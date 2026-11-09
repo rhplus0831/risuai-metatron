@@ -66,6 +66,7 @@ git show 607a33d74:docs/plan/implementation-audit-fixes.md
 git show e99fca9a7:docs/plan/store-memory-sweep.md
 git show 211ac71e2:docs/plan/multi-client-e2e.md
 git show d745dcb8f:docs/plan/storage-settings-page.md
+git show 2beca50d5:docs/plan/found-issues-decisions.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -136,6 +137,7 @@ it is not a current architecture guide.
 | Multi-Client Data Safety Checks          | `211ac71e2`: `docs/plan/multi-client-e2e.md`                              | [resource sync](../structure/resource-sync.md), [chat store](../structure/chat-store.md) (Q3 Limitation), [draft recovery](../structure/draft-recovery.md), [live updates](../structure/live-updates.md), [server generation](../structure/server-generation.md), [test harness](../structure/test-harness.md)                                                                                                                                                                              |
 | Storage Settings Page                    | `d745dcb8f`: `docs/plan/storage-settings-page.md`                         | [settings](../structure/settings-i18n.md), [app shell](../structure/app-shell.md), [assets](../structure/assets.md), [server](../structure/self-host-server.md)                                                                                                                                                                                                                                                                                                                             |
 | Module Headers                           | `25537bb26`: `docs/plan/module-headers.md`                                | [self-host server](../structure/self-host-server.md), [chat pipeline](../structure/chat-pipeline.md), [global API](../structure/global-api.md), [LLM requests](../structure/llm-requests.md), [persistence](../structure/persistence.md): the source module headers and export doc comments their `Files` entries name                                                                                                                                                                      |
+| Found Issues Decisions                   | `2beca50d5`: `docs/plan/found-issues-decisions.md`                        | [LLM requests](../structure/llm-requests.md), [server generation](../structure/server-generation.md), [plugins](../structure/plugin-sandbox.md), [self-host server](../structure/self-host-server.md), the [structured memory](../structure/structured-memory/README.md) pages; E1's Limitations in their owning guides                                                                                                                                                                     |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -1288,6 +1290,20 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     server-generation path list is in the archived file.
   - Found by the run: 29 entries in `docs/research/found-issues.md` (`25537bb26`), 16 of them under the new LLM
     requests and providers section. The plan's D7 sweep session is for the owner to start; it was not run.
+- Found Issues Decisions:
+  - All eleven slices landed on `dev` on 2026-11-09 (plan-runner, every slice under delegate-implementation with
+    Opus implementing): A1 (`844846d9b`), A2 (`697557b4a`), A3 (`d2f4a2596`), B1 (`d4b76d821`), B2 (`174565cde`),
+    B3 (`ccf6980aa`), B4 (`fc708d953`), C1 (`9deff3578`), D1 (`bafa4359d`), D2 (`03f729fd4`), E1 (`02cd93f4d`). The
+    eighteen decided entries left `docs/research/found-issues.md`. The full gate passed on the combined tree at
+    `2beca50d5`: 9,588 tests, the 63 slow tests, and the 54 e2e specs the run reached.
+  - Revised before the run: D2 prunes against the settled outcome (`871b8e29f`, finding G1 of the
+    [second audit](../plan-runner-audit/found-issues-decisions-2026-11-08-2.md)).
+  - D2 prunes inside the store's write transaction; its challenger found two bugs in pruning on append. A 2,000-run
+    checkpoint save went from 751.54 ms to 19.55 ms and the run data from 79 MB to 236 KB. A crafted restore whose
+    keys are unicode-escaped can slip past the SQL prefilter and keep its bytes; retries are unaffected.
+  - Manual checks not run: A3's optional `checkJobHandoff.mjs` `prefer` check, and B2's two-tab check that a reset
+    plugin asks for its permission again.
+  - Found by the run: two entries in `docs/research/found-issues.md` (`426fdbce0`).
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry
   above.

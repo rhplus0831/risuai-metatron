@@ -1,6 +1,6 @@
 # Found Issues Decisions Plan audit, 2026-11-08 (second)
 
-- Plan: [docs/plan/found-issues-decisions.md](../plan/found-issues-decisions.md)
+- Plan: `docs/plan/found-issues-decisions.md`, retired; its last version is `git show 2beca50d5:docs/plan/found-issues-decisions.md`
 - Commit audited: `38329666b` (`dev`), the plan as revised after the
   [first audit](found-issues-decisions-2026-11-08.md)
 - Mode: `full`

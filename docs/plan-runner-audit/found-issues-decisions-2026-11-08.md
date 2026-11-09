@@ -1,6 +1,6 @@
 # Found Issues Decisions Plan audit, 2026-11-08
 
-- Plan: [docs/plan/found-issues-decisions.md](../plan/found-issues-decisions.md)
+- Plan: `docs/plan/found-issues-decisions.md`, retired; its last version is `git show 2beca50d5:docs/plan/found-issues-decisions.md`
 - Commit audited: `3f1fab1ef` (`dev`)
 - Mode: `full`
 - Model: GPT-6.1-Sol (`xhigh`), read-only; report written by the plan-runner orchestrator (Claude Opus 5.5)
