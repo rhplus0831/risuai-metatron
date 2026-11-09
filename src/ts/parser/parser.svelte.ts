@@ -479,6 +479,7 @@ function getEmoSrc(emoArr: readonly (readonly string[])[], emoPaths: AssetPaths)
     }
 }
 
+const FILE_SRC_CACHE_LIMIT = 2000;
 const fileSrcCache = new Map<string, string>();
 
 /** Controller loss invalidates parser URLs, including direct asset URLs that need the signing worker. */
@@ -501,6 +502,9 @@ async function getFileSrcCached(path: string, signal?: AbortSignal, rejectFailed
     }
     const src = await readRenderFileSrc(path, signal, rejectFailedAssetReads);
     fileSrcCache.set(path, src);
+    if (fileSrcCache.size > FILE_SRC_CACHE_LIMIT) {
+        fileSrcCache.delete(fileSrcCache.keys().next().value!);
+    }
     return src;
 }
 

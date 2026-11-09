@@ -15,7 +15,7 @@ import * as inlays from "src/ts/process/files/inlays";
 import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
-import { ParseMarkdown } from "../parser.svelte";
+import { invalidateFileSrcCache, ParseMarkdown } from "../parser.svelte";
 import { isTransient } from "../renderErrors";
 import { captureTransform, serverProcessScript, type CapturedTransform } from "../transformClient";
 
@@ -41,6 +41,61 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("ParseMarkdown render lifetime", () => {
+    it("keeps the newest 2,000 file sources after rendering 3,000 assets and clears them on invalidation", async () => {
+        const char = selectedCharacter();
+        if (char?.type !== "character") throw new Error("Missing character fixture");
+        const assets: [string, string, string][] = Array.from({ length: 3000 }, (_, index) => [
+            `cached-${index}`,
+            `assets/file-src-cache-${index}.png`,
+            "png",
+        ]);
+        char.additionalAssets = assets;
+        const reads = new Map<string, number>();
+        vi.mocked(getFileSrc).mockImplementation(async (path) => {
+            reads.set(path, (reads.get(path) ?? 0) + 1);
+            return path;
+        });
+        const render = async (items: typeof assets) => {
+            const html = await ParseMarkdown(
+                items.map(([name]) => `{{img::${name}}}`).join("\n"),
+                char,
+                "normal",
+                -1,
+                {},
+                null,
+            );
+            const output = document.createElement("div");
+            output.innerHTML = html;
+            expect([...output.querySelectorAll("img")].map((image) => image.getAttribute("src"))).toEqual(
+                items.map(([, path]) => path),
+            );
+        };
+
+        invalidateFileSrcCache();
+        try {
+            await render(assets);
+            const oncePerPath = new Map(assets.map(([, path]) => [path, 1]));
+            expect(reads).toEqual(oncePerPath);
+
+            const newest = assets.slice(-2000);
+            await render(newest);
+            expect(reads).toEqual(oncePerPath);
+
+            const oldest = assets.slice(0, -2000);
+            await render(oldest);
+            for (const [, path] of oldest) {
+                expect(reads.get(path), path).toBe(2);
+            }
+
+            invalidateFileSrcCache();
+            reads.clear();
+            await render(assets);
+            expect(reads).toEqual(oncePerPath);
+        } finally {
+            invalidateFileSrcCache();
+        }
+    });
+
     it("rejects an abort during the first language import without highlighting or importing the next language", async () => {
         expect(hljs.getLanguage("python")).toBeUndefined();
         expect(hljs.getLanguage("rust")).toBeUndefined();

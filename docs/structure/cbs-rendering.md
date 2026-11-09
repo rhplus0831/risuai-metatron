@@ -208,10 +208,11 @@ and video have two modes:
 
 ### Caches
 
-- Parser and page caches: the parser's file-source (`fileSrcCache`), encoded-metadata and CSS scope (`scopeCss`: by the
-  CSS after CBS, 256 entries / 4 MiB) maps, the fallback's media object URLs in `files/inlays.ts` (`mediaObjectUrls`),
-  the scoped evaluators (`scopedEvaluators`), the asset maps (reset by `resetAssetsCache` and by `syncAssetsCache` in an
-  `$effect.root` and at the start of an asset parse), and global `CSS.highlights`.
+- Parser and page caches: the parser's file-source (`fileSrcCache`, 2,000 entries, oldest first), encoded-metadata and
+  CSS scope (`scopeCss`: by the CSS after CBS, 256 entries / 4 MiB) maps, the fallback's media object URLs in
+  `files/inlays.ts` (`mediaObjectUrls`), the scoped evaluators (`scopedEvaluators`), the asset maps (reset by
+  `resetAssetsCache` and by `syncAssetsCache` in an `$effect.root` and at the start of an asset parse), and global
+  `CSS.highlights`.
 - Server transform (`server/src/prompt/transformCache.ts`): an LRU of text and emotions, 512 entries / 16 MiB, at most
   512 KiB per entry. Its key, the character identities and the all-cached probe are the `server/src/prompt/transform.ts`
   header ([server generation](server-generation.md)). The key holds the stored chat revision, so after a save, rows that

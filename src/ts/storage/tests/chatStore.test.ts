@@ -638,6 +638,29 @@ describe("mirror and queue", () => {
 });
 
 describe("membership and selection", () => {
+    it("refuses numeric message data with a plain Error before creating a chat", async () => {
+        const { chat, character } = await boot();
+        const before = clone(character().chats);
+        let failure: unknown;
+        try {
+            chat.createChat("c", {
+                id: "invalid-data",
+                name: "Invalid message data",
+                note: "",
+                localLore: [],
+                message: [{ role: "user", data: 123 }],
+            } as unknown as Parameters<ChatModule["createChat"]>[1]);
+        } catch (error) {
+            failure = error;
+        }
+
+        expect(failure).toBeInstanceOf(Error);
+        expect(failure).toMatchObject({ constructor: Error, message: "message.data must be a string" });
+        expect(clone(character().chats)).toEqual(before);
+        expect(chat.findChat({ chaId: "c", chatId: "invalid-data" })).toBeUndefined();
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
     it("cancels a create that was never sent, but keeps a delete behind a create that was", async () => {
         const { server, chat, take, commit, open } = await boot();
         chat.createChat("c", { id: "n", name: "N", message: [] } as any);

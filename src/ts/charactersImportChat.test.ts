@@ -189,6 +189,33 @@ afterEach(() => {
 });
 
 describe("importChat writes the character selected when the dialog opened", () => {
+    it("refuses a JSON chat with numeric message data through the error alert and adds no chat", async () => {
+        const { run, alpha, chatsOf, sync, serverText } = await boot();
+        const before = chatsOf(alpha);
+        const serverBefore = serverText();
+
+        await run({
+            name: "invalid-data.json",
+            data: encode({
+                type: "risuChat",
+                ver: 1,
+                data: {
+                    name: "Invalid message data",
+                    note: "",
+                    localLore: [],
+                    message: [{ role: "user", data: 123 }],
+                },
+            }),
+        });
+
+        expect(alerts.error).toHaveBeenCalledExactlyOnceWith(new Error("message.data must be a string"));
+        expect(alerts.error.mock.calls[0][0].constructor).toBe(Error);
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(chatsOf(alpha)).toEqual(before);
+        await sync.flushResources();
+        expect(serverText()).toBe(serverBefore);
+    });
+
     it("a jsonl chat lands at the top of that character, substitutes its name, and selects it while it is still on screen", async () => {
         const { run, alpha, chatsOf, texts, character, sync, fake, activePersona } = await boot();
         await run(jsonl());

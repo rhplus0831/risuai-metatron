@@ -82,6 +82,9 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   ([resource sync](resource-sync.md)) sends a chat's unsent ops as one group (`takeChatWork`, `coalesce`: a
   generation-bearing op never coalesces, so every generation fence holds). An op's `before` is the
   [chat journal's](draft-recovery.md#chat-journal). A direct chat write fails `pnpm check` (STRUCTURE D1).
+- Messages a writer takes in whole (`createChat`, `appendMessage`, `replaceChat`, `applyChatResult`, a new character's
+  chats) pass `prepareMessages`, which refuses a non-string `data` as the server's `normalizeMessage` does, so a JSON
+  chat import cannot store one.
 
 ### By-id ops
 
