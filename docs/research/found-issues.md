@@ -11,7 +11,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (3)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
 - [Server routes and resource store](#server-routes-and-resource-store) (4)
-- [LLM requests and providers](#llm-requests-and-providers) (9)
+- [LLM requests and providers](#llm-requests-and-providers) (7)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (3)
 - [Chat screen and input](#chat-screen-and-input) (4)
@@ -107,22 +107,6 @@ Excluded by the Implementation Audit Fixes plan (2026-11-05) as an unverified le
 **Suggested handling:** pause an export before it opens such an asset, replace the asset through the normal write path, and inspect the archive; then decide what consistency custom keys promise.
 
 ## LLM requests and providers
-
-### OpenRouter free-model discovery ignores the bound key
-
-With the `risu/free` model, `server/src/llm/openAI/requests.ts` (~251) calls `getFreeOpenRouterModels(arg.ctx)` without the resolved `arg.key`; `server/src/llm/openrouter.ts` (~24) sends `ctx.db.openrouterKey`, while the generation request uses `getOpenAIRequestKey` (~611). A profile bound to a named key discovers models with the flat default key, or with none. This contradicts the llm-requests invariant "Adapters use the resolved key". Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** a user with only a named OpenRouter key gets no free model, or one chosen with another key.
-
-**Suggested handling:** pass the resolved key into the discovery call.
-
-### An empty OpenRouter free list throws a TypeError
-
-`getFreeOpenRouterModels` in `server/src/llm/openrouter.ts` (~42–43) reads `[0].id` before `?? ""` applies. Its `catch` turns a network failure, an abort, or a malformed response into an empty list, so any of those, or no free model at all, throws a TypeError that hides the real cause; the function's comment notes the client throws the same way. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** the user sees a TypeError instead of "no free model" or the network error.
-
-**Suggested handling:** optional-chain the index and report an empty result as a failure.
 
 ### The OpenAI tool stream wrapper keeps only choice 0
 
