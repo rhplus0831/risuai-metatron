@@ -3,6 +3,7 @@ import { MCPClientLike } from "./internalmcp";
 import type { MCPTool, RPCToolCallContent } from "./mcplib";
 import { fetchNative } from "../../globalApi.svelte";
 import { alertInput } from "../../alert";
+import type { PluginCallContext } from "../../plugins/apiV3/pluginContext";
 import { updateSettings } from "../../storage/collectionStore.svelte";
 
 interface WebSearchArgs {
@@ -188,17 +189,25 @@ export class GoogleSearchClient extends MCPClientLike {
         ];
     }
 
-    async callTool(toolName: string, args: any): Promise<RPCToolCallContent[]> {
+    /** Runs searches with the caller signal forwarded to fetchNative. */
+    async callTool(
+        toolName: string,
+        args: any,
+        _context?: PluginCallContext,
+        signal?: AbortSignal,
+    ): Promise<RPCToolCallContent[]> {
+        signal?.throwIfAborted();
         try {
             switch (toolName) {
                 case "google_search":
-                    return await this.performWebSearch(args);
+                    return await this.performWebSearch(args, signal);
                 case "google_search_images":
-                    return await this.performImageSearch(args);
+                    return await this.performImageSearch(args, signal);
                 default:
                     return [{ type: "text", text: `Unknown tool: ${toolName}` }];
             }
         } catch (error: unknown) {
+            signal?.throwIfAborted();
             const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
             return [{ type: "text", text: `Error: ${errorMessage}` }];
         }
@@ -215,7 +224,7 @@ export class GoogleSearchClient extends MCPClientLike {
         return `${baseUrl}?${params.toString()}`;
     }
 
-    private async performWebSearch(args: WebSearchArgs): Promise<RPCToolCallContent[]> {
+    private async performWebSearch(args: WebSearchArgs, signal?: AbortSignal): Promise<RPCToolCallContent[]> {
         const { query, num = 10, start = 1, dateRestrict, siteSearch, fileType, language, safe = "active" } = args;
 
         if (!query || !query.trim()) {
@@ -242,6 +251,7 @@ export class GoogleSearchClient extends MCPClientLike {
             const response = await fetchNative(url, {
                 method: "GET",
                 headers: { Accept: "application/json" },
+                signal,
             });
 
             if (!response.ok) {
@@ -272,12 +282,13 @@ export class GoogleSearchClient extends MCPClientLike {
 
             return [{ type: "text", text: JSON.stringify(summary, null, 2) }];
         } catch (error: unknown) {
+            signal?.throwIfAborted();
             const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
             return [{ type: "text", text: `Search failed: ${errorMessage}` }];
         }
     }
 
-    private async performImageSearch(args: ImageSearchArgs): Promise<RPCToolCallContent[]> {
+    private async performImageSearch(args: ImageSearchArgs, signal?: AbortSignal): Promise<RPCToolCallContent[]> {
         const { query, num = 10, start = 1, imageSize, imageType, imageColorType, safe = "active" } = args;
 
         if (!query || !query.trim()) {
@@ -304,6 +315,7 @@ export class GoogleSearchClient extends MCPClientLike {
             const response = await fetchNative(url, {
                 method: "GET",
                 headers: { Accept: "application/json" },
+                signal,
             });
 
             if (!response.ok) {
@@ -339,6 +351,7 @@ export class GoogleSearchClient extends MCPClientLike {
 
             return [{ type: "text", text: JSON.stringify(summary, null, 2) }];
         } catch (error: unknown) {
+            signal?.throwIfAborted();
             const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
             return [{ type: "text", text: `Image search failed: ${errorMessage}` }];
         }

@@ -11,6 +11,22 @@ const { fakes, urls } = vi.hoisted(() => {
         static all: FakeClient[] = [];
         /** Per URL: a promise `getToolList` awaits before answering (a slow listing). */
         static listGates = new Map<string, Promise<void>>();
+        static handshakeGates = new Map<string, Promise<void>>();
+        signals: (AbortSignal | undefined)[] = [];
+        async waitForGate(gate: Promise<void> | undefined, signal?: AbortSignal) {
+            signal?.throwIfAborted();
+            if (!gate) return;
+            let onAbort: () => void = () => {};
+            const cancelled = new Promise<never>((_, reject) => {
+                onAbort = () => reject(signal!.reason);
+                signal?.addEventListener("abort", onAbort, { once: true });
+            });
+            try {
+                await Promise.race([gate, cancelled]);
+            } finally {
+                signal?.removeEventListener("abort", onAbort);
+            }
+        }
         destroyed = false;
         handshakes = 0;
         calls: string[] = [];
@@ -19,11 +35,14 @@ const { fakes, urls } = vi.hoisted(() => {
         constructor(public readonly url: string) {
             FakeClient.all.push(this);
         }
-        async checkHandshake() {
+        async checkHandshake(signal?: AbortSignal) {
+            this.signals.push(signal);
             this.handshakes += 1;
+            await this.waitForGate(FakeClient.handshakeGates.get(this.url), signal);
         }
-        async getToolList() {
-            await FakeClient.listGates.get(this.url);
+        async getToolList(_context?: unknown, signal?: AbortSignal) {
+            this.signals.push(signal);
+            await this.waitForGate(FakeClient.listGates.get(this.url), signal);
             return [{ name: "roll", description: `roll at ${this.url}`, inputSchema: { type: "object" } }];
         }
         async callTool(name: string, _args: unknown) {
@@ -36,6 +55,8 @@ const { fakes, urls } = vi.hoisted(() => {
     }
     return {
         fakes: {
+            directoryImport: undefined as Promise<void> | undefined,
+            directoryImportStarted: false,
             FakeClient,
             byUrl: (url: string) => FakeClient.all.filter((client) => client.url === url),
         },
@@ -50,6 +71,17 @@ vi.mock("src/ts/process/mcp/mcplib", () => ({ MCPClient: fakes.FakeClient }));
 vi.mock("src/ts/process/mcp/risuaccess", () => ({ RisuAccessClient: fakes.FakeClient }));
 vi.mock("src/ts/process/mcp/risuaccess/index", () => ({ RisuAccessClient: fakes.FakeClient }));
 vi.mock("src/ts/process/mcp/risuaccess/client", () => ({ RisuAccessClient: fakes.FakeClient }));
+vi.mock("src/ts/process/mcp/filesystemclient", async () => {
+    fakes.directoryImportStarted = true;
+    await fakes.directoryImport;
+    return {
+        FileSystemClient: class extends fakes.FakeClient {
+            constructor() {
+                super("internal:fs");
+            }
+        },
+    };
+});
 vi.mock("src/ts/process/mcp/pluginmcp", () => ({ registeredCustomPluginMCPs: new Map() }));
 vi.mock("src/ts/process/modules", () => ({
     getModuleMcps: (chatRef?: { chaId: string; chatId: string }) => [
@@ -90,6 +122,7 @@ beforeEach(async () => {
     vi.resetModules();
     fakes.FakeClient.all.length = 0;
     fakes.FakeClient.listGates.clear();
+    fakes.FakeClient.handshakeGates.clear();
     urls.clear();
     urls.set("a/1", [X]);
     urls.set("b/1", [Y]);
@@ -176,4 +209,84 @@ describe("the leased MCP clients", () => {
         await mcp.initializeMCPs(undefined, refB);
         expect(x.destroyed).toBe(true);
     });
+});
+
+it("releases a cancelled listing's lease while an independent chat keeps working", async () => {
+    const release = holdListing(X);
+    const controller = new AbortController();
+    const reason = new Error("listing cancelled");
+    let failure: unknown;
+    const listing = mcp.getMCPTools(undefined, refA, undefined, controller.signal).catch((error) => {
+        failure = error;
+    });
+    try {
+        await settleMicrotasks();
+        const [x] = live(X);
+        expect(x).toBeDefined();
+        await mcp.getMCPTools(undefined, refB);
+        expect(x.destroyed).toBe(false);
+        controller.abort(reason);
+        await settleMicrotasks();
+        expect(failure).toBe(reason);
+        expect(x.signals).toContain(controller.signal);
+        expect(x.destroyed).toBe(true);
+        expect((await mcp.getMCPTools(undefined, refB)).map((tool) => tool.mcpURL)).toEqual([Y]);
+    } finally {
+        release();
+        await listing;
+    }
+});
+
+it("destroys a cancelled discovery client and never installs its late handshake in the registry", async () => {
+    let release!: () => void;
+    fakes.FakeClient.handshakeGates.set(
+        X,
+        new Promise<void>((resolve) => {
+            release = resolve;
+        }),
+    );
+    const controller = new AbortController();
+    const reason = new Error("discovery cancelled");
+    let failure: unknown;
+    const discovery = mcp.getMCPTools(undefined, refA, undefined, controller.signal).catch((error) => {
+        failure = error;
+    });
+    try {
+        await settleMicrotasks();
+        const [x] = live(X);
+        expect(x).toBeDefined();
+        controller.abort(reason);
+        await settleMicrotasks();
+        expect(failure).toBe(reason);
+        expect(x.destroyed).toBe(true);
+        release();
+        await discovery;
+        expect(mcp.MCPs[X]).toBeUndefined();
+    } finally {
+        release();
+        await discovery;
+    }
+});
+
+it("does not start a directory picker if cancelled while the tab client is dynamically imported", async () => {
+    let release!: () => void;
+    fakes.directoryImport = new Promise<void>((resolve) => {
+        release = resolve;
+    });
+    fakes.directoryImportStarted = false;
+    const controller = new AbortController();
+    const reason = new Error("picker callback cancelled");
+    const ready = mcp.readyTabClient("internal:fs", controller.signal);
+    const rejected = expect(ready).rejects.toBe(reason);
+    try {
+        // Import evaluation yields through Vite's loader, then waits at the explicit gate.
+        await vi.waitFor(() => expect(fakes.directoryImportStarted).toBe(true), { timeout: 100 });
+        controller.abort(reason);
+        release();
+        await rejected;
+        expect(fakes.byUrl("internal:fs").map((client) => client.handshakes)).toEqual([0]);
+    } finally {
+        release();
+        fakes.directoryImport = undefined;
+    }
 });

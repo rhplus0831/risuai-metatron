@@ -49,14 +49,17 @@ function tabClient(identifier: string): Promise<MCPClientLike> {
 }
 
 /** The tab client of `identifier`, handshaken (concurrent first uses share one handshake). */
-export async function readyTabClient(identifier: string): Promise<MCPClientLike> {
+export async function readyTabClient(identifier: string, signal?: AbortSignal): Promise<MCPClientLike> {
+    signal?.throwIfAborted();
     const client = await tabClient(identifier);
+    signal?.throwIfAborted();
     let handshake = tabHandshakes.get(identifier);
     if (!handshake) {
         handshake = client.checkHandshake().finally(() => tabHandshakes.delete(identifier));
         tabHandshakes.set(identifier, handshake);
     }
     await handshake;
+    signal?.throwIfAborted();
     return client;
 }
 
@@ -110,6 +113,7 @@ async function syncMCPs(
     additionalMCPs: string[] | undefined,
     chatRef: ModuleChatRef,
     held?: AnyMCPClient[],
+    signal?: AbortSignal,
 ): Promise<{ active: Record<string, AnyMCPClient>; callOnly: Record<string, AnyMCPClient> }> {
     const own: Record<string, AnyMCPClient> = {};
     const keep = (mcp: string) => {
@@ -137,6 +141,7 @@ async function syncMCPs(
         }
     }
     for (const mcp of mcpUrls) {
+        signal?.throwIfAborted();
         if (mcp.startsWith("plugin:")) {
             // Resolve every time: reloads can replace or remove a plugin's registered client.
             const client = registeredCustomPluginMCPs.get(mcp);
@@ -160,7 +165,7 @@ async function syncMCPs(
                         // Registered before its handshake, as every internal client is.
                         MCPs[mcp] = await tabClient(mcp);
                         keep(mcp);
-                        await readyTabClient(mcp);
+                        await readyTabClient(mcp, signal);
                         continue;
                     }
                     case "internal:risuai": {
@@ -217,15 +222,16 @@ async function syncMCPs(
                 return settings.authRefreshes.find((refresh) => refresh.url === mcp);
             };
 
+            let mcpClient: MCPClient | undefined;
             try {
                 if (!mcpUrl.startsWith("https://") && !mcpUrl.startsWith("http://")) {
                     throw new Error("Invalid MCP URL");
                 }
 
-                const mcpClient = new MCPClient(mcpUrl);
+                mcpClient = new MCPClient(mcpUrl);
                 mcpClient.registerRefreshToken = registerRefresh;
                 mcpClient.getRefreshToken = getRefresh;
-                await mcpClient.checkHandshake();
+                await mcpClient.checkHandshake(signal);
                 MCPs[mcp] ??= mcpClient;
                 if (MCPs[mcp] !== mcpClient) {
                     // Another initialization connected it meanwhile: that client is the one.
@@ -233,6 +239,8 @@ async function syncMCPs(
                 }
                 keep(mcp);
             } catch (error) {
+                mcpClient?.destroy();
+                signal?.throwIfAborted();
                 console.error(`MCP: Failed to initialize MCP at ${mcp}:`, error);
             }
         }
@@ -267,14 +275,21 @@ async function syncMCPs(
     return { active, callOnly };
 }
 
-/** The tools of `chatRef`'s MCP servers (its own clients, leased while they are listed). */
-export async function getMCPTools(additionalMCPs?: string[], chatRef?: ModuleChatRef, context?: PluginCallContext) {
+/** Lists the chat's MCP tools with clients leased until completion or caller cancellation. */
+export async function getMCPTools(
+    additionalMCPs?: string[],
+    chatRef?: ModuleChatRef,
+    context?: PluginCallContext,
+    signal?: AbortSignal,
+) {
     const held: AnyMCPClient[] = [];
     try {
-        const { active } = await syncMCPs(additionalMCPs, chatRef, held);
+        signal?.throwIfAborted();
+        const { active } = await syncMCPs(additionalMCPs, chatRef, held, signal);
         const tools: MCPToolWithURL[] = [];
         for (const [key, client] of Object.entries(active)) {
-            const t = (await (key.startsWith("plugin:") ? client.getToolList(context) : client.getToolList())).map(
+            signal?.throwIfAborted();
+            const t = (await client.getToolList(key.startsWith("plugin:") ? context : undefined, signal)).map(
                 (tool) => {
                     return {
                         ...tool,
@@ -285,6 +300,7 @@ export async function getMCPTools(additionalMCPs?: string[], chatRef?: ModuleCha
 
             tools.push(...t);
         }
+        signal?.throwIfAborted();
         return tools;
     } finally {
         releaseLeases(held);
@@ -332,19 +348,23 @@ export async function callMCPTool(
     args: any,
     chatRef?: ModuleChatRef,
     context?: PluginCallContext,
+    signal?: AbortSignal,
 ): Promise<RPCToolCallContent[]> {
     const held: AnyMCPClient[] = [];
     try {
-        const { active, callOnly } = await syncMCPs(undefined, chatRef, held);
+        signal?.throwIfAborted();
+        const { active, callOnly } = await syncMCPs(undefined, chatRef, held, signal);
         const combinedMCPs = { ...active, ...callOnly };
         for (const key of Object.keys(combinedMCPs)) {
             const client = combinedMCPs[key];
             const isPlugin = key.startsWith("plugin:");
-            const tools = await (isPlugin ? client.getToolList(context) : client.getToolList());
+            signal?.throwIfAborted();
+            const tools = await client.getToolList(isPlugin ? context : undefined, signal);
+            signal?.throwIfAborted();
             const tool = tools.find((t) => t.name === methodName);
             if (tool) {
                 if (isPlugin) {
-                    return await client.callTool(methodName, args, context);
+                    return await client.callTool(methodName, args, context, signal);
                 }
                 if (chatRef !== undefined && isChatToolClient(client)) {
                     // The context's preset is the request's when it was captured for the same chat.
@@ -354,7 +374,7 @@ export async function callMCPTool(
                             : undefined;
                     return await client.callToolForChat(chatRef, methodName, args, scope);
                 }
-                return await client.callTool(methodName, args);
+                return await client.callTool(methodName, args, undefined, signal);
             }
         }
     } finally {
@@ -370,13 +390,19 @@ export async function callMCPTool(
 
 //Currently just a wrapper for getMCPTools, but can be extended later for more than MCPs
 /** The tools for a request of `chatRef`'s chat (default: the selected chat; its modules choose the MCP servers). */
-export async function getTools(chatRef?: ModuleChatRef, context?: PluginCallContext) {
-    return await getMCPTools(undefined, chatRef, context);
+export async function getTools(chatRef?: ModuleChatRef, context?: PluginCallContext, signal?: AbortSignal) {
+    return await getMCPTools(undefined, chatRef, context, signal);
 }
 
 //Currently just a wrapper for callMCPTool, but can be extended later for more than MCPs
-export async function callTool(methodName: string, args: any, chatRef?: ModuleChatRef, context?: PluginCallContext) {
-    return await callMCPTool(methodName, args, chatRef, context);
+export async function callTool(
+    methodName: string,
+    args: any,
+    chatRef?: ModuleChatRef,
+    context?: PluginCallContext,
+    signal?: AbortSignal,
+) {
+    return await callMCPTool(methodName, args, chatRef, context, signal);
 }
 
 /**

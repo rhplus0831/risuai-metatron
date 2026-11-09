@@ -375,7 +375,15 @@ async function requestPinnedChatData(
     // below, the chat must still be the one the request began with.
     const target = arg.chatRef ?? pluginContext?.chatRef;
     const held = () => requestChatHeld(target, arg.chatOwner);
-    const tools = arg.tools ?? (await getTools(target, pluginContext));
+    let tools = arg.tools;
+    try {
+        tools ??= await getTools(target, pluginContext, abortSignal);
+    } catch (error) {
+        if (abortSignal?.aborted) {
+            return { type: "fail", result: "Aborted" };
+        }
+        throw error;
+    }
     if (!held()) {
         return requestChatGone();
     }

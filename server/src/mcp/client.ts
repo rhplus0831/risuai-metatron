@@ -30,7 +30,8 @@ import { parseSseEvent, SseFramer } from "../../../shared/mcp/sse.ts";
  *
  * Events are framed by `shared/mcp/sse.ts` (CRLF, LF, or CR line ends; `data:` with or without the
  * space), a session id is taken from an `initialize` answer in JSON or as an event stream, and a
- * refresh answer's new refresh token replaces the stored one (the tab client does the same).
+ * refresh answer's new refresh token is saved even after caller cancellation. Rotation writes
+ * check the original store epoch and grant, while access-token publication stays fenced.
  * Over streamable HTTP only, a 404 with a session or a 401 with a token resets the session and
  * retries at most once; the tab can retry again when concurrent work restores a session or token.
  * Prompts, the custom transport, and `debug` are not ported (no server caller).
@@ -72,7 +73,9 @@ export type McpIo = {
     /** Asks the owner for the authorization code; `cancel` aborting withdraws the question. */
     askCode(cancel: AbortSignal): Promise<string>;
     /** Stores the refresh record of a completed login. */
-    writeRefresh(entry: McpRefresh): void;
+    writeRefresh(entry: McpRefresh, previous?: McpRefresh): void;
+    /** Preserves remote token rotation after cancellation, conditional on the previous stored record. */
+    writeRotatedRefresh?(entry: McpRefresh, previous: McpRefresh): void;
 };
 
 export type McpClientDeps = {
@@ -664,8 +667,12 @@ export class McpClient {
     }
 
     /** One bounded OAuth exchange: the status and the JSON body (undefined when it is not JSON). */
-    private async oauthFetch(url: string, init: RequestInit, io: McpIo): Promise<{ status: number; json: any }> {
-        const signal = AbortSignal.any([io.signal, this.closing.signal, AbortSignal.timeout(MCP_OAUTH_TIMEOUT_MS)]);
+    private async oauthFetch(
+        url: string,
+        init: RequestInit,
+        io: McpIo,
+        signal = AbortSignal.any([io.signal, this.closing.signal, AbortSignal.timeout(MCP_OAUTH_TIMEOUT_MS)]),
+    ): Promise<{ status: number; json: any }> {
         let response: Response;
         let text: string;
         try {
@@ -706,20 +713,27 @@ export class McpClient {
                     }).toString(),
                 },
                 io,
+                // The remote grant may spend the old token even after this caller leaves.
+                AbortSignal.timeout(MCP_OAUTH_TIMEOUT_MS),
             );
             const token = answer.status === 200 ? answer.json?.access_token : undefined;
             if (typeof token === "string" && token !== "") {
                 // A rotated refresh token replaces the stored one (the old one may be spent).
                 const rotated = answer.json?.refresh_token;
                 if (typeof rotated === "string" && rotated !== "") {
-                    this.fenceIo(io);
-                    io.writeRefresh({
+                    const entry = {
                         ...(stored.clientId !== undefined ? { clientId: stored.clientId } : {}),
                         ...(stored.clientSecret !== undefined ? { clientSecret: stored.clientSecret } : {}),
                         refreshToken: rotated,
                         tokenUrl: stored.tokenUrl,
-                    });
+                    };
+                    if (io.writeRotatedRefresh) {
+                        io.writeRotatedRefresh(entry, stored);
+                    } else {
+                        io.writeRefresh(entry);
+                    }
                 }
+                this.fenceIo(io);
                 this.publishToken(token);
                 return;
             }

@@ -4,7 +4,8 @@ import type { MCPTool, RPCToolCallContent } from "./mcplib";
 import type { PluginCallContext } from "../../plugins/apiV3/pluginContext";
 
 /**
- * Base for internal and plugin clients; the remote client is `src/ts/process/mcp/mcplib.ts`.
+ * Base for internal and plugin clients. The remote client is `src/ts/process/mcp/mcplib.ts`.
+ * Listing and calls accept a trailing caller signal for cancellable network work.
  * Dispatchers pass the optional trailing `context` only to `plugin:` clients. A client whose tools
  * act on a chat also implements `callToolForChat(chatRef, name, args, scope?)`:
  * `callMCPTool` in `src/ts/process/mcp/mcp.ts` uses it for any supplied chat argument, including
@@ -42,11 +43,16 @@ export class MCPClientLike {
         return this.serverInfo;
     }
 
-    async getToolList(_context?: PluginCallContext): Promise<MCPTool[]> {
+    async getToolList(_context?: PluginCallContext, _signal?: AbortSignal): Promise<MCPTool[]> {
         return [];
     }
 
-    async callTool(toolName: string, args: any, _context?: PluginCallContext): Promise<RPCToolCallContent[]> {
+    async callTool(
+        toolName: string,
+        args: any,
+        _context?: PluginCallContext,
+        _signal?: AbortSignal,
+    ): Promise<RPCToolCallContent[]> {
         return [
             {
                 type: "text",

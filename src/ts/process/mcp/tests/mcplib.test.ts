@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // client usable. Not asserted here: a stream that ends without its answer (JSON-RPC error -32000,
 // `mcp.md`; `mcplibStreams.test.ts` covers it). The framer alone: `server/src/tests/mcpSse.test.ts`.
 
-type Call = { url: string; method: string; headers: Record<string, string>; body: any };
+type Call = { url: string; method: string; headers: Record<string, string>; body: any; signal?: AbortSignal };
 type Reply = {
     status: number;
     statusText: string;
@@ -23,14 +23,17 @@ type Reply = {
 };
 
 const { calls, server } = vi.hoisted(() => ({
-    calls: [] as { url: string; method: string; headers: Record<string, string>; body: any }[],
+    calls: [] as { url: string; method: string; headers: Record<string, string>; body: any; signal?: AbortSignal }[],
     server: { handle: null as null | ((call: Call) => Promise<unknown> | unknown) },
 }));
 
 vi.mock("src/ts/globalApi.svelte", async () =>
     (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
         fetchNative: vi.fn(
-            async (url: string, init: { method?: string; headers?: Record<string, string>; body?: string }) => {
+            async (
+                url: string,
+                init: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal },
+            ) => {
                 let body: any = init?.body ?? null;
                 if (typeof body === "string") {
                     try {
@@ -39,7 +42,13 @@ vi.mock("src/ts/globalApi.svelte", async () =>
                         body = Object.fromEntries(new URLSearchParams(body));
                     }
                 }
-                const call = { url, method: init?.method ?? "GET", headers: { ...(init?.headers ?? {}) }, body };
+                const call = {
+                    url,
+                    method: init?.method ?? "GET",
+                    headers: { ...(init?.headers ?? {}) },
+                    body,
+                    signal: init?.signal,
+                };
                 calls.push(call);
                 if (!server.handle) {
                     throw new Error(`unexpected fetchNative(${url})`);
@@ -137,6 +146,7 @@ beforeEach(() => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
 });
 
@@ -541,5 +551,163 @@ describe("MCPClient retirement (destroy) against the session reset", () => {
         ]);
         expect(client.accessToken).toBeNull();
         expect((await client.request("tools/list")).rpc.result).toEqual({ ok: "tools/list" });
+    });
+});
+
+// Promise checkpoints keep cancellation assertions independent of the host clock.
+async function checkpoint(predicate: () => boolean) {
+    for (let i = 0; i < 200 && !predicate(); i++) await Promise.resolve();
+    expect(predicate()).toBe(true);
+}
+
+describe("caller cancellation and deadlines", () => {
+    it("aborts discovery before headers with the caller reason and installs no handshake", async () => {
+        const client = await newClient();
+        const controller = new AbortController();
+        const reason = new Error("discovery cancelled");
+        server.handle = (call) =>
+            new Promise((_, reject) =>
+                call.signal!.addEventListener("abort", () => reject(call.signal!.reason), { once: true }),
+            );
+        const answer = client.getToolList(undefined, controller.signal);
+        let failure: unknown;
+        const settled = answer.catch((error) => {
+            failure = error;
+        });
+        try {
+            await checkpoint(() => calls.length === 1);
+            controller.abort(reason);
+            await checkpoint(() => failure !== undefined);
+            expect(failure).toBe(reason);
+            expect(calls[0].signal?.aborted).toBe(true);
+            expect(client.initialized).toBe(false);
+        } finally {
+            client.destroy();
+        }
+        await settled;
+    });
+
+    it("aborts a tool call before headers and releases the caller's abort listener", async () => {
+        const client = await newClient();
+        server.handle = (call) => (call.body.method === "initialize" ? rpcJson(call, INFO) : reply({ status: 202 }));
+        await client.checkHandshake();
+        const controller = new AbortController();
+        const reason = new Error("tool cancelled");
+        const removed = vi.spyOn(controller.signal, "removeEventListener");
+        server.handle = (call) =>
+            new Promise((_, reject) =>
+                call.signal!.addEventListener("abort", () => reject(call.signal!.reason), { once: true }),
+            );
+        let failure: unknown;
+        const call = client.callTool("echo", {}, undefined, controller.signal).catch((error) => {
+            failure = error;
+        });
+        try {
+            await checkpoint(() => calls.some((call) => call.body.method === "tools/call"));
+            controller.abort(reason);
+            await checkpoint(() => failure !== undefined);
+            expect(failure).toBe(reason);
+            expect(calls[calls.length - 1].signal?.aborted).toBe(true);
+            expect(removed).toHaveBeenCalledWith("abort", expect.any(Function));
+        } finally {
+            client.destroy();
+        }
+        await call;
+    });
+
+    it("rejects an aborted paginated JSON listing and never caches its late page", async () => {
+        const client = await newClient();
+        const controller = new AbortController();
+        const late = deferred<unknown>();
+        let waiting = false;
+        let lists = 0;
+        server.handle = (call) => {
+            if (call.body.method === "initialize") return rpcJson(call, INFO);
+            if (call.body.id === undefined) return reply({ status: 202 });
+            if (++lists === 1)
+                return rpcJson(call, { tools: [{ name: "first", inputSchema: {} }], nextCursor: "page2" });
+            if (lists === 2)
+                return reply({
+                    json: async () => {
+                        waiting = true;
+                        return late.promise;
+                    },
+                });
+            return rpcJson(call, TOOLS);
+        };
+        try {
+            const listing = client.getToolList(undefined, controller.signal);
+            await checkpoint(() => waiting);
+            const reason = new Error("listing cancelled");
+            controller.abort(reason);
+            late.resolve({
+                jsonrpc: "2.0",
+                id: calls[calls.length - 1].body.id,
+                result: { tools: [{ name: "late", inputSchema: {} }] },
+            });
+            await expect(listing).rejects.toBe(reason);
+            expect((await client.getToolList()).map((tool) => tool.name)).toEqual(["echo"]);
+            expect(calls.filter((call) => call.body.method === "tools/list")[1].body.params).toEqual({
+                cursor: "page2",
+            });
+        } finally {
+            client.destroy();
+        }
+    });
+
+    it("times out a custom transport at five minutes and removes its listener and timer", async () => {
+        const client = await newClient();
+        vi.useFakeTimers();
+        const listeners = new Set<(message: import("../mcplib").JsonRPC) => void>();
+        const sent: unknown[] = [];
+        client.customTransport = {
+            addListener: (listener) => {
+                listeners.add(listener);
+            },
+            removeListener: (listener) => {
+                listeners.delete(listener);
+            },
+            send: async (message) => {
+                sent.push(message);
+            },
+        };
+        try {
+            const request = client.request("silent");
+            const rejected = expect(request).rejects.toThrow("The MCP request timed out");
+            await checkpoint(() => sent.length === 1);
+            await vi.advanceTimersByTimeAsync(5 * 60_000 - 1);
+            expect(listeners.size).toBe(1);
+            await vi.advanceTimersByTimeAsync(1);
+            await rejected;
+            expect(listeners.size).toBe(0);
+            expect(vi.getTimerCount()).toBe(0);
+        } finally {
+            client.destroy();
+        }
+    });
+
+    it("lets a caller leave an OAuth prompt without waiting for the prompt answer", async () => {
+        const client = await newClient();
+        const controller = new AbortController();
+        const login = deferred<void>();
+        const prompt = vi.spyOn(client, "oauthLogin").mockImplementation(() => login.promise);
+        server.handle = () => reply({ status: 401 });
+        const reason = new Error("owner left prompt");
+        const handshake = client.checkHandshake(controller.signal);
+        let failure: unknown;
+        const settled = Promise.resolve(handshake).catch((error) => {
+            failure = error;
+        });
+        try {
+            await checkpoint(() => prompt.mock.calls.length === 1);
+            controller.abort(reason);
+            await checkpoint(() => failure !== undefined);
+            expect(failure).toBe(reason);
+            expect(client.initialized).toBe(false);
+        } finally {
+            client.destroy();
+            login.resolve();
+        }
+        await settled;
     });
 });

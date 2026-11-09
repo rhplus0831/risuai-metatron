@@ -1,4 +1,10 @@
 // @vitest-environment node
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createSnapshotManager } from "../data/snapshots.ts";
+import { createGenerationLock } from "../jobs/generationLock.ts";
+import { installSnapshot } from "./stagedRestore.ts";
 import { createHash } from "node:crypto";
 import { getEventListeners } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,11 +15,12 @@ import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
 import { createChannelHub } from "../jobs/channel.ts";
-import type { RunningJob } from "../jobs/generationJobs.ts";
+import { createGenerationJobs, type RunningJob } from "../jobs/generationJobs.ts";
 import { loadJobScope, type JobScope } from "../jobs/jobScope.ts";
 import { createLuaBindings, LuaJobFatalError } from "../lua/bindings.ts";
 import {
     MAX_MCP_MESSAGE_BYTES,
+    MCP_OAUTH_TIMEOUT_MS,
     MAX_TOOL_LIST_PAGES,
     MAX_TOOL_LIST_TOOLS,
     McpClient,
@@ -1215,6 +1222,59 @@ describe("createMcpRegistry", () => {
         store.close();
     });
 
+    it("does not resurrect a removed grant or overwrite any newer grant field after cancellation", () => {
+        const store = memoryStore();
+        const registry = createMcpRegistry({ store, kinds });
+        const refreshKind = kind(RESOURCE_KIND.authRefreshes);
+        const identifier = "http://mcp.test/mcp";
+        const previous = { clientId: "c", clientSecret: "s", refreshToken: "r1", tokenUrl: "http://mcp.test/token" };
+        const rotated = { ...previous, refreshToken: "r2" };
+        const other = { url: "other", refreshToken: "keep" };
+        try {
+            for (const field of ["clientId", "clientSecret", "refreshToken", "tokenUrl"] as const) {
+                const newer = { url: identifier, ...previous, [field]: "new-value" };
+                store.put(refreshKind, "main", [newer, other], store.get(refreshKind, "main")!.revision);
+                registry.writeRotatedRefresh(identifier, rotated, previous, store.epoch());
+                expect(store.get(refreshKind, "main")!.data).toEqual([newer, other]);
+            }
+            store.put(refreshKind, "main", [other], store.get(refreshKind, "main")!.revision);
+            registry.writeRotatedRefresh(identifier, rotated, previous, store.epoch());
+            expect(store.get(refreshKind, "main")!.data).toEqual([other]);
+        } finally {
+            registry.dispose();
+            store.close();
+        }
+    });
+
+    it("refuses a late rotation from the epoch replaced by a restore even if the grant still matches", async () => {
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-refresh-epoch-"));
+        const store = memoryStore();
+        const registry = createMcpRegistry({ store, kinds });
+        const refreshKind = kind(RESOURCE_KIND.authRefreshes);
+        const identifier = "http://mcp.test/mcp";
+        const previous = { refreshToken: "r1", tokenUrl: "http://mcp.test/token" };
+        try {
+            store.put(
+                refreshKind,
+                "main",
+                [{ url: identifier, ...previous }],
+                store.get(refreshKind, "main")!.revision,
+            );
+            const epoch = store.epoch();
+            const backup = path.join(dir, "snapshot.sqlite");
+            await store.backupTo(backup);
+            await installSnapshot(store, backup, kinds);
+            registry.sync(store.epoch());
+            expect(store.epoch()).not.toBe(epoch);
+            registry.writeRotatedRefresh(identifier, { ...previous, refreshToken: "r2" }, previous, epoch);
+            expect(store.get(refreshKind, "main")!.data).toEqual([{ url: identifier, ...previous }]);
+        } finally {
+            registry.dispose();
+            store.close();
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
     it("replaces every authRefreshes entry of the identifier in place and keeps the others, appends a new one, and the client reads the stored entry", async () => {
         const store = memoryStore();
         const refreshKind = kind(RESOURCE_KIND.authRefreshes);
@@ -1380,6 +1440,167 @@ describe("createJobTools", () => {
         call.url.startsWith("http://second.test/")
             ? streamable({ pages: [[tool("echo"), tool("other")]] })(call, index)
             : streamable({ pages: [[tool("echo")]] })(call, index);
+
+    it("preserves a spent refresh grant after cancelling a real job and refreshes the next client with the replacement", async () => {
+        vi.useFakeTimers();
+        const dir = mkdtempSync(path.join(os.tmpdir(), "risu-refresh-job-"));
+        const lock = createGenerationLock();
+        const store = createResourceStore({ file: ":memory:", kinds, guard: lock });
+        const snapshots = createSnapshotManager({ store, dir });
+        const identifier = "http://mcp.test/mcp";
+        const stored = { clientId: "c1", clientSecret: "s1", refreshToken: "r1", tokenUrl: "http://mcp.test/token" };
+        const other = { url: "http://other.test/mcp", refreshToken: "untouched" };
+        const refreshKind = kind(RESOURCE_KIND.authRefreshes);
+        store.put(
+            refreshKind,
+            "main",
+            [{ url: identifier, ...stored }, other],
+            store.get(refreshKind, "main")!.revision,
+        );
+        const grants: string[] = [];
+        let release!: () => void;
+        let grantSignal: AbortSignal | undefined;
+        const server = recorder((call, index) => {
+            if (call.url === stored.tokenUrl) {
+                const refresh = new URLSearchParams(call.raw).get("refresh_token")!;
+                grants.push(refresh);
+                if (refresh === "r1") {
+                    grantSignal = call.signal;
+                    return new Promise<Response>((resolve) => {
+                        release = () => resolve(json({ access_token: "a1", refresh_token: "r2" }));
+                    });
+                }
+                expect(refresh).toBe("r2");
+                return json({ access_token: "a2", refresh_token: "r3" });
+            }
+            return call.headers.authorization === "Bearer a2" ? streamable()(call, index) : json({}, 401);
+        });
+        const registry = createMcpRegistry({ store, kinds, fetchImpl: server.fetchImpl });
+        let original!: McpClient;
+        await registry.use(identifier, identifier, async (client) => {
+            original = client;
+        });
+        let finished = false;
+        let failure: unknown;
+        const jobs = createGenerationJobs({
+            store,
+            kinds,
+            snapshots,
+            gate: snapshots.gate,
+            lock,
+            authorize: async () => true,
+            runner: async (job) => {
+                const tools = createJobTools({
+                    job,
+                    scope: fakeScope([identifier]),
+                    state: createJobToolState(),
+                    registry,
+                    store,
+                    kinds,
+                    services: fakeServices().services,
+                });
+                try {
+                    await tools.list(ctxOf(job.signal));
+                } catch (error) {
+                    failure = error;
+                    throw error;
+                } finally {
+                    finished = true;
+                }
+            },
+        });
+        const firstId = (name: string) => (store.get(kind(name), "main")!.data as { id: string }[])[0].id;
+        const ids = {
+            presetId: firstId("presets"),
+            modelPresetId: firstId("modelPresets"),
+            personaId: firstId("personas"),
+        };
+        store.applyChanges({
+            ops: [{ kind: kind("characters"), id: "c", baseRevision: null, data: { chaId: "c", name: "C" } }],
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: null,
+                    ops: [
+                        {
+                            op: "create",
+                            chat: {
+                                name: "K",
+                                message: [],
+                                modelPresetId: ids.modelPresetId,
+                                promptPresetId: ids.presetId,
+                                bindedPersona: ids.personaId,
+                            } as never,
+                        },
+                    ],
+                },
+            ],
+        });
+        const wait = async (ready: () => boolean) => {
+            for (let i = 0; i < 1000 && !ready(); i++) await Promise.resolve();
+            expect(ready()).toBe(true);
+        };
+        try {
+            const created = jobs.create(
+                {
+                    kind: "send",
+                    clientId: "tab",
+                    context: {
+                        characterId: "c",
+                        chatId: "k",
+                        ...ids,
+                        mode: "normal",
+                        input: "",
+                        chatRevision: store.chatRevision("c", "k")!,
+                    },
+                },
+                store.epoch(),
+            );
+            expect(created.ok).toBe(true);
+            if (!created.ok) throw new Error(JSON.stringify(created));
+            await wait(() => grants.length === 1);
+            expect(
+                jobs.stop({ characterId: "c", chatId: "k", jobId: created.jobId, clientId: "tab" }, store.epoch()).ok,
+            ).toBe(true);
+            await wait(() => finished);
+            expect(failure).toBe("aborted");
+            expect(grantSignal?.aborted).toBe(false);
+            release();
+            await wait(
+                () => (store.get(refreshKind, "main")!.data as { refreshToken: string }[])[0].refreshToken === "r2",
+            );
+            expect(store.get(refreshKind, "main")!.data).toEqual([
+                { url: identifier, ...stored, refreshToken: "r2" },
+                other,
+            ]);
+            expect(priv(original).accessToken).toBeNull();
+            original.destroy();
+            await registry.use(identifier, identifier, (client) =>
+                client.checkHandshake(
+                    ioOf({
+                        writeRefresh(entry, previous) {
+                            store.applyChanges(registry.refreshChanges(identifier, entry, previous));
+                        },
+                    }),
+                ),
+            );
+            expect(grants).toEqual(["r1", "r2"]);
+            expect(store.get(refreshKind, "main")!.data).toEqual([
+                { url: identifier, ...stored, refreshToken: "r3" },
+                other,
+            ]);
+        } finally {
+            release?.();
+            jobs.beginShutdown();
+            await jobs.drain();
+            jobs.dispose();
+            registry.dispose();
+            await snapshots.stop();
+            store.close();
+            rmSync(dir, { recursive: true, force: true });
+        }
+    });
 
     it("offers dice, the remotes, and a stdio URL in module order, each identifier once, routes a name to its first MCP, and warns for what it does not serve", async () => {
         const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -2296,7 +2517,69 @@ describe("McpClient: event framing, the session id, and refresh token rotation",
         }
     });
 
-    it("writes no rotated token and publishes no access token when the job ends or the client closes while the refresh answer is out", async () => {
+    it("keeps a dispatched refresh alive after caller abort but aborts it at the OAuth deadline", async () => {
+        vi.useFakeTimers();
+        vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+            const controller = new AbortController();
+            setTimeout(() => controller.abort(new DOMException("OAuth deadline", "TimeoutError")), ms);
+            return controller.signal;
+        });
+        const server = recorder((call) => (call.url === stored.tokenUrl ? withheld(call) : json({}, 401)));
+        const mcp = client(server.fetchImpl, { refresh: stored });
+        const controller = new AbortController();
+        const writeRefresh = vi.fn<McpIo["writeRefresh"]>();
+        const handshake = mcp.checkHandshake(ioOf({ writeRefresh }, controller.signal));
+        const rejected = expect(handshake).rejects.toThrow("caller ended");
+        try {
+            for (let i = 0; i < 1000 && !server.calls.some((call) => call.url === stored.tokenUrl); i++)
+                await Promise.resolve();
+            const grant = server.calls.find((call) => call.url === stored.tokenUrl)!;
+            expect(grant).toBeDefined();
+            controller.abort(new Error("caller ended"));
+            await rejected;
+            expect(grant.signal.aborted).toBe(false);
+            await vi.advanceTimersByTimeAsync(MCP_OAUTH_TIMEOUT_MS - 1);
+            expect(grant.signal.aborted).toBe(false);
+            await vi.advanceTimersByTimeAsync(1);
+            expect(grant.signal.aborted).toBe(true);
+            expect(writeRefresh).not.toHaveBeenCalled();
+            expect(priv(mcp).accessToken).toBeNull();
+        } finally {
+            mcp.destroy();
+        }
+    });
+
+    it("does not persist missing or invalid rotations from a refresh completed after client close", async () => {
+        for (const rotation of [undefined, "", 4]) {
+            let release!: () => void;
+            const server = refreshServer(
+                () =>
+                    new Promise<Response>((resolve) => {
+                        release = () => resolve(json({ access_token: "late", refresh_token: rotation }));
+                    }),
+            );
+            const mcp = client(server.fetchImpl, { refresh: stored });
+            const writeRefresh = vi.fn<McpIo["writeRefresh"]>();
+            const handshake = mcp.checkHandshake(ioOf({ writeRefresh }));
+            const rejected = expect(handshake).rejects.toBeInstanceOf(McpClientClosedError);
+            try {
+                for (let i = 0; i < 1000 && server.refreshes.length === 0; i++) await Promise.resolve();
+                expect(server.refreshes).toHaveLength(1);
+                mcp.destroy();
+                await rejected;
+                expect(server.calls.find((call) => call.url === stored.tokenUrl)!.signal.aborted).toBe(false);
+                release();
+                for (let i = 0; i < 1000; i++) await Promise.resolve();
+                expect(writeRefresh).not.toHaveBeenCalled();
+                expect(priv(mcp).accessToken).toBeNull();
+            } finally {
+                release?.();
+                mcp.destroy();
+            }
+        }
+    });
+
+    it("stores a rotated token and publishes no access token when the job ends or the client closes while the refresh answer is out", async () => {
         for (const end of ["abort", "close"] as const) {
             let release!: () => void;
             const server = refreshServer(
@@ -2322,7 +2605,7 @@ describe("McpClient: event framing, the session id, and refresh token rotation",
                 await expect(handshake).rejects.toBeInstanceOf(McpClientClosedError);
             }
             await sleep(20);
-            expect(writeRefresh).not.toHaveBeenCalled();
+            expect(writeRefresh).toHaveBeenCalledExactlyOnceWith({ ...stored, refreshToken: "r2" });
             expect(priv(mcp).accessToken).toBeNull();
             mcp.destroy();
         }

@@ -18,7 +18,9 @@ export const MCP_IDLE_MS = 15 * 60_000;
 export type McpRegistry = {
     use<T>(identifier: string, url: string, run: (client: McpClient) => Promise<T>): Promise<T>;
     /** The `authRefreshes` write of a completed login: the entry of `identifier` replaced (every one with that URL). */
-    refreshChanges(identifier: string, entry: McpRefresh): JobChanges;
+    refreshChanges(identifier: string, entry: McpRefresh, previous?: McpRefresh): JobChanges;
+    /** Saves a rotated grant after caller cancellation, while its epoch and previous record still match. */
+    writeRotatedRefresh(identifier: string, entry: McpRefresh, previous: McpRefresh, epoch: string): void;
     sync(epoch: string): void;
     dispose(): void;
 };
@@ -28,7 +30,7 @@ type Entry = { client: McpClient; active: number; timer: NodeJS.Timeout | null }
 /**
  * The idle period starts after the last active operation releases its hold, including on failure.
  * Refresh reads see the current store, while `refreshChanges` only builds a write for the calling
- * job to apply.
+ * job to apply. Rotated grants are saved independently with epoch and previous-record checks.
  */
 export function createMcpRegistry(options: {
     store: ResourceStore;
@@ -113,10 +115,15 @@ export function createMcpRegistry(options: {
             }
         },
 
-        refreshChanges(identifier, entry) {
+        refreshChanges(identifier, entry, previous) {
             const { row, list } = storedRefreshes();
             if (!row) {
                 throw new Error("The server has no authRefreshes record");
+            }
+            const current = list.find((refresh) => refresh?.url === identifier);
+            const fields = ["clientId", "clientSecret", "refreshToken", "tokenUrl"] as const;
+            if (previous && (!current || !fields.every((field) => current[field] === previous[field]))) {
+                return { ops: [] };
             }
             const record = { url: identifier, ...entry };
             const first = list.findIndex((refresh) => refresh?.url === identifier);
@@ -132,6 +139,14 @@ export function createMcpRegistry(options: {
             return {
                 ops: [{ kind: refreshKind(), id: SINGLETON_RESOURCE_ID, baseRevision: row.revision, data: next }],
             };
+        },
+
+        writeRotatedRefresh(identifier, entry, previous, epoch) {
+            if (store.epoch() !== epoch) {
+                return;
+            }
+            // This remote auth-state write outlives the job. Re-read and apply synchronously.
+            store.applyChanges(this.refreshChanges(identifier, entry, previous), { epoch });
         },
 
         sync(epoch) {

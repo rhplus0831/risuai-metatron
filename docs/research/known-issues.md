@@ -16,7 +16,7 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [draft-recovery](#draft-recovery) (7)
 - [live-updates](#live-updates) (3)
 - [llm-requests](#llm-requests) (4)
-- [mcp](#mcp) (4)
+- [mcp](#mcp) (1)
 - [media-aux](#media-aux) (2)
 - [memory](#memory) (10)
 - [network-jobs](#network-jobs) (1)
@@ -201,17 +201,10 @@ Guide: [LLM Requests, Model Catalogue, Tokenizers](../structure/llm-requests.md#
 
 Guide: [MCP: Client Registry, Remote and Internal Clients, RisuAccess, Tool Dispatch](../structure/mcp.md#known-hazards).
 
-- `filesystemclient.ts` advertises `fs_watch_directory` but has no dispatch for it.
 - A rotated refresh token is a whole-collection `authRefreshes` edit from the tab (and the server job's write to the
   same collection is not hydrated into the tab): another writer of the collection can make the tab's write conflict and
   be discarded, and the next refresh then sends a token the server may have spent (an unsuccessful refresh answer goes
   on to a full login; a rejected refresh fetch rejects the login).
-- The server MCP client fences a rotated-token write against the job and client signals. If the remote server rotates
-  the old refresh token before the answer arrives, an abort or client close in that window leaves the old token stored
-  while the new one is lost; the next refresh may fail and require a full login. `server/src/tests/mcp.test.ts` pins the
-  cancellation behavior, not the remote server's token state.
-- The tab's `MCPClient` has no request timeout, and `request.ts` `getTools` does not propagate an abort signal to its
-  tool listing. A stream that stays open without answering can still keep that caller waiting.
 
 ## media-aux
 

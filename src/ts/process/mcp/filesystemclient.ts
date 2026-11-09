@@ -5,7 +5,7 @@ import type { MCPTool, RPCToolCallContent } from "./mcplib";
  * `internal:fs` is one tab instance shared with server jobs through `readyTabClient` in
  * `src/ts/process/mcp/mcp.ts`. Its first handshake opens the directory picker; a server job reaches
  * it through `src/ts/network/jobChannel.ts`. PDF reads render page images through
- * `src/ts/process/dynamicutils/pdf.ts`. `fs_watch_directory` is advertised but has no dispatch.
+ * `src/ts/process/dynamicutils/pdf.ts`. Only implemented tools are advertised.
  */
 export class FileSystemClient extends MCPClientLike {
     private directoryHandle: FileSystemDirectoryHandle | null = null;
@@ -198,20 +198,6 @@ export class FileSystemClient extends MCPClientLike {
                         },
                     },
                     required: ["path"],
-                },
-            },
-            {
-                name: "fs_watch_directory",
-                description: "Watch a directory for changes",
-                inputSchema: {
-                    type: "object",
-                    properties: {
-                        path: {
-                            type: "string",
-                            description: "Directory to watch (default: root)",
-                        },
-                    },
-                    required: [],
                 },
             },
             {
