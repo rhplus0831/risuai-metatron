@@ -5,7 +5,7 @@ shipped behavior; [the archive](../archived-plan/README.md) records completed pl
 historical paths/commits, retrieval commands, and pending manual follow-ups.
 
 - [Upstream Intake 2](upstream-intake-2.md): upstream `f50b5942..4d87a70ff` (53 commits) triaged into 13 port
-  slices and a close-out; drafted 2026-11-10, audited; landed: 1, 2, 3, 7, 8, 9, 10, 12.
+  slices and a close-out; drafted 2026-11-10, audited; landed: 1, 2, 3, 7, 8, 9, 10, 11, 12, 13.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
