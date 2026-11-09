@@ -48,6 +48,12 @@ import { sayTTS, stopTTS } from "src/ts/process/tts";
 import type { ClientCharacter } from "src/ts/storage/characterStore.svelte";
 
 const media = settings.memoryTranslateMedia;
+const originalGlobals = new Map(
+    ["fetch", "speechSynthesis", "SpeechSynthesisUtterance"].map((key) => [
+        key,
+        Object.getOwnPropertyDescriptor(globalThis, key),
+    ]),
+);
 function configure() {
     installFlatDatabase({
         characters: [],
@@ -156,7 +162,12 @@ beforeEach(() => {
     // A visible marker proves that the translated node, including a replacement node, was processed.
     deps.markdown.mockImplementation((node: HTMLElement) => node.setAttribute("data-markdown", "applied"));
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+    for (const [key, descriptor] of originalGlobals) {
+        if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+        else Reflect.deleteProperty(globalThis, key);
+    }
+});
 
 describe("translateHTML media regressions", () => {
     it("sends escaped markup in a combined paragraph to the provider as literal text", async () => {
@@ -548,6 +559,18 @@ describe("translate memory cache ownership", () => {
 });
 
 describe("runTranslator line breaks", () => {
+    it("the none provider preserves ordinary multiline and asset input without any provider request", async () => {
+        media.translatorType = "none";
+        const source = "Hello 한글\nsecond line\n{{img::asset}}\nlast line";
+        for (const reverse of [false, true]) {
+            await expect(runTranslator(source, reverse, "en", "ko")).resolves.toBe(source);
+        }
+        expect(deps.fetch).not.toHaveBeenCalled();
+        expect(deps.globalFetch).not.toHaveBeenCalled();
+        expect(deps.request).not.toHaveBeenCalled();
+        expect(deps.alert).not.toHaveBeenCalled();
+    });
+
     it("sends the lines between two empty or asset lines as one chunk with their line breaks, as the server does", async () => {
         const text = "first\nsecond\n\nthird\n{{img::x}}\nfourth\nfifth";
         await expect(runTranslator(text, false, "ko", "en")).resolves.toBe(

@@ -25,7 +25,6 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [self-host-server](#self-host-server) (4)
 - [server-generation](#server-generation) (1)
 - [settings-i18n](#settings-i18n) (3)
-- [translation](#translation) (1)
 
 ## app-shell
 
@@ -303,10 +302,3 @@ Guide: [Settings UI, Bot Presets, Prompt Template Editor, i18n](../structure/set
 - A remote or conflict replacement of the `ui` record does not apply a new `settings.ui.language`: `src/ts/bootstrap.ts`
   `watchRemoteRecords` reapplies the color scheme, text theme/CSS, animation, and sizes, but does not call
   `changeLanguage`.
-
-## translation
-
-Guide: [Translation: Providers, the LLM Translator, Presets, Server and Stored Translation, Bilingual Display](../structure/translation.md#known-hazards).
-
-- `src/ts/translator/translator.ts` `translateMain` has no `translatorType: "none"` branch, so an older save retaining
-  that accepted value falls through to Google (`shared/database.ts` still includes `"none"` in the field type).

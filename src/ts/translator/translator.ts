@@ -406,6 +406,7 @@ export async function runTranslator(
 }
 
 /**
+ * The legacy `none` provider returns the input unchanged without a provider call.
  * DeepLX's wait is shared by all tab callers: unless no-wait is enabled, each request reserves the
  * next three-second slot before awaiting, so concurrent calls cannot choose the same slot.
  */
@@ -428,6 +429,9 @@ async function translateMain(
 ) {
     arg.signal?.throwIfAborted();
     const { provider } = arg;
+    if (provider.translatorType === "none") {
+        return text;
+    }
     if (provider.translatorType === "llm") {
         const tr = arg.to || "en";
         return translateLLM(
