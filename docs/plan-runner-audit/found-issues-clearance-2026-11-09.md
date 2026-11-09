@@ -1,6 +1,6 @@
 # Found Issues Clearance Plan audit, 2026-11-09
 
-- Plan: `docs/plan/found-issues-clearance.md`
+- Plan: `docs/plan/found-issues-clearance.md`, retired; its last version is `git show e8758c2a8:docs/plan/found-issues-clearance.md`
 - Commit audited: `355e82e58` (`dev`)
 - Mode: `full`
 - Model: GPT-6.1-Sol (`xhigh`), read-only; report written by the plan-runner orchestrator (Claude Opus 5.5)

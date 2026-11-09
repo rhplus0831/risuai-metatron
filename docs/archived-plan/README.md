@@ -67,6 +67,7 @@ git show e99fca9a7:docs/plan/store-memory-sweep.md
 git show 211ac71e2:docs/plan/multi-client-e2e.md
 git show d745dcb8f:docs/plan/storage-settings-page.md
 git show 2beca50d5:docs/plan/found-issues-decisions.md
+git show e8758c2a8:docs/plan/found-issues-clearance.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -138,6 +139,7 @@ it is not a current architecture guide.
 | Storage Settings Page                    | `d745dcb8f`: `docs/plan/storage-settings-page.md`                         | [settings](../structure/settings-i18n.md), [app shell](../structure/app-shell.md), [assets](../structure/assets.md), [server](../structure/self-host-server.md)                                                                                                                                                                                                                                                                                                                             |
 | Module Headers                           | `25537bb26`: `docs/plan/module-headers.md`                                | [self-host server](../structure/self-host-server.md), [chat pipeline](../structure/chat-pipeline.md), [global API](../structure/global-api.md), [LLM requests](../structure/llm-requests.md), [persistence](../structure/persistence.md): the source module headers and export doc comments their `Files` entries name                                                                                                                                                                      |
 | Found Issues Decisions                   | `2beca50d5`: `docs/plan/found-issues-decisions.md`                        | [LLM requests](../structure/llm-requests.md), [server generation](../structure/server-generation.md), [plugins](../structure/plugin-sandbox.md), [self-host server](../structure/self-host-server.md), the [structured memory](../structure/structured-memory/README.md) pages; E1's Limitations in their owning guides                                                                                                                                                                     |
+| Found Issues Clearance                   | `e8758c2a8`: `docs/plan/found-issues-clearance.md`                        | [LLM requests](../structure/llm-requests.md), [translation](../structure/translation.md), [UI theming](../structure/ui-theming.md), [diagnostics](../structure/diagnostics.md), [assets](../structure/assets.md), [test harness](../structure/test-harness.md); H1's Limitations in their owning guides                                                                                                                                                                                     |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -1304,6 +1306,30 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
   - Manual checks not run: A3's optional `checkJobHandoff.mjs` `prefer` check, and B2's two-tab check that a reset
     plugin asks for its permission again.
   - Found by the run: two entries in `docs/research/found-issues.md` (`426fdbce0`).
+- Found Issues Clearance:
+  - All 39 slices landed on `dev` on 2026-11-09 (plan-runner, every slice under delegate-implementation with Codex
+    implementing): A1 (`d1a40c7ce`), A2 (`b6423360e`), A3 (`daca54e6b`), A4 (`0ea39e750`), A5 (`000cbfd7f`), B1
+    (`029994a02`), B2 (`dffdad50f`), B3 (`7ef8f4622`), B4 (`538eeaa20`), B5 (`6ccc14e7a`), B6 (`c0850c908`), C1
+    (`517e2d29c`), C2 (`45bd82a37`), C3 (`d855b826b`), C4 (`5a25b6977`), C5 (`94ee64bbc`), C6 (`8d65ec0b4`), D1
+    (`6e9abbed2`), D2 (`423b5eb73`), D3 (`43066ebd6`), E1 (`79d508832`), E2 (`3190ebbf9`), E3 (`d48282559`), E4
+    (`535a6e7f1`), F1 (`98128cebb`), F2 (`79d4f2c47`), F3 (`084d57119`), F4 (`044dc9e4b`), F5 (`7aca72529`), F6
+    (`279c57807`), F7 (`af549771e`), F8 (`1e271629e`), F9 (`6a26398e6`), F10 (`361b211d2`), G1 (`9cfd74d76`), G2
+    (`a030fd212`), G3 (`529bbd582`), G4 (`504f8d42a`), H1 (`b9d766f6c`). The 86 inbox entries left
+    `docs/research/found-issues.md` (fixed, recorded in their guides, or closed in H1's commit). The full checks
+    passed on the combined tree at `179e08fc5`: 9,806 tests with the slow tag and the 52 e2e tests the run's changes
+    select.
+  - Revised during the run: G3 detects harness reloads instead of a warm-up (`307dd273c`); C4 saves signatures in
+    the `model` mode only and hides their markers in chat (owner decision, `21cbf1e2b`); D1 narrows the escape fix
+    to the provider input and H1 records the Markdown pass (owner decision). E4 missed its memory target and
+    recorded the miss in `docs/audit/screenshot-memory-2026-11.md`.
+  - Manual checks not run (the plan's Owner checklist): the chat list on Firefox and Safari (far-row containment,
+    pixel anchoring, the newest-first reveal); a live Realm import with a tab closed after prepare and a 503 during
+    commit (B5); Docker with a chrooted sftp account reading `shared/` and not `save/data/`; Web Push in Chrome and
+    Firefox (the enable button right after a reconcile, a service-worker upgrade during a subscribe, a `/`-route
+    click); the chatPatch transport in a real browser; a `/sw/img` URL after a lost controller (F1); a Gemini
+    thinking model accepting the replayed signature (C4); the request-log copy-failure display (D3); and a
+    real-browser `measureHeap.mjs` run after a module delete, if a heap plan returns (Q16).
+  - Found by the run: eight entries in `docs/research/found-issues.md` (`e8758c2a8`).
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry
   above.
