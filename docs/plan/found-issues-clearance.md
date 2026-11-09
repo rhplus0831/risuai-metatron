@@ -251,7 +251,7 @@ Every slice is independent of the others' code unless listed here.
   (`base.length`, `base.hash`, the 8 KiB threshold, the 64 KiB cap) is unchanged. `shared/textHash.ts` gains a
   radix option on its core; `shared/notifications.ts` (~120–130) and `shared/contextReport.ts` (~531–542) call it
   with base 36 and keep their outputs byte for byte.
-  _Done_: a 4 MiB changed row that takes the whole-row patch hashes nothing; the notification tag and the
+  _Done_: a 4 MiB old row shrunk to a small final row that takes the whole-row patch hashes nothing; the notification tag and the
   `historyDigest` fixtures are unchanged.
   _Test_: `server/src/tests/chatFeedPatches.test.ts` (hash calls counted per form), `shared/tests/notifications.test.ts`,
   `shared/contextReport.test.ts` and `server/src/tests/assemble.test.ts` (existing digests stay).
@@ -472,7 +472,9 @@ Every slice is independent of the others' code unless listed here.
   the pending memo key; `src/lib/ChatScreens/Chat.svelte` (~1422–1424): drop the per-row `getModelInfo` call that
   fed it (the visible label at ~1282 and ~1684 stays); remove the `modelShortName: ""` lines and the model-change
   case (~710–737) from the ChatBody tests and `tests/ChatStyleProviderFixture.svelte`.
-  `src/lib/ChatScreens/DefaultChatScreen.drafts.test.ts` (the only mount, with `Chats` mocked) gains a `Chats`
+  `src/ts/process/rerollCandidates.test.ts` and `src/lib/ChatScreens/Chat.settledRender.svelte.test.ts` lose
+  their `modelShortName` references too. `src/lib/ChatScreens/DefaultChatScreen.drafts.test.ts` (the chosen
+  harness, with `Chats` mocked) gains a `Chats`
   stub exposing `followsLatest`, `scrollToLatestMessage` and bindable `holding`, and three cases: the
   `ShowLatestMessageStore` effect (~318–322) scrolls once and clears the store; the reroll swap (~624–637) scrolls
   after a tick only when the view followed the latest message; the scroll handler (~1139–1144) skips load-more
@@ -496,7 +498,7 @@ Every slice is independent of the others' code unless listed here.
 
 - **E4. Screenshot memory** (_hard_, `ui-theming.md`; Q10; after E3). Investigate first with
   `util/playwright/measureRenderWork.mjs` on the 150-row fixture: a heap snapshot and the renderer's `VmHWM` after
-  each page, to name what grows with rows (the per-row captures in `src/ts/screenshotCaptureCache.ts`, the
+  each page, to name what grows with rows (the per-row captures under `src/lib/ChatScreens/`, the
   DOM-to-canvas clones, the page canvases); record in `docs/audit/screenshot-memory-2026-11.md`. Then release that
   per page in `src/lib/ChatScreens/screenshotExport.ts` and `DefaultChatScreen.svelte` (~983–1019), and in the
   planner (~79–96) scale a row over `MAX_EXPORT_PIXELS` to the area budget with the same scale in planning and
