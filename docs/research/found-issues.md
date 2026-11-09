@@ -10,7 +10,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (3)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (5)
-- [Server routes and resource store](#server-routes-and-resource-store) (10)
+- [Server routes and resource store](#server-routes-and-resource-store) (9)
 - [LLM requests and providers](#llm-requests-and-providers) (11)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (6)
@@ -162,18 +162,6 @@ The doc comment of `normalizePreset` in `shared/presets.ts` (~629–636) says "a
 **Why it matters:** no practical effect; recorded because the signature accepts `unknown`.
 
 **Suggested handling:** lowest priority; likely close as not worth fixing.
-
-### Realm staged import leftovers
-
-Left by slice 3 of the server-side Realm import (prepare/commit/cancel, 3a61ecb5c, 2026-10-19; `server/src/routes/importRealm.ts`, `shared/realmImport.ts`, `src/ts/storage/realmImportClient.ts`, `src/ts/characterCards.ts`); the slot, TTL and cap decisions are in backup-sync-hub.md. Kept in memory until 2026-11-08; identifiers re-checked that day.
-
-- A tab that leaves after its prepare staged a file leaves that file in `realmStaging` for the 10 min TTL.
-- A commit refused with 409 or 503 is not retried: the tab attempts a cancellation and the user re-imports (`characterCards.ts` ~2360).
-- Deferred from slices 1 and 2: legacy JSON hub resources are fetched by the tab, the tab's `readModule` saves the module.risum assets, and `planPngFile` (`server/src/routes/importPng.ts`) does one read per tEXt key.
-- No real-browser or live Realm check was run.
-
-**Why it matters:** a staged file holds one of the four staging slots and its disk space for the TTL; a transient refusal costs the user a second download.
-**Suggested handling:** check this list before changing the Realm import; a retry belongs in the client after the server's refusal text is classified as transient.
 
 ## LLM requests and providers
 
