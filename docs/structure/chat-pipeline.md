@@ -307,6 +307,11 @@ matched-entry identities.
 - The server's `refreshChat` (`server/src/jobs/jobScope.ts`) reloads the stored chat after job writes and callbacks that
   may write, so an unrelated edit to that chat while the job runs can enter a later prompt stage. Decision: that file's
   header.
+- `svelte/store` runs every `writable.set` subscriber through one module-level `subscriber_queue`: a subscriber that
+  throws leaves the queue mid-run for the whole page, so later store updates anywhere may not notify. `beginLocalSend`
+  (`src/ts/process/localSends.ts`) rolls back its own entry on a throw but cannot repair the queue; no known subscriber
+  throws. Decision: Found Issues Clearance Q1 (owner, 2026-11-09): moving `localSends` to `$state` touches every
+  consumer for no reproduced defect.
 
 ### Gotchas
 

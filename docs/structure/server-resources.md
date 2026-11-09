@@ -439,6 +439,15 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
   budget charges stored bytes, not wire bytes or heap. Nothing bounds how many large answers are in flight, and
   `readRefs` and `JSON.stringify` still run on the serving thread. Decision: Server Byte Budgets D2, D3, and Q3,
   archive.
+- The change log is bounded by rows, not bytes ([Store tables](#store-tables)): ids may be 512 UTF-16 units, so 20,000
+  rows made an 82 MB database in a 2026-11-05 probe (a few MB with UUID ids), and the `DELETE` prune never shrinks the
+  file. Every kept snapshot (20, plus up to 20 pinned) and backup carries it, so size snapshot storage as rows × id
+  length. Decision: Found Issues Clearance Q4 (owner, 2026-11-09): a byte bound costs a `SUM(length(id))` per prune, and
+  a VACUUM would stall every commit.
+- A version-2 export (`server/src/routes/backups.ts`) opens a custom-key asset while it streams without
+  `claimAssetKey`'s lock, so a custom-key write (`server/src/routes/storage.ts`) during the export can pair the
+  archive's database copy with later bytes; content-hash keys cannot change. Decision: Found Issues Clearance Q5 (owner,
+  2026-11-09): custom keys are mutable by contract, and holding the lock across a stream would block the writer.
 
 ### Gotchas
 

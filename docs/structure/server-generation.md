@@ -329,6 +329,12 @@ Other subsystems' runtime limits live with their owners: [chat-pipeline](chat-pi
   Handoff D3.
 - Lua stuck in native code cannot reach its abort hook; worker termination waits for abort grace, and queued work waits
   for a replacement. Decision: Server-Owned Data script worker spike, archive; `server/src/lua/runtime.ts`.
+- Job traffic and parse work grow with the collection, not the change: every job parses its whole scope (the modules
+  record, every section and preset); `emitRecords` sends records and other chats whole; a job socket's `chatPatch`
+  carries the chat metadata whole (`ChatPatchBody.meta`); a `ChannelChunk` keeps its recovery snapshot, and cumulative
+  text for a tab without the `chunks: "append"` offer, beside the sequenced appends. Neither socket is compressed (HTTP
+  JSON reads are). Decision: Audit Findings and Performance Leftovers, archive; Found Issues Clearance (owner,
+  2026-11-09).
 
 ### Gotchas
 

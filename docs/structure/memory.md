@@ -351,6 +351,11 @@ lookahead starts at stored coverage and does not defer summaries.
   with an English error, since the server has no localized channel for terminal errors; and a raw record write that
   turns `supaMemory` on does not bump `supaMemoryOnCount`, so a chat's "don't ask again" survives it. Decision: Found
   Issues Decisions (owner, 2026-11-08).
+- The `deferStored` replay ([Deferred stored summaries](#deferred-stored-summaries)) approximates the ordinary plan in
+  three ways: a lookahead window cut at the protected tail, or an edited or merged summary, is taken whole, up to one
+  window early; a stored summary reaching into a grown `queryChatCount` tail is taken where the planner would summarize
+  again; past lengths use the current rest-of-prompt size, so a lore swing can move summaries. Prepared summaries can so
+  replace messages earlier than vanilla Hypa would. Decision: owner, 2026-10-27 (document, do not change).
 
 ### Gotchas
 

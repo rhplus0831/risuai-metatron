@@ -281,6 +281,11 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   recreated, so selection and undo history are lost. One model across the switch is a larger editor-lifetime change.
   Observed by the [cross-plan review](../manual-audit/archive/cross-plan-2026-10-29.md#noted-not-recommended-to-fix).
   Decision: text-only toggle contract kept, commit `634bc14c7`.
+- Pixel anchoring across far and near row toggles was checked only by a manual Chrome script, with no kept test, and the
+  chat list was never driven in Firefox or Safari (far-row containment, anchoring, the newest-first reveal). A client
+  JSON chat import remounts the list once, and the `checkIfAtBottom` layout read (`Chats.svelte`) remains. Decision:
+  chat rendering perf series and slice 3f (2026-10-14, 2026-10-16), Audit Findings and Performance Leftovers,
+  [archive](../archived-plan/README.md); Found Issues Clearance (owner, 2026-11-09).
 - Older rows do not rerender merely because the chat length changes. Length-dependent CBS updates when that row next
   renders (edit, reload, remount, etc.). Decision: `docs/research/risunest-ideas.md`.
 - The screenshot export's renderer peak grows with the row count (about 1.4 GiB at 150 fixture rows, 3.3–3.9 GiB at 600)

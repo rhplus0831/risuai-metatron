@@ -338,6 +338,10 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
   credential writes).
 - Keepalive has no prefix send and no records: an ineligible batch, or a record edit no cycle saved before a close,
   waits for normal saving or the journal's next boot. Decision: Durable Drafts D7, archive.
+- Some saves still travel whole: `loreBook` and `globalscript` are collections without item ids, so an edit of one entry
+  saves the whole list, and a create carries its whole record. Measure before changing (the asset-scale slice 3c numbers
+  are the baseline). Decision: Audit Findings and Performance Leftovers, archive; Found Issues Clearance (owner,
+  2026-11-09).
 
 ### Gotchas
 

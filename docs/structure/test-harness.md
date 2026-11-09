@@ -394,3 +394,8 @@ test, follow [Recipes](#recipes); `readSlowTable` in `util/testInventory.mjs` ha
 - A Vitest file that reaches the settings views or the records needs the client environment (happy-dom): the records use
   Svelte's client `$state`, so `@vitest-environment node` fits only pure schema tests. Install a flat fixture with
   `src/ts/storage/tests/installFlatDatabase.ts`.
+- Under parallel whole suites (load average near 30, 2026-10-18 and 19)
+  `src/ts/storage/tests/resourceSyncFieldCache.test.ts` and the cold `boot()` of the first cases of
+  `src/ts/storage/tests/chatStore.test.ts` and `src/ts/storage/tests/resourceSyncChats.test.ts` have hit the 5,000 ms
+  default; each passed alone, and the whole-suite lock makes the case rare. Treat a failure there as load unless it also
+  fails alone; a warm-up import in `beforeAll` would remove the cold boot.

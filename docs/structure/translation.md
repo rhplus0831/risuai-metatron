@@ -281,3 +281,13 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
 
 - `src/ts/translator/translator.ts` `translateMain` has no `translatorType: "none"` branch, so an older save retaining
   that accepted value falls through to Google (`shared/database.ts` still includes `"none"` in the field type).
+
+### Limitations
+
+- The experimental Google translator (`useExperimentalGoogleTranslator`) sends one request per stream frame for a
+  message translated while it streams (upstream behavior). Decision: Audit Findings and Performance Leftovers,
+  [archive](../archived-plan/README.md); Found Issues Clearance (owner, 2026-11-09).
+- The write-back's Markdown pass (`applyMarkdownToNode` in `src/ts/parser/parser.svelte.ts`, markdown-it with
+  `html: true`) turns escaped markup in a translated paragraph back into tags on the single- and multi-sentence paths;
+  `ChatBody` sanitizes the result. Escaping before the pass would break code spans, angle-bracket links, and KaTeX.
+  Decision: owner, 2026-11-09 (Found Issues Clearance D1).

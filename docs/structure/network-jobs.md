@@ -192,6 +192,11 @@ The transport below retains this tab's in-memory log.
   now: a tab duplicated after its page released the id on `pagehide` and before the next page claimed it shares the id
   with that page, and a tab killed without `pagehide` (and not reported as `wasDiscarded`) mints a new id on return and
   loses reload recovery of its jobs. Decision: U1, [audit](../manual-audit/archive/job-protocol-2026-10-29.md).
+- A notification click whose route is `/` (a payload without a chat route, `safeRoute` in `public/sw.js`) only focuses a
+  window. Whether the enable button keeps its user activation when it waits behind a reconcile, and whether
+  `navigator.serviceWorker.ready` names the old worker during an upgrade, are browser behaviors the tests cannot show
+  (left to a real-browser check). Decision: Web Push (`e148f7276`, [archive](../archived-plan/README.md)); Found Issues
+  Clearance (owner, 2026-11-09).
 
 ### Gotchas
 

@@ -272,9 +272,11 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 
 ### Issues
 
-- Unconfirmed: two installed plugins with the same name and textarea argument share the same popup editor context. A
-  reorder could apply an open draft to the other plugin. See the
-  [caller and reproduction conditions](../research/found-issues.md#duplicate-plugin-names-can-share-a-popup-editor-target).
+- Unconfirmed: two installed plugins with the same name and textarea argument share one popup editor context.
+  `setPlugins` (`src/ts/storage/collectionStore.svelte.ts`) accepts duplicate names; `PluginSettings.svelte` binds an
+  unkeyed row's textarea to `settings.plugins[i].realArg[arg]` with the context `${plugin.name}\u0000${arg}`. If another
+  client swaps two such plugins with the same text while the popup is open, `TextAreaInput.svelte`'s checks still match,
+  and the draft lands on the plugin now at that index (verify by checking which stored argument changed).
 - The declarations and runtime disagree:
   - `risuFetch` and `setChatPanel` are implemented but not declared.
   - The arity of `saveSecretHeader` differs.

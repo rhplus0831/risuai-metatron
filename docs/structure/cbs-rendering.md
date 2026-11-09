@@ -395,6 +395,16 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
 - A chat write the render does not read still moves the chat revision in the transform key: with `useAutoSuggestions`
   on, a suggestion save (`Suggestion.svelte`, `setChatMeta`) costs one server re-render of the rows on the next visit,
   and a `{{random}}` row can change. Decision: Found Issues Decisions (owner, 2026-11-08).
+- When whole-chunk cancellation aborts a chunk's first `/api/transform` call (`postOnce`, `transformClient.ts`) before
+  its headers arrive, `snapshotGone` stays `true` and the chunk releases its permit at once, though the server may have
+  stored the snapshot: it lives until its 30 s TTL and counts toward `MAX_TRANSFORM_SNAPSHOTS_PER_CLIENT`, so the next
+  chunk can evict a live one (`SnapshotExpired`, a raw row, one retry round). Decision: Implementation Audit Fixes R4
+  (2026-11-06), to avoid holding a permit 30 s on every scroll-away abort.
+- A Re-render's cache bypass (`noCacheNext`) is consumed when its operation is created and restored only on withdrawal
+  before dispatch or a whole-chunk cancel: a dispatched target withdrawn from a surviving chunk loses it, so a
+  same-input replacement sends `noCache: false` and can read the server's old cache entry. Decision: excluded as an edge
+  (2026-11-05),
+  [RW3](../manual-audit/archive/render-work-budget-2026-11-05.md#rw3--a-departed-forced-refresh-can-leave-its-replacement-using-the-old-server-cache).
 
 ### Gotchas
 

@@ -370,6 +370,11 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
 - MCP tool schemas are charged only in assembly's final recheck, as an estimate: memory budgets and the no-memory trim
   plan without them, so the recheck can drop removable entries they kept. Decision: Found Issues Clearance Q2,
   2026-11-09.
+- Request capture: a stream capture flushed by an abort, a cancel, or a read error is not trimmed for a trailing
+  credential prefix (`trimPartial` runs only when the 4 MiB bound cut it, `server/src/llm/requests.ts`) and can end in
+  U+FFFD; an adapter's `addLog` (the Anthropic batch) counts logged text, not wire bytes; exchanges are stored in
+  completion order, not start order. Decision: Request History and Diagnostics trade-offs (`ab11ea9d0`,
+  [archive](../archived-plan/README.md)), recorded by Found Issues Clearance (owner, 2026-11-09).
 - Auxiliary requests still tokenize bias strings with the main model, not their own profile's tokenizer. Decision:
   `shared/llm/request.ts` `tokenizer`.
 - A legacy plugin `custom` tokenizer counts with `cl100k_base` on screen and in server requests; its `tokenizerFunc` is

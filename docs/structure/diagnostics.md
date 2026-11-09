@@ -165,7 +165,10 @@ The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credent
   [test-harness](test-harness.md).
 - E2E: none.
 - Not tested: the full viewer/alert flow, production Docker+sftp isolation, pulling and withdrawing a shared job, and
-  saving a phone browser report. These manual checks are tracked in the [archive](../archived-plan/README.md).
+  saving a phone browser report. These manual checks are tracked in the [archive](../archived-plan/README.md). The
+  viewer, the failure alert's two buttons, the popup's job filter, the Diagnostics panel, and `LogField`'s copy failure
+  state were never opened in a browser. No test covers a global middleware's early return or a `http` event for an
+  answer slower than 5 s.
 
 ## Known Hazards
 
@@ -189,6 +192,31 @@ The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credent
   can leave a successfully saved file. Decision: a share stays one synchronous step, since an await inside it lets a
   withdrawal be undone; asynchronous copies would need a queue across a whole share
   (`server/src/diagnostics/journal.ts`).
+- Request history keeps these trade-offs (decided with the Request History and Diagnostics plan, `ab11ea9d0`,
+  [archive](../archived-plan/README.md); recorded by Found Issues Clearance, owner, 2026-11-09):
+  - Store: an invalid `firstByte` or `completedAt` time falls back to `now()`; `setShared` returns the matched count,
+    not the changed count; a missing JWT answers 400, not 401 (server-wide). The viewer (`src/lib/Others/RequestLogs/`)
+    keeps a list row's old summary after re-expanding it loads a fresh detail, until the list reloads.
+  - Structured failures: a memory request's failure is `assembly` with no `requestId`; an OpenAI Responses stream error
+    is answer text ([LLM requests](llm-requests.md)), so it has no failure code; `APP_PATH`
+    (`server/src/diagnostics/log.ts`) would accept a `node_modules/*/shared/*.ts` frame.
+  - Journal: `script` events are deferred, so a swallowed Lua or trigger failure records nothing; the symlink checks
+    guard stray entries, not a writer racing in the folder; a failure `startServer`'s own catch takes is not recorded;
+    one failed state write can count two failures.
+  - Browser collector: frames are not checked against the build (a script rewriting `error.stack` can name an app-shaped
+    file); V8 `at async <url>` frames are dropped (`FRAME` in `shared/diagnostics.ts`); WebKit `[native code]` lines
+    give no frames; folding collapses alternating `hidden` and `visible` within 16 events or 10 minutes and keeps the
+    first `at`.
+  - Reports: the server checks a report's shape, not its provenance; one naming a model that later left
+    `BASE_LLM_MODELS` is refused; a prune failure after a save is counted but not shown.
+  - Shares: boot does not reconcile `sharedAt` marks with the `shared/` files (the files are authoritative, withdrawal
+    is idempotent); marks stay if `deleteAll` fails after the copies were removed; `eventsFor` does not detect pruned
+    day files; the second redaction cannot catch a retired key or an expired Vertex token and leaves out the auxiliary
+    `secrets` section.
+- Both sockets' protocol number reaches only the server console (`[Live-update socket] proto=…`,
+  `[Generation socket] proto=…`): the Diagnostics events (`DIAGNOSTIC_EVENT_KINDS`, `shared/diagnostics.ts`) and
+  `logEvent` carry none, so a protocol floor decision would read console logs. Decision: Found Issues Clearance Q8
+  (owner, 2026-11-09): no floor is planned.
 
 ### Gotchas
 

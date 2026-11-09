@@ -117,6 +117,19 @@ a controller, so later reads take an object URL. The probe and the worker's sign
 
 - A PNG card read from a one-shot stream (a Chub download) keeps each asset's base64 text in its `saveAssets` item for
   the final presence pass; a `File` or `Blob` rereads its byte range. Decision: Implementation Audit Fixes Q1.
+- Likewise a JSON card's embedded assets (`saveEmbeddedAssets`) and a V3 card's `data:` URI assets
+  (`src/ts/characterCards.ts`) keep their base64 text, about 4/3 of the decoded bytes, reachable until the import's
+  hand-off ends: `saveAssets` and the hand-off replay an item's `load`, and a JSON string has no byte range to reread.
+  Decision: Found Issues Clearance AUD-5 (owner, 2026-11-09).
+- In the fallback every plain `getFileSrc` read (parser HTML, chat rows, icons) pins its source for the page; only
+  `holdFileSrc` previews release theirs, so pinned `blob:` URLs grow with the distinct assets rendered until a reload. A
+  fallback `blob:` URL is typed `image/png`; video and audio rely on the `<source type>` the parser writes. Decision:
+  asset-scale D2b left open (2026-10-23), Audit Findings and Performance Leftovers,
+  [archive](../archived-plan/README.md).
+- The asset UIs' first name filter after an edit of a character's asset field copies the live list once
+  (`characterAssetNames`, `src/ts/assetList.ts`; about 0.3 to 0.6 s at 100,000 assets); later queries reuse the names
+  until the field changes. Decision: Heap Memory Reduction, [archive](../archived-plan/README.md); Found Issues
+  Clearance (owner, 2026-11-09).
 - Without a capable controlling service worker, the fallback's audio and video object URLs (`getInlayObjectUrl`,
   `mediaObjectUrls` in `src/ts/process/files/inlays.ts`) live for the page: they grow with the distinct media played,
   past the 64 MiB `blobCache` budget, until a reload. Decision: Found Issues Decisions (owner, 2026-11-08).

@@ -147,3 +147,6 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
 - Summary comparison uses stored projection text without parsing metadata, unless that projection is missing or stale
   (`freshSummaryText` rebuilds it from parsed metadata). A metadata change past `MAX_FEED_PATCH_BYTES` parses metadata
   before and after for the field diff. Decision: Server Byte Budgets D4 and Per-Event Server Work D7, archive.
+- A socket's `proto` is kept per socket (`protocols` in `server/src/routes/events.ts`) and logged as one `console.info`
+  line, not recorded in Diagnostics ([diagnostics](diagnostics.md#limitations)). Decision: Found Issues Clearance Q8
+  (owner, 2026-11-09).
