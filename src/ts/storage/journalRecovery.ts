@@ -314,13 +314,16 @@ function validRecoveryOp(value: unknown, chatId: string): value is ChatOp {
 
 /**
  * Checks before values in operation order and the final touched values, without changing the boot
- * mirror: matching befores permit replay; matching final values recognize landed work. Predicates
- * need the whole pinned chat. Combinations whose ordering or normalization the sidecars cannot
- * prove are drafted, including mixed append/remove membership edits, translations, and candidate selections.
+ * mirror: matching befores permit replay only without evidence the chat moved on; matching final
+ * values recognize landed work. An absent appended id is ambiguous only when the revision moved
+ * on; on an unchanged base it is a never-sent append. Predicates need the whole pinned chat. Combinations whose
+ * ordering or normalization the sidecars cannot prove are drafted, including mixed append/remove
+ * membership edits, translations, and candidate selections.
  */
 export function decideChatOpsRecovery(
     ops: JournalChatOp[],
     chat: DeepReadonly<Chat>,
+    movedOn = false,
 ): "replay" | "satisfied" | "draft" {
     const observed = copyJson<Chat>(chat as Chat);
     const scratch = copyJson(observed);
@@ -463,7 +466,7 @@ export function decideChatOpsRecovery(
                     observed.message.findIndex((row) => row.chatId === id) ===
                     scratch.message.findIndex((row) => row.chatId === id),
             ));
-    return landed ? "satisfied" : notApplied ? "replay" : "draft";
+    return landed ? "satisfied" : notApplied && !movedOn ? "replay" : "draft";
 }
 
 /**
@@ -472,7 +475,8 @@ export function decideChatOpsRecovery(
  * must be atomically drafted before that resend is installed. A dispatched create still absent
  * is drafted; an undispatched create uses its snapshot and original id. Pending batches over
  * MAX_BATCH_OPERATIONS (5,000) are drafted because a prefix may have landed under their id.
- * Pending whole-chat and generation ops require the unchanged boot revision. The caller also loads
+ * Pending whole-chat and generation ops require the unchanged boot revision. By-id replay also
+ * requires it after checking for satisfied work. The caller also loads
  * deletes to check generation locks, and refuses deletion of the last chat. Other uncertain work is drafted.
  */
 export function decideChatRecovery(
@@ -558,7 +562,7 @@ export function decideChatRecovery(
         if (server.revision !== pending!.baseRevision) return draft;
     } else {
         if (!server.data) return { action: "load" };
-        const action = decideChatOpsRecovery(pending!.ops, server.data);
+        const action = decideChatOpsRecovery(pending!.ops, server.data, server.revision !== pending!.baseRevision);
         if (action !== "replay") return { action };
     }
     return {
@@ -833,13 +837,18 @@ export function recoveryDraftDetails(entry: DraftEntry): {
 
 /**
  * Explicit Apply makes fresh by-id writes: append only absent messages and remove only present ids.
- * Returns skipped missing targets, whole-chat ops and translations whose source changed, so the
- * caller can report lost intent even though a successful save still removes the draft. Metadata
- * uses the recovery source, without plugin notices. The last meta naming hypaV3Data wins, including
+ * Returns skipped strings for reporting and narrowed ops for content that did not land, so the
+ * caller can keep that content after saving. Deliberate skips of control/whole-chat ops and absent
+ * removals are report-only, as are appends whose exact content is already present. Metadata uses
+ * the recovery source, without plugin notices. The last meta naming hypaV3Data wins, including
  * an unset; only a final refused unsealed value is returned for the caller to preserve as a draft.
  */
-function applyChatOps(ref: ChatRef, ops: ChatOp[]): { skipped: string[]; refusedHypaV3Data: unknown } {
+function applyChatOps(
+    ref: ChatRef,
+    ops: ChatOp[],
+): { skipped: string[]; skippedOps: ChatOp[]; refusedHypaV3Data: unknown } {
     const skipped: string[] = [];
+    const skippedOps: ChatOp[] = [];
     let refusedHypaV3Data: unknown;
     for (const op of ops) {
         const present = new Set(findChat(ref)!.message.map((message) => message.chatId));
@@ -856,18 +865,57 @@ function applyChatOps(ref: ChatRef, ops: ChatOp[]): { skipped: string[]; refused
             const existing = op.messages.filter((message) => present.has(message.chatId));
             if (existing.length > 0) skipped.push(`${op.op}: ${existing.map((message) => message.chatId).join(", ")}`);
             const messages = op.messages.filter((message) => !present.has(message.chatId));
-            if (messages.length === 0) continue;
-            if ("after" in op.anchor && !present.has(op.anchor.after)) {
-                skipped.push(`${op.op}: ${op.anchor.after}`);
-            } else appendMessage(ref, messages, { anchor: op.anchor });
+            // An exact copy already landed, including a retry after a lost save answer.
+            const kept = existing.filter((message) => {
+                const normalized = copyJson(message);
+                dropInvalidTranslation(normalized);
+                return !equal(
+                    normalized,
+                    findChat(ref)!.message.find((row) => row.chatId === message.chatId),
+                );
+            });
+            if (messages.length > 0) {
+                if ("after" in op.anchor && !present.has(op.anchor.after)) {
+                    skipped.push(`${op.op}: ${op.anchor.after}`);
+                    kept.push(...messages);
+                } else {
+                    try {
+                        appendMessage(ref, messages, { anchor: op.anchor });
+                    } catch {
+                        skipped.push(`${op.op}: ${messages.map((message) => message.chatId).join(", ")}`);
+                        kept.push(...messages);
+                    }
+                }
+            }
+            if (kept.length > 0)
+                skippedOps.push({ ...op, messages: op.messages.filter((message) => kept.includes(message)) });
         } else if (op.op === "remove") {
             const ids = op.ids.filter((id) => present.has(id));
             const missing = op.ids.filter((id) => !present.has(id));
             if (missing.length > 0) skipped.push(`${op.op}: ${missing.join(", ")}`);
             if (ids.length > 0) removeMessagesUnasked(ref, ids, op.retract ? { retract: true } : {});
         } else if (op.op === "meta") {
-            const refused = setChatMeta(ref, op.set ?? {}, op.unset ?? [], "recovery");
-            if (namesHypaV3Data(op)) refusedHypaV3Data = refused;
+            try {
+                const refused = setChatMeta(ref, op.set ?? {}, op.unset ?? [], "recovery");
+                if (namesHypaV3Data(op)) refusedHypaV3Data = refused;
+            } catch {
+                // The metadata writer checks the whole set before applying it. Recover memory
+                // independently if an unrelated field made that set fail.
+                if (namesHypaV3Data(op)) {
+                    refusedHypaV3Data = setChatMeta(
+                        ref,
+                        Object.hasOwn(op.set ?? {}, "hypaV3Data") ? { hypaV3Data: op.set!.hypaV3Data } : {},
+                        (op.unset ?? []).filter((key) => key === "hypaV3Data"),
+                        "recovery",
+                    );
+                }
+                const set = Object.fromEntries(Object.entries(op.set ?? {}).filter(([key]) => key !== "hypaV3Data"));
+                const unset = (op.unset ?? []).filter((key) => key !== "hypaV3Data");
+                if (Object.keys(set).length === 0 && unset.length === 0)
+                    throw new Error(language.recoveryDrafts.invalid);
+                skipped.push(`${op.op}: ${[...Object.keys(set), ...unset].join(", ")}`);
+                skippedOps.push({ op: "meta", set, unset });
+            }
             const fields = new Set([...Object.keys(op.merge ?? {}), ...Object.keys(op.mergeUnset ?? {})]);
             for (const field of fields)
                 mergeChatMeta(ref, field, op.merge?.[field] ?? {}, op.mergeUnset?.[field] ?? []);
@@ -875,25 +923,34 @@ function applyChatOps(ref: ChatRef, ops: ChatOp[]): { skipped: string[]; refused
             const id = op.op === "setMessage" ? op.message.chatId : op.id;
             if (!id || !present.has(id)) {
                 skipped.push(`${op.op}: ${id ?? ""}`);
+                skippedOps.push(op);
                 continue;
             }
-            switch (op.op) {
-                case "setText":
-                    setMessageText(ref, id, op.text);
-                    break;
-                case "setMessage":
-                    replaceMessage(ref, op.message);
-                    break;
-                case "patchMessage":
-                    patchMessage(ref, id, op.set, op.unset);
-                    break;
-                case "setTranslation":
-                    if (!setMessageTranslation(ref, id, op.translation)) skipped.push(`${op.op}: ${id}`);
-                    break;
+            try {
+                switch (op.op) {
+                    case "setText":
+                        setMessageText(ref, id, op.text);
+                        break;
+                    case "setMessage":
+                        replaceMessage(ref, op.message);
+                        break;
+                    case "patchMessage":
+                        patchMessage(ref, id, op.set, op.unset);
+                        break;
+                    case "setTranslation":
+                        if (!setMessageTranslation(ref, id, op.translation)) {
+                            skipped.push(`${op.op}: ${id}`);
+                            skippedOps.push(op);
+                        }
+                        break;
+                }
+            } catch {
+                skipped.push(`${op.op}: ${id}`);
+                skippedOps.push(op);
             }
         }
     }
-    return { skipped, refusedHypaV3Data };
+    return { skipped, skippedOps, refusedHypaV3Data };
 }
 
 function namesHypaV3Data(op: Extract<ChatOp, { op: "meta" }>): boolean {
@@ -987,12 +1044,15 @@ async function keepRecoveryMemory(
  * Non-delete character intent past the boot's trash threshold is skipped and its draft retained.
  * src/ts/storage/resourceSync.svelte.ts
  * flushResources must confirm the scope without relevant discarded/refused keys before deletion.
- * If deletion fails after saving, src/ts/storage/recoveryDrafts.svelte.ts marks Apply off for this
- * page, reporting appliedNotRemoved; after reload the durable draft is available again.
+ * Skipped content is filed as ops alone, under the applied chat's ref and with the source's epoch
+ * and expiry, before removing the source. If filing or deletion fails after saving,
+ * src/ts/storage/recoveryDrafts.svelte.ts marks Apply off for this page, reporting appliedNotRemoved;
+ * after reload the durable draft is available again.
  */
 export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
     skipped: string[];
     memoryKept?: "filed" | "kept";
+    kept?: true;
 }> {
     assertSaveAdmission();
     const details = recoveryDraftDetails(entry);
@@ -1002,6 +1062,8 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
     const keys = new Set<string>();
     const changedMembership = new Set<string>();
     let skipped: string[] = [];
+    let skippedOps: ChatOp[] = [];
+    let appliedChatRef: ChatRef | undefined;
     let memoryKept: "filed" | undefined;
     let release: (() => void) | undefined;
     try {
@@ -1070,7 +1132,7 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
                 const chat = createChat(ref.chaId, { ...snapshot, id: entry.id });
                 keys.add(`chats/${ref.chaId}/${chat.id}`);
                 appliedRef = { chaId: ref.chaId, chatId: chat.id };
-                ({ skipped, refusedHypaV3Data } = applyChatOps(appliedRef, tail));
+                ({ skipped, skippedOps, refusedHypaV3Data } = applyChatOps(appliedRef, tail));
             } else {
                 const owner = chatOwnerToken(ref.chaId);
                 release = pinChat(ref);
@@ -1081,7 +1143,7 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
                 if (entry.epoch !== getResourceEpoch()) throw new Error(language.recoveryDrafts.otherEpoch);
                 if (isChatGenerating(ref)) throw new Error(language.chatGenerating);
                 keys.add(`chats/${ref.chaId}/${ref.chatId}`);
-                ({ skipped, refusedHypaV3Data } = applyChatOps(ref, ops));
+                ({ skipped, skippedOps, refusedHypaV3Data } = applyChatOps(ref, ops));
                 if (refusedHypaV3Data !== undefined && !snapshot && onlyHypaV3Data(ops)) {
                     return { skipped, memoryKept: "kept" };
                 }
@@ -1090,6 +1152,7 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
                 await keepRecoveryMemory(entry, appliedRef, refusedHypaV3Data);
                 memoryKept = "filed";
             }
+            appliedChatRef = appliedRef;
         }
         const result = await flushResources({ scope });
         // Flush reports kind/id for records and chats/characterId[/chatId] for chat work.
@@ -1106,13 +1169,30 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
             throw new Error(language.recoveryDrafts.notSaved);
         }
         try {
+            if (skippedOps.length > 0 && appliedChatRef) {
+                const id = await pageDraftJournal().putDraft({
+                    scope: "chat",
+                    epoch: entry.epoch,
+                    createdAt: entry.createdAt,
+                    target: `${appliedChatRef.chaId}\u0000${appliedChatRef.chatId}`,
+                    layers: {
+                        pending: {
+                            ops: skippedOps.map((op) => ({ op })),
+                            baseRevision: heldChatRevision(appliedChatRef) ?? null,
+                            groupId: uuidv4(),
+                        },
+                    },
+                });
+                if (id === null) throw new Error(language.recoveryDrafts.appliedNotRemoved);
+            }
             await recoveryDrafts.remove(entry.id);
         } catch {
             // The changes are saved; applying the kept draft again would repeat them.
             recoveryDrafts.markApplied(entry.id);
             throw new Error(language.recoveryDrafts.appliedNotRemoved);
         }
-        return { skipped, ...(memoryKept ? { memoryKept } : {}) };
+        if (skippedOps.length > 0) await recoveryDrafts.refresh();
+        return { skipped, ...(memoryKept ? { memoryKept } : {}), ...(skippedOps.length > 0 ? { kept: true } : {}) };
     } finally {
         release?.();
     }

@@ -14,7 +14,7 @@
      * alerts (z-index 45 against their 50), so its confirmations show above it. While it is open no key reaches the
      * app's shortcuts, even with focus moved outside it, except while an alert or the terminal notice is up. Apply
      * reports the operations `applyRecoveryDraft` (`src/ts/storage/journalRecovery.ts`) skipped and
-     * whether refused memory was kept in this draft or filed separately.
+     * whether skipped content or refused memory was kept as a recovery draft.
      */
 
     let busy = $state(false);
@@ -83,7 +83,7 @@
     function apply(entry: DraftEntry, name: string) {
         void act(async () => {
             if (!(await alertConfirm(language.recoveryDrafts.applyConfirm(name)))) return;
-            const { skipped, memoryKept } = await applyRecoveryDraft(entry);
+            const { skipped, memoryKept, kept } = await applyRecoveryDraft(entry);
             let notice =
                 skipped.length > 0
                     ? `${language.recoveryDrafts.applied}\n\n${language.recoveryDrafts.skipped}\n${skipped.join("\n")}`
@@ -91,6 +91,7 @@
             if (memoryKept) {
                 notice += `\n\n${memoryKept === "filed" ? language.recoveryDrafts.memoryFiled : language.recoveryDrafts.memoryKept}`;
             }
+            if (kept) notice += `\n\n${language.recoveryDrafts.skippedKept}`;
             alertNormal(notice);
         });
     }

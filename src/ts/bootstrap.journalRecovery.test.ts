@@ -1109,7 +1109,6 @@ describe("boot recovery of chat work", () => {
             await flush();
             expect(first.chat.findChat(ref())).toBeUndefined();
             await first.chat.ensureChatLoaded(ref());
-            const baseRevision = server.chat("c", "chat")!.revision;
             if (outcome === "stale message") {
                 first.chat.replaceMessage(ref(), { chatId: "m", role: "user", data: "local" });
             } else first.chat.setMessageText(ref(), "m", "local");
@@ -1117,7 +1116,6 @@ describe("boot recovery of chat work", () => {
             const row = rows.find((entry) => entry.scope === "chat")!;
             expect(row.scope).toBe("chat");
             if (row.scope !== "chat") throw new Error("Missing chat journal row");
-            const pending = row.layers.pending!.value;
             expect(row.layers.resend).toBeUndefined();
             if (outcome === "before") remoteChat([{ op: "meta", set: { note: "unrelated remote edit" } }]);
             if (outcome === "landed") remoteChat([{ op: "setText", id: "m", text: "local" }]);
@@ -1130,47 +1128,106 @@ describe("boot recovery of chat work", () => {
             expect(chatReads()).toEqual([{ characterId: "c", id: "chat" }]);
             expect(second.chat.findChat(ref("untouched"))).toBeUndefined();
             await flush();
-            if (outcome === "before") {
-                expect(chatGroups()).toEqual([
+            expect(chatGroups()).toEqual([]);
+            expect(server.chat("c", "chat")).toEqual(current);
+            if (outcome === "landed") {
+                expect(second.recoveryDrafts.entries).toEqual([]);
+                expect(await second.journal.listDrafts()).toEqual([]);
+            } else {
+                expect(second.recoveryDrafts.entries).toMatchObject([
                     {
-                        characterId: "c",
-                        chatId: "chat",
-                        groupId: pending.groupId,
-                        baseRevision,
-                        ops: [{ op: "setText", id: "m", text: "local" }],
-                        retry: true,
+                        scope: "chat",
+                        target: row.target,
+                        otherEpoch: false,
+                        layers: row.layers,
                     },
                 ]);
-                expect(server.texts("c", "chat")).toEqual(["local", "second"]);
-                expect(second.chat.findChat(ref())?.message[0].data).toBe("local");
-                expect(second.recoveryDrafts.entries).toEqual([]);
-            } else {
-                expect(chatGroups()).toEqual([]);
-                expect(server.chat("c", "chat")).toEqual(current);
-                if (outcome === "landed") {
-                    expect(second.recoveryDrafts.entries).toEqual([]);
+                expect(await second.journal.listDrafts()).toMatchObject([{ scope: "chat", layers: row.layers }]);
+                const recovery = await import("./storage/journalRecovery");
+                const draft = second.recoveryDrafts.entries[0];
+                expect(recovery.recoveryDraftDetails(draft).canApply).toBe(true);
+                if (outcome === "remote") {
+                    await recovery.applyRecoveryDraft(draft);
+                    await flush();
+                    expect(server.texts("c", "chat")).toEqual(["local", "second"]);
                     expect(await second.journal.listDrafts()).toEqual([]);
-                } else {
-                    expect(second.recoveryDrafts.entries).toMatchObject([
-                        {
-                            scope: "chat",
-                            target: row.target,
-                            otherEpoch: false,
-                            layers: row.layers,
-                        },
-                    ]);
-                    expect(await second.journal.listDrafts()).toMatchObject([{ scope: "chat", layers: row.layers }]);
-                    const recovery = await import("./storage/journalRecovery");
-                    const draft = second.recoveryDrafts.entries[0];
-                    expect(recovery.recoveryDraftDetails(draft).canApply).toBe(true);
-                    if (outcome === "remote") {
-                        await recovery.applyRecoveryDraft(draft);
-                        await flush();
-                        expect(server.texts("c", "chat")).toEqual(["local", "second"]);
-                        expect(await second.journal.listDrafts()).toEqual([]);
-                    }
                 }
             }
+            expect(await second.journal.readOwn()).toEqual([]);
+        },
+    );
+
+    it.each(["edit", "append"] as const)(
+        "recovers pending %s by the persisted revision and leaves already landed work satisfied",
+        async (kind) => {
+            const ids = ["unchanged", "changed", "landed"];
+            seedChats([...ids, "untouched"]);
+            const first = await boot();
+            await flush();
+            const op: ChatOp =
+                kind === "edit"
+                    ? { op: "setText", id: "m", text: "Final local text" }
+                    : {
+                          op: "append",
+                          anchor: { after: "n" },
+                          messages: [{ chatId: "new", role: "char", data: "Never-sent reply" }],
+                      };
+            for (const id of ids) {
+                await first.chat.ensureChatLoaded(ref(id));
+                if (op.op === "setText") {
+                    first.chat.setMessageText(ref(id), "m", "Intermediate local text");
+                    first.chat.setMessageText(ref(id), "m", op.text);
+                } else if (op.op === "append") first.chat.appendMessage(ref(id), op.messages, { anchor: op.anchor });
+            }
+            const rows = (await hideUnsent()).filter((row) => row.scope === "chat");
+            expect(rows).toHaveLength(3);
+            for (const row of rows) {
+                const id = row.target.split("\0")[1];
+                expect(row.layers.resend).toBeUndefined();
+                expect(row.layers.pending!.value).toMatchObject({
+                    baseRevision: server.chat("c", id)!.revision,
+                    ops: [{ op, before: kind === "edit" ? { value: "before" } : { absent: true } }],
+                });
+            }
+            const changed = rows.find((row) => row.target === "c\0changed")!;
+            const unchanged = rows.find((row) => row.target === "c\0unchanged")!;
+            remoteChat([{ op: "meta", set: { note: "Unrelated remote edit" } }], "changed");
+            remoteChat([op], "landed");
+            const changedServer = plain(server.chat("c", "changed"));
+            const landedServer = plain(server.chat("c", "landed"));
+            expect(changedServer.revision).not.toBe(changed.layers.pending!.value.baseRevision);
+
+            const second = await reload();
+            expect(
+                chatReads()
+                    .map(({ id }) => id)
+                    .sort(),
+            ).toEqual([...ids].sort());
+            expect(second.chat.findChat(ref("untouched"))).toBeUndefined();
+            await flush();
+            expect(chatGroups()).toEqual([
+                expect.objectContaining({
+                    characterId: "c",
+                    chatId: "unchanged",
+                    ops: [op],
+                    baseRevision: unchanged.layers.pending!.value.baseRevision,
+                    groupId: unchanged.layers.pending!.value.groupId,
+                    retry: true,
+                }),
+            ]);
+            expect(server.texts("c", "unchanged")).toEqual(
+                kind === "edit" ? ["Final local text", "second"] : ["before", "second", "Never-sent reply"],
+            );
+            expect(server.chat("c", "changed")).toEqual(changedServer);
+            expect(server.chat("c", "landed")).toEqual(landedServer);
+            expect(await second.journal.listDrafts()).toEqual([
+                expect.objectContaining({
+                    scope: "chat",
+                    target: changed.target,
+                    layers: changed.layers,
+                }),
+            ]);
+            expect(second.recoveryDrafts.entries).toMatchObject([{ target: changed.target, layers: changed.layers }]);
             expect(await second.journal.readOwn()).toEqual([]);
         },
     );

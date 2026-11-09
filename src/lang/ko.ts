@@ -1987,6 +1987,7 @@ export const languageKorean = {
         discardConfirm: (name: string) => `복구 초안 “${name}”을(를) 버릴까요? 이 작업은 되돌릴 수 없습니다.`,
         applied: "복구된 변경 사항을 반영했습니다.",
         skipped: "건너뛴 작업 (대상 없음, 전체 채팅 교체 또는 번역 원문 변경):",
+        skippedKept: "건너뛴 내용은 복구 초안으로 보관했습니다. 내보내거나 다시 적용할 수 있습니다.",
         failed: "작업을 완료하지 못했습니다. 복구 초안은 그대로 보관됩니다.",
         refreshFailed: "복구 초안 목록을 새로 불러오지 못했습니다.",
         removeFailed: "복구 초안을 삭제하지 못했습니다.",

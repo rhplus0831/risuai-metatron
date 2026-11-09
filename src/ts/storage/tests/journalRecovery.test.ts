@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { Chat } from "../../../../shared/database.ts";
+import type { ChatOp } from "../../../../shared/chats.ts";
 import { sealHypaV3Data } from "../../../../shared/structuredMemory.ts";
 import { decideChatRecovery, decideRecordRecovery, replayedHypaV3Data } from "../journalRecovery";
-import type { RecordLayerValues, StoredLayers } from "../draftJournal";
+import type { JournalChatOp, RecordLayerValues, StoredLayers } from "../draftJournal";
 
 const A = JSON.stringify({ name: "sent" });
 const B = JSON.stringify({ name: "newer" });
@@ -119,6 +120,98 @@ describe("whole-chat recovery decisions", () => {
             groupId: "original-group",
         });
         expect(decideChatRecovery(layers, { revision: "remote-base" }, context)).toEqual({ action: "draft" });
+    });
+});
+
+describe("pending by-id recovery revisions", () => {
+    const original: Chat = {
+        id: "chat",
+        name: "Chat",
+        note: "",
+        localLore: [],
+        message: [{ chatId: "m", role: "user", data: "Before" }],
+    };
+    const context = { parent: true, chatId: "chat", canDelete: true };
+
+    it("requires the recorded base for matching before-values but recognizes final coalesced text on a later revision", () => {
+        // Coalescing persists the first before-value and the final text, with no history marker.
+        const op = { op: "setText", id: "m", text: "Final local edit" } satisfies ChatOp;
+        const layers: StoredLayers<"chat"> = {
+            pending: layer(
+                { baseRevision: "base", groupId: "pending-group", ops: [{ op, before: { value: "Before" } }] },
+                99,
+            ),
+        };
+        const server = (revision: string, data = original) => ({ revision, data });
+
+        expect(decideChatRecovery(layers, { revision: "later" }, context)).toEqual({ action: "load" });
+        expect(decideChatRecovery(layers, server("base"), context)).toEqual({
+            action: "replay",
+            ops: [op],
+            baseRevision: "base",
+            groupId: "pending-group",
+            splitPending: false,
+        });
+        const moved = { ...original, note: "Unrelated remote change" };
+        expect(decideChatRecovery(layers, server("later", moved), context)).toEqual({ action: "draft" });
+        expect(
+            decideChatRecovery(
+                layers,
+                server("later", { ...moved, message: [{ ...original.message[0], data: op.text }] }),
+                context,
+            ),
+        ).toEqual({ action: "satisfied" });
+        expect(
+            decideChatRecovery(
+                { pending: layer({ ...layers.pending!.value, baseRevision: null }) },
+                server("base"),
+                context,
+            ),
+        ).toEqual({ action: "draft" });
+        // An empty base is unknown/invalid, rather than evidence that the revision is unchanged.
+        expect(
+            decideChatRecovery(
+                { pending: layer({ ...layers.pending!.value, baseRevision: "" }) },
+                server("base"),
+                context,
+            ),
+        ).toEqual({ action: "draft" });
+        expect(original.message[0].data).toBe("Before");
+    });
+
+    it("replays a never-sent append only on its recorded revision and satisfies an exact landed append on a later revision", () => {
+        const appended = { chatId: "new", role: "char" as const, data: "Unsent reply" };
+        const op = { op: "append", anchor: { after: "m" }, messages: [appended] } satisfies ChatOp;
+        const journalOp: JournalChatOp = { op, before: { absent: true } };
+        const pending = { baseRevision: "base", groupId: "append-group", ops: [journalOp] };
+        const layers: StoredLayers<"chat"> = { pending: layer(pending) };
+
+        expect(decideChatRecovery(layers, { revision: "base", data: original }, context)).toEqual({
+            action: "replay",
+            ops: [op],
+            baseRevision: "base",
+            groupId: "append-group",
+            splitPending: false,
+        });
+        expect(decideChatRecovery(layers, { revision: "later", data: original }, context)).toEqual({ action: "draft" });
+        expect(
+            decideChatRecovery(
+                layers,
+                { revision: "later", data: { ...original, message: [...original.message, appended] } },
+                context,
+            ),
+        ).toEqual({ action: "satisfied" });
+        expect(
+            decideChatRecovery(
+                { pending: layer({ ...pending, baseRevision: null }) },
+                { revision: "base", data: original },
+                context,
+            ),
+        ).toEqual({ action: "draft" });
+        expect(decideChatRecovery(layers, { revision: "base", data: { ...original, message: [] } }, context)).toEqual({
+            action: "draft",
+        });
+        expect(original.message).toHaveLength(1);
     });
 });
 

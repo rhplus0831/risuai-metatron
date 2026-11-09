@@ -1716,6 +1716,7 @@ export const languageEnglish = {
             "The recovered HypaV3 memory could not be kept as a draft of its own, so this draft was kept. Export it to keep a copy of the memory.",
         skipped:
             "Skipped operations (missing targets, expired trash, whole-chat changes, or a translation whose source changed):",
+        skippedKept: "Skipped content was kept as a recovery draft. You can export it or apply it again.",
         failed: "Could not complete this action. The recovery draft has been kept.",
         refreshFailed: "Could not refresh recovery drafts.",
         removeFailed: "The recovery draft could not be removed.",

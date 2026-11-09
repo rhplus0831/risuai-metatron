@@ -1,6 +1,7 @@
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatOp } from "../../../shared/chats.ts";
+import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import type { DraftEntry, DraftInput, DraftJournal, RecordLayerValues } from "src/ts/storage/draftJournal";
 import { createFakeLockManager } from "src/ts/storage/tests/fakeLockManager";
 import { bootMutations, m, plain, refK, warmMutationGraph } from "src/ts/storage/tests/mutationStoresHarness";
@@ -105,6 +106,29 @@ function chatInput(ops: ChatOp[], chatId = "k"): DraftInput & { scope: "chat" } 
             },
         },
     };
+}
+
+async function remainder(source: DraftEntry, ops: ChatOp[], chatId = "k") {
+    const rows = await journal.listDrafts();
+    expect(rows).toHaveLength(1);
+    const [kept] = rows;
+    expect(kept.id).not.toBe(source.id);
+    expect(kept).toMatchObject({
+        scope: "chat",
+        epoch: source.epoch,
+        createdAt: source.createdAt,
+        target: `c\0${chatId}`,
+    });
+    if (kept.scope !== "chat") throw new Error("Missing chat remainder");
+    expect(Object.keys(kept.layers)).toEqual(["pending"]);
+    expect(kept.layers.pending!.value).toEqual({
+        ops: ops.map((op) => ({ op })),
+        baseRevision: h.fake.chat("c", chatId)!.revision,
+        groupId: expect.any(String),
+    });
+    expect(kept.layers.pending!.value.groupId).not.toBe("old-page-group");
+    expect(drafts.recoveryDrafts.entries).toMatchObject([{ id: kept.id }]);
+    return kept;
 }
 
 const snapshot = () => ({
@@ -419,7 +443,7 @@ describe("recovery drafts", () => {
         },
     );
 
-    it("confirms applying chat operations by id on the current chat and reports missing targets", async () => {
+    it("confirms applying chat operations by id on the current chat and keeps missing targets as a draft", async () => {
         const ops: ChatOp[] = [
             { op: "setText", id: "b", text: "Recovered B" },
             { op: "setText", id: "missing-message", text: "Cannot be placed" },
@@ -472,8 +496,323 @@ describe("recovery drafts", () => {
         expect(h.fake.texts("c", "k")).toEqual(["Other tab's A", "Recovered B", "C", "New message"]);
         expect(io.normal).toHaveBeenCalledWith(expect.stringContaining("missing-message"));
         expect(io.normal).toHaveBeenCalledWith(expect.stringContaining(language.recoveryDrafts.skipped));
+        expect(io.normal).toHaveBeenCalledWith(expect.stringContaining(language.recoveryDrafts.skippedKept));
+        const remaining = await journal.listDrafts();
+        expect(remaining).toHaveLength(1);
+        expect(remaining[0]).toMatchObject({
+            scope: "chat",
+            target: entry.target,
+            epoch: entry.epoch,
+            createdAt: entry.createdAt,
+            layers: { pending: { value: { ops: [{ op: ops[1] }] } } },
+        });
+        expect(remaining[0].id).not.toBe(entry.id);
+        expect(target.querySelectorAll("li")).toHaveLength(1);
+    });
+
+    it.each([
+        { op: "setText", id: "missing", text: "Unplaced text" },
+        { op: "setMessage", message: { chatId: "missing", role: "char", data: "Unplaced message" } },
+        { op: "patchMessage", id: "missing", set: { saying: "Unplaced speaker" } },
+        {
+            op: "setTranslation",
+            id: "missing",
+            translation: {
+                text: "번역",
+                sourceHash: translationSourceHash("Missing"),
+                targetLanguage: "ko",
+                translatedAt: 1,
+            },
+        },
+    ] satisfies ChatOp[])(
+        "keeps a missing $op target without retaining successful edits or snapshot state",
+        async (op) => {
+            const input = chatInput([
+                { op: "begin", id: "b", generationId: "old-generation" },
+                { op: "setText", id: "b", text: "Saved B" },
+                op,
+            ]);
+            input.createdAt = Date.now() - 60_000;
+            input.layers.pending!.createSnapshot = plain(h.fake.chat("c", "k")!.data);
+            const entry = await put(input);
+
+            expect(await recovery.applyRecoveryDraft(entry)).toEqual({ skipped: [`${op.op}: missing`], kept: true });
+            expect(h.fake.texts("c", "k")).toEqual(["A", "Saved B", "C"]);
+            await remainder(entry, [op]);
+        },
+    );
+
+    it.each([
+        { op: "patchMessage", id: "a", set: { saying: "Kept speaker" }, unset: ["saying"] },
+        {
+            op: "setTranslation",
+            id: "a",
+            translation: { text: "Kept translation", sourceHash: "", targetLanguage: "ko", translatedAt: 1 },
+        },
+    ] satisfies ChatOp[])("keeps a $op refused by the writer while saving independent edits", async (op) => {
+        const entry = await put(chatInput([op, { op: "setText", id: "b", text: "Saved B" }]));
+
+        expect(await recovery.applyRecoveryDraft(entry)).toEqual({ skipped: [`${op.op}: a`], kept: true });
+        expect(h.fake.chat("c", "k")!.data.message[0]).toEqual(m("a", "A", "char"));
+        expect(h.fake.texts("c", "k")).toEqual(["A", "Saved B", "C"]);
+        await remainder(entry, [op]);
+    });
+
+    it("keeps a translation whose source changed and can apply it once the source matches again", async () => {
+        const op = {
+            op: "setTranslation",
+            id: "a",
+            translation: {
+                text: "Recovered translation",
+                sourceHash: translationSourceHash("Earlier A"),
+                targetLanguage: "ko",
+                translatedAt: 1,
+            },
+        } satisfies ChatOp;
+        const entry = await put(chatInput([op]));
+
+        expect(await recovery.applyRecoveryDraft(entry)).toEqual({ skipped: ["setTranslation: a"], kept: true });
+        expect(h.fake.chat("c", "k")!.data.message[0]).not.toHaveProperty("translation");
+        const kept = await remainder(entry, [op]);
+        h.chat.setMessageText(refK, "a", "Earlier A");
+        await h.sync.flushResources();
+        expect(await recovery.applyRecoveryDraft(kept)).toEqual({ skipped: [] });
+        expect(h.fake.chat("c", "k")!.data.message[0].translation).toEqual(op.translation);
         expect(await journal.listDrafts()).toEqual([]);
-        expect(target.querySelector("li")).toBeNull();
+    });
+
+    it.each(["c", "missing-anchor"])(
+        "keeps only conflicting or uninserted append rows in their original order after %s",
+        async (after) => {
+            const op = {
+                op: "append",
+                anchor: { after },
+                messages: [m("new-1", "First"), m("b", "Conflicting B"), m("a", "A", "char"), m("new-2", "Last")],
+            } satisfies ChatOp;
+            const entry = await put(chatInput([op]));
+
+            const result = await recovery.applyRecoveryDraft(entry);
+            expect(result.kept).toBe(true);
+            expect(result.skipped).toContain("append: b, a");
+            expect(h.fake.texts("c", "k")).toEqual(after === "c" ? ["A", "B", "C", "First", "Last"] : ["A", "B", "C"]);
+            const messages = after === "c" ? [op.messages[1]] : [op.messages[0], op.messages[1], op.messages[3]];
+            await remainder(entry, [{ ...op, messages }]);
+        },
+    );
+
+    it("excludes landed appends and deliberate skips from the retained content", async () => {
+        const missing = { op: "setText", id: "missing", text: "Keep only this" } satisfies ChatOp;
+        const entry = await put(
+            chatInput([
+                { op: "begin", id: "a", generationId: "old-generation" },
+                {
+                    op: "selectCandidate",
+                    messageId: "a",
+                    candidateId: "old-candidate",
+                    expect: { candidatesRevision: 0 },
+                },
+                { op: "create", chat: snapshot() },
+                { op: "replace", chat: snapshot() },
+                { op: "delete" },
+                { op: "remove", ids: ["already-removed"] },
+                { op: "append", anchor: { end: true }, messages: [m("a", "A", "char")] },
+                missing,
+            ]),
+        );
+
+        expect(await recovery.applyRecoveryDraft(entry)).toEqual({
+            skipped: [
+                "selectCandidate: a",
+                "create",
+                "replace",
+                "delete",
+                "remove: already-removed",
+                "append: a",
+                "setText: missing",
+            ],
+            kept: true,
+        });
+        expect(h.fake.texts("c", "k")).toEqual(["A", "B", "C"]);
+        expect(h.fake.batchCount()).toBe(0);
+        await remainder(entry, [missing]);
+    });
+
+    it("files refused metadata separately from HypaV3 memory and saves the other edits", async () => {
+        h.settings.ui.memoryAlgorithmType = "structuredMemory";
+        await h.sync.flushResources();
+        const hypaV3Data = { summaries: [{ text: "Recovered memory", chatMemos: ["a"], isImportant: false }] };
+        const entry = await put(
+            chatInput([
+                { op: "meta", set: { id: "cannot-change-id", note: "Recovered note", hypaV3Data } },
+                { op: "setText", id: "b", text: "Saved B" },
+            ]),
+        );
+
+        expect(await recovery.applyRecoveryDraft(entry)).toEqual({
+            skipped: ["meta: id, note"],
+            kept: true,
+            memoryKept: "filed",
+        });
+        expect(h.fake.chat("c", "k")!.data).toMatchObject({ id: "k", note: "" });
+        expect(h.fake.texts("c", "k")).toEqual(["A", "Saved B", "C"]);
+        expect(h.fake.chat("c", "k")!.data).not.toHaveProperty("hypaV3Data");
+        const rows = await journal.listDrafts();
+        expect(rows).toHaveLength(2);
+        for (const kept of rows) {
+            expect(kept.id).not.toBe(entry.id);
+            expect(kept).toMatchObject({ target: entry.target, epoch: entry.epoch, createdAt: entry.createdAt });
+        }
+        const payloads = rows.map((row) => {
+            if (row.scope !== "chat") throw new Error("Missing chat draft");
+            expect(Object.keys(row.layers)).toEqual(["pending"]);
+            expect(row.layers.pending!.value).not.toHaveProperty("createSnapshot");
+            return row.layers.pending!.value.ops;
+        });
+        const memoryOps = [{ op: { op: "meta", set: { hypaV3Data } } }];
+        expect(payloads).toEqual(
+            expect.arrayContaining([
+                memoryOps,
+                [{ op: { op: "meta", set: { id: "cannot-change-id", note: "Recovered note" }, unset: [] } }],
+            ]),
+        );
+        const memoryDraft = rows[payloads.findIndex((ops) => JSON.stringify(ops) === JSON.stringify(memoryOps))];
+        expect(recovery.recoveryDraftDetails(memoryDraft).canApply).toBe(true);
+        h.settings.ui.memoryAlgorithmType = "hypaMemoryV3";
+        expect(await recovery.applyRecoveryDraft(memoryDraft)).toEqual({ skipped: [] });
+        expect(h.fake.chat("c", "k")!.data.hypaV3Data).toEqual(hypaV3Data);
+        expect(await journal.listDrafts()).toHaveLength(1);
+    });
+
+    it.each([
+        { locale: "ko", notice: "건너뛴 내용은 복구 초안으로 보관했습니다. 내보내거나 다시 적용할 수 있습니다." },
+        { locale: "de", notice: "Skipped content was kept as a recovery draft. You can export it or apply it again." },
+    ])(
+        "exports and reapplies an ops-only remainder against its recreated chat ($locale)",
+        async ({ locale, notice }) => {
+            const lang = await import("src/lang");
+            lang.changeLanguage(locale);
+            language = lang.language;
+            const missing = { op: "setText", id: "missing", text: "Recovered missing reply" } satisfies ChatOp;
+            const input = chatInput(
+                [
+                    { op: "create", chat: snapshot() },
+                    { op: "begin", id: "snapshot-message", generationId: "old-generation" },
+                    { op: "setText", id: "snapshot-message", text: "Saved snapshot edit" },
+                    missing,
+                ],
+                "gone",
+            );
+            input.createdAt = Date.now() - 60_000;
+            const entry = await put(input);
+            await render();
+            const notified = deferred<void>();
+            io.normal.mockImplementationOnce(() => notified.resolve());
+            button(language.apply, row()).click();
+            await notified.promise;
+            await settle();
+
+            expect(io.normal).toHaveBeenCalledWith(expect.stringContaining(notice));
+            expect(h.fake.texts("c", entry.id)).toEqual(["Saved snapshot edit"]);
+            const kept = await remainder(entry, [missing], entry.id);
+            expect(recovery.recoveryDraftDetails(kept)).toMatchObject({ canApply: true, blocked: false });
+            expect(row().querySelector("time")!.getAttribute("datetime")).toBe(new Date(entry.createdAt).toISOString());
+            button(language.export, row()).click();
+            await settle();
+            expect(JSON.parse(io.download.mock.calls[0][1] as string).drafts).toEqual([{ ...kept, otherEpoch: false }]);
+            expect(await journal.listDrafts()).toEqual([kept]);
+
+            h.chat.appendMessage({ chaId: "c", chatId: entry.id }, m("missing", "Restored target"));
+            await h.sync.flushResources();
+            const reapplied = deferred<void>();
+            io.normal.mockImplementationOnce(() => reapplied.resolve());
+            button(language.apply, row()).click();
+            await reapplied.promise;
+            await settle();
+            expect(io.error).not.toHaveBeenCalled();
+            expect(h.fake.texts("c", entry.id)).toEqual(["Saved snapshot edit", "Recovered missing reply"]);
+            expect(h.fake.order("c")!.ids).toEqual(["k", "j", entry.id]);
+            expect(await journal.listDrafts()).toEqual([]);
+            expect(target.querySelector("li")).toBeNull();
+        },
+    );
+
+    it.each(["null", "throw"])("keeps the saved source and disables Apply when filing returns %s", async (outcome) => {
+        const entry = await put(
+            chatInput([
+                { op: "setText", id: "b", text: "Saved B" },
+                { op: "setText", id: "missing", text: "Unplaced" },
+            ]),
+        );
+        const filing = vi.spyOn(journal, "putDraft");
+        if (outcome === "null") filing.mockResolvedValueOnce(null);
+        else filing.mockRejectedValueOnce(new Error("IndexedDB unavailable"));
+        h.fake.holdNextBatchResponse = true;
+        const applying = recovery.applyRecoveryDraft(entry);
+        const result = expect(applying).rejects.toThrow(language.recoveryDrafts.appliedNotRemoved);
+        try {
+            await settle();
+            expect(h.fake.releaseBatchResponse).not.toBeNull();
+            expect(h.fake.texts("c", "k")).toEqual(["A", "Saved B", "C"]);
+            expect(filing).not.toHaveBeenCalled();
+            expect(await journal.listDrafts()).toMatchObject([{ id: entry.id, layers: entry.layers }]);
+        } finally {
+            h.fake.releaseBatchResponse?.();
+            await result;
+        }
+
+        expect(await journal.listDrafts()).toMatchObject([{ id: entry.id, layers: entry.layers }]);
+        expect(recovery.recoveryDraftDetails(entry)).toMatchObject({
+            canApply: false,
+            reason: language.recoveryDrafts.appliedNotRemoved,
+        });
+        await render();
+        expect([...row().querySelectorAll("button")].some((node) => node.textContent === language.apply)).toBe(false);
+        const batches = h.fake.batchCount();
+        await expect(recovery.applyRecoveryDraft(entry)).rejects.toThrow(language.recoveryDrafts.appliedNotRemoved);
+        expect(h.fake.batchCount()).toBe(batches);
+        button(language.export, row()).click();
+        await settle();
+        expect(JSON.parse(io.download.mock.calls[0][1] as string).drafts).toEqual([entry]);
+    });
+
+    it("keeps both the saved source and narrowed content when source deletion fails", async () => {
+        const missing = { op: "setText", id: "missing", text: "Unplaced" } satisfies ChatOp;
+        const entry = await put(chatInput([{ op: "setText", id: "b", text: "Saved B" }, missing]));
+        vi.spyOn(journal, "removeDraft").mockResolvedValueOnce(false);
+
+        await expect(recovery.applyRecoveryDraft(entry)).rejects.toThrow(language.recoveryDrafts.appliedNotRemoved);
+        expect(h.fake.texts("c", "k")).toEqual(["A", "Saved B", "C"]);
+        const rows = await journal.listDrafts();
+        expect(rows).toHaveLength(2);
+        expect(rows).toContainEqual(expect.objectContaining({ id: entry.id, layers: entry.layers }));
+        const kept = rows.find((row) => row.id !== entry.id)!;
+        expect(kept).toMatchObject({
+            target: entry.target,
+            createdAt: entry.createdAt,
+            layers: { pending: { value: { ops: [{ op: missing }] } } },
+        });
+        await drafts.recoveryDrafts.refresh();
+        expect(recovery.recoveryDraftDetails(entry)).toMatchObject({
+            canApply: false,
+            reason: language.recoveryDrafts.appliedNotRemoved,
+        });
+        expect(recovery.recoveryDraftDetails(kept).canApply).toBe(true);
+    });
+
+    it("retains the full source before filing when saving fails, then narrows it after a successful retry", async () => {
+        const missing = { op: "setText", id: "missing", text: "Unplaced" } satisfies ChatOp;
+        const entry = await put(chatInput([{ op: "setText", id: "b", text: "Saved B" }, missing]));
+        const filing = vi.spyOn(journal, "putDraft");
+        h.fake.failNext = { status: 503, times: 1, match: batchPath };
+
+        await expect(recovery.applyRecoveryDraft(entry)).rejects.toThrow("failed 503");
+        expect(h.fake.texts("c", "k")).toEqual(["A", "B", "C"]);
+        expect(await journal.listDrafts()).toMatchObject([{ id: entry.id, layers: entry.layers }]);
+        expect(filing).not.toHaveBeenCalled();
+        expect(recovery.recoveryDraftDetails(entry).canApply).toBe(true);
+        expect(await recovery.applyRecoveryDraft(entry)).toEqual({ skipped: ["setText: missing"], kept: true });
+        expect(h.fake.texts("c", "k")).toEqual(["A", "Saved B", "C"]);
+        await remainder(entry, [missing]);
     });
 
     it("replays recovered deletions without asking and preserves only a recorded retraction mark", async () => {
