@@ -1,7 +1,9 @@
 # Upstream Intake 2 Plan
 
-Status: drafted 2026-11-10 at `3cc8b2d56`, not started. This is the second upstream intake, run by the
-[ledger](../research/upstream-ledger.md)'s procedure over `f50b5942..4d87a70ff` (upstream release 2026.10.295):
+Status: drafted 2026-11-10 at `3cc8b2d56`; the owner accepted every decision's default and answered both open
+questions the same day (Decisions, Open Questions); not audited, not started. This is the second upstream
+intake, run by the [ledger](../research/upstream-ledger.md)'s procedure over `f50b5942..4d87a70ff` (upstream
+release 2026.10.295):
 53 non-merge commits and 13 merges. Nine read-only Luna workers compared the commits with Metatron by group; the
 session then re-read in source every claim a slice below rests on: the two bridge callback returns and the
 `Math.random` ref ids in `factory.ts`, the dropped `removedNodes` and the substring URL blocklist in `v3.svelte.ts`,
@@ -129,11 +131,13 @@ Depends: 3. Upstream `43e5576df`. Decision D1.
   loading and the plugin-install confirmation. A refusal warns and changes nothing (the guide's write rule).
 - Grants stay in Metatron's server-owned permission resource, keyed by script hash and permission. No record is
   written directly.
+- A `db` grant does not count as `dbWrite`: a plugin that already reads is asked again before its first write
+  (owner, 2026-11-10).
 - `plugins.md` and `risuai.d.ts`: the permission and the six gated calls. `plugin-sandbox.md`: `Invariants`, and
   drop the part of the Known Hazards capability entry this closes, if any.
 - Test, in `src/ts/plugins/apiV3/permissions.test.ts`: each of the six calls prompts once, writes after a grant,
   and writes nothing after a refusal; a transform continuation is refused before any prompt; a grant for one
-  script hash does not cover a changed script.
+  script hash does not cover a changed script; a plugin holding only `db` is still asked.
 
 ## Slice 5. The install confirmation names the plugin and says when it replaces one (_small_, `plugin-sandbox.md`)
 
@@ -241,11 +245,17 @@ Upstream `a0598d546`. Decision D2.
   these paths (upstream `9b1415461`, already covered) but not `mcp`.
 - Delete `mcp` at the file and link import boundaries only: `readModule` (~211), `importModuleFile` (~349) and
   the JSON branch of `importModule` (~564–623) in `src/ts/process/modules.ts`, and the `#import_module=` branch
-  of `characterURLImport` (~816) in `src/ts/characterCards.ts`. `importMCPModule` (`src/ts/process/mcp/mcp.ts`), `normalizeModule` and the stores
-  keep the field: MCP modules stay supported, they are just not importable from a file.
+  of `characterURLImport` (~816) in `src/ts/characterCards.ts`. `importMCPModule` (`src/ts/process/mcp/mcp.ts`),
+  `normalizeModule` and the stores keep the field: MCP modules stay supported, they are just not importable
+  from a file.
+- Say so (owner, 2026-11-10): when a module the user picked (a file, JSON, or a link) carried an `mcp` field, show
+  one toast (`alertToast`, `src/ts/alert.ts`) that its tool server was not imported; a new language key in
+  `src/lang/en.ts` and `src/lang/ko.ts`. No toast when the field was absent. `readModule` itself strips without
+  a message, since it also reads modules embedded in cards.
 - `characters-modules.md`: the import rule.
-- Test, in `src/ts/process/modulesImport.test.ts`: each of those paths yields a module without `mcp`;
-  `importMCPModule` still stores its URL.
+- Test, in `src/ts/process/modulesImport.test.ts`: each of those paths yields a module without `mcp`; the three
+  user-facing paths show the toast once when the field was present and nothing otherwise; `importMCPModule`
+  still stores its URL.
 
 ## Slice 13. `fetchNative` keeps the caller's abort after the headers arrive (_small_, `network-jobs.md`)
 
@@ -350,7 +360,7 @@ Totals: 21 gap (slices 1–13), 9 equivalent, 19 excluded, 4 deferred.
 
 ## Decisions
 
-The runner takes each default unless the owner overrides it.
+The owner accepted every default on 2026-11-10; the slices are written for them.
 
 - D1. Scope of `dbWrite`. Options: (a) the six calls upstream gates; (b) those plus Metatron's other record
   writers that pass `refuseTransformWrite` (`setArg`, `saveAsset`, the theme and color-scheme setters,
@@ -358,7 +368,8 @@ The runner takes each default unless the owner overrides it.
   written for upstream expect a prompt on exactly those calls. Every installed plugin that writes is asked once
   after this lands, and again after three days, like `db`.
 - D2. A module's `mcp` field on import. Options: (a) drop it on file and link imports, as upstream does; (b) keep
-  it behind a confirmation that shows the URL. Default (a); a user adds a tool server through the MCP import.
+  it behind a confirmation that shows the URL. Default (a), with a toast when a field was dropped; a user adds a
+  tool server through the MCP import.
 - D3. pnpm 11. Options: (a) defer with the trigger in the Inventory; (b) a tooling slice now (the workspace file,
   `allowBuilds`, the Dockerfile and CI pins, STRUCTURE.md Tooling). Default (a): the release-age policy is
   already set in `.npmrc`, and nothing else in Metatron needs 11. A later move must carry the `.npmrc` settings
@@ -386,8 +397,9 @@ The runner takes each default unless the owner overrides it.
 
 ## Open Questions
 
-- Slice 4 changes what installed plugins may do without asking. Is one prompt per writing plugin after the
-  update acceptable (D1 default), or should grants a plugin already holds for `db` carry over to `dbWrite`?
-  The plan does not carry them over: reading and writing are different consents.
-- Slice 12 drops `mcp` silently, as upstream does. Should the import say that a tool server was removed? The
-  plan adds no message.
+None open. The owner answered both on 2026-11-10; the slices carry the answers.
+
+- Slice 4: should a grant a plugin already holds for `db` carry over to `dbWrite`? No: reading and writing are
+  different consents, so each writing plugin is asked once after the update.
+- Slice 12: should the import say that a tool server was removed, where upstream drops `mcp` silently? Yes, with
+  a toast.
