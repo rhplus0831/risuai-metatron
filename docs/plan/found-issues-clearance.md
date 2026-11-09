@@ -1,6 +1,9 @@
 # Found Issues Clearance Plan
 
-Status: drafted 2026-11-09; the owner accepted every open question's recommendation the same day; no slice has landed. Source: every
+Status: drafted 2026-11-09; the owner accepted every open question's recommendation the same day; revised the same
+day after the plan-runner audit ([report](../plan-runner-audit/found-issues-clearance-2026-11-09.md)): its eight P1
+corrections and the P2 and P3 corrections are applied below, with the owner's two decisions (C4 adds the setting's
+control; F3's retention entry is Recorded). No slice has landed. Source: every
 entry of [found-issues](../research/found-issues.md) at `1e55709f9` (86 entries in nine sections), re-checked
 against that tree the same day by eleven read-only Luna workers whose file and line evidence the session
 spot-checked. The goal differs from the three sweeps before it: when the last slice lands, the inbox is empty.
@@ -48,25 +51,25 @@ sentence added to a guide near its ceiling is paid for with a trim in the same e
 The owner accepted every recommendation on 2026-11-09. Each gated slice carries the accepted answer only;
 no slice waits on a question. A Limitation H1 records for one of these carries that date.
 
-| Q   | Question                                                                                                                                                                                                                                                                                                            | Accepted answer                                                                                                                                                                                               |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Q1  | `svelte/store`'s module-level `subscriber_queue` is left mid-run when a subscriber throws; no known subscriber throws. Record it, or move `localSends` (`src/ts/process/localSends.ts`) off `svelte/store` onto `$state`?                                                                                           | Record (H1, `chat-pipeline.md`): latent, and a store change touches every consumer (UI, memory fences, translation, plugin idle tracking) for no reproduced defect.                                           |
-| Q2  | Tool schemas are not in the assembly token budget (`AssemblyHost` has no schema input; `body.tools` is added later). Charge a tokenizer estimate of the serialized descriptors in the final recheck, or record the gap?                                                                                             | Charge it (A4): a send near the budget that the provider refuses is a user-visible failure the meter contradicts. A4 measures first and keeps the charge an estimate.                                         |
-| Q3  | Lore regex keys with a comma are split on every comma, and a bound persona's embedded module resolves only when the module is installed; both pinned by tests and already in `chat-pipeline.md` and `characters-modules.md` Known Hazards. Keep them accepted (delete the inbox entry), or fix the comma split now? | Keep accepted; close the entry (H1). The fix changes activation parity with the browser path and upstream, and the owner tied it to the next lore rework.                                                     |
-| Q4  | The change log keeps 20,000 rows with no byte bound (82 MB in the 512-unit-id probe; a few MB with UUID ids). Record the worst case in `server-resources.md`, or add a byte bound or a VACUUM to `pruneChanges`?                                                                                                    | Record (H1), with the numbers: typical stores stay small, a byte bound costs a `SUM(length(id))` per prune, and `DELETE` never shrinks the file without a VACUUM that would stall every commit.               |
-| Q5  | A version-2 export streams a custom-key asset without the per-path `claimAssetKey` lock, so a custom-key rewrite during the export can pair the database copy with later bytes. Record it, or take the lock per custom-key file while it streams?                                                                   | Record (H1, `server-resources.md`): custom keys are mutable by contract and content-hash keys cannot change; holding the asset lock across a network stream would block the writer for the export's duration. |
-| Q6  | `requireObject` and `isPlainObject` accept a `Map`, a `Date`, or a class instance. Make both reject anything whose prototype is not `Object.prototype` or `null`, or reword the comment?                                                                                                                            | Make them strict (B4): no caller legitimately passes a non-plain object, arrays are already rejected, and a `Map` serializing as `{}` is a silent loss.                                                       |
-| Q7  | The `saveSignatures` setting does nothing on the typed path, the saved inlay holds response text instead of the provider token, and a signature-only part marks the wrong text. Fix all three so the setting works, or record that the setting is inert?                                                            | Fix all three together (C4): the setting exists in the UI and the former browser path honored it; fixing only the assignment would turn it into rejected requests.                                            |
-| Q8  | Both sockets log `proto=1` to the server console only; Diagnostics carries no protocol number. Add a diagnostics field and recorders now, or record it until a protocol floor is planned?                                                                                                                           | Record (H1, `diagnostics.md` and `live-update-feed.md`): no floor is planned, and a new event field changes the closed `DIAGNOSTIC_EVENT_KINDS` schema on both sides for a number nothing reads yet.          |
-| Q9  | `MAX_SNAPSHOT_BYTES` (8 MiB) was never re-measured after the shared display entries left the per-scope charge. If D2's measurement shows a realistic scope alone over the limit, may D2 raise the constant (to at most 16 MiB), or does it only record the numbers?                                                 | Allow the raise under that rule (D2), recorded with the measurement; a scope alone over the limit stays raw forever, which is worse than a larger snapshot.                                                   |
-| Q10 | A screenshot row over `MAX_EXPORT_PIXELS` gets its own page without reducing its area (a 300 MiB canvas at DPR 2). Scale such a row down to the area budget, or tile it across pages?                                                                                                                               | Scale it (E4): one page per row stays true, the output is a smaller image of the same row, and tiling needs a seam-free capture of one row at two offsets.                                                    |
-| Q11 | `getFileSrc` never rejects (its loader resolves `""`), so the render path's transient retry never fires. Add an opt-in rejecting read for the parser's asset and inlay passes, or record that failed asset reads are not retried?                                                                                   | Add the opt-in read (F1): the recovery path exists and is tested; it only lacks a signal. The shared loader keeps resolving `""` for every other caller.                                                      |
-| Q12 | The Web Push detail strings exist in `en` and `ko`; `de`, `es`, `vi`, `cn`, `zh-Hant` show English. Add translations, or record the English fallback once as the locale rule?                                                                                                                                       | Record once (H1, `settings-i18n.md`, if the DeepPartial fallback is not stated there yet): the other locales are partial by design and every feature since 2026-10 added `en` and `ko` only.                  |
-| Q13 | Of the request-history trade-offs, two are fixable: `LogField` always shows "copied" (it ignores `copyText`'s boolean), and the viewer maps the older-copies 500 by comparing the server's English message. Fix both (D3), or record them with the rest?                                                            | Fix both (D3): a `code` field on the 500 and a failure state in `LogField` are small; the delete ordering and the double-counted state write stay recorded.                                                   |
-| Q14 | `replacePlaceholders(msg, name)` never reads `name`. Use it (falling back to the selected character), or drop the parameter?                                                                                                                                                                                        | Use it (F5): both callers already pass a name, and a caller rendering another character then gets the right one.                                                                                              |
-| Q15 | Same-name plugins can share a popup editor target; `plugin-sandbox.md` Issues already states it (moved there 2026-11-07), and a real fix needs a plugin id in the persisted schema. Close the inbox copy, or key the editor context by a runtime identity now?                                                      | Close (H1): the guide carries it; an index key is not robust under a reorder, and a persisted id is a schema change for an unconfirmed browser sequence.                                                      |
-| Q16 | The heap D3 bullet (`Batch.previous` held by an `{#await}` closure, about 17 MB) names no identifier in the current source. Close it, or re-measure with `measureHeap.mjs`?                                                                                                                                         | Close (H1): the identifier is gone and the measurement predates the per-row effect roots; a re-measure belongs to the next heap plan if one comes.                                                            |
-| Q17 | A tab that leaves after a Realm prepare holds a staging slot for the 10-minute TTL, and a commit refused 409 or 503 is not retried. Add a best-effort `pagehide` cancel and a bounded retry for the busy and maintenance classes, or record both?                                                                   | Fix both (B5): the cancel is one keepalive request, the retry is bounded to the two refusal texts the server already classifies, and both stay compatible with the one-time token.                            |
+| Q   | Question                                                                                                                                                                                                                                                                                                            | Accepted answer                                                                                                                                                                                                                     |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Q1  | `svelte/store`'s module-level `subscriber_queue` is left mid-run when a subscriber throws; no known subscriber throws. Record it, or move `localSends` (`src/ts/process/localSends.ts`) off `svelte/store` onto `$state`?                                                                                           | Record (H1, `chat-pipeline.md`): latent, and a store change touches every consumer (UI, memory fences, translation, plugin idle tracking) for no reproduced defect.                                                                 |
+| Q2  | Tool schemas are not in the assembly token budget (`AssemblyHost` has no schema input; `body.tools` is added later). Charge a tokenizer estimate of the serialized descriptors in the final recheck, or record the gap?                                                                                             | Charge it (A4): a send near the budget that the provider refuses is a user-visible failure the meter contradicts. A4 measures first and keeps the charge an estimate.                                                               |
+| Q3  | Lore regex keys with a comma are split on every comma, and a bound persona's embedded module resolves only when the module is installed; both pinned by tests and already in `chat-pipeline.md` and `characters-modules.md` Known Hazards. Keep them accepted (delete the inbox entry), or fix the comma split now? | Keep accepted; close the entry (H1). The fix changes activation parity with the browser path and upstream, and the owner tied it to the next lore rework.                                                                           |
+| Q4  | The change log keeps 20,000 rows with no byte bound (82 MB in the 512-unit-id probe; a few MB with UUID ids). Record the worst case in `server-resources.md`, or add a byte bound or a VACUUM to `pruneChanges`?                                                                                                    | Record (H1), with the numbers: typical stores stay small, a byte bound costs a `SUM(length(id))` per prune, and `DELETE` never shrinks the file without a VACUUM that would stall every commit.                                     |
+| Q5  | A version-2 export streams a custom-key asset without the per-path `claimAssetKey` lock, so a custom-key rewrite during the export can pair the database copy with later bytes. Record it, or take the lock per custom-key file while it streams?                                                                   | Record (H1, `server-resources.md`): custom keys are mutable by contract and content-hash keys cannot change; holding the asset lock across a network stream would block the writer for the export's duration.                       |
+| Q6  | `requireObject` and `isPlainObject` accept a `Map`, a `Date`, or a class instance. Make both reject anything whose prototype is not `Object.prototype` or `null`, or reword the comment?                                                                                                                            | Make them strict (B4): no caller legitimately passes a non-plain object, arrays are already rejected, and a `Map` serializing as `{}` is a silent loss.                                                                             |
+| Q7  | The `saveSignatures` setting does nothing on the typed path, the saved inlay holds response text instead of the provider token, and a signature-only part marks the wrong text. Fix all three so the setting works, or record that the setting is inert?                                                            | Fix all three together (C4) and give the setting the control it lacks: the schema persists it and the former browser path honored it, but no UI binds it (AUD-12); fixing only the assignment would turn it into rejected requests. |
+| Q8  | Both sockets log `proto=1` to the server console only; Diagnostics carries no protocol number. Add a diagnostics field and recorders now, or record it until a protocol floor is planned?                                                                                                                           | Record (H1, `diagnostics.md` and `live-update-feed.md`): no floor is planned, and a new event field changes the closed `DIAGNOSTIC_EVENT_KINDS` schema on both sides for a number nothing reads yet.                                |
+| Q9  | `MAX_SNAPSHOT_BYTES` (8 MiB) was never re-measured after the shared display entries left the per-scope charge. If D2's measurement shows a realistic scope alone over the limit, may D2 raise the constant (to at most 16 MiB), or does it only record the numbers?                                                 | Allow the raise under that rule (D2), recorded with the measurement; a scope alone over the limit stays raw forever, which is worse than a larger snapshot.                                                                         |
+| Q10 | A screenshot row over `MAX_EXPORT_PIXELS` gets its own page without reducing its area (a 300 MiB canvas at DPR 2). Scale such a row down to the area budget, or tile it across pages?                                                                                                                               | Scale it (E4): one page per row stays true, the output is a smaller image of the same row, and tiling needs a seam-free capture of one row at two offsets.                                                                          |
+| Q11 | `getFileSrc` never rejects (its loader resolves `""`), so the render path's transient retry never fires. Add an opt-in rejecting read for the parser's asset and inlay passes, or record that failed asset reads are not retried?                                                                                   | Add the opt-in read (F1): the recovery path exists and is tested; it only lacks a signal. The shared loader keeps resolving `""` for every other caller.                                                                            |
+| Q12 | The Web Push detail strings exist in `en` and `ko`; `de`, `es`, `vi`, `cn`, `zh-Hant` show English. Add translations, or record the English fallback once as the locale rule?                                                                                                                                       | Record once (H1, `settings-i18n.md`, if the DeepPartial fallback is not stated there yet): the other locales are partial by design and every feature since 2026-10 added `en` and `ko` only.                                        |
+| Q13 | Of the request-history trade-offs, two are fixable: `LogField` always shows "copied" (it ignores `copyText`'s boolean), and the viewer maps the older-copies 500 by comparing the server's English message. Fix both (D3), or record them with the rest?                                                            | Fix both (D3): a `code` field on the 500 and a failure state in `LogField` are small; the delete ordering and the double-counted state write stay recorded.                                                                         |
+| Q14 | `replacePlaceholders(msg, name)` never reads `name`. Use it (falling back to the selected character), or drop the parameter?                                                                                                                                                                                        | Use it (F5): both callers already pass a name, and a caller rendering another character then gets the right one.                                                                                                                    |
+| Q15 | Same-name plugins can share a popup editor target; `plugin-sandbox.md` Issues already states it (moved there 2026-11-07), and a real fix needs a plugin id in the persisted schema. Close the inbox copy, or key the editor context by a runtime identity now?                                                      | Close (H1): the guide carries it; an index key is not robust under a reorder, and a persisted id is a schema change for an unconfirmed browser sequence.                                                                            |
+| Q16 | The heap D3 bullet (`Batch.previous` held by an `{#await}` closure, about 17 MB) names no identifier in the current source. Close it, or re-measure with `measureHeap.mjs`?                                                                                                                                         | Close (H1): the identifier is gone and the measurement predates the per-row effect roots; a re-measure belongs to the next heap plan if one comes.                                                                                  |
+| Q17 | A tab that leaves after a Realm prepare holds a staging slot for the 10-minute TTL, and a commit refused 409 or 503 is not retried. Add a best-effort `pagehide` cancel and a bounded retry for the busy and maintenance classes, or record both?                                                                   | Fix both (B5): the cancel is one keepalive request, the retry is bounded to the two refusal texts the server already classifies, and both stay compatible with the one-time token.                                                  |
 
 ## Index
 
@@ -134,7 +137,7 @@ Every entry of `found-issues.md`, by its section and heading there, with its dis
 |                                    | #import_preset opens the settings after a refusal                         | F3                                                                                      |
 |                                    | A stray }} ends CBS highlighting                                          | F4                                                                                      |
 |                                    | Inlay explorer hard-codes two strings                                     | F4                                                                                      |
-|                                    | JSON and V3 card imports keep base64 text until the save ends             | F3                                                                                      |
+|                                    | JSON and V3 card imports keep base64 text until the save ends             | Recorded (`assets.md`): H1 (AUD-5, 2026-11-09)                                          |
 |                                    | Bulk plugin character adds stay quadratic                                 | F7                                                                                      |
 |                                    | A memory algorithm switch during a detached read omits its projection     | F7                                                                                      |
 |                                    | The sandbox bridge drops an own `__proto__` key                           | F8                                                                                      |
@@ -167,23 +170,37 @@ Every slice is independent of the others' code unless listed here.
 
 - **Shared source files.** C1 and C4 both touch `server/src/llm/google.ts` only if C1 takes the `formated[0]`
   guard there; it does not: the Google read is C4's. B5 and F3 both edit `src/ts/characterCards.ts` (the Realm
-  commit path and the import paths): B5 first, F3 rebases. F2, F7 and F8 all edit
+  commit path and the preset hash branch): B5 first, F3 rebases. F2, F7 and F8 all edit
   `src/ts/plugins/apiV3/v3.svelte.ts` in different regions (`setColorScheme` and `applyPluginKey`;
   `applyPluginCharacters`, the chat index accessors and the detached read; `executePluginV3`): serial, in that
   order, each rebasing. F1 and F9 both touch the parser's asset passes (`src/ts/parser/parser.svelte.ts`: F1 the
-  read call, F9 the cache): F1 first. E3 lands before E4 (E4 measures with the fixture E3 extends). G4 edits test
-  files only, none that another slice's _Test_ names, except `server/src/tests/transform.test.ts`, which D2 reads
-  but does not edit.
-- **Guides.** A1, A2, A4 and H1 edit `server-generation.md`; C1 to C6 and H1 edit `llm-requests.md` (each a
-  hazard removal or a header sentence; C4 adds the signature flow); D1 and H1 edit `translation.md`; E1 to E4, F2 and
-  H1 edit `ui-theming.md`; F1, F3, F9 and H1 edit `assets.md`; F7, F8 and H1 edit `plugin-sandbox.md`; B2, B3, B5
-  and H1 edit `backup-sync-hub.md`: H1 runs last and rebases onto what landed; the others rebase. Every guide stays
-  under the 40,000-byte ceiling (`pnpm check:docs`); `llm-requests.md`, `cbs-rendering.md`, `ui-theming.md`,
-  `diagnostics.md` and `assets.md` take the most new sentences and may need a trim each.
+  read call and the cache invalidation, F9 the cache bound): F1 first. E3 lands before E4 (E4 measures with the
+  fixture E3 extends). G4 edits test files only; the ones another slice's _Test_ names are in the groups below.
+  Further groups the 2026-11-09 audit found (AUD-29), each run serially in slice order with the later slice
+  rebasing; a test file a slice only runs does not count: A1 and A4 (`server/src/prompt/assemble.ts`,
+  `server/src/tests/assemble.test.ts`); A1 and A2 (`server/src/tests/triggerRuntime.test.ts`); A2 and E1
+  (`server/src/prompt/commands.ts`); A3 and G4 (`server/src/tests/hypaV3Parts.test.ts`); A4 and A5
+  (`shared/contextReport.ts`); A4 and C4 (`server/src/tests/llmRequests.test.ts`); A4, C4 and F4 (`src/lang/en.ts`
+  and `ko.ts`); B2 and B3 (`server/src/tests/upstreamImportCharacters.test.ts`); B6 and F7
+  (`src/ts/storage/records.svelte.ts`); C1 and C4 (`server/src/llm/request.ts`); C3 and C5
+  (`server/src/llm/openAI/requests.ts`); C1 to C6, every pair (`server/src/tests/llmProviderAdapters.test.ts`);
+  C4 and C5 (`server/src/tests/llmStreamParsing.test.ts`); A1 and G4 (`server/src/tests/transform.test.ts`); D2
+  and G4 (`server/src/tests/transformService.test.ts`, and `server/src/prompt/transform.ts` if D2 raises the
+  limit).
+- **Guides.** A1, A2, A4, D2 and H1 edit `server-generation.md`; A1, A3 and H1 edit `memory.md`; A2, E1 and H1
+  edit `chat-pipeline.md`; A4, C1 to C6 and H1 edit `llm-requests.md` (each a hazard removal or a header sentence;
+  C4 adds the signature flow); D1 and H1 edit `translation.md`; E2 to E4, F2 and H1 edit `ui-theming.md`; D2, F4,
+  F9 and H1 edit `cbs-rendering.md`; F1, F9 and H1 edit `assets.md`; A5, F1 and F5 edit `global-api.md`; B1 and
+  F10 edit `self-host-server.md`; B4, B6 and F7 edit `persistence.md`; B6, F7, F8 and H1 edit `plugin-sandbox.md`;
+  B2, B3 and B5 edit `backup-sync-hub.md`; C4, F4, F6 and H1 edit `settings-i18n.md`; G1 and G2 edit
+  `build-test-platforms.md`; G2, G3 and G4 edit `test-harness.md`: H1 runs last and rebases onto what landed; the
+  others rebase in slice order. Every guide stays under the 40,000-byte ceiling (`pnpm check:docs`);
+  `llm-requests.md`, `cbs-rendering.md`, `ui-theming.md`, `diagnostics.md` and `assets.md` take the most new
+  sentences and may need a trim each.
 - **Questions.** None open: every slice carries the accepted answer from the table above. A slice that finds
   its decision does not fit the code stops with `QUESTION` instead of choosing.
-- **Sessions.** A2, A4, C4, C5, D1, E4, F1, F3, F7 and G4 are _hard_; every other slice is _small_. Three
-  sessions at a time is the runner's default; H1 waits for every other slice.
+- **Sessions.** A2, A4, C4, C5, D1, E4, F1, F7 and G4 are _hard_; every other slice is _small_. Three sessions
+  at a time is this plan's choice (the runner has no default); H1 waits for every other slice.
 
 ## Slices
 
@@ -209,8 +226,10 @@ Every slice is independent of the others' code unless listed here.
   `server/src/prompt/commands.ts` `comment`, `cut`, `del` (~218–262) resolve indexes and "the last message"
   against the stored chat handed to `services.writeChat`; during reroll assembly the Lua getters and setters address
   the history view (`scopeHistoryMessages`, `server/src/jobs/jobScope.ts` ~474–496, `server/src/lua/bindings.ts`
-  ~1329–1381) with the carrier hidden. Resolve the three commands through the same history-view helper: the index
-  and "last" map to stored positions through the view, the hidden carrier is never "last", and a `/cut` on the view
+  ~1329–1381) with the carrier hidden. Resolve the three commands through the same history view, reached by a new
+  `CommandHost` callback (`server/src/prompt/commands.ts` ~7; the host carries no scope and no history accessor
+  today) that `server/src/jobs/runSetup.ts` (~422, where the host is built) wires to
+  `scopeHistoryMessages(scope, chat)`: the index and "last" map to stored positions through the view, the hidden carrier is never "last", and a `/cut` on the view
   removes the message the script read. Keep the carrier lock, the stored-write revision fence, and the insertion
   anchors.
   _Done_: with `scope.rerollHistoryMessageId` set, a trigger's `/cut 2` and a Lua `getChat(2)` name the same
@@ -221,27 +240,36 @@ Every slice is independent of the others' code unless listed here.
   _Removes_: Slash commands address stored positions during a reroll.
 
 - **A3. HypaV3 chunk vectors by map** (_small_, `memory.md`). `server/src/prompt/memory/hypav3.ts`
-  `addSummaryChunks` (~2672–2695): after `addText`, build one `Map` from content to a queue of vectors and take the
-  next vector per chunk, so duplicate chunk texts keep their first-match order and N chunks cost N; the contextual
-  path (~2697–2784) is unchanged.
-  _Done_: 2,000 chunks run in linear time; two identical chunk texts map to two vectors in order.
-  _Test_: `server/src/tests/hypaV3Parts.test.ts` (duplicate texts; a count of comparisons or a time bound).
+  `addSummaryChunks` (~2672–2695): after `addText`, build one `Map` from content to the first vector carrying it and
+  look each chunk up, so duplicate chunk texts share their first match as the scan does and N chunks cost N. Not a
+  queue consumed per chunk: `addText` admits a cached or already-loaded text once (`server/src/prompt/embeddings.ts`
+  ~632), so two equal chunks can own one vector and a queue would run dry on the second. The contextual path
+  (~2697–2784) is unchanged.
+  _Done_: 2,000 chunks run in linear time; two identical chunk texts, one already cached, share one vector and
+  throw nothing.
+  _Test_: `server/src/tests/hypaV3Parts.test.ts` (warm duplicates; a text admitted by an earlier call; a count of
+  comparisons or a time bound).
   _Removes_: HypaV3 summary chunks find their vectors by scan.
 
 - **A4. Tool schemas in the token budget** (_hard_, `server-generation.md` with `llm-requests.md`; Q2).
   Measure first: serialize a realistic tool set (the MCP descriptors a chat with two servers offers, from the
   fixtures in `server/src/tests/mcp.test.ts`) and count it with the resolved tokenizer
-  (`server/src/prompt/tokens.ts` `encode`) for two models; record the counts in the commit message. Then
-  `server/src/prompt/assemble.ts` `AssemblyHost` (~138–200) gains an optional `toolSchemaTokens` input that the
-  final recheck (~2503–2543) subtracts from the room, and `server/src/llm/requests.ts` (~628–693, where the
-  descriptors are tokenized for bias strings) supplies the estimate from the descriptors it will send; the estimate
-  counts the provider body form once (`server/src/llm/openAI/requests.ts` ~534–545), not per follow-up round. Keep
+  (`server/src/prompt/tokens.ts` `encode`) for two models; record the counts in the commit message. Then the tool
+  set moves ahead of assembly: today the runner awaits `assemblePrompt` (`server/src/prompt/runner.ts` ~1621) before
+  it calls `services.request` (~1785), and the descriptors are listed only inside that request
+  (`server/src/lua/bindings.ts` ~943, `jobTools.list(ctx)` once per request). The runner obtains that one listing
+  before assembly, estimates its resolved provider body form once (`server/src/llm/openAI/requests.ts` ~534–545,
+  not per follow-up round) with the runner's tokenizer, passes the estimate to `server/src/prompt/assemble.ts`
+  `AssemblyHost` (~138–200) as an optional `toolSchemaTokens` input that the final recheck (~2503–2543) subtracts
+  from the room, and hands the same set to the request, which sends it instead of listing again. Keep
   `maxContext - maxResponse` and the ledger shape; the meter (`shared/contextReport.ts`) shows the charge as its own
-  row.
-  _Done_: with tools offered, the recheck trims so that messages plus schemas fit; without tools nothing changes;
-  the context meter names the schema charge.
-  _Test_: `server/src/tests/assemble.test.ts` (the host input shrinks the room), `server/src/tests/llmRequests.test.ts`
-  (the estimate reaches the host), `server/src/tests/contextReport.test.ts` or the meter test (the row).
+  row. Two commits are allowed: the host input with its meter row, then the runner and bindings wiring.
+  _Done_: with tools offered, the recheck trims so that messages plus schemas fit and the request sends exactly the
+  set that was estimated; without tools nothing changes; the context meter names the schema charge.
+  _Test_: `server/src/tests/assemble.test.ts` (the host input shrinks the room), `server/src/tests/promptRunner.test.ts`
+  (a job offering two tools assembles under the trimmed room and the request receives the listed set),
+  `server/src/tests/llmRequests.test.ts` (the request reuses the set it is given), `server/src/tests/contextReport.test.ts`
+  or the meter test (the row).
   _Removes_: Tool schemas are outside the assembly token budget.
 
 - **A5. Feed row base hash and the cyrb53 copies** (_small_, `live-update-feed.md` with `global-api.md`).
@@ -319,7 +347,10 @@ Every slice is independent of the others' code unless listed here.
 
 - **B5. Realm staging cancel and retry** (_small_, `backup-sync-hub.md`; Q17). `src/ts/characterCards.ts` and
   `src/ts/storage/realmImportClient.ts`: a `pagehide` listener registered while a prepare is staged sends the
-  cancel with `keepalive` (best effort); `commitRealmCard` (~2391–2402) retries once after a short wait when the
+  cancel the way the unload transport in `src/ts/storage/resourceClient.ts` (~461) does: the authentication token
+  is prepared ahead and the request is a direct `keepalive` fetch, because `cancelRealmImport` (~50) goes through
+  `authFetch`, which awaits authentication and signing (`src/ts/storage/serverAuth.ts` ~196) that `pagehide`
+  cannot wait for; the TTL stays the fallback (best effort); `commitRealmCard` (~2391–2402) retries once after a short wait when the
   server's refusal text is the busy or maintenance class (`server/src/tests/importRealm.test.ts` names both), and
   cancels as today otherwise. Record in `backup-sync-hub.md` Limitations (adding the heading), with the date: the
   legacy JSON hub resources are fetched by the tab, `readModule` stores a CharX module's assets in the tab, and
@@ -346,10 +377,11 @@ Every slice is independent of the others' code unless listed here.
   `stringlizeAINChat` (~152) and the tab copy `src/ts/process/stringlize.ts` (~159): drop the stray unary `+`, or
   delete the tab export (no non-test importer; `unstringlizeChat` is the only import from that file). `reformater`
   in `server/src/llm/request.ts` (~282) and `src/ts/process/request/request.ts` (~573): guard `formated.length` in
-  the `hasFirstSystemPrompt` loop so an empty or all-system prompt returns a normal failure. `server/src/prompt/tokens.ts`
+  the `hasFirstSystemPrompt` loop so an empty or all-system prompt throws no `TypeError`: `reformater` then
+  restores the collected system prompt (~351) and the adapter handles the request as it does any other. `server/src/prompt/tokens.ts`
   `countWithGoogle` (~175): key the cache and the in-flight map by a serialized tuple of text and model id.
-  _Done_: a non-continued AIN prompt ends in `\n\n<char> 「`; an all-system prompt fails with a message, not a
-  TypeError; `ab`+`c` and `a`+`bc` count separately.
+  _Done_: a non-continued AIN prompt ends in `\n\n<char> 「`; an all-system prompt reaches the adapter with its system
+  prompt restored and no TypeError; `ab`+`c` and `a`+`bc` count separately.
   _Test_: `server/src/tests/llmLegacyFormats.test.ts` (the tail), `server/src/tests/llmProviderAdapters.test.ts`
   (empty and all-system input on the server reformater), a tab request test under
   `src/ts/process/request/tests/` (the tab copy), `server/src/tests/tokens.test.ts` (the collision pair).
@@ -376,18 +408,30 @@ Every slice is independent of the others' code unless listed here.
   _Removes_: OpenRouter free-model discovery ignores the bound key; An empty OpenRouter free list throws a
   TypeError.
 
-- **C4. Google thought signatures** (_hard_, `llm-requests.md`; Q7). `server/src/llm/request.ts` (~508–515):
-  set `targ.saveSignatures` from the request-local `db.saveSignatures` (never from a client field; the allowlist in
-  `server/src/routes/llm.ts` ~54–61 is unchanged). `server/src/llm/google.ts`: the buffered save (~684–695) and
-  the streaming saves (~989–1001) store the provider's signature token in `signatures[].content`, which replay
-  (~113–120) already reads; a signature-only buffered part (~696) keeps its marker on a text part of its own or is
-  skipped when none exists; the `formated[0]` read (~77) is guarded for an empty prompt. The live streaming tool
-  follow-up (~1077–1131) keeps its raw tokens as today. Add the signature flow to the guide's `Flows`.
-  _Done_: with the setting on, a Gemini thinking reply stores a token the next request replays and the provider
-  accepts; with it off nothing is stored; a signature-only part throws nothing and marks nothing unrelated.
+- **C4. Google thought signatures** (_hard_, `llm-requests.md` with `settings-i18n.md`; Q7).
+  `server/src/llm/request.ts` (~508–515): set `targ.saveSignatures` from the request-local `db.saveSignatures`
+  (never from a client field; the allowlist in `server/src/routes/llm.ts` ~54–61 is unchanged).
+  `server/src/llm/google.ts`: the buffered save (~684–695) and the streaming saves (~989–1001) store the provider's
+  `thoughtSignature` token in `signatures[].content`; replay (~113–120) parses the inlay's raw JSON text, which is
+  what both stores hold (`src/ts/process/files/inlays.ts` ~477 writes `JSON.stringify(signature)`,
+  `server/src/lua/bindings.ts` ~846 returns `meta.text` unchanged, and `server/src/prompt/assemble.ts` ~1794 passes
+  it on as `multimodals[].base64`), so the `Buffer.from(…, "base64")` step is the mismatch and goes; a stored value
+  that does not parse skips the part instead of failing the request; a signature-only buffered part (~696) keeps
+  its marker on a text part of its own or is skipped when none exists; the `formated[0]` read (~77) is guarded for
+  an empty prompt. The live streaming tool follow-up (~1077–1131) keeps its raw tokens as today. The setting gets
+  its control: a `Check` bound to `settings.providers.saveSignatures` in `src/lib/Setting/Pages/ModelSettings.svelte`
+  (~63–70, beside `streamGeminiThoughts`, shown for a model with the `geminiThinking` flag) with a
+  `language.modelProfiles` key in `src/lang/en.ts` (~1216) and `ko.ts` (~1150). Add the signature flow to the
+  guide's `Flows`.
+  _Done_: with the setting on, a Gemini thinking reply stores the token and the next request's body carries it as
+  `thoughtSignature`; with it off nothing is stored and nothing is replayed; a signature-only part throws nothing
+  and marks nothing unrelated; the control appears for a Gemini thinking model. Whether the provider accepts the
+  replayed token is on the Owner checklist.
   _Test_: `server/src/tests/llmProviderAdapters.test.ts` (the typed path saves; the stored content is the token;
-  the signature-only part), `server/src/tests/llmStreamParsing.test.ts` (the streaming saves store the token; the
-  follow-up is unchanged), `server/src/tests/llmRequests.test.ts` (the setting reaches the adapter).
+  the signature-only part; the replayed body after a save-then-load through assembly),
+  `server/src/tests/llmStreamParsing.test.ts` (the streaming saves store the token; the follow-up is unchanged),
+  `server/src/tests/llmRequests.test.ts` (the setting reaches the adapter), a `ModelSettings` test beside the
+  component (the control and its binding).
   _Removes_: Google thought signatures are never saved on the typed path; Saved Google signatures replay the wrong
   content; A signature-only Google part marks the wrong text.
 
@@ -396,9 +440,10 @@ Every slice is independent of the others' code unless listed here.
   instead of rebuilding `{ 0: ... }`; `getTranStream` (~1099–1128) turns a JSON event carrying `error` and no
   `choices` into a stream failure with the provider's message, in both parser instances (the initial stream and the
   tool follow-up ~1310–1347); the `Content-Type` reads (~681–686, ~1321–1328) default a missing header to `""` so
-  the unsupported-response path returns the body. Update the module header's two stated behaviors.
+  the initial response's unsupported-response path returns the body (~681) and the tool follow-up (~1321) fails the
+  stream with the body text instead of a generic alert and a retry. Update the module header's two stated behaviors.
   _Done_: a streamed `n: 3` request yields three candidates; a mid-stream `error` event fails the request with its
-  message; a 200 without `Content-Type` fails with the body text.
+  message; a 200 without `Content-Type` fails with the body text, on the initial response and on the tool follow-up.
   _Test_: `server/src/tests/llmStreamParsing.test.ts` (three choices through the wrapper; an error-only event),
   `server/src/tests/llmProviderAdapters.test.ts` (no header), `src/ts/process/request/tests/transport.test.ts`
   (the tab receives every key, unchanged).
@@ -433,9 +478,12 @@ Every slice is independent of the others' code unless listed here.
   the status; A provider switch during a translation caches a mixed result; The MessageTranslation sourceHash comment
   names the wrong text.
 
-- **D2. Transform snapshot measurement** (_small_, `cbs-rendering.md` with `server-generation.md`; Q9). Run
-  `util/playwright/measureTransformLua.mjs` on a 2,000-message chat of about 6 MiB with a display handler (the
-  shape the Display Evaluation run used) and record, per scope, the snapshot charge after the shared-entry exclusion
+- **D2. Transform snapshot measurement** (_small_, `cbs-rendering.md` with `server-generation.md`; Q9). Extend
+  `util/playwright/measureTransformLua.mjs` first: its fixture is fixed at 200 messages (~31) and it sends no
+  `handlers` (~177), while snapshots are charged only when `handlers` is present (`server/src/prompt/transform.ts`
+  ~824); give it a message-count option, a display handler, and the continuation path, and print the scope and
+  target charges. Then run it on a 2,000-message chat of about 6 MiB with that handler (the shape the Display
+  Evaluation run used) and record, per scope, the snapshot charge after the shared-entry exclusion
   (`server/src/prompt/transform.ts` ~824–851) and how many targets of a 64-target chunk fit under
   `MAX_SNAPSHOT_BYTES` (~51–54), in `docs/audit/transform-snapshot-2026-11.md` (dated to the run). Rule: if a
   realistic scope alone passes the limit, raise the constant to the smallest power of two that admits it, at most 16
@@ -447,11 +495,15 @@ Every slice is independent of the others' code unless listed here.
 
 - **D3. Request history viewer and share robustness** (_small_, `diagnostics.md`; Q13).
   `src/lib/Others/RequestLogs/LogField.svelte` (~29–35): show a failure state when `copyText` returns false.
-  `server/src/routes/requestHistory.ts` (~189–205): the older-copies refusal carries a stable `code`, and
-  `src/lib/Others/RequestLogs/ServerRequestHistory.svelte` (~119–127) maps by that code, not the English message.
+  the older-copies refusal starts in `server/src/diagnostics/share.ts` (~125): its outcome type carries a stable
+  `code` that `server/src/routes/requestHistory.ts` (~171) forwards on the 500 body; the client transport
+  `src/ts/network/requestHistory.ts` (~41), which keeps only the status and the error text today, puts the code on
+  `RequestHistoryError`; `src/lib/Others/RequestLogs/ServerRequestHistory.svelte` (~119–127) maps by that code, not
+  the English message.
   _Done_: a failed copy says so; the older-copies refusal is localized through its code.
   _Test_: a `LogField` test beside the component (both branches), `src/lib/Others/RequestLogs/ServerRequestHistory.test.ts`
-  (the code mapping), `server/src/tests/requestHistoryRoutes.test.ts` (the code on the response).
+  (the code mapping), a test of `src/ts/network/requestHistory.ts` (the code survives the client parse),
+  `server/src/tests/requestHistoryRoutes.test.ts` (the code on the response).
   _Removes_: the Viewer `copyText` bullet and the older-copy mapping bullet of Request history accepted trade-offs
   (the entry itself leaves with H1).
 
@@ -496,16 +548,18 @@ Every slice is independent of the others' code unless listed here.
   `@import`).
   _Removes_: Repeated screenshot exports grow the live stylesheet.
 
-- **E4. Screenshot memory** (_hard_, `ui-theming.md`; Q10; after E3). Investigate first with
-  `util/playwright/measureRenderWork.mjs` on the 150-row fixture: a heap snapshot and the renderer's `VmHWM` after
-  each page, to name what grows with rows (the per-row captures under `src/lib/ChatScreens/`, the
+- **E4. Screenshot memory** (_hard_, `ui-theming.md`; Q10; after E3). Investigate first: extend
+  `util/playwright/measureRenderWork.mjs` (~577 samples once around the whole export and reads the heap after it)
+  to sample the renderer's `VmHWM` after each page and take a heap snapshot after the export, then run it on the
+  150-row fixture to name what grows with rows (the per-row captures under `src/lib/ChatScreens/`, the
   DOM-to-canvas clones, the page canvases); record in `docs/audit/screenshot-memory-2026-11.md`. Then release that
   per page in `src/lib/ChatScreens/screenshotExport.ts` and `DefaultChatScreen.svelte` (~983–1019), and in the
   planner (~79–96) scale a row over `MAX_EXPORT_PIXELS` to the area budget with the same scale in planning and
   capture (Q10). Rule: the peak after the change is under one page plus the largest row, or the audit says by how
   much it misses and why.
-  _Done_: the 600-row export's `VmHWM` rise is bounded by one page plus one row; a 2,400 × 8,192 CSS-pixel row at
-  DPR 2 exports as one page under the pixel budget.
+  _Done_: the 600-row export's `VmHWM` rise is bounded by one page plus one row, or the audit file states the
+  measured miss and its cause (that completes the slice too); a 2,400 × 8,192 CSS-pixel row at DPR 2 exports as
+  one page under the pixel budget.
   _Test_: `src/lib/ChatScreens/screenshotExport.test.ts` (the oversized row is scaled; per-page release), the
   driver run recorded in the commit message.
   _Removes_: The screenshot peak grows with the row count.
@@ -514,16 +568,24 @@ Every slice is independent of the others' code unless listed here.
 
 - **F1. File sources and the appendable buffer** (_hard_, `assets.md` with `global-api.md`; Q11).
   `src/ts/globalApi.svelte.ts`: `loadFileSrc` (~368–420) returns a `/sw/img` URL only while
-  `navigator.serviceWorker.controller` is set, else takes the `blob:` fallback; a new opt-in read (an option on
-  `getFileSrc`, or a sibling `getFileSrcOrFail`) rejects on a read failure while the shared loader keeps resolving
-  `""`, and the parser's asset and inlay passes (`src/ts/parser/parser.svelte.ts` ~681–770, ~934–942, through
-  `readRenderIO`) use it so a transient failure is retried by `displayTransformRecovery`; `AppendableBuffer.append`
+  `navigator.serviceWorker.controller` is set, else takes the `blob:` fallback, and a `controllerchange` that leaves
+  the controller null (the listener in `src/ts/bootstrap.ts` ~371–380) clears `knownSwPaths` and the `fileSources`
+  map (~316, which returns a cached promise without calling the loader) and, through an exported invalidation, the
+  parser's `fileSrcCache` (`src/ts/parser/parser.svelte.ts` ~482), so the next read takes the `blob:` path; a
+  controller that appears mid-page needs no invalidation, since the `blob:` URLs made before it stay valid. A new
+  opt-in read (an option on `getFileSrc`, or a sibling `getFileSrcOrFail`) rejects on a read failure while the
+  shared loader keeps resolving `""`, and the parser's asset and inlay passes (`src/ts/parser/parser.svelte.ts`
+  ~681–770, ~934–942, through `readRenderIO`) use it so a transient failure takes the parser's local retries
+  (`src/lib/ChatScreens/ChatBody.svelte` ~454: 250 ms, then 1 s; the five-second `displayTransformRecovery` rounds
+  belong to reported `editdisplay` failures and are not involved); `AppendableBuffer.append`
   (~1046–1058) starts growth from `Math.max(this.#buffer.byteLength, 128)`, so a full `deappend` cannot leave a
   zero-length backing array that never grows.
-  _Done_: a cached `/sw/img` entry on a page without a controller yields a `blob:` URL; a failing asset read in a
-  row is retried after 5 s; `deappend` of the whole buffer followed by `append` returns.
+  _Done_: after a controller loss, a path cached as `/sw/img` is read again and yields a `blob:` URL; a failing
+  asset read in a row is retried locally twice and then surfaces as a render failure; `deappend` of the whole
+  buffer followed by `append` returns.
   _Test_: `src/ts/globalApiRetention.test.ts` or `globalApiThumbnails.test.ts` (the controller check; the
-  rejecting read), `src/ts/parser/tests/parseMarkdownLifetime.test.ts` (the retry classification),
+  invalidation after a controller loss; the rejecting read), `src/ts/parser/tests/parseMarkdownLifetime.test.ts`
+  (the retry classification),
   `src/ts/characterCardsPngImport.test.ts` (the full deappend).
   _Removes_: loadFileSrc can return /sw/img on an uncontrolled page; getFileSrc never rejects, so asset reads are
   never retried; AppendableBuffer can hang after a full deappend.
@@ -543,19 +605,18 @@ Every slice is independent of the others' code unless listed here.
   `src/ts/storage/tests/resourceSyncLive.test.ts` (remote unchanged).
   _Removes_: Scheme writers skip the text theme; Local ui writers skip the display apply.
 
-- **F3. Card import paths** (_hard_, `characters-modules.md` with `assets.md`; after B5).
+- **F3. Card import preset hash** (_small_, `characters-modules.md`; after B5).
   `src/ts/characterCards.ts`: the `#import_preset=` branch (~829–838) opens the settings only when `importPreset`
-  returns an id, like the drop and `#share_preset` paths; `saveEmbeddedAssets` (~1083–1124) and the V3 `data:`
-  branch (~1244–1293) stop capturing the base64 string in the queue's `load` closure: decode each asset once into
-  bytes under `saveAssets`'s byte cap (`src/ts/storage/assetQueue.ts` ~283–284, ~469–487) and drop the string
-  reference from the card object before the save, so a JSON card's retained text is at most one asset at a time.
-  Record the retained-bytes rule beside the PNG Limitation in `assets.md`.
-  _Done_: a refused `.risup` from the hash opens no settings; a 50 MB JSON card import's peak retention is the
-  decoded bytes of one asset plus the queue's cap, measured with a heap snapshot in the commit message.
-  _Test_: `src/ts/characterCards.share.test.ts` (the hash path), `src/ts/characterCardsImport.test.ts` (the
-  references are dropped before the save; the bytes saved are the same).
-  _Removes_: #import_preset opens the settings after a refusal; JSON and V3 card imports keep base64 text until the
-  save ends.
+  returns an id, like the drop and `#share_preset` paths. The retained-text entry that shared this slice is Recorded
+  instead (H1, `assets.md`, beside the PNG Limitation; decided 2026-11-09, AUD-5): `saveAssets` calls an item's
+  `load` again to repair a missing file at completion (`src/ts/storage/assetQueue.ts` ~71, ~480) and the card
+  hand-off keeps and calls it again (`characterCards.ts` ~110), so a JSON or V3 card's asset payloads stay
+  reachable until the hand-off ends whatever their encoding; decoding up front would hold the bytes of every asset
+  (a quarter less than the text) rather than one asset at a time, and a re-readable source would mean re-parsing
+  the JSON per asset.
+  _Done_: a refused `.risup` from the hash opens no settings.
+  _Test_: `src/ts/characterCards.share.test.ts` (the hash path).
+  _Removes_: #import_preset opens the settings after a refusal.
 
 - **F4. Editor highlighting and playground strings** (_small_, `cbs-rendering.md` with `settings-i18n.md`).
   `src/ts/gui/highlight.ts` `simpleCBSHighlightParser` (~470–489): an unmatched `}}` leaves `depth` at 0.
@@ -596,16 +657,21 @@ Every slice is independent of the others' code unless listed here.
 
 - **F7. Plugin database reads and bulk adds** (_hard_, `plugin-sandbox.md` with `persistence.md`; after F2).
   `src/ts/plugins/apiV3/v3.svelte.ts` `applyPluginCharacters` (~1724–1745): new characters go through one
-  `addPreparedCharacters` that builds its index once, checks new ids against a `Set` (`requireNewId` in
-  `src/ts/storage/records.svelte.ts` ~3120–3131 gains a batch form or the caller pre-checks), and runs
-  `checkCharOrder()` once (`src/ts/storage/characterStore.svelte.ts` ~237–249, `src/ts/storage/characterOrder.ts`
-  ~45–85); `getChatFromIndex` (~2603–2606) and `setChatToIndex` (~2714–2719) resolve one id through
-  `chatMemberPage(chaId, i, i + 1)` instead of `chatList(chaId)`. The detached read (~1280–1328): a fresh response
+  `addPreparedCharacters` that builds its index once, checks new ids against a `Set`, and inserts through a batch
+  path in `src/ts/storage/records.svelte.ts` that carries that uniqueness past `requireNewId` (~3120–3131; a
+  caller's pre-check does not help, since every `insertCharacterRecord` ~3212 still runs its `.some` scan), then
+  runs `checkCharOrder()` once (`src/ts/storage/characterStore.svelte.ts` ~237–249,
+  `src/ts/storage/characterOrder.ts` ~45–85); `getChatFromIndex` (~2603–2606) and `setChatToIndex` (~2714–2719)
+  require a nonnegative integer index and then resolve one id through `chatMemberPage(chaId, i, i + 1)` instead of
+  `chatList(chaId)` (`chatMemberPage` slices, so an unchecked `1.5` would reach chat 1 where today it resolves
+  nothing). The detached read (~1280–1328): a fresh response
   is fenced by the algorithm captured before its await the way cache hits are (`src/ts/plugins/apiV3/detachedChatCache.ts`
   ~146–168); when the algorithm changed, the read refreshes once with the new one, in both directions.
-  _Done_: `setDatabase` appending 300 characters does 300 index visits, not 300 × list; a plugin reading across a
-  switch into Structured Memory gets the projection for an unloaded chat.
-  _Test_: `src/ts/plugins/apiV3/v3SetDatabase.test.ts` (visit counts), `src/ts/plugins/apiV3/hostApiChats.test.ts`
+  _Done_: `setDatabase` appending 300 characters does 300 index visits and one order repair, not 300 × list;
+  `setChatToIndex(0, 1.5, chat)` writes nothing; a plugin reading across a switch into Structured Memory gets the
+  projection for an unloaded chat.
+  _Test_: `src/ts/plugins/apiV3/v3SetDatabase.test.ts` (visit and record-scan counts through the insertion
+  boundary), `src/ts/plugins/apiV3/hostApiChats.test.ts`
   (the index accessors), `src/ts/plugins/apiV3/getDatabaseDetached.test.ts` (fresh switch-in and switch-out).
   _Removes_: Bulk plugin character adds stay quadratic; A memory algorithm switch during a detached read omits its
   projection.
@@ -615,10 +681,12 @@ Every slice is independent of the others' code unless listed here.
   object or `Object.defineProperty`) so an own `__proto__` key round-trips; the CALL handler (~1009–1034) creates a
   host-side `AbortController` per call that `terminate` (~1147–1175) aborts along with the guest-signal controllers,
   so an unsignalled `nativeFetch` ends with its plugin. `src/ts/plugins/apiV3/v3.svelte.ts` `executePluginV3`
-  (~3383–3407): register the instance after `host.run` resolves, or remove it when `run` throws. Delete the
-  `plugin-sandbox.md` hazard sentences these replace.
+  (~3383–3407): register the instance after `host.run` returns (it is synchronous, `factory.ts` ~946), and when
+  `run` throws terminate the partly started host so no iframe stays in the DOM without a list entry. Update the
+  guide's abort invariant for the per-call controller; the unload-window and deferred-reload hazards
+  (`plugin-sandbox.md` ~289, ~297) stay true and stay.
   _Done_: `pluginStorage.getItem` returns an object stored with a `__proto__` key intact; a terminated plugin's
-  pending `nativeFetch` is aborted; a plugin whose `run` throws is not listed as loaded.
+  pending `nativeFetch` is aborted; a plugin whose `run` throws is not listed as loaded and its iframe is gone.
   _Test_: `src/ts/plugins/apiV3/guestBridge.test.ts` (the round trip), `src/ts/plugins/apiV3/nativeFetchAbort.test.ts`
   (the unsignalled fetch), `src/ts/plugins/pluginLifecycle.test.ts` (the failed start).
   _Removes_: The sandbox bridge drops an own `__proto__` key; the `executePluginV3` and `terminate` bullets of
@@ -627,25 +695,30 @@ Every slice is independent of the others' code unless listed here.
 - **F9. Parser caches and imported chat data** (_small_, `cbs-rendering.md` with `chat-store.md`; after F1).
   `src/ts/parser/parser.svelte.ts` `fileSrcCache` (~482–492): bound it (a count-bounded map that evicts the oldest
   entry not in flight, say 2,000) and list the bound in the guide's parser caches. `src/ts/storage/chatStore.svelte.ts`
-  `prepareMessages` (~1592–1605): refuse a message whose `data` is not a string with the same error class the
-  server's `patchMessage` check uses (~3781–3795), so a JSON chat import cannot store one.
+  `prepareMessages` (~1592–1605): refuse a message whose `data` is not a string with a plain `Error` carrying a message, as
+  the client's own `patchMessage` check does (~3789; the server's `ResourceValidationError` stays server-side), so
+  a JSON chat import cannot store one.
   _Done_: rendering 3,000 distinct assets keeps at most 2,000 cached sources; an imported chat with a numeric `data`
   is refused with a message.
   _Test_: `src/ts/parser/tests/parseMarkdownLifetime.test.ts` (the bound), `src/ts/storage/tests/chatStore.test.ts`
-  (the refusal), `src/ts/characterCardsImport.test.ts` (an import with bad data).
+  (the refusal), `src/ts/charactersImportChat.test.ts` (a JSON chat import with bad data, through
+  `src/ts/characters.ts` ~530).
   _Removes_: the `fileSrcCache` and JSON-import bullets of Asset-scale client leftovers (the entry itself leaves
   with H1).
 
 - **F10. Web Push client race and server no-store** (_small_, `network-jobs.md` with `self-host-server.md`).
-  `src/ts/network/pushNotifications.ts` (~436–484): re-read the opt-out flag inside the lock immediately before
-  `ensureSubscribed(false, known)` (~479–480), and skip the subscribe when another tab disabled in between;
-  `server/src/routes/push.ts` (~24–47): the limiter, JWT and body-cap rejections answer with `no-store` (a
-  middleware that sets it first, or the push family added to `server/src/app.ts`'s no-store families ~742–814), so
-  the header comment holds.
-  _Done_: a disable in tab B between tab A's re-read and subscribe leaves no subscription; a 429, 401 and 413 from
-  `/api/push/*` carry `Cache-Control: no-store`.
-  _Test_: `src/ts/network/pushNotifications.test.ts` (the race with two modules), `server/src/tests/push.test.ts`
-  (the three rejections' headers).
+  `src/ts/network/pushNotifications.ts` `ensureSubscribed` (~353–400): after `pushManager.subscribe` returns (~383),
+  read the opt-out flag once more and, when it is set, unsubscribe the new subscription and return without a
+  stamp. The re-read before the call already exists inside `serial` (~468): with Web Locks a disable waits behind
+  the reconcile, but without them `serial` is module-local (~206) and tab B can disable during the awaits before
+  `subscribe`, which only a check after it closes. `server/src/routes/push.ts` (~24–47): the limiter, JWT and
+  body-cap rejections answer with `no-store` (a middleware that sets it first, or the push family added to
+  `server/src/app.ts`'s no-store families ~742–814), so the header comment holds.
+  _Done_: without Web Locks, a disable in tab B during tab A's awaits before `subscribe` leaves no subscription;
+  a 429, 400 and 413 from `/api/push/*` carry `Cache-Control: no-store` (a JWT failure answers 400,
+  `server/src/routes/auth.ts` ~21).
+  _Test_: `src/ts/network/pushNotifications.test.ts` (the race with two modules and no `navigator.locks`),
+  `server/src/tests/push.test.ts` (the three rejections' headers).
   _Removes_: the opt-out race and `no-store` bullets of Web Push leftovers (the entry itself leaves with H1).
 
 ### G. Build and test tooling
@@ -665,10 +738,12 @@ Every slice is independent of the others' code unless listed here.
   An ignored path can hide a broken sibling in a guide; docs:contracts crashes on EPIPE under head.
 
 - **G2. e2e type check and spec selection** (_small_, `test-harness.md` with `build-test-platforms.md`). Add
-  `e2e/tsconfig.json` extending the root config with `e2e/**/*.ts`, Node and Playwright types, and a type-only
-  `paths` mapping `/src/*` to `src/*`; wire `tsc -p e2e/tsconfig.json --noEmit` into the `check` script
-  (`package.json` ~13); fix the narrowing at `e2e/multiClient.spec.ts` (~391–397) with the `kind === "chatOrder"`
-  guard. `util/agentE2e.mjs` `staticImports` (~68–80): resolve a relative import to its on-disk path (the exact
+  `e2e/tsconfig.json` extending the root config with `include: ["**/*.ts"]` (resolved from the config's own
+  directory; `e2e/**/*.ts` there would look for `e2e/e2e/` and find nothing), Node and Playwright types, and a
+  type-only `paths` mapping `/src/*` to `src/*` over the inherited root `baseUrl`; wire
+  `tsc -p e2e/tsconfig.json --noEmit` into the `check` script (`package.json` ~13); fix the narrowing at
+  `e2e/multiClient.spec.ts` (~391–397) with the `isChatOrderConflict` predicate from `shared/resources.ts` (~182):
+  the `kind === "chatOrder"` comparison already there cannot exclude `ResourceConflict`, whose `kind` is `string`. `util/agentE2e.mjs` `staticImports` (~68–80): resolve a relative import to its on-disk path (the exact
   path, then `.ts`, `.svelte.ts`, then `index.ts`) with the supplied read function before recording it, so a helper
   change selects the specs that import it.
   _Done_: `pnpm check` reports a type error planted in a spec; `selectSpecs` for `e2e/multiClient.ts` selects the two
@@ -700,7 +775,8 @@ Every slice is independent of the others' code unless listed here.
   deadline for the test; `src/lib/ChatScreens/Chat.draft.test.ts` (~335–400) moves the auto-popup cases onto fake
   timers; `src/ts/network/generationJobs.test.ts` (~872–1025) fakes the connect timeout for the follow cases as the
   liveness block does (~1813–1830); `src/ts/process/serverCommands.test.ts` (~220–231) replaces the
-  `realSetTimeout(0)` flush with an awaited microtask drain. `server/src/tests/push.test.ts` needs nothing. Also
+  `realSetTimeout(0)` flush with a latch on the condition each case awaits, keeping a real-timer turn where a case
+  needs a full event-loop turn and saying so. `server/src/tests/push.test.ts` needs nothing. Also
   warm or latch the two `cbsLimitsHost.test.ts` (~557–568) and `lore.test.ts` (~1147–1186) cases the Stop B entry
   names, or tag them `slow`. `pnpm --silent test:agent --slow-tests` before and after, in the commit message.
   _Done_: each named case passes under `taskset -c 0` with the suite's load, three runs; no production constant
@@ -718,10 +794,11 @@ Every slice is independent of the others' code unless listed here.
   `chat-pipeline.md`: a throwing `svelte/store` subscriber leaves the shared queue mid-run (`localSends`; no known
   thrower).
   `resource-sync.md` and `server-generation.md`: `loreBook` and `globalscript` travel whole (no item ids), creates
-  and `ChatPatchBody.meta` travel whole, the sockets have no compression (HTTP reads do), `ChannelChunk` stays
-  cumulative, `emitRecords` sends non-job records whole, every job parses its whole scope; the fixed bullets
-  (plugins by name key, HTTP compression, the settling `flushResources`, the deleted-speaker lookup, the Lua
-  reparse) are deleted with a note; the real-browser chatPatch check goes to the Owner checklist.
+  and `ChatPatchBody.meta` travel whole, the sockets have no compression (HTTP reads do), the `ChannelChunk`
+  recovery snapshot and legacy cumulative fallback remain beside the sequenced appends (`shared/jobs.ts` ~873),
+  `emitRecords` sends non-job records whole, every job parses its whole scope; the fixed bullets (plugins by name
+  key, HTTP compression, the settling `flushResources`, the deleted-speaker lookup, the Lua reparse, the
+  cumulative-only transport) are deleted with a note; the real-browser chatPatch check goes to the Owner checklist.
   `memory.md` (Deferred stored summaries): the three replay approximations, as accepted on 2026-10-27.
   `server-resources.md`: the change log's worst case (20,000 rows × up to 512-unit ids, 82 MB in the probe, no
   VACUUM on prune) and the snapshot budget that counts it (Q4); a custom-key asset rewritten during a version-2
@@ -737,7 +814,9 @@ Every slice is independent of the others' code unless listed here.
   `ui-theming.md`: pixel anchoring across far and near rows has no kept browser test; Firefox and Safari were never
   driven for the chat list.
   `assets.md`: every plain `getFileSrc` read pins its URL for the page (D2b, 2026-10-23) if the guide does not say
-  so; the asset UIs' first filter after an edit copies the live state once.
+  so; the asset UIs' first filter after an edit copies the live state once; beside the PNG Limitation, a JSON or
+  V3 card's embedded asset payloads stay reachable until the import's hand-off ends, because `saveAssets` and the
+  hand-off replay an item's `load` (F3's former entry; 2026-11-09).
   `translation.md`: the experimental Google translator translates per stream frame (upstream behavior).
   `network-jobs.md`: a notification click whose route is `/` only focuses the window; the enable button's user
   activation and `navigator.serviceWorker.ready` during an upgrade are browser behaviors the tests cannot show
@@ -746,7 +825,7 @@ Every slice is independent of the others' code unless listed here.
   not stated.
   Closed with a reason in the commit message: Deferred lore behaviors (both bullets in `chat-pipeline.md` and
   `characters-modules.md`; Q3), Duplicate plugin names can share a popup editor target (`plugin-sandbox.md` Issues;
-  Q15), the heap D3 bullet (no identifier; Q16), the parser fuzzy-lookup test-gap bullet (a test inventory, not a
+  Q15; its link at ~271 to the deleted research heading is replaced by the conditions stated in place), the heap D3 bullet (no identifier; Q16), the parser fuzzy-lookup test-gap bullet (a test inventory, not a
   defect), the unload-fence bullet of Plugin reload deferral leftovers (`plugin-sandbox.md`), and the settled Stop B
   bullets (capture listeners, `creation_date`). The push dedupe bullet is already in `network-jobs.md`.
   _Done_: every Recorded item is in its guide with its date; after H1's landing commit `found-issues.md` has no
@@ -769,7 +848,10 @@ line.
 - Web Push in Chrome and Firefox: the enable button right after a reconcile (user activation), a service-worker
   upgrade during a subscribe, a notification click whose route is `/`.
 - The chatPatch transport in a real browser (a long reply watched with DevTools' socket frames).
-- A `/sw/img` URL after a lost controller (F1 adds the guard; the reproduction is still unconfirmed).
+- A `/sw/img` URL after a lost controller (F1 adds the guard and the invalidation; the reproduction is still
+  unconfirmed).
+- A Gemini thinking model with `saveSignatures` on: the second request of a chat replays the stored token and the
+  provider accepts it (C4 can only check the body).
 - A real-browser run of `util/playwright/measureHeap.mjs` after a module delete, if a heap plan returns (Q16).
 
 ## Verification
@@ -778,7 +860,7 @@ line.
   `pnpm format:check`, the owning guide's focused checks, and `pnpm check:docs` for any guide edit
   (`pnpm docs:ledger` for a trim).
 - Measurements, recorded in `docs/audit/` and the commit message: A4 (schema token counts), D2 (snapshot charges and
-  capacity), E4 (`VmHWM` per page before and after), F3 (the import's heap peak).
+  capacity), E4 (`VmHWM` per page before and after).
 - Driver runs, recorded in the commit message: E3 and E4 (`measureRenderWork.mjs`), G3 (both drivers twice), G4
   (`--slow-tests` before and after).
 - At the end of the run: the whole suite with the slow tag, the e2e specs the changed files select (G2's selector),

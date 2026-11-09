@@ -15,7 +15,11 @@
 Tests, drivers, and browser behavior were not run. The Index matches all 86 headings of
 `found-issues.md`, and every _Removes_ name exists. Mechanisms found consistent: A1, B1 to B4, B6, C2,
 C3, C6, D1, E1, E3, F2, F4 to F6, G1, and G3, subject to the overlaps in AUD-29 and AUD-30. AUD-23,
-AUD-24, and AUD-25 were applied to the plan in the commit that adds this report; the rest stand as found.
+AUD-24, and AUD-25 were applied to the plan in the commit that adds this report. The rest were applied in the
+follow-up commit the same day with the owner's decisions: C4 adds the `saveSignatures` control and replays raw
+JSON (AUD-3, AUD-12); F3 keeps only the preset-hash fix and its retention entry is Recorded by H1 (AUD-5); F10
+checks the flag after `subscribe` (AUD-6); E4 completes on a measured, explained miss (AUD-17); AUD-31 takes a
+latch per case; AUD-32 states the concurrency as the plan's choice.
 
 ## P1
 
