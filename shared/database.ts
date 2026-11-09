@@ -1410,7 +1410,7 @@ export interface Message {
 /** A translation of a message's `data`, kept while `sourceHash` matches the current `data`. */
 export interface MessageTranslation {
     text: string;
-    /** `translationSourceHash(data)` (`shared/translation/hash.ts`) of the translated text. */
+    /** `translationSourceHash(data)` (`shared/translation/hash.ts`) of the source `data`. */
     sourceHash: string;
     /** Informational: the translator preset that produced it. Never decides freshness. */
     presetId?: string;

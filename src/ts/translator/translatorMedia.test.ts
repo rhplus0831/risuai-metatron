@@ -78,9 +78,13 @@ type Request = { body?: { text: string | string[]; target_lang: string } };
 function reply(url: string, init: Request = {}) {
     if (url.startsWith("https://translate.google.com/")) {
         const query = new URL(url).searchParams;
+        // The experimental page is requested with `rawResponse`, so it arrives as bytes.
         return {
             ok: true,
-            data: `<div class="result-container">${query.get("tl").toUpperCase()}:${query.get("q")}</div>`,
+            status: 200,
+            data: new TextEncoder().encode(
+                `<div class="result-container">${query.get("tl").toUpperCase()}:${query.get("q")}</div>`,
+            ),
         };
     }
     const { text, target_lang } = init.body;
@@ -155,6 +159,16 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("translateHTML media regressions", () => {
+    it("sends escaped markup in a combined paragraph to the provider as literal text", async () => {
+        media.translatorType = "google";
+        media.combineTranslation = true;
+
+        await translateHTML("<p>&lt;b&gt;x&lt;/b&gt;</p>", false, "", 0);
+
+        // The Markdown write-back is outside this contract; inspect only the provider request.
+        expect(deps.fetch.mock.calls.map(([url]) => new URL(url).searchParams.get("q"))).toEqual(["<b>x</b>"]);
+    });
+
     it("finishes blank nodes and more than eleven nodes in sequential bounded DeepLX batches, including the tail and an oversized node", async () => {
         await expect(translateHTML("<p>  </p>\n<span>\t</span>", false, "", 0)).resolves.toContain("<p>  </p>");
         expect(calls()).toBe(0);
@@ -328,6 +342,66 @@ describe("translateHTML media regressions", () => {
 });
 
 describe("translate memory cache ownership", () => {
+    it("does not return or cache an experimental Google error page when the direct fallback also fails", async () => {
+        media.translatorType = "google";
+        media.useExperimentalGoogleTranslator = true;
+        const source = "experimental Google retry";
+        deps.globalFetch.mockResolvedValueOnce({
+            ok: false,
+            status: 429,
+            data: new TextEncoder().encode('<div class="result-container">Quota page text</div>'),
+        });
+        deps.fetch.mockRejectedValue(new TypeError("Direct Google unavailable"));
+
+        await expect(translate(source, false)).rejects.toThrow("Direct Google unavailable");
+        expect(deps.globalFetch).toHaveBeenCalledWith(
+            "https://translate.google.com/m?tl=ko&sl=en&q=experimental%20Google%20retry",
+            expect.objectContaining({ rawResponse: true }),
+        );
+
+        await expect(translate(source, false)).resolves.toBe("KO:experimental Google retry");
+        expect(deps.globalFetch).toHaveBeenCalledTimes(2);
+        expect(deps.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps every chunk and the cached pair with the provider selected when translation started", async () => {
+        media.translatorType = "deepl";
+        const source = "provider-first\n{{img::provider-switch}}\nprovider-second";
+        const deeplResult = "DeepL:provider-first\n{{img::provider-switch}}\nDeepL:provider-second";
+        const deeplXResult = "DeepLX:provider-first\n{{img::provider-switch}}\nDeepLX:provider-second";
+        const started = deferred<void>();
+        const release = deferred<void>();
+        deps.globalFetch.mockImplementation(async (url: string, init: Request) => {
+            const deepl = new URL(url).host === "api-free.deepl.com";
+            const text = Array.isArray(init.body.text) ? init.body.text[0] : init.body.text;
+            if (deps.globalFetch.mock.calls.length === 1) {
+                started.resolve();
+                await release.promise;
+            }
+            return deepl
+                ? { ok: true, data: { translations: [{ text: `DeepL:${text}` }] } }
+                : { ok: true, data: { data: `DeepLX:${text}` } };
+        });
+
+        const work = translate(source, false);
+        try {
+            await started.promise;
+            media.translatorType = "deeplX";
+        } finally {
+            release.resolve();
+        }
+        await expect(work).resolves.toBe(deeplResult);
+        expect(deps.globalFetch).toHaveBeenCalledTimes(2);
+
+        // The new configuration must not reuse the producer's old-provider result.
+        await expect(translate(source, false)).resolves.toBe(deeplXResult);
+        expect(deps.globalFetch).toHaveBeenCalledTimes(4);
+        media.translatorType = "deepl";
+        await expect(translate(source, false)).resolves.toBe(deeplResult);
+        await expect(translate(deeplResult, true)).resolves.toBe(source);
+        expect(deps.globalFetch).toHaveBeenCalledTimes(4);
+    });
+
     it("invalidates both lookup directions when either language or a non-LLM provider option changes", async () => {
         const cases = [
             {

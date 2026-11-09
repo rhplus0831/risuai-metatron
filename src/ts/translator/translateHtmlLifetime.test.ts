@@ -11,6 +11,7 @@ vi.mock("src/ts/process/request/request", async () =>
 );
 
 import { isTransient } from "src/ts/parser/renderErrors";
+import { globalFetch } from "src/ts/globalApi.svelte";
 import { requestChatData } from "src/ts/process/request/request";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
@@ -94,6 +95,28 @@ describe("translateHTML render lifetime", () => {
         await expect(translateHTML(source, false, "", -1, false, null)).resolves.toBe("<p>Translation</p>");
         expect(provider).toHaveBeenCalledTimes(2);
         expect(new URL(String(provider.mock.calls[1][0])).searchParams.get("q")).toBe("Google quota retry");
+    });
+
+    it("uses the direct Google adapter after an experimental HTTP 429 page containing a result", async () => {
+        settings.memoryTranslateMedia.useExperimentalGoogleTranslator = true;
+        vi.mocked(globalFetch).mockResolvedValueOnce({
+            ok: false,
+            status: 429,
+            headers: {},
+            data: new TextEncoder().encode('<div class="result-container">Quota page text</div>'),
+        });
+
+        await expect(translateHTML("<p>Google experimental fallback</p>", false, "", -1, false, null)).resolves.toBe(
+            "<p>Translation</p>",
+        );
+        expect(globalFetch).toHaveBeenCalledExactlyOnceWith(
+            "https://translate.google.com/m?tl=ko&sl=en&q=Google%20experimental%20fallback",
+            expect.objectContaining({ rawResponse: true }),
+        );
+        expect(provider).toHaveBeenCalledTimes(1);
+        const directURL = new URL(String(provider.mock.calls[0][0]));
+        expect(directURL.host).toBe("translate.googleapis.com");
+        expect(directURL.searchParams.get("q")).toBe("Google experimental fallback");
     });
 
     it("marks a rejected LLM cache read as transient before any provider request", async () => {

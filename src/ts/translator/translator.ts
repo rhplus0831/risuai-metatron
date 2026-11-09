@@ -167,28 +167,37 @@ export function getCurrentTranslatorPreset(): TranslatorPreset {
     return currentTranslatorPreset();
 }
 
-/**
- * LLM translations use their own pipeline-aware cache in `translateLLM`.
- */
-function usesMemoryCache(): boolean {
-    return settings.memoryTranslateMedia.translatorType !== "llm";
-}
-
-/** Both directions of the input box share one configuration and one pair cache. */
+/** Both directions of the input box share one detached provider configuration and one pair cache. */
 function memoryTranslationContext() {
     const from = settings.memoryTranslateMedia.translator;
     const target = getModelInfoForMode("model").id.startsWith("novellist") ? "ja" : "en";
+    const provider = {
+        translatorType: settings.memoryTranslateMedia.translatorType,
+        translatorInputLanguage: settings.memoryTranslateMedia.translatorInputLanguage,
+        useExperimentalGoogleTranslator: settings.memoryTranslateMedia.useExperimentalGoogleTranslator,
+        noWaitForTranslate: settings.memoryTranslateMedia.noWaitForTranslate,
+        deeplOptions: {
+            key: settings.secrets.deeplOptions?.key,
+            freeApi: settings.secrets.deeplOptions?.freeApi,
+        },
+        deeplXOptions: {
+            url: settings.secrets.deeplXOptions?.url,
+            token: settings.secrets.deeplXOptions?.token,
+        },
+    };
     const key = JSON.stringify([
         from,
         target,
-        settings.memoryTranslateMedia.translatorType,
-        settings.memoryTranslateMedia.translatorInputLanguage,
-        settings.memoryTranslateMedia.useExperimentalGoogleTranslator,
-        settings.secrets.deeplXOptions?.url,
-        settings.secrets.deeplOptions?.freeApi,
+        provider.translatorType,
+        provider.translatorInputLanguage,
+        provider.useExperimentalGoogleTranslator,
+        provider.deeplXOptions.url,
+        provider.deeplOptions.freeApi,
     ]);
-    return { from, target, key };
+    return { from, target, key, provider };
 }
+
+type TranslationProviderConfig = ReturnType<typeof memoryTranslationContext>["provider"];
 
 type MemoryTranslationFlight = {
     promise: Promise<string>;
@@ -208,7 +217,7 @@ export async function translate(text: string, reverse: boolean) {
  * flight leaves when its last caller aborts; admitted producers finish without caller signals.
  * Producer failures notify subscribed callbacks synchronously before releasing the permit, so
  * failed render attempts can withdraw their queued flights before another producer is admitted.
- * Only successful results under the original configuration populate the cache. Direct
+ * Provider configuration is read once per producer; only successful results populate its cache. Direct
  * `runTranslator` calls bypass both maps; LLM calls retain their separate cache and flights.
  */
 async function translateShared(
@@ -220,7 +229,8 @@ async function translateShared(
 ): Promise<string> {
     signal?.throwIfAborted();
     const context = memoryTranslationContext();
-    const memoryCache = usesMemoryCache();
+    // LLM translations use their own pipeline-aware cache in `translateLLM`.
+    const memoryCache = context.provider.translatorType !== "llm";
     if (memoryCache) {
         const cached = readMemoryCache(context.key, text, reverse);
         if (cached !== undefined) {
@@ -255,14 +265,12 @@ async function translateShared(
                     if (cached !== undefined) return cached;
                 }
                 const failure = { failed: false };
-                const result = await runTranslator(text, reverse, context.from, context.target, { failure });
-                // A settings/chat switch can change providers between chunks. Never cache that mixed result.
-                if (
-                    memoryCache &&
-                    !failure.failed &&
-                    usesMemoryCache() &&
-                    memoryTranslationContext().key === context.key
-                ) {
+                const result = await runTranslator(text, reverse, context.from, context.target, {
+                    failure,
+                    provider: context.provider,
+                });
+                // The cache key and every chunk's result come from the same provider snapshot.
+                if (memoryCache && !failure.failed) {
                     writeMemoryCache(context.key, reverse ? result : text, reverse ? text : result);
                 }
                 return result;
@@ -311,6 +319,7 @@ async function translateShared(
 }
 
 /**
+ * Provider configuration is read once per call, unless the caller supplies its producer's snapshot.
  * Captures one detached preset and prompt/model/persona request ids for all chunks, so switching
  * chats or deleting a preset during the run cannot change their preset or request identity.
  * Send Text As-Is bypasses `shared/translation/pipeline.ts`'s line protection; its pipeline result
@@ -328,9 +337,16 @@ export async function runTranslator(
     from: string,
     target: string,
     /** `globalPreset`: translate with the global translator preset, not the selected chat's (the playground). */
-    exarg?: { translatorNote?: string; globalPreset?: boolean; failure?: { failed: boolean }; signal?: AbortSignal },
+    exarg?: {
+        translatorNote?: string;
+        globalPreset?: boolean;
+        failure?: { failed: boolean };
+        signal?: AbortSignal;
+        provider?: TranslationProviderConfig;
+    },
 ) {
     exarg?.signal?.throwIfAborted();
+    const provider = exarg?.provider ?? memoryTranslationContext().provider;
     const arg = {
         from: reverse ? from : target,
 
@@ -340,6 +356,7 @@ export async function runTranslator(
 
         translatorNote: exarg?.translatorNote,
         signal: exarg?.signal,
+        provider,
 
         // The LLM translator's preset, read once for every chunk of this call: a plain copy, since the
         // record view resolves by id on each read and throws once the preset is deleted meanwhile.
@@ -351,7 +368,7 @@ export async function runTranslator(
     };
     // Send Text As-Is: the LLM translator takes the whole text in one pipeline run and its reply is
     // returned as it is (a failure already alerted and returned the text).
-    const llm = settings.memoryTranslateMedia.translatorType === "llm";
+    const llm = provider.translatorType === "llm";
     if (llm && arg.preset.sendTextAsIs === true) {
         return await translateMain(text, arg);
     }
@@ -402,6 +419,7 @@ async function translateMain(
         signal?: AbortSignal;
         preset: TranslatorPreset;
         requestIds: ChatContextIds;
+        provider: TranslationProviderConfig;
         /** The text is already stripped of its reasoning blocks (`runTranslator`'s chunks). */
         inputPrepared?: boolean;
         /** Set when the LLM translator failed (it alerted and returned the text). */
@@ -409,7 +427,8 @@ async function translateMain(
     },
 ) {
     arg.signal?.throwIfAborted();
-    if (settings.memoryTranslateMedia.translatorType === "llm") {
+    const { provider } = arg;
+    if (provider.translatorType === "llm") {
         const tr = arg.to || "en";
         return translateLLM(
             text,
@@ -426,18 +445,18 @@ async function translateMain(
             arg.signal,
         );
     }
-    if (settings.memoryTranslateMedia.translatorType === "deepl") {
+    if (provider.translatorType === "deepl") {
         const body = {
             text: [text],
             target_lang: arg.to.toLocaleUpperCase(),
         };
-        let url = settings.secrets.deeplOptions.freeApi
+        let url = provider.deeplOptions.freeApi
             ? "https://api-free.deepl.com/v2/translate"
             : "https://api.deepl.com/v2/translate";
         const f = await globalFetch(url, {
             abortSignal: arg.signal,
             headers: {
-                Authorization: "DeepL-Auth-Key " + settings.secrets.deeplOptions.key,
+                Authorization: "DeepL-Auth-Key " + provider.deeplOptions.key,
                 "Content-Type": "application/json",
             },
             body: body,
@@ -448,8 +467,8 @@ async function translateMain(
         }
         return f.data.translations[0].text;
     }
-    if (settings.memoryTranslateMedia.translatorType === "deeplX") {
-        if (!settings.memoryTranslateMedia.noWaitForTranslate) {
+    if (provider.translatorType === "deeplX") {
+        if (!provider.noWaitForTranslate) {
             // Each request takes the next free slot, 3 s after the one before it.
             const now = Date.now();
             const slot = Math.max(now, waitTrans);
@@ -460,7 +479,7 @@ async function translateMain(
         }
         arg.signal?.throwIfAborted();
 
-        let url = settings.secrets.deeplXOptions.url ?? "http://localhost:1188";
+        let url = provider.deeplXOptions.url ?? "http://localhost:1188";
 
         if (url.endsWith("/")) {
             url = url.slice(0, -1);
@@ -474,8 +493,8 @@ async function translateMain(
 
         const body = { text: text, target_lang: arg.to.toLocaleUpperCase(), source_lang: arg.from.toLocaleUpperCase() };
 
-        if (settings.secrets.deeplXOptions.token.trim() !== "") {
-            headers["Authorization"] = "Bearer " + settings.secrets.deeplXOptions.token;
+        if (provider.deeplXOptions.token.trim() !== "") {
+            headers["Authorization"] = "Bearer " + provider.deeplXOptions.token;
         }
 
         //Since the DeepLX API is non-CORS restricted, we can use the plain fetch function
@@ -493,7 +512,7 @@ async function translateMain(
 
         return f.data.data;
     }
-    if (settings.memoryTranslateMedia.useExperimentalGoogleTranslator) {
+    if (provider.useExperimentalGoogleTranslator) {
         try {
             const ua = navigator.userAgent;
             const d = await globalFetch(
@@ -505,11 +524,15 @@ async function translateMain(
                         Accept: "*/*",
                     },
                     method: "GET",
+                    rawResponse: true,
                 },
             );
             arg.signal?.throwIfAborted();
+            if (!d.ok) {
+                throw markTransient(new Error(`Google Translate returned HTTP ${d.status}`), arg.signal);
+            }
             const parser = new DOMParser();
-            const dom = parser.parseFromString(d.data, "text/html");
+            const dom = parser.parseFromString(new TextDecoder().decode(d.data), "text/html");
             const result = dom.querySelector(".result-container")?.textContent?.trim();
             if (result) {
                 return result;
@@ -520,7 +543,7 @@ async function translateMain(
     }
 
     const url =
-        `https://${arg.host}/translate_a/single?client=gtx&dt=t&sl=${settings.memoryTranslateMedia.translatorInputLanguage}&tl=${arg.to}&q=` +
+        `https://${arg.host}/translate_a/single?client=gtx&dt=t&sl=${provider.translatorInputLanguage}&tl=${arg.to}&q=` +
         encodeURIComponent(text);
 
     let f: Response;
@@ -722,7 +745,7 @@ export async function translateHTML(
                         }
                     } else {
                         // Single sentence
-                        node.innerHTML = sentences[0];
+                        node.textContent = sentences[0];
                         collectNodeText(node, true);
                     }
                     return;
@@ -838,6 +861,7 @@ export async function translateHTML(
             applyMarkdownToNode(node);
         } else {
             const newNode = document.createElement(node.nodeType === Node.TEXT_NODE ? "span" : node.nodeName);
+            // Preserve the HTML produced by the editdisplay script.
             newNode.innerHTML = processedTranslated;
             node.parentNode.replaceChild(newNode, node);
             applyMarkdownToNode(newNode);
