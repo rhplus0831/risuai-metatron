@@ -64,7 +64,8 @@ and keeps what spans files.
   [Checkpoint tables](server-resources.md#checkpoint-tables).
 - Realm, the Realm part of `src/ts/characterCards.ts`: `hubURL`, `getRisuHub`, `hubAdditionalHTML`, `hubType`,
   `getRealmInfo`, `showRealmInfoStore`, `downloadRisuHub`, `commitRealmCard`, `getHubResources`; its staged import
-  client `src/ts/storage/realmImportClient.ts` (`prepareRealmImport`, `commitRealmImport`, `cancelRealmImport`).
+  client `src/ts/storage/realmImportClient.ts` (`prepareRealmImport`, `commitRealmImport`, `cancelRealmImport`,
+  `cancelRealmImportOnPagehide`, `isRetriableRealmCommitRefusal`).
 - `src/ts/realmBlocking.ts` (the creator-id block rules) and `src/ts/realmTerms.ts` (`REALM_TERMS_VERSION`, the RisuAI
   terms and privacy URLs, `ensureRealmTerms`, whose dialog is `src/ts/alert.ts` `alertRealmTerms`).
 - `src/lib/UI/Realm/RealmMain.svelte` (browse), `src/lib/UI/Realm/RealmPopUp.svelte` (detail, block, Chat),
@@ -136,6 +137,9 @@ and keeps what spans files.
   limits (10 minutes, four waiting) and the routes are `shared/realmImport.ts` and `server/src/routes/importRealm.ts`
   ([server-resources](server-resources.md)). Legacy JSON is imported in hub mode, its portrait and assets fetched
   through `/hub-proxy`.
+- While a stage waits, a `pagehide` sends its cancel as one `keepalive` request with a `risu-auth` token signed ahead
+  (best effort; the TTL stays the fallback). A commit refused as busy (409 `Another import is running`) or in
+  maintenance (503 `Maintenance in progress`) is retried once after five seconds; any other refusal cancels the stage.
 
 ### Upstream database import
 
@@ -254,3 +258,10 @@ and keeps what spans files.
 - `RealmMain` renders `hubAdditionalHTML` via `{@html}`.
 - The RisuRealm terms gate is client-side only: `GET /hub-proxy/*` (unauthenticated) and `POST /api/import/realm` do not
   check `ui.realmTermsAccepted`.
+
+### Limitations
+
+- Kept tab-side or unbounded in the Realm import (2026-11-09, Found Issues Clearance B5): a legacy JSON card's hub
+  resources are fetched by the tab (`getHubResources`); a CharX card's embedded `module.risum` is read in the tab
+  (`readModule`), which stores its assets; `planPngFile` (`server/src/routes/importPng.ts`) reads one key prefix per
+  tEXt chunk.

@@ -67,7 +67,14 @@ import { loadAssetsInBatches, saveAssets, type AssetSaveItem } from "./storage/a
 import { assetContentHash, missingAssets, writeAssets } from "./storage/assetClient";
 import { ASSET_LEASE_MS } from "../../shared/assetLifecycle.ts";
 import { importCharxOverServer } from "./storage/charxImportClient";
-import { cancelRealmImport, commitRealmImport, prepareRealmImport } from "./storage/realmImportClient";
+import {
+    cancelRealmImport,
+    cancelRealmImportOnPagehide,
+    commitRealmImport,
+    isRetriableRealmCommitRefusal,
+    prepareRealmImport,
+    REALM_COMMIT_RETRY_DELAY_MS,
+} from "./storage/realmImportClient";
 import { ServerImportRequestError } from "./storage/serverImportClient";
 import { type CharxImportResult, INVALID_CHARX_FILE } from "../../shared/charxImport.ts";
 import {
@@ -2360,6 +2367,9 @@ export async function downloadRisuHub(
  * The rest of a staged Realm import (`downloadRisuHub`): the prepared card is read, applicable
  * password and `lowLevelAccess` prompts resolve, then the staged assets are committed through
  * `src/ts/storage/realmImportClient.ts` and the character is built from the stored keys.
+ * A pagehide guard is registered at entry, before prompts, and released in finally once commit
+ * succeeds or the normal cancel settles. It sends one best-effort keepalive cancel with auth signed
+ * ahead. Busy/maintenance commit refusals alone are retried once after five seconds.
  * Read failures and declined prompts trigger best-effort cancellation before commit. If the commit
  * throws before returning a validated result, cancellation is also attempted, but assets may already
  * be stored.
@@ -2370,6 +2380,7 @@ async function commitRealmCard(
     download: Exclude<RealmPrepared, { kind: "json" }>,
     quiet: boolean,
 ): Promise<string | false | null | undefined> {
+    const releasePagehideCancel = cancelRealmImportOnPagehide(download.token);
     let committed = false;
     try {
         let charx: CharacterCardV3 | null = null;
@@ -2390,11 +2401,19 @@ async function commitRealmCard(
         }
         let stored: RealmCommitted;
         try {
-            stored = await commitRealmImport(download.token, {
-                onProgress: (done, total) => {
-                    alertWait(`Loading... (Saving Assets ${done}/${total})`);
-                },
-            });
+            for (let attempt = 0; ; attempt++) {
+                try {
+                    stored = await commitRealmImport(download.token, {
+                        onProgress: (done, total) => {
+                            alertWait(`Loading... (Saving Assets ${done}/${total})`);
+                        },
+                    });
+                    break;
+                } catch (error) {
+                    if (attempt !== 0 || !isRetriableRealmCommitRefusal(error)) throw error;
+                    await sleep(REALM_COMMIT_RETRY_DELAY_MS);
+                }
+            }
             committed = true;
         } catch (error) {
             alertError(realmImportErrorMessage(error));
@@ -2416,7 +2435,9 @@ async function commitRealmCard(
         throw new Error("The Realm commit answered another kind of file");
     } finally {
         if (!committed) {
-            void cancelRealmImport(download.token);
+            void cancelRealmImport(download.token).finally(releasePagehideCancel);
+        } else {
+            releasePagehideCancel();
         }
     }
 }

@@ -148,11 +148,12 @@ async function boot() {
      */
     const answer = (
         prepare: Response | string,
-        commit: Response | string = new Response("unexpected commit", { status: 500 }),
+        commit: Response | string | (() => Response | string) = new Response("unexpected commit", { status: 500 }),
     ) => {
         fetch.mockImplementation((url, init) => {
             if (url === route) return Promise.resolve(toResponse(prepare));
-            if (url === REALM_COMMIT_PATH) return Promise.resolve(toResponse(commit));
+            if (url === REALM_COMMIT_PATH)
+                return Promise.resolve(toResponse(typeof commit === "function" ? commit() : commit));
             if (url === REALM_CANCEL_PATH) return Promise.resolve(new Response(null, { status: 204 }));
             return realFetch(url, init);
         });
@@ -206,7 +207,7 @@ beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
     alerts.current = null;
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     vi.stubGlobal("location", new URL("http://localhost/"));
     vi.stubGlobal("safeStructuredClone", (value: unknown) =>
         value === undefined ? undefined : JSON.parse(JSON.stringify(value)),
@@ -705,6 +706,139 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
         expect(alerts.wait).toHaveBeenLastCalledWith("Loading...");
     });
 
+    describe("staged cancellation and commit retries", () => {
+        it("sends one signed keepalive cancel synchronously on pagehide during a prompt, with no later normal cancel", async () => {
+            const b = await boot();
+            let settlePrompt!: (accepted: boolean) => void;
+            alerts.confirm.mockReturnValueOnce(
+                new Promise<boolean>((resolve) => {
+                    settlePrompt = resolve;
+                }),
+            );
+            b.answer(line(charxPrepared(cardV3("Leaving", {}, { lowLevelAccess: true }))));
+            // Both cancel paths reach the fake server, while this spy identifies direct browser fetches.
+            const pagehideFetch = vi.fn((url: string, init?: RequestInit) => b.fetch(url, init));
+            vi.stubGlobal("fetch", pagehideFetch);
+            const before = b.ids();
+            const importing = b.cards.downloadRisuHub("leaving-id");
+            await vi.advanceTimersByTimeAsync(0);
+            expect(alerts.confirm).toHaveBeenCalledExactlyOnceWith(language.lowLevelAccessConfirm);
+            expect(b.commits()).toEqual([]);
+            expect(b.cancels()).toEqual([]);
+
+            window.dispatchEvent(new Event("pagehide"));
+
+            // No await between the event and the request assertion, since unload cannot wait for auth.
+            expect(pagehideFetch).toHaveBeenCalledExactlyOnceWith(
+                REALM_CANCEL_PATH,
+                expect.objectContaining({ method: "POST", keepalive: true }),
+            );
+            const request = pagehideFetch.mock.calls[0];
+            expect(new Headers(request[1]?.headers).get("risu-auth")).toBe("signed-token");
+            expect(sent(request)).toEqual({ token: TOKEN });
+            expect(b.cancels()).toHaveLength(1);
+            window.dispatchEvent(new Event("pagehide"));
+            settlePrompt(false);
+            await importing;
+            await vi.advanceTimersByTimeAsync(0);
+            window.dispatchEvent(new Event("pagehide"));
+
+            expect(pagehideFetch).toHaveBeenCalledTimes(1);
+            expect(b.cancels()).toHaveLength(1);
+            expect(b.commits()).toEqual([]);
+            expect(b.ids()).toEqual(before);
+            expect(b.saveAsset).not.toHaveBeenCalled();
+            expect(alerts.error).not.toHaveBeenCalled();
+        });
+
+        it.each([
+            { name: "busy", status: 409, error: "Another import is running" },
+            { name: "maintenance", status: 503, error: "Maintenance in progress" },
+        ])(
+            "retries a $name commit refusal once after five seconds and imports on success",
+            async ({ status, error }) => {
+                const b = await boot();
+                vi.mocked(b.util.sleep).mockRestore();
+                b.answer(line(charxPrepared(cardV3("Retried"))), () =>
+                    b.commits().length === 1 ? Response.json({ error }, { status }) : line(charxCommitted()),
+                );
+                const before = b.ids();
+                const imports = b.imports();
+                const importing = b.cards.downloadRisuHub("retry-id");
+                await vi.advanceTimersByTimeAsync(0);
+                expect(b.commits()).toHaveLength(1);
+
+                await vi.advanceTimersByTimeAsync(4_999);
+                expect(b.commits()).toHaveLength(1);
+                expect(b.cancels()).toEqual([]);
+                expect(alerts.error).not.toHaveBeenCalled();
+                expect(b.ids()).toEqual(before);
+                await vi.advanceTimersByTimeAsync(1);
+                expect(b.commits()).toHaveLength(2);
+                await importing;
+
+                expect(b.commits().map(sent)).toEqual([{ token: TOKEN }, { token: TOKEN }]);
+                expect(b.ids()).toHaveLength(before.length + 1);
+                expect(plain(b.character(b.ids().at(-1)!))).toMatchObject({ name: "Retried" });
+                expect(b.imports()).toBe(imports + 1);
+                expect(alerts.error).not.toHaveBeenCalled();
+                window.dispatchEvent(new Event("pagehide"));
+                expect(b.cancels()).toEqual([]);
+                expect(b.globalFetch).not.toHaveBeenCalled();
+            },
+        );
+
+        it("alerts once and cancels once when the one commit retry is also refused", async () => {
+            const b = await boot();
+            vi.mocked(b.util.sleep).mockRestore();
+            b.answer(line(charxPrepared(cardV3("Refused twice"))), () =>
+                Response.json({ error: "Another import is running" }, { status: 409 }),
+            );
+            const before = b.ids();
+            const importing = b.cards.downloadRisuHub("retry-refused-id");
+            await vi.advanceTimersByTimeAsync(0);
+            expect(b.commits()).toHaveLength(1);
+            expect(alerts.error).not.toHaveBeenCalled();
+            expect(b.cancels()).toEqual([]);
+
+            await vi.advanceTimersByTimeAsync(5_000);
+            expect(b.commits()).toHaveLength(2);
+            expect(alerts.error).toHaveBeenCalledExactlyOnceWith(language.moduleImportBusy);
+            expect(b.cancels()).toHaveLength(1);
+            await importing;
+            await vi.advanceTimersByTimeAsync(5_000);
+            window.dispatchEvent(new Event("pagehide"));
+
+            expect(b.commits().map(sent)).toEqual([{ token: TOKEN }, { token: TOKEN }]);
+            expect(b.cancels()).toHaveLength(1);
+            expect(sent(b.cancels()[0])).toEqual({ token: TOKEN });
+            expect(b.ids()).toEqual(before);
+            expect(b.saveAsset).not.toHaveBeenCalled();
+            expect(b.globalFetch).not.toHaveBeenCalled();
+            expect(alerts.error).toHaveBeenCalledExactlyOnceWith(language.moduleImportBusy);
+        });
+
+        it("does not retry a 409 commit refusal with another error text", async () => {
+            const b = await boot();
+            vi.mocked(b.util.sleep).mockRestore();
+            b.answer(line(charxPrepared(cardV3("Conflicting"))), () =>
+                Response.json({ error: "Different conflict" }, { status: 409 }),
+            );
+            const before = b.ids();
+            const importing = b.cards.downloadRisuHub("conflict-id");
+            await vi.advanceTimersByTimeAsync(0);
+            await vi.advanceTimersByTimeAsync(5_000);
+
+            expect(b.commits()).toHaveLength(1);
+            await importing;
+            expect(b.cancels()).toHaveLength(1);
+            expect(sent(b.cancels()[0])).toEqual({ token: TOKEN });
+            expect(alerts.error).toHaveBeenCalledTimes(1);
+            expect(b.ids()).toEqual(before);
+            expect(b.saveAsset).not.toHaveBeenCalled();
+        });
+    });
+
     type Failure = {
         name: string;
         status?: number;
@@ -806,7 +940,8 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
     );
 
     it.each([
-        ...failures,
+        // A busy commit refusal is retried once ("staged cancellation and commit retries").
+        ...failures.filter((testCase) => testCase.name !== "busy"),
         { name: "expired", status: 404, error: REALM_IMPORT_EXPIRED, message: () => language.realmImportExpired },
         {
             name: "malformed committed line",
