@@ -13,7 +13,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Server routes and resource store](#server-routes-and-resource-store) (10)
 - [LLM requests and providers](#llm-requests-and-providers) (11)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
-- [Display transform](#display-transform) (7)
+- [Display transform](#display-transform) (6)
 - [Chat screen and input](#chat-screen-and-input) (6)
 - [Client and plugins](#client-and-plugins) (25)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (8)
@@ -300,13 +300,6 @@ Both sockets send `proto=1` (Incremental Chat Transport D4, Slice 2). The server
 **Suggested handling:** before any `proto` floor work, add a diagnostics event field and a recorder on both sockets.
 
 ## Display transform
-
-### Budget-refused handler rows not re-measured
-
-`server/src/prompt/transform.ts` refuses a two-call (tab plugin handler) target whose snapshot charge passes `MAX_SNAPSHOT_BYTES` (8 MiB, :54). Since the [cross-plan review's DT1 fix](../manual-audit/archive/cross-plan-2026-10-29.md#dt1--a-permanent-display-failure-retries-and-toasts-every-round) (94856bdc2) a scope over the limit alone fails `permanent` (shown raw until its source or context changes), while a refusal the request's other targets caused is a plain failure that `src/ts/parser/displayTransformRecovery.svelte.ts` retries after 5 s with only the failed rows, so the earlier claim that such rows stay raw until a remount no longer holds. What is left is the measurement: when Display Evaluation Slice 3 measured it (2026-10-28), a 2,000-message chat of about 6 MiB charged about 6.7 MiB per scope, so only 30–38 of a 64-target chunk fit; Slice 4 then excluded the shared display entries from the per-snapshot charge (`exclude: entries`), so that number is likely smaller now. Not re-measured since.
-
-**Why it matters:** users with display plugins and long chats may still see a round of raw rows before the retry, and a scope whose own charge is over the limit stays raw.
-**Suggested handling:** re-measure on a realistic large chat with handlers (`util/playwright/measureTransformLua.mjs` has the shape); if a scope alone still passes the limit on realistic chats, raise the limit or charge the transcript once per scope.
 
 ### A single combined paragraph is written back as HTML
 
