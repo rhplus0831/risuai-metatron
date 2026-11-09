@@ -16,7 +16,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Display transform](#display-transform) (3)
 - [Chat screen and input](#chat-screen-and-input) (4)
 - [Client and plugins](#client-and-plugins) (8)
-- [Build, drivers, and e2e](#build-drivers-and-e2e) (4)
+- [Build, drivers, and e2e](#build-drivers-and-e2e) (2)
 
 ## Chat store, sync, and change feeds
 
@@ -316,21 +316,6 @@ Left on purpose by slice P2 of the RisuNest Small Wins plan (ed9d207c5, 2026-10-
 **Suggested handling:** pick these up when a change touches plugin reload timing (S1 safe boot uses P2's reload guard) or a bug report does. Related: "A multi-tab plugin removal can bring its deleted data back".
 
 ## Build, drivers, and e2e
-
-### checkJobProtocol's first run after a source change fails its SIGKILL case
-
-`util/playwright/checkJobProtocol.mjs`: the first run after a source change failed `sigkill-before-checkpoint` with "waiting for navigation to finish" (the page rebooted about 6 s after the SIGKILL restart); the next two runs passed every case. Likely Vite's dependency-optimization reload of the dev stack. Found 2026-10-29 by the Job Protocol audit's verification; not reproduced.
-
-**Why it matters:** a first run on a fresh tree can report a protocol failure that is the dev server's reload.
-**Suggested handling:** if it recurs, have the driver wait for Vite's optimization to settle before the case (`openApp` already answers the prompt again after a reload), or run the dev stack once before the cases.
-
-### checkServerSend once hit an alert after its mid-stream reload
-
-On 2026-11-05 (Incremental Chat Transport Slice 5, code at `f906c864e`) the first `node util/playwright/checkServerSend.mjs` passed 11 checks, then `openCharacterChat` after the "reload in the middle of a slow stream" step (~340) timed out because a `[data-alert-dialog]` overlay covered the sidebar. The run overlapped a `docker build`; four reruns passed 19/19, two of them logging no alert after the reload, and the base `9bf28c429` passed 19/19. The alert text was not captured. Candidates: the automatic safe-boot notice (the driver does not clear safe-boot attempts) or an error alert from the owner's resync after the reload.
-
-**Why it matters:** if it recurs it may be a real owner-reload problem, not harness noise.
-
-**Suggested handling:** if it shows again, print the dialog text before `openCharacterChat` to tell the two apart; consider clearing safe-boot attempts in the driver.
 
 ### pnpm check does not type-check e2e specs
 
