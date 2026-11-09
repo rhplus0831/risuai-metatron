@@ -10,27 +10,10 @@ The inbox was emptied on 2026-11-09 by the Found Issues Clearance plan (retired;
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (2)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (1)
 - [LLM requests and providers](#llm-requests-and-providers) (1)
 - [Display transform](#display-transform) (2)
 - [Client and plugins](#client-and-plugins) (2)
-
-## Chat store, sync, and change feeds
-
-### The save loop adopts each new character with a list scan
-
-`src/ts/storage/resourceSync.svelte.ts` (~2826, the flush's op loop) calls `adoptCharacter(op.id)` for every character create op; `adoptCharacter` (`src/ts/storage/chatStore.svelte.ts` ~5392) runs `findCharacter` without an index hint, and `normalizeNewCharacter` scans again. A flush carrying N new characters (a plugin `setDatabase` appending 300) costs N list scans there, after Found Issues Clearance F7 made the insertion itself linear. Found 2026-11-09 by F7; outside its files.
-
-**Why it matters:** the bulk-add path is linear only up to the insertion; the first save repeats the quadratic scan once.
-**Suggested handling:** build one id-to-index map per flush and pass the hint to `adoptCharacter`.
-
-### A refused later chat leaves a multi-chat import partly applied
-
-`src/ts/characters.ts` `importChat` `addChats` (~530) calls `createChat` per chat in a loop; when a later chat is refused (for example a non-string message `data`, which `prepareMessages` refuses since Found Issues Clearance F9), the earlier chats stay created, so the user sees the error alert but part of the import landed. The v2 path also changes folders before any chat is created. `installCharacterChats` (`src/ts/storage/chatStore.svelte.ts` ~5217) and `normalizeNewCharacter` (~5388) have the same order, but only for malformed data already in the mirror. Found 2026-11-09 by F9.
-
-**Why it matters:** an import that reports a refusal while keeping some of its chats is surprising and hard to undo.
-**Suggested handling:** validate every chat before the first `createChat` (and before the folder change).
 
 ## Server jobs and prompt assembly
 

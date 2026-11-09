@@ -100,6 +100,7 @@ export function createChatStoreMock(overrides: ModuleMockOverrides<ChatStoreModu
         unloadPendingChatWork: vi.fn(() => []),
         setStreamingState: vi.fn(),
         prepareChatInput: vi.fn(),
+        validateChatInput: vi.fn<ChatStoreModule["validateChatInput"]>(),
         createChat: vi.fn(),
         ensureChat: vi.fn(),
         deleteChat: vi.fn(),

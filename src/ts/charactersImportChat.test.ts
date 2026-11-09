@@ -95,6 +95,7 @@ const v2 = () => ({
     }),
 });
 const folder = (id: string, name: string) => ({ id, name, color: "", folded: false });
+const originalGlobals = { location: globalThis.location, safeStructuredClone: globalThis.safeStructuredClone };
 
 /**
  * Boots the harness with Alpha (one chat `a1`, a folder `f1`) selected and Beta (chats `b1`, `b2`, the
@@ -184,7 +185,8 @@ afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
-    vi.unstubAllGlobals();
+    vi.stubGlobal("location", originalGlobals.location);
+    vi.stubGlobal("safeStructuredClone", originalGlobals.safeStructuredClone);
     server.current?.close();
 });
 
@@ -273,6 +275,31 @@ describe("importChat writes the character selected when the dialog opened", () =
             expect(fake.chat(alpha, chat.id)?.data.name).toBe(chat.name);
         }
         expect(record("characters", beta).chatFolders).toBeUndefined();
+    });
+
+    it("refuses an entire risuAllChats v2 import before writing folders or chats when its second chat is invalid", async () => {
+        const { run, alpha, chatsOf, character, sync, serverText } = await boot();
+        const chatsBefore = chatsOf(alpha);
+        const foldersBefore = plain(character(alpha).chatFolders);
+        const serverBefore = serverText();
+        await run({
+            name: "invalid-chats.json",
+            data: encode({
+                type: "risuAllChats",
+                ver: 2,
+                folders: [folder("new-folder", "New folder")],
+                data: [
+                    chatV2("Valid", "new-folder", "one"),
+                    { ...chatV2("Invalid", "new-folder", "two"), message: [{ role: "user", data: 42 }] },
+                ],
+            }),
+        });
+        expect(alerts.error).toHaveBeenCalledExactlyOnceWith(new Error("message.data must be a string"));
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(chatsOf(alpha)).toEqual(chatsBefore);
+        expect(plain(character(alpha).chatFolders)).toEqual(foldersBefore);
+        await sync.flushResources();
+        expect(serverText()).toBe(serverBefore);
     });
 
     it("a character list changed around the target (an earlier character removed) does not redirect the write", async () => {

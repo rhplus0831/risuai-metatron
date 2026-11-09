@@ -2820,10 +2820,12 @@ function collectOperations(): {
         }
     }
     const creating = new Set<string>();
+    let characterIndices: Map<string, number> | undefined;
     for (const op of ops) {
         if (op.kind === RESOURCE_KIND.characters && op.baseRevision === null) {
             creating.add(op.id);
-            adoptCharacter(op.id);
+            characterIndices ??= new Map(characters.map((character, index) => [character.chaId, index]));
+            adoptCharacter(op.id, characterIndices.get(op.id));
         }
     }
     for (const [key, current] of persisted) {

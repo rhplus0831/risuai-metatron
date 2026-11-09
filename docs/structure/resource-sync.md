@@ -101,7 +101,7 @@
   an unindexed refusal. A new character travels with or before its chats.
 - Membership diffs by `chaId`: remove/re-add before collection is an update, with
   [chat reconciliation](chat-store.md#character-lifecycle). The server refuses two resource ops for one id, or a parent
-  delete beside its chat changes.
+  delete beside its chat changes. A collection with character creates builds one id-to-index map for `adoptCharacter`.
 - Above 5,000 unsent chat ops, the chat module holds a resend prefix under the batch id and a suffix under a fresh id;
   neither sends that cycle. `takeChatWork` withholds the prefix until
   [split confirmation](draft-recovery.md#split-confirmation); the suffix follows its acknowledgement.

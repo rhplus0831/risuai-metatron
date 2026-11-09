@@ -1589,6 +1589,15 @@ function sendChat(chat: Chat): Chat {
     return withoutProjection(projectChat(chat));
 }
 
+/** Checks a chat's message data without changing it; imports validate every chat before any write. */
+export function validateChatInput(chat: DeepReadonly<Pick<Chat, "message">>) {
+    for (const message of chat.message ?? []) {
+        if (typeof message.data !== "string") {
+            throw new Error("message.data must be a string");
+        }
+    }
+}
+
 /**
  * Prepares messages the module takes in (owned copies) as the server's `normalizeMessage` stores
  * them: a non-string `data` is refused before any message changes, a missing or duplicate id is
@@ -1596,11 +1605,7 @@ function sendChat(chat: Chat): Chat {
  * (`dropInvalidTranslation`), so the mirror holds what the server holds.
  */
 function prepareMessages(messages: Message[], taken: Set<string>, existing?: ReadonlyMap<string, number>) {
-    for (const message of messages) {
-        if (typeof message.data !== "string") {
-            throw new Error("message.data must be a string");
-        }
-    }
+    validateChatInput({ message: messages });
     for (const message of messages) {
         dropInvalidTranslation(message);
         if (!isValidId(message.chatId) || taken.has(message.chatId) || existing?.has(message.chatId)) {

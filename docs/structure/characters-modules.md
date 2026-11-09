@@ -228,7 +228,8 @@ module is added ([module import](#module-import)).
 
 - Character identity is `chaId`; imports and core creators add through `characterStore`. Create, copy, or ensure chats
   through the chat module after the character is in its mirror. See [persistence](persistence.md) and
-  [chat store](chat-store.md#chat-writes) for chat ownership.
+  [chat store](chat-store.md#chat-writes) for chat ownership. `importChat` validates every chat before adding folders or
+  chats.
 - Before insertion, `prepareNewCharacter` supplies a first chat when needed, moves `postHistoryInstructions` into the
   selected chat note, and prepares `fmIndex` and `localLore`; the character record itself holds no chats.
 

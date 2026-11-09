@@ -44,7 +44,14 @@ import {
 import { parseMarkdownSafe } from "./parser/parser.svelte";
 import { translateHTML } from "./translator/translator";
 import { captureTransform } from "./parser/transformClient";
-import { createChat, ensureChat, ensureChatLoaded, findChat, isCharacterGenerating } from "./storage/chatStore.svelte";
+import {
+    createChat,
+    ensureChat,
+    ensureChatLoaded,
+    findChat,
+    isCharacterGenerating,
+    validateChatInput,
+} from "./storage/chatStore.svelte";
 import { importedChatBinding } from "./storage/chatBinding.svelte";
 import { importedChatTranslation } from "./translator/chatTranslation.svelte";
 import { importedChatTogglePreset } from "./toggles/chatToggles.svelte";
@@ -525,9 +532,11 @@ export async function importChat() {
          * waits for the user's confirmation before its first send (`importedChatBinding`), and keeps its
          * translator and toggle presets only when they exist here (`importedChatTranslation`,
          * `importedChatTogglePreset`). `records` holds what the file held of each chat's memory, by the
-         * chat's place in `chats`; the restores run behind the action, also when a later chat throws.
+         * chat's place in `chats`; the restores run behind the action. Every chat is validated before
+         * the first write, so a refused chat leaves the import unapplied.
          */
         const addChats = (chats: Chat[], records: (StructuredMemoryFileRecords | undefined)[] = []) => {
+            chats.forEach(validateChatInput);
             const scope = beginMutationScope();
             const restores: ChatMemoryRestore[] = [];
             try {
@@ -592,6 +601,7 @@ export async function importChat() {
             if ((json.type === "risuAllChats" || json.type === "risuChat") && json.ver === 2) {
                 const folders = json.folders || [];
                 const chats = Array.isArray(json.data) ? json.data : [json.data];
+                chats.forEach(validateChatInput);
                 let folderIdMap = {};
                 folders.forEach((folder) => {
                     if (target.chatFolders?.some((f) => f.id === folder.id)) {

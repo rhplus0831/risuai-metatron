@@ -638,6 +638,24 @@ describe("mirror and queue", () => {
 });
 
 describe("membership and selection", () => {
+    it("validates message data without mutating a valid chat input", async () => {
+        const { chat } = await boot();
+        const input = { message: [m(undefined, "A"), m("b", "B")] };
+        const before = clone(input);
+        expect(chat.validateChatInput(input)).toBeUndefined();
+        expect(input).toEqual(before);
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
+    it("refuses non-string message data during validation", async () => {
+        const { chat } = await boot();
+        const input = { message: [m(undefined, "A"), { ...m("b", "B"), data: 42 }] };
+        const before = clone(input);
+        expect(() => chat.validateChatInput(input)).toThrow("message.data must be a string");
+        expect(input).toEqual(before);
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
     it("refuses numeric message data with a plain Error before creating a chat", async () => {
         const { chat, character } = await boot();
         const before = clone(character().chats);

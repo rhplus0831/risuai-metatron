@@ -84,7 +84,7 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   [chat journal's](draft-recovery.md#chat-journal). A direct chat write fails `pnpm check` (STRUCTURE D1).
 - Messages a writer takes in whole (`createChat`, `appendMessage`, `replaceChat`, `applyChatResult`, a new character's
   chats) pass `prepareMessages`, which refuses a non-string `data` as the server's `normalizeMessage` does, so a JSON
-  chat import cannot store one.
+  chat import cannot store one. Its non-mutating `validateChatInput` rule checks all imported chats before any write.
 
 ### By-id ops
 
