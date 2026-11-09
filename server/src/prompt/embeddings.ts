@@ -1,6 +1,7 @@
 import os from "node:os";
 import { createHash } from "node:crypto";
 import type { Database } from "../../../shared/database.ts";
+import { textHash } from "../../../shared/textHash.ts";
 import {
     type HypaModel,
     VOYAGE_CONTEXT_MODELS,
@@ -470,9 +471,8 @@ async function openAIEmbeds(env: EmbeddingEnv, model: string, input: string[] | 
  * The Voyage `/v1/embeddings` request (`voyageEmbeds` of the client's `hypamemory.ts`): `inputType`
  * is `document` for stored texts and `query` for a search, which give different vectors
  * (`HypaProcesser` caches no query; `HypaProcessorV2` keeps a Voyage query under its own key). It
- * sends what it is given and counts no tokens: `HypaProcesser.embedDocuments` and `HypaProcessorV2`'s
- * API batches pass at most 50 texts, but a direct `HypaProcesser.getEmbeds` call forwards its whole
- * input.
+ * sends what it is given and counts no tokens: `HypaProcesser.getEmbeds` (including `embedDocuments`)
+ * and `HypaProcessorV2`'s API batches pass at most 50 texts.
  */
 async function voyageEmbeds(
     env: EmbeddingEnv,
@@ -535,6 +535,13 @@ export class HypaProcesser {
     }
 
     async getEmbeds(input: string[] | string, inputType: "query" | "document" = "query"): Promise<VectorArray[]> {
+        if (Array.isArray(input) && input.length > 50) {
+            const embeddings: VectorArray[] = [];
+            for (const batch of chunkArray(input, 50)) {
+                embeddings.push(...(await this.getEmbeds(batch, inputType)));
+            }
+            return embeddings;
+        }
         if (isContextModel(this.model)) {
             const provider = getContextProvider(this.env, this.model)!;
             const inputs: string[] = Array.isArray(input) ? input : [input];
@@ -732,13 +739,8 @@ export function cosineSimilarity(a: VectorArray, b: VectorArray): number {
 }
 
 export function contextHash(texts: string[]): string {
-    let h = 0x811c9dc5;
-    const s = texts.join("\0");
-    for (let i = 0; i < s.length; i++) {
-        h ^= s.charCodeAt(i);
-        h = Math.imul(h, 0x01000193);
-    }
-    return (h >>> 0).toString(36);
+    // JSON preserves chunk boundaries; the shared 53-bit hash replaces the old 32-bit cache keys.
+    return textHash(JSON.stringify(texts));
 }
 
 const chunkArray = <T>(arr: T[], chunkSize: number) =>

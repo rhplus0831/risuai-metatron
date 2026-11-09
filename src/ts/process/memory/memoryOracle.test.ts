@@ -389,6 +389,133 @@ describe("the tab's Voyage embedding processors", () => {
         expect([...world.log.cacheKeys]).toEqual(["a|voyage4Large", "b|voyage4Large"]);
     });
 
+    it("batches direct arrays at 50 without changing scalar queries, input types or vector order", async () => {
+        const world = voyageWorld("voyage4");
+        const http = vi.spyOn(world, "http").mockImplementation(async (_url, body) => ({
+            ok: true,
+            status: 200,
+            data: {
+                data: (Array.isArray(body.input) ? body.input : [body.input]).map((text: string) => ({
+                    embedding: [Number(text)],
+                })),
+            },
+        }));
+        const { HypaProcesser } = await import("./hypamemory");
+        const processor = new HypaProcesser();
+        await expect(processor.getEmbeds("9")).resolves.toEqual([[9]]);
+        expect(http.mock.calls[0][1]).toEqual({ input: "9", model: "voyage-4", input_type: "query" });
+        for (const [length, inputType, sizes] of [
+            [50, "document", [50]],
+            [51, "query", [50, 1]],
+            [101, "document", [50, 50, 1]],
+        ] as const) {
+            http.mockClear();
+            const texts = Array.from({ length }, (_, i) => String(i));
+            await expect(processor.getEmbeds(texts, inputType)).resolves.toEqual(texts.map((text) => [Number(text)]));
+            expect(http.mock.calls.map(([, body]) => body.input.length)).toEqual(sizes);
+            expect(http.mock.calls.map(([, body]) => body.input_type)).toEqual(sizes.map(() => inputType));
+            expect(http.mock.calls.flatMap(([, body]) => body.input)).toEqual(texts);
+        }
+    });
+
+    it("preserves a later batch's provider error and sends no remaining batch", async () => {
+        const world = voyageWorld("voyage4");
+        const original = world.http.bind(world);
+        const http = vi
+            .spyOn(world, "http")
+            .mockImplementation(async (url, body) =>
+                http.mock.calls.length === 2
+                    ? { ok: false, status: 503, data: { error: "later batch failed" } }
+                    : original(url, body),
+            );
+        const { HypaProcesser } = await import("./hypamemory");
+        await expect(
+            new HypaProcesser().getEmbeds(
+                Array.from({ length: 101 }, (_, i) => `direct ${i}`),
+                "document",
+            ),
+        ).rejects.toBe('{"error":"later batch failed"}');
+        expect(http.mock.calls.map(([, body]) => body.input.length)).toEqual([50, 50]);
+    });
+
+    it("keeps the tab and server group keys equal while separating old collisions and NUL chunk boundaries", async () => {
+        const { contextHash } = await import("./hypamemory");
+        const { contextHash: serverHash } = await import("../../../../server/src/prompt/embeddings.ts");
+        // The first pair shared FNV-1a key 0xa7bbb898; the second pair shared NUL-joined input.
+        const groups = [
+            ["shared", "473817d277027566"],
+            ["shared", "5da0dcafcfa539c6"],
+            ["a\0b", "c"],
+            ["a", "b\0c"],
+        ];
+        const hashes = ["1940fe3a49b2e9", "0e84d4b5c73f2e", "09bc21f7dcdcb7", "08043e2d73364b"];
+        expect(groups.map(contextHash)).toEqual(hashes);
+        expect(groups.map(serverHash)).toEqual(hashes);
+        expect(new Set(hashes).size).toBe(4);
+    });
+
+    it("misses legacy contextual keys and warmly reuses distinct vectors for formerly colliding groups", async () => {
+        const world = voyageWorld("voyageContext3");
+        // Legacy FNV key for both groups. It must no longer be admitted as either group's vector.
+        world.cache.set(`shared|voyageContext3|voyageContext3|ctx:${(0xa7bbb898).toString(36)}`, {
+            content: "shared",
+            embedding: [99, 99],
+        });
+        const http = vi.spyOn(world, "http").mockImplementation(async (_url, body) => ({
+            ok: true,
+            status: 200,
+            data: {
+                data: body.inputs.map((group: string[]) => ({
+                    data: group.map(() => ({ embedding: group[1] === "473817d277027566" ? [1, 0] : [0, 1] })),
+                })),
+            },
+        }));
+        const { HypaProcessorV2 } = await import("./hypamemoryv2");
+        const groups = [
+            ["shared", "473817d277027566"],
+            ["shared", "5da0dcafcfa539c6"],
+        ];
+        for (const cacheState of ["cold", "warm"]) {
+            for (const [index, group] of groups.entries()) {
+                const processor = new HypaProcessorV2<string>();
+                await processor.addTexts(
+                    group.map((content, position) => ({ id: String(position), content, metadata: `group-${index}` })),
+                );
+                expect(processor.vectors.get("0")?.embedding, cacheState).toEqual(index === 0 ? [1, 0] : [0, 1]);
+            }
+            expect(http).toHaveBeenCalledTimes(2);
+        }
+        expect([...world.log.cacheKeys].sort()).toEqual(
+            [
+                "shared|voyageContext3|voyageContext3|ctx:1ajfvko",
+                "shared|voyageContext3|voyageContext3|ctx:1940fe3a49b2e9",
+                "473817d277027566|voyageContext3|voyageContext3|ctx:1940fe3a49b2e9",
+                "shared|voyageContext3|voyageContext3|ctx:0e84d4b5c73f2e",
+                "5da0dcafcfa539c6|voyageContext3|voyageContext3|ctx:0e84d4b5c73f2e",
+            ].sort(),
+        );
+    });
+
+    it("accepts all six local model IDs in runEmbedding and preserves CPU/GPU routing", async () => {
+        voyageWorld("MiniLM");
+        const { HypaProcesser, localModels } = await import("./hypamemory");
+        const { runEmbedding } = await import("../transformers");
+        const models = [
+            "Xenova/all-MiniLM-L6-v2",
+            "nomic-ai/nomic-embed-text-v1.5",
+            "Xenova/bge-small-en-v1.5",
+            "Xenova/bge-m3",
+            "Xenova/paraphrase-multilingual-MiniLM-L12-v2",
+            "HyperBlaze/BGE-m3-ko",
+        ] as const satisfies readonly Parameters<typeof runEmbedding>[1][];
+        expect([...new Set(Object.values(localModels.models))]).toEqual(models);
+        const embed = vi.spyOn(await import("../transformers"), "runEmbedding");
+        for (const [name, model] of Object.entries(localModels.models)) {
+            await new HypaProcesser(name as keyof typeof localModels.models).getEmbeds("local");
+            expect(embed).toHaveBeenLastCalledWith(["local"], model, name.endsWith("GPU") ? "webgpu" : "wasm");
+        }
+    });
+
     it("HypaProcessorV2 keeps a Voyage 4 query vector under its own key", async () => {
         const world = voyageWorld("voyage4Lite");
         const { HypaProcessorV2 } = await import("./hypamemoryv2");

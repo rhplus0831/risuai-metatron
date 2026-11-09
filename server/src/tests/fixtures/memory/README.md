@@ -28,3 +28,8 @@ The `v3exp-existing-voyage-groups` case was hand-edited on 2026-10-21: `HypaProc
 a contextual model's query vectors under a `|query` suffix, so its three query cache keys end in
 `|query`. Without it, a query and a one-text document group of the same text shared one key and each
 reused the other's vector (embedded with the other `input_type`). The requests are unchanged.
+
+The `v3-voyage-similar-full` and `v3exp-existing-voyage-groups` cases have hand-edited
+contextual group cache keys: the tab and server now use the shared 53-bit `textHash` over
+JSON-encoded chunks in place of the 32-bit hash over NUL-joined chunks. Only those cache keys
+changed; prompts, vectors, requests, and results remain the captured behavior.

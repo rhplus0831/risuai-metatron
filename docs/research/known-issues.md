@@ -14,7 +14,7 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [live-updates](#live-updates) (2)
 - [llm-requests](#llm-requests) (4)
 - [mcp](#mcp) (1)
-- [memory](#memory) (10)
+- [memory](#memory) (6)
 - [persistence](#persistence) (2)
 - [plugin-sandbox](#plugin-sandbox) (6)
 - [resource-sync](#resource-sync) (2)
@@ -167,7 +167,6 @@ Guide: [MCP: Client Registry, Remote and Internal Clients, RisuAccess, Tool Disp
 
 Guide: [Long-Term Memory and Embeddings](../structure/memory.md#known-hazards).
 
-- `memoryAlgorithmType` can disagree with the actual boolean flags on old saves.
 - The modal and lore-draft fence knows only this tab's sends and the jobs it follows or sees locked: another tab's modal
   (no job ownership on the change feed), the HypaV2 chunk editor (`AlertComp.svelte` `setHypaV2ChunkText`), and a
   plugin's whole-chat result (`applyChatResult`) still write a whole memory value, and one that lands after the job's
@@ -178,15 +177,9 @@ Guide: [Long-Term Memory and Embeddings](../structure/memory.md#known-hazards).
   the idle refresh catches up, and a whole-field write can replace the job's data (`chat-store.md`, job hydration and
   idle refresh).
 - Experimental's rate limiter is per execution: no provider-wide allowance across runs or chats.
-- Ordinary API document batches (`HypaProcesser.embedDocuments`, `HypaProcessorV2`) are capped at 50 texts, a direct
-  `getEmbeds` call is not, and none counts tokens before sending; long inputs can exceed provider limits. Contextual
-  batches likewise count inputs and chunks, not tokens.
-- The Voyage group hash is a 32-bit hash of the group's texts (joined with `\0`), so two different groups can still
-  share a key.
-- A cancelled `TaskRateLimiter` batch leaves its retry timer alive until the window advances (up to 60 s); it starts no
-  task.
+- No API embedding batch (`HypaProcesser.getEmbeds`, `HypaProcessorV2`) counts tokens before sending, so long
+  inputs can exceed provider limits; contextual batches likewise count inputs and chunks, not tokens.
 - The custom embedding URL is fetched directly by the server with no local-target restriction.
-- The Transformers `EmbeddingModel` union names only MiniLM and nomic, while `localModels` lists more models.
 
 ## persistence
 

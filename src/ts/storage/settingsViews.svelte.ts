@@ -31,6 +31,7 @@ import {
     type PromptPresetField,
 } from "../../../shared/presets.ts";
 import { PERSONA_DEFAULTS } from "../../../shared/personas.ts";
+import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
 import {
     COLLECTION_FIELDS,
     COLLECTION_KIND,
@@ -632,7 +633,25 @@ function sectionView(section: SectionKind): object {
         defineView(
             view,
             field,
-            () => trackedRecord<Record<string, unknown>>(section)?.[field],
+            () => {
+                const value = trackedRecord<Record<string, unknown>>(section)?.[field];
+                if (section !== "ui" || field !== "memoryAlgorithmType" || value === STRUCTURED_MEMORY_ALGORITHM) {
+                    return value;
+                }
+                // Legacy saves can disagree with the selector. Mirror the server's flag priority
+                // on read only; the records stay unchanged until the user selects an algorithm.
+                const memory = trackedRecord<SettingsViews["memoryTranslateMedia"]>("memoryTranslateMedia");
+                if (!memory) return value;
+                return memory.hanuraiEnable
+                    ? "hanuraiMemory"
+                    : memory.hypav2
+                      ? "hypaMemoryV2"
+                      : memory.hypaV3
+                        ? "hypaMemoryV3"
+                        : memory.supaModelType !== "none"
+                          ? "supaMemory"
+                          : "none";
+            },
             (value) => writeRecordField(section, field, value),
         );
     }

@@ -716,6 +716,58 @@ describe("activePersona", () => {
 });
 
 describe("the section and collection views", () => {
+    it("derives stale memory selectors reactively in dispatch priority without writing the saved selector", () => {
+        boot({
+            memoryAlgorithmType: "hypaMemoryV3",
+            supaModelType: "none",
+            hypav2: false,
+            hypaV3: false,
+            hanuraiEnable: false,
+        });
+        const memory = trackedRecord<any>("memoryTranslateMedia")!;
+        const ui = trackedRecord<any>("ui")!;
+        const probe = createProbe(() => settings.ui.memoryAlgorithmType);
+        try {
+            expect(probe.derived()).toBe("none");
+            expect(notified).toEqual([]);
+            for (const [patch, expected] of [
+                [{ supaModelType: "subModel" }, "supaMemory"],
+                [{ hypaV3: true }, "hypaMemoryV3"],
+                [{ hypav2: true }, "hypaMemoryV2"],
+                [{ hanuraiEnable: true }, "hanuraiMemory"],
+                [{ hanuraiEnable: false }, "hypaMemoryV2"],
+                [{ hypav2: false }, "hypaMemoryV3"],
+                [{ hypaV3: false, supaModelType: "none" }, "none"],
+            ] as const) {
+                Object.assign(memory, patch);
+                notified.length = 0;
+                flushSync();
+                expect(probe.derived()).toBe(expected);
+                expect(ui.memoryAlgorithmType).toBe("hypaMemoryV3");
+                expect(notified).toEqual([]);
+            }
+            expect(probe.seen).toEqual([
+                "none",
+                "supaMemory",
+                "hypaMemoryV3",
+                "hypaMemoryV2",
+                "hanuraiMemory",
+                "hypaMemoryV2",
+                "hypaMemoryV3",
+                "none",
+            ]);
+            ui.memoryAlgorithmType = "structuredMemory";
+            Object.assign(memory, { hanuraiEnable: true, hypav2: true, hypaV3: true });
+            notified.length = 0;
+            flushSync();
+            expect(probe.derived()).toBe("structuredMemory");
+            expect(notified).toEqual([]);
+            expect(queued()).toEqual([]);
+        } finally {
+            probe.dispose();
+        }
+    });
+
     it("read every section field as its record holds it", () => {
         for (const section of Object.values(SECTION_KIND) as SectionKind[]) {
             for (const field of SECTION_FIELDS[section]) {

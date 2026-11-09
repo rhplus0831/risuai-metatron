@@ -162,7 +162,8 @@ cleanup after formatting still applies.
 
 - DB settings:
   - Algorithm flags: `hypaMemory`, `hypav2`, `hypaV3`, `hanuraiEnable`, `hanuraiSplit`, `hanuraiTokens`,
-    `memoryAlgorithmType` (only `structuredMemory` is read).
+    `memoryAlgorithmType` (`structuredMemory` stays explicit; the settings view derives legacy values from the flags in
+    server priority order on read, without saving).
   - Models and keys: `hypaModel`, `supaModelType`, `supaMemoryKey`, `voyageApiKey`. `supaMemoryKey` is edited only on
     the Memory page, one input for summarization and embeddings; the Playground embedding tool shows its status, links
     there ([settings-i18n](settings-i18n.md)), and keeps its draft (model, query, data, results) in module state across

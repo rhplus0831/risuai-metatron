@@ -4,6 +4,7 @@ import localforage from "localforage";
 import { globalFetch } from "src/ts/globalApi.svelte";
 import { runEmbedding } from "../transformers";
 import { appendLastPath } from "src/ts/util";
+import { textHash } from "../../../../shared/textHash.ts";
 import { isContextModel, getContextProvider } from "./contextualEmbedding";
 import {
     type HypaModel,
@@ -54,9 +55,8 @@ export const localModels = {
  * The Voyage `/v1/embeddings` request for a `VOYAGE_EMBEDDING_MODELS` model (Voyage 4 Large, 4, and
  * 4 Lite), with `voyageApiKey` through `globalFetch`. `inputType` is `document` for stored texts and
  * `query` for a search; the two give different vectors. The answer has the OpenAI shape
- * (`data[].embedding`). It sends what it is given and counts no tokens: `HypaProcesser.embedDocuments`
- * and `HypaProcessorV2`'s API batches pass at most 50 texts, but a direct `HypaProcesser.getEmbeds`
- * call forwards its whole input.
+ * (`data[].embedding`). It sends what it is given and counts no tokens: `HypaProcesser.getEmbeds`
+ * (including `embedDocuments`) and `HypaProcessorV2`'s API batches pass at most 50 texts.
  */
 export async function voyageEmbeds(model: string, input: string[] | string, inputType: "query" | "document") {
     const apiKey = settings.secrets.voyageApiKey?.trim();
@@ -124,6 +124,13 @@ export class HypaProcesser {
      * string, not an `Error`); the contextual provider throws an `Error`.
      */
     async getEmbeds(input: string[] | string, inputType: "query" | "document" = "query"): Promise<VectorArray[]> {
+        if (Array.isArray(input) && input.length > 50) {
+            const embeddings: VectorArray[] = [];
+            for (const batch of chunkArray(input, 50)) {
+                embeddings.push(...(await this.getEmbeds(batch, inputType)));
+            }
+            return embeddings;
+        }
         if (isContextModel(this.model)) {
             const provider = getContextProvider(this.model);
             const inputs: string[] = Array.isArray(input) ? input : [input];
@@ -315,13 +322,8 @@ export function cosineSimilarity(a: VectorArray, b: VectorArray): number {
 }
 
 export function contextHash(texts: string[]): string {
-    let h = 0x811c9dc5;
-    const s = texts.join("\0");
-    for (let i = 0; i < s.length; i++) {
-        h ^= s.charCodeAt(i);
-        h = Math.imul(h, 0x01000193);
-    }
-    return (h >>> 0).toString(36);
+    // JSON preserves chunk boundaries; the shared 53-bit hash replaces the old 32-bit cache keys.
+    return textHash(JSON.stringify(texts));
 }
 
 export type VectorArray = number[] | Float32Array;

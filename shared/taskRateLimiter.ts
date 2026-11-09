@@ -8,9 +8,8 @@
  * - A task's failure is its result (`success: false`), never a rejection. With `failFast` (the
  *   default) the first failure cancels every queued task: each ends with a `TaskCanceledError`
  *   result. Tasks already running are not stopped.
- * - `cancelPendingTasks` ends the queued tasks the same way. A retry timer already scheduled for the
- *   rate window stays alive until the window advances (up to 60 seconds); it then processes the
- *   queue as it is then, so it starts nothing unless a task was queued after the cancel.
+ * - `cancelPendingTasks` ends the queued tasks the same way and clears the rate-window retry timer.
+ *   Later tasks schedule their own retry against the unchanged window.
  */
 
 /** The limits: 20 tasks per minute, 5 at once, and `failFast` by default. */
@@ -44,6 +43,7 @@ export class TaskRateLimiter {
     public taskQueueChangeCallback: ((queuedCount: number) => void) | null = null;
     private timestamps: number[] = [];
     private active: number = 0;
+    private retryTimer: ReturnType<typeof setTimeout> | undefined;
     private queue: Array<{
         task: () => Promise<TaskResult<any>>;
         resolve: (result: TaskResult<any>) => void;
@@ -95,6 +95,8 @@ export class TaskRateLimiter {
     }
 
     public cancelPendingTasks(reason: string): void {
+        clearTimeout(this.retryTimer);
+        this.retryTimer = undefined;
         const error = new TaskCanceledError(reason);
 
         while (this.queue.length > 0) {
@@ -149,7 +151,12 @@ export class TaskRateLimiter {
             );
 
             // Wait until rate limit window advances before retrying
-            setTimeout(() => this.processNextFromQueue(), timeUntilExpiry);
+            if (this.retryTimer === undefined) {
+                this.retryTimer = setTimeout(() => {
+                    this.retryTimer = undefined;
+                    this.processNextFromQueue();
+                }, timeUntilExpiry);
+            }
             return;
         }
 

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { TaskRateLimiter } from "../../../shared/taskRateLimiter.ts";
+import { TaskCanceledError, TaskRateLimiter } from "../../../shared/taskRateLimiter.ts";
 import { createVectorCache, type VectorCache } from "../data/vectorCache.ts";
 import {
     contextHash,
@@ -138,6 +138,56 @@ afterEach(() => {
 });
 
 describe("HypaProcesser over the providers", () => {
+    it("bounds direct arrays at 50 texts while preserving scalar queries, input type and vector order", async () => {
+        const calls: Call[] = [];
+        const processor = new HypaProcesser(env({ fetch: fakeFetch({ calls }), db: { hypaModel: "voyage4" } }));
+        await expect(processor.getEmbeds("scalar")).resolves.toEqual([vector("scalar")]);
+        expect(calls[0].body).toEqual({ input: "scalar", model: "voyage-4", input_type: "query" });
+        for (const [length, inputType, sizes] of [
+            [50, "document", [50]],
+            [51, "query", [50, 1]],
+            [101, "document", [50, 50, 1]],
+        ] as const) {
+            calls.length = 0;
+            const texts = Array.from({ length }, (_, i) => `direct ${i}`);
+            await expect(processor.getEmbeds(texts, inputType)).resolves.toEqual(texts.map(vector));
+            expect(calls.map(({ body }) => body.input.length)).toEqual(sizes);
+            expect(calls.map(({ body }) => body.input_type)).toEqual(sizes.map(() => inputType));
+            expect(calls.flatMap(({ body }) => body.input)).toEqual(texts);
+        }
+    });
+
+    for (const failure of ["provider failure", "abort"] as const) {
+        it(`stops a direct embedding call after a later batch's ${failure}`, async () => {
+            const calls: Call[] = [];
+            const controller = new AbortController();
+            const processor = new HypaProcesser(
+                env({
+                    signal: controller.signal,
+                    db: { hypaModel: "voyage4" },
+                    fetch: fakeFetch({
+                        calls,
+                        answer: (call) => {
+                            if (calls.length !== 2) return defaultAnswer(call);
+                            if (failure === "abort") {
+                                controller.abort(new Error("later batch aborted"));
+                                return defaultAnswer(call);
+                            }
+                            return { status: 503, body: { error: "later batch failed" } };
+                        },
+                    }),
+                }),
+            );
+            await expect(
+                processor.getEmbeds(
+                    Array.from({ length: 101 }, (_, i) => `direct ${i}`),
+                    "document",
+                ),
+            ).rejects.toThrow(failure === "abort" ? "later batch aborted" : "later batch failed");
+            expect(calls.map(({ body }) => body.input.length)).toEqual([50, 50]);
+        });
+    }
+
     it("calls the custom server with the settings' model and trimmed key, caches under the model suffix, and reuses the vectors", async () => {
         const calls: Call[] = [];
         const shared = cache();
@@ -689,7 +739,139 @@ describe("the job's end and the cache's generation", () => {
     });
 });
 
+describe("the memory limiter's retry lifecycle", () => {
+    it("cancels the retry and queued tasks once, keeps active work, and gives a fresh batch the original rate window", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        let release!: (value: string) => void;
+        const held = new Promise<string>((resolve) => {
+            release = resolve;
+        });
+        const limiter = new TaskRateLimiter({ tasksPerMinute: 2, maxConcurrentTasks: 2 });
+        const queued = vi.fn<() => Promise<string>>().mockResolvedValue("unexpected");
+        const settled = vi.fn<(value: unknown) => void>();
+        try {
+            const active = limiter.executeTask(() => held);
+            await limiter.executeTask(async () => "spent quota");
+            const pending = limiter.executeBatch([queued, queued]).then((value) => {
+                settled(value);
+                return value;
+            });
+            await vi.advanceTimersByTimeAsync(10_000);
+            expect(vi.getTimerCount()).toBe(1);
+            limiter.cancelPendingTasks("cancelled by user");
+            limiter.cancelPendingTasks("cancel again");
+            const result = await pending;
+            expect(result).toMatchObject({ successCount: 0, failureCount: 2, allSucceeded: false });
+            expect(result.results.map(({ error }) => error)).toEqual([
+                new TaskCanceledError("cancelled by user"),
+                new TaskCanceledError("cancelled by user"),
+            ]);
+            expect(settled).toHaveBeenCalledTimes(1);
+            expect(queued).not.toHaveBeenCalled();
+            expect(vi.getTimerCount()).toBe(0);
+
+            const fresh = vi.fn<() => Promise<string>>().mockResolvedValue("fresh");
+            const next = limiter.executeBatch([fresh]);
+            expect(vi.getTimerCount()).toBe(1);
+            await vi.advanceTimersByTimeAsync(49_999);
+            expect(fresh).not.toHaveBeenCalled();
+            release("active completed");
+            await expect(active).resolves.toEqual({ success: true, data: "active completed" });
+            await vi.advanceTimersByTimeAsync(101);
+            expect(await next).toMatchObject({ successCount: 1, failureCount: 0 });
+            expect(fresh).toHaveBeenCalledTimes(1);
+            expect(queued).not.toHaveBeenCalled();
+            expect(settled).toHaveBeenCalledTimes(1);
+            expect(vi.getTimerCount()).toBe(0);
+        } finally {
+            release("cleanup");
+            limiter.cancelPendingTasks("cleanup");
+            vi.clearAllTimers();
+            vi.useRealTimers();
+        }
+    });
+
+    it("removes the minute retry on fail-fast without running or resettling the cancelled queue", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        let reject!: (reason: Error) => void;
+        const held = new Promise<string>((_resolve, fail) => {
+            reject = fail;
+        });
+        const limiter = new TaskRateLimiter({ tasksPerMinute: 2, maxConcurrentTasks: 2 });
+        const queued = vi.fn<() => Promise<string>>().mockResolvedValue("unexpected");
+        const settled = vi.fn<(value: unknown) => void>();
+        try {
+            const failed = limiter.executeTask(() => held);
+            await limiter.executeTask(async () => "spent quota");
+            const pending = limiter.executeBatch([queued, queued]).then((value) => {
+                settled(value);
+                return value;
+            });
+            await vi.advanceTimersByTimeAsync(0);
+            expect(vi.getTimerCount()).toBe(1);
+            const error = new Error("provider failed");
+            reject(error);
+            await expect(failed).resolves.toEqual({ success: false, error });
+            const result = await pending;
+            expect(result.failureCount).toBe(2);
+            expect(result.results.every(({ error }) => error instanceof TaskCanceledError)).toBe(true);
+            expect(vi.getTimerCount()).toBe(0);
+            await vi.advanceTimersByTimeAsync(61_000);
+            expect(queued).not.toHaveBeenCalled();
+            expect(settled).toHaveBeenCalledTimes(1);
+        } finally {
+            reject(new Error("cleanup"));
+            limiter.cancelPendingTasks("cleanup");
+            vi.clearAllTimers();
+            vi.useRealTimers();
+        }
+    });
+});
+
 describe("HypaProcessorV2", () => {
+    it("misses legacy context keys and warmly reuses separate vectors for old 32-bit collisions", async () => {
+        const calls: Call[] = [];
+        const shared = cache();
+        const e = env({
+            cache: shared,
+            db: { hypaModel: "voyageContext3" },
+            fetch: fakeFetch({
+                calls,
+                answer: (call) => ({
+                    body: {
+                        data: call.body.inputs.map((group: string[]) => ({
+                            data: group.map(() => ({ embedding: group[1] === "473817d277027566" ? [1, 0] : [0, 1] })),
+                        })),
+                    },
+                }),
+            }),
+        });
+        const oldKey = `shared|voyageContext3|voyageContext3|ctx:${(0xa7bbb898).toString(36)}|chunk-cache-v2|index:0`;
+        shared.set(oldKey, [99, 99], e.generation);
+        const groups = [
+            ["shared", "473817d277027566"],
+            ["shared", "5da0dcafcfa539c6"],
+        ];
+        const hashes = ["1940fe3a49b2e9", "0e84d4b5c73f2e"];
+        for (const cacheState of ["cold", "warm"]) {
+            for (const [index, group] of groups.entries()) {
+                const processor = new HypaProcessorV2<{ group: string }>(e);
+                const metadata = { group: `group-${index}` };
+                await processor.addTexts(
+                    group.map((content, position) => ({ id: String(position), content, metadata })),
+                );
+                const expected = index === 0 ? [1, 0] : [0, 1];
+                expect(processor.vectors.get("0")?.embedding, cacheState).toEqual(expected);
+                expect(
+                    shared.get(`shared|voyageContext3|voyageContext3|ctx:${hashes[index]}|chunk-cache-v2|index:0`),
+                ).toEqual(expected);
+            }
+            expect(calls).toHaveLength(2);
+        }
+        expect(calls.map(({ body }) => body.inputs)).toEqual(groups.map((group) => [group]));
+        expect(shared.get(oldKey)).toEqual([99, 99]);
+    });
+
     type Meta = { group: string };
 
     it("embeds API texts in chunks of 50 through the rate limiter, keeps metadata, and gives a cache hit the client's shape (no id)", async () => {

@@ -198,22 +198,22 @@ describe("the server ports against the browser fixture", () => {
         key.endsWith("|custom-em") ? `${key}|endpoint-v1:http://embed.test/v1/embeddings` : key;
     const serverCacheKeys: Record<string, string[]> = {
         "v3-voyage-similar-full": [
-            "Gravel underfoot.|voyageContext3|ctx:wbf3zz|chunk-cache-v2|index:1",
+            "Gravel underfoot.|voyageContext3|ctx:0277353d251a21|chunk-cache-v2|index:1",
             "Old summary four: a whisper in the orchard.|voyageContext3|chunk-cache-v2|index:0",
-            "Old summary one: the river crossing.|voyageContext3|ctx:1t4y9hp|chunk-cache-v2|index:0",
-            "Old summary six: ember and willow.|voyageContext3|ctx:wbf3zz|chunk-cache-v2|index:0",
-            "Old summary three: copper coins traded.|voyageContext3|ctx:shczrm|chunk-cache-v2|index:0",
-            "The harbor was silent.|voyageContext3|ctx:shczrm|chunk-cache-v2|index:1",
-            "They camped by the lantern.|voyageContext3|ctx:1t4y9hp|chunk-cache-v2|index:1",
+            "Old summary one: the river crossing.|voyageContext3|ctx:01462129ac56ef|chunk-cache-v2|index:0",
+            "Old summary six: ember and willow.|voyageContext3|ctx:0277353d251a21|chunk-cache-v2|index:0",
+            "Old summary three: copper coins traded.|voyageContext3|ctx:15e6a9bdcd73eb|chunk-cache-v2|index:0",
+            "The harbor was silent.|voyageContext3|ctx:15e6a9bdcd73eb|chunk-cache-v2|index:1",
+            "They camped by the lantern.|voyageContext3|ctx:01462129ac56ef|chunk-cache-v2|index:1",
         ],
         "v3exp-existing-voyage-groups": [
             "Message 11: willow silent harbor river meadow gravel.|voyageContext3|voyageContext3|query",
             "Message 12: river meadow gravel orchard ember lantern whisper saffron copper willow silent harbor river.|voyageContext3|voyageContext3|query",
             "Message 13: orchard ember lantern whisper saffron copper willow silent harbor.|voyageContext3|voyageContext3|query",
-            "Old summary one: the river crossing.|voyageContext3|voyageContext3|ctx:1t4y9hp|chunk-cache-v2|index:0",
-            "Old summary three: copper coins traded.|voyageContext3|voyageContext3|ctx:shczrm|chunk-cache-v2|index:0",
-            "The harbor was silent.|voyageContext3|voyageContext3|ctx:shczrm|chunk-cache-v2|index:1",
-            "They camped by the lantern.|voyageContext3|voyageContext3|ctx:1t4y9hp|chunk-cache-v2|index:1",
+            "Old summary one: the river crossing.|voyageContext3|voyageContext3|ctx:01462129ac56ef|chunk-cache-v2|index:0",
+            "Old summary three: copper coins traded.|voyageContext3|voyageContext3|ctx:15e6a9bdcd73eb|chunk-cache-v2|index:0",
+            "The harbor was silent.|voyageContext3|voyageContext3|ctx:15e6a9bdcd73eb|chunk-cache-v2|index:1",
+            "They camped by the lantern.|voyageContext3|voyageContext3|ctx:01462129ac56ef|chunk-cache-v2|index:1",
         ],
     };
 

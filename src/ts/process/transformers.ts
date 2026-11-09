@@ -85,7 +85,13 @@ export const runSummarizer = async (text: string) => {
 
 let extractor: FeatureExtractionPipeline = null;
 let lastEmbeddingModelQuery: string = "";
-type EmbeddingModel = "Xenova/all-MiniLM-L6-v2" | "nomic-ai/nomic-embed-text-v1.5";
+type EmbeddingModel =
+    | "Xenova/all-MiniLM-L6-v2"
+    | "nomic-ai/nomic-embed-text-v1.5"
+    | "Xenova/bge-small-en-v1.5"
+    | "Xenova/bge-m3"
+    | "Xenova/paraphrase-multilingual-MiniLM-L12-v2"
+    | "HyperBlaze/BGE-m3-ko";
 /**
  * One normalized, mean-pooled vector per text, with 8-bit weights on `device`. Only the extractor is
  * kept between calls (replaced when the model or device changes); the vectors are not cached here,
