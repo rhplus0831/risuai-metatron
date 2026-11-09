@@ -607,7 +607,9 @@ export async function mirrorState(s: Session, chaId: string, expected: ExpectedS
                 return {
                     character: {
                         name: character?.name,
-                        ...("desc" in expected.character ? { desc: character?.desc } : {}),
+                        ...("desc" in expected.character
+                            ? { desc: character && "desc" in character ? character.desc : undefined }
+                            : {}),
                     },
                     chats: held,
                     order,

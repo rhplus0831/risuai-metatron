@@ -7,6 +7,7 @@
  * Accepted independent writes survive; a refused local edit must remain visible as recovery work.
  */
 import { expect, settle, test } from "./fixtures";
+import { isChatOrderConflict } from "../shared/resources.ts";
 import {
     BATCH_URL,
     CONVERGENCE_TIMEOUT,
@@ -393,7 +394,7 @@ test("concurrent chat creation deletion and reordering preserve every surviving 
             batch.body.chatOrders?.some((order) => order.characterId === chaId) &&
             batch.response?.status === 409 &&
             batch.response.body.conflicts?.some(
-                (conflict) => conflict.kind === "chatOrder" && conflict.characterId === chaId,
+                (conflict) => isChatOrderConflict(conflict) && conflict.characterId === chaId,
             ),
     );
     const discarded =

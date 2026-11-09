@@ -2,7 +2,7 @@
 // a change reaches. Every spec drives the whole app, so no import graph says which spec covers a
 // change; the selection is by name instead. A spec is selected for a changed file when
 // - the spec is the changed file, or the spec reaches it through relative static imports (followed
-//   through the harness files in `e2e/` and `util/playwright/`);
+//   through the harness files in `e2e/` and `util/playwright/`, resolving extensionless imports);
 // - the spec's text names the file: its repository path (`/src/...` dynamic imports included), its
 //   file name when no other tracked file has that name, or one of its parent directories (fixture
 //   directories a spec reads);
@@ -63,7 +63,8 @@ function isHarness(file) {
 /**
  * The repository paths `file` reaches through relative static imports, following the harness files
  * (`e2e/`, `util/playwright/`) and stopping at app and shared code. `read` returns a file's text, or
- * null when it cannot be read.
+ * null when it cannot be read. Resolve the exact path, then `.ts`, `.svelte.ts`, and `/index.ts`,
+ * keeping the normalized path when none is readable.
  */
 export function staticImports(file, read) {
     const reached = new Set();
@@ -73,7 +74,11 @@ export function staticImports(file, read) {
         const text = read(current);
         if (text === null) continue;
         for (const [, specifier] of text.matchAll(IMPORT_PATTERN)) {
-            const target = posix.normalize(posix.join(posix.dirname(current), specifier));
+            const normalized = posix.normalize(posix.join(posix.dirname(current), specifier));
+            const target =
+                [normalized, `${normalized}.ts`, `${normalized}.svelte.ts`, `${normalized}/index.ts`].find(
+                    (candidate) => read(candidate) !== null,
+                ) ?? normalized;
             if (reached.has(target)) continue;
             reached.add(target);
             if (isHarness(target)) pending.push(target);

@@ -54,8 +54,8 @@ codes; the entries name the role and the identifiers to look up.
 ### Browser stack
 
 - Plain `playwright-core` scripts in `util/playwright/` for captures and one-off observations, `@playwright/test` specs
-  in `e2e/` for repeatable checks. `playwright.config.ts`, `e2e/`, and `util/playwright/` are outside `tsconfig.json`'s
-  include, so `pnpm check` does not type-check them.
+  in `e2e/` for repeatable checks. `pnpm check` type-checks the specs and harness through `e2e/tsconfig.json`;
+  `playwright.config.ts` and `util/playwright/` are outside its type-checking scope.
 - `playwright.config.ts`: one worker, the system Chrome (`RISU_CHROME`), `globalSetup` `util/playwright/globalSetup.mjs`
   (one stack per run on `E2E_SERVER_PORT`/`E2E_VITE_PORT`).
 - `e2e/fixtures.ts`: the specs' `test` (clears safe boot's counter per page load), `expect`, and `settle` (waits for
@@ -142,9 +142,8 @@ the change reaches, not the whole set.
 
 - The wrapper asks `util/agentE2e.mjs` which specs the changed files reach; when none, it lists the specs and exits with
   2, so the agent names the specs that cover the behavior it changed.
-- After editing `e2e/multiClient.ts`, name both importing specs:
-  `pnpm --silent test:agent --e2e e2e/multiClient.spec.ts e2e/multiClientGeneration.spec.ts`. For `e2e/fixtures.ts`,
-  every spec uses the fixture, so run `pnpm --silent test:agent --e2e --all`. See the [selection issue](#issues).
+- A harness change selects the specs that import it, including through extensionless relative imports:
+  `e2e/multiClient.ts` selects both two-client specs, and `e2e/fixtures.ts` selects every importing spec.
 - Selection is by name, not coverage: a component no spec names (a chat screen file, say) selects nothing even when a
   spec drives it.
 - One e2e run at a time per machine: the run holds the e2e lock port, then waits for the stack's ports, and Playwright's
@@ -385,12 +384,6 @@ test, follow [Recipes](#recipes); `readSlowTable` in `util/testInventory.mjs` ha
 `triggerRuntime.test.ts` "ends an endless loop with the limit" still covers the effect limit in the default agent suite.
 
 ## Known Hazards
-
-### Issues
-
-- `staticImports` in `util/agentE2e.mjs` leaves extensionless relative imports unresolved. A change to a TypeScript
-  harness can select zero specs. See the [explicit commands](#browser-specs) and
-  [reproduction](../research/found-issues.md#automatic-browser-spec-selection-misses-extensionless-imports).
 
 ### Gotchas
 

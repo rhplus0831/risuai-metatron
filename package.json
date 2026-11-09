@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build --sourcemap && node util/compressDist.mjs",
-    "check": "svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json --incremental --tsBuildInfoFile node_modules/.cache/tsc/server.tsbuildinfo",
+    "check": "svelte-check --tsconfig ./tsconfig.json && tsc -p server/tsconfig.json --incremental --tsBuildInfoFile node_modules/.cache/tsc/server.tsbuildinfo && tsc -p e2e/tsconfig.json --noEmit",
     "check:changed": "node util/changedChecks.mjs types",
     "check:tests": "node util/testInventory.mjs",
     "check:docs": "node util/docsBudget.mjs",

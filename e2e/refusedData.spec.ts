@@ -29,7 +29,7 @@ test("a refused chat stays badged and its banner exports the locally edited mess
         const folderId = crypto.randomUUID();
         settings.characterOrder = [
             ...settings.characterOrder.filter((entry) => entry !== chaId),
-            { type: "folder", id: folderId, name: "Refused export folder", color: "blue", data: [chaId] },
+            { id: folderId, name: "Refused export folder", color: "blue", data: [chaId] },
         ];
         await flushResources();
         await changeChar(chaId);

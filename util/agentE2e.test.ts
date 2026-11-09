@@ -96,6 +96,29 @@ describe("selectSpecs", () => {
         const result = selectSpecs({ specs, changed: ["playwright.config.ts"], tracked });
         expect(result.selected).toHaveLength(specs.length);
     });
+
+    it("selects an importing spec when its extensionless TypeScript helper changes", () => {
+        const files: Record<string, string> = {
+            "e2e/a.spec.ts": 'import { x } from "./multiClient";',
+            "e2e/b.spec.ts": "",
+            "e2e/multiClient.ts": "export const x = 1;",
+        };
+        const read = (file: string) => files[file] ?? null;
+        const result = selectSpecs({
+            specs: ["e2e/a.spec.ts", "e2e/b.spec.ts"].map((file) => ({
+                file,
+                text: files[file],
+                imports: staticImports(file, read),
+            })),
+            changed: ["e2e/multiClient.ts"],
+            tracked: Object.keys(files),
+        });
+        expect(result).toEqual({
+            selected: [{ file: "e2e/a.spec.ts", because: ["e2e/multiClient.ts"] }],
+            unnamed: [],
+            ignored: [],
+        });
+    });
 });
 
 describe("staticImports", () => {
@@ -113,6 +136,38 @@ describe("staticImports", () => {
             "shared/sections.ts",
             "util/playwright/modelProfiles.mjs",
             "util/playwright/stack.mjs",
+        ]);
+    });
+
+    it("resolves the first readable path and follows extensionless harness imports", () => {
+        const files: Record<string, string> = {
+            "e2e/a.spec.ts": `
+                import { x } from "./multiClient";
+                import "./exact";
+                import "./state";
+                import "./folder";
+                import "./nested/../missing";
+            `,
+            "e2e/multiClient.ts": 'import { y } from "../shared/presets";',
+            "e2e/multiClient.svelte.ts": "",
+            "e2e/multiClient/index.ts": "",
+            "e2e/exact": "",
+            "e2e/exact.ts": "",
+            "e2e/exact.svelte.ts": "",
+            "e2e/exact/index.ts": "",
+            "e2e/state.svelte.ts": "",
+            "e2e/state/index.ts": "",
+            "e2e/folder/index.ts": "",
+            "shared/presets.ts": "",
+        };
+        const read = (file: string) => files[file] ?? null;
+        expect([...staticImports("e2e/a.spec.ts", read)].sort()).toEqual([
+            "e2e/exact",
+            "e2e/folder/index.ts",
+            "e2e/missing",
+            "e2e/multiClient.ts",
+            "e2e/state.svelte.ts",
+            "shared/presets.ts",
         ]);
     });
 });

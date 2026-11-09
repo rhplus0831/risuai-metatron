@@ -114,7 +114,7 @@ const captureMarkdown = (page: Page) =>
                 if (key === "loreBookPage") return selectionModule.selectLoreBookPage(value);
                 writeSettingsRoot(key, clone(value));
             };
-            presetActions.changeToPreset(settings.presets[0].id, true);
+            presetActions.changeToPreset(settings.presets[0].id);
             for (const [key, value] of Object.entries(baseSettings)) {
                 applyRoot(key, value);
             }

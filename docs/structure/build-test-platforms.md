@@ -20,7 +20,7 @@
 | ---------------------------------- | --------------------------------------------------------------------------------------------- |
 | `dev`                              | Vite only; requires a running `server`.                                                       |
 | `build`                            | Vite with source maps, then `util/compressDist.mjs`.                                          |
-| `check`                            | `svelte-check` (client), then server `tsc` (cache in `node_modules/.cache/tsc/`).             |
+| `check`                            | `svelte-check` (client), server `tsc` (cache in `node_modules/.cache/tsc/`), then e2e `tsc`.  |
 | `check:changed` / `format:changed` | `util/changedChecks.mjs` `types` / `format`; see [Changed-file checks](#changed-file-checks). |
 | `check:docs` / `docs:*`            | See [Documentation check](#documentation-check).                                              |
 | `server`                           | Node runs `server/src/main.ts` with type stripping.                                           |
@@ -75,6 +75,9 @@
     imports of `shared/` use explicit `.ts` extensions.
   - `server/tsconfig.json`: strict, `erasableSyntaxOnly`, `lib: es2023` without DOM; includes `src/**/*.ts` and
     `../shared/**/*.ts`, so `pnpm check` strict-checks the shared persisted types.
+  - `e2e/tsconfig.json`: extends the root config and includes `**/*.ts` relative to `e2e/`, plus the existing client
+    ambient declarations and Node, Playwright, and File System Access types. Type-only `/src/*`, `/shared/*`, and
+    `/util/*` mappings resolve browser imports. `pnpm check` type-checks the specs and harness.
   - `tsconfig.node.json` covers the Vite config only and is outside `pnpm check`; see [Issues](#issues).
   - `.prettierrc.json`: 4-space indent, double quotes, semicolons, width 120, 2-space for JSON/YAML/Markdown,
     `prettier-plugin-svelte`, `proseWrap: "always"` for `STRUCTURE.md` and `docs/structure/`.
