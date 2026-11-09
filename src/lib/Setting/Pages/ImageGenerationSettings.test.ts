@@ -24,6 +24,7 @@ vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).cre
 
 import { language } from "src/lang";
 import * as globalApi from "src/ts/globalApi.svelte";
+import * as util from "src/ts/util";
 import { applyRaw, setRecordWriteListener } from "src/ts/storage/records.svelte";
 import { saving } from "src/ts/storage/resourceSync.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
@@ -137,7 +138,83 @@ afterEach(async () => {
     setRecordWriteListener(null);
     document.body.replaceChildren();
     vi.restoreAllMocks();
+    vi.useRealTimers();
 });
+
+it.each(["upload", "model change"] as const)(
+    "stores finite NovelAI vibe information and preserves the previous value for malformed information on %s",
+    async (action) => {
+        vi.useFakeTimers();
+        const cases = [
+            { model: "v4curated", information: "0.25", expected: 0.25 },
+            { model: "v4-5full", information: "not-a-number", expected: 0.25 },
+            { model: "v4-5curated", information: "Infinity", expected: 0.25 },
+            { model: "v4full", information: 0.75, expected: 0.75 },
+        ];
+        const encodings = (information: string | number) => ({
+            first: { params: { information_extracted: information } },
+            second: { params: { information_extracted: 0.99 } },
+        });
+        const vibe = {
+            version: 1,
+            identifier: "novelai-vibe-transfer",
+            thumbnail: "data:image/png;base64,AA==",
+            encodings: Object.fromEntries(cases.map(({ model, information }) => [model, encodings(information)])),
+        };
+        installFlatDatabase({
+            characters: [],
+            sdProvider: "novelai",
+            NAIImgModel: "nai-diffusion-4-full",
+            NAIImgConfig: {
+                reference_mode: "vibe",
+                InfoExtracted: 0.65,
+                reference_strength_multiple: [0.7],
+                ...(action === "model change" ? { vibe_data: vibe, vibe_model_selection: "v4full" } : {}),
+            },
+        });
+        const target = document.createElement("div");
+        document.body.append(target);
+        mounted.push(mount(ImageGenerationSettings, { target }));
+        flushSync();
+        const picker = vi.spyOn(util, "selectSingleFile");
+
+        for (const { model, information, expected } of cases) {
+            if (action === "upload") {
+                picker.mockResolvedValueOnce({
+                    name: "reference.naiv4vibe",
+                    data: new TextEncoder().encode(
+                        JSON.stringify({ ...vibe, encodings: { v4full: encodings(information) } }),
+                    ),
+                });
+                const upload = [...target.querySelectorAll("button")].find(
+                    (button) =>
+                        button.querySelector('img[alt="Vibe Preview"]') || button.textContent?.includes("Upload"),
+                )!;
+                upload.click();
+                await tick();
+            } else {
+                const select = [...target.querySelectorAll("select")].find((node) =>
+                    [...node.options].some((option) => option.value === "v4full"),
+                )!;
+                select.value = model;
+                // happy-dom does not match :checked, which Svelte's native select binding reads.
+                const querySelector = select.querySelector.bind(select);
+                (select as { querySelector: unknown }).querySelector = (selector: string) =>
+                    selector === ":checked" ? (select.options[select.selectedIndex] ?? null) : querySelector(selector);
+                try {
+                    select.dispatchEvent(new Event("change", { bubbles: true }));
+                } finally {
+                    delete (select as { querySelector?: unknown }).querySelector;
+                }
+            }
+            flushSync();
+            const config = settings.memoryTranslateMedia.NAIImgConfig;
+            expect(config.InfoExtracted, `${action}: ${information}`).toBe(expected);
+            expect(JSON.parse(JSON.stringify(config)).InfoExtracted).toBe(expected);
+            expect(config.vibe_model_selection).toBe(action === "upload" ? "v4full" : model);
+        }
+    },
+);
 
 describe("WaveSpeed LoRA editing", () => {
     it("two clean editors follow alternating remote records without saving on mount or adoption", async () => {

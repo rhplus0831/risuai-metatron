@@ -54,7 +54,6 @@ export class StorageController {
     running = $derived(this.report?.running ?? false);
     incomplete = $derived(this.report?.generatedAt != null && !this.report.complete);
     sweepDisabled = $derived(this.busy || this.running || this.report?.generatedAt == null || !this.report?.complete);
-    owners = $derived([...(this.report?.owners ?? [])].sort((a, b) => b.bytes - a.bytes));
     selectedBytes = $derived.by(() => {
         const keys = new Set(this.selectedKeys);
         return (

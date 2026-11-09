@@ -33,6 +33,13 @@
         if (revealNovelAIKey) void scrollToCredential("NAIApiKey");
     });
 
+    function setVibeInfoExtracted(value: unknown) {
+        const infoExtracted = Number(value);
+        if (Number.isFinite(infoExtracted)) {
+            settings.memoryTranslateMedia.NAIImgConfig.InfoExtracted = infoExtracted;
+        }
+    }
+
     // wavespeed
     interface WavespeedModel {
         model_id: string;
@@ -466,9 +473,7 @@
                                 const encodings = vibeData.encodings[selectedModel];
                                 const firstKey = Object.keys(encodings)[0];
                                 if (firstKey) {
-                                    settings.memoryTranslateMedia.NAIImgConfig.InfoExtracted = Number(
-                                        encodings[firstKey].params.information_extracted,
-                                    );
+                                    setVibeInfoExtracted(encodings[firstKey].params.information_extracted);
                                 }
                             }
                         }
@@ -533,9 +538,7 @@
                             ];
                         const firstKey = Object.keys(encodings)[0];
                         if (firstKey) {
-                            settings.memoryTranslateMedia.NAIImgConfig.InfoExtracted = Number(
-                                encodings[firstKey].params.information_extracted,
-                            );
+                            setVibeInfoExtracted(encodings[firstKey].params.information_extracted);
                         }
                     }
                 }}

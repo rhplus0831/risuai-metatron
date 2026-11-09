@@ -86,6 +86,13 @@ export function inlayScreenGenData(
 
 type Defaults = readonly (readonly [string, () => unknown])[];
 
+export const VOICEVOX_CONFIG_DEFAULTS = {
+    SPEED_SCALE: 1,
+    PITCH_SCALE: 0,
+    INTONATION_SCALE: 1,
+    VOLUME_SCALE: 1,
+} as const;
+
 const EVERY_CHARACTER: Defaults = [
     ["name", () => ""],
     ["firstMessage", () => ""],
@@ -112,7 +119,7 @@ const SINGLE_CHARACTER: Defaults = [
     ["scenario", () => ""],
     ["firstMsgIndex", () => -1],
     ["additionalData", () => ({ tag: [], creator: "", character_version: "" })],
-    ["voicevoxConfig", () => ({ SPEED_SCALE: 1, PITCH_SCALE: 0, INTONATION_SCALE: 1, VOLUME_SCALE: 1 })],
+    ["voicevoxConfig", () => ({ ...VOICEVOX_CONFIG_DEFAULTS })],
     ["additionalText", () => ""],
     ["depth_prompt", () => ({ depth: 0, prompt: "" })],
     ["hfTTS", () => ({ model: "", language: "en" })],

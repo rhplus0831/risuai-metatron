@@ -203,7 +203,8 @@
                                 revocation,
                                 (async () => {
                                     await loadPlugins();
-                                    // onUnload can still write; delete only after the local sandbox is gone.
+                                    // Removal from settings.plugins already blocks owned writes from onUnload.
+                                    // Delete after loadPlugins(): legacy and custom (setDatabase) writes from onUnload can still land.
                                     if (removal.checked) deleteOwnedPluginStorage(name);
                                 })(),
                             ]);
@@ -290,14 +291,13 @@
                                     />
                                 {:else if plugin?.argMeta?.[arg]?.radio}
                                     {#each plugin?.argMeta?.[arg]?.radio?.split(",") as radioOption}
+                                        {@const parsedValue = parseInt(radioOption.split("|").at(-1))}
+                                        {@const radioValue = Number.isFinite(parsedValue) ? parsedValue : 0}
                                         <CheckInput
-                                            check={settings.plugins[i].realArg[arg] ===
-                                                parseInt(radioOption.split("|").at(-1))}
+                                            check={settings.plugins[i].realArg[arg] === radioValue}
                                             onChange={(e) => {
                                                 if (e) {
-                                                    settings.plugins[i].realArg[arg] = parseInt(
-                                                        radioOption.split("|").at(-1),
-                                                    );
+                                                    settings.plugins[i].realArg[arg] = radioValue;
                                                 }
                                             }}
                                             margin={false}

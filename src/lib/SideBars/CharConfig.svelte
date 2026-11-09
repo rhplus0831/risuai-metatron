@@ -11,6 +11,7 @@
     import { characterAssetNames, matchingAssetIndices } from "src/ts/assetList";
     import { CharConfigSubMenu, hypaV3ModalOpen } from "../../ts/stores.svelte";
     import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
+    import { VOICEVOX_CONFIG_DEFAULTS } from "../../../shared/characters.ts";
     import {
         PlusIcon,
         SmileIcon,
@@ -98,6 +99,14 @@
 
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
+
+    function resetNonFiniteVoicevoxScale(key: keyof typeof VOICEVOX_CONFIG_DEFAULTS) {
+        const config = currentCharacter.voicevoxConfig;
+        if (!Number.isFinite(config[key])) {
+            config[key] = VOICEVOX_CONFIG_DEFAULTS[key];
+        }
+    }
+
     // Popup editors of chat fields belong to the chat they opened on.
     const chatContext = $derived.by(() => {
         const ref = currentChatRef();
@@ -1191,16 +1200,36 @@
                 </SelectInput>
             {/if}
             <span class="text-textcolor">Speed scale</span>
-            <NumberInput size={"sm"} marginBottom bind:value={currentCharacter.voicevoxConfig.SPEED_SCALE} />
+            <NumberInput
+                size={"sm"}
+                marginBottom
+                bind:value={currentCharacter.voicevoxConfig.SPEED_SCALE}
+                onChange={() => resetNonFiniteVoicevoxScale("SPEED_SCALE")}
+            />
 
             <span class="text-textcolor">Pitch scale</span>
-            <NumberInput size={"sm"} marginBottom bind:value={currentCharacter.voicevoxConfig.PITCH_SCALE} />
+            <NumberInput
+                size={"sm"}
+                marginBottom
+                bind:value={currentCharacter.voicevoxConfig.PITCH_SCALE}
+                onChange={() => resetNonFiniteVoicevoxScale("PITCH_SCALE")}
+            />
 
             <span class="text-textcolor">Volume scale</span>
-            <NumberInput size={"sm"} marginBottom bind:value={currentCharacter.voicevoxConfig.VOLUME_SCALE} />
+            <NumberInput
+                size={"sm"}
+                marginBottom
+                bind:value={currentCharacter.voicevoxConfig.VOLUME_SCALE}
+                onChange={() => resetNonFiniteVoicevoxScale("VOLUME_SCALE")}
+            />
 
             <span class="text-textcolor">Intonation scale</span>
-            <NumberInput size={"sm"} marginBottom bind:value={currentCharacter.voicevoxConfig.INTONATION_SCALE} />
+            <NumberInput
+                size={"sm"}
+                marginBottom
+                bind:value={currentCharacter.voicevoxConfig.INTONATION_SCALE}
+                onChange={() => resetNonFiniteVoicevoxScale("INTONATION_SCALE")}
+            />
             <span class="text-sm mb-2 text-textcolor2"
                 >To use VOICEVOX, you need to run a colab and put the localtunnel URL in "Settings → Voice & Emotion".
                 https://colab.research.google.com/drive/1tyeXJSklNfjW-aZJAib1JfgOMFarAwze</span
