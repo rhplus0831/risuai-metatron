@@ -15,7 +15,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (3)
 - [Chat screen and input](#chat-screen-and-input) (4)
-- [Client and plugins](#client-and-plugins) (12)
+- [Client and plugins](#client-and-plugins) (11)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (8)
 
 ## Chat store, sync, and change feeds
@@ -302,13 +302,6 @@ Left after the Stop B fix commit (30bee445, 2026-10-05) and kept in memory until
 **Why it matters:** a large JSON card keeps all of its assets' base64 text (about 4/3 of the decoded bytes) alive until the whole save finishes.
 **Suggested handling:** raise on a JSON or V3 card import memory complaint; the text is a JSON string in hand with no byte range to reread, so a fix drops references from the card object or decodes up front under the queue's byte cap. The PNG stream path keeps the same retention by owner decision (`assets.md` Known Hazards).
 
-### The sandbox bridge drops an own `__proto__` key
-
-Excluded as an edge case by the Implementation Audit Fixes plan (2026-11-05): it needs a plugin to store an object with a key spelled `__proto__`. The bridge copy helpers in `src/ts/plugins/apiV3/factory.ts` (`replaceStreamsWithPorts` and the guest and reconstruction helpers, ~232, ~281, ~825, ~907) rebuild plain objects with `const out = {}` and `out[k] = …`, so an own `__proto__` key sets the copy's prototype and is lost in the structured clone. The storage layer keeps such keys, so direct API tests do not see it. Source: [U1](../manual-audit/archive/plugin-storage-data-api-2026-11-05.md#u1--the-sandbox-drops-an-own-__proto__-field-from-returned-json).
-
-**Why it matters:** a `pluginStorage.getItem` value can come back without a field it was stored with; not prototype pollution.
-**Suggested handling:** define own properties (`Object.defineProperty` or a null-prototype object) in every bridge copy helper, and test a round trip through the guest bridge.
-
 ### Duplicate plugin names can share a popup editor target
 
 Unconfirmed in the browser. `setPlugins` in `src/ts/storage/collectionStore.svelte.ts` accepts duplicate names. In `src/lib/Setting/Pages/PluginSettings.svelte`, an unkeyed row binds the textarea to `settings.plugins[i].realArg[arg]`, while `popupEditorContext` uses the plugin name and argument key. `TextAreaInput.svelte` checks the initial value, context and context revision before applying the draft.
@@ -364,10 +357,8 @@ Open after the Web Push implementation (e148f7276, 2026-10-13; the archived `doc
 Left on purpose by slice P2 of the RisuNest Small Wins plan (ed9d207c5, 2026-10-20; `git show f4c26f27d:docs/plan/risunest-small-wins.md`), which defers a remote plugin reload until the tab is idle, and by its P1 (a293fc574). The D4 decision (a never-settling guest defers remote reloads until a page reload or a local `loadPlugins`) is in plugin-sandbox.md Known Hazards and not repeated. Kept in memory until 2026-11-08; identifiers re-checked that day.
 
 - Work admitted while `loadV3Plugins` unloads the old sandboxes is not fenced: `unloadV3Plugin` (`src/ts/plugins/apiV3/v3.svelte.ts`) splices the instance before awaiting the unload callbacks (up to 1 s), so a job created then lists the hooks registered at that moment; every local `loadPlugins` has the same window. RisuNest fences with `beginUnload`/`invokeUnloadCallback`. A Sol plan review raised it; rejected as pre-existing.
-- `executePluginV3` (`v3.svelte.ts` ~3395) pushes the instance before `host.run`; a `run` that throws leaves the instance registered.
-- `SandboxHost.terminate` (`src/ts/plugins/apiV3/factory.ts` ~1156) aborts only controllers built from a guest-supplied signal (`ABORT_SIGNAL_REF`, ~720); a `nativeFetch(url)` without one keeps running until it resolves, and only its late body is cancelled. A fix needs a host-side controller per call in the CALL handler.
 
-**Why it matters:** a reload can run a job against a half-unloaded hook list, a failed plugin start stays listed as loaded, and a terminated plugin's fetch keeps the network busy.
+**Why it matters:** a reload can run a job against a half-unloaded hook list. (The failed-start and unsignalled-fetch bullets were fixed by Found Issues Clearance slice F8.)
 **Suggested handling:** pick these up when a change touches plugin reload timing (S1 safe boot uses P2's reload guard) or a bug report does. Related: "A multi-tab plugin removal can bring its deleted data back".
 
 ### The plugin remove button's comment predates the owned-write refusal
