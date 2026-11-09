@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { get } from "svelte/store";
 
 // The v3 `setDatabase` and `setDatabaseLite` host setters route every `allowedDbKeys` key to the
 // mutation that owns it, on the live settings records as the app runs them (read through the
@@ -92,6 +93,8 @@ import { rootSnapshot } from "src/ts/storage/snapshots.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets";
 import { executePluginV3 } from "./v3.svelte";
+import { updateColorScheme, updateTextThemeAndCSS } from "src/ts/gui/colorscheme";
+import { CustomCSSStore } from "src/ts/stores.svelte";
 
 const ui = () => settings.ui as any;
 const preset = (id: string) => settings.presets.find((entry: { id: string }) => entry.id === id) as any;
@@ -204,6 +207,39 @@ afterEach(() => {
 });
 
 describe("the routing table: settings keys", () => {
+    it("both database setters repaint text and custom CSS, keeping the display after a refused ui write", async () => {
+        const api = await makeApi();
+        const css = (name: string) => document.documentElement.style.getPropertyValue(name);
+        for (const setter of ["setDatabaseLite", "setDatabase"] as const) {
+            liveDatabase();
+            updateColorScheme();
+            updateTextThemeAndCSS();
+            expect(css("--FontColorBold")).toBe("#0f172a");
+            expect(get(CustomCSSStore)).toBe("");
+
+            await api[setter]({ textTheme: "highcontrast" });
+            expect(css("--FontColorBold")).toBe("#8BE9FD");
+            expect(css("--FontColorItalic")).toBe("#F1FA8C");
+
+            await api[setter]({ customCSS: ".chattext { color: red; }" });
+            expect(get(CustomCSSStore)).toBe(".chattext { color: red; }");
+
+            const displayed = document.documentElement.style.cssText;
+            await api[setter]({ textTheme: null, customCSS: null });
+
+            expect(ui().textTheme).toBe("highcontrast");
+            expect(ui().customCSS).toBe(".chattext { color: red; }");
+            expect(document.documentElement.style.cssText).toBe(displayed);
+            expect(get(CustomCSSStore)).toBe(".chattext { color: red; }");
+        }
+        expect(warnings()).toEqual([
+            expect.stringMatching(/^\[Plugin\] Refused the database key textTheme;/),
+            expect.stringMatching(/^\[Plugin\] Refused the database key customCSS;/),
+            expect.stringMatching(/^\[Plugin\] Refused the database key textTheme;/),
+            expect.stringMatching(/^\[Plugin\] Refused the database key customCSS;/),
+        ]);
+    });
+
     it.each([
         ["moduleIntergration", "m1", "m2"],
         ["temperature", 11, 12],
@@ -921,6 +957,23 @@ describe("reserved storage namespaces a plugin replaced", () => {
 });
 
 describe("setArg, setArgument, and the theme APIs", () => {
+    it("setColorScheme immediately applies dark text when switching from a dark to a light scheme", async () => {
+        liveDatabase({ colorScheme: { ...lightScheme, type: "dark", bgcolor: "#111111" } });
+        const api = await makeApi();
+        const css = (name: string) => document.documentElement.style.getPropertyValue(name);
+        updateColorScheme();
+        updateTextThemeAndCSS();
+        expect(css("--FontColorStandard")).toBe("#fafafa");
+        expect(css("--FontColorBold")).toBe("#fafafa");
+
+        api.setColorScheme({ ...lightScheme });
+
+        expect(css("--risu-theme-bgcolor")).toBe("#ffffff");
+        expect(document.documentElement.style.colorScheme).toBe("light");
+        expect(css("--FontColorStandard")).toBe("#0f172a");
+        expect(css("--FontColorBold")).toBe("#0f172a");
+    });
+
     it("setArg and setArgument write the plugin's argument through setPluginArgument, and a bad value is refused", async () => {
         settings.plugins = [
             { name: "other", script: "", version: "3.0", realArg: { foo: "bar" } },

@@ -25,6 +25,7 @@ vi.mock("../process/index.svelte", () => ({
 
 import { updateAnimationSpeed } from "./animation";
 import {
+    changeColorScheme,
     changeColorSchemeType,
     ColorSchemeTypeStore,
     updateColorScheme,
@@ -164,6 +165,24 @@ describe("updateTextThemeAndCSS", () => {
 });
 
 describe("the color-scheme writers", () => {
+    it.each([
+        ["changeColorScheme", () => changeColorScheme("light"), "#ffffff"],
+        ["updateCustomColorScheme", updateCustomColorScheme, "#eeeeee"],
+    ] as const)("%s immediately applies dark text when switching to a light scheme", (_name, write, bgcolor) => {
+        installFlatDatabase(database({ textTheme: "standard", customColorScheme: scheme("light", "#eeeeee") }));
+        updateColorScheme();
+        updateTextThemeAndCSS();
+        expect(css("--FontColorStandard")).toBe("#fafafa");
+        expect(css("--FontColorBold")).toBe("#fafafa");
+
+        write();
+
+        expect(css("--risu-theme-bgcolor")).toBe(bgcolor);
+        expect(document.documentElement.style.colorScheme).toBe("light");
+        expect(css("--FontColorStandard")).toBe("#0f172a");
+        expect(css("--FontColorBold")).toBe("#0f172a");
+    });
+
     it("changeColorSchemeType writes the custom scheme's type and installs it as the scheme, in the ui record only", () => {
         changeColorSchemeType("light");
         expect(plain(ui().customColorScheme)).toEqual(scheme("light", "#222222"));

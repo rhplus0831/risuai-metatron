@@ -220,6 +220,7 @@ export function changeColorScheme(colorScheme: string) {
             colorScheme === "custom" ? (settings.ui.customColorScheme ?? defaultColorScheme) : colorShemes[colorScheme];
         updateSettings({ colorScheme: scheme, colorSchemeName: colorScheme });
         updateColorScheme();
+        updateTextThemeAndCSS();
     } catch (error) {}
 }
 
@@ -227,15 +228,16 @@ export function updateCustomColorScheme() {
     try {
         updateSettings({ colorScheme: settings.ui.customColorScheme ?? defaultColorScheme, colorSchemeName: "custom" });
         updateColorScheme();
+        updateTextThemeAndCSS();
     } catch (error) {}
 }
 
 /**
  * Applies `settings.ui.colorScheme` to the page: the `--risu-theme-*` variables that the `src/styles.css` `@theme`
  * tokens read, and the root's inline `color-scheme`, so native controls follow the app's scheme instead of the OS
- * (`src/styles.css` declares `color-scheme: dark` on `:root` for the page before boot). Boot, the display settings'
- * scheme changes, the plugin API, and remote `ui` records (`watchRemoteRecords` in `src/ts/bootstrap.ts`) apply it.
- * Other local settings writes do not automatically re-apply it.
+ * (`src/styles.css` declares `color-scheme: dark` on `:root` for the page before boot). Boot and the color-scheme
+ * writers call this directly; remote `ui` records, UI recovery drafts, and plugin database UI writes call it
+ * through `applyDisplaySettings` in `src/ts/gui/displayApply.ts`.
  */
 export function updateColorScheme() {
     try {
@@ -266,7 +268,6 @@ export function changeColorSchemeType(type: "light" | "dark") {
     try {
         settings.ui.customColorScheme.type = type;
         updateCustomColorScheme();
-        updateTextThemeAndCSS();
     } catch (error) {}
 }
 
@@ -313,7 +314,7 @@ export function updateTextThemeAndCSS() {
         return;
     }
     let textTheme = settings.ui.textTheme;
-    let colorScheme = settings.ui.colorScheme.type;
+    let colorScheme = (settings.ui.colorScheme ?? defaultColorScheme).type;
     switch (textTheme) {
         case "standard": {
             if (colorScheme === "dark") {

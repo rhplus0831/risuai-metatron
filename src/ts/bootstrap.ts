@@ -12,6 +12,7 @@ import { alertError, alertConfirm, alertInput } from "./alert";
 import { characterURLImport } from "./characterCards";
 import { updateAnimationSpeed } from "./gui/animation";
 import { updateColorScheme, updateTextThemeAndCSS } from "./gui/colorscheme";
+import { applyDisplaySettings } from "./gui/displayApply";
 import { changeLanguage, language } from "src/lang";
 import { startObserveDom } from "./observer.svelte";
 import { updateGuisize } from "./gui/guisize";
@@ -331,10 +332,7 @@ export function watchRemoteRecords() {
             queueRemoteCharOrderRepair((chaId) => heldRecordRevision(RESOURCE_KIND.characters, chaId));
         }
         if (kind === SECTION_KIND.ui) {
-            updateColorScheme();
-            updateTextThemeAndCSS();
-            updateAnimationSpeed();
-            updateGuisize();
+            applyDisplaySettings();
         }
     });
     setRemoteChatListener(() => invalidateInlayCaches());

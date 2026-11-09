@@ -149,7 +149,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   hold the `risu-select`, `.chat-message-container.far`, and `:root` `color-scheme` rules.
 - `src/ts/gui/colorscheme.ts`: `updateColorScheme`, `updateTextThemeAndCSS` apply the saved palette and custom text/CSS.
   `src/ts/gui/animation.ts` `updateAnimationSpeed` and `src/ts/gui/guisize.ts` `updateGuisize` apply the other display
-  values. Boot and remote `ui` updates call these together ([app shell](app-shell.md#boot)).
+  values. Boot calls these together ([app shell](app-shell.md#boot)); `src/ts/gui/displayApply.ts`
+  `applyDisplaySettings` runs all four for the writers named under Flows.
 
 ## Flows
 
@@ -159,8 +160,10 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   (`greetingIndex`, `greetingText`, `nextGreetingIndex`, `previousGreetingIndex`). Not converted yet:
   `src/ts/characters.ts`, `src/ts/gui/branches.ts` and `src/lib/Others/HypaV3Modal/utils.ts` index `alternateGreetings`
   directly.
-- Theme: boot (`bootstrap.ts`), the display settings, plugins (`apiV3`), and a remote `ui` record (`watchRemoteRecords`)
-  call `updateColorScheme`, `updateTextThemeAndCSS`, `updateAnimationSpeed`, and `updateGuisize`.
+- Theme: a remote `ui` record (`watchRemoteRecords`), an applied `ui` recovery draft (`applyRecoveryDraft`), and a
+  plugin database write of a `ui` field (`applyPluginKey`) call `applyDisplaySettings`; the display settings and the
+  plugin theme APIs call the applier they change. Every color-scheme writer also calls `updateTextThemeAndCSS`, whose
+  font colors follow the scheme's `type`.
 
 ## State
 

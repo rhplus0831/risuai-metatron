@@ -119,6 +119,8 @@ import { alertConfirm, alertError, alertNormal, terminalNoticeShown } from "src/
 import { language } from "src/lang";
 import { checkCharOrder, fetchNative, getFetchLogs, globalFetch, readImage, saveAsset } from "src/ts/globalApi.svelte";
 import { changeColorScheme, updateColorScheme, updateTextThemeAndCSS, type ColorScheme } from "src/ts/gui/colorscheme";
+import { applyDisplaySettings } from "src/ts/gui/displayApply";
+import { SECTION_FIELDS } from "../../../../shared/sections.ts";
 import { get } from "svelte/store";
 import { registerMCPModule, registeredCustomPluginMCPs, unregisterMCPModule } from "src/ts/process/mcp/pluginmcp";
 import { getInlayAsset } from "src/ts/process/files/inlays";
@@ -1885,6 +1887,7 @@ function applyPluginKey(
         // Validation stays in the mutation module; model roots then use `writeModelRoot` with this
         // captured scope, including its unchanged-value check before matching profiles.
         updateSettings({ [key]: value }, scope);
+        if ((SECTION_FIELDS.ui as readonly string[]).includes(key)) applyDisplaySettings();
     } else {
         setPluginCustomValue(key, value);
     }
@@ -2502,6 +2505,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             }
             updateSettings({ colorSchemeName: "custom", customColorScheme: scheme, colorScheme: scheme });
             updateColorScheme();
+            updateTextThemeAndCSS();
         },
         getColorScheme: () => {
             return {

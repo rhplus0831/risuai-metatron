@@ -14,6 +14,7 @@ import {
     STRUCTURED_MEMORY_ALGORITHM,
 } from "../../../shared/structuredMemory.ts";
 import { recordClientEvent } from "../diagnostics/collector";
+import { applyDisplaySettings } from "../gui/displayApply";
 import {
     characterList,
     addCharacter,
@@ -1013,6 +1014,7 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
             } else replaceRecord(kind as RecordKind, value);
             reconcileSelection();
             changeLanguage(settings.ui.language);
+            if (kind === SECTION_KIND.ui) applyDisplaySettings();
         } else if (entry.scope === "order") {
             const vector = draftOrder(entry);
             const current = chatList(entry.target).map((chat) => chat.id);

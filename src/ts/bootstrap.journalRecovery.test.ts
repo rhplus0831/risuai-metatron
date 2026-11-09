@@ -246,6 +246,55 @@ afterEach(async () => {
 });
 
 describe("boot journal recovery", () => {
+    it("applying a recovered ui draft repaints colors, text, custom CSS, speed, and sizes without reloading", async () => {
+        const initial = plain(server.record("ui", "main")!.data);
+        server.set("ui", "main", {
+            ...initial,
+            colorScheme: { ...initial.colorScheme, type: "dark", bgcolor: "#111111" },
+            textTheme: "standard",
+            customCSS: "",
+            animationSpeed: 1,
+            sideBarSize: 0,
+        });
+        const current = await boot();
+        await flush();
+        const css = (name: string) => document.documentElement.style.getPropertyValue(name);
+        expect(css("--risu-theme-bgcolor")).toBe("#111111");
+        expect(css("--FontColorStandard")).toBe("#fafafa");
+        expect(get(current.stores.CustomCSSStore)).toBe("");
+        expect(css("--risu-animation-speed")).toBe("1s");
+        expect(css("--sidebar-size")).toBe("24rem");
+
+        const recovered = {
+            ...plain(current.settings.ui),
+            colorScheme: { ...plain(current.settings.ui.colorScheme), type: "light", bgcolor: "#eeeeee" },
+            customCSS: ".chattext { letter-spacing: 2px; }",
+            animationSpeed: 0.7,
+            sideBarSize: 3,
+        };
+        const id = await current.journal.putDraft({
+            epoch: server.store.epoch(),
+            scope: "record",
+            target: UI,
+            layers: { latest: intent(JSON.stringify(recovered), server.record("ui", "main")!.revision) },
+        });
+        expect(id).not.toBeNull();
+        await current.recoveryDrafts.refresh();
+        const draft = current.recoveryDrafts.entries.find((entry) => entry.id === id)!;
+        expect(draft).toBeDefined();
+        const { applyRecoveryDraft } = await import("./storage/journalRecovery");
+
+        expect(await applyRecoveryDraft(draft)).toEqual({ skipped: [] });
+
+        expect(css("--risu-theme-bgcolor")).toBe("#eeeeee");
+        expect(document.documentElement.style.colorScheme).toBe("light");
+        expect(css("--FontColorStandard")).toBe("#0f172a");
+        expect(get(current.stores.CustomCSSStore)).toBe(".chattext { letter-spacing: 2px; }");
+        expect(css("--risu-animation-speed")).toBe("0.7s");
+        expect(css("--sidebar-size")).toBe("36rem");
+        expect(location.reload).not.toHaveBeenCalled();
+    });
+
     it.each(["cache hit", "fallback"] as const)(
         "resends unanswered settings and character edits once through a %s, keeping the server baseline and cache",
         async (mode) => {
