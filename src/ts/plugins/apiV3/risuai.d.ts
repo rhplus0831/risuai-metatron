@@ -902,7 +902,7 @@ interface SafeElement {
  * const button = await doc.createElement('button');
  *
  * // Create anchor with URL validation
- * const link = doc.createAnchorElement('https://example.com');
+ * const link = await doc.createAnchorElement('https://example.com');
  * ```
  */
 interface SafeDocument extends SafeElement {
@@ -924,17 +924,17 @@ interface SafeDocument extends SafeElement {
     /**
      * Creates an anchor element with URL validation
      * @param href - URL for the anchor (only http/https allowed)
-     * @returns SafeElement (anchor)
+     * @returns Promise resolving to a SafeElement (anchor) across the iframe bridge
      *
      * @note Invalid URLs or non-http(s) protocols default to '#'
      *
      * @example
      * ```typescript
-     * const link = doc.createAnchorElement('https://example.com'); // ✅ Valid
-     * const bad = doc.createAnchorElement('javascript:alert()'); // href becomes '#'
+     * const link = await doc.createAnchorElement('https://example.com'); // ✅ Valid
+     * const bad = await doc.createAnchorElement('javascript:alert()'); // href becomes '#'
      * ```
      */
-    createAnchorElement(href: string): SafeElement;
+    createAnchorElement(href: string): Promise<SafeElement>;
 }
 
 // ============================================================================

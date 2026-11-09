@@ -380,7 +380,7 @@ Use dedicated methods for standard attributes:
 
 ```javascript
 // For links, use createAnchorElement
-const link = rootDoc.createAnchorElement("https://example.com");
+const link = await rootDoc.createAnchorElement("https://example.com");
 
 // For styles, use style methods
 await element.setStyle("color", "red");
@@ -541,6 +541,12 @@ const observer = await Risuai.createMutationObserver(async (mutations) => {
     for (const node of addedNodes) {
       console.log(`Node added: ${await node.nodeName()}`);
     }
+
+    // getRemovedNodes() also returns SafeClassArray<SafeElement>
+    const removedNodes = await Risuai.unwarpSafeArray(await mutation.getRemovedNodes());
+    for (const node of removedNodes) {
+      console.log(`Node removed: ${await node.nodeName()}`);
+    }
   }
 });
 
@@ -554,9 +560,11 @@ await observer.observe(body, {
 });
 ```
 
+`getAddedNodes()` and `getRemovedNodes()` include only `HTMLElement` nodes. Text nodes and SVG elements are excluded.
+
 ### SafeClassArray
 
-`SafeClassArray<T>` is a secure array-like container used in several APIs (e.g., mutation observer callbacks, `getAddedNodes()`). Use `unwarpSafeArray()` to convert it to a standard JavaScript array:
+`SafeClassArray<T>` is a secure array-like container used in several APIs (e.g., mutation observer callbacks, `getAddedNodes()`, `getRemovedNodes()`). Use `unwarpSafeArray()` to convert it to a standard JavaScript array:
 
 ```javascript
 // Recommended: use unwarpSafeArray for easy iteration
@@ -626,7 +634,7 @@ Add buttons and menu items to Risuai's interface:
 #### Settings Menu Item
 
 ```javascript
-Risuai.registerSetting(
+await Risuai.registerSetting(
   "My Plugin Settings",
   async () => {
     // Called when user clicks the menu item
@@ -640,7 +648,7 @@ Risuai.registerSetting(
 #### Floating Action Button
 
 ```javascript
-Risuai.registerButton(
+await Risuai.registerButton(
   {
     name: "Quick Action",
     icon: "https://example.com/icon.png", // Optional icon URL
@@ -984,19 +992,19 @@ Modify content at different processing stages:
 
 ```javascript
 // Add handler for display output
-Risuai.addRisuScriptHandler("display", async (content) => {
+await Risuai.addRisuScriptHandler("display", async (content) => {
   // Modify content before display
   return content.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
 });
 
 // Add handler for user input
-Risuai.addRisuScriptHandler("input", async (content) => {
+await Risuai.addRisuScriptHandler("input", async (content) => {
   // Process user input before sending
   return content.trim();
 });
 
 // Remove handler
-Risuai.removeRisuScriptHandler("display", handlerFunction);
+await Risuai.removeRisuScriptHandler("display", handlerFunction);
 ```
 
 **Available modes:**
@@ -1034,19 +1042,19 @@ Replace or modify message arrays:
 
 ```javascript
 // Add replacer before sending to AI
-Risuai.addRisuReplacer("beforeRequest", async (messages, type) => {
+await Risuai.addRisuReplacer("beforeRequest", async (messages, type) => {
   // Add system message
   return [{ role: "system", content: "You are a helpful assistant." }, ...messages];
 });
 
 // Add replacer after receiving from AI
-Risuai.addRisuReplacer("afterRequest", async (content, type) => {
+await Risuai.addRisuReplacer("afterRequest", async (content, type) => {
   // Modify response text
   return content.toUpperCase();
 });
 
 // Remove replacer
-Risuai.removeRisuReplacer("beforeRequest", replacerFunction);
+await Risuai.removeRisuReplacer("beforeRequest", replacerFunction);
 ```
 
 ### Asset Management
@@ -1442,10 +1450,10 @@ Prefer `pluginStorage` over `safeLocalStorage` for syncable data:
 
 ```javascript
 //  Good - syncs across devices
-Risuai.pluginStorage.setItem("settings", JSON.stringify(settings));
+await Risuai.pluginStorage.setItem("settings", JSON.stringify(settings));
 
 // Device-specific only
-Risuai.safeLocalStorage.setItem("device_id", id);
+await Risuai.safeLocalStorage.setItem("device_id", id);
 ```
 
 ### 4. Clean Up Resources
@@ -1510,7 +1518,7 @@ Add clear comments and metadata:
 (async () => {
   try {
     // Register settings button
-    Risuai.registerSetting(
+    await Risuai.registerSetting(
       "Theme Settings",
       async () => {
         const theme = await Risuai.getArgument("theme");
@@ -1535,11 +1543,11 @@ Add clear comments and metadata:
           console.log("Theme set to dark");
         });
 
-        document.getElementById("close-btn").addEventListener("click", () => {
-          Risuai.hideContainer();
+        document.getElementById("close-btn").addEventListener("click", async () => {
+          await Risuai.hideContainer();
         });
 
-        Risuai.showContainer("fullscreen");
+        await Risuai.showContainer("fullscreen");
       },
       "https://example.com/icon_src_here.png",
       "img",
@@ -1561,7 +1569,7 @@ Add clear comments and metadata:
 
 (async () => {
   try {
-    Risuai.registerButton(
+    await Risuai.registerButton(
       {
         name: "Show Character Info",
         icon: "🛈",
@@ -1571,10 +1579,10 @@ Add clear comments and metadata:
       async () => {
         const char = await Risuai.getCharacter();
 
-        const rootDoc = Risuai.getRootDocument();
-        const body = rootDoc.querySelector("body");
+        const rootDoc = await Risuai.getRootDocument();
+        const body = await rootDoc.querySelector("body");
 
-        const infoBox = rootDoc.createElement("div");
+        const infoBox = await rootDoc.createElement("div");
         await infoBox.setStyle("position", "fixed");
         await infoBox.setStyle("top", "50%");
         await infoBox.setStyle("left", "50%");
@@ -1616,10 +1624,12 @@ Add clear comments and metadata:
 
 (async () => {
   try {
-    const rootDoc = Risuai.getRootDocument();
+    const rootDoc = await Risuai.getRootDocument();
 
     // Add a status indicator
-    const indicator = rootDoc.createElement("div");
+    const indicator = await rootDoc.createElement("div");
+    // Mark the indicator before inserting it so its own mutations can be ignored
+    await indicator.setAttribute("x-dom-monitor", "indicator");
     await indicator.setStyle("position", "fixed");
     await indicator.setStyle("bottom", "10px");
     await indicator.setStyle("right", "10px");
@@ -1629,20 +1639,44 @@ Add clear comments and metadata:
     await indicator.setStyle("borderRadius", "5px");
     await indicator.setTextContent("Plugin Active");
 
-    const body = rootDoc.querySelector("body");
+    const body = await rootDoc.querySelector("body");
     if (body) {
       await body.appendChild(indicator);
     }
 
     // Monitor DOM changes
     let changeCount = 0;
-    const observer = Risuai.createMutationObserver(async (mutations) => {
-      changeCount += mutations.length;
+    const isIndicator = async (node) => (await node.getAttribute("x-dom-monitor")) === "indicator";
+    const observer = await Risuai.createMutationObserver(async (mutations) => {
+      let counted = 0;
+      for (const mutation of await Risuai.unwarpSafeArray(mutations)) {
+        // Updating the indicator's text also produces a mutation
+        const target = await mutation.getTarget();
+        if (await isIndicator(target)) continue;
+
+        const addedNodes = await Risuai.unwarpSafeArray(await mutation.getAddedNodes());
+        const removedNodes = await Risuai.unwarpSafeArray(await mutation.getRemovedNodes());
+        const changedNodes = [...addedNodes, ...removedNodes];
+
+        // Ignore records that only add or remove the indicator, but count mixed changes
+        let indicatorOnly = changedNodes.length > 0;
+        for (const node of changedNodes) {
+          if (!(await isIndicator(node))) {
+            indicatorOnly = false;
+            break;
+          }
+        }
+        if (indicatorOnly) continue;
+
+        counted++;
+      }
+      if (counted === 0) return;
+      changeCount += counted;
       await indicator.setTextContent(`Changes: ${changeCount}`);
     });
 
     if (body) {
-      observer.observe(body, {
+      await observer.observe(body, {
         childList: true,
         subtree: true,
         attributes: false,
@@ -1666,7 +1700,7 @@ Add clear comments and metadata:
 (async () => {
   try {
     // Process AI output to convert markdown-style bold
-    Risuai.addRisuScriptHandler("output", async (content) => {
+    await Risuai.addRisuScriptHandler("output", async (content) => {
       // **bold** <strong>bold</strong>
       content = content.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
 
@@ -1677,9 +1711,9 @@ Add clear comments and metadata:
     });
 
     // Process user input to add timestamps
-    Risuai.addRisuScriptHandler("input", async (content) => {
+    await Risuai.addRisuScriptHandler("input", async (content) => {
       const timestamp = new Date().toLocaleTimeString();
-      Risuai.pluginStorage.setItem("last_input_time", timestamp);
+      await Risuai.pluginStorage.setItem("last_input_time", timestamp);
 
       return content;
     });
@@ -1749,10 +1783,10 @@ await element.removeEventListener("click", listenerId);
 
 ```javascript
 // For user preferences (syncs)
-Risuai.pluginStorage.setItem("preference", "value");
+await Risuai.pluginStorage.setItem("preference", "value");
 
 // For device-specific data
-Risuai.safeLocalStorage.setItem("device_id", "uuid");
+await Risuai.safeLocalStorage.setItem("device_id", "uuid");
 ```
 
 ### Script tags being removed from HTML
@@ -1765,7 +1799,7 @@ await element.setInnerHTML('<script>alert("XSS")</script>');
 // Result: empty element (script removed)
 
 // Use event listeners instead
-const button = rootDoc.createElement("button");
+const button = await rootDoc.createElement("button");
 await button.setTextContent("Click Me");
 await button.addEventListener("click", async () => {
   console.log("Button clicked!");
@@ -1778,15 +1812,17 @@ await button.addEventListener("click", async () => {
 
 ```javascript
 // L Wrong - these are separate contexts
-const rootDoc = Risuai.getRootDocument();
-rootDoc.querySelector("#my-iframe-element"); // Won't find it
+const rootDoc = await Risuai.getRootDocument();
+await rootDoc.querySelector("#my-iframe-element"); // Won't find it
+```
 
+```javascript
 //  Correct - access each separately
 // Your iframe's DOM:
 document.getElementById("my-iframe-element");
 
 // Risuai's main DOM:
-const rootDoc = Risuai.getRootDocument();
+const rootDoc = await Risuai.getRootDocument();
 await rootDoc.querySelector(".Risuai-element");
 ```
 
