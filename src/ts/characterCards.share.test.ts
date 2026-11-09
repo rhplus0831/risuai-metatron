@@ -112,6 +112,13 @@ async function moduleBytes(booted: Awaited<ReturnType<typeof boot>>, lorebook: u
     );
 }
 
+function presetHash(bytes: Uint8Array) {
+    vi.stubGlobal(
+        "location",
+        new URL(`http://local/#import_preset=${encodeURIComponent(Buffer.from(bytes).toString("base64"))}`),
+    );
+}
+
 beforeAll(async () => {
     await import("./stores.svelte");
     await import("./storage/database.svelte");
@@ -319,4 +326,37 @@ describe("characterURLImport pending shares", () => {
             expect(share.fetch).not.toHaveBeenCalled();
         },
     );
+});
+
+describe("characterURLImport preset hashes", () => {
+    it("leaves settings closed and the menu unchanged when a hash preset import returns no id", async () => {
+        const app = await boot();
+        const before = plain(app.settings.presets);
+        app.stores.SettingsMenuIndex.set(app.stores.MODEL_SETTINGS_MENU);
+        const importer = vi.spyOn(app.presets, "importPreset").mockResolvedValue(undefined);
+        presetHash(new Uint8Array([251, 255]));
+
+        await app.cards.characterURLImport();
+
+        expect(importer).toHaveBeenCalledOnce();
+        expect(get(app.stores.settingsOpen)).toBe(false);
+        expect(get(app.stores.SettingsMenuIndex)).toBe(app.stores.MODEL_SETTINGS_MENU);
+        expect(plain(app.settings.presets)).toEqual(before);
+    });
+
+    it("opens prompt settings after importing a preset from the hash", async () => {
+        const app = await boot();
+        const ids = app.settings.presets.map((preset) => preset.id);
+        const bytes = new Uint8Array(readFileSync(path.resolve(__dirname, "storage/tests/fixtures/boot/custom.risup")));
+        const { decodeRPack } = await import("./rpack/rpack_js");
+        presetHash(await decodeRPack(bytes));
+
+        await app.cards.characterURLImport();
+
+        expect(app.settings.presets).toHaveLength(ids.length + 1);
+        expect(app.settings.presets.at(-1).name).toBe("커스텀 プリセット ✓");
+        expect(ids).not.toContain(app.settings.presets.at(-1).id);
+        expect(get(app.stores.settingsOpen)).toBe(true);
+        expect(get(app.stores.SettingsMenuIndex)).toBe(app.stores.PROMPT_SETTINGS_MENU);
+    });
 });

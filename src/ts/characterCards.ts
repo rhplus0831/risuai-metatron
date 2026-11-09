@@ -836,12 +836,14 @@ export async function characterURLImport() {
     if (hash.startsWith("#import_preset=")) {
         const data = hash.replace("#import_preset=", "");
         const importData = Buffer.from(decodeURIComponent(data), "base64");
-        await importPreset({
+        const id = await importPreset({
             name: "imported.risupreset",
             data: importData,
         });
-        SettingsMenuIndex.set(PROMPT_SETTINGS_MENU);
-        settingsOpen.set(true);
+        if (id) {
+            SettingsMenuIndex.set(PROMPT_SETTINGS_MENU);
+            settingsOpen.set(true);
+        }
         return;
     }
     if (hash.startsWith("#share_character")) {
