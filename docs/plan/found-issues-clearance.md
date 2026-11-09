@@ -757,14 +757,18 @@ Every slice is independent of the others' code unless listed here.
   _Removes_: pnpm check does not type-check e2e specs; Automatic browser spec selection misses extensionless
   imports.
 
-- **G3. Manual drivers** (_small_, `test-harness.md`). `util/playwright/checkJobProtocol.mjs` (~648–672): open the
-  app once (the `openApp` of `util/playwright/stack.mjs` ~237–269 answers Vite's reload prompt) before the
-  `sigkill-before-checkpoint` case, so a dependency-optimization reload cannot be read as the protocol failing.
+- **G3. Manual drivers** (_small_, `test-harness.md`). `util/playwright/checkJobProtocol.mjs` (~648–672): every
+  case already opens the app through `fixture()` (~380), and the recorded failure was a page reboot about 6 s into
+  the `sigkill-before-checkpoint` case, so a warm-up does nothing (G3's run found this; decided 2026-11-09). Instead,
+  record the owner page's main-frame navigations (`framenavigated`) and the stack log's Vite "optimized dependencies
+  changed. reloading" line during each case; a failing case that saw a navigation names the reload as its cause, and
+  when the Vite line is present it reruns that case once on a fresh fixture, so a dependency-optimization reload
+  cannot be read as the protocol failing.
   `util/playwright/checkServerSend.mjs` (~335–351, ~376–404): clear the safe-boot attempts
   (`clearSafeBootAttempts`, `stack.mjs` ~230–234) before the reload cases and print any `[data-alert-dialog]` text
   before `openCharacterChat`, so a recurrence names its alert.
   _Done_: both drivers pass on a fresh tree twice in a row (recorded in the commit message); a planted alert is
-  printed.
+  printed; a planted mid-case reload is named as the cause.
   _Test_: the two driver runs.
   _Removes_: checkJobProtocol's first run after a source change fails its SIGKILL case; checkServerSend once hit an
   alert after its mid-stream reload.
