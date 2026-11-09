@@ -17,7 +17,6 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Chat screen and input](#chat-screen-and-input) (5)
 - [Client and plugins](#client-and-plugins) (23)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (8)
-- [Test timing](#test-timing) (1)
 
 ## Chat store, sync, and change feeds
 
@@ -321,7 +320,7 @@ Left after the Stop B fix commit (30bee445, 2026-10-05) and kept in memory until
 
 - Capture-phase key listeners still see keys behind the restore notice (`src/lib/Others/TerminalNotice.svelte` calls only `stopPropagation`, :34); a plugin's `document` listener with `capture` is the example.
 - `getFileSrc` object URLs: `holdFileSrc` releases only the asset lists' `LazyFileSrc` previews; every plain `getFileSrc` read (parser HTML, chat rows, icons) pins its URL for the page, and every file gets `image/png` (`src/ts/globalApi.svelte.ts` :348); video and audio rely on the `<source type>` the parser writes. The same pinning is the open D2b item of the asset-scale work (parser `fileSrcCache`, inlays `mediaObjectUrls`).
-- Load flakes seen only under parallel full suites (load average 28–32 on 2026-10-18/19), each passing alone: `server/src/tests/cbsLimitsHost.test.ts` "does not yield between quick effects…" (:557), `server/src/tests/lore.test.ts`'s worker-timeout case, `src/ts/storage/tests/resourceSyncFieldCache.test.ts`, and the cold `boot()` of the first cases of `chatStore.test.ts` and `resourceSyncChats.test.ts` hitting the 5,000 ms default (a warm-up import in `beforeAll` would remove it). `util/playwright/checkStopDMatrix.mjs`, listed then, no longer exists. Not re-run since; the whole-suite lock of 2026-10-30 reduces the parallel case.
+- Load flakes seen only under parallel full suites (load average 28–32 on 2026-10-18/19), each passing alone, that the Found Issues Clearance slice G4 did not reach (it moved the `cbsLimitsHost.test.ts` cases onto scripted clocks; `lore.test.ts`'s worker-timeout case was already `slow`): `src/ts/storage/tests/resourceSyncFieldCache.test.ts`, and the cold `boot()` of the first cases of `chatStore.test.ts` and `resourceSyncChats.test.ts` hitting the 5,000 ms default (a warm-up import in `beforeAll` would remove it). Not re-run since; the whole-suite lock of 2026-10-30 reduces the parallel case.
 - `addCharacter` stamps `creation_date` on a re-add (accepted at slice 5b). The first-visit default writes of some settings pages are already in `settings-i18n.md` Known Hazards.
 
 **Why it matters:** the capture gap lets a plugin act behind a blocking notice; the pinned URLs grow with assets rendered; the flakes return whenever suites run in parallel.
@@ -563,12 +562,3 @@ A helper-only change can therefore miss its browser tests during automatic selec
 In `util/docsBudget.mjs`, `pathProblem` returns success for the whole span as soon as a missing brace alternative matches a Git ignore rule. Reproduced on 2026-11-07 with `measureDocs` and `checkDocs` in a temporary Git repository containing an empty `src/` and a `*.local` ignore rule. The span `src/{draft.local,missing.ts}` produced no finding. Reversing the alternatives reported the missing `src/missing.ts`.
 
 A guide can pass the path check while pointing an agent at a missing source file. Check the remaining alternatives after accepting an ignored path.
-
-## Test timing
-
-### Gate tests still racing real time
-
-Untagged gate tests that depend on real wall-clock or scheduler time (invariant V3), noted by the [cross-plan review](../manual-audit/archive/cross-plan-2026-10-29.md#test-quality) on 2026-10-29; none failed in its runs. `src/ts/storage/tests/draftJournal.test.ts`: the start and adoption cases (the live-owner case near "leaves a live owner's rows alone" and the owner-reload case) call the real journal with its production 3 s open/seed and 5 s recovery-lock deadlines, and the file's blanket fake-timer comment does not hold for them. `server/src/tests/hypaV3Parts.test.ts`: selection and deferral cases built with `hostOf` run under the real 5,000 ms cumulative separator budget. `server/src/tests/transformService.test.ts`: `heldCount` polls with a real `setTimeout(2)` (up to 500 polls) and a 5 ms real sleep observes shutdown. `server/src/tests/transform.test.ts`: the real-worker route cases outside the cache describe's fake clock race worker, CBS, and transform deadlines (`SLOW = 60_000` is a timeout, not a `slow` tag). `src/ts/storage/tests/bootCacheServer.test.ts` (around the cases near lines 185 and 485 at that time): the real 3 s cache deadline with asynchronous IndexedDB work. Real sleeps: `server/src/tests/push.test.ts` (delivery and queue synchronization). `src/lib/ChatScreens/Chat.draft.test.ts`: the auto-popup cases wait for the first row with real `vi.waitFor` before faking timers. `src/ts/network/generationJobs.test.ts` and `src/ts/process/serverCommands.test.ts`: zero-delay real-timer `flush` helpers (28 and 106 calls) as synchronization. Re-checked 2026-11-03: behind mocks that resolve at once these flushes are close to deterministic; the load-sensitive part left is the `generationJobs` `startFollow` cases outside fake timers, which race the real connect timeout. `server/src/tests/testSupport.ts` `waitFor` without `timeoutMs` has no deadline of its own and is not one of these.
-
-**Why it matters:** each is a load-sensitive failure waiting for a slow CI runner; the timing plans' policy (`docs/structure/test-harness.md` `Tests`) asks for controlled clocks or the `slow` tag.
-**Suggested handling:** when one of these files is next touched, control its clock (inject the deadline or fake the timers) or tag the case `slow`; `pnpm --silent test:agent --slow-tests` lists the ones over 1 s.
