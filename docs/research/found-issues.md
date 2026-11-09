@@ -15,7 +15,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (3)
 - [Chat screen and input](#chat-screen-and-input) (4)
-- [Client and plugins](#client-and-plugins) (17)
+- [Client and plugins](#client-and-plugins) (12)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (8)
 
 ## Chat store, sync, and change feeds
@@ -329,46 +329,6 @@ Three writers can leave a nested number field `NaN` or `null`, which the record 
 **Why it matters:** a dead sort on every report refresh, and it misleads readers about where the owner list is computed.
 
 **Suggested handling:** remove it after `rg "controller\.owners"` confirms no reader.
-
-### searchTagList never matches the OC tag by name
-
-`searchTagList` in `src/ts/util.ts` (~1045) lowercases the last query segment, then compares it with `tag.value.startsWith(...)` (~1051) and the aliases unchanged. `TagList` has `value: "OC"` (~828), so typing "OC" or "oc" never suggests it; only its alias `original-character` does. The function's comment now states the case behavior. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** a tag suggestion silently missing on realistic input; small.
-
-**Suggested handling:** compare against lowercased tag values and aliases.
-
-### replacePlaceholders ignores its name parameter
-
-`replacePlaceholders(msg, name)` in `src/ts/util.ts` (~120) never reads `name`: it replaces the char markers with `selectedCharacter().name`, which throws when nothing is selected. Its two callers in `src/lib/ChatScreens/Suggestion.svelte` (~119, ~133) pass the selected character's name after checking one exists, so the gap is latent. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** a future caller rendering another character would get the selected character's name.
-
-**Suggested handling:** use `name` (falling back to the selection), or drop the parameter.
-
-### getCharToken rejects with no selected character
-
-`getCharToken(char?)` in `src/ts/tokenizer.ts` (~317) falls back to `selectedCharacter()`, which returns `undefined` with no selection (`src/ts/storage/characterStore.svelte.ts` ~381); reading `char.type` (~322) then rejects instead of returning zero counts. Its doc comment now states this. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** a caller that runs before a character is selected gets a rejection.
-
-**Suggested handling:** return zero counts when there is no character.
-
-### The source map fetch timeout ends before the body
-
-`translateStackTrace` in `src/ts/sourcemap.ts` (~78) clears its timer as soon as `fetch` resolves with the headers, then awaits `mapRes.json()` (~82) with no timer. A source map whose body stalls keeps the translation pending, and `src/lib/Others/AlertComp.svelte` then never shows the translated trace (it ignores late results, so the output is missing, not wrong). Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** low impact (a debug aid), but the intended 10 s bound does not hold.
-
-**Suggested handling:** clear the timer after the body read.
-
-### selectLoreBookPage stores any number
-
-`selectLoreBookPage` in `src/ts/storage/selection.svelte.ts` (~135) stores and persists any number, while `loadSelection` in the same file (~101) accepts only nonnegative integers, so a bad value lives until a reload resets it to 0. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** low impact (callers pass UI page indexes), but the two paths disagree on what a valid page is.
-
-**Suggested handling:** apply the load check in the setter; low priority.
 
 ### Asset-scale client leftovers
 
