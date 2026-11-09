@@ -10,7 +10,7 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [diagnostics](#diagnostics) (1)
 - [memory](#memory) (1)
 - [persistence](#persistence) (1)
-- [plugin-sandbox](#plugin-sandbox) (3)
+- [plugin-sandbox](#plugin-sandbox) (2)
 - [resource-sync](#resource-sync) (1)
 - [scripts-triggers](#scripts-triggers) (1)
 - [self-host-server](#self-host-server) (3)
@@ -73,10 +73,6 @@ Guide: [Plugins: v3 Sandbox, Host API, Hooks, Storage, Permissions](../structure
   without an allowlist.
 - A plugin event listener lives until the wrapper that registered it removes it by id or plugins reload: removing
   its element from the page keeps it (and the element).
-- A plugin's whole-chat setter (`setChatToIndex`, and a character setter's `chats`) diffs the plugin's copy against the
-  chat at call time (`captureChatBaseline` right before `applyChatResult`), not as the plugin read it. So a change
-  another writer made after the plugin's read is overwritten: a changed message field or chat field is set back to the
-  copy's value (a `CHAT_META_MERGE_KEYS` map only in the entries that differ), and a message added meanwhile is removed.
 
 ## resource-sync
 

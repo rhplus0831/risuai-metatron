@@ -1336,7 +1336,7 @@ interface RisuaiPluginAPI {
     // ========== Character APIs ==========
 
     /**
-     * Gets the current character
+     * Gets the current character, retaining read baselines for its chats (up to 16 per plugin instance).
      * @returns Current character object
      *
      * @example
@@ -1348,7 +1348,7 @@ interface RisuaiPluginAPI {
     getCharacter(): Promise<any>;
 
     /**
-     * Sets the current character
+     * Sets the current character. Its chats use the same read-baseline rules as setChatToIndex.
      * @param character - Character object to set
      *
      * @example
@@ -1373,15 +1373,15 @@ interface RisuaiPluginAPI {
     setChar(character: any): Promise<void>;
 
         /**
-     * Gets a character by index
+     * Gets a character by index, retaining read baselines for its chats (up to 16 per plugin instance).
      * @param index - Character index
      * @returns Character object or null if not found
      */
     getCharacterFromIndex(index: number): Promise<any|null>;
 
     /**
-     * Saves a character at a specific index. Its `chats` are applied as changes against the chats as
-     * they are now (your copy wins where it differs): new or missing ids create chats, chats left
+     * Saves a character at a specific index. Its `chats` use the same read-baseline rules as
+     * setChatToIndex: new or missing ids create chats, chats left
      * out are deleted (the last one is kept), and `chatPage` selects a chat in this tab only. A
      * character that is generating a reply is not replaced by one with another `chaId`.
      * @param index - Character index
@@ -1391,7 +1391,7 @@ interface RisuaiPluginAPI {
     setCharacterToIndex(index: number, character: any): Promise<void>;
 
     /**
-     * Gets a chat by index
+     * Gets a chat by index, retaining its read baseline (up to 16 chats per plugin instance).
      * @param characterIndex - Character index
      * @param chatIndex - Chat index
      * @returns Chat object or null if not found
@@ -1441,9 +1441,11 @@ interface RisuaiPluginAPI {
     
 
     /**
-     * Saves a chat at a specific index. The chat is compared with the chat as it is when you call
-     * this, and every difference is saved (messages matched by `chatId`): a message someone else
-     * changed after you read the chat is overwritten by your copy. Read right before writing.
+     * Saves a chat at a specific index. Changes are compared with this plugin instance's latest
+     * retained read (messages matched by `chatId`), preserving fields and messages changed by others
+     * that your copy left alone. The baseline is consumed once; without one, comparison uses the
+     * current chat. Reads retain at most 16 chats, evicting the least recently read; unload clears them.
+     * Reordering messages after the chat changed drops the reorder with a console warning.
      * Skipped (with a console warning) when it changes the message a reply is being generated into.
      * @param characterIndex - Character index
      * @param chatIndex - Chat index

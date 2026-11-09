@@ -67,8 +67,11 @@ import { noteChannelCallbacks } from "src/ts/network/generationJobs";
 import { endJobChannel, handleChannelEvent } from "src/ts/network/jobChannel";
 import { beginLocalSend } from "src/ts/process/localSends";
 import type { ChatRef } from "src/ts/storage/chatStore.svelte";
+import * as chatStore from "src/ts/storage/chatStore.svelte";
+import type { Chat } from "../../../../shared/database";
 import * as resourceSync from "src/ts/storage/resourceSync.svelte";
-import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
+import { installFlatDatabase, installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import { selectCharacter } from "src/ts/storage/selection.svelte";
 import { pluginHooks, type PluginProviderArgument } from "../pluginHooks";
 import { invokeHook } from "./pluginContext";
 import { bodyIntercepterStore } from "src/ts/stores.svelte";
@@ -336,5 +339,92 @@ describe("pluginWorkIdle", () => {
         releaseB();
         expect(pluginWorkIdle()).toBe(true);
         expect(observed.at(-1)).toBe(true);
+    });
+});
+
+describe("plugin read baseline lifetime", () => {
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        localStorage.clear();
+        installFlatDatabaseWithChats({
+            characters: [
+                {
+                    chaId: "a",
+                    type: "character",
+                    name: "A",
+                    chats: [
+                        {
+                            id: "a0",
+                            name: "Chat",
+                            note: "",
+                            localLore: [],
+                            message: [{ chatId: "m", role: "user", data: "original" }],
+                        },
+                    ],
+                },
+            ],
+            plugins: [],
+        });
+        chatStore.initializeChats();
+        selectCharacter("a");
+    });
+
+    afterEach(async () => {
+        await loadV3Plugins([]);
+        selectCharacter(null);
+        installFlatDatabase({ characters: [], plugins: [] });
+        vi.clearAllTimers();
+        vi.useRealTimers();
+    });
+
+    it("clears the old instance's retained read on unload and gives its replacement a fresh cache", async () => {
+        const { api, plugin } = await makeApi();
+        const copy: Chat = await api.getChatFromIndex(0, 0);
+        chatStore.setMessageText(chatA, "m", "user first");
+        copy.note = "plugin first";
+        await api.setChatToIndex(0, 0, copy);
+        expect(chatStore.findChat(chatA)!.message[0].data).toBe("user first");
+        const oldRead: Chat = await api.getChatFromIndex(0, 0);
+        await loadV3Plugins([plugin]);
+        const replacement = harness.captured.api!;
+        expect(replacement).not.toBe(api);
+        chatStore.setMessageText(chatA, "m", "after unload");
+        await api.setChatToIndex(0, 0, oldRead);
+        // Old host continuations have no retained read after unload: comparison is at write time.
+        expect(chatStore.findChat(chatA)!.message[0].data).toBe("user first");
+        chatStore.setMessageText(chatA, "m", "replacement unread");
+        await replacement.setChatToIndex(0, 0, oldRead);
+        expect(chatStore.findChat(chatA)!.message[0].data).toBe("user first");
+        const fresh: Chat = await replacement.getChatFromIndex(0, 0);
+        chatStore.setMessageText(chatA, "m", "replacement user edit");
+        fresh.note = "replacement plugin edit";
+        await replacement.setChatToIndex(0, 0, fresh);
+        expect(chatStore.findChat(chatA)!).toMatchObject({
+            note: "replacement plugin edit",
+            message: [{ data: "replacement user edit" }],
+        });
+    });
+
+    it("does not recreate an unloaded instance's cache when its pending getter completes", async () => {
+        const { api, plugin } = await makeApi();
+        const prime: Chat = await api.getChatFromIndex(0, 0);
+        chatStore.setMessageText(chatA, "m", "before pending read");
+        prime.note = "prime";
+        await api.setChatToIndex(0, 0, prime);
+        expect(chatStore.findChat(chatA)!.message[0].data).toBe("before pending read");
+        const gate = deferred<ReturnType<typeof chatStore.findChat>>();
+        vi.spyOn(chatStore, "ensureChatLoaded").mockReturnValueOnce(gate.promise);
+        const pending = api.getChatFromIndex(0, 0);
+        await loadV3Plugins([plugin]);
+        gate.resolve(chatStore.findChat(chatA));
+        const late: Chat = await pending;
+        chatStore.setMessageText(chatA, "m", "after late getter");
+        late.note = "late plugin edit";
+        await api.setChatToIndex(0, 0, late);
+        expect(chatStore.findChat(chatA)!).toMatchObject({
+            note: "late plugin edit",
+            message: [{ data: "before pending read" }],
+        });
+        expect(chatStore.isChatPinned("a")).toBe(false);
     });
 });

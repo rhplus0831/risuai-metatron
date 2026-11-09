@@ -1008,6 +1008,54 @@ describe("conflict recovery", () => {
 });
 
 describe("applyChatResult", () => {
+    it("clones a supplied read as the baseline, preserving independent changes through a saved round trip", async () => {
+        const { chat, ref, server, commit } = await boot();
+        chat.setChatMeta(ref, { scriptstate: { $kept: "read", $plugin: "read" } });
+        commit();
+        const copy = clone(chat.captureChatBaseline(ref).chat);
+        const result = clone(copy);
+        chat.setMessageText(ref, "b", "B meanwhile");
+        chat.setChatMeta(ref, { name: "Name meanwhile" });
+        chat.mergeChatMeta(ref, "scriptstate", { $kept: "user", $added: "user" });
+        const baseline = chat.captureChatBaseline(ref, copy);
+        // Neither the caller's read nor the live mirror may alias the retained baseline.
+        copy.message[0].data = "mutated read";
+        copy.scriptstate!.$kept = "mutated read";
+        result.message[0].data = "A plugin";
+        result.scriptstate!.$plugin = "plugin";
+        chat.applyChatResult(baseline, result);
+        commit();
+        expect(server.chat("c", "k")!.data).toMatchObject({
+            name: "Name meanwhile",
+            scriptstate: { $kept: "user", $plugin: "plugin", $added: "user" },
+            message: [
+                { chatId: "a", data: "A plugin" },
+                { chatId: "b", data: "B meanwhile" },
+                { chatId: "c", data: "C" },
+            ],
+        });
+    });
+
+    it("reconciles with supplied read baselines and falls back to current state for an uncached chat", async () => {
+        const { chat, ref, server, commit } = await boot();
+        const other = { chaId: "c", chatId: "j" };
+        chat.createChat("c", { id: "j", name: "J", message: [m("j-a", "J original")] } as any);
+        commit();
+        const baseline = chat.captureChatBaseline(ref);
+        const result = clone(baseline.chat);
+        const uncached = clone(chat.captureChatBaseline(other).chat);
+        chat.setMessageText(ref, "b", "B meanwhile");
+        chat.setMessageText(other, "j-a", "J meanwhile");
+        chat.appendMessage(ref, m("d", "D meanwhile"));
+        result.message[0].data = "A plugin";
+        chat.reconcileCharacterChats("c", [result, uncached], 0, (target) =>
+            target.chatId === "k" ? baseline : undefined,
+        );
+        commit();
+        expect(server.texts("c", "k")).toEqual(["A plugin", "B meanwhile", "C", "D meanwhile"]);
+        expect(server.texts("c", "j")).toEqual(["J original"]);
+    });
+
     it("applies only what the hook changed, keeping edits, appends, and removals made meanwhile", async () => {
         const { server, chat, ref, commit } = await boot();
         const baseline = chat.captureChatBaseline(ref);

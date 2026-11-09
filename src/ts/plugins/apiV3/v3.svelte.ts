@@ -97,6 +97,7 @@ import {
     selectChat,
     selectedChatIndex,
     withChatsCopy,
+    type ChatBaseline,
     type ChatRef,
 } from "src/ts/storage/chatStore.svelte";
 import { readChatRefsDetached, type DetachedChatRead } from "src/ts/storage/chatEdits";
@@ -1618,12 +1619,44 @@ async function withDetachedDatabaseChats<T>(
     }
 }
 
+/** Read baselines belong to the loaded API instance, never its name or another plugin's context. */
+const pluginChatBaselines = new WeakMap<object, Map<string, ChatBaseline>>();
+/** Maximum retained chat reads per instance; rereading a chat refreshes its eviction order. */
+const PLUGIN_CHAT_BASELINES_MAX = 16;
+
+function rememberChatRead(owner: object, ref: ChatRef, copy: Chat) {
+    const baselines = pluginChatBaselines.get(owner);
+    // A getter that finishes after unload must not recreate the old instance's state.
+    if (!baselines) return;
+    const key = `${ref.chaId}\u0000${ref.chatId}`;
+    baselines.delete(key);
+    baselines.set(key, captureChatBaseline(ref, copy));
+    if (baselines.size > PLUGIN_CHAT_BASELINES_MAX) {
+        baselines.delete(baselines.keys().next().value!);
+    }
+}
+
+function rememberCharacterReads<T extends { chaId: string; chats: Chat[] }>(owner: object, copy: T): T {
+    for (const chat of copy.chats) {
+        rememberChatRead(owner, { chaId: copy.chaId, chatId: chat.id! }, chat);
+    }
+    return copy;
+}
+
+function takeChatRead(owner: object, ref: ChatRef): ChatBaseline | undefined {
+    const baselines = pluginChatBaselines.get(owner);
+    const key = `${ref.chaId}\u0000${ref.chatId}`;
+    const baseline = baselines?.get(key);
+    baselines?.delete(key);
+    return baseline;
+}
+
 /**
  * The hook's character with a context, else the selected one: a detached copy in the legacy shape,
  * with its chats (`withChatsCopy`). A hook's character reports the hook's chat as its `chatPage`, so
- * `chats[chatPage]` is the chat the hook runs for.
+ * `chats[chatPage]` is the chat the hook runs for. Retains bounded read baselines for its setters.
  */
-const getChar = async (context: PluginCallContext | undefined) => {
+const getChar = async (context: PluginCallContext | undefined, owner: object) => {
     const chaId = context ? context.chatRef.chaId : selectedCharacter()?.chaId;
     if (chaId === undefined) {
         return undefined;
@@ -1633,10 +1666,10 @@ const getChar = async (context: PluginCallContext | undefined) => {
         () => {
             if (context) {
                 const { character } = contextTarget(context);
-                return withChatsCopy($state.snapshot(character), context.chatRef.chatId);
+                return rememberCharacterReads(owner, withChatsCopy($state.snapshot(character), context.chatRef.chatId));
             }
             const snapshot = characterSnapshot(chaId);
-            return snapshot === undefined ? undefined : withChatsCopy(snapshot);
+            return snapshot === undefined ? undefined : rememberCharacterReads(owner, withChatsCopy(snapshot));
         },
         () => chatsOfRead([chaId], context),
     );
@@ -1648,7 +1681,7 @@ const getChar = async (context: PluginCallContext | undefined) => {
  * hook's chat is what `getChar` reported, not a change of the user's chat selection, so it is not
  * applied.
  */
-const setChar = async (context: PluginCallContext | undefined, char: any) => {
+const setChar = async (context: PluginCallContext | undefined, char: any, owner: object) => {
     const chaId = context ? context.chatRef.chaId : selectedCharacter()?.chaId;
     if (context) {
         // Before the load: a `chatPage` naming the hook's chat (as `getChar` reported it then) is not
@@ -1664,10 +1697,12 @@ const setChar = async (context: PluginCallContext | undefined, char: any) => {
             applyPluginCharacter(
                 chaId === undefined ? -1 : characterList().findIndex((entry) => entry?.chaId === chaId),
                 char,
+                undefined,
+                owner,
             );
             return;
         }
-        applyPluginCharacter(contextTarget(context).characterIndex, char);
+        applyPluginCharacter(contextTarget(context).characterIndex, char, undefined, owner);
     });
 };
 
@@ -1687,9 +1722,10 @@ function warnRefused(what: string, write: () => void) {
 }
 
 /**
- * Applies a whole character a plugin hands back (last writer wins). The same `chaId` as the
+ * Applies a whole character a plugin hands back. The same `chaId` as the
  * character at `index`: its own fields replace the character's (`replaceCharacterFields`), and its
- * chats are reconciled by id through the chat module (changed chats diffed, new ones created,
+ * chats are reconciled by id through the chat module (diffed against the instance's last retained
+ * read when supplied, else the current chat; new ones created,
  * missing ones deleted, the order and a given `chatPage` followed). Database setters can mark
  * chats unchanged after checking the whole list or when chats are omitted: only a numeric
  * `chatPage` is then applied. Read-only `chatSummaries` never enter a character record.
@@ -1697,7 +1733,12 @@ function warnRefused(what: string, write: () => void) {
  * the character replaces the one at the index (`replaceCharacterAt`), unless that one is generating
  * a reply or the `chaId` is already another character's. A refusal is warned about.
  */
-function applyPluginCharacter(index: number, char: any, unchangedChats: ReadonlySet<string> = new Set()) {
+function applyPluginCharacter(
+    index: number,
+    char: any,
+    unchangedChats: ReadonlySet<string> = new Set(),
+    baselineOwner?: object,
+) {
     warnRefused("a character", () => {
         const current = characterList()[index];
         if (!current || !char || typeof char !== "object" || char.chaId !== current.chaId) {
@@ -1736,7 +1777,12 @@ function applyPluginCharacter(index: number, char: any, unchangedChats: Readonly
         replaceCharacterFields(fields, index);
         const { chats, chatPage } = char;
         if (Array.isArray(chats) && !unchangedChats.has(current.chaId)) {
-            reconcileCharacterChats(current.chaId, chats, typeof chatPage === "number" ? chatPage : undefined);
+            reconcileCharacterChats(
+                current.chaId,
+                chats,
+                typeof chatPage === "number" ? chatPage : undefined,
+                baselineOwner ? (ref) => takeChatRead(baselineOwner, ref) : undefined,
+            );
         } else if (typeof chatPage === "number") {
             selectChat(current.chaId, chatPage, index);
         }
@@ -2186,6 +2232,8 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
     // Keyed by the original callback so removal finds its registered wrapper.
     const hookWrappers = new WeakMap<Function, Function>();
     const contextOwner = {};
+    pluginChatBaselines.set(contextOwner, new Map());
+    addPluginUnloadCallback(plugin.name, () => pluginChatBaselines.delete(contextOwner));
     let hintedFullDatabase = false;
     // Check synchronously at host entry, before validation, permission prompts or chat loading.
     // Refusal must not throw: a failed transform would show raw text and schedule recovery retries.
@@ -2289,10 +2337,10 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             // RequestInit is public; internal routing, logging and interceptor options are not.
             return fetchNative(url, { method, headers, body, signal: options.signal ?? callSignal });
         },
-        getChar: () => getChar(currentContext(contextOwner)),
+        getChar: () => getChar(currentContext(contextOwner), contextOwner),
         setChar: async (char: any) => {
             if (refuseTransformWrite("setChar")) return;
-            return setChar(currentContext(contextOwner), char);
+            return setChar(currentContext(contextOwner), char, contextOwner);
         },
         /**
          * Replaces registrations by name: the latest callback, options, and model metadata win,
@@ -2665,7 +2713,9 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
                 [chaId],
                 () => {
                     const snapshot = characterSnapshot(chaId);
-                    return snapshot === undefined ? null : withChatsCopy(snapshot);
+                    return snapshot === undefined
+                        ? null
+                        : rememberCharacterReads(contextOwner, withChatsCopy(snapshot));
                 },
                 () => chatsOfRead([chaId], context),
             );
@@ -2680,7 +2730,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             await withChatsLoaded([chaId], () => {
                 const at = characterList().findIndex((entry) => entry?.chaId === chaId);
                 if (at !== -1) {
-                    applyPluginCharacter(at, char);
+                    applyPluginCharacter(at, char, undefined, contextOwner);
                 }
             });
         },
@@ -2699,7 +2749,10 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
                 await refreshChatProjections([ref]);
                 // Found again after both: the chat as it is now (none when it was deleted meanwhile).
                 const chat = findChat(ref);
-                return chat ? $state.snapshot(chat) : null;
+                if (!chat) return null;
+                const copy = $state.snapshot(chat) as Chat;
+                rememberChatRead(contextOwner, ref, copy);
+                return copy;
             } finally {
                 release();
             }
@@ -2811,9 +2864,9 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             if (!(await ensureChatLoaded(ref))) {
                 return;
             }
-            // Last writer wins: the plugin's chat is diffed against the chat as it is now.
+            // Consume the last retained read once; writes without one diff against the current chat.
             try {
-                applyChatResult(captureChatBaseline(ref), { ...chat, id: chatId });
+                applyChatResult(takeChatRead(contextOwner, ref) ?? captureChatBaseline(ref), { ...chat, id: chatId });
             } catch (error) {
                 console.warn("[Plugin] Skipped a chat change (a message being generated, or a refused field)", error);
             }
@@ -2866,10 +2919,10 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             }
         },
         //New names for character APIs, to match API naming conventions
-        getCharacter: () => getChar(currentContext(contextOwner)),
+        getCharacter: () => getChar(currentContext(contextOwner), contextOwner),
         setCharacter: async (char: any) => {
             if (refuseTransformWrite("setCharacter")) return;
-            return setChar(currentContext(contextOwner), char);
+            return setChar(currentContext(contextOwner), char, contextOwner);
         },
 
         showContainer: (

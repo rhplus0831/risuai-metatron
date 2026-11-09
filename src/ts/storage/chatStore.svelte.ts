@@ -4522,11 +4522,11 @@ export function replaceChat(ref: ChatRef, input: DeepReadonly<Chat>) {
  */
 export type ChatBaseline = { ref: ChatRef; chat: Chat; version: number; owner?: string };
 
-/** Captures a chat before a hook works on a copy of it (for `applyChatResult`). */
-export function captureChatBaseline(ref: ChatRef): ChatBaseline {
+/** Captures a chat before editing; an already assembled read copy avoids projecting the held chat again. */
+export function captureChatBaseline(ref: ChatRef, copy?: DeepReadonly<Chat>): ChatBaseline {
     return {
         ref,
-        chat: projectChat(requireChat(ref)),
+        chat: copy === undefined ? projectChat(requireChat(ref)) : clone<Chat>(copy),
         version: versions.get(keyOf(ref.chaId, ref.chatId)) ?? 0,
         owner: lifetimeOf(ref.chaId),
     };
@@ -4700,12 +4700,17 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
 }
 
 /**
- * Applies a whole character's chats handed back by a plugin (last writer wins): chats matched by id
- * take the incoming version (a diff against the current mirror), new ones are created, missing ones
+ * Applies a whole character's chats handed back by a plugin: chats matched by id are diffed against
+ * a supplied read baseline, else the current mirror; new ones are created, missing ones
  * deleted (unless a generation runs in them), and the order follows the incoming list. Changes to a
  * message being generated are skipped with a warning.
  */
-export function reconcileCharacterChats(chaId: string, incoming: readonly DeepReadonly<Chat>[], chatPage?: number) {
+export function reconcileCharacterChats(
+    chaId: string,
+    incoming: readonly DeepReadonly<Chat>[],
+    chatPage?: number,
+    takeBaseline?: (ref: ChatRef) => ChatBaseline | undefined,
+) {
     const character = findCharacter(chaId);
     if (!character || !Array.isArray(incoming)) {
         return;
@@ -4726,7 +4731,7 @@ export function reconcileCharacterChats(chaId: string, incoming: readonly DeepRe
         const ref = { chaId, chatId: chat.id! };
         if (isMember(ref)) {
             try {
-                applyChatResult(captureChatBaseline(ref), chat);
+                applyChatResult(takeBaseline?.(ref) ?? captureChatBaseline(ref), chat);
             } catch (error) {
                 console.warn(
                     "[Chat] Skipped a plugin change to a chat (a message being generated, or a refused field)",
