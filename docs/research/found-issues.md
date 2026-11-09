@@ -11,7 +11,6 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (1)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
 - [Server routes and resource store](#server-routes-and-resource-store) (4)
-- [LLM requests and providers](#llm-requests-and-providers) (1)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (3)
 - [Chat screen and input](#chat-screen-and-input) (3)
@@ -90,16 +89,6 @@ Excluded by the Implementation Audit Fixes plan (2026-11-05) as an unverified le
 
 **Why it matters:** an export taken while a plugin or script rewrites a custom-key asset may not be a consistent snapshot.
 **Suggested handling:** pause an export before it opens such an asset, replace the asset through the normal write path, and inspect the archive; then decide what consistency custom keys promise.
-
-## LLM requests and providers
-
-### setObjectValue follows `__proto__` segments
-
-`setObjectValue` in `server/src/llm/shared.ts` (~37, recursion ~45) applies additional-parameter dotted paths and walks inherited properties, so a key `__proto__.x` writes to `Object.prototype` on the server. The input is trusted configuration, so the exposure depends on who can set additional parameters or custom model parameters. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** server-wide prototype pollution if a less trusted user can set those parameters.
-
-**Suggested handling:** reject `__proto__`, `constructor`, and `prototype` segments.
 
 ## Request history and diagnostics
 
