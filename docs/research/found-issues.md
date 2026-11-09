@@ -14,7 +14,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [LLM requests and providers](#llm-requests-and-providers) (1)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (3)
-- [Chat screen and input](#chat-screen-and-input) (4)
+- [Chat screen and input](#chat-screen-and-input) (3)
 - [Client and plugins](#client-and-plugins) (6)
 
 ## Chat store, sync, and change feeds
@@ -159,15 +159,6 @@ In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces o
 
 **Why it matters:** a regression in either path would pass the gate.
 **Suggested handling:** add coverage when `DefaultChatScreen` gets a mounted test harness (the Deep Audit Fixes bookmark-jump and translation-invalidation tests are waiting on the same harness), or when touching these paths.
-
-### The screenshot peak grows with the row count
-
-After the paged export (`src/lib/ChatScreens/screenshotExport.ts`), the Render Work Budget comparison run ([audit](../audit/render-work-budget-2026-11-05.md#acceptance-after-slices-14), 2026-11-05) writes 2 / 7 / 25 valid PNG pages for 30 / 150 / 600 rows, but the renderer's `VmHWM` still rises by 607 / 1,478 / 3,987 MiB while one page's RGBA (816 × 16,308) is 50.8 MiB, so the acceptance "peak under one page plus the largest row" is not met. Most of the peak is not the page canvas; what holds it (the per-row captures, `src/ts/screenshotCaptureCache.ts`, or the DOM-to-canvas renderer's clones) was not investigated.
-
-A single row is outside the page budget too: the planner (`src/lib/ChatScreens/screenshotExport.ts` ~79–87) puts a row over `MAX_EXPORT_PIXELS` (64 M pixels) on its own page without reducing its area, as the module header allows, so a row about 2,400 CSS pixels wide and 8,192 tall at DPR 2 allocates a 300 MiB source and a 300 MiB page. The Implementation Audit Fixes plan (2026-11-05) excluded that as an edge case, to be taken with this investigation. Source: [RW4](../manual-audit/archive/render-work-budget-2026-11-05.md#rw4--a-single-oversized-screenshot-row-bypasses-the-page-memory-budget).
-
-**Why it matters:** a 600-row export still costs about 4 GiB of renderer memory, enough to crash a tab on phones.
-**Suggested handling:** take a heap snapshot and `VmHWM` per page during a 150-row export to find what scales with rows, then release it per page; for the single row, enforce area before capture with the same scale in planning and capture, or tile it.
 
 ### Chat rendering leftovers
 
