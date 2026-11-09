@@ -198,6 +198,25 @@ afterEach(() => {
 });
 
 describe("the getters", () => {
+    it("requires nonnegative integer chat indexes for reads and writes, preserving valid indexed access", async () => {
+        const api = await makeApi();
+        const refJ = { chaId: "c", chatId: "j" };
+        const before = JSON.parse(JSON.stringify([chatStore.findChat(refK), chatStore.findChat(refJ)]));
+        const replacement = { ...chat("j", "Updated J"), note: "Written at index 1" };
+
+        for (const index of [1.5, -2]) {
+            expect(await api.getChatFromIndex(0, index)).toBeNull();
+            await api.setChatToIndex(0, index, replacement);
+            expect([chatStore.findChat(refK), chatStore.findChat(refJ)]).toEqual(before);
+        }
+
+        expect(await api.getChatFromIndex(0, 1)).toMatchObject(chat("j", "J"));
+        await api.setChatToIndex(0, 1, replacement);
+        expect(chatStore.findChat(refJ)).toMatchObject(replacement);
+        expect(await api.getChatFromIndex(0, 1)).toMatchObject(replacement);
+        expect(chatStore.findChat(refK)).toEqual(before[0]);
+    });
+
     it.each(["cold", "warm"])("getChats builds only the requested page entries with %s chats", async (state) => {
         const chats = Array.from({ length: 1_000 }, (_, i) => chat(`page-${i}`, `Chat ${i}`));
         installDatabase({ characters: [{ ...liveCharacters()[0], chats }] }, state === "cold" ? ["c"] : []);

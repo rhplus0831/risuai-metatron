@@ -270,8 +270,9 @@ them up, and a backup does not carry them.
 - No default is applied at boot or on selection. Neither selection nor an ordinary send writes `lastInteraction` or
   moves the character revision, except the `supaMemory` turn-on.
 - Every write of a character's own fields is saved, whichever character is selected. Membership changes only through
-  `addCharacter`, `replaceCharacterAt`, `removeCharacter`, and `removeCharacters`: a `push`, `splice`, or index
-  assignment through `characterList()` throws, and a `chaId` never changes.
+  `addCharacter`, `addPreparedCharacters` (a batch: one id set, one membership change, one order repair),
+  `replaceCharacterAt`, `removeCharacter`, and `removeCharacters`: a `push`, `splice`, or index assignment through
+  `characterList()` throws, and a `chaId` never changes.
 - The settings and character records transport their own writes: a write through a view or wrapper, from the UI or a
   `bind:`, is saved without any watcher, and a bulk writer runs in one `batchRecordWrites` scope. External contracts go
   through a mutation module or the chat module.

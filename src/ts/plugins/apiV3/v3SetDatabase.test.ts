@@ -51,6 +51,8 @@ import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/
 import { assembleChats, seedChats } from "src/ts/storage/chatStore.svelte";
 import { MutationTargetGoneError } from "src/ts/storage/mutationValidation";
 import * as resourceClient from "src/ts/storage/resourceClient";
+import * as records from "src/ts/storage/records.svelte";
+import * as characterOrder from "src/ts/storage/characterOrder";
 import { executePluginV3 } from "./v3.svelte";
 import { characterList } from "src/ts/storage/characterStore.svelte";
 import { seedPluginPermissions } from "./permissionStore";
@@ -93,6 +95,56 @@ beforeEach(async () => {
 });
 
 describe("the plugin setDatabase host setter", () => {
+    it("appends 300 characters with 300 list visits, no record scans and one order repair", async () => {
+        const incoming = Array.from({ length: 300 }, (_, i) => ({
+            chaId: `bulk-${i}`,
+            name: `Character ${i}`,
+            type: "character",
+        }));
+        const list = characterList();
+        const raw = records.characterData();
+        let indexVisits = 0;
+        let recordScanVisits = 0;
+        const counted = new Proxy(list, {
+            get(target, key, receiver) {
+                if (typeof key === "string" && /^(0|[1-9]\d*)$/.test(key)) indexVisits++;
+                return Reflect.get(target, key, receiver);
+            },
+        });
+        const tracked = records.trackedCharacters;
+        // Observe the real list at the insertion boundary, including the order repair's walk.
+        const listSpy = vi.spyOn(records, "trackedCharacters").mockImplementation(<T>() => {
+            const current = tracked<T>();
+            return current === list ? (counted as T) : current;
+        });
+        // The records' uniqueness check and chat adoption must not search the growing raw list.
+        const scans = (["some", "find", "findIndex"] as const).map((method) => {
+            const original = Array.prototype[method];
+            return vi.spyOn(Array.prototype, method).mockImplementation(function (predicate, thisArg) {
+                const counted = this === raw;
+                return original.call(this, (value, index, array) => {
+                    if (counted) recordScanVisits++;
+                    return predicate.call(thisArg, value, index, array);
+                });
+            });
+        });
+        const repair = vi.spyOn(characterOrder, "checkCharOrder");
+        try {
+            await captured.api!.setDatabase({ characters: incoming });
+            expect(indexVisits).toBe(300);
+            expect(recordScanVisits).toBe(0);
+            expect(repair).toHaveBeenCalledTimes(1);
+        } finally {
+            listSpy.mockRestore();
+            for (const scan of scans) scan.mockRestore();
+            repair.mockRestore();
+        }
+        expect(characterList().map(({ chaId, name }) => ({ chaId, name }))).toEqual(
+            incoming.map(({ chaId, name }) => ({ chaId, name })),
+        );
+        expect(settings.characterOrder).toEqual(incoming.map(({ chaId }) => chaId));
+    });
+
     it("round-trips 1,000 existing characters with a linear number of list lookup visits", async () => {
         const characters = Array.from({ length: 1_000 }, (_, i) => ({
             chaId: `character-${i}`,

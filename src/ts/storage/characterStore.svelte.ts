@@ -28,7 +28,7 @@ import {
 } from "./mutationValidation";
 import {
     batchRecordWrites,
-    insertCharacterRecord,
+    insertCharacterRecords,
     removeCharacterRecords,
     replaceCharacterRecordAt,
     trackedCharacters,
@@ -232,21 +232,41 @@ export function addCharacter(char: unknown): string {
 
 /** `addCharacter` for a character prepared before (a caller's preflight of a whole list). */
 export function addPreparedCharacter(prepared: PreparedCharacter): string {
-    requirePrepared(prepared);
-    const { copy, chaId, chats } = prepared;
-    if (indexOf(chaId) !== -1) {
-        throw new MutationValidationError("character", `a character with chaId ${chaId} already exists`);
+    return addPreparedCharacters([prepared])[0];
+}
+
+/**
+ * Appends prepared characters in input order and returns their ids. Checks all ids against one
+ * index before installing any chats, then stages and inserts all records in one membership change.
+ * Installation or insertion failure forgets every attempted character's chats and leaves the list
+ * unapplied. Adoption uses the inserted indexes; the character order is repaired once for a nonempty
+ * batch, after the caller's preceding updates (including characters restored from trash).
+ */
+export function addPreparedCharacters(prepared: readonly PreparedCharacter[]): string[] {
+    if (prepared.length === 0) return [];
+    const ids = new Set(list().map((character) => character?.chaId));
+    for (const entry of prepared) {
+        requirePrepared(entry);
+        if (ids.has(entry.chaId)) {
+            throw new MutationValidationError("character", `a character with chaId ${entry.chaId} already exists`);
+        }
+        ids.add(entry.chaId);
     }
-    installCharacterChats(chaId, chats, copy);
+    const installed: string[] = [];
+    let indexes: number[];
     try {
-        insertCharacterRecord(copy as unknown as Record<string, unknown>);
+        for (const { copy, chaId, chats } of prepared) {
+            installed.push(chaId);
+            installCharacterChats(chaId, chats, copy);
+        }
+        indexes = insertCharacterRecords(prepared.map(({ copy }) => copy as unknown as Record<string, unknown>));
     } catch (error) {
-        forgetCharacterChats(chaId);
+        for (const chaId of installed) forgetCharacterChats(chaId);
         throw error;
     }
-    adoptCharacter(chaId);
+    for (let i = 0; i < prepared.length; i++) adoptCharacter(prepared[i].chaId, indexes[i]);
     checkCharOrder();
-    return chaId;
+    return prepared.map(({ chaId }) => chaId);
 }
 
 /**

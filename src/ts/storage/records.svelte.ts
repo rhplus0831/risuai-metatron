@@ -3252,6 +3252,55 @@ export function insertCharacterRecord(value: CharacterObject): number {
 }
 
 /**
+ * Appends checked characters in one membership change and returns their indexes. One id set checks
+ * the current list and the whole batch; all values are staged through the normal ownership rules
+ * before any append. Every new record renews its stamps and queues its own write. If insertion or
+ * its notifications throw, the appended records are removed before the caller forgets their chats.
+ */
+export function insertCharacterRecords(values: readonly CharacterObject[]): number[] {
+    if (values.length === 0) return [];
+    let start = -1;
+    let list: CharacterObject[] | undefined;
+    let ids: string[] = [];
+    try {
+        changeMembership(() => {
+            list = rawList();
+            const seen = new Set(list.map((entry) => entry?.chaId));
+            ids = values.map((value) => {
+                const chaId = value.chaId;
+                if (typeof chaId !== "string" || chaId === "") {
+                    throw new TypeError("characters: a character needs a chaId");
+                }
+                if (seen.has(chaId)) {
+                    throw new TypeError(`characters: a character with chaId ${chaId} already exists`);
+                }
+                seen.add(chaId);
+                return chaId;
+            });
+            const stored = values.map((value, index) => {
+                const chaId = ids[index];
+                renewStamps(characterOwner(chaId));
+                return storedCharacter(value, chaId, undefined);
+            });
+            start = list.length;
+            for (const character of stored) list.push(character);
+            return ids;
+        });
+    } catch (error) {
+        if (list && start !== -1) {
+            untrack(() => {
+                list!.splice(start, values.length);
+                for (const chaId of ids) bumpEpoch(characterOwner(chaId));
+                forgetCharacterNodes(ids);
+                trimRootList(CHARACTERS);
+            });
+        }
+        throw error;
+    }
+    return ids.map((_, index) => start + index);
+}
+
+/**
  * Stores a character at `index` (an existing index, or the list's length to append). The same
  * `chaId` as the character there replaces it (its retained wrappers follow it); another id puts a
  * different character there (the one there leaves the list), refused when another character has it.

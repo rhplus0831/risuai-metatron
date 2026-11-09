@@ -26,7 +26,7 @@ import {
     type DetachedChatCacheHit,
 } from "./detachedChatCache";
 import {
-    addPreparedCharacter,
+    addPreparedCharacters,
     checkCharacterInput,
     prepareNewCharacter,
     removeCharacter,
@@ -1269,14 +1269,15 @@ async function withHeldChatPage<T>(
     return undefined;
 }
 
-type SharedDetachedRead = { read: DetachedChatRead; needsSnapshot: boolean };
+type SharedDetachedRead = { read: DetachedChatRead; needsSnapshot: boolean; structured: boolean };
 const detachedReadsInFlight = new Map<string, Promise<SharedDetachedRead>>();
 
 /**
  * Claim every cold ref before dispatching one batch. Identical overlapping callers join per-ref
  * promises; epoch, owner, held revision, algorithm and cache generation separate incompatible reads.
  * Snapshot scanning and cache sizing happen once per answer. Callers retain their own assembly and
- * held-work checks; rejection clears only the pending entries belonging to this batch.
+ * held-work checks, including the captured algorithm returned with every answer; rejection clears
+ * only the pending entries belonging to this batch.
  */
 async function readSharedDetachedChats(refs: readonly ChatRef[]): Promise<Map<ChatRef, SharedDetachedRead>> {
     const generation = detachedChatCacheGeneration();
@@ -1329,7 +1330,7 @@ async function readSharedDetachedChats(refs: readonly ChatRef[]): Promise<Map<Ch
                     ) {
                         rememberDetachedChat(ref, read, structured, generation);
                     }
-                    resolve({ read, needsSnapshot });
+                    resolve({ read, needsSnapshot, structured });
                 }
             } catch (error) {
                 for (const { reject } of claimed) reject(error);
@@ -1352,6 +1353,9 @@ async function readSharedDetachedChats(refs: readonly ChatRef[]): Promise<Map<Ch
  * Each caller rechecks owners, local work, cache hits and membership after awaits, with a few assembly
  * attempts before held-state fallback. The optional selector names one character's page and limits
  * its reads and refreshes to those members.
+ * Final synchronous assembly fences unloaded copies by the algorithm of both their read and the
+ * preceding settings flush. A switch discards those copies and retries once, flushing the new
+ * setting before reading again; a second switch uses held-state loading.
  * A restore halt refuses every result, including fully held pages and held-state fallbacks.
  */
 async function withDetachedDatabaseChats<T>(
@@ -1424,22 +1428,35 @@ async function withDetachedDatabaseChats<T>(
             checkOwners();
             if (held) return held.value;
         }
-        let flushed: Awaited<ReturnType<typeof flushResources>>;
-        try {
-            flushed = await flushResources();
-        } catch {
-            assertSaveAdmission();
-            return await loaded();
-        }
-        const fallback = new Set(
-            ids.filter((chaId) =>
-                [...flushed.discarded, ...flushed.refused].some(
-                    (key) =>
-                        key === `characters/${chaId}` || key === `chats/${chaId}` || key.startsWith(`chats/${chaId}/`),
-                ),
-            ),
-        );
-        const reads = new Map<string, Map<string, DetachedChatRead>>();
+        const fallback = new Set<string>();
+        let flushedStructured = settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
+        const flush = async () => {
+            // Whole-chat responses follow the server's persisted setting, not the read's local flag.
+            flushedStructured = settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
+            let flushed: Awaited<ReturnType<typeof flushResources>>;
+            try {
+                flushed = await flushResources();
+            } catch {
+                assertSaveAdmission();
+                return false;
+            }
+            checkOwners();
+            for (const chaId of ids) {
+                if (
+                    [...flushed.discarded, ...flushed.refused].some(
+                        (key) =>
+                            key === `characters/${chaId}` ||
+                            key === `chats/${chaId}` ||
+                            key.startsWith(`chats/${chaId}/`),
+                    )
+                ) {
+                    fallback.add(chaId);
+                }
+            }
+            return true;
+        };
+        if (!(await flush())) return await loaded();
+        const reads = new Map<string, Map<string, SharedDetachedRead>>();
         const cacheHits = new Map<string, { ref: ChatRef; hit: DetachedChatReadHit }>();
         const discardInvalidHits = () => {
             let discarded = false;
@@ -1458,11 +1475,12 @@ async function withDetachedDatabaseChats<T>(
                 if (isChatBehind(ref)) return true;
                 if (findChat(ref)) return false;
                 if (chatHasUnackedWork(ref) || chatHydrationHold(ref) !== "none") return true;
-                const read = reads.get(chaId)?.get(id);
+                const read = reads.get(chaId)?.get(id)?.read;
                 if (read === "gone" || read === "absent") return true;
                 const held = heldChatRevision(ref);
                 return read !== undefined && held !== null && (compareRevision(read.revision, held) ?? -1) < 0;
             });
+        let refreshedAlgorithm = false;
         for (let round = 0; round < 3; round++) {
             const prepared = selectMembers ? new Map(ids.map((chaId) => [chaId, members(chaId)])) : undefined;
             pinLoadedMembers();
@@ -1488,18 +1506,25 @@ async function withDetachedDatabaseChats<T>(
                 }
                 let held = reads.get(ref.chaId);
                 if (!held) reads.set(ref.chaId, (held = new Map()));
-                held.set(ref.chatId, { revision: hit.entry.revision, data: hit.data });
+                held.set(ref.chatId, {
+                    read: { revision: hit.entry.revision, data: hit.data },
+                    needsSnapshot: false,
+                    structured: hit.entry.structured,
+                });
                 cacheHits.set(`${ref.chaId}\u0000${ref.chatId}`, { ref, hit });
             }
-            if (missing.length > 0) {
+            if (
+                missing.length > 0 &&
+                flushedStructured === (settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM)
+            ) {
                 try {
                     const read = await readSharedDetachedChats(missing);
-                    for (const [ref, { read: chat, needsSnapshot }] of read) {
+                    for (const [ref, chat] of read) {
                         let held = reads.get(ref.chaId);
                         if (!held) reads.set(ref.chaId, (held = new Map()));
                         held.set(ref.chatId, chat);
                         // The normal snapshot drops own __proto__ keys; raw JSON would differ.
-                        if (needsSnapshot) fallback.add(ref.chaId);
+                        if (chat.needsSnapshot) fallback.add(ref.chaId);
                     }
                 } catch {
                     assertSaveAdmission();
@@ -1518,6 +1543,8 @@ async function withDetachedDatabaseChats<T>(
                     checkOwners();
                     const detached = new Map<string, Map<string, Chat>>();
                     let retry = discardInvalidHits();
+                    let algorithmChanged = false;
+                    const structured = settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
                     for (const chaId of ids) {
                         const selected = members(chaId);
                         const before = prepared?.get(chaId);
@@ -1537,13 +1564,16 @@ async function withDetachedDatabaseChats<T>(
                         for (const { id } of selected) {
                             if (findChat({ chaId, chatId: id })) continue;
                             const read = reads.get(chaId)?.get(id);
-                            if (read === undefined || typeof read === "string") {
+                            if (structured !== flushedStructured || (read && read.structured !== structured)) {
+                                algorithmChanged = true;
+                            } else if (read === undefined || typeof read.read === "string") {
                                 retry = true;
                             } else {
-                                copies.set(id, read.data);
+                                copies.set(id, read.read.data);
                             }
                         }
                     }
+                    if (algorithmChanged) return { algorithmChanged: true } as const;
                     if (retry) return undefined;
                     for (const copies of detached.values()) {
                         for (const [id, chat] of copies) {
@@ -1554,7 +1584,23 @@ async function withDetachedDatabaseChats<T>(
                 },
                 prepared ? () => chatsOfRead(ids, undefined, (chaId) => prepared.get(chaId) ?? []) : refreshed,
             );
-            if (assembled) return assembled.value;
+            if (assembled && "algorithmChanged" in assembled) {
+                for (const [chaId, chats] of reads) {
+                    for (const chatId of chats.keys()) {
+                        const ref = { chaId, chatId };
+                        forgetDetachedChat(ref, cacheHits.get(`${chaId}\u0000${chatId}`)?.hit.entry);
+                    }
+                }
+                reads.clear();
+                cacheHits.clear();
+                if (refreshedAlgorithm) return await loaded();
+                refreshedAlgorithm = true;
+                if (!(await flush())) return await loaded();
+                // The refreshed algorithm gets the same membership/assembly retry budget.
+                round = -1;
+            } else if (assembled) {
+                return assembled.value;
+            }
         }
         return await loaded();
     } finally {
@@ -1694,9 +1740,10 @@ function applyPluginCharacter(index: number, char: any, unchangedChats: Readonly
  * `chaId` go through `applyPluginCharacter`, new ones are appended (prepared by `prepareNewCharacter`
  * before the list changes, their chats saved with them), and missing ones removed
  * (`removeCharacter`), except a character that is generating a reply: it stays (with a console
- * warning). Membership and positions are indexed once, with new positions recorded as characters
- * append; the mirror keeps its order. Entries marked as having unchanged chats still pass all
- * validation and apply their character fields and numeric `chatPage`, without reconciling chats.
+ * warning). Membership and existing positions are indexed once; new characters append in one batch
+ * after existing updates, repairing the order once when any were added. The mirror keeps its order.
+ * Entries marked as having unchanged chats still pass all validation and apply their character
+ * fields and numeric `chatPage`, without reconciling chats.
  */
 function applyPluginCharacters(
     incoming: unknown,
@@ -1729,23 +1776,25 @@ function applyPluginCharacters(
     const positions = new Map(existing.map((chaId, index) => [chaId, index]));
     // Every new character is prepared (checked, normalized, its creation steps done) before the list
     // changes, so an entry refused there leaves the whole list unapplied.
+    const reservedIds = new Set(existingIds);
     const prepared = new Map(
         entries.flatMap((char, i) => {
             if (typeof char.chaId === "string" && existingIds.has(char.chaId)) return [];
             const { chatSummaries: _summaries, ...fields } = char;
-            return [[char, prepareNewCharacter(fields, `characters[${i}]`)] as const];
+            const ready = prepareNewCharacter(fields, `characters[${i}]`);
+            if (reservedIds.has(ready.chaId)) {
+                throw new MutationValidationError("characters", `a character with chaId ${ready.chaId} already exists`);
+            }
+            reservedIds.add(ready.chaId);
+            return [[char, ready] as const];
         }),
     );
     for (const char of entries) {
-        const ready = prepared.get(char);
-        if (ready) {
-            const index = characters.length;
-            const chaId = addPreparedCharacter(ready);
-            positions.set(chaId, index);
-        } else {
+        if (!prepared.has(char)) {
             applyPluginCharacter(positions.get(char.chaId as string) ?? -1, char, unchangedChats);
         }
     }
+    addPreparedCharacters([...prepared.values()]);
     for (const chaId of existing) {
         if (typeof chaId !== "string" || kept.has(chaId)) {
             continue;
@@ -2604,9 +2653,11 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
                 }
             });
         },
+        /** Captures one member's id before loading; a non-integer or negative chat index returns null. */
         getChatFromIndex: async (characterIndex: number, chatIndex: number) => {
+            if (!Number.isInteger(chatIndex) || chatIndex < 0) return null;
             const chaId = characterList()[characterIndex]?.chaId;
-            const chatId = chaId === undefined ? undefined : chatList(chaId)[chatIndex]?.id;
+            const chatId = chaId === undefined ? undefined : chatMemberPage(chaId, chatIndex, chatIndex + 1)[0]?.id;
             if (chaId === undefined || chatId === undefined) {
                 return null;
             }
@@ -2715,11 +2766,13 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             return (await serverProcessScript(char, parsed, "editprocess", chatID, cbsConditions, transform, "message"))
                 .data;
         },
+        /** Captures one member's id before loading; a non-integer or negative chat index writes nothing. */
         setChatToIndex: async (characterIndex: number, chatIndex: number, chat: any) => {
             if (refuseTransformWrite("setChatToIndex")) return;
+            if (!Number.isInteger(chatIndex) || chatIndex < 0) return;
             // The chat at the indexes when the call came, by id, loaded first.
             const chaId = characterList()[characterIndex]?.chaId;
-            const chatId = chaId === undefined ? undefined : chatList(chaId)[chatIndex]?.id;
+            const chatId = chaId === undefined ? undefined : chatMemberPage(chaId, chatIndex, chatIndex + 1)[0]?.id;
             if (chaId === undefined || chatId === undefined || !chat || typeof chat !== "object") {
                 return;
             }

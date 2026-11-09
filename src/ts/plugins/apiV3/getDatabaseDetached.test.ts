@@ -763,6 +763,61 @@ it("falls back for the whole call when the detached read fails", async () => {
     expect(b.chat.chatsLoaded("d")).toBe(true);
 });
 
+it.each([
+    { method: "getDatabase", from: "hypaV3", to: "structuredMemory" },
+    { method: "getChats", from: "hypaV3", to: "structuredMemory" },
+    { method: "getDatabase", from: "structuredMemory", to: "hypaV3" },
+    { method: "getChats", from: "structuredMemory", to: "hypaV3" },
+])("$method assembles a fresh detached read after switching from $from to $to", async ({ method, from, to }) => {
+    const stored = chatData("other");
+    const fake = await fixture({ c: [stored] });
+    fake.set("ui", "main", { ...fake.record("ui", "main")!.data, memoryAlgorithmType: from });
+    remember(fake, "c", "other");
+    const b = await boot(fake);
+    const entered = deferred();
+    const release = deferred();
+    const readAlgorithms: string[] = [];
+    let firstChat: Chat | undefined;
+    boundary.fetch = async (path, init) => {
+        const response = await fake.fetch(path, init);
+        if (path === readPath) {
+            readAlgorithms.push(fake.record("ui", "main")!.data.memoryAlgorithmType);
+            if (readAlgorithms.length === 1) {
+                firstChat = (await response.clone().json()).chats[0].data;
+                entered.resolve();
+                await release.promise;
+            }
+        }
+        return response;
+    };
+    const pending = method === "getDatabase" ? b.api.getDatabase(["characters"]) : b.api.getChats("c");
+    try {
+        await entered.promise;
+        expect(isSealedHypaV3Data(firstChat?.hypaV3Data)).toBe(from === "structuredMemory");
+        b.settings.ui.memoryAlgorithmType = to;
+        await tick();
+        // Keep the debounce clock stopped: the detached read must flush the new setting itself.
+        expect(fake.record("ui", "main")!.data.memoryAlgorithmType).toBe(from);
+    } finally {
+        release.resolve();
+    }
+    const got = await pending;
+    const chats: Chat[] = method === "getDatabase" ? returnedCharacter(got, "c").chats : got.chats;
+    expect(chats).toHaveLength(1);
+    expect(chats[0]).toMatchObject(stored);
+    if (to === "structuredMemory") {
+        expect(chats[0].hypaV3Data?.summaries).toEqual([
+            { text: "A remembered promise", chatMemos: ["message"], isImportant: false },
+        ]);
+        expect(isSealedHypaV3Data(chats[0].hypaV3Data)).toBe(true);
+    } else {
+        expect(chats[0].hypaV3Data).toBeUndefined();
+    }
+    expect(readAlgorithms).toEqual([from, to]);
+    expect(fake.record("ui", "main")!.data.memoryAlgorithmType).toBe(to);
+    expect(b.chat.findChat(other)).toBeUndefined();
+});
+
 it("drops sealed projections from both loaded and detached chats after leaving structured memory", async () => {
     const fake = await fixture();
     fake.set("ui", "main", { ...fake.record("ui", "main")!.data, memoryAlgorithmType: "structuredMemory" });
@@ -774,7 +829,8 @@ it("drops sealed projections from both loaded and detached chats after leaving s
     let projectedResponse = false;
     boundary.fetch = async (path, init) => {
         const response = await fake.fetch(path, init);
-        if (path === readPath) {
+        // Only the first read precedes the switch; the read redone after flushing it is unsealed.
+        if (path === readPath && !projectedResponse) {
             const read = await response.clone().json();
             expect(
                 isSealedHypaV3Data(read.chats.find((entry: { id: string }) => entry.id === "other").data.hypaV3Data),

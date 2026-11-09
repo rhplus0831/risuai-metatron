@@ -335,16 +335,19 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   installed; held chats stay pinned until the synchronous copy. A fully held page skips the flush. Unsafe copies and
   hooks load (a page, its members: `withHeldChatPage`). A failed flush or read falls back to that loading; after a
   restore halt every such call rejects, a fully held page included.
+- The server projects a detached read by its saved memory algorithm, so a switch before the final assembly discards the
+  unloaded copies and reads once more after flushing the setting; a second switch loads.
 - `getDatabase(keys, { chats: "summaries" })` reads, flushes, pins, and loads no chat (`chatSummaryList` in
   `src/ts/storage/chatStore.svelte.ts`); every plugin character setter strips `chatSummaries`.
 - `getChatFromIndex`, `setChatToIndex`, `parseRisuChat`, and `sendChat` capture their chat by id first and await
-  `ensureChatLoaded`. `setDatabase`/`setDatabaseLite` skip loading omitted chats and exact round trips, rechecked before
+  `ensureChatLoaded`; the two index accessors take only a nonnegative integer index and read one member
+  (`chatMemberPage`). `setDatabase`/`setDatabaseLite` skip loading omitted chats and exact round trips, rechecked before
   applying, else load (`applyPluginDatabaseWithChats` JSDoc). Other character setters capture targets, pin and load,
   then apply synchronously.
 - Plugins hand back whole objects, but [chats are saved as changes](chat-store.md#whole-chat-writers).
   `applyPluginCharacter`/`applyPluginCharacters` JSDoc holds reconciliation rules (`reconcileCharacterChats`,
-  `applyChatResult`); a chat left out is deleted, never the last one. New setters use these functions, never assign
-  `chats` or `chatPage`.
+  `applyChatResult`); a chat left out is deleted, never the last one. New characters append in one batch after the
+  updates (`addPreparedCharacters`). New setters use these functions, never assign `chats` or `chatPage`.
 - When a whole-chat diff would change or remove a message being generated (`assertUnlocked`), that chat's update is
   skipped with a warning; a reorder of unchanged messages while it generates drops only the order change.
 - Generating-character and duplicate-id refusals: `applyPluginCharacter`/`applyPluginCharacters`; `removeChar` also

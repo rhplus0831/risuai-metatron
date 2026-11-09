@@ -5369,9 +5369,10 @@ function dropLoadState(chaId: string) {
 /**
  * Gives a character new to the list its first chat when it holds none, and its chats their message
  * ids and defaults, without queuing anything (`adoptCharacter` queues the creates after insertion).
+ * A matching index hint avoids searching the character list.
  */
-export function normalizeNewCharacter(chaId: string) {
-    const character = findCharacter(chaId);
+export function normalizeNewCharacter(chaId: string, indexHint?: number) {
+    const character = findCharacter(chaId, indexHint);
     if (!character) {
         return;
     }
@@ -5388,12 +5389,15 @@ export function normalizeNewCharacter(chaId: string) {
     syncSelection(chaId);
 }
 
-/** Queues creates for a new character's chats on insertion and for unsaved chats found by the save loop. */
-export function adoptCharacter(chaId: string) {
-    if (!findCharacter(chaId)) {
+/**
+ * Queues creates for a new character's chats on insertion and for unsaved chats found by the save
+ * loop. A matching index hint avoids list searches here and during normalization.
+ */
+export function adoptCharacter(chaId: string, indexHint?: number) {
+    if (!findCharacter(chaId, indexHint)) {
         return;
     }
-    normalizeNewCharacter(chaId);
+    normalizeNewCharacter(chaId, indexHint);
     for (const chatId of memberIds(chaId)) {
         const key = keyOf(chaId, chatId);
         const entry = pending.get(key);
