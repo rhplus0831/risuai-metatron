@@ -11,7 +11,7 @@ historical paths/commits, retrieval commands, and pending manual follow-ups.
   reports, shared normalization, translator provider capture, screenshot memory, file-source retries, plugin
   database reads, display apply after local writes, the docs and e2e tooling, the gate tests' clocks), measurement
   slices settle the unmeasured claims, and H1 records the accepted behaviors in their guides and closes the rest;
-  the owner accepted every open question's recommendation on 2026-11-09. Landed so far: A3, A1, C1, D2, F2, B6, E3, B5, C2.
+  the owner accepted every open question's recommendation on 2026-11-09. Landed so far: A3, A1, C1, D2, F2, B6, E3, B5, C2, A2.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
