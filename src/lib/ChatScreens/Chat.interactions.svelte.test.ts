@@ -702,21 +702,26 @@ describe("display transform recovery", () => {
         expect(alertToast).toHaveBeenCalledTimes(2);
     });
 
-    it("retries the rows of a refused request of several targets, which may fit apart", async () => {
+    it("splits a refused request of several targets at once and sends its rows apart", async () => {
         appendMessage(ref, { chatId: "second", role: "char", data: "Second reply" });
-        respond = () => Response.json({ error: "Request body too large" }, { status: 413 });
+        // The sum is refused; each row alone fits.
+        respond = (body) =>
+            body.targets.length > 1
+                ? Response.json({ error: "Request body too large" }, { status: 413 })
+                : success(body);
         renderChat("First reply");
         renderChat("Second reply", { messageId: "second", idx: 1 });
         await settle(16);
         await settle();
-        expect(requests.map((request) => request.targets.length)).toEqual([2]);
-        respond = success;
-        await settle(5_000);
-        await settle(16);
-        await settle();
+        expect(requests.map((request) => request.targets.length)).toEqual([2, 1, 1]);
         expect(requests.slice(1).flatMap((request) => request.targets.map((target) => target.source))).toEqual(
             expect.arrayContaining(["First reply", "Second reply"]),
         );
+        // Nothing is left for a retry round.
+        await settle(5_000);
+        await settle(16);
+        await settle();
+        expect(requests).toHaveLength(3);
     });
 
     it("ends an older generation's pending retry when the newer render fails permanently", async () => {
