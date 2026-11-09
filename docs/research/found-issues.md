@@ -10,7 +10,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (3)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
-- [Server routes and resource store](#server-routes-and-resource-store) (8)
+- [Server routes and resource store](#server-routes-and-resource-store) (5)
 - [LLM requests and providers](#llm-requests-and-providers) (9)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (3)
@@ -112,30 +112,6 @@ Excluded by the Implementation Audit Fixes plan (2026-11-05) as an unverified le
 
 **Why it matters:** a plugin's binary or dated value comes back changed after an upstream import, with nothing in the report to say so.
 **Suggested handling:** have `storedValue`/`storedForm` report a value whose JSON form differs in kind (typed array, `Date`, `Map`/`Set`), and report `copied` in the settings loop.
-
-### requireObject accepts class instances
-
-`shared/mutationValidation.ts` `requireObject` (~90) is documented "Throws unless `value` is a plain object", but it checks only `typeof value === "object"`, not null, and not an array, so a `Map`, a `Date`, or a class instance passes. `isPlainObject` in `shared/valueKinds.ts` (~26) is the stricter check. The mutation validators (`server/src/data/kinds.ts`, the normalizers under `server/src/data/normalize/`) and the tab's collection, character, and plugin storage stores call it. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** a non-plain object from a plugin or an MCP tool can reach record writes and serialize unexpectedly (a `Map` as `{}`).
-
-**Suggested handling:** use `isPlainObject`, or reword the comment if the loose check is intended.
-
-### normalizePreset can keep an `ooba` container without `formating`
-
-The doc comment of `normalizePreset` in `shared/presets.ts` (~629–636) says "a stored preset always has the containers the client reads through (`NAISettings.cfg_scale`, `ooba.formating`)". `normalizeFields` (~550) keeps any value of the right kind and fills nested defaults only for `NAISettings`, `promptSettings`, and `seperateParameters`, so an input `ooba: {}` is kept as is and `ooba.formating` can be missing. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** a client reader dereferencing `ooba.formating.*` would throw on such a stored preset.
-
-**Suggested handling:** confirm with a `normalizePreset({ ooba: {} })` probe, then either fill the `ooba` container's defaults or fix the comment.
-
-### normalizeChatLoadPages throws on a Symbol
-
-`normalizeChatLoadPages(value: unknown, fallback)` in `shared/chatLoadPages.ts` (~21) coerces with `Number(value)` (~23), which throws a TypeError for a Symbol; its header now says "Numeric coercion errors propagate". Settings come from JSON, which cannot hold a Symbol, so only the `unknown` signature admits it. Found in the Module Headers run (2026-11-08).
-
-**Why it matters:** no practical effect; recorded because the signature accepts `unknown`.
-
-**Suggested handling:** lowest priority; likely close as not worth fixing.
 
 ## LLM requests and providers
 
