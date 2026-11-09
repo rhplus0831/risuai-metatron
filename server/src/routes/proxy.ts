@@ -7,7 +7,7 @@ import type { AuthStore } from "./auth.ts";
 
 /**
  * Reverse-proxy routes on server/src/app.ts's authenticated limiter bucket. GET/POST /proxy and
- * /proxy2 authenticate with a stored password digest or registered JWT before reading raw POST
+ * /proxy2 authenticate with a registered ES256 JWT before reading raw POST
  * bytes; their targets are unrestricted. risu-url (URI-decoded) precedes ?url=; risu-header is a
  * URI-encoded JSON header object, otherwise incoming headers are used. Hop-by-hop fields,
  * Connection-nominated fields, and risu-auth are stripped, and a missing x-forwarded-for is filled
@@ -157,7 +157,7 @@ function filterHeaders(source: Headers, stripped: string[]): Headers {
 
 /**
  * The proxies, all on the authenticated limiter: `/proxy` and `/proxy2` (GET and POST,
- * `checkProxyAuth`: the stored password digest or a registered JWT; JWT only with `risu-aux-op`)
+ * `checkAuth`: a registered ES256 JWT, including with `risu-aux-op`)
  * reach any target the tab names, with no address or local-network restriction; `/hub-proxy/*` (GET,
  * no auth) reaches only `hubURL`.
  */
@@ -328,7 +328,7 @@ export function registerProxyRoutes(
         if (auxOpName !== undefined) {
             return await auxOp(c, auxOpName);
         }
-        const denied = await auth.checkProxyAuth(c);
+        const denied = await auth.checkAuth(c);
         if (denied) {
             return denied;
         }

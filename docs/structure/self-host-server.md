@@ -97,8 +97,8 @@ Route lookup order:
 
 `server/src/routes/proxy.ts` `registerProxyRoutes`; its module header owns authentication, limiter, and target policy.
 
-- `GET`/`POST /proxy`, `/proxy2`: `checkProxyAuth`; auxiliary operations: `server/src/llm/auxOps.ts`
-  ([LLM requests](llm-requests.md)).
+- `GET`/`POST /proxy`, `/proxy2`: `checkAuth`, a registered JWT only; the stored password digest in `risu-auth` gets the
+  usual JWT failure. Auxiliary operations: `server/src/llm/auxOps.ts` ([LLM requests](llm-requests.md)).
 - `GET /hub-proxy/*`: configured hub (default `https://sv.risuai.xyz`).
 
 ### Push routes
@@ -169,9 +169,10 @@ deletes past-grace candidates; its batches and synchronous turn are `sweep`'s co
 1. The tab keeps an ES256 key pair in IndexedDB and asks `/api/test_auth`. On first setup it posts the password digest
    to `/api/set_password`, then logs in; with an unknown key it calls `/api/login`, which registers the public-key hash
    and answers `{ status: "success" }`, with no token.
-2. Every HTTP and WebSocket request carries a JWT the tab signs itself (`createAuth`, `src/ts/storage/serverAuth.ts`,
-   five minutes). A failed check answers 400 (`failureBodies`), 401 on the asset route; sockets share the rule
-   (`isAuthorizedToken`).
+2. Every HTTP and WebSocket request, the proxy routes included, carries a JWT the tab signs itself (`createAuth`,
+   `src/ts/storage/serverAuth.ts`, five minutes). A failed check answers 400 (`failureBodies`), 401 on the asset route;
+   sockets share the rule (`isAuthorizedToken`). The password digest is checked only by `/api/login`, never accepted as
+   `risu-auth`.
 
 ### Request bodies
 

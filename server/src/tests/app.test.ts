@@ -1607,8 +1607,12 @@ describe("serialized auth persistence", () => {
             expect(loser.status).toBe(400);
             expect(await loser.text()).toBe("already set");
             expect(readFileSync(path.join(save, "server", "password"), "utf8")).toBe("first");
-            expect(await auth.isAuthorizedProxyToken("first")).toBe(true);
-            expect(await auth.isAuthorizedProxyToken("second")).toBe(false);
+            const signer = await createSigner();
+            const winner = await app.request("/api/login", json({ password: "first", publicKey: signer.publicJwk }));
+            expect(winner.status).toBe(200);
+            const other = await app.request("/api/login", json({ password: "second", publicKey: signer.publicJwk }));
+            expect(await other.json()).toEqual({ error: "Password incorrect" });
+            expect(await auth.isAuthorizedToken(await signer.jwt())).toBe(true);
         } finally {
             release.resolve();
             await Promise.all([first, second]);

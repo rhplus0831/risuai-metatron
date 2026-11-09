@@ -19,7 +19,7 @@ import { limitedBody } from "./limitedBody.ts";
  * or success.
  *
  * JWT failures normally answer 400; server/src/routes/storage.ts maps asset failures to 401.
- * checkProxyAuth additionally accepts the password digest, while isAuthorizedToken is JWT-only.
+ * checkAuth (including proxy routes) and isAuthorizedToken require a registered ES256 JWT.
  * The optional bypass accepts every token; server/src/listenConfig.ts restricts process startup
  * with bypass to numeric loopback. Files live under save/server, outside the storage namespace.
  * Missing keys start empty, malformed key JSON is renamed aside, and other read failures propagate.
@@ -201,21 +201,9 @@ export function createAuthStore(
         return c.json({ error: body.error }, body.status);
     }
 
-    /** Proxy routes also accept the stored password digest itself. */
-    async function checkProxyAuth(c: Context<AppEnv>): Promise<Response | null> {
-        if (isStoredPassword(c.req.header("risu-auth"))) {
-            return null;
-        }
-        return await checkAuth(c);
-    }
-
     /** `checkAuth`'s rule for a raw token (a WebSocket handshake): a valid JWT only. */
     async function isAuthorizedToken(token: string | undefined): Promise<boolean> {
         return (await verifyJwt(token)) === null;
-    }
-
-    async function isAuthorizedProxyToken(token: string | undefined): Promise<boolean> {
-        return isStoredPassword(token) || (await verifyJwt(token)) === null;
     }
 
     function registerRoutes(
@@ -312,5 +300,5 @@ export function createAuthStore(
         });
     }
 
-    return { checkAuth, checkProxyAuth, isAuthorizedToken, isAuthorizedProxyToken, registerRoutes };
+    return { checkAuth, isAuthorizedToken, registerRoutes };
 }

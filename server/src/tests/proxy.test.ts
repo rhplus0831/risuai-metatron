@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createHash } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
     allowTestLoopbackOrigin,
@@ -28,9 +29,64 @@ afterEach(async () => {
     upstream.requests.length = 0;
 });
 
+describe("/proxy and /proxy2", () => {
+    it("rejects the stored password digest without contacting upstream and accepts a JWT registered with it on GET and POST", async () => {
+        const passwordDigest = createHash("sha256").update("proxy-password").digest("hex");
+        server = createTestServer({ password: passwordDigest });
+        const routes = ["/proxy", "/proxy2"];
+        const methods = ["GET", "POST"];
+
+        for (const route of routes) {
+            for (const method of methods) {
+                const rejected = await server.app.request(route, {
+                    method,
+                    headers: { "risu-auth": passwordDigest, "risu-url": target("/echo") },
+                    body: method === "POST" ? "proxy body" : undefined,
+                });
+                expect(rejected.status, `${method} ${route}`).toBe(400);
+                expect(await rejected.json(), `${method} ${route}`).toEqual({ error: "Invalid Signature" });
+                expect(upstream.requests, `${method} ${route}`).toHaveLength(0);
+            }
+        }
+
+        const signer = await createSigner();
+        const login = await server.app.request(
+            "/api/login",
+            json({ password: passwordDigest, publicKey: signer.publicJwk }),
+        );
+        expect(login.status).toBe(200);
+
+        for (const route of routes) {
+            for (const method of methods) {
+                const forwarded = await server.app.request(route, {
+                    method,
+                    headers: { "risu-auth": await signer.jwt(), "risu-url": target("/echo") },
+                    body: method === "POST" ? "proxy body" : undefined,
+                });
+                expect(forwarded.status, `${method} ${route}`).toBe(200);
+                expect(await forwarded.json(), `${method} ${route}`).toMatchObject({
+                    method,
+                    url: "/echo",
+                    body: method === "POST" ? "proxy body" : "",
+                });
+            }
+        }
+        expect(upstream.requests).toHaveLength(4);
+    });
+});
+
+/** A test server with the password digest "pw" and a JWT registered through `/api/login`. */
+async function serverWithJwt(options: Parameters<typeof createTestServer>[0] = {}): Promise<string> {
+    server = createTestServer({ password: "pw", ...options });
+    const signer = await createSigner();
+    const login = await server.app.request("/api/login", json({ password: "pw", publicKey: signer.publicJwk }));
+    expect(login.status).toBe(200);
+    return await signer.jwt();
+}
+
 describe("/proxy2", () => {
-    it("requires proxy auth (stored password or a registered JWT) and a target URL", async () => {
-        server = createTestServer({ password: "pw" });
+    it("requires a registered JWT and a target URL", async () => {
+        const auth = await serverWithJwt();
         const { app } = server;
         const unauth = await app.request("/proxy2", {
             method: "POST",
@@ -40,26 +96,24 @@ describe("/proxy2", () => {
         expect(unauth.status).toBe(400);
         expect(await unauth.json()).toEqual({ error: "No auth header" });
 
-        const noUrl = await app.request("/proxy2", { method: "POST", headers: { "risu-auth": "pw" }, body: "{}" });
+        const noUrl = await app.request("/proxy2", { method: "POST", headers: { "risu-auth": auth }, body: "{}" });
         expect(noUrl.status).toBe(400);
         expect(await noUrl.json()).toEqual({ error: "URL has no param" });
 
-        const signer = await createSigner();
-        await app.request("/api/login", json({ password: "pw", publicKey: signer.publicJwk }));
         const viaJwt = await app.request("/proxy2", {
-            headers: { "risu-auth": await signer.jwt(), "risu-url": target("/echo") },
+            headers: { "risu-auth": auth, "risu-url": target("/echo") },
         });
         expect(viaJwt.status).toBe(200);
-        const viaQuery = await app.request(`/proxy?url=${target("/echo?q=1")}`, { headers: { "risu-auth": "pw" } });
+        const viaQuery = await app.request(`/proxy?url=${target("/echo?q=1")}`, { headers: { "risu-auth": auth } });
         expect(((await viaQuery.json()) as { url: string }).url).toBe("/echo?q=1");
     });
 
     it("forwards the raw body and filters request headers case-insensitively", async () => {
-        server = createTestServer({ password: "pw" });
+        const auth = await serverWithJwt();
         const res = await server.app.request("/proxy2", {
             method: "POST",
             headers: {
-                "risu-auth": "pw",
+                "risu-auth": auth,
                 "risu-url": target("/echo"),
                 "content-type": "application/x-www-form-urlencoded",
                 "risu-header": rh({
@@ -99,27 +153,27 @@ describe("/proxy2", () => {
     });
 
     it("never forwards risu-auth when risu-header is absent and rejects a non-object risu-header", async () => {
-        server = createTestServer({ password: "pw" });
+        const auth = await serverWithJwt();
         const res = await server.app.request("/proxy2", {
-            headers: { "risu-auth": "pw", "risu-url": target("/echo"), "x-custom": "c" },
+            headers: { "risu-auth": auth, "risu-url": target("/echo"), "x-custom": "c" },
         });
         const seen = (await res.json()) as { headers: Record<string, string> };
         expect(seen.headers["risu-auth"]).toBeUndefined();
         expect(seen.headers["x-custom"]).toBe("c");
 
         const bad = await server.app.request("/proxy2", {
-            headers: { "risu-auth": "pw", "risu-url": target("/echo"), "risu-header": rh([["X-A", "1"]]) },
+            headers: { "risu-auth": auth, "risu-url": target("/echo"), "risu-header": rh([["X-A", "1"]]) },
         });
         expect(bad.status).toBe(500);
         expect(upstream.requests).toHaveLength(1);
     });
 
     it("keeps an unrelated handler error as 500 with an intact POST body", async () => {
-        server = createTestServer({ password: "pw", routeLimits: { bodyBytes: 8 } });
+        const auth = await serverWithJwt({ routeLimits: { bodyBytes: 8 } });
         const response = await server.app.request("/proxy2", {
             method: "POST",
             headers: {
-                "risu-auth": "pw",
+                "risu-auth": auth,
                 "risu-url": target("/echo"),
                 "risu-header": rh([["invalid", "header object"]]),
             },
@@ -131,10 +185,10 @@ describe("/proxy2", () => {
     });
 
     it("streams SSE through, and a timeout before upstream headers is a 504", async () => {
-        server = createTestServer({ password: "pw" });
+        const auth = await serverWithJwt();
         const sse = await server.app.request("/proxy2", {
             method: "POST",
-            headers: { "risu-auth": "pw", "risu-url": target("/sse"), "risu-header": rh({}) },
+            headers: { "risu-auth": auth, "risu-url": target("/sse"), "risu-header": rh({}) },
             body: "{}",
         });
         expect(sse.headers.get("content-type")).toBe("text/event-stream");
@@ -171,7 +225,7 @@ describe("/proxy2", () => {
             const pending = server.app.request("/proxy2", {
                 method: "POST",
                 headers: {
-                    "risu-auth": "pw",
+                    "risu-auth": auth,
                     "risu-url": target("/hang"),
                     "risu-header": rh({}),
                     "risu-timeout-ms": String(timeoutMs),
@@ -192,10 +246,10 @@ describe("/proxy2", () => {
     });
 
     it("answers HEAD with headers only and closes the upstream body", async () => {
-        server = createTestServer({ password: "pw" });
+        const auth = await serverWithJwt();
         const res = await server.app.request("/proxy2", {
             method: "HEAD",
-            headers: { "risu-auth": "pw", "risu-url": target("/stall"), "risu-header": rh({}) },
+            headers: { "risu-auth": auth, "risu-url": target("/stall"), "risu-header": rh({}) },
         });
         expect(res.status).toBe(200);
         expect(res.headers.get("content-type")).toBe("text/event-stream");
