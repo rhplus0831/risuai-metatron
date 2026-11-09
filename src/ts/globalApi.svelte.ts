@@ -620,19 +620,22 @@ function buildTimeoutSignal(originalSignal?: AbortSignal, timeoutMs?: number) {
     if (!timeoutMs || timeoutMs <= 0) {
         return {
             signal: originalSignal,
-            cleanup: () => {
+            clearTimer: () => {
                 /* no-op */
             },
+            detach: undefined as (() => void) | undefined,
         };
     }
 
     const controller = new AbortController();
     const onAbort = () => controller.abort();
+    let detach: (() => void) | undefined;
     if (originalSignal) {
         if (originalSignal.aborted) {
             controller.abort();
         } else {
             originalSignal.addEventListener("abort", onAbort, { once: true });
+            detach = () => originalSignal.removeEventListener("abort", onAbort);
         }
     }
 
@@ -640,10 +643,8 @@ function buildTimeoutSignal(originalSignal?: AbortSignal, timeoutMs?: number) {
 
     return {
         signal: controller.signal,
-        cleanup: () => {
-            clearTimeout(timeoutId);
-            originalSignal?.removeEventListener("abort", onAbort);
-        },
+        clearTimer: () => clearTimeout(timeoutId),
+        detach,
     };
 }
 
@@ -786,7 +787,8 @@ export async function globalFetch(url: string, arg: GlobalFetchArgs = {}): Promi
             }
             return await fetchWithProxy(url, requestArg);
         } finally {
-            timeoutSignal.cleanup();
+            timeoutSignal.clearTimer();
+            timeoutSignal.detach?.();
         }
     } catch (error) {
         console.error(error);
@@ -1173,19 +1175,17 @@ export class AppendableBuffer {
 }
 
 /**
- * Streaming remote call returning a `Response`; transport failures reject. Accepts an optional
- * string, Uint8Array, or ArrayBuffer body. Method defaults to POST; exact GET/HEAD discard the
- * body, while DELETE/PATCH retain it. String bodies alone run `bodyIntercepterStore` interceptors
- * before encoding (throws are logged and the body so far kept).
- * A qualifying `networkRoute: "local_network"` (`shared/localNetwork.ts`) takes same-origin
- * `/proxy2`; otherwise userscript `userScriptFetch` when present, else direct fetch. The proxy
- * sends encoded `risu-url` and JSON `risu-header`, outer Content-Type application/json, a fresh
- * `risu-auth` JWT when present, optional `x-risu-tk: use` (`useRisuTk`), and `risu-timeout-ms`
- * (`requestTimeoutMs`, floored to at least 1). The request body remains its encoded bytes.
- * Timeout starts after interceptors and combines with `signal` until transport settlement, not
- * until the returned stream is consumed. Logging defaults on, records a streamed-fetch placeholder
- * before dispatch, and does not consume the response. The plugin adapter's GET default and body
- * normalization are in `src/ts/plugins/apiV3/v3.svelte.ts`.
+ * Streaming remote call returning a `Response`; transport failures reject. Accepts an optional string, Uint8Array, or
+ * ArrayBuffer body. Method defaults to POST; exact GET/HEAD discard the body, while DELETE/PATCH retain it. String bodies
+ * alone run `bodyIntercepterStore` interceptors before encoding (throws are logged and the body so far kept).
+ * A qualifying `networkRoute: "local_network"` (`shared/localNetwork.ts`) takes same-origin `/proxy2`; otherwise userscript
+ * `userScriptFetch` when present, else direct fetch. The proxy sends encoded `risu-url` and JSON `risu-header`, outer
+ * Content-Type application/json, a fresh `risu-auth` JWT when present, optional `x-risu-tk: use` (`useRisuTk`), and
+ * `risu-timeout-ms` (`requestTimeoutMs`, floored to at least 1). The request body remains its encoded bytes.
+ * Timeout starts after interceptors and limits the wait for response headers. The caller's `signal` keeps aborting the
+ * request until the body ends, errors, or is cancelled. Logging defaults on, records a streamed-fetch placeholder before
+ * dispatch, and does not consume the response. The plugin adapter's GET default and body normalization are in
+ * `src/ts/plugins/apiV3/v3.svelte.ts`.
  */
 export async function fetchNative(
     url: string,
@@ -1248,8 +1248,9 @@ export async function fetchNative(
         });
     }
     try {
+        let response: Response;
         if (window.userScriptFetch && !throughProxy) {
-            return await window.userScriptFetch(url, {
+            response = await window.userScriptFetch(url, {
                 body: realBody as any,
                 headers: headers,
                 method: arg.method,
@@ -1284,20 +1285,58 @@ export async function fetchNative(
                 signal: requestSignal,
             });
 
-            return new Response(r.body, {
+            response = new Response(r.body, {
                 headers: r.headers,
                 status: r.status,
             });
         } else {
-            return await fetch(url, {
+            response = await fetch(url, {
                 body: realBody as any,
                 headers: headers,
                 method: arg.method,
                 signal: requestSignal,
             });
         }
+        const detach = timeoutSignal.detach;
+        if (!detach || !response.body) {
+            detach?.();
+            return response;
+        }
+
+        const reader = response.body.getReader();
+        // Body errors can arrive while the wrapper is waiting for the consumer to read again.
+        void reader.closed.catch(detach);
+        return new Response(
+            new ReadableStream({
+                async pull(controller) {
+                    try {
+                        const { done, value } = await reader.read();
+                        if (done) {
+                            detach();
+                            controller.close();
+                        } else {
+                            controller.enqueue(value);
+                        }
+                    } catch (error) {
+                        detach();
+                        controller.error(error);
+                    }
+                },
+                async cancel(reason) {
+                    try {
+                        await reader.cancel(reason);
+                    } finally {
+                        detach();
+                    }
+                },
+            }),
+            { status: response.status, statusText: response.statusText, headers: response.headers },
+        );
+    } catch (error) {
+        timeoutSignal.detach?.();
+        throw error;
     } finally {
-        timeoutSignal.cleanup();
+        timeoutSignal.clearTimer();
     }
 }
 

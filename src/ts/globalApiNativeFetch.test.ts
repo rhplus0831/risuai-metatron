@@ -29,7 +29,7 @@ vi.mock("./gui/colorscheme", () => ({}));
 vi.mock("src/lang", () => ({}));
 vi.mock("./gui/guisize", () => ({}));
 vi.mock("./process/modules", () => ({}));
-vi.mock("./storage/serverAuth", () => ({}));
+vi.mock("./storage/serverAuth", () => ({ getNodeServerProxyAuth: async () => "" }));
 
 import { fetchNative } from "./globalApi.svelte";
 const fetchStub = vi.fn<typeof fetch>();
@@ -38,10 +38,171 @@ const sent = () => fetchStub.mock.calls.at(-1)![1]!;
 beforeEach(() => {
     fetchStub.mockReset().mockResolvedValue(new Response("ok"));
     vi.stubGlobal("fetch", fetchStub);
+    vi.stubGlobal("userScriptFetch", undefined);
 });
 afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+});
+
+function abortAwareTransport(transport: typeof fetchStub) {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({
+        start(streamController) {
+            controller = streamController;
+        },
+    });
+    transport.mockImplementationOnce(async (_url, options) => {
+        options!.signal!.addEventListener(
+            "abort",
+            () => controller.error(new DOMException("Request aborted", "AbortError")),
+            { once: true },
+        );
+        return new Response(body);
+    });
+    return controller;
+}
+
+function observeCallerAbort(signal: AbortSignal) {
+    const added = vi.spyOn(signal, "addEventListener");
+    const removed = vi.spyOn(signal, "removeEventListener");
+    return {
+        expectAttached() {
+            const listeners = added.mock.calls.filter(([event]) => event === "abort");
+            expect(listeners.length).toBeGreaterThan(0);
+            for (const [, listener] of listeners) {
+                expect(removed).not.toHaveBeenCalledWith("abort", listener);
+            }
+        },
+        expectDetached() {
+            for (const [event, listener] of added.mock.calls) {
+                if (event === "abort") {
+                    expect(removed).toHaveBeenCalledWith("abort", listener);
+                }
+            }
+        },
+    };
+}
+
+describe.each(["direct fetch", "userscript", "/proxy2"] as const)("fetchNative via %s", (branch) => {
+    const requestTimeoutMs = 1_000;
+    const requestUrl = branch === "/proxy2" ? "http://127.0.0.1:1234/x" : url;
+    let transport: typeof fetchStub;
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        const userscript = vi.fn<typeof fetch>();
+        if (branch !== "direct fetch") {
+            vi.stubGlobal("userScriptFetch", userscript);
+        }
+        transport = branch === "userscript" ? userscript : fetchStub;
+    });
+
+    const request = (signal: AbortSignal, timeoutMs?: number) =>
+        fetchNative(requestUrl, {
+            method: "GET",
+            signal,
+            requestTimeoutMs: timeoutMs,
+            networkRoute: branch === "/proxy2" ? "local_network" : "auto",
+        });
+    const transportSignal = () => transport.mock.calls.at(-1)![1]!.signal!;
+
+    it("stops the header timeout while forwarding caller abort to a pending body read", async () => {
+        const caller = new AbortController();
+        abortAwareTransport(transport);
+        const response = await request(caller.signal, requestTimeoutMs);
+        const signal = transportSignal();
+        const [target, options] = transport.mock.calls.at(-1)!;
+        expect(target).toBe(branch === "/proxy2" ? "/proxy2" : requestUrl);
+        if (branch === "/proxy2") {
+            expect(new Headers(options!.headers).get("risu-timeout-ms")).toBe("1000");
+        }
+
+        const readError = response
+            .body!.getReader()
+            .read()
+            .then(
+                () => undefined,
+                (error: unknown) => error,
+            );
+        await vi.advanceTimersByTimeAsync(requestTimeoutMs + 1);
+        expect(signal.aborted).toBe(false);
+
+        caller.abort();
+        expect(signal.aborted).toBe(true);
+        await expect(readError).resolves.toMatchObject({ name: "AbortError" });
+    });
+
+    it.each(["read to the end", "errored", "cancelled"] as const)(
+        "detaches caller abort after the body is %s",
+        async (ending) => {
+            const caller = new AbortController();
+            const listener = observeCallerAbort(caller.signal);
+            const controller = abortAwareTransport(transport);
+            controller.enqueue(new TextEncoder().encode("streamed body"));
+            const response = await request(caller.signal, requestTimeoutMs);
+            const signal = transportSignal();
+            listener.expectAttached();
+
+            if (ending === "read to the end") {
+                controller.close();
+                await expect(response.text()).resolves.toBe("streamed body");
+            } else if (ending === "errored") {
+                // Fill the returned stream's queue before failing the transport: cleanup must
+                // also happen while the consumer is idle, without another body read.
+                await vi.advanceTimersByTimeAsync(0);
+                const failure = new Error("Body transport failed");
+                controller.error(failure);
+                await vi.advanceTimersByTimeAsync(0);
+                listener.expectDetached();
+                await expect(response.text()).rejects.toThrow();
+            } else {
+                await response.body!.cancel("consumer finished");
+            }
+
+            listener.expectDetached();
+            caller.abort();
+            expect(signal.aborted).toBe(false);
+        },
+    );
+
+    it.each(["rejects", "returns a null body"] as const)(
+        "detaches caller abort when the transport %s",
+        async (outcome) => {
+            const caller = new AbortController();
+            const listener = observeCallerAbort(caller.signal);
+            const failure = new Error("Transport failed before headers");
+            transport.mockImplementationOnce(async () => {
+                listener.expectAttached();
+                if (outcome === "rejects") {
+                    throw failure;
+                }
+                return new Response(null);
+            });
+
+            const result = request(caller.signal, requestTimeoutMs);
+            if (outcome === "rejects") {
+                await expect(result).rejects.toBe(failure);
+            } else {
+                expect((await result).body).toBeNull();
+            }
+
+            listener.expectDetached();
+            const signal = transportSignal();
+            await vi.advanceTimersByTimeAsync(requestTimeoutMs + 1);
+            caller.abort();
+            expect(signal.aborted).toBe(false);
+        },
+    );
+
+    it("passes the caller signal unchanged when no request timeout is set", async () => {
+        const caller = new AbortController();
+        abortAwareTransport(transport);
+        const response = await request(caller.signal);
+        expect(transportSignal()).toBe(caller.signal);
+        await response.body!.cancel();
+    });
 });
 
 describe("internal fetchNative body contract", () => {
