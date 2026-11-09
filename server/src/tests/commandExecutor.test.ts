@@ -252,8 +252,11 @@ describe("the command executor", () => {
     it.each([
         ["/cut 1", ["char:greeting", "char:third"]],
         ["/cut 0-2", ["char:greeting", "user:hi there"]],
-        // A negative index takes the range branch: `slice(parseInt("") → NaN, 1)` keeps the first message.
-        ["/cut -1", ["char:greeting"]],
+        // A negative index removes from the end of the history view.
+        ["/cut -1", ["char:greeting", "user:hi there"]],
+        ["/cut abc-def", ["char:greeting", "user:hi there", "char:third"]],
+        ["/cut 3f1c2b6e-1234-4abc-9def-0123456789ab", ["char:greeting", "user:hi there", "char:third"]],
+        ["/cut 1-", ["char:greeting", "user:hi there", "char:third"]],
         ["/cut m2", ["char:greeting", "char:third"]],
         ["/del 2", ["user:hi there", "char:third"]],
         ["/del nope", ["char:greeting", "user:hi there", "char:third"]],

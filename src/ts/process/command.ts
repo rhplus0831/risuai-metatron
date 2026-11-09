@@ -200,16 +200,17 @@ async function processCommand(command: string, pipe: string, ref: ChatRef | null
             return pipe;
         }
         case "cut": {
-            if (arg.includes("-")) {
+            const range = /^(-?\d+)-(\d+)$/.exec(arg);
+            if (range) {
                 // Keeps the messages of the range (as `Array.slice` does), removes the rest.
-                const [start, end] = arg.split("-");
+                const [, start, end] = range;
                 const kept = new Set(currentChat.message.slice(parseInt(start), parseInt(end)));
                 removeMessagesUnasked(
                     ref,
                     currentChat.message.filter((message) => !kept.has(message)).map((message) => message.chatId),
                 );
-            } else if (!isNaN(parseInt(arg))) {
-                // Removes the one message at the index (a negative one takes the range branch above, as upstream).
+            } else if (/^-?\d+$/.test(arg)) {
+                // Removes the one message at the index; negative indexes count from the end.
                 const target = currentChat.message.at(parseInt(arg));
                 if (target) {
                     removeMessagesUnasked(ref, [target.chatId]);

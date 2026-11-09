@@ -242,10 +242,25 @@ describe("/cut and /del", () => {
             { op: "remove", ids: ["d"] },
         ]);
         expect(server.texts("c", ref.chatId)).toEqual(["A", "C"]);
-        // A negative number is a range with an empty start (as before): `/cut -1` keeps the first message.
+        // A negative index removes the last message of a fresh chat.
+        const negativeRef = freshChat();
         expect(await processMultiCommand("/cut -1")).toBe("");
-        expect(texts(ref)).toEqual(["A"]);
+        expect(texts(negativeRef)).toEqual(["A", "B", "C"]);
+        commit();
+        expect(server.texts("c", negativeRef.chatId)).toEqual(["A", "B", "C"]);
     });
+
+    it.each(["x-y", "3f1c2b6e-1234-4abc-9def-0123456789ab"])(
+        "/cut with unmatched hyphenated id %s removes nothing",
+        async (id) => {
+            const ref = freshChat();
+            expect(await processMultiCommand(`/cut ${id}`, ref)).toBe("");
+            expect(texts(ref)).toEqual(["A", "B", "C", "D"]);
+            const { work } = commit();
+            expect(work.groups).toEqual([]);
+            expect(server.texts("c", ref.chatId)).toEqual(["A", "B", "C", "D"]);
+        },
+    );
 
     it("/cut with a range keeps the messages of the range (as a slice does) and removes the rest", async () => {
         const ref = freshChat();

@@ -10,19 +10,9 @@ The inbox was emptied on 2026-11-09 by the Found Issues Clearance plan (retired;
 
 ## Contents
 
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (1)
 - [LLM requests and providers](#llm-requests-and-providers) (1)
 - [Display transform](#display-transform) (2)
 - [Client and plugins](#client-and-plugins) (2)
-
-## Server jobs and prompt assembly
-
-### Server /cut with a dashed id removes every message
-
-`server/src/prompt/commands.ts` `cut` (~232): any argument containing `-` takes the range branch first, so `/cut abc-def` or a UUID chat id (the by-id fallback's input) becomes `slice(NaN, NaN)`, keeps nothing, and removes every message of the history view (during a reroll the hidden carrier survives; outside one the whole chat goes). A numeric-prefixed id (`12abc`) takes the index branch through `parseInt`. Found 2026-11-09 by the A2 challenger; out of A2's scope.
-
-**Why it matters:** a script passing a chat id to `/cut` wipes the chat instead of removing one message.
-**Suggested handling:** take the range branch only for numeric bounds (for example `/^-?\d*-\d*$/`) and let other arguments reach the by-id branch; compare with the client's `src/ts/process/command.ts` first.
 
 ## LLM requests and providers
 

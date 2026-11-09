@@ -234,13 +234,14 @@ export function createCommandExecutor(host: CommandHost) {
                 services.writeChat((chat) => {
                     const view = host.historyMessages?.(chat) ?? chat.message;
                     let removed: string[];
-                    if (cutArg.includes("-")) {
+                    const range = /^(-?\d+)-(\d+)$/.exec(cutArg);
+                    if (range) {
                         // Keeps the history view's range (as `Array.slice` does), removes the rest of the view.
-                        const [start, end] = cutArg.split("-");
+                        const [, start, end] = range;
                         const kept = new Set(view.slice(parseInt(start), parseInt(end)));
                         removed = view.filter((message) => !kept.has(message)).map((message) => message.chatId!);
-                    } else if (!isNaN(parseInt(cutArg))) {
-                        // Removes the history view's indexed message (a negative index takes the range branch).
+                    } else if (/^-?\d+$/.test(cutArg)) {
+                        // Removes the history view's indexed message; negative indexes count from its end.
                         const target = view.at(parseInt(cutArg));
                         removed = target?.chatId ? [target.chatId] : [];
                     } else {
