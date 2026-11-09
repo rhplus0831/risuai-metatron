@@ -101,8 +101,8 @@ The tab's own requests (`/api/llm/request`) run their tool loops on the server t
   from the current registration on every call.
 - Remembered tool calls live in `chat.toolCalls` of the request's chat, written with `mergeChatMeta`
   ([MCP registry](#mcp-registry)).
-- Remote servers' refresh tokens are the `authRefreshes` collection, which the tab and a server job both write
-  ([known issue](../research/known-issues.md#mcp)); the Google search key and engine id are `googleSearchCredentials`.
+- Remote servers' refresh tokens are the `authRefreshes` collection, which the tab and a server job both write (a kept
+  [limitation](#limitations)); the Google search key and engine id are `googleSearchCredentials`.
 
 ## Coupling
 
@@ -159,6 +159,11 @@ The tab's own requests (`/api/llm/request`) run their tool loops on the server t
   [`jobTools.ts`](../../server/src/mcp/jobTools.ts).
 - A remote server's OAuth page opens through an `openURL` notice, which a popup blocker may stop. Decision: owner-tab
   work in [`jobTools.ts`](../../server/src/mcp/jobTools.ts).
+- A rotated refresh token is a whole-collection `authRefreshes` edit from the tab (and the server job's write to the
+  same collection is not hydrated into the tab): another writer of the collection can make the tab's write conflict and
+  be discarded, and the next refresh then sends a token the server may have spent (an unsuccessful refresh answer goes
+  on to a full login; a rejected refresh fetch rejects the login). Decision: owner, 2026-11-10 (known-issues review):
+  the failed refresh falls back to a full login.
 
 ### Gotchas
 

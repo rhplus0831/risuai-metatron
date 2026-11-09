@@ -185,6 +185,16 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
 
 - `triggercode` effects have no runtime case. Only `triggerlua` executes. Decision: `triggercode` is legacy and
   unsupported (`TriggerList.svelte`, Files above).
+- Trigger and command runs are not atomic: each trigger effect and each mutating command is its own job write (a command
+  pipeline rereads the chat before each command), so a later refused effect leaves the earlier writes committed, and a
+  command's wait can expose an intermediate revision; only the final `applyTriggerChat` diff is one write. Decision:
+  owner, 2026-11-10 (known-issues review): no transaction or rollback policy is wanted.
+- A regex script with `ableFlag` set whose action metadata leaves the flags empty runs with the legacy `g` flag.
+  `server/src/tests/regex.test.ts` pins it as a quirk. Decision: owner, 2026-11-10 (known-issues review): compatibility
+  with existing cards.
+- `v2Calculate` substitutes chat variables and calls the calculator directly, outside the CBS evaluator's cooperative
+  work/time budget; expensive expressions can hold the server thread. Decision: owner, 2026-11-10 (known-issues review):
+  isolation would be designed with the server CBS thread (server-generation).
 
 ### Gotchas
 

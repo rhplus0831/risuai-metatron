@@ -403,6 +403,9 @@ belong to [test-harness](test-harness.md); `slow` and `e2e` memberships are in i
 - A chunked body over the cap to the snapshot restore is not refused: the operation runs and the adapter discards the
   body ([Request bodies](#request-bodies)). The snapshot restore is authenticated. Decision: Server Byte Budgets D1,
   archive.
+- The thumbnail cache has no byte cap. It holds at most two sizes per asset, an asset's removal removes its entries, and
+  a changed source (the key carries its stat) leaves a stale entry for the startup sweep, so it grows with the asset
+  library, not without bound. Decision: owner, 2026-11-10 (known-issues review).
 
 ### Gotchas
 

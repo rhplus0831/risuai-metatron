@@ -333,6 +333,9 @@ Other subsystems' runtime limits live with their owners: [chat-pipeline](chat-pi
   text for a tab without the `chunks: "append"` offer, beside the sequenced appends. Neither socket is compressed (HTTP
   JSON reads are). Decision: Audit Findings and Performance Leftovers, archive; Found Issues Clearance (owner,
   2026-11-09).
+- Server CBS evaluation runs on the main thread under cooperative limits, with no hard deadline or heap bound. Other
+  prompt work (Jinja rendering, tokenizer calls after model load, non-worker lore matching) also runs there. Decision:
+  owner, 2026-11-10 (known-issues review): worker isolation is a separate design.
 
 ### Gotchas
 

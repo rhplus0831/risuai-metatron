@@ -360,6 +360,8 @@ them up, and a backup does not carry them.
 - The remote repair appends at the root: a folder this tab chose for its new character is lost with the discarded order
   write. A failed read ends the repair (logged) unless another order was announced meanwhile; the next remote order or
   `checkCharOrder` repairs again. Decision: the repair only adds (`queueRemoteCharOrderRepair`).
+- The browser-local import has no cross-tab lock: a change another tab lands between `removeIfUnchanged`'s comparison
+  and its deletion is lost. Decision: owner, 2026-11-10 (known-issues review): the import is one-time.
 
 ### Gotchas
 

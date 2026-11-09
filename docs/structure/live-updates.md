@@ -78,8 +78,7 @@ Identifiers the flows below name are not repeated here.
   checkpoint patches.
 - An edit sent before the lock frame meets the server's generating refusal and the client's
   [conflict fallback](resource-sync.md#generating-refusals): edits of the named locked messages are dropped with the
-  reload notice and read back; remaining work retries. The first-frame window remains a
-  [known issue](../research/known-issues.md#live-updates).
+  reload notice and read back; remaining work retries. The first-frame window is a kept [limitation](#limitations).
 
 ### Restore halt
 
@@ -153,3 +152,12 @@ Identifiers the flows below name are not repeated here.
   Decision: Durable Drafts D11, D8, archive.
 - A loaded chat noticed without a body or an applicable `rows` manifest is read whole when idle: a manifest past 64 KiB,
   a second over-cap write before the row read, or a `moved` answer. Decision: Incremental Chat Transport D6, archive.
+- A tab can still edit a generating reply before the job's first write's frame arrives (`hello` cannot list a message
+  before `begin`), or, with an older server, after an adopted newer read released the locks, until the next write
+  (`CHECKPOINT_INTERVAL_MS` while streaming; longer while a job waits). The edit is
+  [dropped](resource-sync.md#generating-refusals), the mirror shows it until the whole read, and with no retry block a
+  later edit can land over the finished reply. Decision: owner, 2026-11-10 (known-issues review): a feed reservation is
+  not worth the protocol work for this window.
+- The same window decides when an observer refuses a permanent character delete or different-id replace
+  (`isCharacterGenerating`). A fix would announce the job's chat reservation in the feed and read lock lists, locking
+  the chat's tail. Decision: owner, 2026-11-10 (known-issues review), with the entry above.

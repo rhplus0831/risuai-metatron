@@ -337,6 +337,21 @@ lookahead starts at stored coverage and does not defer summaries.
   window early; a stored summary reaching into a grown `queryChatCount` tail is taken where the planner would summarize
   again; past lengths use the current rest-of-prompt size, so a lore swing can move summaries. Prepared summaries can so
   replace messages earlier than vanilla Hypa would. Decision: owner, 2026-10-27 (document, do not change).
+- The modal and lore-draft fence knows only this tab's sends and the jobs it follows or sees locked: another tab's modal
+  (no job ownership on the change feed), the HypaV2 chunk editor (`AlertComp.svelte` `setHypaV2ChunkText`), and a
+  plugin's whole-chat result (`applyChatResult`) still write a whole memory value, and one that lands after the job's
+  write replaces the job's summaries (`meta set` replaces the field). Decision: owner, 2026-11-10 (known-issues review).
+- The job's own write keeps a change saved before it. A memory task's writes fence the modal of every connected tab (its
+  `memoryTask` frames), but a plugin's whole-chat result that lands after a task's write still replaces its summaries.
+  Decision: owner, 2026-11-10 (known-issues review).
+- An edit right after a refused final job hydration can still use a stale modal or lore copy: the job fence drops before
+  the idle refresh catches up, and a whole-field write can replace the job's data (`chat-store.md`, job hydration and
+  idle refresh). Decision: owner, 2026-11-10 (known-issues review).
+- Experimental's rate limiter is per execution: no provider-wide allowance across runs or chats. Decision: owner,
+  2026-11-10 (known-issues review).
+- No API embedding batch (`HypaProcesser.getEmbeds`, `HypaProcessorV2`) counts tokens before sending, so long inputs can
+  exceed provider limits; contextual batches likewise count inputs and chunks, not tokens. Decision: owner, 2026-11-10
+  (known-issues review): the provider reports the overflow.
 
 ### Gotchas
 

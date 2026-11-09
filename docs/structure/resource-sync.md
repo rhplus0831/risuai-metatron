@@ -335,6 +335,8 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
   saves the whole list, and a create carries its whole record. Measure before changing (the asset-scale slice 3c numbers
   are the baseline). Decision: Audit Findings and Performance Leftovers, archive; Found Issues Clearance (owner,
   2026-11-09).
+- A page restored from the back-forward cache may still wait for an unload answer; `flushResources` gives up after 20 s.
+  Decision: owner, 2026-11-10 (known-issues review).
 
 ### Gotchas
 

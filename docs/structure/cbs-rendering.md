@@ -352,7 +352,8 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
   and upstream parity (`server/src/tests/fixtures/cbs-parity.json`).
 - Plugin-private writes and allowed indirect host effects can change opaque handler output without invalidating its
   transform cache entry. See the [host write boundary](plugin-sandbox.md#invariants). Decision: the
-  [plugin author contract](../../plugins.md#read-only-transform-continuations).
+  [plugin author contract](../../plugins.md#read-only-transform-continuations); a plugin-side "re-render me" call is to
+  be part of the plugin API design (owner, 2026-11-10).
 - The evaluator has quadratic paths: `{{` nesting (`unshift`), the `#each` splice, `filter` with `unique`/`all`; the
   limits bound them on both hosts, and a row that reaches the client budget shows the limit text instead of its content.
   A fan-out of `call::` (a function calling itself twice) is bounded by the work budget only, so on the server it fails
@@ -375,6 +376,33 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
   same-input replacement sends `noCache: false` and can read the server's old cache entry. Decision: excluded as an edge
   (2026-11-05),
   [RW3](../manual-audit/archive/render-work-budget-2026-11-05.md#rw3--a-departed-forced-refresh-can-leave-its-replacement-using-the-old-server-cache).
+- A permanent display failure is not remembered: when another target of the same row fails transiently (a legacy
+  rendered translation's paragraph beside an oversized original), that row's retry round rerenders it whole, so the
+  permanent target is requested and its toast shown again every round. A fix would remember terminal outcomes per
+  target. Decision: owner, 2026-11-10 (known-issues review): per-target terminal outcomes are not worth their lifecycle
+  state.
+- A request of the old source still in flight when its message is edited can fail after the edited source renders. The
+  failure is recorded against the source shown then, so its retry round rerenders the edited row once (typed form input
+  included). The capture carries no shown source to fence it. Decision: owner, 2026-11-10 (known-issues review): one
+  extra rerender is accepted.
+- The transform's invalidation guarantee does not cover inlay records or file existence read by Lua
+  `getCharacterImage`/`getPersonaImage`; those inputs are not keyed. Decision: owner, 2026-11-10 (known-issues review):
+  a media revision in the key waits for a card that needs it.
+- A `{{random}}` or clock row may change when it remounts after its chat changed. After eviction or Re-render elsewhere,
+  a random/clock/plugin row can be refilled with different text under the same key, and `same` can still confirm the
+  tab's older text: the key names inputs, not output. Decision: owner, 2026-11-10 (known-issues review): upstream
+  re-evaluates these on every render too.
+- Resize and rotation do not re-render rows; the new viewport takes effect on the next remount. Decision: owner,
+  2026-11-10 (known-issues review): the next remount is enough.
+- A [permanent display failure](#display-transform-failures) is not retried when only the stored data shrinks: a
+  transcript or character trimmed under the limit renders the row on its next mount or a Re-render, not on its own.
+  Decision: owner, 2026-11-10 (known-issues review): a fix needs its own invalidation of the remembered failure when
+  stored data shrinks (the per-target outcomes of the toast entry above would not clear it).
+- A script whose output size varies (`{{random}}`, a clock) can fail the head limit once and fit on the next run; it is
+  still marked permanent. Decision: owner, 2026-11-10 (known-issues review).
+- A screenshot taken while a provisional display awaits a replacing answer can capture the cached text:
+  `ChatBody.svelte`'s `whenRendered` waits for current parses and auto-translation, not the transform confirmation.
+  Decision: owner, 2026-11-10 (known-issues review).
 
 ### Gotchas
 

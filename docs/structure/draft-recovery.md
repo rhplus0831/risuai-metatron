@@ -261,6 +261,18 @@
 - A draft Apply that conflicts keeps its own draft and adds one of the abandoned applied text. A parked resend a server
   list supersedes is drafted even when it landed (the list cannot tell). Ops answered `missing` are kept as a draft of
   their text by `ackChatWork` ([By-id ops](chat-store.md#by-id-ops)). Decision: Durable Drafts D8, archive.
+- The conservative `sent`/`resend` marks of a cycle can outlive an early exit, leaving a dispatched mark for a later
+  batch that never went: harmless for an update, but recovery treats such a create as a draft rather than creating it.
+  Decision: owner, 2026-11-10 (known-issues review): the conservative draft is preferred.
+- A metadata before captured from an unloaded summary may differ from raw storage (for example, omitted `pinned:false`),
+  so recovery may conservatively draft it. Decision: owner, 2026-11-10 (known-issues review): the conservative draft is
+  preferred.
+- A composer draft typed during a send with that send's text carries its message id (`retryIdFor`). The page's own
+  settlement keeps it as a plain draft, but a reload before that settlement cannot tell it from the send's text put back
+  after a failure: `composerDrafts.svelte.ts` `restore` finds the message landed and deletes the draft, so the retyped
+  text is lost. Keeping it would bring sent text back after every uncertain landed end
+  ([JR1](../manual-audit/archive/cross-plan-2026-10-29.md#jr1--a-landed-send-deletes-an-identical-drafts-journal-row)).
+  Decision: owner, 2026-11-10.
 
 ### Gotchas
 

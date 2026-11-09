@@ -293,6 +293,27 @@ matched-entry identities.
   (`src/ts/process/localSends.ts`) rolls back its own entry on a throw but cannot repair the queue; no known subscriber
   throws. Decision: Found Issues Clearance Q1 (owner, 2026-11-09): moving `localSends` to `$state` touches every
   consumer for no reproduced defect.
+- A reroll's restore cannot see another tab's job that holds no lock yet and was not met at this tab's create: the
+  restored replies land while that job runs, like any other edit. Decision: owner, 2026-11-10 (known-issues review),
+  together with the live-updates reservation window.
+- `disable_ui_prompt` lore decorators fill `disabledUIPrompts`, which nothing consumes. Decision: owner, 2026-11-10
+  (known-issues review): upstream has no consumer either; the decorator is accepted and ignored.
+- `renderChatTemplate` calls Jinja's `Template.render` synchronously with no work or time limit; a costly custom
+  template occupies its caller's thread. Decision: owner, 2026-11-10 (known-issues review): worker isolation would be
+  designed together with the server CBS thread (server-generation).
+- The screen's per-chat reroll history (the bundles of multi-reply tails) is in memory only; a single reply's reroll
+  keeps the previous reply as that message's `candidates` on the server. Decision: owner, 2026-11-10 (known-issues
+  review).
+- Composer recovery depends on the browser journal. Chrome aborts IndexedDB writes begun in `pagehide` on unload, so a
+  reload, close, or navigation within 500 ms of the last edit loses it. Decision: owner, 2026-11-10 (known-issues
+  review).
+- In-page send recovery restores the serialized send text without its translation draft; journal recovery restores the
+  pre-consumption composer. Neither restores a send whose job ended `done` (`ok`) after a script removed its user
+  message. Decision: owner, 2026-11-10 (known-issues review).
+- Lore keys keep the inherited grammar: every key is split on commas before the `/pattern/flags` parse, so `/a{1,2}/`
+  becomes two malformed keys; the last slash closes a pattern, and a bare or unclosed slash, an invalid flag, or a
+  malformed later entry ends that key search instead of being skipped. Kept for parity. Decision: owner, 2026-11-10
+  (known-issues review).
 
 ### Gotchas
 
