@@ -155,7 +155,8 @@ and keeps what spans files.
 - Cold storage is folded on import only (the export writes characters and chats inline): stub characters, cold chats
   (`importCharacters.ts` header), and plugin storage (`importCollections.ts` `convertPluginStorage`;
   [Invariants](#invariants)).
-- PocketRisu/RisuBard swipes become `candidates` (`message-swipes`; `importCharacters.ts` header).
+- PocketRisu/RisuBard swipes become `candidates` (`message-swipes`; `importCharacters.ts` header): the selected swipe
+  plus the newest ring-sized window, so a message with thousands of swipes converts in linear time.
 
 ### Upstream database export
 

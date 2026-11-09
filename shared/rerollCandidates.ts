@@ -225,7 +225,7 @@ export function trimCandidates(
     }
     if (!copy.candidates) return copy;
     let selected = copy.selected ?? 0;
-    const candidates = [...copy.candidates];
+    let candidates = [...copy.candidates];
     for (let index = candidates.length - 1; index >= 0; index--) {
         if (
             candidateBytes(candidates[index]) > MAX_CANDIDATE_BYTES ||
@@ -242,10 +242,27 @@ export function trimCandidates(
             if (index < selected) selected--;
         }
     }
+    // Both bounds use the same drop priority, so remove the count excess before measuring the bounded ring.
+    const excess = candidates.length - MAX_MESSAGE_CANDIDATES;
+    if (excess > 0) {
+        const dropped = new Set<number>();
+        for (let index = 0; index < candidates.length && dropped.size < excess; index++) {
+            if (index !== selected && candidates[index].id !== previousId) dropped.add(index);
+        }
+        for (let index = 0; index < candidates.length && dropped.size < excess; index++) {
+            if (index !== selected) dropped.add(index);
+        }
+        const originalSelected = selected;
+        candidates = candidates.filter((_entry, index) => {
+            if (!dropped.has(index)) return true;
+            if (index < originalSelected) selected--;
+            notice("rerollCandidateDropped");
+            return false;
+        });
+    }
     while (
-        candidates.length > MAX_MESSAGE_CANDIDATES ||
         candidateBytes({ candidates, scriptstateCheckpoint: copy.scriptstateCheckpoint }) >
-            MAX_CANDIDATES_BYTES_PER_MESSAGE
+        MAX_CANDIDATES_BYTES_PER_MESSAGE
     ) {
         let index = candidates.findIndex((entry, index) => index !== selected && entry.id !== previousId);
         if (index < 0) index = candidates.findIndex((_entry, index) => index !== selected);

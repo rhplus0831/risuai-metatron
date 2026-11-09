@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { Chat, Message } from "../database.ts";
-import { isLatestReply, isRerollCarrier } from "../rerollCandidates.ts";
+import { isLatestReply, isRerollCarrier, trimCandidates, type CandidateNoticeCode } from "../rerollCandidates.ts";
 
 const message = (chatId: string, role: Message["role"], isComment = false): Message => ({
     chatId,
@@ -29,6 +29,38 @@ function observedChat(messages: Message[]) {
     };
     return { chat, visited };
 }
+
+describe("trimCandidates", () => {
+    it.each([
+        {
+            bound: "count",
+            data: "x",
+            kept: [1, 31, ...Array.from({ length: 14 }, (_, index) => 50 + index)],
+            dropped: 48,
+        },
+        {
+            bound: "bytes after count trimming",
+            // Twelve 16 KiB texts fill the 192 KiB budget before JSON overhead; only eleven fit.
+            data: "x".repeat(16 * 1024),
+            kept: [1, 31, ...Array.from({ length: 9 }, (_, index) => 55 + index)],
+            dropped: 53,
+        },
+    ])("keeps the previous and selected replies in order under the $bound bound", ({ data, kept, dropped }) => {
+        const candidates = Array.from({ length: 64 }, (_, index) => ({ id: `reply-${index}`, data }));
+        const notices: CandidateNoticeCode[] = [];
+        const result = trimCandidates(
+            { ...reply, data, candidates, selected: 31 },
+            (code) => notices.push(code),
+            "reply-1",
+        );
+
+        expect(result.candidates?.map(({ id }) => id)).toEqual(kept.map((index) => `reply-${index}`));
+        expect(result.candidates?.map(({ data }) => data)).toEqual(kept.map(() => data));
+        expect(result.selected).toBe(1);
+        expect(result.data).toBe(data);
+        expect(notices).toEqual(Array(dropped).fill("rerollCandidateDropped"));
+    });
+});
 
 describe("reply tail predicates", () => {
     it("recognizes reroll carriers through comments and stops at the preceding non-comment message", () => {

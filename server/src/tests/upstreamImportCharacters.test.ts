@@ -861,16 +861,60 @@ describe("convertUpstreamDatabase: chats and messages", () => {
         expectForeignFieldsRemoved([fallback]);
     });
 
-    it("drops the oldest non-selected swipes above sixteen while retaining the displayed reply", () => {
-        const swipes = Array.from({ length: 18 }, (_, index) => `Reply ${index}`);
-        const { out, messages } = importSwipes([msg("char", "Reply 0", { swipes, swipeId: 0 })]);
+    it("bounds 1,000 swipes to the selected reply and newest others and reports every dropped swipe", () => {
+        const swipes = Array.from({ length: 1_000 }, (_, index) => `Reply ${index}`);
+        const { out, messages } = importSwipes([msg("char", "Reply 500", { swipes, swipeId: 500 })]);
         const reply = messages[0];
         expect(reply.candidates).toHaveLength(16);
-        expect(reply.candidates!.map(({ data }) => data)).toEqual(["Reply 0", ...swipes.slice(3)]);
+        expect(reply.candidates!.map(({ data }) => data)).toEqual([
+            "Reply 500",
+            ...Array.from({ length: 15 }, (_, index) => `Reply ${985 + index}`),
+        ]);
         expect(reply.selected).toBe(0);
-        expect(reply.data).toBe("Reply 0");
+        expect(reply.data).toBe("Reply 500");
         expectForeignFieldsRemoved(messages);
         expect(converted(out, "message-swipes")).toEqual({ code: "message-swipes", count: 1, examples: ["Swipes"] });
+        expect(excluded(out, "invalid-data")).toEqual({ code: "invalid-data", count: 984, examples: ["Swipes"] });
+    });
+
+    it("reports missing inlays once per chat when only alternate swipe candidates reference them", () => {
+        for (const syntax of ["inlay", "inlayed", "inlayeddata"]) {
+            const swipes = [`First {{${syntax}::missing-one}}`, `Second {{${syntax}::missing-two}}`, "Displayed reply"];
+            const { out, messages } = importSwipes([msg("char", "Displayed reply", { swipes, swipeId: 2 })]);
+            const reply = messages[0];
+            expect(reply.data).toBe("Displayed reply");
+            expect(reply.selected).toBe(2);
+            expect(reply.candidates!.map(({ data }) => data)).toEqual(swipes);
+            expect(excluded(out, "inlays-not-in-backup"), syntax).toEqual({
+                code: "inlays-not-in-backup",
+                count: 1,
+                examples: ["Swipes"],
+            });
+        }
+    });
+
+    it("converts swipes after discarding empty native candidates but preserves valid native candidates", () => {
+        const swipes = ["Foreign alternate", "Displayed reply"];
+        const native = [
+            { id: "native-alternate", data: "Native alternate" },
+            { id: "native-selected", data: "Displayed reply" },
+        ];
+        const { out, messages } = importSwipes([
+            msg("char", "Displayed reply", { candidates: [], swipes, swipeId: 1 }),
+            msg("char", "Displayed reply", { candidates: native, selected: 1, swipes, swipeId: 1 }),
+        ]);
+        expect(messages[0].candidates).toEqual([
+            { id: expect.any(String), data: "Foreign alternate" },
+            { id: expect.any(String), data: "Displayed reply" },
+        ]);
+        expect(messages[0].selected).toBe(1);
+        expect(messages[0].data).toBe("Displayed reply");
+        expect(messages[1].candidates).toEqual(native);
+        expect(messages[1].selected).toBe(1);
+        expect(messages[1].data).toBe("Displayed reply");
+        expectForeignFieldsRemoved(messages);
+        expect(converted(out, "message-swipes")).toEqual({ code: "message-swipes", count: 1, examples: ["Swipes"] });
+        expect(excluded(out, "invalid-data")).toEqual({ code: "invalid-data", count: 1, examples: ["Swipes"] });
     });
 
     it("binds every chat to the converted selection and keeps bindedPersona only when it names a persona", () => {
