@@ -133,10 +133,10 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 
 ### Whole-chat writers
 
-- Plugin setters, `chatEdits.ts`, and the reroll paths capture a baseline and call `applyChatResult`;
-  `reconcileCharacterChats` takes a plugin's whole list ([plugins](plugin-sandbox.md)). A structured chat's `hypaV3Data`
-  is a projection the mirror holds and no send carries:
-  [the rules](structured-memory/projection.md#the-hypav3-projection).
+- Plugin setters, `chatEdits.ts`, and the reroll paths capture a baseline and call `applyChatResult`
+  (`captureChatBaseline` can take an already assembled read copy); `reconcileCharacterChats` takes a plugin's whole list
+  and an optional supplier of read-time baselines ([plugins](plugin-sandbox.md)). A structured chat's `hypaV3Data` is a
+  projection the mirror holds and no send carries: [the rules](structured-memory/projection.md#the-hypav3-projection).
 - A `createChatFieldDraft` copy is fenced by `loreWriteFenced` over `localSends` and `generatingChatKeys`, also before
   structural override actions; the job's Lua lorebook upsert writes from the stored chat
   ([scripts](scripts-triggers.md)).

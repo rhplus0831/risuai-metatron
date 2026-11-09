@@ -132,7 +132,9 @@
 
 - `recoverJournal` uses `decideChatRecovery`, `decideChatOpsRecovery` and `decideOrderRecovery`, then calls
   `chatStore.svelte.ts` `installRecoveredChat` and `installRecoveredOrder`. Absent parents, refusals, malformed rows and
-  uncertain work become drafts. Classifier comments hold the revision, before-value and membership rules.
+  uncertain work become drafts. Matching final values satisfy pending by-id work; otherwise matching before-values
+  replay only on the row's recorded `baseRevision` (a chat that moved on is drafted, since its ops may have landed in
+  another form). Classifier comments hold the revision, before-value and membership rules.
 - Resends preserve original ops/base/id for `retry: true`; dependent pending work is atomically drafted first. For rows
   handed back to saving, installation and adapter adoption precede reservation release in `draftJournal.ts`; failed
   installations retain their reservations. Committed whole-row moves to drafts and expiry cleanup also free
@@ -155,18 +157,23 @@
 ### Apply
 
 - The dialog calls `applyRecoveryDraft`, which applies explicit intent through normal writers in a mutation scope. Its
-  comment defines admission, expiry, layer priority and retry destination; `applyChatOps` defines skipped ops. A gone
-  chat with a snapshot uses `createChat` under the draft's id.
+  comment defines admission, expiry, layer priority and retry destination; `applyChatOps` returns the skipped report
+  strings and, for content that did not land (a missing or refused message edit or translation, an append whose rows
+  were not inserted, a refused non-memory `meta` set), the narrowed ops. A gone chat with a snapshot uses `createChat`
+  under the draft's id.
 - A real `hypaV3Data` that Structured Memory refuses (`setChatMeta`'s recovery source) is filed as a draft of its own
   before the flush, or a memory-only draft is kept; the dialog says which.
 - A non-delete character edit past the boot's three-day trash threshold becomes a draft instead of replaying. Explicit
   Apply skips it and keeps the draft, reporting the character in its skipped result.
-- `flushResources({ scope })` must save the affected keys without `discarded` or `refused` before
-  `recoveryDrafts.remove` deletes the draft. A conflict retains it; a second Apply uses the revision the conflict reload
-  installed.
-- If deletion fails after a confirmed save, `appliedNotRemoved` says the changes were saved and the draft should be
-  discarded. `recoveryDrafts.markApplied` disables Apply for the rest of the page; reload offers it again, though a
-  second Apply repeats a record draft's write over later edits.
+- `flushResources({ scope })` must save the affected keys without `discarded` or `refused` before the source draft is
+  removed. Skipped content is first filed as an ops-only draft (the source's `createdAt` and epoch, the applied chat's
+  ref, no snapshot), and the result's `kept` makes the dialog say so (`recoveryDrafts.skippedKept`); by-design skips
+  (control and whole-chat ops, removes of absent ids, appends already present) are report-only. A conflict retains the
+  source; a second Apply uses the revision the conflict reload installed.
+- If filing the skipped content or deleting the source fails after a confirmed save, the source stays and
+  `appliedNotRemoved` says the changes were saved and the draft should be discarded. `recoveryDrafts.markApplied`
+  disables Apply for the rest of the page; reload offers it again, though a second Apply repeats a record draft's write
+  over later edits.
 
 ## State
 

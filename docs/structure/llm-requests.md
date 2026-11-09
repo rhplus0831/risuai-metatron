@@ -44,12 +44,14 @@ and what to look up.
 - `shared/llm.ts`: the persisted descriptor codes (`LLMFlags`, `LLMProvider`, `LLMFormat`, `LLMTokenizer`), `LLMModel`,
   and `LLMParameter`. `shared/llm/types.ts` re-exports the four code objects and `LLMModel` with `ProviderNames` and the
   parameter presets (`OpenAIParameters`, `ClaudeParameters`); static entries are in `shared/llm/providers/`.
-- `shared/llm/models.ts`: the catalogue and resolver both runtimes share: `BASE_LLM_MODELS`, `resolveModelInfo`, and
-  `dynamicModelOf`.
+- `shared/llm/models.ts`: the catalogue and resolver both runtimes share: `BASE_LLM_MODELS`, `resolveModelInfo`,
+  `dynamicModelOf`, and `isUnresolvedModelId` (true when resolution reaches the final as-is OpenAI-compatible fallback;
+  `ModelProfileEditor.svelte` then shows `modelProfiles.unresolvedModelNotice` beside the model field).
 - `shared/llm/thinkingResolver.ts` `resolveClaudeThinkingType`: stored versus displayed Claude thinking mode.
-- `src/ts/model/modellist.ts`: the tab's registry and lookups: `LLMModels`, `isDynamicModel`, `registerModelDynamic`,
-  `getModelInfo`, `getModelInfoForMode`, `getModelList`. The server's lookup is `server/src/llm/request.ts`
-  `requestModelLookup`.
+- `src/ts/model/modellist.ts`: the tab's registry and lookups: `LLMModels`, `isDynamicModel`, `registerModelDynamic`
+  (with a `profileId`, as the profile editor's `ModelList.svelte` passes on open, it discovers that profile's provider
+  with the profile's credential), `getModelInfo`, `getModelInfoForMode`, `getModelList`. The server's lookup is
+  `server/src/llm/request.ts` `requestModelLookup`.
 
 ### Model preset slots
 
@@ -78,9 +80,9 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
   keys; refusal messages are `server/src/llm/messages.ts` `errors.credential*`.
 - `server/src/llm/auxOps.ts` `AUX_OPS`, `planAuxOp`: the `/proxy2` auxiliary operations ([server](self-host-server.md)):
   the media, memory, model discovery, account, and count calls the tab makes with a stored key, and which rows accept a
-  profile. `server/src/routes/proxy.ts` reads the `risu-aux-profile` header, and `server/src/app.ts` `auxCredential`
-  resolves that profile with `resolveCredential` over the merged records (`server/src/llm/settings.ts`
-  `mergeCredentials`).
+  profile (the rows with a `slot`: NanoGPT, OpenRouter, Ollama, and the Google, Anthropic, and OpenAI model discovery).
+  `server/src/routes/proxy.ts` reads the `risu-aux-profile` header, and `server/src/app.ts` `auxCredential` resolves
+  that profile with `resolveCredential` over the merged records (`server/src/llm/settings.ts` `mergeCredentials`).
 
 ### Tab request layer
 
@@ -339,6 +341,10 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
 ## Known Hazards
 
 ### Limitations
+
+- The `/proxy2` media, memory, and count rows (`AUX_OPS` rows without a `slot`) use their flat default keys and accept
+  no profile; only the discovery rows resolve one. Decision: owner, 2026-11-10 (known-issues review): the profile
+  editor's model list was the case that mattered.
 
 - An overload error event inside an Anthropic stream becomes redacted `Error:<message>` answer text (an OpenAI Responses
   error event becomes the answer too; an OpenAI Chat `error` event fails the stream). There is no in-stream retry;

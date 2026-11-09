@@ -67,10 +67,12 @@ it runs on both sides.
 Asset sources use direct URLs only while boot recorded a ready worker (`setUsingSw`) and the controlling worker reports
 `directAssets: true` on `/sw/init` (`setDirectAssets`); otherwise each call takes the fallback, a worker cache URL or an
 object URL ([Asset sources](#asset-sources)). A `controllerchange` clears the capability until the new controller's
-probe answers ([known issue](../research/known-issues.md#assets)); one that leaves no controller also drops the resolved
-`/sw/img` sources (`invalidateWorkerFileSources`) and the parser's `fileSrcCache`, and the fallback never returns a
-`/sw/img` URL without a controller, so later reads take an object URL. The probe and the worker's signing:
-[build/test](build-test-platforms.md#direct-assets); the asset route, thumbnails, and HTTP cache:
+probe answers; a direct `img`, `audio`, `video`, or `source` already on the page that then errors retries once through
+the fallback (`recoverDirectAssetElement`: a capture-phase `error` listener per chat body, the lazy image wrappers, and
+the home and settings images), and an error while direct assets are still usable is left alone. A change that leaves no
+controller also drops the resolved `/sw/img` sources (`invalidateWorkerFileSources`) and the parser's `fileSrcCache`,
+and the fallback never returns a `/sw/img` URL without a controller, so later reads take an object URL. The probe and
+the worker's signing: [build/test](build-test-platforms.md#direct-assets); the asset route, thumbnails, and HTTP cache:
 [server](self-host-server.md#storage-routes).
 
 ## State

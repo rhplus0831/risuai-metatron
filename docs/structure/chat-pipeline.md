@@ -185,6 +185,8 @@ in [network jobs](network-jobs.md#job-recovery).
 - `anyLocalSend` is the tab-wide view for plugin reload deferral and translator cache-only mode; screen controls and
   suggestions follow the selected chat's own work.
 - `followedJobs` (`serverCommands.ts`) and `jobStages` describe current follows; stages leave when the follow ends.
+  `loadingJobChats` marks a discovered job while `loadJobChat` runs (retries included): the screen shows
+  `serverJob.chatLoading` beside Stop, which stays usable.
 - `chatStore.svelte.ts` owns loaded chats and every write ([chat store](chat-store.md)); autosave does not.
 - Chats load on demand. Async operations pin and load their captured targets; unavailable chats are gone to synchronous
   readers, never an excuse to use another selection ([pins and eviction](chat-store.md#pins-and-eviction)).
@@ -319,7 +321,8 @@ matched-entry identities.
 
 - `editChat`/`editChatSync` (`src/ts/storage/chatEdits.ts`) capture the baseline before their edit works on its copy, so
   they keep another writer's change to a field the edit left alone; where both changed one field, the edit's value wins.
-  A plugin's whole-chat setter captures its baseline only at the call ([plugins](plugin-sandbox.md)).
+  A plugin's whole-chat setter diffs against the baseline its instance's last read of that chat retained, else against
+  the chat at the call ([plugins](plugin-sandbox.md)).
 - `DevTool.svelte`'s autopilot sends each line as a job in the chat selected when it started; a group's speakers are
   chosen by the server.
 - Group prompt assembly names a speaker it cannot resolve (`host.findCharacter`) `Unknown Character` in the group

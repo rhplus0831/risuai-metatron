@@ -337,6 +337,9 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   `applyPluginCharacter`/`applyPluginCharacters` JSDoc holds reconciliation rules (`reconcileCharacterChats`,
   `applyChatResult`); a chat left out is deleted, never the last one. New characters append in one batch after the
   updates (`addPreparedCharacters`). New setters use these functions, never assign `chats` or `chatPage`.
+- The chat and character getters retain the read as a baseline (16 chats per instance, least recently read evicted,
+  cleared on unload) and the setters consume it once, so a change another writer made after the read survives; a write
+  without a retained read diffs against the chat at the call.
 - When a whole-chat diff would change or remove a message being generated (`assertUnlocked`), that chat's update is
   skipped with a warning; a reorder of unchanged messages while it generates drops only the order change.
 - Generating-character and duplicate-id refusals: `applyPluginCharacter`/`applyPluginCharacters`; `removeChar` also

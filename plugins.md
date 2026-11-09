@@ -933,13 +933,7 @@ const chat = await Risuai.getChatFromIndex(charIndex, chatIndex);
 await Risuai.setChatToIndex(charIndex, chatIndex, chat);
 ```
 
-How chat changes are saved: chats are stored message by message, so the host compares the object
-you hand back with the chat as it is **when you call the setter** and saves the differences
-(messages are matched by their `chatId`, chats by their `id`). The object you hand back wins
-wherever it differs: if you read a chat, the user then edits message B, and you hand back your copy
-with only message A changed, your old copy of B overwrites the user's edit. Read the chat right
-before changing it and hand it back without awaiting in between; this is still not an atomic
-read-modify-write. A character's `chats` list passed to `setCharacter`/`setCharacterToIndex`/
+How chat changes are saved: chats are stored message by message, so the host compares the object you hand back with the copy you **read** (`getChatFromIndex`, `getCharacterFromIndex`, `getCharacter`, `getChar`; the host keeps the last read of up to 16 chats per plugin, and a setter uses that read once) and saves the differences (messages are matched by their `chatId`, chats by their `id`). So if you read a chat, the user then edits message B, and you hand back your copy with only message A changed, the user's edit to B is kept and only A changes; where you both changed the same field, your value wins. Without a retained read (a write with no read before it, or a read evicted by 16 later ones), the comparison is against the chat as it is when you call the setter, and your old copy overwrites changes made meanwhile. A character's `chats` list passed to `setCharacter`/`setCharacterToIndex`/
 `setDatabase` works the same way: chats with a new or missing `id` are created, chats you left out
 are deleted (the last chat is always kept), the list order becomes the chat order, and `chatPage`
 selects a chat in the current tab only. While a reply is being generated, a change that touches the

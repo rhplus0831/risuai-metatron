@@ -163,7 +163,11 @@ inlay, whose tag stays as text. Images use `getFileSrc` ([assets](assets.md)). A
 - A failed `editdisplay` transform records a `notice` `transformFailed` diagnostics event. For a message with a captured
   id and current cache and Re-render generations, `transformClient.ts` registers it with
   `displayTransformRecovery.svelte.ts` unless it is permanent (the `transformClient.ts` header; the server's marks come
-  from `server/src/prompt/transform.ts`: a text or loaded scope over a limit on its own).
+  from `server/src/prompt/transform.ts`: a target's own text over its limit, or a single-target request over the scope
+  or snapshot budget).
+- A refused request of several targets (a 400 or 413, or a transient scope-limit result) is split in two and both halves
+  are sent at once within the original deadline, down to single targets, which then fail permanently; the original batch
+  still shows one toast (`sendChunk`, `transformClient.ts`).
 - When a round runs and how its backoff grows and resets are the `src/ts/parser/displayTransformRecovery.svelte.ts`
   header.
 - Each `Chat.svelte` row reports what it shows (`displaya`: the display text and the bilingual source side) through

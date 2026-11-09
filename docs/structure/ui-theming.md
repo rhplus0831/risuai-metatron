@@ -47,7 +47,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   button goes in the composer row; popup behavior follows
   [Dialogs, popovers, and portals](#dialogs-popovers-and-portals).
 - `src/lib/ChatScreens/composerPlaceholder.ts` owns the main placeholder. `DefaultChatScreen.svelte` also handles
-  incomplete chat bindings and the Stop button's `processStage` ring.
+  incomplete chat bindings, the Stop button's `processStage` ring, and the loading label beside Stop while a discovered
+  job's chat loads.
 
 ### Transcript rows and the mount hold
 

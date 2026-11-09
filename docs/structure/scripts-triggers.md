@@ -114,7 +114,9 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
   triggers in the job. It yields after 50 ms of effect work so pending I/O and abort callbacks can run; a privileged
   recursive trigger is ended by the shared limit, not the JavaScript stack.
 - A trigger effect or Lua function that changes a character writes one field of the run's character; never the selected
-  index or the whole working copy.
+  index or the whole working copy. A lore effect writes one `globalLore` entry (`GlobalLoreChange`, applied to the
+  current record inside each revision-checked write: by `id`, or by index with an unchanged-value check for legacy
+  entries without one), so another writer's edit to a different entry survives the run.
 - v2 block edits must preserve paired `v2EndIndent` entries and indentation.
 - Lua `request` restrictions (`server/src/lua/egress.ts`): HTTPS only, URL at most 120 characters, the three banned Risu
   prefixes, no `localhost` and only public addresses, 30 requests per minute per server, a 10 s timeout and a 2 MB
@@ -133,9 +135,10 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
 - Lua `getLoreBooksMain` searches the chat's `localLore`, the character's `globalLore` with the chat's `loreOverrides`
   applied (`mergeOwnerLore`, [chat pipeline](chat-pipeline.md)), and the chat's module lore; `upsertLocalLoreBookMain`
   writes `localLore` only. Trigger v2 lore effects read and write the raw character lore.
-- Trigger character effects warn and skip a gone character; a patch the store refuses is a fatal failure that ends the
-  job (`LuaJobFatalError`, `server/src/lua/bindings.ts`); `v2SetLorebookActivation` warns and changes nothing for a
-  non-integer, negative, or missing lore index.
+- Trigger character effects warn and skip a gone character, and a lore effect whose target entry is gone, duplicated, or
+  (without an id) changed; a patch the store refuses is a fatal failure that ends the job (`LuaJobFatalError`,
+  `server/src/lua/bindings.ts`); `v2SetLorebookActivation` warns and changes nothing for a non-integer, negative, or
+  missing lore index.
 - Lua `request(id, url)` returns `nil` at once, without any egress, when `id` has no low-level access.
 - `logMain` passes its text through as is; the Lua `log` wrapper JSON-encodes its value before calling it.
 
