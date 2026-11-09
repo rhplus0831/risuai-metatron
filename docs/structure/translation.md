@@ -22,9 +22,9 @@
 
 - `src/ts/translator/translator.ts`: tab providers and rendered translation; `translate`, `runTranslator`,
   `translateMain`, `memoryTranslationContext`, `translateVox`, `isExpTranslator`, `translateHTML`,
-  `applyEdittransRegex`, `applyEdittransToStoredTranslation`; the `runTranslator` comment owns chunking, Exclude
-  Chain-of-Thought, prepared-chunk cache keys and failures; the `translateHTML` comment owns signals, permits, attempt
-  failure, shared flights and LLM regeneration/cache-write rules.
+  `applyEdittransRegex`, `applyEdittransToStoredTranslation`; `runTranslator` captures one translator note for all
+  chunks; its comment owns chunking, Exclude Chain-of-Thought, prepared-chunk cache keys and failures; the
+  `translateHTML` comment owns signals, permits, attempt failure, shared flights and LLM regeneration/cache-write rules.
 - `src/ts/characters.ts` `exportChat`: translated chat exports also call `translateHTML` with the export's captured
   transform ([characters-modules](characters-modules.md)).
 - `server/src/data/normalize/memoryTranslateMedia.ts`: persisted translator normalization;

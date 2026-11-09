@@ -10,24 +10,7 @@ The inbox was emptied on 2026-11-09 by the Found Issues Clearance plan (retired;
 
 ## Contents
 
-- [Display transform](#display-transform) (2)
 - [Client and plugins](#client-and-plugins) (2)
-
-## Display transform
-
-### The LLM translator note is read again for each chunk
-
-`src/ts/translator/translator.ts` `runTranslator` (~387) translates chunk by chunk through `translateMain`, which builds `llmTranslationContext` per chunk (~435); without an explicit note, `resolveTranslatorNote` (~908) reads the selected character's `translatorNote` live each time. A character switch during a multi-chunk LLM translation sends the later chunks with the other character's note, and the cache key mixes contexts. Found 2026-11-09 by the D1 challenger's probe; D1 snapshots only the provider.
-
-**Why it matters:** one translation can mix two characters' notes, the same class as the provider switch D1 fixed.
-**Suggested handling:** resolve the note once in `runTranslator` and pass it in `chunkArg` beside `preset` and `requestIds`.
-
-### Rendered translation may strip quotes inside a message style (unverified)
-
-Reported 2026-11-09 by the Found Issues Clearance E3 implementer: a driver message `<style>` with `@import url("…")` and `font-family:"…"` never requested its imported CSS with rendered translation on, and it concluded that markdown-it's typographer quotes (`src/ts/parser/parser.svelte.ts` ~89, ~187–237) run over the inline CSS on the translated-HTML path (`markParsing`, `translateHTML`, `postTranslationParse`). The driver now uses unquoted values. Not reproduced: the `<style>` to `<risu-style>` encoding is meant to protect CSS from Markdown, so the leak may be specific to the translated path or not real.
-
-**Why it matters:** a quoted `url("…")`, `content: "…"` or font family in a card or message style would stop applying for users with auto-translate on.
-**Suggested handling:** reproduce with `<style>.x{font-family:"A B"}</style>` in a chat with rendered auto-translate on and compare the scoped CSS with translation off before changing anything.
 
 ## Client and plugins
 

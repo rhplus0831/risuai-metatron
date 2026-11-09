@@ -320,8 +320,8 @@ async function translateShared(
 
 /**
  * Provider configuration is read once per call, unless the caller supplies its producer's snapshot.
- * Captures one detached preset and prompt/model/persona request ids for all chunks, so switching
- * chats or deleting a preset during the run cannot change their preset or request identity.
+ * Captures one detached preset, translator note and prompt/model/persona request ids for all chunks,
+ * so switching chats or deleting a preset cannot change their note, preset or request identity.
  * Send Text As-Is bypasses `shared/translation/pipeline.ts`'s line protection; its pipeline result
  * is returned without further processing (the pipeline still strips reasoning from step outputs).
  * Otherwise Exclude Chain-of-Thought strips the whole source once before cutting: prepared chunks
@@ -354,7 +354,7 @@ export async function runTranslator(
 
         host: "translate.googleapis.com",
 
-        translatorNote: exarg?.translatorNote,
+        translatorNote: resolveTranslatorNote(exarg?.translatorNote),
         signal: exarg?.signal,
         provider,
 
@@ -906,7 +906,7 @@ interface LLMTranslationContext {
 }
 
 function resolveTranslatorNote(explicit: string | undefined): string {
-    if (explicit) {
+    if (explicit !== undefined) {
         return explicit;
     }
     const currentChar = selectedCharacter();
@@ -916,8 +916,9 @@ function resolveTranslatorNote(explicit: string | undefined): string {
 /**
  * The preset's steps (`arg.preset`, else the selected chat's preset or the global one; a plain copy:
  * an edit or a conflict reload during the requests changes neither the run nor its cache key) and the
- * languages and translator note, each from `arg` when it names one and otherwise as `translateHTML`
- * resolves it: the language settings and the selected character's note. The request ids are
+ * languages and translator note, each from `arg` when supplied (including an empty note) and otherwise
+ * as `translateHTML` resolves it: the language settings and the selected character's note.
+ * `runTranslator` captures the note once for all chunks. The request ids are
  * `arg.requestIds` (a caller's capture for several calls), else the settings views' (the selected
  * chat's bound ids where they exist, else the tab's selection).
  */

@@ -351,6 +351,72 @@ describe("rendered LLM request sharing", () => {
 });
 
 describe("the LLM translation", () => {
+    const selectCharactersWithNotes = () => {
+        installFlatDatabase({
+            ...SELECTABLE,
+            characters: [
+                { chaId: "first", type: "character", name: "First", translatorNote: "formal" },
+                { chaId: "second", type: "character", name: "Second", translatorNote: "casual" },
+            ],
+            translatorPresets: [
+                createTranslatorPreset("Notes", {
+                    id: "notes",
+                    prompt: "Translate {{slot::content}} (note {{slot::tnote}})",
+                    maxResponse: 5,
+                }),
+            ],
+            translatorPresetId: "notes",
+            translatorType: "llm",
+        } as any);
+        selectPair(IDS_1);
+        selectCharacter("first");
+    };
+
+    it("captures the translator note once per call across a character switch during the first chunk", async () => {
+        selectCharactersWithNotes();
+        let release!: () => void;
+        const pending = new Promise<void>((resolve) => (release = resolve));
+        let started!: () => void;
+        const firstRequest = new Promise<void>((resolve) => (started = resolve));
+        request.requestChatData.mockImplementationOnce(async () => {
+            started();
+            await pending;
+            return { type: "success", result: "F1" };
+        });
+        succeed("F2");
+        const translating = runTranslator("first\n\nsecond", false, "ko", "en");
+        await firstRequest;
+        selectCharacter("second");
+        release();
+
+        await expect(translating).resolves.toBe("F1\n\nF2");
+        expect(requests()).toEqual([
+            {
+                mode: "translate",
+                maxTokens: 5,
+                messages: [{ role: "system", content: "Translate first (note formal)" }],
+            },
+            {
+                mode: "translate",
+                maxTokens: 5,
+                messages: [{ role: "system", content: "Translate second (note formal)" }],
+            },
+        ]);
+    });
+
+    it("honors an explicit empty translator note instead of the selected character's note", async () => {
+        selectCharactersWithNotes();
+        succeed("Translated");
+        await expect(runTranslator("Hello", false, "ko", "en", { translatorNote: "" })).resolves.toBe("Translated");
+        expect(requests()).toEqual([
+            {
+                mode: "translate",
+                maxTokens: 5,
+                messages: [{ role: "system", content: "Translate Hello (note )" }],
+            },
+        ]);
+    });
+
     it("runs every step through the pipeline on the translate slot and caches the result under the full key", async () => {
         succeed("<think>plan</think>\nDRAFT", "FINAL");
         await expect(runTranslator("Hello", false, "ko", "en", { translatorNote: "formal" })).resolves.toBe("FINAL");
