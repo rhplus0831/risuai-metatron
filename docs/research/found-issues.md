@@ -13,7 +13,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Server routes and resource store](#server-routes-and-resource-store) (2)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (3)
-- [Chat screen and input](#chat-screen-and-input) (3)
+- [Chat screen and input](#chat-screen-and-input) (1)
 - [Client and plugins](#client-and-plugins) (6)
 
 ## Chat store, sync, and change feeds
@@ -128,13 +128,6 @@ Excluded as an edge case by the Implementation Audit Fixes plan (2026-11-05): it
 
 ## Chat screen and input
 
-### Latest-message start scroll untested in DefaultChatScreen
-
-In 49b046098 (2026-10-24, chat opens at the newest message's start) two pieces of `src/lib/ChatScreens/DefaultChatScreen.svelte` have no unit test, because no test mounts that screen: the reroll swipe alignment gated on `followsSwap` / `Chats.followsLatest` (read before the swap, then `scrollToLatestMessage` after a tick), and the `$effect` that consumes `ShowLatestMessageStore` (set by `openRoute` for notification clicks), and (since 2026-10-27) the scroll handler's load-more skip while `Chats.holding` is true. Only `openRoute` setting the store is tested (`src/ts/router/router.test.ts`).
-
-**Why it matters:** a regression in either path would pass the gate.
-**Suggested handling:** add coverage when `DefaultChatScreen` gets a mounted test harness (the Deep Audit Fixes bookmark-jump and translation-invalidation tests are waiting on the same harness), or when touching these paths.
-
 ### Chat rendering leftovers
 
 Left by the chat rendering perf series (7003e80e9, daf658ba1, 224bc6aae, 2026-10-14) and slice 3f (2ed26dfee, 2026-10-16: per-row effect roots, `far` rows contained, a guarded trim to 150 rows; a windowed list was rejected; details in `git show e1aa33150:docs/plan/audit-findings-perf.md`). Kept in memory until 2026-11-08; the `far` containment observer is at `src/lib/ChatScreens/Chats.svelte` ~553 that day.
@@ -146,13 +139,6 @@ Left by the chat rendering perf series (7003e80e9, daf658ba1, 224bc6aae, 2026-10
 
 **Why it matters:** the containment changes what a far card can show, and the anchoring has no regression test.
 **Suggested handling:** start from this list when picking up chat rendering work; the later chat-open work (newest-first reveal, staged mounting, held rows) is contracted in ui-theming.md.
-
-### ChatBody's modelShortName no longer changes the body
-
-`src/lib/ChatScreens/ChatBody.svelte` `prepareShownBody` (~581) still reads `modelShortName` into its pending memo, and `src/lib/ChatScreens/Chat.svelte` (~1422) still computes it per row from `getModelInfo(...).shortName`. Its only effect on the HTML was `addMetadataToElement` (the watermark), which Found Issues Decisions C1 deleted (2026-11-09), so the prop is now a dead render input. Also cited as dormant in `docs/manual-audit/plan-design-audit-2026-11-04/render-work-budget.md` (~94). Found by the C1 slice session.
-
-**Why it matters:** a model change only misses the pending memo (one extra re-render), and every row pays a `getModelInfo` call for nothing.
-**Suggested handling:** drop the prop, its memo key, the `Chat.svelte` computation, and the `modelShortName: ""` lines in the ChatBody and Chat tests (the `ChatBody.svelte.test.ts` model-change case ~720 goes with it).
 
 ## Client and plugins
 
