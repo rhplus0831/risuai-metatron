@@ -14,7 +14,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [LLM requests and providers](#llm-requests-and-providers) (9)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (3)
-- [Chat screen and input](#chat-screen-and-input) (5)
+- [Chat screen and input](#chat-screen-and-input) (4)
 - [Client and plugins](#client-and-plugins) (23)
 - [Build, drivers, and e2e](#build-drivers-and-e2e) (8)
 
@@ -285,13 +285,6 @@ A single row is outside the page budget too: the planner (`src/lib/ChatScreens/s
 
 **Why it matters:** a 600-row export still costs about 4 GiB of renderer memory, enough to crash a tab on phones.
 **Suggested handling:** take a heap snapshot and `VmHWM` per page during a 150-row export to find what scales with rows, then release it per page; for the single row, enforce area before capture with the same scale in planning and capture, or tile it.
-
-### /multisend keeps its quotes
-
-`/multisend "one|||two"` sends `"one` and `two"`: `processPinnedCommands` in `src/ts/process/command.ts` (~75–90) splits the line on `|` outside double quotes but keeps the quote characters, and `commandParser` (~360) joins the arguments verbatim. The unquoted form is split by the pipe parser (`["/multisend one", "", "", "two"]`), so the quoted form is the only one that works. `src/ts/process/command.test.ts` (~445) pins `'"one'`. Server twin: `server/src/prompt/commands.ts`. Found by the Found Issues Sweep's B1 (2026-11-05). Owner: chat-pipeline.
-
-**Why it matters:** every use of the documented example sends stray quotes in the first and last messages.
-**Suggested handling:** strip one pair of surrounding quotes from a command argument on client and server, and update the pinned test.
 
 ### Chat rendering leftovers
 
