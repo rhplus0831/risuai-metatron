@@ -127,7 +127,9 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
   variable holding one anywhere (JSON `1e400`) is stored as its `toString()`; lore insert orders must be finite (create
   defaults to 100, modify keeps the old one).
 - During rerolls, Lua getters and indexed setters share the carrier-hidden history view; setters write by message id,
-  and insertions beside the carrier anchor as trigger insertions do.
+  and insertions beside the carrier anchor as trigger insertions do. The server slash commands `/comment`, `/cut` and
+  `/del` resolve "last" and indexes through the same view (`CommandHost.historyMessages`), so the carrier is never their
+  target.
 - Lua `getLoreBooksMain` searches the chat's `localLore`, the character's `globalLore` with the chat's `loreOverrides`
   applied (`mergeOwnerLore`, [chat pipeline](chat-pipeline.md)), and the chat's module lore; `upsertLocalLoreBookMain`
   writes `localLore` only. Trigger v2 lore effects read and write the raw character lore.

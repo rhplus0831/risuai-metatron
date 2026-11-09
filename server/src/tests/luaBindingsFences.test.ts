@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { Chat } from "../../../shared/database.ts";
+import type { character, Chat } from "../../../shared/database.ts";
 import { type GenerationQuestion, NO_GENERATION_HOOKS, type QuestionResult } from "../../../shared/jobs.ts";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
@@ -11,10 +11,11 @@ import { createResourceStore, type ResourceStore } from "../data/resourceStore.t
 import type { RunningJob } from "../jobs/generationJobs.ts";
 import { createGenerationLock, type MessageGuard } from "../jobs/generationLock.ts";
 import { loadJobScope, scopeChat } from "../jobs/jobScope.ts";
+import { createJobRunState, createRunSetup } from "../jobs/runSetup.ts";
 import { createLuaBindings, LuaJobFatalError, type OptionalQuestionResult } from "../lua/bindings.ts";
 import { createScriptWorkerPool, type HostContext } from "../scripts/workerPool.ts";
 import { waitFor } from "./testSupport.ts";
-import { UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
+import { UNHURRIED_CBS, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
 // The bindings' cancellation fences on their asynchronous continuations, with the production
 // bindings over a real store and a fake job, and a suspendable token counter and file check: lore
@@ -202,10 +203,25 @@ function setup(
         regex: async () => ({ value: false }),
     };
     const chat = () => store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0].data as Chat;
-    return { store, scope, bindings, ctx, host, jobController, tokens, callbacks, asks, channel, chat };
+    return {
+        store,
+        scope,
+        bindings,
+        ctx,
+        host,
+        jobController,
+        tokens,
+        callbacks,
+        asks,
+        channel,
+        chat,
+        job,
+        dir,
+        lock: options.lock,
+    };
 }
 
-describe("Lua history during a reroll", () => {
+describe("Lua and command history during a reroll", () => {
     const messages: Chat["message"] = [
         { chatId: "u", role: "user", data: "Question." },
         { chatId: "r", role: "char", data: "Previous reply." },
@@ -247,6 +263,83 @@ describe("Lua history during a reroll", () => {
         expect(h.bindings.fatal()).toBeNull();
         return JSON.parse(result.res as string);
     }
+
+    async function command(h: ReturnType<typeof history>, line: string) {
+        const run = createRunSetup(
+            h.job,
+            {
+                store: h.store,
+                kinds,
+                lock: h.lock!,
+                rootDir: path.resolve(import.meta.dirname, "../../.."),
+                savePath: path.join(h.dir, "save"),
+                scriptWorkers: pool,
+                tokens: { count: async (text: string) => text.length, encode: async () => [] } as never,
+                llm: {} as never,
+                embeddings: {} as never,
+                transformers: {} as never,
+                effectClock: () => 0,
+                cbsTimeLimits: UNHURRIED_CBS,
+            },
+            createJobRunState(h.job, pool.createBudget()),
+            h.scope,
+            { runCharacterId: "c", engineCharacterId: "c" },
+        );
+        await run.runOnCopy(
+            {
+                ...(h.scope.db.characters[0] as character),
+                triggerscript: [
+                    {
+                        comment: "history",
+                        type: "manual",
+                        conditions: [],
+                        effect: [
+                            { type: "v2Header", indent: 0 },
+                            { type: "v2Command", indent: 0, valueType: "value", value: line },
+                        ],
+                    },
+                ],
+            },
+            "manual",
+            { manualName: "history" },
+        );
+    }
+
+    it("appends a trigger's /comment to the last visible message while the carrier is locked", async () => {
+        const h = history(true, [messages[0], messages[1]]);
+
+        await command(h, "/comment noted");
+
+        expect(h.chat().message).toEqual([
+            { ...messages[0], data: "Question.<Comment>\nnoted\n</Comment>" },
+            messages[1],
+        ]);
+    });
+
+    it("removes with a trigger's /cut 2 the same message Lua getChat(2) names, leaving the carrier", async () => {
+        const h = history();
+        expect(await editRequest(h, "return json.encode(getChat(id, 2).data)")).toBe("Second comment.");
+
+        await command(h, "/cut 2");
+
+        expect(h.chat().message).toEqual([messages[0], messages[1], messages[2]]);
+    });
+
+    it("keeps a trigger's /cut range in the visible history and preserves the carrier outside that range", async () => {
+        const h = history();
+
+        await command(h, "/cut 1-2");
+
+        expect(h.chat().message).toEqual([messages[1], messages[2]]);
+    });
+
+    it("keeps the last two visible messages for a trigger's /del 2 without counting or removing the carrier", async () => {
+        const h = history(true, [messages[0], messages[2], messages[3], messages[1]]);
+
+        await command(h, "/del 2");
+
+        expect(h.chat().message).toEqual([messages[2], messages[3], messages[1]]);
+    });
 
     it("reads, edits, changes role, and removes the same indexed comment with and without a hidden carrier", async () => {
         for (const reroll of [true, false]) {

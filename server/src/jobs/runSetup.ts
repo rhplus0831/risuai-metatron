@@ -35,7 +35,14 @@ import { jobModules, type ServerCbsTimeLimits } from "./cbsHost.ts";
 import { applyTriggerChat, type OwnedGeneration } from "./chatResult.ts";
 import { GenerationRunnerError, markFailure, type RunningJob } from "./generationJobs.ts";
 import type { MessageGuard } from "./generationLock.ts";
-import { flushChatMetadata, type JobScope, refreshCharacter, refreshChat, scopeHistoryChat } from "./jobScope.ts";
+import {
+    flushChatMetadata,
+    type JobScope,
+    refreshCharacter,
+    refreshChat,
+    scopeHistoryChat,
+    scopeHistoryMessages,
+} from "./jobScope.ts";
 import { createJobToolState, type JobToolState } from "../mcp/jobTools.ts";
 import type { DiagnosticsRecorder } from "../diagnostics/log.ts";
 import type { McpRegistry } from "../mcp/registry.ts";
@@ -423,6 +430,7 @@ export function createRunSetup(
         services,
         ctx: nativeCtx,
         character: storedCharacter,
+        historyMessages: (chat) => scopeHistoryMessages(scope, chat),
         runManualTrigger: runManual,
         multisend: (clear, parts) => {
             // In the tab `/multisend` does nothing while a send runs; a send job is that send.
