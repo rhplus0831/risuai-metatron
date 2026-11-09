@@ -3,7 +3,7 @@
 Status: drafted 2026-11-09; the owner accepted every open question's recommendation the same day; revised the same
 day after the plan-runner audit ([report](../plan-runner-audit/found-issues-clearance-2026-11-09.md)): its eight P1
 corrections and the P2 and P3 corrections are applied below, with the owner's two decisions (C4 adds the setting's
-control; F3's retention entry is Recorded). Landed: A3 (daca54e6b), A1 (d1a40c7ce). Source: every
+control; F3's retention entry is Recorded). Landed: A3 (daca54e6b), A1 (d1a40c7ce), C1 (517e2d29c). Source: every
 entry of [found-issues](../research/found-issues.md) at `1e55709f9` (86 entries in nine sections), re-checked
 against that tree the same day by eleven read-only Luna workers whose file and line evidence the session
 spot-checked. The goal differs from the three sweeps before it: when the last slice lands, the inbox is empty.

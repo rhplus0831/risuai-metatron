@@ -11,7 +11,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (4)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (5)
 - [Server routes and resource store](#server-routes-and-resource-store) (10)
-- [LLM requests and providers](#llm-requests-and-providers) (14)
+- [LLM requests and providers](#llm-requests-and-providers) (11)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (7)
 - [Chat screen and input](#chat-screen-and-input) (6)
@@ -184,22 +184,6 @@ Left by slice 3 of the server-side Realm import (prepare/commit/cancel, 3a61ecb5
 
 ## LLM requests and providers
 
-### AIN prompts end in NaN
-
-`stringlizeAINChat` in `server/src/llm/stringlize.ts` (~152) does ``res += +`\n\n${char} 「`;`` for a non-continued prompt: the unary `+` coerces the speaker suffix to a number, so the prompt ends in `NaN` instead of `\n\n<char> 「`. The server copy is live: `server/src/llm/request.ts` (~1257) builds the AIN-format text with it. The tab copy in `src/ts/process/stringlize.ts` (~159) has the same line but no non-test caller (only `unstringlizeChat` is imported from that file). Probably inherited from upstream; check before calling it ours. Found in the Module Headers run (2026-11-08), which documented the current behavior on the tab export's doc comment.
-
-**Why it matters:** every non-continued AIN-format request sends a malformed prompt tail with no speaker cue, which degrades replies for that format.
-
-**Suggested handling:** drop the stray `+` in the server copy (and in the tab copy, or delete the unused tab export), with a test on the serializer's non-continued tail.
-
-### reformater throws on an empty or all-system prompt
-
-`reformater` in `src/ts/process/request/request.ts` (~517) and `server/src/llm/request.ts` (~282): on the `hasFirstSystemPrompt` path (without `hasFullSystemPrompt`), `while (formated[0].role === "system")` reads past the end once the prompt is empty or holds only system entries, so it throws before dispatch instead of returning a normal failure. `server/src/llm/google.ts` (~77) also reads the first entry unguarded. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** an edge-case prompt surfaces as an exception rather than a failure message.
-
-**Suggested handling:** guard `formated.length` in the loop and at the Google read.
-
 ### A system-only Claude prompt loses its text
 
 `requestClaude` in `server/src/llm/anthropic.ts` (~283–294): when the prompt holds only system text, the adapter inserts a `Start` user turn and clears `systemPrompt`, so the actual input is dropped. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
@@ -279,14 +263,6 @@ With the `risu/free` model, `server/src/llm/openAI/requests.ts` (~251) calls `ge
 **Why it matters:** latent until signature saving works (see the two entries above).
 
 **Suggested handling:** keep the marker with a text part of its own, or skip it when no text part exists.
-
-### Google token counts can collide in the cache
-
-`countWithGoogle` in `server/src/prompt/tokens.ts` (~173, key ~175) keys its cache and in-flight map by `text + scope.model.internalID`, so two text/model pairs with the same concatenation reuse one count or pending request. Found in the Module Headers run (2026-11-08) from source reading, unreproduced.
-
-**Why it matters:** a rare wrong token count, which shifts trim decisions.
-
-**Suggested handling:** join with a separator, or key by a tuple.
 
 ### setObjectValue follows `__proto__` segments
 
