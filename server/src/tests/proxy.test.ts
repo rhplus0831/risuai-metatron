@@ -220,7 +220,7 @@ describe("/hub-proxy", () => {
         const seen = (await res.json()) as { url: string; headers: Record<string, string> };
         expect(seen.url).toBe("/echo?viahub=1");
         expect(seen.headers.origin).toBe(upstream.url);
-        expect(seen.headers["x-custom"]).toBe("hub");
+        expect(seen.headers["x-custom"]).toBeUndefined();
         expect(seen.headers["risu-auth"]).toBeUndefined();
         expect(seen.headers["x-risu-node-path"]).toBeUndefined();
         expect(upstream.requests).toHaveLength(1);
@@ -231,6 +231,45 @@ describe("/hub-proxy", () => {
         expect(redirected.headers.get("x-first")).toBeNull();
         expect(await redirected.text()).toBe("final body");
         expect(upstream.requests.map((r) => r.url)).toEqual(["/echo?viahub=1", "/redirect", "/final?from=redirect"]);
+    });
+
+    it("allows content and hub listing headers case-insensitively while dropping credentials and forwarding metadata", async () => {
+        server = createTestServer({ password: "pw", realm: { hubURL: upstream.url } });
+        const allowed = {
+            Accept: "application/json",
+            "aCcEpT-LaNgUaGe": "ko-KR",
+            "Content-TYPE": "application/json",
+            RANGE: "bytes=0-99",
+            "User-Agent": "hub-browser",
+            "X-RisuAI-Info": "client-version",
+        };
+        const blocked = {
+            Authorization: "Bearer private",
+            Cookie: "session=private",
+            "Proxy-Authorization": "Basic private",
+            Forwarded: "for=private",
+            "X-Forwarded-For": "192.0.2.1",
+            "X-Forwarded-Host": "private.example",
+            "X-Forwarded-Proto": "https",
+            "X-Arbitrary": "private",
+            "Risu-Auth": "pw",
+            "X-Risu-Node-Path": "https://elsewhere.example",
+        };
+        const response = await server.app.request("/hub-proxy/echo", {
+            headers: { ...allowed, ...blocked, Origin: "https://private.example" },
+        });
+        expect(response.status).toBe(200);
+        const seen = (await response.json()) as { headers: Record<string, string> };
+        for (const [name, value] of Object.entries(allowed)) expect(seen.headers[name.toLowerCase()], name).toBe(value);
+        for (const name of Object.keys(blocked)) expect(seen.headers[name.toLowerCase()], name).toBeUndefined();
+        expect(seen.headers.origin).toBe(upstream.url);
+        const redirect = await server.app.request("/hub-proxy/redirect", { headers: { ...allowed, ...blocked } });
+        expect(await redirect.text()).toBe("final body");
+        expect(upstream.requests.map((request) => request.url)).toEqual(["/echo", "/redirect", "/final?from=redirect"]);
+        for (const request of upstream.requests) {
+            expect(request.headers["x-risuai-info"]).toBe("client-version");
+            expect(request.headers.authorization).toBeUndefined();
+        }
     });
 
     it("answers a redirect to another origin to the browser as it is, without fetching it", async () => {

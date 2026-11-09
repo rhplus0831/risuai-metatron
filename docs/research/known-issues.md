@@ -24,7 +24,7 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [plugin-sandbox](#plugin-sandbox) (6)
 - [resource-sync](#resource-sync) (3)
 - [scripts-triggers](#scripts-triggers) (6)
-- [self-host-server](#self-host-server) (5)
+- [self-host-server](#self-host-server) (4)
 - [server-generation](#server-generation) (1)
 - [server-resources](#server-resources) (1)
 - [settings-i18n](#settings-i18n) (3)
@@ -333,12 +333,11 @@ Guide: [Regex Scripts, Triggers, Lua Scripting](../structure/scripts-triggers.md
 
 Guide: [Self-Host Server (Hono on Node), Docker](../structure/self-host-server.md#known-hazards).
 
-- `/api/remove` deletes sequentially: a filesystem error stops the batch with 500 and leaves earlier deletions in place.
 - `/api/asset/*` verification is in memory and stat-based; it starts empty after restart and cannot detect an outside
   same-size edit that restores the full stat.
 - The thumbnail cache has no byte cap.
 - JWT validation does not check issuer, audience, `typ`, or `iat`, and a token without `exp` does not expire.
-- `/hub-proxy` is unauthenticated and forwards request headers other than `risu-auth` to the configured hub.
+- `/hub-proxy` is unauthenticated (its forwarded request headers are an allowlist since 2026-11-10).
 
 ## server-generation
 

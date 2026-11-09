@@ -39,8 +39,8 @@ import { limitedBody, RequestBodyError } from "./limitedBody.ts";
  *
  * Every route uses server/src/app.ts's storage limiter before JWT auth. GET /api/read returns an
  * empty 200 for a missing/unresolvable key; GET /api/list returns only decodable regular files.
- * GET /api/remove validates every $$-joined header key before sequential removal (later I/O failure
- * leaves earlier removals). POST /api/write takes raw bytes, including empty files. Writes/removals
+ * GET /api/remove validates every $$-joined header key, attempts every removal, and lists failed
+ * logical keys in a 500 response. POST /api/write takes raw bytes, including empty files. Writes/removals
  * enter the maintenance gate only for mutation and answer 503 with Retry-After: 5 while closed;
  * reads stay available. Publication and reuse use claimAssetKey's lock and one-hour lease, shared
  * with server/src/data/assetLifecycle.ts; in-process callers hold their own admission.
@@ -785,12 +785,13 @@ export function registerStorageRoutes(
         if ("closed" in admitted) {
             return admitted.closed;
         }
+        const failedPaths: string[] = [];
         try {
-            // Sequential; a filesystem error (e.g. missing file) stops the batch with a 500 and
-            // leaves earlier deletions in place.
             for (const [fullPath, key] of fullPaths) {
                 try {
                     await fs.rm(fullPath);
+                } catch {
+                    failedPaths.push(key);
                 } finally {
                     assetVerification.forgetVerification(fullPath);
                     await thumbnails.removeKey(key).catch((error: unknown) => {
@@ -800,6 +801,9 @@ export function registerStorageRoutes(
             }
         } finally {
             admitted.leave();
+        }
+        if (failedPaths.length > 0) {
+            return c.json({ error: "Failed to remove files", failedPaths }, 500);
         }
         return c.json({ success: true });
     });

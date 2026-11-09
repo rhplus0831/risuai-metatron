@@ -22,12 +22,13 @@ import type { AuthStore } from "./auth.ts";
  * Reverse-proxy responses drop CSP, Clear-Site-Data, cache policy, and obsolete encoding/framing.
  *
  * GET /hub-proxy/* uses no auth and only the configured hub (default https://sv.risuai.xyz), forwarding
- * its suffix/query with the hub Origin and without risu-auth. It follows at most one same-origin
+ * its suffix/query with the hub Origin and allowlisted content and x-risuai-info headers. It follows at most one same-origin
  * redirect, passing external redirects back to the browser. Its responses strip only obsolete
  * encoding/framing headers; stream failures close the body and request failures answer 502.
  */
 
 const DEFAULT_HUB_URL = "https://sv.risuai.xyz";
+const hubRequestHeaders = ["accept", "accept-language", "content-type", "range", "user-agent", "x-risuai-info"];
 
 // fetch() already decoded the body, so the upstream length/encoding/framing no longer apply.
 const strippedProxyResponseHeaders = [
@@ -408,13 +409,14 @@ export function registerProxyRoutes(
             const url = new URL(c.req.url);
             const externalURL = hubURL + url.pathname.replace(/^\/hub-proxy/, "") + url.search;
 
-            const headersToSend = Object.fromEntries(c.req.raw.headers);
-            delete headersToSend.host;
-            delete headersToSend.connection;
-            delete headersToSend["content-length"];
-            delete headersToSend["x-risu-node-path"];
-            delete headersToSend["risu-auth"];
-            headersToSend.origin = new URL(hubURL).origin;
+            const headersToSend = new Headers();
+            for (const name of hubRequestHeaders) {
+                const value = c.req.raw.headers.get(name);
+                if (value !== null) {
+                    headersToSend.set(name, value);
+                }
+            }
+            headersToSend.set("origin", new URL(hubURL).origin);
 
             const request = (target: string) =>
                 fetch(target, {

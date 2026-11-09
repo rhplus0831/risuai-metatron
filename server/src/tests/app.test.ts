@@ -24,6 +24,7 @@ import type { AppEnv } from "../types.ts";
 import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from "node:zlib";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServerContext } from "../app.ts";
+import { assetVerification } from "../http/assetVerification.ts";
 import { decodeFileName, decodeKeyHeader, encodeFileName, resolveStorageKey } from "../routes/storage.ts";
 import {
     buildArchive,
@@ -1344,7 +1345,7 @@ describe("storage routes", () => {
         }
     });
 
-    it("validates every $$-separated batch segment before deleting, deduplicates by resolved file, and stops at a missing file", async () => {
+    it("validates every $$-separated batch segment before deleting, deduplicates by resolved file, and reports a missing file", async () => {
         const s = await authedServer();
         for (const key of ["assets/a", "assets/b", "assets/c"]) {
             await write(s, key, key);
@@ -1369,6 +1370,42 @@ describe("storage routes", () => {
         expect(partial.status).toBe(500);
         expect(exists("c")).toBe(false);
         expect((await remove(s, hex("assets/a"))).status).toBe(500);
+    });
+
+    it("attempts the whole removal batch after start and middle failures and releases cleanup admissions", async () => {
+        const s = await authedServer();
+        const keys = ["assets/missing-first", "assets/deleted-a", "assets/missing-middle", "assets/deleted-b"];
+        for (const key of keys) await write(s, key, key);
+        const paths = keys.map((key) => resolveStorageKey(s.savePath, key)!);
+        const stats = await Promise.all(paths.map((file) => fsPromises.stat(file, { bigint: true })));
+        paths.forEach((file, index) => assetVerification.recordVerification(file, stats[index], true));
+        rmSync(paths[0]);
+        rmSync(paths[2]);
+        const cleanup = vi.spyOn(s.context.thumbnails, "removeKey");
+        try {
+            // Invalid segments prevent even the first valid deletion and its cleanup.
+            await invalidPath(await remove(s, `${hex(keys[1])}$$zz`), "malformed batch");
+            expect(existsSync(paths[1])).toBe(true);
+            expect(cleanup).not.toHaveBeenCalled();
+
+            const response = await remove(s, keys.map(hex).join("$$"));
+            expect(response.status).toBe(500);
+            expect(await response.json()).toEqual({
+                error: "Failed to remove files",
+                failedPaths: [keys[0], keys[2]],
+            });
+            expect(paths.map((file) => existsSync(file))).toEqual([false, false, false, false]);
+            expect(cleanup.mock.calls.map(([key]) => key)).toEqual(keys);
+            paths.forEach((file, index) =>
+                expect(assetVerification.lookupVerification(file, stats[index])).toBe("unknown"),
+            );
+            // Maintenance must drain immediately; a leaked removal admission strands this await.
+            await s.context.snapshots.withMaintenance(async () => {});
+            expect((await write(s, "assets/after-failure", "ok")).status).toBe(200);
+        } finally {
+            cleanup.mockRestore();
+            paths.forEach((file) => assetVerification.forgetVerification(file));
+        }
     });
 
     it("replaces a file atomically: an open reader keeps the old bytes and a failed rename keeps the old file", async () => {
