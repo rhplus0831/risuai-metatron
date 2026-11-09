@@ -28,6 +28,25 @@ afterEach(() => {
     document.body.replaceChildren();
 });
 
+it("forwards each planned pixel ratio to toCanvas with autoscaling disabled", async () => {
+    const container = document.createElement("div");
+    const oversized = document.createElement("div");
+    const neighbour = document.createElement("div");
+    container.append(oversized, neighbour);
+    document.body.append(container);
+    const lib = htmlToImage("");
+    const capture = await prepareScreenshotCapture(lib, [oversized, neighbour]);
+    const areaLimitedRatio = Math.sqrt(64_000_000 / (2400 * 8192));
+
+    await capture(oversized, areaLimitedRatio);
+    await capture(neighbour, 2);
+
+    expect(lib.toCanvas.mock.calls).toEqual([
+        [oversized, expect.objectContaining({ pixelRatio: areaLimitedRatio, skipAutoScale: true })],
+        [neighbour, expect.objectContaining({ pixelRatio: 2, skipAutoScale: true })],
+    ]);
+});
+
 it("prepares fonts once for 30 rows and passes the prepared CSS and query option to every capture", async () => {
     const container = document.createElement("div");
     const rows = Array.from({ length: 30 }, () => document.createElement("div"));
@@ -37,12 +56,17 @@ it("prepares fonts once for 30 rows and passes the prepared CSS and query option
     const lib = htmlToImage(preparedCSS);
 
     const capture = await prepareScreenshotCapture(lib, rows);
-    for (const row of rows) await capture(row);
+    for (const row of rows) await capture(row, 1);
 
     expect(lib.getFontEmbedCSS).toHaveBeenCalledTimes(1);
     expect(lib.toCanvas).toHaveBeenCalledTimes(30);
     for (const row of rows) {
-        expect(lib.toCanvas).toHaveBeenCalledWith(row, { includeQueryParams: true, fontEmbedCSS: preparedCSS });
+        expect(lib.toCanvas).toHaveBeenCalledWith(row, {
+            includeQueryParams: true,
+            fontEmbedCSS: preparedCSS,
+            pixelRatio: 1,
+            skipAutoScale: true,
+        });
     }
 });
 
@@ -72,12 +96,17 @@ it("passes an empty prepared CSS string to every capture so no row scans fonts a
     const lib = htmlToImage("");
 
     const capture = await prepareScreenshotCapture(lib, rows);
-    for (const row of rows) await capture(row);
+    for (const row of rows) await capture(row, 1);
 
     expect(lib.getFontEmbedCSS).toHaveBeenCalledTimes(1);
     expect(lib.toCanvas).toHaveBeenCalledTimes(2);
     for (const row of rows) {
-        expect(lib.toCanvas).toHaveBeenCalledWith(row, { includeQueryParams: true, fontEmbedCSS: "" });
+        expect(lib.toCanvas).toHaveBeenCalledWith(row, {
+            includeQueryParams: true,
+            fontEmbedCSS: "",
+            pixelRatio: 1,
+            skipAutoScale: true,
+        });
     }
 });
 
@@ -106,8 +135,13 @@ it("keeps the original rules and total rule count across two font preparations",
 
         expect(stylesheetRules().flat()).toHaveLength(originalRuleCount);
         expect(stylesheetRules()).toEqual(originalRules);
-        await capture(row);
-        expect(lib.toCanvas).toHaveBeenLastCalledWith(row, { includeQueryParams: true, fontEmbedCSS: preparedCSS });
+        await capture(row, 1);
+        expect(lib.toCanvas).toHaveBeenLastCalledWith(row, {
+            includeQueryParams: true,
+            fontEmbedCSS: preparedCSS,
+            pixelRatio: 1,
+            skipAutoScale: true,
+        });
     }
     expect(lib.getFontEmbedCSS).toHaveBeenCalledTimes(2);
     expect(lib.toCanvas).toHaveBeenCalledTimes(2);

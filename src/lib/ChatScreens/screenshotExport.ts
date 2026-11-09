@@ -1,8 +1,9 @@
 /**
  * Plans the chat screenshot as pages of whole rows in reverse DOM order and composes each page.
  * Pages contain at most MAX_EXPORT_PIXELS pixels and measure at most MAX_EXPORT_SIDE on either
- * side, unless a row alone exceeds the pixel budget. A row gets its own page if it exceeds that
- * budget or html-to-image scales it down. Rows are never split.
+ * side. Each row's pixel ratio is bounded from its original CSS capture size by both limits;
+ * planning and capture use that same ratio and canvas dimension truncation. A row whose ratio
+ * is reduced from the device ratio gets its own page. Rows are never split.
  *
  * Each page canvas is sized once. Only one row canvas is alive at a time, and its size is zeroed
  * after its draw. Each page is filled with the passed background color. The page canvas is released
@@ -20,6 +21,7 @@ export interface ScreenshotCaptureSize {
     width: number;
     height: number;
     scaledDown: boolean;
+    pixelRatio: number;
 }
 
 export interface ScreenshotRowSlot<Row> {
@@ -27,6 +29,7 @@ export interface ScreenshotRowSlot<Row> {
     y: number;
     width: number;
     height: number;
+    pixelRatio: number;
 }
 
 export interface ScreenshotPage<Row> {
@@ -35,33 +38,26 @@ export interface ScreenshotPage<Row> {
     height: number;
 }
 
-/** Matches html-to-image's toCanvas sizing, including truncation at each canvas dimension assignment. */
+/** Bounds the original CSS size before toCanvas's dimension truncation; never rescales rounded pixels. */
 export function measureScreenshotRow(node: HTMLElement): ScreenshotCaptureSize {
     const size = getImageSize(node, SCREENSHOT_CAPTURE_OPTIONS);
-    const ratio = getPixelRatio();
-    let width = Math.trunc(size.width * ratio);
-    let height = Math.trunc(size.height * ratio);
-    const scaledDown = width > MAX_EXPORT_SIDE || height > MAX_EXPORT_SIDE;
-
-    if (scaledDown) {
-        if (width > MAX_EXPORT_SIDE && height > MAX_EXPORT_SIDE) {
-            if (width > height) {
-                height = Math.trunc(height * (MAX_EXPORT_SIDE / width));
-                width = MAX_EXPORT_SIDE;
-            } else {
-                width = Math.trunc(width * (MAX_EXPORT_SIDE / height));
-                height = MAX_EXPORT_SIDE;
-            }
-        } else if (width > MAX_EXPORT_SIDE) {
-            height = Math.trunc(height * (MAX_EXPORT_SIDE / width));
-            width = MAX_EXPORT_SIDE;
-        } else {
-            width = Math.trunc(width * (MAX_EXPORT_SIDE / height));
-            height = MAX_EXPORT_SIDE;
-        }
+    const deviceRatio = getPixelRatio();
+    let pixelRatio = Math.min(
+        deviceRatio,
+        MAX_EXPORT_SIDE / size.width,
+        MAX_EXPORT_SIDE / size.height,
+        Math.sqrt(MAX_EXPORT_PIXELS / (size.width * size.height)),
+    );
+    let width = Math.trunc(size.width * pixelRatio);
+    let height = Math.trunc(size.height * pixelRatio);
+    // Guard floating-point rounding at a limit without deriving a new ratio from truncated sizes.
+    while (width > MAX_EXPORT_SIDE || height > MAX_EXPORT_SIDE || width * height > MAX_EXPORT_PIXELS) {
+        pixelRatio *= 1 - Number.EPSILON;
+        width = Math.trunc(size.width * pixelRatio);
+        height = Math.trunc(size.height * pixelRatio);
     }
 
-    return { width, height, scaledDown };
+    return { width, height, scaledDown: pixelRatio < deviceRatio, pixelRatio };
 }
 
 /** Keeps rows whole in reverse DOM order; zero-sized captures are omitted because drawImage rejects them. */
@@ -73,10 +69,13 @@ export function planScreenshotPages<Row>(
     let page: ScreenshotPage<Row> | undefined;
 
     for (const row of Array.from(rows).reverse()) {
-        const { width, height, scaledDown } = measure(row);
+        const { width, height, scaledDown, pixelRatio } = measure(row);
         if (width === 0 || height === 0) continue;
+        if (width > MAX_EXPORT_SIDE || height > MAX_EXPORT_SIDE || width * height > MAX_EXPORT_PIXELS) {
+            throw new Error("Screenshot row exceeds capture limits");
+        }
 
-        const alone = scaledDown || width * height > MAX_EXPORT_PIXELS;
+        const alone = scaledDown;
         const nextWidth = Math.max(page?.width ?? 0, width);
         const nextHeight = (page?.height ?? 0) + height;
         if (
@@ -90,7 +89,7 @@ export function planScreenshotPages<Row>(
             pages.push(page);
         }
 
-        page.rows.push({ row, y: page.height, width, height });
+        page.rows.push({ row, y: page.height, width, height, pixelRatio });
         page.width = Math.max(page.width, width);
         page.height += height;
         if (alone) page = undefined;
@@ -101,7 +100,7 @@ export function planScreenshotPages<Row>(
 
 export interface ScreenshotComposeOptions<Row> {
     pages: readonly ScreenshotPage<Row>[];
-    capture(row: Row): Promise<HTMLCanvasElement>;
+    capture(row: Row, pixelRatio: number): Promise<HTMLCanvasElement>;
     createCanvas(): HTMLCanvasElement;
     download(name: string, blob: Blob): Promise<void>;
     baseName: string;
@@ -135,7 +134,7 @@ export async function composeScreenshot<Row>({
             ctx.fillRect(0, 0, page.width, page.height);
 
             for (const slot of page.rows) {
-                const source = await capture(slot.row);
+                const source = await capture(slot.row, slot.pixelRatio);
                 try {
                     if (source.width !== slot.width || source.height !== slot.height) {
                         warn(

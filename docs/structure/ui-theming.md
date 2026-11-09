@@ -280,6 +280,12 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   Decision: text-only toggle contract kept, commit `634bc14c7`.
 - Older rows do not rerender merely because the chat length changes. Length-dependent CBS updates when that row next
   renders (edit, reload, remount, etc.). Decision: `docs/research/risunest-ideas.md`.
+- The screenshot export's renderer peak grows with the row count (about 1.4 GiB at 150 fixture rows, 3.3–3.9 GiB at 600)
+  although each page stays under `MAX_EXPORT_PIXELS`: html-to-image's per-row clone (every computed property, custom
+  ones included, inlined on every element), its SVG data URL, and the decoded image are garbage the browser reclaims
+  lazily, and nothing holds them, so no per-page release bounds the peak. Copying fewer custom properties halves it but
+  changed pixels in the tried variants. Decision: measured miss recorded 2026-11-09
+  ([audit](../audit/screenshot-memory-2026-11.md)).
 
 ### Gotchas
 

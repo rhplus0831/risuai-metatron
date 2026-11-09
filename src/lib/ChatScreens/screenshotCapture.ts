@@ -10,13 +10,18 @@ export const SCREENSHOT_CAPTURE_OPTIONS = { includeQueryParams: true } satisfies
  * restoring their original rules and cascade before capturing rows.
  * Every capture reuses the CSS, even when empty; otherwise html-to-image re-expands surviving
  * @import rules into the live stylesheet and refetches fonts for each row.
+ * The caller supplies the pixel ratio from the page plan, which already bounds both canvas sides
+ * and total pixels. Disable html-to-image's separate autoscale so capture uses that exact ratio.
  */
 export async function prepareScreenshotCapture(
     lib: Pick<typeof HtmlToImage, "getFontEmbedCSS" | "toCanvas">,
     rows: readonly HTMLElement[],
 ) {
     let fontRoot = rows[0];
-    if (!fontRoot) return (row: HTMLElement) => lib.toCanvas(row, SCREENSHOT_CAPTURE_OPTIONS);
+    if (!fontRoot) {
+        return (row: HTMLElement, pixelRatio: number) =>
+            lib.toCanvas(row, { ...SCREENSHOT_CAPTURE_OPTIONS, pixelRatio, skipAutoScale: true });
+    }
 
     while (!rows.every((row) => fontRoot.contains(row))) {
         const parent = fontRoot.parentElement;
@@ -44,5 +49,6 @@ export async function prepareScreenshotCapture(
             }
         }
     }
-    return (row: HTMLElement) => lib.toCanvas(row, { ...SCREENSHOT_CAPTURE_OPTIONS, fontEmbedCSS });
+    return (row: HTMLElement, pixelRatio: number) =>
+        lib.toCanvas(row, { ...SCREENSHOT_CAPTURE_OPTIONS, fontEmbedCSS, pixelRatio, skipAutoScale: true });
 }

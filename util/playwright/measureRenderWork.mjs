@@ -53,21 +53,31 @@
 // mark's PID, validated against browser CDP SystemInfo's renderer list. New renderer candidates
 // are also recorded (Chrome can create a WebUI renderer as well as this page). GPU is the sole GPU
 // process. Before export, GC then /proc status, then clear_refs=5 on each PID; if refused, VmHWM
-// delta remains a historical-high-water delta, not an isolated export peak. All downloads through
-// the success/error alert (or timeout) are read, including multipart Blob exports; PNG signature,
-// IHDR, dimensions and IEND are checked. Files are inspected in Playwright's temporary download
+// delta remains a historical-high-water delta, not an isolated export peak.
+// Each download event samples both PIDs before waiting for the PNG file: RSS at that notification,
+// and cumulative HWM since the pre-export reset (not a separate peak for each page). The renderer
+// can already be capturing the next page. Samples do not pause export or force GC. If HWM drops
+// during export, observedVmHwmBytes preserves the largest read; an unsampled peak can still be missed.
+// End-of-export RSS is also sampled after the existing GC. Optional heap snapshots follow these metrics;
+// they cover V8/Oilpan, not all native image/canvas memory, and can themselves trigger collection.
+// All downloads through the success/error alert (or timeout) are read, including multipart Blob exports;
+// PNG signature, IHDR, dimensions and IEND are checked. Files are inspected in Playwright's temporary download
 // storage, not retained. Trace gzip files and the default trace directory ARE retained.
 //
 // Env: ROWS=30,150,600; SCENARIOS=open,profile,switch,switch-mounted,screenshot;
 // SWITCH_DELAY_MS=100 (after the open click for switch; after all N message rows mount for switch-mounted);
 // SCREENSHOT_TIMEOUT_MS=900000; RENDER_OUT=<JSON file> (JSON always also printed to stdout);
+// RENDER_HEAP_SNAPSHOT=<file> (optional post-export CDP snapshot; {rows} expands to the row count,
+// or .<rows> is appended for multiple ROWS to avoid overwriting); path/bytes/timing are in JSON.
 // RENDER_TRACE_DIR=<directory> (default: kept temp directory, printed); DEBUG=1 (stack to stderr).
 // RISU_CHROME is honored by stack.mjs. Viewport 1280x800, headless; one dev stack at a time.
 // Usage: ROWS=30 util/playwright/offline.sh node util/playwright/measureRenderWork.mjs
 import http from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { createWriteStream } from "node:fs";
 import { open, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { finished } from "node:stream/promises";
 import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -447,7 +457,7 @@ async function processMemory(pid) {
             const match = status.match(new RegExp(`^${name}:\\s+(\\d+) kB`, "m"));
             return match ? Number(match[1]) * 1024 : null;
         };
-        return { pid, vmHwmBytes: bytes("VmHWM"), vmRssBytes: bytes("VmRSS") };
+        return { pid, sampledAt: Date.now(), vmHwmBytes: bytes("VmHWM"), vmRssBytes: bytes("VmRSS") };
     } catch (error) {
         return { pid, unavailable: error.message };
     }
@@ -457,7 +467,7 @@ async function resetPeak(pid) {
     if (!pid) return { succeeded: false, reason: "No unambiguous process PID" };
     try {
         await writeFile(`/proc/${pid}/clear_refs`, "5");
-        return { succeeded: true };
+        return { succeeded: true, resetAt: Date.now() };
     } catch (error) {
         return { succeeded: false, reason: error.message };
     }
@@ -566,7 +576,7 @@ async function waitSettled(
     return { status: "timeout", at: Date.now(), ...rows };
 }
 
-async function screenshot(page, cdp, browserCdp, rendererPid, timeoutMs) {
+async function screenshot(page, cdp, browserCdp, rendererPid, timeoutMs, rows) {
     // Import and resolve labels before resetting memory and starting the export clock.
     await page.evaluate(async () => {
         const stores = await import("/src/ts/stores.svelte.ts");
@@ -592,11 +602,27 @@ async function screenshot(page, cdp, browserCdp, rendererPid, timeoutMs) {
     const gpuCandidates = processInfo.filter((p) => p.type === "GPU").map((p) => p.id);
     const gpuPid = gpuCandidates.length === 1 ? gpuCandidates[0] : null;
     await cdp.send("HeapProfiler.collectGarbage");
+    const heapBefore = await cdp.send("Runtime.getHeapUsage");
     const before = { renderer: await processMemory(rendererPid), gpu: await processMemory(gpuPid) };
     const reset = { renderer: await resetPeak(rendererPid), gpu: await resetPeak(gpuPid) };
     const baseline = { renderer: await processMemory(rendererPid), gpu: await processMemory(gpuPid) };
     const downloads = [];
-    const onDownload = (download) => downloads.push(inspectDownload(download));
+    const pageSamples = [];
+    const onDownload = (download) => {
+        const receivedAt = Date.now();
+        const pageNumber = downloads.length + 1;
+        pageSamples.push(
+            Promise.all([processMemory(rendererPid), processMemory(gpuPid)]).then(([renderer, gpu]) => ({
+                page: pageNumber,
+                name: download.suggestedFilename(),
+                receivedAt,
+                elapsedMs: receivedAt - startedAt,
+                renderer,
+                gpu,
+            })),
+        );
+        downloads.push(inspectDownload(download));
+    };
     page.on("download", onDownload);
     const startedAt = Date.now();
     let outcome;
@@ -618,32 +644,82 @@ async function screenshot(page, cdp, browserCdp, rendererPid, timeoutMs) {
         const after = { renderer: await processMemory(rendererPid), gpu: await processMemory(gpuPid) };
         await cdp.send("HeapProfiler.collectGarbage");
         const heap = await cdp.send("Runtime.getHeapUsage");
+        const afterGc = { renderer: await processMemory(rendererPid), gpu: await processMemory(gpuPid) };
+        const samples = await Promise.all(pageSamples);
         const memory = Object.fromEntries(
-            ["renderer", "gpu"].map((kind) => [
-                kind,
-                {
-                    before: before[kind],
-                    reset: reset[kind],
-                    baseline: baseline[kind],
-                    after: after[kind],
-                    vmHwmDeltaBytes:
-                        after[kind].vmHwmBytes == null || baseline[kind].vmHwmBytes == null
-                            ? null
-                            : after[kind].vmHwmBytes - baseline[kind].vmHwmBytes,
-                    isolatedPeak: reset[kind].succeeded,
-                },
-            ]),
+            ["renderer", "gpu"].map((kind) => {
+                const hwms = [baseline[kind], ...samples.map((sample) => sample[kind]), after[kind]]
+                    .map((sample) => sample.vmHwmBytes)
+                    .filter((bytes) => bytes != null);
+                const observedPeak = hwms.length ? Math.max(...hwms) : null;
+                return [
+                    kind,
+                    {
+                        before: before[kind],
+                        reset: reset[kind],
+                        baseline: baseline[kind],
+                        after: after[kind],
+                        afterGc: afterGc[kind],
+                        vmHwmDeltaBytes:
+                            after[kind].vmHwmBytes == null || baseline[kind].vmHwmBytes == null
+                                ? null
+                                : after[kind].vmHwmBytes - baseline[kind].vmHwmBytes,
+                        observedVmHwmBytes: observedPeak,
+                        observedVmHwmDeltaBytes:
+                            observedPeak == null || baseline[kind].vmHwmBytes == null
+                                ? null
+                                : observedPeak - baseline[kind].vmHwmBytes,
+                        vmHwmDecreased: hwms.some((bytes, index) => index > 0 && bytes < hwms[index - 1]),
+                        isolatedPeak: reset[kind].succeeded,
+                    },
+                ];
+            }),
         );
+        const durationMs = (outcome.finishedAt ?? Date.now()) - startedAt;
+        let heapSnapshot;
+        if (process.env.RENDER_HEAP_SNAPSHOT) {
+            const requested = process.env.RENDER_HEAP_SNAPSHOT;
+            const file = path.resolve(
+                requested.includes("{rows}")
+                    ? requested.replaceAll("{rows}", String(rows))
+                    : `${requested}${ROWS.length > 1 ? `.${rows}` : ""}`,
+            );
+            await mkdir(path.dirname(file), { recursive: true });
+            const stream = createWriteStream(file);
+            const written = finished(stream);
+            // Handle stream errors immediately, including errors before CDP finishes emitting chunks.
+            written.catch(() => {});
+            const onChunk = ({ chunk }) => stream.write(chunk);
+            const snapshotStartedAt = Date.now();
+            cdp.on("HeapProfiler.addHeapSnapshotChunk", onChunk);
+            try {
+                await cdp.send("HeapProfiler.takeHeapSnapshot", { reportProgress: false });
+            } finally {
+                cdp.off("HeapProfiler.addHeapSnapshotChunk", onChunk);
+                stream.end();
+                await written;
+            }
+            heapSnapshot = {
+                path: file,
+                bytes: (await stat(file)).size,
+                durationMs: Date.now() - snapshotStartedAt,
+                rendererAfter: await processMemory(rendererPid),
+                gpuAfter: await processMemory(gpuPid),
+            };
+        }
         return {
             ...outcome,
             startedAt,
-            durationMs: (outcome.finishedAt ?? Date.now()) - startedAt,
+            durationMs,
             files,
+            pageSamples: samples,
             pages: files.length,
             invalidPngs: files.filter((f) => !f.validPng).length,
             memory,
             gpuCandidates,
+            heapBeforeExport: heapBefore,
             heapAfterGc: heap,
+            heapSnapshot,
         };
     } finally {
         page.off("download", onDownload);
@@ -741,6 +817,12 @@ function printTables() {
                               [`${p} VmHWM after (bytes)`, `export.memory.${p}.after.vmHwmBytes`],
                               [`${p} VmHWM delta (bytes)`, `export.memory.${p}.vmHwmDeltaBytes`],
                               [`${p} VmRSS after (bytes)`, `export.memory.${p}.after.vmRssBytes`],
+                              [`${p} largest sampled VmHWM (bytes)`, `export.memory.${p}.observedVmHwmBytes`],
+                              [
+                                  `${p} largest sampled VmHWM delta (bytes)`,
+                                  `export.memory.${p}.observedVmHwmDeltaBytes`,
+                              ],
+                              [`${p} VmHWM decreased during export`, `export.memory.${p}.vmHwmDecreased`],
                           ]),
                           ["JS heap after GC (bytes)", "export.heapAfterGc.usedSize"],
                       ];
@@ -759,6 +841,20 @@ function printTables() {
                 return value ?? "unavailable";
             });
             console.log(`| ${name} | ${values.join(" | ")} |`);
+        }
+        if (scenario === "screenshot") {
+            console.log("\nPer-page download notifications; cumulative HWM / current RSS in MiB.\n");
+            console.log("| Rows | Page | Elapsed ms | Renderer HWM / RSS | GPU HWM / RSS |");
+            console.log("| ---: | ---: | ---: | ---: | ---: |");
+            const mib = (bytes) => (bytes == null ? "unavailable" : round(bytes / 1024 ** 2));
+            for (const result of results) {
+                for (const sample of result?.export?.pageSamples ?? []) {
+                    const values = ["renderer", "gpu"].map(
+                        (kind) => `${mib(sample[kind].vmHwmBytes)} / ${mib(sample[kind].vmRssBytes)}`,
+                    );
+                    console.log(`| ${result.rows} | ${sample.page} | ${sample.elapsedMs} | ${values.join(" | ")} |`);
+                }
+            }
         }
     }
 }
@@ -1317,7 +1413,7 @@ try {
                             rendererPid,
                         );
                     if (scenario === "screenshot")
-                        result.export = await screenshot(page, cdp, browserCdp, rendererPid, SCREENSHOT_TIMEOUT_MS);
+                        result.export = await screenshot(page, cdp, browserCdp, rendererPid, SCREENSHOT_TIMEOUT_MS, n);
                 }
                 if (coverage) {
                     await cdp.send("Profiler.stopPreciseCoverage");

@@ -9,8 +9,14 @@ import {
 
 const baseName = "chat-11111111-2222-4333-8444-555555555555";
 const png = () => new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
-const row = (id: string, width: number, height: number) => ({ id, width, height, scaledDown: false });
+const row = (id: string, width: number, height: number) => ({ id, width, height, scaledDown: false, pixelRatio: 1 });
 type Row = ReturnType<typeof row>;
+
+function screenshotRow(width: number, height: number) {
+    const node = document.createElement("div");
+    Object.defineProperties(node, { clientWidth: { value: width }, clientHeight: { value: height } });
+    return node;
+}
 
 // happy-dom has no 2D context. Record allocations, draws and releases without allocating pixel buffers.
 class FakeCanvas {
@@ -227,31 +233,110 @@ it.each([
     },
 );
 
+it("exports an area-limited row alone at the planned pixel ratio with neighbours on other pages", async () => {
+    vi.stubEnv("devicePixelRatio", "2");
+    const before = screenshotRow(2, 5);
+    const oversized = screenshotRow(2400, 8192);
+    const after = screenshotRow(3, 4);
+    // Solve (2400 * ratio) * (8192 * ratio) = 64,000,000 using the original CSS size.
+    const expectedRatio = Math.sqrt(64_000_000 / (2400 * 8192));
+    expect(measureScreenshotRow(oversized)).toEqual({
+        width: 4330,
+        height: 14780,
+        scaledDown: true,
+        pixelRatio: expectedRatio,
+    });
+    const pages = planScreenshotPages([before, oversized, after], measureScreenshotRow);
+    expect(pages).toEqual([
+        { width: 6, height: 8, rows: [{ row: after, y: 0, width: 6, height: 8, pixelRatio: 2 }] },
+        {
+            width: 4330,
+            height: 14780,
+            rows: [{ row: oversized, y: 0, width: 4330, height: 14780, pixelRatio: expectedRatio }],
+        },
+        { width: 4, height: 10, rows: [{ row: before, y: 0, width: 4, height: 10, pixelRatio: 2 }] },
+    ]);
+    const io = exportIO([png(), png(), png()]);
+    const capture = vi.fn(async (node: HTMLElement, pixelRatio = 2) => {
+        return new FakeCanvas(
+            "row",
+            io.events,
+            Math.trunc(node.clientWidth * pixelRatio),
+            Math.trunc(node.clientHeight * pixelRatio),
+        ).element;
+    });
+    const warn = vi.fn();
+
+    await composeScreenshot({ ...io, capture, pages, baseName, warn });
+
+    expect(capture.mock.calls).toEqual([
+        [after, 2],
+        [oversized, expectedRatio],
+        [before, 2],
+    ]);
+    expect(io.canvases.map((canvas) => [canvas.widthAssignments[0], canvas.heightAssignments[0]])).toEqual([
+        [6, 8],
+        [4330, 14780],
+        [4, 10],
+    ]);
+    for (const canvas of io.canvases) {
+        expect(canvas.widthAssignments[0] * canvas.heightAssignments[0]).toBeLessThanOrEqual(64_000_000);
+        expect(canvas.widthAssignments[0]).toBeLessThanOrEqual(16_384);
+        expect(canvas.heightAssignments[0]).toBeLessThanOrEqual(16_384);
+    }
+    expect(warn).not.toHaveBeenCalled();
+    expect(io.download.mock.calls.map(([name]) => name)).toEqual([
+        `${baseName}-1of3.png`,
+        `${baseName}-2of3.png`,
+        `${baseName}-3of3.png`,
+    ]);
+});
+
+it("keeps an in-budget row at the device pixel ratio and shares its page", () => {
+    vi.stubEnv("devicePixelRatio", "2");
+    const large = screenshotRow(2400, 6000);
+    const neighbour = screenshotRow(300, 400);
+
+    expect(measureScreenshotRow(large)).toEqual({ width: 4800, height: 12000, scaledDown: false, pixelRatio: 2 });
+    expect(planScreenshotPages([large, neighbour], measureScreenshotRow)).toEqual([
+        {
+            width: 4800,
+            height: 12800,
+            rows: [
+                { row: neighbour, y: 0, width: 600, height: 800, pixelRatio: 2 },
+                { row: large, y: 800, width: 4800, height: 12000, pixelRatio: 2 },
+            ],
+        },
+    ]);
+});
+
 it.each([
     { side: "tall", width: 1000, height: 20000, scaledWidth: 819, scaledHeight: 16384 },
     { side: "wide", width: 20000, height: 1000, scaledWidth: 16384, scaledHeight: 819 },
 ])("gives a $side autoscaled row its own page at its measured size", ({ width, height, scaledWidth, scaledHeight }) => {
     // html-to-image reads the environment override before window.devicePixelRatio.
     vi.stubEnv("devicePixelRatio", "2");
-    const node = (width: number, height: number) => {
-        const node = document.createElement("div");
-        Object.defineProperties(node, { clientWidth: { value: width }, clientHeight: { value: height } });
-        return node;
-    };
-    const before = node(2, 5);
-    const oversized = node(width, height);
-    const after = node(3, 4);
+    const before = screenshotRow(2, 5);
+    const oversized = screenshotRow(width, height);
+    const after = screenshotRow(3, 4);
+    // The side limit bounds the ratio from the original CSS size: 16,384 / the longer side.
+    const pixelRatio = 16_384 / Math.max(width, height);
 
-    expect(measureScreenshotRow(before)).toEqual({ width: 4, height: 10, scaledDown: false });
-    expect(measureScreenshotRow(oversized)).toEqual({ width: scaledWidth, height: scaledHeight, scaledDown: true });
+    expect(measureScreenshotRow(before)).toEqual({ width: 4, height: 10, scaledDown: false, pixelRatio: 2 });
+    expect(measureScreenshotRow(oversized)).toEqual({
+        width: scaledWidth,
+        height: scaledHeight,
+        scaledDown: true,
+        pixelRatio,
+    });
     expect(planScreenshotPages([before, oversized, after], measureScreenshotRow)).toEqual([
-        { width: 6, height: 8, rows: [{ row: after, y: 0, width: 6, height: 8 }] },
+        { width: 6, height: 8, rows: [{ row: after, y: 0, width: 6, height: 8, pixelRatio: 2 }] },
         {
             width: scaledWidth,
             height: scaledHeight,
-            rows: [{ row: oversized, y: 0, width: scaledWidth, height: scaledHeight }],
+            rows: [{ row: oversized, y: 0, width: scaledWidth, height: scaledHeight, pixelRatio }],
         },
-        { width: 4, height: 10, rows: [{ row: before, y: 0, width: 4, height: 10 }] },
+        { width: 4, height: 10, rows: [{ row: before, y: 0, width: 4, height: 10, pixelRatio: 2 }] },
     ]);
 });
 
