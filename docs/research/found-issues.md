@@ -8,7 +8,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 ## Contents
 
-- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (3)
+- [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (1)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
 - [Server routes and resource store](#server-routes-and-resource-store) (4)
 - [LLM requests and providers](#llm-requests-and-providers) (7)
@@ -26,20 +26,6 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 **Why it matters:** a single bad subscriber (plugin or component) could silently freeze unrelated store notifications.
 **Suggested handling:** if store notifications mysteriously stop after an error, check for a throwing subscriber first; a fix would wrap subscribers or avoid svelte/store for hot paths.
-
-### Feed row text diffs hash the whole base per candidate
-
-`server/src/data/chatStore.ts` `chatRowDiff` (~751–780) calls `textHash(before.data)` for every row whose text changed while `chatFeedChange` (~1912–1925) builds body candidates, so a candidate the size choice later rejects (a whole-row `patch` under 8 KiB, the 64 KiB cap) still pays the hash; the tab hashes its held text once per applied diff (`stagedRowDiffs` in `src/ts/storage/chatStore.svelte.ts`). Measured by the A5 challenger of the Chat Store and Structured Memory Sweep (2026-11-06): about 2.3 ms per MiB on warm Node.
-
-**Why it matters:** only multi-MiB messages make it visible.
-**Suggested handling:** if feed cost on huge rows is reported, add `base` only after the row delta fits (its encoded size is fixed, about 45 bytes), or skip it when the whole-row patch wins.
-
-### Two more cyrb53 copies beside `shared/textHash.ts`
-
-`shared/notifications.ts` (~117, the notification tag) and `shared/contextReport.ts` (~517) each carry a private base-36 cyrb53. The sweep's A5 added the shared hex helper in `shared/textHash.ts`. Their outputs must not change (tags, report keys), so a merge needs a radix option on the shared core. Found 2026-11-06.
-
-**Why it matters:** three copies of one hash invite drift; cleanup only.
-**Suggested handling:** fold them into `shared/textHash.ts` when one of those files is touched anyway.
 
 ## Server jobs and prompt assembly
 
