@@ -10,7 +10,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
 import { ASSET_LIST_CAP } from "../../../shared/assetLifecycle.ts";
-import { createAssetLifecycle, type AssetLifecycleOptions } from "../data/assetLifecycle.ts";
+import { createAssetLifecycle, recognize, walkJson, type AssetLifecycleOptions } from "../data/assetLifecycle.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
 import { createSnapshotManager } from "../data/snapshots.ts";
@@ -129,6 +129,42 @@ function fixture(options: AssetLifecycleOptions & Pick<Parameters<typeof createA
         },
     };
 }
+
+it("recognizes all three inlay syntaxes in plain text and JSON-escaped keys and values", () => {
+    const ids: string[] = [];
+    const tails: string[] = [];
+    const sink = { inlay: (id: string) => ids.push(id), tail: (value: string) => tails.push(value) };
+    const expected = ["plain-image", "legacy-image", "data-image"];
+    recognize("before {{inlay::plain-image}} {{inlayed::legacy-image}} {{inlayeddata::data-image}} after", sink);
+    expect(ids).toEqual(expected);
+    expect(tails).toEqual([]);
+
+    ids.length = 0;
+    walkJson(
+        JSON.parse(String.raw`{
+        "\u007b\u007b\u0069nlay\u003a\u003aplain-image\u007d\u007d": [
+            { "text": "\u007b\u007binlayed\u003a\u003alegacy-image\u007d\u007d" }
+        ],
+        "data": "\u007b\u007binlayeddata\u003a\u003adata-image\u007d\u007d"
+    }`),
+        sink,
+    );
+    expect(ids.sort()).toEqual([...expected].sort());
+    expect(tails).toEqual([]);
+});
+
+it("rejects 20,000 unterminated inlay openings within a generous performance bound", { tags: ["slow"] }, () => {
+    const ids: string[] = [];
+    const sink = { inlay: (id: string) => ids.push(id), tail() {} };
+    const malformed = "{{inlay::".repeat(20_000);
+    recognize("{{inlay::".repeat(2_000), sink);
+    const start = performance.now();
+    recognize(malformed, sink);
+    const elapsed = performance.now() - start;
+    expect(ids).toEqual([]);
+    // The regression took about 1.2 s; the linear scan is well below 50 ms.
+    expect(elapsed).toBeLessThan(250);
+});
 
 it("marks decoded live text, every memory table, and named checkpoint pages without inventing disk keys", async () => {
     const f = fixture();

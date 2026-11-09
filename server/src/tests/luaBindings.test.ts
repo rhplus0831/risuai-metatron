@@ -4,6 +4,8 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { serve } from "@hono/node-server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Chat, character, loreBook } from "../../../shared/database.ts";
@@ -12,6 +14,7 @@ import { createAssetLifecycle } from "../data/assetLifecycle.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
 import { createSnapshotManager } from "../data/snapshots.ts";
+import { assetLeased, withAssetLocks } from "../http/assetLeases.ts";
 import type { RunningJob } from "../jobs/generationJobs.ts";
 import { loadJobScope, type JobScope } from "../jobs/jobScope.ts";
 import { createLuaBindings } from "../lua/bindings.ts";
@@ -563,6 +566,262 @@ describe("the lore reader binding", () => {
             clock.mockRestore();
         }
     });
+});
+
+const imageMethods = ["getCharacterImageMain", "getPersonaImageMain", "generateImageMain"] as const;
+
+function imageAssetFixture(method: (typeof imageMethods)[number], answerStoredImage = true) {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "risu-lua-image-asset-"));
+    const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+    const kind = (name: string) => kinds.get(name)!;
+    const store = createResourceStore({ file: path.join(dir, "data", "resources.sqlite"), kinds });
+    const snapshots = createSnapshotManager({ store, dir: path.join(dir, "backups") });
+    const clock = sweepClock();
+    const lifecycle = createAssetLifecycle({
+        savePath: dir,
+        store,
+        snapshots,
+        inlaysKind: kind("inlays"),
+        ...clock.options,
+    });
+    const id = `asset-reused-by-${method}`;
+    const asset = `assets/${id}.png`;
+    const file = seedSweepAsset({ savePath: dir }, asset);
+    const put = (name: string, key: string, data: unknown) =>
+        store.put(kind(name), key, data, store.get(kind(name), key)?.revision ?? null);
+    put("presets", "main", [{ id: "p", name: "P" }]);
+    put("modelPresets", "main", [{ id: "m", name: "M" }]);
+    put("personas", "main", [{ id: "u", name: "U", icon: id }]);
+    put("characters", "c", { chaId: "c", type: "character", name: "C", image: id });
+    store.applyChanges({
+        chats: [
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: null,
+                ops: [
+                    {
+                        op: "create",
+                        chat: {
+                            message: [],
+                            promptPresetId: "p",
+                            modelPresetId: "m",
+                            bindedPersona: "u",
+                        },
+                    },
+                ],
+            },
+        ],
+    });
+    const context = {
+        characterId: "c",
+        chatId: "k",
+        presetId: "p",
+        modelPresetId: "m",
+        personaId: "u",
+        mode: "button" as const,
+        input: "",
+        chatRevision: store.chatRevision("c", "k")!,
+    };
+    const signal = new AbortController().signal;
+    const callback = vi.fn(async () =>
+        answerStoredImage
+            ? { outcome: "answered" as const, value: { id } }
+            : { outcome: "failed" as const, failure: "hook" as const, error: "No image backend" },
+    );
+    const job: RunningJob = {
+        id: "job",
+        kind: "command",
+        context,
+        command: { type: "button", data: "" },
+        hooks: NO_GENERATION_HOOKS,
+        epoch: store.epoch(),
+        signal,
+        channel: { notice() {}, ask: async () => ({ outcome: "aborted" }), callback },
+        ownerAttached: () => true,
+        emit() {},
+        emitRecords: () => [],
+        onClientMessage: () => () => {},
+        write: (build) => store.applyChanges(build() as never, { epoch: store.epoch(), changes: true }),
+    };
+    const ctx: HostContext = {
+        identity: { characterId: "c", chatId: "k", presetId: "p", personaId: "u" },
+        access: "lowLevel",
+        signal,
+        regex: async () => ({ value: false }),
+    };
+    return {
+        dir,
+        id,
+        asset,
+        file,
+        lifecycle,
+        clock,
+        callback,
+        putImage() {
+            put("inlays", id, { asset, type: "image", name: id, ext: "png" });
+        },
+        removeImage() {
+            store.delete(kind("inlays"), id, store.get(kind("inlays"), id)!.revision);
+        },
+        invoke() {
+            const bindings = createLuaBindings({
+                job,
+                scope: loadJobScope(store, kinds, context),
+                store,
+                kinds,
+                rootDir: REPO_ROOT,
+                savePath: dir,
+                llm: {} as never,
+                tokens: {} as never,
+                runCharacterId: "c",
+                engineCharacterId: "c",
+            });
+            return Promise.resolve(bindings.host.async![method](["id", "prompt", "", "{}"], ctx));
+        },
+        async close() {
+            await lifecycle.close();
+            await snapshots.stop();
+            store.close();
+            rmSync(dir, { recursive: true, force: true });
+        },
+    };
+}
+
+it.each(imageMethods)(
+    "%s blocks sweep during the reused asset check and leases the file afterwards",
+    async (method) => {
+        vi.useFakeTimers({ toFake: ["Date", "performance"] });
+        const f = imageAssetFixture(method);
+        let release!: () => void;
+        const resume = new Promise<void>((resolve) => (release = resolve));
+        let entered!: () => void;
+        const checking = new Promise<void>((resolve) => (entered = resolve));
+        const lstat = fs.lstat;
+        let holdCheck = false;
+        const check = vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
+            if (holdCheck && String(args[0]) === f.file) {
+                holdCheck = false;
+                entered();
+                await resume;
+            }
+            return lstat(...args);
+        });
+        let result: Promise<unknown> | undefined;
+        let duringCheck: ReturnType<typeof f.lifecycle.sweep> | undefined;
+        try {
+            // Mature the file before adding metadata, so retention cannot hide a missing asset lease.
+            expect((await f.lifecycle.scan()).complete).toBe(true);
+            f.clock.advanceWall();
+            expect((await f.lifecycle.scan()).complete).toBe(true);
+            f.putImage();
+            holdCheck = true;
+            result = f.invoke();
+            await checking;
+            f.removeImage();
+            const sweep = () => f.lifecycle.sweep({ dryRun: false, keys: [f.asset], inlays: [] });
+            let swept = false;
+            duringCheck = sweep().then((answer) => {
+                swept = true;
+                return answer;
+            });
+            // With no snapshots or export holds, sweep's setup only queues microtasks before
+            // the key lock. Drain them while verification is explicitly suspended.
+            await nextTurn();
+            expect(swept).toBe(false);
+            expect(await fs.readFile(f.file, "utf8")).toBe("old bytes");
+            release();
+            expect(await result).toBe(`{{${method === "generateImageMain" ? "inlay" : "inlayed"}::${f.id}}}`);
+            expect(f.callback).toHaveBeenCalledTimes(method === "generateImageMain" ? 1 : 0);
+            expect(assetLeased(f.file)).toBe(true);
+            expect(await duringCheck).toMatchObject({ deleted: [], skipped: [{ key: f.asset, reason: "leased" }] });
+            expect(await sweep()).toMatchObject({ deleted: [], skipped: [{ key: f.asset, reason: "leased" }] });
+            expect(await fs.readFile(f.file, "utf8")).toBe("old bytes");
+        } finally {
+            release();
+            await result?.catch(() => {});
+            await duringCheck?.catch(() => {});
+            check.mockRestore();
+            await f.close();
+            vi.useRealTimers();
+        }
+    },
+);
+
+it("an image shortcut waits for the sweep's key lock before checking a reused image", async () => {
+    const f = imageAssetFixture("getCharacterImageMain");
+    const lstat = fs.lstat;
+    let locked = false;
+    const readsWhileLocked: string[] = [];
+    const check = vi.spyOn(fs, "lstat").mockImplementation(async (...args) => {
+        if (String(args[0]) === f.file && locked) readsWhileLocked.push(f.file);
+        return lstat(...args);
+    });
+    let result: Promise<unknown> | undefined;
+    try {
+        f.putImage();
+        // Hold the exact lock used by sweep. The turn barrier drains the callback's microtasks;
+        // it does not race a real deadline or wait for filesystem completion.
+        await withAssetLocks([f.file], async () => {
+            locked = true;
+            result = f.invoke();
+            await nextTurn();
+            expect(readsWhileLocked).toEqual([]);
+            // A deletion by the lock holder must be visible to the check after it acquires the lock.
+            rmSync(f.file);
+            locked = false;
+        });
+        await expect(result).rejects.toThrow("The client answered an image inlay that is not stored");
+        expect(assetLeased(f.file)).toBe(false);
+    } finally {
+        locked = false;
+        await result?.catch(() => {});
+        check.mockRestore();
+        await f.close();
+    }
+});
+
+it("treats missing, non-regular, and unmappable inlay assets as unusable in shortcuts and callback answers", async () => {
+    for (const method of imageMethods) {
+        for (const state of ["missing", "non-regular", "unmappable"] as const) {
+            const f = imageAssetFixture(method, method === "generateImageMain");
+            try {
+                if (state === "unmappable") {
+                    f.putImage();
+                    // Historical metadata can predate today's asset-key validation.
+                    const db = new DatabaseSync(path.join(f.dir, "data", "resources.sqlite"));
+                    try {
+                        db.prepare("UPDATE resources SET data = ? WHERE kind = 'inlays' AND id = ?").run(
+                            JSON.stringify({
+                                asset: "outside-storage/image.png",
+                                type: "image",
+                                name: f.id,
+                                ext: "png",
+                            }),
+                            f.id,
+                        );
+                    } finally {
+                        db.close();
+                    }
+                } else {
+                    f.putImage();
+                    rmSync(f.file);
+                    if (state === "non-regular") mkdirSync(f.file);
+                }
+                if (method === "generateImageMain") {
+                    await expect(f.invoke(), `${method}: ${state}`).rejects.toThrow(
+                        "The client answered an image inlay that is not stored",
+                    );
+                } else {
+                    expect(await f.invoke(), `${method}: ${state}`).toBe("");
+                }
+                expect(f.callback, `${method}: ${state}`).toHaveBeenCalledTimes(1);
+                expect(assetLeased(f.file), `${method}: ${state}`).toBe(false);
+            } finally {
+                await f.close();
+            }
+        }
+    }
 });
 
 it.each(["getCharacterImageMain", "getPersonaImageMain", "generateImageMain"] as const)(

@@ -379,6 +379,7 @@ test, follow [Recipes](#recipes); `readSlowTable` in `util/testInventory.mjs` ha
 | `backups.test.ts` "refuses an archive with more records..."           | production cap     | `server/src/{data/archive,routes/backups}.ts`                        |
 | `importCharx.test.ts` "excludes...entries in file..."                 | production cap     | `server/src/routes/importCharx.ts`, `shared/charxImport.ts`          |
 | `resourcePatchParts.test.ts` "charges four...text: evicts..."         | production budget  | `server/src/data/resourceStore.ts`                                   |
+| `assetLifecycle.test.ts` "rejects 20,000 unterminated..."             | elapsed bound      | `server/src/data/assetLifecycle.ts` (`recognize`)                    |
 | `src/ts/storage/tests/resourceSyncHydration.test.ts` "applies the..." | 150,000 messages   | `src/ts/storage/chatStore.svelte.ts`                                 |
 
 `triggerRuntime.test.ts` "ends an endless loop with the limit" still covers the effect limit in the default agent suite.

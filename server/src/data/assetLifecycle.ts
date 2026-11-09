@@ -148,8 +148,29 @@ export function recognize(value: string, sink: AssetReferenceSink): void {
             }
         }
     }
-    for (const match of value.matchAll(/{{(?:inlay|inlayed|inlayeddata)::(.+?)}}/g)) {
-        sink.inlay(match[1]);
+    // Cache forward-only suffix searches so failed openings cannot rescan a long capture.
+    const openings = /{{(?:inlay|inlayed|inlayeddata)::/g;
+    const lineTerminators = /[\n\r\u2028\u2029]/g;
+    let nextClose = -1;
+    let nextLineTerminator = -1;
+    while (openings.exec(value)) {
+        const start = openings.lastIndex;
+        // The capture must consume at least one character before its closing braces.
+        if (nextClose < start + 1) {
+            nextClose = value.indexOf("}}", start + 1);
+            if (nextClose < 0) {
+                break;
+            }
+        }
+        if (nextLineTerminator < start) {
+            lineTerminators.lastIndex = start;
+            nextLineTerminator = lineTerminators.exec(value)?.index ?? value.length;
+        }
+        if (nextLineTerminator < nextClose) {
+            continue;
+        }
+        sink.inlay(value.slice(start, nextClose));
+        openings.lastIndex = nextClose + 2;
     }
 }
 

@@ -49,7 +49,13 @@ import type { requestDataResponse } from "../llm/request.ts";
 import type { JobRequestSpec, LlmRequests } from "../llm/requests.ts";
 import { mainModelTakesImages, tokenScopeFor } from "../llm/settings.ts";
 import type { TokenCounter } from "../prompt/tokens.ts";
-import { readStorageFile, storageFileExists, writeStorageFile } from "../routes/storage.ts";
+import {
+    claimAssetKey,
+    readStorageFile,
+    resolveStorageKey,
+    storageFileExists,
+    writeStorageFile,
+} from "../routes/storage.ts";
 import { type EmbeddingEnv, type EmbeddingsService, HypaProcesser } from "../prompt/embeddings.ts";
 import type { HostContext, LuaHost } from "../scripts/workerPool.ts";
 import {
@@ -800,7 +806,14 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         if (!meta || meta.type !== "image" || typeof meta.asset !== "string" || meta.asset === "") {
             return false;
         }
-        return await storageFileExists(deps.savePath, meta.asset);
+        const asset = meta.asset;
+        if (resolveStorageKey(deps.savePath, asset) === null) {
+            return false;
+        }
+        const status = await claimAssetKey(deps.savePath, asset, {
+            verify: () => storageFileExists(deps.savePath, asset),
+        });
+        return status === "present";
     };
     /** Claim before the metadata read, then check the image and fence against an abort during file I/O. */
     const usableImage = async (id: string, ctx: HostContext) => {
