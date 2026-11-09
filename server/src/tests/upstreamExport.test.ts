@@ -698,10 +698,11 @@ describe("buildUpstreamDatabase: settings", () => {
         expect(characterNamed(db, "Alice").globalLore).toEqual([{ key: "g", content: "global" }]);
         expect(chatsOf(db, "Alice")[1].localLore).toEqual([{ key: "l", content: "local" }]);
         const repaired = converted(report, "shape-repaired")!;
-        expect(repaired.count).toBe(7);
+        // The store's normalizer already dropped the folder's non-string member, so characterOrder[1] needs no repair.
+        expect(repaired.count).toBe(6);
         expect(repaired.examples).toHaveLength(5);
         expect(repaired.examples).toEqual(
-            expect.arrayContaining(["characterOrder[1]", "characterOrder[2]", "loreBook[0]", "modules[0].lorebook"]),
+            expect.arrayContaining(["characterOrder[2]", "loreBook[0]", "modules[0].lorebook"]),
         );
     });
 

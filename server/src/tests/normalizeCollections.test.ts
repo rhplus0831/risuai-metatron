@@ -197,17 +197,20 @@ describe("plain list and map collections", () => {
         expect(normalizeCharacterOrder(input)).toEqual(expected);
     });
 
-    it("characterOrder drops incomplete and malformed folders without reserving their ids", () => {
+    it("characterOrder drops no folder: older folders missing id, name, color, or data stay, non-string members go, and an id-less folder is never deduplicated", () => {
         const valid = { id: "folder", name: "Valid", color: "", data: ["character"] };
-        const invalid: object[] = [];
-        for (const field of ["id", "name", "color", "data"] as const) {
-            const missing: Record<string, unknown> = { ...valid };
-            delete missing[field];
-            invalid.push(missing, { ...valid, [field]: 7 });
-        }
-        invalid.push({ ...valid, data: ["character", null] });
-        expect(normalizeCharacterOrder([...invalid, valid, "last"])).toEqual([valid, "last"]);
-        expectIdempotent(normalizeCharacterOrder, [...invalid, valid]);
+        const legacy = [
+            { name: "Old", data: ["a"] },
+            { name: "Old", data: ["b"] },
+            { id: "x", data: [] },
+            { name: "No list" },
+        ];
+        const mixed = { id: "mixed", name: "Mixed", color: "", data: ["character", 1, null] };
+        const input = [valid, ...legacy, mixed, "last"];
+        expect(normalizeCharacterOrder(input)).toEqual([valid, ...legacy, { ...mixed, data: ["character"] }, "last"]);
+        // The input is not edited in place.
+        expect(mixed.data).toEqual(["character", 1, null]);
+        expectIdempotent(normalizeCharacterOrder, [valid, ...legacy, mixed]);
     });
 
     it("customModels keeps the first definition per id, detaches extras, and strips retired credentials", () => {

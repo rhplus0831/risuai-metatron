@@ -46,7 +46,11 @@ export function normalizeHotkeys(input: unknown): Database["hotkeys"] {
     return hotkeys;
 }
 
-/** Keeps the first character or folder of each id. Folders require string id/name/color and string-array data. */
+/**
+ * Keeps the first character or folder of each id. A folder is never dropped (older folders lack `id`, `color`, or
+ * `name`, and the boot repair tolerates them): a `data` list loses its non-string members, and a folder without an id is
+ * never deduplicated.
+ */
 export function normalizeCharacterOrder(input: unknown): Database["characterOrder"] {
     if (input === undefined) {
         return [];
@@ -55,24 +59,21 @@ export function normalizeCharacterOrder(input: unknown): Database["characterOrde
         throw new ResourceValidationError("characterOrder must be an array of ids and folders");
     }
     const seen = new Set<string>();
-    const entries = input.filter((entry) => {
-        if (
-            typeof entry !== "string" &&
-            (typeof entry.id !== "string" ||
-                typeof entry.name !== "string" ||
-                typeof entry.color !== "string" ||
-                !Array.isArray(entry.data) ||
-                !entry.data.every((id: unknown) => typeof id === "string"))
-        ) {
-            return false;
+    const entries: unknown[] = [];
+    for (const entry of input) {
+        const id = typeof entry === "string" ? entry : typeof entry.id === "string" ? entry.id : undefined;
+        if (id !== undefined) {
+            if (seen.has(id)) {
+                continue;
+            }
+            seen.add(id);
         }
-        const id = typeof entry === "string" ? entry : (entry.id as string);
-        if (seen.has(id)) {
-            return false;
-        }
-        seen.add(id);
-        return true;
-    });
+        entries.push(
+            typeof entry !== "string" && Array.isArray(entry.data)
+                ? { ...entry, data: entry.data.filter((member: unknown) => typeof member === "string") }
+                : entry,
+        );
+    }
     return plainClone(entries) as Database["characterOrder"];
 }
 

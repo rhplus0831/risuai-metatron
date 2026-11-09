@@ -668,8 +668,8 @@ describe("convertUpstreamDatabase: secrets", () => {
         ];
         const out = convertUpstreamDatabase(db);
         const definitions = record<{ id: string; key?: unknown }[]>(out, COLLECTION_KIND.customModels);
+        // The duplicate `xcustom:::m1` definition collapses to the first (normalizeCustomModels deduplicates).
         expect(definitions.map((definition) => definition.id)).toEqual([
-            "xcustom:::m1",
             "xcustom:::m1",
             "plain-model",
             "xcustom:::blank",

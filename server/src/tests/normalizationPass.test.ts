@@ -174,7 +174,12 @@ describe("the pass at startup", () => {
         const store = open(file, defaults, CLEAN_B);
         const repaired = observe(store);
         expect(repaired.epoch).toBe(initial.epoch);
-        expect(repaired.kinds.characterOrder[0].data).toEqual(["character", folder]);
+        // The folder with a non-string member keeps its place; only the member goes.
+        expect(repaired.kinds.characterOrder[0].data).toEqual([
+            "character",
+            folder,
+            { id: "bad", name: "Bad", color: "", data: [] },
+        ]);
         expect(repaired.kinds.customModels[0].data).toEqual([{ id: "model", internalId: "first", extra: true }]);
         for (const kind of ["characterOrder", "customModels"]) {
             expect(parseToken(repaired.kinds[kind][0].revision).revision).toBe(2);

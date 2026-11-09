@@ -20,6 +20,7 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [scripts-triggers](#scripts-triggers) (4)
 - [self-host-server](#self-host-server) (4)
 - [server-generation](#server-generation) (1)
+- [server-resources](#server-resources) (1)
 
 ## assets
 
@@ -236,3 +237,10 @@ Guide: [Server generation: jobs, channels, transforms, LLM and token routes](../
 
 - Server CBS evaluation runs on the main thread under cooperative limits, with no hard deadline or heap bound. Other
   prompt work (Jinja rendering, tokenizer calls after model load, non-worker lore matching) also runs there.
+
+## server-resources
+
+Guide: [Server resources](../structure/server-resources.md#known-hazards).
+
+- `normalizeCharacterOrder` validates only a folder's `data` members (non-strings are dropped) and keeps a folder whose
+  `id`, `name`, or `color` is missing or malformed, since older saves hold such folders; the boot repair tolerates them.
