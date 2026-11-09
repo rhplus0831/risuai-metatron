@@ -4,7 +4,8 @@ Plans live here while work is in progress. Current architecture guides describe
 shipped behavior; [the archive](../archived-plan/README.md) records completed plans,
 historical paths/commits, retrieval commands, and pending manual follow-ups.
 
-None.
+- [Upstream Intake 2](upstream-intake-2.md): upstream `f50b5942..4d87a70ff` (53 commits) triaged into 13 port
+  slices and a close-out; drafted 2026-11-10, not started.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive. Use `None` here when no plans remain active.
