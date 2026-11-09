@@ -208,6 +208,12 @@ describe("completionNotification", () => {
 describe("completionNotificationTag", () => {
     const base = { name: "Ann", customMessage: "", language: "en" };
 
+    it("preserves exact unpadded base-36 tags for fixed chat ids", () => {
+        // Computed with the original completionNotificationTag/hash53 at HEAD.
+        expect(completionNotificationTag("c1", "k")).toBe("risuai-chat-completion:v1wmkbx1gd");
+        expect(completionNotificationTag("캐릭터😀", "대화/一")).toBe("risuai-chat-completion:cu4blmji6t");
+    });
+
     it("gives each chat its own tag under the prefix and the same chat the same tag", () => {
         const a = completionNotification({ ...base, chaId: "c1", chatId: "a" }).tag;
         const b = completionNotification({ ...base, chaId: "c1", chatId: "b" }).tag;

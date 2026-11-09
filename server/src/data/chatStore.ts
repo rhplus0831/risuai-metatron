@@ -744,12 +744,19 @@ function chatMetaFields(before: Record<string, unknown>, after: Record<string, u
     return fields;
 }
 
+type ChatRowDiffCandidate = { diff: ChatRowDiff; beforeText: string };
+
 /**
  * An existing row's fields and text from its first stored read to its final value. A non-string
  * `data` or a changed own `__proto__` field needs a whole row. Equal JSON fields keep no diff even
- * when their object keys were stored in another order.
+ * when their object keys were stored in another order. A text hash uses a fixed-width placeholder
+ * for size measurement; its captured old text is hashed only if the rowDelta is selected.
  */
-function chatRowDiff(id: string, before: Record<string, unknown>, after: Record<string, unknown>): ChatRowDiff | null {
+function chatRowDiff(
+    id: string,
+    before: Record<string, unknown>,
+    after: Record<string, unknown>,
+): ChatRowDiffCandidate | null {
     if (typeof before.data !== "string" || typeof after.data !== "string") {
         return null;
     }
@@ -775,10 +782,10 @@ function chatRowDiff(id: string, before: Record<string, unknown>, after: Record<
         diff.text = {
             keep,
             text: after.data.slice(keep),
-            base: { length: before.data.length, hash: textHash(before.data) },
+            base: { length: before.data.length, hash: "00000000000000" },
         };
     }
-    return diff;
+    return { diff, beforeText: before.data };
 }
 
 function isNonNegativeSafeInteger(value: unknown): value is number {
@@ -1939,19 +1946,21 @@ export function createChatTables(
         };
         const kept: FeedRow[] = [];
         const whole: FeedRow[] = [];
-        const rowDiffs: ChatRowDiff[] = [];
+        const rowDiffCandidates: ChatRowDiffCandidate[] = [];
         const parsed = (row: FeedRow) => (row.message ??= JSON.parse(row.data) as Record<string, unknown>);
         let considered = 0;
         const diffRows = () => {
             while (considered < kept.length && rowDeltaBytes <= MAX_FEED_PATCH_BYTES) {
                 const row = kept[considered++];
                 const old = insertedHere.has(row.id) ? undefined : before.get(row.id);
-                const diff = old === undefined ? null : chatRowDiff(row.id, JSON.parse(old), parsed(row));
-                if (diff) {
+                const candidate = old === undefined ? null : chatRowDiff(row.id, JSON.parse(old), parsed(row));
+                if (candidate) {
                     rowDeltaBytes = capped(
-                        rowDeltaBytes + Buffer.byteLength(JSON.stringify(diff)) + (rowDiffs.length > 0 ? 1 : 0),
+                        rowDeltaBytes +
+                            Buffer.byteLength(JSON.stringify(candidate.diff)) +
+                            (rowDiffCandidates.length > 0 ? 1 : 0),
                     );
-                    rowDiffs.push(diff);
+                    rowDiffCandidates.push(candidate);
                 } else {
                     rowDeltaBytes = capped(
                         rowDeltaBytes + row.bytes + (whole.length > 0 ? 1 : ',"messages":[]'.length),
@@ -1982,7 +1991,7 @@ export function createChatTables(
         }
         const useRowDelta =
             patchBytes >= SMALL_FEED_PATCH_BYTES &&
-            rowDiffs.length > 0 &&
+            rowDiffCandidates.length > 0 &&
             rowDeltaBytes <= MAX_FEED_PATCH_BYTES &&
             rowDeltaBytes < patchBytes;
         const usePatch = !useRowDelta && patchBytes <= MAX_FEED_PATCH_BYTES;
@@ -1999,7 +2008,15 @@ export function createChatTables(
             body.messages = selected.map((row) => ({ after: row.after, message: parsed(row) }));
         }
         if (useRowDelta) {
-            const rowDelta: ChatRowDeltaBody = { ...body, rowDiffs };
+            const rowDelta: ChatRowDeltaBody = {
+                ...body,
+                rowDiffs: rowDiffCandidates.map(({ diff, beforeText }) => {
+                    if (diff.text) {
+                        diff.text.base = { length: beforeText.length, hash: textHash(beforeText) };
+                    }
+                    return diff;
+                }),
+            };
             return { rowDelta };
         }
         return usePatch ? { patch: body } : { delta: body };

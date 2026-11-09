@@ -84,6 +84,8 @@ comments own the notice lifetimes and input behavior.
 - `src/ts/iris.ts` `getIrisSystemPrompt` and `src/lib/Others/IrisModal.svelte` (component contract): the Iris assistant,
   its `otherAx` requests, and the `irisDialogue` field.
 - `src/ts/sourcemap.ts`, `src/ts/licenses.ts` `CCLicenseData`, `src/ts/util/inlayTokens.ts` `inlayTokenRegex`.
+- `shared/textHash.ts` `textHash`: the one cyrb53 copy (not a security boundary), 14 hex digits by default, unpadded
+  base 36 for the completion notification tag and `historyDigest`, whose outputs must not change.
 
 ## Flows
 

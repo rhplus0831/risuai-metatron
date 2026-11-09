@@ -1,9 +1,9 @@
 /**
  * A fast non-cryptographic 53-bit hash: cyrb53 with seed 0 over the text's UTF-16 code units,
- * written as 14 lowercase hexadecimal digits. Synchronous and without `crypto.subtle`, so it
- * works on plain-HTTP origins too. It is not a security boundary.
+ * written as 14 lowercase hexadecimal digits by default, or unpadded base 36. Synchronous and
+ * without `crypto.subtle`, so it works on plain-HTTP origins too. It is not a security boundary.
  */
-export function textHash(text: string): string {
+export function textHash(text: string, radix: 16 | 36 = 16): string {
     let h1 = 0xdeadbeef;
     let h2 = 0x41c6ce57;
     for (let i = 0; i < text.length; i++) {
@@ -16,5 +16,5 @@ export function textHash(text: string): string {
     h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
     h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
     const value = 4294967296 * (2097151 & h2) + (h1 >>> 0);
-    return value.toString(16).padStart(14, "0");
+    return radix === 16 ? value.toString(16).padStart(14, "0") : value.toString(36);
 }

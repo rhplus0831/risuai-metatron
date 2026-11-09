@@ -264,6 +264,14 @@ describe("eligibleHistory and historyDigest", () => {
         message("u2", "user", "fine"),
     ];
 
+    it("preserves exact unpadded base-36 digests for fixed histories", () => {
+        // Computed with the original historyDigest/hashString at HEAD.
+        expect(historyDigest([])).toBe("m22j75kgwk");
+        expect(historyDigest([message("u1", "user", "안녕하세요 😀"), message("c1", "char", "Hello, world!")])).toBe(
+            "28an220jilt",
+        );
+    });
+
     it("reads back to the last allBefore message, skipping disabled ones", () => {
         expect(eligibleHistory(base)).toEqual({ messages: base, reset: false });
         const cut = [base[0], message("u1", "user", "hi", "allBefore"), base[2], message("u2", "user", "fine", true)];

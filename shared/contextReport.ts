@@ -10,6 +10,7 @@ import {
     type MemoryManifestLane,
     type MemoryStaleReason,
 } from "./structuredMemory.ts";
+import { textHash } from "./textHash.ts";
 
 /**
  * Context accounting shared by prompt producers and meter readers: versioned report shapes,
@@ -532,20 +533,6 @@ function isMemoryStages(value: unknown): boolean {
 
 type HistoryMessage = Pick<Message, "chatId" | "role" | "data" | "disabled">;
 
-/** cyrb53: a fast 53-bit string hash (not cryptographic), as base 36. */
-function hashString(text: string): string {
-    let h1 = 0xdeadbeef;
-    let h2 = 0x41c6ce57;
-    for (let i = 0; i < text.length; i++) {
-        const code = text.charCodeAt(i);
-        h1 = Math.imul(h1 ^ code, 2654435761);
-        h2 = Math.imul(h2 ^ code, 1597334677);
-    }
-    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
-}
-
 /**
  * A digest of the history a send of `messages` reads: the eligible messages' id, role, disabled
  * flag, and text, and whether an `allBefore` message cut it. The server and the tab compute it the
@@ -554,11 +541,12 @@ function hashString(text: string): string {
  */
 export function historyDigest(messages: readonly HistoryMessage[]): string {
     const { messages: eligible, reset } = eligibleHistory(messages);
-    return hashString(
+    return textHash(
         JSON.stringify([
             reset,
             ...eligible.map((message) => [message.chatId ?? null, message.role, !!message.disabled, message.data]),
         ]),
+        36,
     );
 }
 

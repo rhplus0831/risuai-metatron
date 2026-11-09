@@ -5,6 +5,7 @@ import type { Chat, Message, MessageTranslation } from "../../../shared/database
 import type { ChatGroup, ChatOp } from "../../../shared/chats.ts";
 import { MAX_FEED_PATCH_BYTES, SMALL_FEED_PATCH_BYTES, type ResourceBatchResult } from "../../../shared/resources.ts";
 import { textHash } from "../../../shared/textHash.ts";
+import * as textHashModule from "../../../shared/textHash.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
 import { CHAT_TABLES_SQL, TOUCHED_ROWS_SQL, type ChatWriteChange } from "../data/chatStore.ts";
@@ -309,6 +310,26 @@ describe("by-id chat feed patches", () => {
         for (const key of ["patch", "delta", "rowDelta", "rows"]) expect(entry).not.toHaveProperty(key);
     });
 
+    it("does not hash a 4 MiB row's old text when the shrunk whole-row patch wins", () => {
+        const b = setup({ ...initial, message: [m("a", "A"), m("b", "x".repeat(4 * 1024 * 1024)), m("c", "C")] });
+        const baseRevision = b.read().revision;
+        // Stay above the 8 KiB shortcut so the shrinking patch wins a comparison with a text diff.
+        const message = m("b", "final".repeat(2 * 1024));
+        const hash = vi.spyOn(textHashModule, "textHash");
+        b.write([{ op: "setMessage", message }]);
+        const expected = { baseRevision, count: 3, messages: [{ after: "a", message }] };
+        expect(b.notice()).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: b.read().revision,
+            summaryBase: baseRevision,
+            patch: expected,
+        });
+        expect(hash).toHaveBeenCalledTimes(0);
+        expect(Buffer.byteLength(JSON.stringify(expected))).toBeGreaterThanOrEqual(SMALL_FEED_PATCH_BYTES);
+        expect(b.read().data.message[1]).toEqual(message);
+    });
+
     it.each([
         { label: "4 KiB", before: "x".repeat(4 * 1024), body: "patch" },
         { label: "32 KiB", before: "x".repeat(32 * 1024), body: "rowDelta" },
@@ -378,7 +399,7 @@ describe("by-id chat feed patches", () => {
         expect(b.read().data.message[1]).toEqual({ ...m("b", data), generationInfo });
     });
 
-    it("diffs a group's final fields and UTF-16 text against its first read beside whole inserted rows", () => {
+    it("hashes each published text diff once against the group's first read beside whole inserted rows", () => {
         const b = setup();
         const prefix = "x".repeat(32 * 1024) + "😀";
         b.write([
@@ -392,6 +413,7 @@ describe("by-id chat feed patches", () => {
             },
         ]);
         const baseRevision = b.read().revision;
+        const hash = vi.spyOn(textHashModule, "textHash");
         b.write([
             {
                 op: "setMessage",
@@ -405,6 +427,7 @@ describe("by-id chat feed patches", () => {
             { op: "patchMessage", id: "b", set: { data: prefix + "new" }, unset: ["saying"] },
             { op: "append", anchor: { after: "b" }, messages: [m("inserted", "first")] },
             { op: "setText", id: "inserted", text: "final" },
+            { op: "setText", id: "c", text: "C!" },
             { op: "remove", ids: ["a"] },
             { op: "meta", set: { note: "changed" } },
         ]);
@@ -426,16 +449,24 @@ describe("by-id chat feed patches", () => {
                         text: {
                             keep: prefix.length,
                             text: "new",
-                            base: { length: (prefix + "old").length, hash: textHash(prefix + "old") },
+                            // Original HEAD textHash("x".repeat(32 * 1024) + "😀old").
+                            base: { length: (prefix + "old").length, hash: "116f7292c7a818" },
                         },
+                    },
+                    {
+                        id: "c",
+                        text: { keep: 1, text: "!", base: { length: 1, hash: "19044896483eba" } },
                     },
                 ],
             },
         });
+        expect(hash).toHaveBeenCalledTimes(2);
+        expect(hash).toHaveBeenCalledWith(prefix + "old");
+        expect(hash).toHaveBeenCalledWith("C");
         expect(b.read().data.message).toEqual([
             { ...m("b", prefix + "new"), role: "user", generationInfo: { model: "same", inputTokens: 12 } },
             m("inserted", "final"),
-            m("c", "C"),
+            m("c", "C!"),
         ]);
     });
 

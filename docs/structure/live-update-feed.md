@@ -69,9 +69,10 @@ the tab side is [feed connection](live-updates.md#feed-connection).
 group result, never in `ChatGroupResult`, the HTTP body, or `ChatWriteChange`. An entry carries the group's summary
 knowledge (`ChatFeedPayloads`) and at most one body, chosen by size in `chatFeedChange` (rule: `ChangeSet`): a whole-row
 `patch` under `SMALL_FEED_PATCH_BYTES`, else a smaller `rowDelta` (per-row field and text diffs against the group's
-first read, `chatRowDiff`; a text diff names that read's length and `textHash`: a tab holding other text misses; without
-them (older servers) only the length is checked), else a fitting `patch`, else a `delta`, else a fitting `rows` manifest
-(`ChatRowsManifest`: base, row ids, removals, count, changed metadata field names).
+first read, `chatRowDiff`; a text diff names that read's length and `textHash`, hashed only once the `rowDelta` is
+chosen because the hex hash has a fixed size: a tab holding other text misses; without them (older servers) only the
+length is checked), else a fitting `patch`, else a `delta`, else a fitting `rows` manifest (`ChatRowsManifest`: base,
+row ids, removals, count, changed metadata field names).
 
 ### Coalescing and publish order
 
