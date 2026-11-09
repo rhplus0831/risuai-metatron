@@ -328,11 +328,6 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
 
 ## Known Hazards
 
-### Issues
-
-- A user-defined `send` hotkey clicks `.button-icon-send` without the popup-editor guard of the preset hotkeys, so it
-  can send (and run `presetChain`) while a popup editor is open.
-
 ### Limitations
 
 - Safe boot shares its attempt record across tabs, but concurrent writes are not atomic and a settled boot clears only

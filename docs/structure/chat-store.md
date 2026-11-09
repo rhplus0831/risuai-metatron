@@ -267,12 +267,6 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 
 ## Known Hazards
 
-### Issues
-
-- Folder moves touch the character (`chatFolders`), the chat (`folderId`), and the chat order, each saved alone. A
-  conflict on one can leave a `folderId` naming no folder of its character. Nothing repairs it; an explicit write clears
-  it (a move, a plugin's chat copy without it, a branch with "Create Folder on Branch", deleting a folder of that id).
-
 ### Limitations
 
 - `CHAT_READ_DEADLINE_MS` bounds one `readRefs` call, not a whole load: a load can make three passes of 500-chat calls

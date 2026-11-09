@@ -384,15 +384,6 @@ belong to [test-harness](test-harness.md); `slow` and `e2e` memberships are in i
 
 ## Known Hazards
 
-### Issues
-
-- `/api/remove` deletes sequentially: a filesystem error stops the batch with 500 and leaves earlier deletions in place.
-- `/api/asset/*` verification is in memory and stat-based; it starts empty after restart and cannot detect an outside
-  same-size edit that restores the full stat.
-- The thumbnail cache has no byte cap.
-- JWT validation does not check issuer, audience, `typ`, or `iat`, and a token without `exp` does not expire.
-- `/hub-proxy` is unauthenticated and forwards request headers other than `risu-auth` to the configured hub.
-
 ### Limitations
 
 - Directory fsync may be unsupported on a mount (`EINVAL`/`EPERM`); in that case a successful rename or link is not

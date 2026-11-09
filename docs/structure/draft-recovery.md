@@ -216,28 +216,6 @@
 
 ## Known Hazards
 
-### Issues
-
-- Apply removes a draft once its save succeeds even when it skipped ops: the skipped content is named only in Apply's
-  result, not kept. A draft of edits answered `missing` therefore keeps their text only until Apply; Export keeps it.
-- A recovered field edit to a character whose `trashTime` is already past the boot prune threshold can become a deletion
-  during maintenance.
-- The conservative `sent`/`resend` marks of a cycle can outlive an early exit, leaving a dispatched mark for a later
-  batch that never went: harmless for an update, but recovery treats such a create as a draft rather than creating it.
-- A stale `pending` row can name ops that landed under a merged or reanchored id. If its before value matches again (or
-  an appended id has since been deleted), a later recovery can re-apply those ops. Coalescing and deliberate withdrawal
-  also mean a remembered id does not prove that every older form of its intent was applied.
-- A metadata before captured from an unloaded summary may differ from raw storage (for example, omitted `pinned:false`),
-  so recovery may conservatively draft it.
-- A composer draft typed during a send with that send's text carries its message id (`retryIdFor`). The page's own
-  settlement keeps it as a plain draft, but a reload before that settlement cannot tell it from the send's text placed
-  back after a failure: `composerDrafts.svelte.ts` `restore` finds the message landed and deletes the draft, so the
-  retyped text is lost. Keeping it would bring already-sent text back after every uncertain end that landed
-  ([JR1](../manual-audit/archive/cross-plan-2026-10-29.md#jr1--a-landed-send-deletes-an-identical-drafts-journal-row),
-  remaining case).
-- `updateComposerRequest` reports one `journalSkipped` event with `entries: 1` even when both of the chat's rows are
-  unreadable and skipped; both rows stay untouched.
-
 ### Limitations
 
 - A missing-chat Apply creates its chat under the draft's id for a retry to find; a destination that another tab deleted

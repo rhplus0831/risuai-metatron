@@ -171,11 +171,6 @@ The transport below retains this tab's in-memory log.
 
 ## Known Hazards
 
-### Issues
-
-- A tab MCP tool call from the job channel (`getToolList`, `callTool`) has no abort signal: once it starts, ending the
-  request does not stop it.
-
 ### Limitations
 
 - A plugin hook already inside `invokeHook` cannot be aborted: a cancellation skips the later hooks, but the running one

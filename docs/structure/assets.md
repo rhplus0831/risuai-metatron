@@ -67,9 +67,9 @@ it runs on both sides.
 Asset sources use direct URLs only while boot recorded a ready worker (`setUsingSw`) and the controlling worker reports
 `directAssets: true` on `/sw/init` (`setDirectAssets`); otherwise each call takes the fallback, a worker cache URL or an
 object URL ([Asset sources](#asset-sources)). A `controllerchange` clears the capability until the new controller's
-probe answers ([Issues](#issues)); one that leaves no controller also drops the resolved `/sw/img` sources
-(`invalidateWorkerFileSources`) and the parser's `fileSrcCache`, and the fallback never returns a `/sw/img` URL without
-a controller, so later reads take an object URL. The probe and the worker's signing:
+probe answers ([known issue](../research/known-issues.md#assets)); one that leaves no controller also drops the resolved
+`/sw/img` sources (`invalidateWorkerFileSources`) and the parser's `fileSrcCache`, and the fallback never returns a
+`/sw/img` URL without a controller, so later reads take an object URL. The probe and the worker's signing:
 [build/test](build-test-platforms.md#direct-assets); the asset route, thumbnails, and HTTP cache:
 [server](self-host-server.md#storage-routes).
 
@@ -108,11 +108,6 @@ a controller, so later reads take an object URL. The probe and the worker's sign
 - Slow: the server asset batch cap in `server/src/tests/assets.test.ts` is `slow` ([test-harness](test-harness.md)).
 
 ## Known Hazards
-
-### Issues
-
-- Direct URLs already handed out are not re-rendered when the page loses its controller or capability. Without a signing
-  worker they load from the browser HTTP cache or fail with 401; only new source calls use the fallback.
 
 ### Limitations
 

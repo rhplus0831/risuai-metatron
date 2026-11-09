@@ -78,7 +78,8 @@
   - `e2e/tsconfig.json`: extends the root config and includes `**/*.ts` relative to `e2e/`, plus the existing client
     ambient declarations and Node, Playwright, and File System Access types. Type-only `/src/*`, `/shared/*`, and
     `/util/*` mappings resolve browser imports. `pnpm check` type-checks the specs and harness.
-  - `tsconfig.node.json` covers the Vite config only and is outside `pnpm check`; see [Issues](#issues).
+  - `tsconfig.node.json` covers the Vite config only and is outside `pnpm check`; see the
+    [known issue](../research/known-issues.md#build-test-platforms).
   - `.prettierrc.json`: 4-space indent, double quotes, semicolons, width 120, 2-space for JSON/YAML/Markdown,
     `prettier-plugin-svelte`, `proseWrap: "always"` for `STRUCTURE.md` and `docs/structure/`.
 - `.prettierignore` (its comments give the reasons): `.ignore`'s payloads, all of `public/` (so `public/sw.js` keeps its
@@ -285,11 +286,6 @@ Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
   changing that code.
 
 ## Known Hazards
-
-### Issues
-
-- `tsconfig.node.json` pairs `module: ESNext` with `moduleResolution: nodenext`, producing TS5110 when checked directly.
-  `pnpm check` does not include this project.
 
 ### Gotchas
 

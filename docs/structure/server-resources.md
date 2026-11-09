@@ -394,12 +394,6 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
 
 ## Known Hazards
 
-### Issues
-
-- `normalizeCharacterOrder` and `normalizeCustomModels` do not deduplicate entries. The former accepts folder objects
-  without validating their fields; the latter requires string `id` and `internalId` and strips retired credential
-  fields.
-
 ### Limitations
 
 - Every listed snapshot is an [asset mark](self-host-server.md#asset-mark) root, so its assets stay until it rotates

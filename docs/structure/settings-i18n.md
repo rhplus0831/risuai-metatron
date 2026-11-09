@@ -283,13 +283,6 @@ section.
 
 ### Issues
 
-- `src/lang/index.ts` supports Spanish through `changeLanguage`, but `src/ts/setting/languageSettingsData.svelte.ts`
-  does not offer `es` in the UI-language selector.
-- The new-message button style labels in `src/ts/setting/accessibilitySettingsData.ts` are copied from `language` at
-  module load, so they stay in the original language after a switch.
-- A remote or conflict replacement of the `ui` record does not apply a new `settings.ui.language`: `src/ts/bootstrap.ts`
-  `watchRemoteRecords` reapplies the color scheme, text theme/CSS, animation, and sizes, but does not call
-  `changeLanguage`.
 - Unconfirmed: some settings controls may materialize missing values when first mounted (`bindPath` creates missing
   containers). `e2e/settingsPages.spec.ts` checks that a second traversal writes nothing, but does not identify any
   first-visit writes. Collapsible sections mount only when opened.

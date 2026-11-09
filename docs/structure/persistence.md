@@ -341,16 +341,6 @@ them up, and a backup does not carry them.
 
 ## Known Hazards
 
-### Issues
-
-- The browser-local import has no cross-tab lock: a change another tab lands between `removeIfUnchanged`'s comparison
-  and its deletion is lost.
-- `replaceCharacterAt` does not repair `characterOrder`: a new id is missing until the next `checkCharOrder`. The old id
-  is removed then only if a repair observed it; otherwise boot removes it.
-- A character trashed or deleted on the server after the remote repair's read and before its write, with no order change
-  between, can be appended. Its id leaves only once this tab holds the trash or deletion and a later `checkCharOrder`
-  runs (arrival alone does not run the repair).
-
 ### Limitations
 
 - A browser's LocalForage `mcp-tool-calls` store is never read: a tool call remembered only there does not resolve

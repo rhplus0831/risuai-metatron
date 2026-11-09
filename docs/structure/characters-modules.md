@@ -277,14 +277,6 @@ module is added ([module import](#module-import)).
 
 ### Issues
 
-- An off-spec card with only `char_name` imports as "unknown name": the check accepts `char_name`, but
-  `convertOffSpecCards` reads `name`.
-- A bound persona's embedded module joins the effective modules only when a module with its id exists in
-  `settings.modules`: the tab's `getModules` and the server's `jobModules` add the persona's `embeddedModule.id`, then
-  resolve ids against the stored list only (`getModuleByIds`, `modulesByIds`), so an embedded module never stored
-  contributes nothing. Kept for parity as a candidate for a later fix.
-- `addModule` does not refuse a duplicate module id, so two modules can share one; `removeModule` removes the module but
-  leaves its id in `enabledModules` until that list changes.
 - Unconfirmed: a same-length remote replacement while an emotion or asset name field is focused may let the next input
   write to the new row at the old index. `CharConfig.renameAsset`/`renameEmotion` and `ModuleMenu.renameAsset` address
   the live list by index; existing `ModuleMenu.assets` tests cover a reorder but not a focused input event after one.

@@ -172,11 +172,6 @@ The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credent
 
 ## Known Hazards
 
-### Issues
-
-- Daily event appends are unsynced, so a power loss can lose recent events; whole-file state, report, and share writes
-  flush their staged files before rename.
-
 ### Limitations
 
 - Sharing can redact only credentials still stored then; deleted credentials are unavailable. Encoding limits belong to

@@ -257,12 +257,6 @@ and keeps what spans files.
 
 ## Known Hazards
 
-### Issues
-
-- `RealmMain` renders `hubAdditionalHTML` via `{@html}`.
-- The RisuRealm terms gate is client-side only: `GET /hub-proxy/*` (unauthenticated) and `POST /api/import/realm` do not
-  check `ui.realmTermsAccepted`.
-
 ### Limitations
 
 - Kept tab-side or unbounded in the Realm import (2026-11-09, Found Issues Clearance B5): a legacy JSON card's hub

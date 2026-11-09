@@ -306,15 +306,6 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
 
 ## Known Hazards
 
-### Issues
-
-- A single oversized chat group is quarantined before dispatch and cannot be chunked (cap:
-  [Batch composition](#batch-composition)); an edit or Retry still over it quarantines again silently.
-- A page restored from the back-forward cache may still wait for an unload answer; `flushResources` gives up after 20 s.
-- A save's echo arriving before its acknowledgement schedules a cycle 50 ms later (`noteRemoteChanges`), so continuous
-  typing can save more often than the debounce. [Measurements](../audit/projection-bindings-2026-10-04.md) no longer
-  show extra saves; coalescing would bound the 50 ms echo cycle.
-
 ### Limitations
 
 - A lost group is recognized only within its chat's newest 100 groups: a live resend past them answers

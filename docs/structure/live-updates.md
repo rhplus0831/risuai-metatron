@@ -76,7 +76,8 @@ Identifiers the flows below name are not repeated here.
   checkpoint patches.
 - An edit sent before the lock frame meets the server's generating refusal and the client's
   [conflict fallback](resource-sync.md#generating-refusals): edits of the named locked messages are dropped with the
-  reload notice and read back; remaining work retries. The first-frame window remains an [issue](#issues).
+  reload notice and read back; remaining work retries. The first-frame window remains a
+  [known issue](../research/known-issues.md#live-updates).
 
 ### Restore halt
 
@@ -143,19 +144,6 @@ Identifiers the flows below name are not repeated here.
 - Not tested: only the adapter tests' gaps ([resource-sync](resource-sync.md#tests)).
 
 ## Known Hazards
-
-### Issues
-
-- A tab can still edit a generating reply before the job's first write's frame arrives (`hello` cannot list a message
-  before `begin`), or, with an older server, after an adopted newer read released the locks, until the next write
-  (`CHECKPOINT_INTERVAL_MS` while streaming; longer while a job waits). The edit is
-  [dropped](resource-sync.md#generating-refusals), the mirror shows it until the whole read, and with no retry block a
-  later edit can land over the finished reply.
-- The same window decides when an observer refuses a permanent character delete or different-id replace
-  (`isCharacterGenerating`). A fix would announce the job's chat reservation in the feed and read lock lists, locking
-  the chat's tail.
-- A noticed idle chat read whole (`readIdleChats`) before the pass's trim may be evicted once its notice settles,
-  wasting the read.
 
 ### Limitations
 

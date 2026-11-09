@@ -300,8 +300,6 @@ Other subsystems' runtime limits live with their owners: [chat-pipeline](chat-pi
 
 ### Issues
 
-- Server CBS evaluation runs on the main thread under cooperative limits, with no hard deadline or heap bound. Other
-  prompt work (Jinja rendering, tokenizer calls after model load, non-worker lore matching) also runs there.
 - Unconfirmed: a provider callback that ends `disconnected` fails its job through `endWith` and the runner's finalize
   (`jobs/runSetup.ts`), not the registry's `abort()`, so `JOB_ABORT_GRACE_MS` does not bound that end (the
   maximum-duration watchdog still does). The chat can stay busy longer than owner absence plus abort grace.

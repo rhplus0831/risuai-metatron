@@ -267,26 +267,6 @@ matched-entry identities.
 
 ## Known Hazards
 
-### Issues
-
-- A reroll's restore cannot see another tab's job that holds no lock yet and was not met at this tab's create: the
-  restored replies land while that job runs, like any other edit.
-- Stop stays visible between a followed job's `done` and its socket close, when an abort does nothing.
-- A boot resume that discovers its chat but cannot load it shows Stop during the load retries, until the follow ends as
-  lost.
-- `disable_ui_prompt` lore decorators fill `disabledUIPrompts`, which nothing consumes.
-- `renderChatTemplate` calls Jinja's `Template.render` synchronously with no work or time limit; a costly custom
-  template occupies its caller's thread.
-- The screen's per-chat reroll history (multi-reply tails) is in memory only.
-- Composer recovery depends on the browser journal. Chrome aborts IndexedDB writes begun in `pagehide` on unload, so a
-  reload, close, or navigation within 500 ms of the last edit loses it.
-- In-page send recovery restores the serialized send text without its translation draft; journal recovery restores the
-  pre-consumption composer. Neither restores a send whose job ended `done` (`ok`) after a script removed its user
-  message.
-- Lore keys keep the inherited grammar: every key is split on commas before the `/pattern/flags` parse, so `/a{1,2}/`
-  becomes two malformed keys; the last slash closes a pattern, and a bare or unclosed slash, an invalid flag, or a
-  malformed later entry ends that key search instead of being skipped. Kept for parity.
-
 ### Limitations
 
 - Sequence events are live-only: parts completed without an attached socket do not count statistics in that tab. Server

@@ -277,28 +277,6 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   unkeyed row's textarea to `settings.plugins[i].realArg[arg]` with the context `${plugin.name}\u0000${arg}`. If another
   client swaps two such plugins with the same text while the popup is open, `TextAreaInput.svelte`'s checks still match,
   and the draft lands on the plugin now at that index (verify by checking which stored argument changed).
-- The declarations and runtime disagree:
-  - `risuFetch` and `setChatPanel` are implemented but not declared.
-  - The arity of `saveSecretHeader` differs.
-  - `SafeDocument.createElement` is declared synchronous, but plugin calls cross the iframe bridge and return a
-    `Promise<SafeElement>`; the host method itself is synchronous.
-- Consented capabilities reach further than their names suggest (never reviewed): `mainDom` lets a plugin listen on
-  `document` through `getRootDocument` and forwards keys (except from the terminal notice's opening until reload), so a
-  plugin could observe typing in the password or credential prompts; `mainDom` also allows document-wide queries and
-  mutation; `nativeFetch` lets a plugin choose its headers; the RPC dispatcher in `factory.ts` looks callables up
-  without an allowlist.
-- A plugin event listener lives until the wrapper that registered it removes it by id or plugins reload: removing its
-  element from the page keeps it (and the element), a `once` listener that fired stays in the teardown list, and a
-  wrapper queried again for the same node does not know the id.
-- A plugin's whole-chat setter (`setChatToIndex`, and a character setter's `chats`) diffs the plugin's copy against the
-  chat at call time (`captureChatBaseline` right before `applyChatResult`), not as the plugin read it. So a change
-  another writer made after the plugin's read is overwritten: a changed message field or chat field is set back to the
-  copy's value (a `CHAT_META_MERGE_KEYS` map only in the entries that differ), and a message added meanwhile is removed.
-- `unloadV3Plugin` waits up to one second after the unload callbacks before `SandboxHost.terminate`; a plugin's pending
-  async work can still register a hook in that window. The post-unload reset removes providers registered then; other
-  hooks still have this hazard.
-- A plugin provider whose model descriptor fails `isModelDescriptor` makes the generation's hook list fail with HTTP 400
-  on the server, although the tab registered it without complaint.
 
 ### Limitations
 

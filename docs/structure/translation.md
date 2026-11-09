@@ -277,11 +277,6 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
 
 ## Known Hazards
 
-### Issues
-
-- `src/ts/translator/translator.ts` `translateMain` has no `translatorType: "none"` branch, so an older save retaining
-  that accepted value falls through to Google (`shared/database.ts` still includes `"none"` in the field type).
-
 ### Limitations
 
 - The experimental Google translator (`useExperimentalGoogleTranslator`) sends one request per stream frame for a

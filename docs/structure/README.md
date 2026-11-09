@@ -83,13 +83,14 @@ report mode.
 Under `Known Hazards`, use these `###` headings in order. Omit empty headings and give each distinct finding its own
 bullet.
 
-- `Issues` holds remaining defects and advertised but unwired behavior. Prefix an unreproduced claim with
-  `Unconfirmed:`. Delete an entry when the defect is fixed.
+- `Issues` holds unreproduced claims, each prefixed `Unconfirmed:`. Confirmed defects and advertised but unwired
+  behavior live in [known issues](../research/known-issues.md), one queue over every guide (moved there on 2026-11-10):
+  a confirmed claim moves there, and an entry is deleted when the defect is fixed.
 - `Limitations` holds behavior the owner chose or a consequence of a recorded choice. End the bullet with a short
-  decision reference. If the decision is reversed, move the outstanding defect to `Issues`.
+  decision reference. If the decision is reversed, move the outstanding defect to known issues.
 - `Gotchas` holds facts that can mislead an editor, such as ordering requirements, test environment differences, or a
   plausible-looking file with no callers.
 
 Use [found issues](../research/found-issues.md) for out-of-scope findings that still need verification or an owner. When
-a finding is checked and placed, keep the description in the owning guide and retire the inbox entry. For a confirmed
-limitation, include the owner's decision.
+a finding is checked and placed, describe it under its owning guide's section of known issues (or in the guide itself as
+a Limitation or Gotcha) and retire the inbox entry. For a confirmed limitation, include the owner's decision.

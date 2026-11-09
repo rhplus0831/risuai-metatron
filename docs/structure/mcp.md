@@ -102,7 +102,7 @@ The tab's own requests (`/api/llm/request`) run their tool loops on the server t
 - Remembered tool calls live in `chat.toolCalls` of the request's chat, written with `mergeChatMeta`
   ([MCP registry](#mcp-registry)).
 - Remote servers' refresh tokens are the `authRefreshes` collection, which the tab and a server job both write
-  ([Issues](#issues)); the Google search key and engine id are `googleSearchCredentials`.
+  ([known issue](../research/known-issues.md#mcp)); the Google search key and engine id are `googleSearchCredentials`.
 
 ## Coupling
 
@@ -148,20 +148,6 @@ The tab's own requests (`/api/llm/request`) run their tool loops on the server t
   pending.
 
 ## Known Hazards
-
-### Issues
-
-- `filesystemclient.ts` advertises `fs_watch_directory` but has no dispatch for it.
-- A rotated refresh token is a whole-collection `authRefreshes` edit from the tab (and the server job's write to the
-  same collection is not hydrated into the tab): another writer of the collection can make the tab's write conflict and
-  be discarded, and the next refresh then sends a token the server may have spent (an unsuccessful refresh answer goes
-  on to a full login; a rejected refresh fetch rejects the login).
-- The server MCP client fences a rotated-token write against the job and client signals. If the remote server rotates
-  the old refresh token before the answer arrives, an abort or client close in that window leaves the old token stored
-  while the new one is lost; the next refresh may fail and require a full login. `server/src/tests/mcp.test.ts` pins the
-  cancellation behavior, not the remote server's token state.
-- The tab's `MCPClient` has no request timeout, and `request.ts` `getTools` does not propagate an abort signal to its
-  tool listing. A stream that stays open without answering can still keep that caller waiting.
 
 ### Limitations
 

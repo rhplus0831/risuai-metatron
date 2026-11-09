@@ -304,28 +304,8 @@ lookahead starts at stored coverage and does not defer summaries.
 
 ### Issues
 
-- `memoryAlgorithmType` can disagree with the actual boolean flags on old saves.
-- The modal and lore-draft fence knows only this tab's sends and the jobs it follows or sees locked: another tab's modal
-  (no job ownership on the change feed), the HypaV2 chunk editor (`AlertComp.svelte` `setHypaV2ChunkText`), and a
-  plugin's whole-chat result (`applyChatResult`) still write a whole memory value, and one that lands after the job's
-  write replaces the job's summaries (`meta set` replaces the field).
-- The job's own write keeps a change saved before it. A memory task's writes fence the modal of every connected tab (its
-  `memoryTask` frames), but a plugin's whole-chat result that lands after a task's write still replaces its summaries.
-- An edit right after a refused final job hydration can still use a stale modal or lore copy: the job fence drops before
-  the idle refresh catches up, and a whole-field write can replace the job's data (`chat-store.md`, job hydration and
-  idle refresh).
-- Experimental's rate limiter is per execution: no provider-wide allowance across runs or chats.
-- Ordinary API document batches (`HypaProcesser.embedDocuments`, `HypaProcessorV2`) are capped at 50 texts, a direct
-  `getEmbeds` call is not, and none counts tokens before sending; long inputs can exceed provider limits. Contextual
-  batches likewise count inputs and chunks, not tokens.
-- The Voyage group hash is a 32-bit hash of the group's texts (joined with `\0`), so two different groups can still
-  share a key.
-- A cancelled `TaskRateLimiter` batch leaves its retry timer alive until the window advances (up to 60 s); it starts no
-  task.
-- The custom embedding URL is fetched directly by the server with no local-target restriction.
 - Unconfirmed: `gpt2-large-conversational` is listed in `shared/llm/models.ts`, but its model files were not checked on
   the browser mirror or the server's default Transformers host. If absent, selecting it fails during model loading.
-- The Transformers `EmbeddingModel` union names only MiniLM and nomic, while `localModels` lists more models.
 - Unconfirmed: `HypaProcesser` keeps the original comparator `a.similarity > b.similarity ? -1 : 0` (not a total order);
   whether a pathological input orders wrongly is not established.
 

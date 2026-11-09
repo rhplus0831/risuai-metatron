@@ -338,26 +338,6 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
 
 ## Known Hazards
 
-### Issues
-
-- The `/proxy2` media, memory, and count rows and the Google/Anthropic/OpenAI discovery lists keep flat default keys;
-  they do not accept a profile. A model-profile follow-up (Remaining Follow-Ups in the
-  [archive](../archived-plan/README.md)).
-- NanoGPT's `providers.nanogptSubscriptionState` and `nanogptUseSubscriptionEndpoint` remain global: two profiles on
-  different accounts share subscription state and endpoint selection. A model-profile follow-up (Remaining Follow-Ups in
-  the [archive](../archived-plan/README.md)).
-- A profile whose `modelId` names a catalogue id that is later renamed or removed keeps it: unless the id matches a
-  dynamic template, the profile resolves as an as-is OpenAI-compatible model until the user picks another model.
-- The server counter's `selectTokenizer` maps a `llama3` custom or plugin tokenizer override to `llama`; the playground
-  route uses the `llama3` family.
-- `CustomModelsSettings` does not expose every format or tokenizer value (Plugin, Ollama, Horde, Echo, NanoGPT variants,
-  WebLLM, and `Local` are missing).
-- Multimodal counts remain approximate: Claude/Gemini images use the GPT-4o fallback; video/audio/signature entries use
-  a flat 85 tokens.
-- `server/src/llm/redact.ts` matches a credential's stored, JSON-escaped, and `encodeURIComponent` forms. Its exact
-  string matcher does not normalize lowercase percent escapes; designated `key`, `api_key`, and `token` query parameters
-  are still redacted by name.
-
 ### Limitations
 
 - An overload error event inside an Anthropic stream becomes redacted `Error:<message>` answer text (an OpenAI Responses

@@ -168,11 +168,6 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
 
 ## Known Hazards
 
-### Issues
-
-- `sayTTS` passes no hook timeout, so a hanging plugin hook stalls speech.
-- `compressImage`'s lossy path (`doLossyCompression`) labels its input as PNG regardless of the detected type.
-
 ### Gotchas
 
 - `src/lib/UI/3DLoader.svelte`, `src/ts/3d/threeload.ts`, and `src/ts/voice.ts` have no importers; confirm intent before
