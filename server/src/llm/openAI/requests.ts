@@ -29,15 +29,16 @@ import { getLocalNetworkRequestOptions, getOpenAIRequestKey, type LocalNetworkRe
  *
  * The Chat parser accumulates content, reasoning, and tool arguments from SSE deltas into whole-text snapshots.
  * Malformed data lines are skipped; `[DONE]` stops parsing, and upstream EOF closes the stream after flushing any
- * pending line. The tool wrapper exposes only key `"0"`, including prior tool-round text and remembered markers;
- * other choice indexes and parser-only `__tool_calls` do not reach its reader. Tool follow-ups use a fresh parser.
- * JSON events without `choices`, including in-band error payloads, contribute no text and do not fail the stream.
+ * pending line. The tool wrapper carries every choice key except parser-only `__tool_calls`, prefixing key `"0"`
+ * with prior tool-round text and remembered markers. Tool follow-ups use a fresh parser. JSON events with a truthy
+ * top-level `error` fail the stream with the provider's message; other events without `choices` contribute no text.
  *
  * Buffered HTTP/shape failures become `fail` text prefixed by `messages.errors.httpError` from
  * server/src/llm/messages.ts. Initial streaming HTTP or content-type failures return the raw body as `fail` text;
- * body read failures reject the stream, and a missing Content-Type header throws. Exhausted tool follow-ups issue an
- * alert and retain the accumulated answer (a buffered success or a closed stream). Initial transport throws and
- * malformed legacy success payloads propagate.
+ * a missing Content-Type counts as unsupported. Streaming tool follow-ups retry unsupported responses, then fail
+ * the stream with the last body text if the final response is HTTP 200 and the request is not aborted. Exhausted
+ * non-200 or aborted follow-ups alert and retain the accumulated answer, as do exhausted buffered follow-ups.
+ * Body read failures reject the stream; initial transport throws and malformed legacy success payloads propagate.
  */
 
 export { requestOpenAIResponseAPI, __testResponsesAPI } from "./responses.ts";
@@ -682,7 +683,7 @@ export async function requestOpenAI(arg: RequestDataArgumentExtended): Promise<r
             };
         }
 
-        if (!da.headers.get("Content-Type")!.includes("text/event-stream")) {
+        if (!(da.headers.get("Content-Type") ?? "").includes("text/event-stream")) {
             return {
                 type: "fail",
                 result: await textifyReadableStream(da.body!),
@@ -1091,6 +1092,7 @@ function getTranStream(arg: RequestDataArgumentExtended): TransformStream<Uint8A
 
     const applyLines = (completeLines: string[]) => {
         let applied = false;
+        let failure: Error | undefined;
         for (const line of completeLines) {
             if (done) break;
             if (!line.startsWith("data:")) continue;
@@ -1102,6 +1104,17 @@ function getTranStream(arg: RequestDataArgumentExtended): TransformStream<Uint8A
             }
             try {
                 const event = JSON.parse(data);
+                if (event && typeof event === "object" && event.error) {
+                    done = true;
+                    failure = new Error(
+                        typeof event.error === "string"
+                            ? event.error
+                            : typeof event.error.message === "string"
+                              ? event.error.message
+                              : JSON.stringify(event.error),
+                    );
+                    break;
+                }
                 for (const choice of event.choices ?? []) {
                     const delta = choice.delta;
                     const content = delta?.content ?? choice.text;
@@ -1133,6 +1146,7 @@ function getTranStream(arg: RequestDataArgumentExtended): TransformStream<Uint8A
                 // A malformed data line must not hide the following events.
             }
         }
+        if (failure) throw failure;
         return applied;
     };
 
@@ -1324,7 +1338,7 @@ function wrapToolStream(
 
                             if (
                                 resRec.status == 200 &&
-                                resRec.headers.get("Content-Type")!.includes("text/event-stream")
+                                (resRec.headers.get("Content-Type") ?? "").includes("text/event-stream")
                             ) {
                                 // `fetchStream` logged and records this call itself.
                                 errorFlag = false;
@@ -1339,6 +1353,9 @@ function wrapToolStream(
                         } while (attempt <= db.requestRetrys); // Retry up to db.requestRetrys times
 
                         if (errorFlag) {
+                            if (resRec.status === 200 && !arg.abortSignal?.aborted) {
+                                throw new Error(await textifyReadableStream(resRec.body!));
+                            }
                             arg.ctx.alertError(`Failed to fetch model response after tool execution`);
                             return controller.close();
                         }
@@ -1360,7 +1377,8 @@ function wrapToolStream(
 
                 lastValue = value;
 
-                controller.enqueue({ "0": (prefix ? prefix + "\n\n" : "") + content });
+                const { __tool_calls, ...rest } = value ?? {};
+                controller.enqueue({ ...rest, "0": (prefix ? prefix + "\n\n" : "") + content });
             }
         },
     });

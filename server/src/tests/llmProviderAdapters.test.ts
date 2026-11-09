@@ -22,7 +22,8 @@ import { createTransport } from "../llm/transport.ts";
 // (SigV4), Google (buffered, streaming, a preview, a tool round trip), Vertex, NanoGPT's Messages,
 // Legacy, and Responses formats (endpoint, key, request model, provider), and a request without a
 // selected character. The NanoGPT cases and the named credential cases are not part of the oracle
-// capture below.
+// capture below. The missing-Content-Type cases assert the streaming failure contract, not the
+// captured browser behavior.
 //
 // This was the parity gate (`src/ts/process/request/tests/serverParity.test.ts`), which ran the
 // former browser adapters (the test oracles) beside the server and compared the ten outputs above.
@@ -292,7 +293,11 @@ async function run(scenario: Scenario): Promise<Recorded> {
                 parsed = typeof call.body === "string" ? JSON.parse(call.body) : call.body;
             } catch {}
             const canned = scenario.upstream({ ...JSON.parse(JSON.stringify(call)), body: parsed });
-            return new Response(canned.body, { status: canned.status, headers: canned.headers ?? {} });
+            // Bytes preserve an absent Content-Type; a string body would synthesize text/plain.
+            return new Response(new TextEncoder().encode(canned.body), {
+                status: canned.status,
+                headers: canned.headers ?? {},
+            });
         }) as typeof fetch,
     });
     // As `buildContext`: the main profile's flags (the roots), or the request-local profile's.
@@ -660,6 +665,18 @@ describe("the server provider adapters", () => {
             // by the transport).
             logs: [PROVIDER],
         });
+    });
+
+    it("returns the body as a failure when an initial streaming response has no Content-Type", async () => {
+        const recorded = await run({
+            settings: { providers: { useStreaming: true } },
+            arg: { ...prompt(), useStreaming: true },
+            upstream: () => ({ status: 200, body: "The gateway could not start the event stream" }),
+        });
+
+        expect(recorded.result).toEqual({ type: "fail", result: "The gateway could not start the event stream" });
+        expect(recorded.chunks).toEqual([]);
+        expect(recorded.calls).toHaveLength(1);
     });
 
     it("OpenAI-compatible: a JSON schema from an interface, the extraction path, and the CBS parses in order", async () => {
@@ -2767,6 +2784,48 @@ describe("the OpenAI and Responses retries after a tool call (crosscheck side fi
     });
     afterEach(() => {
         vi.useRealTimers();
+    });
+
+    it("retries streaming tool replies without Content-Type and fails with the last body when retries are exhausted", async () => {
+        let followUps = 0;
+        let ended = false;
+        const pending = run({
+            settings: { providers: { useStreaming: true, requestRetrys: 2 } },
+            arg: { ...prompt(), useStreaming: true },
+            tools: [ROLL_DICE],
+            toolAnswer: [{ type: "text", text: "4" }],
+            upstream: (call) => {
+                if (!JSON.stringify(call.body).includes("tool_call_id")) {
+                    return sse([
+                        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, ...CHAT_CALL }] } }] },
+                        "[DONE]",
+                    ]);
+                }
+                followUps += 1;
+                return { status: 200, body: `Missing Content-Type on tool attempt ${followUps}` };
+            },
+        })
+            .then(
+                (result) => ({ result }),
+                (error: unknown) => ({ error }),
+            )
+            .finally(() => {
+                ended = true;
+            });
+
+        for (const [attempt, delay] of [
+            [1, 1000],
+            [2, 2000],
+        ]) {
+            await settle(() => ended || vi.getTimerCount() > 0);
+            expect(followUps).toBe(attempt);
+            await vi.advanceTimersByTimeAsync(delay);
+        }
+
+        await settle(() => ended || vi.getTimerCount() > 0);
+        expect(vi.getTimerCount()).toBe(0);
+        expect(await pending).toEqual({ error: new Error("Missing Content-Type on tool attempt 3") });
+        expect(followUps).toBe(3);
     });
 
     /** A tool round trip whose follow-up request fails `failures` times, then answers. */

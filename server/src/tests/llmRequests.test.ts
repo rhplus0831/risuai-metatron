@@ -1664,13 +1664,13 @@ describe("a job's request names its failure", () => {
         expect(caught).toMatchObject({
             requestId: seen.begun[0],
             providerCode: "server_overloaded",
-            message: expect.stringContaining("socket hang up"),
+            message: expect.stringContaining("Overloaded"),
         });
         await waitFor(() => seen.finished.length === 1);
         expect(seen.finished[0]).toEqual([
             seen.begun[0],
             expect.objectContaining({ status: "error" }),
-            { error: expect.stringContaining("socket hang up"), providerCode: "server_overloaded" },
+            { error: expect.stringContaining("Overloaded"), providerCode: "server_overloaded" },
         ]);
 
         const fine = await registry.runInJob(spec(records, { streaming: true }).spec);

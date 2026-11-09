@@ -52,6 +52,7 @@ function response(chunks: (string | Uint8Array)[]) {
 
 type Options = {
     arg?: Partial<RequestArgs>;
+    genTime?: number;
     saveSignatures?: boolean;
     profile?: Record<string, unknown>;
     tools?: ToolDescriptor[];
@@ -63,6 +64,7 @@ async function start(modelId: string, upstream: (round: number) => Response, opt
     const records: Record<string, unknown> = {
         providers: normalizeProviders({
             useStreaming: true,
+            genTime: options.genTime ?? 1,
             requestRetrys: 0,
             streamGeminiThoughts: false,
             saveSignatures: options.saveSignatures ?? false,
@@ -259,6 +261,59 @@ describe.each(providers)("$name SSE", ({ modelId, event }) => {
 });
 
 describe("OpenAI deltas and tool metadata", () => {
+    it("preserves every multi-generation choice as cumulative text through the stream wrapper", async () => {
+        const run = await start(
+            "gpt4o",
+            () =>
+                response([
+                    frame({
+                        choices: [
+                            { index: 0, delta: { content: "First" } },
+                            { index: 1, delta: { content: "Second" } },
+                            { index: 2, delta: { content: "Third" } },
+                        ],
+                    }),
+                    frame({
+                        choices: [
+                            { index: 2, delta: { content: " answer." } },
+                            { index: 0, delta: { content: " candidate." } },
+                            { index: 1, delta: { content: " alternative." } },
+                        ],
+                    }),
+                ]),
+            { genTime: 3 },
+        );
+
+        expect(run.requests).toEqual([expect.objectContaining({ n: 3, stream: true })]);
+        expect(await drain(run.stream)).toEqual([
+            { "0": "First", "1": "Second", "2": "Third" },
+            { "0": "First candidate.", "1": "Second alternative.", "2": "Third answer." },
+        ]);
+    });
+
+    it.each([
+        {
+            name: "an error-only event",
+            before: [],
+            event: { error: { message: "Provider refused the request" } },
+        },
+        {
+            name: "an OpenRouter error with choices after partial text",
+            before: [frame(openai("Partial answer"))],
+            event: {
+                error: { message: "Provider refused the request" },
+                choices: [{ index: 0, delta: { content: "" }, finish_reason: "error" }],
+            },
+        },
+    ])(
+        "fails with the provider message for $name instead of accepting an incomplete answer",
+        async ({ before, event }) => {
+            const run = await start("gpt4o", () => response([...before, frame(event), "data: [DONE]\n\n"]));
+
+            await expect(drain(run.stream)).rejects.toThrow("Provider refused the request");
+        },
+    );
+
     it.each(["reasoning", "reasoning_content"])(
         "concatenates overlapping content, %s, and tool arguments",
         async (reasoningKey) => {

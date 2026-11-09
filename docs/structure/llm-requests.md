@@ -358,9 +358,10 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
 
 ### Limitations
 
-- An overload error event inside an Anthropic stream becomes redacted `Error:<message>` answer text, like other streamed
-  provider errors. There is no in-stream retry; `outer.ts` `requestChatDataOuter` owns the retry policy and honors
-  `antiServerOverloads`. Decision: `server/src/llm/anthropic.ts`, the stream error comment.
+- An overload error event inside an Anthropic stream becomes redacted `Error:<message>` answer text (an OpenAI Responses
+  error event becomes the answer too; an OpenAI Chat `error` event fails the stream). There is no in-stream retry;
+  `outer.ts` `requestChatDataOuter` owns the retry policy and honors `antiServerOverloads`. Decision:
+  `server/src/llm/anthropic.ts`, the stream error comment.
 - Claude tool calls are not streamed or batched: `requestClaude` sends a request that offers tools buffered and
   directly, with `stream: false` on it and every tool follow-up, even with `useStreaming` or `claudeBatching` on. The
   SSE and batch result parsers read text and thinking only. Upstream has the same gap. Decision: owner, 2026-11-08.
