@@ -9,7 +9,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 ## Contents
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (4)
-- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (9)
+- [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (8)
 - [Server routes and resource store](#server-routes-and-resource-store) (10)
 - [LLM requests and providers](#llm-requests-and-providers) (14)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
@@ -78,13 +78,6 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 **Why it matters:** per-row render cost on long chats; perf only, low priority.
 **Suggested handling:** check `hasTriggers(sourceChar)` (already on the runtime) before `triggerCopy`, keeping the `yieldTurn` and the fence.
-
-### HypaV3 summary chunks find their vectors by scan
-
-`HypaProcesserEx.addSummaryChunks` in `server/src/prompt/memory/hypav3.ts` (~2676, the non-contextual path ~2687) calls `this.vectors.find((v) => v.content === chunk.text)` once per chunk after `addText`, so N chunks cost about N²/2 content comparisons: the shape of the admission scan the Implementation Audit Fixes run's M10 removed from `HypaProcesser.addText`. Found in that run (2026-11-06), outside the slice's files.
-
-**Why it matters:** long HypaV3 chats re-add every summary chunk per send.
-**Suggested handling:** build a map by content once after `addText`.
 
 ### The context override comment is garbled
 
