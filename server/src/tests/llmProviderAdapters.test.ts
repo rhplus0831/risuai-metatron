@@ -1185,6 +1185,62 @@ describe("the server provider adapters", () => {
         });
     });
 
+    it("Anthropic, buffered: sends a system-only prompt as one trimmed user turn", async () => {
+        const recorded = await run({
+            settings: { preset: { aiModel: "claude-sonnet-4-5-20250929" } },
+            arg: {
+                ...prompt(),
+                formated: [
+                    { role: "system", content: " \nBe brief." },
+                    { role: "system", content: "Answer in plain English.\t \n" },
+                ],
+            },
+            upstream: () => json({ content: [{ type: "text", text: "claude says" }] }),
+        });
+        expect(recorded.calls).toHaveLength(1);
+        const body = recorded.calls[0].body as Record<string, unknown>;
+        expect(body.messages).toEqual([
+            { role: "user", content: [{ type: "text", text: "Be brief.\n\nAnswer in plain English." }] },
+        ]);
+        expect(body).not.toHaveProperty("system");
+    });
+
+    it("Anthropic, reverse proxy: preserves multimodal text and omits messages without text", async () => {
+        const recorded = await run({
+            settings: {
+                preset: {
+                    aiModel: "reverse_proxy",
+                    customAPIFormat: LLMFormat.Anthropic,
+                    forceReplaceUrl: "https://mock.test/v1/messages",
+                },
+            },
+            arg: {
+                ...prompt(),
+                formated: [
+                    {
+                        role: "user",
+                        content: "Describe this image.",
+                        multimodals: [{ type: "image", base64: "data:image/png;base64,aW1hZ2U=" }],
+                    },
+                    { role: "user", content: "Mention the colors." },
+                    { role: "assistant", content: "I see blue shapes." },
+                    {
+                        role: "user",
+                        content: "",
+                        multimodals: [{ type: "image", base64: "data:image/png;base64,aW1hZ2U=" }],
+                    },
+                ],
+            },
+            upstream: () => json({ content: [{ type: "text", text: "claude says" }] }),
+        });
+        expect(recorded.calls).toHaveLength(1);
+        const body = recorded.calls[0].body as Record<string, unknown>;
+        expect(body.messages).toEqual([
+            { role: "user", content: "Describe this image.\n\nMention the colors." },
+            { role: "assistant", content: "I see blue shapes." },
+        ]);
+    });
+
     it.each([
         {
             behavior: "explicitly disables thinking when off on Claude 5 Opus",

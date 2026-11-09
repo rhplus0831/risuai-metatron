@@ -91,9 +91,9 @@ interface Claude3ExtendedChat {
 /**
  * Builds, previews, or sends a Claude Messages/Bedrock request, optionally returning a live HTTP or batch stream
  * (never for a request offering tools, which is sent buffered, as are its tool follow-ups).
- * Empty input returns `No input`; system-only input becomes a `Start` user turn with the system text cleared. A
+ * Empty input returns `No input`; system-only input becomes a user turn containing the trimmed system text. A
  * signed Bedrock request without all three `accessKeyId:secretAccessKey:region` key parts throws before preview/send.
- * Reverse-proxy messages keep only their first text block; entries starting with another block map to `undefined`.
+ * Reverse-proxy messages join non-empty text blocks with blank lines and omit messages without text.
  */
 export async function requestClaude(arg: RequestDataArgumentExtended): Promise<requestDataResponse> {
     const formated = arg.formated;
@@ -292,7 +292,7 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
             content: [
                 {
                     type: "text",
-                    text: "Start",
+                    text: systemPrompt.trim(),
                 },
             ],
         });
@@ -380,13 +380,12 @@ export async function requestClaude(arg: RequestDataArgumentExtended): Promise<r
     let finalChat: Claude3ExtendedChat[] = claudeChat;
 
     if (aiModel === "reverse_proxy") {
-        finalChat = claudeChat.map((v): any => {
-            if (v.content.length > 0 && v.content[0].type === "text") {
-                return {
-                    role: v.role,
-                    content: v.content[0].text,
-                };
-            }
+        finalChat = claudeChat.flatMap((chat) => {
+            const content = chat.content
+                .filter((block): block is Claude3TextBlock => block.type === "text" && block.text !== "")
+                .map((block) => block.text)
+                .join("\n\n");
+            return content ? [{ role: chat.role, content }] : [];
         });
     }
 
