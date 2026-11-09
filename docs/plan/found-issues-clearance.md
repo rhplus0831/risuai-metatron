@@ -117,7 +117,7 @@ Every entry of `found-issues.md`, by its section and heading there, with its dis
 | Request history and diagnostics    | Request history accepted trade-offs                                       | D3 (Q13) for two bullets; the rest Recorded (`diagnostics.md`, `llm-requests.md`): H1   |
 |                                    | Socket protocol numbers are not in Diagnostics                            | Recorded (`diagnostics.md`, `live-update-feed.md`): H1 (Q8)                             |
 | Display transform                  | Budget-refused handler rows not re-measured                               | D2 (Q9)                                                                                 |
-|                                    | A single combined paragraph is written back as HTML                       | D1                                                                                      |
+|                                    | A single combined paragraph is written back as HTML                       | D1 (provider input); Recorded (`translation.md`): H1 (the Markdown pass)                |
 |                                    | An aborted first transform call can leave its snapshot counted            | Recorded (`cbs-rendering.md`): H1                                                       |
 |                                    | The experimental Google translator does not check the status              | D1                                                                                      |
 |                                    | A provider switch during a translation caches a mixed result              | D1                                                                                      |
@@ -462,20 +462,25 @@ Every slice is independent of the others' code unless listed here.
 ### D. Translation, transform, diagnostics
 
 - **D1. Translator provider capture and write-back** (_hard_, `translation.md`). `src/ts/translator/translator.ts`:
-  the single-sentence combine branch (~701–727) assigns `textContent`, as the multi-sentence branch does (the
-  replacement-node branch ~814–843 keeps `innerHTML` because it carries the provider's Markdown; note why in the
-  code); the experimental Google branch (~496–520) checks `d.ok` and treats a non-2xx as the transient failure the
-  direct adapter raises, so nothing is cached and the fallback still runs; `runTranslator` (~344–371) and
+  the single-sentence combine branch (~701–727) collects the source through `textContent`, as the multi-sentence
+  branch does, so the provider receives escaped markup as text (the replacement-node branch ~814–843 keeps
+  `innerHTML` because it carries HTML a display script (`editdisplay`) produced; note why in the code). Owner
+  decision 2026-11-09 (after D1's run found it): the write-back's Markdown pass (`applyMarkdownToNode`,
+  `src/ts/parser/parser.svelte.ts` ~1613–1630, markdown-it with `html: true`) turns escaped text back into tags on
+  both paths, and escaping before it breaks code spans, angle-bracket links and KaTeX, so that pass is unchanged
+  and H1 records it; the experimental Google branch (~496–520) requests the raw response, checks `d.ok`, and treats
+  a non-2xx as the transient failure the direct adapter raises, so the error page is not cached and the fallback
+  still runs; `runTranslator` (~344–371) and
   `translateMain` (~412–520) read the provider settings (type, DeepLX URL, experimental mode, the LLM selection)
   once per producer from a snapshot `translateShared` (~214–267) takes with its key, and every chunk and the cache
   key use that snapshot. `shared/database.ts` `MessageTranslation.sourceHash` comment (~1410–1419): "of the
   source `data`".
-  _Done_: `<p>&lt;b&gt;x&lt;/b&gt;</p>` stays escaped after translation; an experimental 429 page caches nothing;
+  _Done_: for `<p>&lt;b&gt;x&lt;/b&gt;</p>` the provider receives the text `<b>x</b>`, not a tag; an experimental
+  429 page is not cached;
   switching DeepL to DeepLX during a three-chunk producer yields one provider's result or a failure, never a mix.
   _Test_: `src/ts/translator/translatorMedia.test.ts` (the three cases), `src/ts/translator/translateHtmlLifetime.test.ts`
   (the fallback still runs).
-  _Removes_: A single combined paragraph is written back as HTML; The experimental Google translator does not check
-  the status; A provider switch during a translation caches a mixed result; The MessageTranslation sourceHash comment
+  _Removes_: The experimental Google translator does not check the status; A provider switch during a translation caches a mixed result; The MessageTranslation sourceHash comment
   names the wrong text.
 
 - **D2. Transform snapshot measurement** (_small_, `cbs-rendering.md` with `server-generation.md`; Q9). Extend
@@ -817,7 +822,10 @@ Every slice is independent of the others' code unless listed here.
   so; the asset UIs' first filter after an edit copies the live state once; beside the PNG Limitation, a JSON or
   V3 card's embedded asset payloads stay reachable until the import's hand-off ends, because `saveAssets` and the
   hand-off replay an item's `load` (F3's former entry; 2026-11-09).
-  `translation.md`: the experimental Google translator translates per stream frame (upstream behavior).
+  `translation.md`: the experimental Google translator translates per stream frame (upstream behavior); the
+  write-back's Markdown pass (`applyMarkdownToNode`, `html: true`) turns escaped markup in a translated paragraph
+  back into tags on the single- and multi-sentence paths (owner decision 2026-11-09, D1; `ChatBody` sanitizes the
+  result, and escaping before the pass breaks code spans, angle-bracket links and KaTeX).
   `network-jobs.md`: a notification click whose route is `/` only focuses the window; the enable button's user
   activation and `navigator.serviceWorker.ready` during an upgrade are browser behaviors the tests cannot show
   (Owner checklist).
