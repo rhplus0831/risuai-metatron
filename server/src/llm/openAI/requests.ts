@@ -248,7 +248,11 @@ export async function requestOpenAI(arg: RequestDataArgumentExtended): Promise<r
     }
 
     if (aiModel === "openrouter" && db.openrouterRequestModel === "risu/free") {
-        openrouterRequestModel = await getFreeOpenRouterModels(arg.ctx);
+        const discovery = await getFreeOpenRouterModels(arg.ctx, getOpenAIRequestKey(arg, db.openrouterKey));
+        if (!discovery.ok) {
+            return { type: "fail", result: discovery.reason };
+        }
+        openrouterRequestModel = discovery.model;
     }
 
     if (arg.modelInfo.flags.includes(LLMFlags.DeveloperRole)) {

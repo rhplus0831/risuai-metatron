@@ -13,6 +13,8 @@ export const messages = {
     errors: {
         unknownModel: "Error: Unknown model selected",
         httpError: "Error: error in request:",
+        openrouterFreeModelUnavailable: "OpenRouter free model: no free model is available.",
+        openrouterFreeModelDiscoveryFailed: (reason: string) => `OpenRouter free model discovery failed: ${reason}`,
         modelProfileMissing: (mode: string) =>
             `Cannot request mode "${mode}": the selected connection no longer exists.`,
         modelProfileNamedMissing: "Cannot send the request: the connection it names no longer exists.",

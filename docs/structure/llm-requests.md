@@ -331,8 +331,8 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
 ### Issues
 
 - The `/proxy2` media, memory, and count rows and the Google/Anthropic/OpenAI discovery lists keep flat default keys;
-  they do not accept a profile. `server/src/llm/openrouter.ts` `getFreeOpenRouterModels` (the `risu/free` pick) also
-  keeps the default key. A model-profile follow-up (Remaining Follow-Ups in the [archive](../archived-plan/README.md)).
+  they do not accept a profile. A model-profile follow-up (Remaining Follow-Ups in the
+  [archive](../archived-plan/README.md)).
 - NanoGPT's `providers.nanogptSubscriptionState` and `nanogptUseSubscriptionEndpoint` remain global: two profiles on
   different accounts share subscription state and endpoint selection. A model-profile follow-up (Remaining Follow-Ups in
   the [archive](../archived-plan/README.md)).

@@ -1782,6 +1782,106 @@ function withNamed(base: Settings, entries: Parameters<typeof named>[0]): Settin
     return { ...base, credentials, secrets: { ...base.secrets, credentials: credentialKeys } };
 }
 
+describe("OpenRouter risu/free discovery", () => {
+    const routerSettings = withNamed(
+        {
+            preset: { aiModel: "openrouter", openrouterRequestModel: "risu/free", credentialId: "router" },
+            secrets: { openrouterKey: "sk-openrouter-default-SENTINEL" },
+        },
+        [{ id: "router", type: "openrouter", key: NAMED.work }],
+    );
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+    });
+
+    it("discovers with the bound named key and sends the discovered free model to chat", async () => {
+        const discovery = vi.fn<typeof fetch>().mockResolvedValue(
+            Response.json({
+                data: [
+                    {
+                        id: "test/discovered-free",
+                        name: "Discovered model",
+                        context_length: 8192,
+                        pricing: { prompt: "0", completion: "0" },
+                    },
+                ],
+            }),
+        );
+        vi.stubGlobal("fetch", discovery);
+
+        const recorded = await run({
+            settings: routerSettings,
+            arg: prompt(),
+            upstream: () => chat("from free model"),
+        });
+
+        expect(discovery).toHaveBeenCalledOnce();
+        const [url, init] = discovery.mock.calls[0];
+        expect(url).toBe("https://openrouter.ai/api/v1/models");
+        expect(init?.method ?? "GET").toBe("GET");
+        expect(new Headers(init?.headers).get("Authorization")).toBe(`Bearer ${NAMED.work}`);
+        expect(recorded.calls).toHaveLength(1);
+        expect(recorded.calls[0]).toMatchObject({
+            method: "POST",
+            url: "https://openrouter.ai/api/v1/chat/completions",
+            headers: { authorization: `Bearer ${NAMED.work}` },
+            body: { model: "test/discovered-free" },
+        });
+        expect(recorded.result).toMatchObject({ type: "success", result: "from free model" });
+    });
+
+    it.each([
+        { name: "empty", data: [] },
+        {
+            name: "all-paid",
+            data: [
+                {
+                    id: "test/paid",
+                    name: "Paid model",
+                    context_length: 8192,
+                    pricing: { prompt: "0.001", completion: "0.002" },
+                },
+            ],
+        },
+    ])("returns a no-free-model failure without chat for an $name model list", async ({ data }) => {
+        const discovery = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ data }));
+        vi.stubGlobal("fetch", discovery);
+
+        const recorded = await run({
+            settings: routerSettings,
+            arg: prompt(),
+            upstream: () => chat("must not run"),
+        });
+
+        expect(discovery).toHaveBeenCalledOnce();
+        expect(recorded.result).toMatchObject({ type: "fail", result: expect.stringMatching(/free model/i) });
+        expect(recorded.calls).toEqual([]);
+    });
+
+    it("returns the discovery HTTP error cause without sending chat", async () => {
+        const discovery = vi
+            .fn<typeof fetch>()
+            .mockResolvedValue(
+                Response.json({ error: { message: "Model catalogue temporarily offline" } }, { status: 503 }),
+            );
+        vi.stubGlobal("fetch", discovery);
+
+        const recorded = await run({
+            settings: routerSettings,
+            arg: prompt(),
+            upstream: () => chat("must not run"),
+        });
+
+        expect(discovery).toHaveBeenCalledOnce();
+        expect(recorded.result).toMatchObject({
+            type: "fail",
+            result: expect.stringContaining("Model catalogue temporarily offline"),
+        });
+        expect(recorded.calls).toEqual([]);
+    });
+});
+
 const headersOf = (recorded: Recorded) => recorded.calls.map((call) => call.headers);
 const wireOf = (recorded: Recorded) => JSON.stringify([recorded.calls, recorded.observer]);
 const claudeAnswer = () => json({ content: [{ type: "text", text: "from claude" }] });
