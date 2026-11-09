@@ -4,7 +4,6 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 
 ## Contents
 
-- [app-shell](#app-shell) (1)
 - [assets](#assets) (1)
 - [backup-sync-hub](#backup-sync-hub) (2)
 - [build-test-platforms](#build-test-platforms) (1)
@@ -24,13 +23,6 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [self-host-server](#self-host-server) (4)
 - [server-generation](#server-generation) (1)
 - [settings-i18n](#settings-i18n) (3)
-
-## app-shell
-
-Guide: [App Shell](../structure/app-shell.md#known-hazards).
-
-- A user-defined `send` hotkey clicks `.button-icon-send` without the popup-editor guard of the preset hotkeys, so it
-  can send (and run `presetChain`) while a popup editor is open.
 
 ## assets
 

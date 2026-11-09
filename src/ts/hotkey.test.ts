@@ -231,6 +231,29 @@ describe("the stored hotkeys and their ui toggle", () => {
     const pressWith = (key: string) =>
         document.dispatchEvent(new KeyboardEvent("keydown", { key, ctrlKey: true, bubbles: true, cancelable: true }));
 
+    it("blocks a custom send hotkey while editing a popup and dispatches it after close", () => {
+        settings.hotkeys = [{ key: "j", ctrl: true, action: "send" }];
+        settings.providers.presetChain = "B";
+        const button = document.createElement("button");
+        button.className = "button-icon-send";
+        const click = vi.fn<() => void>();
+        button.addEventListener("click", click);
+        document.body.appendChild(button);
+        try {
+            popUpEditorStore.open = true;
+            pressWith("j");
+            expect(click).not.toHaveBeenCalled();
+            expect(selection.presetId).toBe("a");
+            expect(settings.providers.presetChain).toBe("B");
+
+            popUpEditorStore.open = false;
+            pressWith("j");
+            expect(click).toHaveBeenCalledOnce();
+        } finally {
+            button.remove();
+        }
+    });
+
     it("dispatch the stored hotkeys, follow an edit of the record, and drop scrollToActiveChar while its toggle is off", () => {
         installFlatDatabase({
             characters: [],

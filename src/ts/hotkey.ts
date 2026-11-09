@@ -166,7 +166,8 @@ export function initHotkey() {
                     break;
                 }
                 case "send": {
-                    clickQuery(".button-icon-send");
+                    // Sending may advance presetChain; keep the popup editor's bound field stable.
+                    if (!popUpEditorStore.open) clickQuery(".button-icon-send");
                     break;
                 }
                 case "settings": {
