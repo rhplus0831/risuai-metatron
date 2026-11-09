@@ -476,7 +476,10 @@ function convertChat(
         }
     }
     if (chat.toolCalls !== undefined) {
-        const stored = storedValue(chat.toolCalls);
+        const conversions = new PendingReport();
+        const stored = storedValue(chat.toolCalls, (kind) =>
+            conversions.converted("messagepack-value", `${label} (${kind})`),
+        );
         if (!stored.ok) {
             reset("toolCalls");
         } else {
@@ -486,6 +489,7 @@ function convertChat(
             }
             try {
                 assertToolCalls(chat.toolCalls);
+                notes.take(conversions);
             } catch (error) {
                 if (!(error instanceof ResourceValidationError)) {
                     throw error;
@@ -500,7 +504,7 @@ function convertChat(
 
     const messages = convertMessages(chat.message, label, notes);
     delete chat.message;
-    const stored = storedValue(chat);
+    const stored = storedValue(chat, (kind) => notes.converted("messagepack-value", `${label} (${kind})`));
     if (!stored.ok || !isPlainObject(stored.value)) {
         return null;
     }
@@ -608,11 +612,15 @@ function convertMessages(value: unknown, label: string, notes: PendingReport): R
             continue;
         }
         // The store serializes the message list, whose wrapper counts toward its depth limit.
-        const stored = storedValue([message]);
+        const conversions = new PendingReport();
+        const stored = storedValue([message], (kind) =>
+            conversions.converted("messagepack-value", `${label} (${kind})`),
+        );
         if (!stored.ok || !Array.isArray(stored.value) || !isPlainObject(stored.value[0])) {
             notes.excluded("invalid-data", label);
             continue;
         }
+        notes.take(conversions);
         if (stored.copied) {
             notes.excluded("invalid-data", label);
         }

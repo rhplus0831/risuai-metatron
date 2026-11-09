@@ -1531,6 +1531,8 @@ export const languageEnglish = {
             "legacy-plugin-storage": "Older plugin data was copied into the plugin storage",
             "character-id-replaced": "Characters with an invalid or repeated id got a new id",
             "post-history-instructions-to-note": "Post-history instructions moved into the chat's note",
+            "messagepack-value":
+                "Binary data, dates, and other values the older save format holds were stored as JSON (they may read differently)",
         },
         excluded: {
             "unknown-setting": "Settings this app does not know",

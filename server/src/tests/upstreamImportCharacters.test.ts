@@ -710,6 +710,55 @@ describe("convertUpstreamDatabase: cold storage", () => {
 });
 
 describe("convertUpstreamDatabase: chats and messages", () => {
+    it("reports decoded chat and message values once each with the character name and keeps their JSON forms", () => {
+        const values = () => ({
+            date: new Date("2024-01-02T03:04:05.000Z"),
+            bytes: new Uint16Array([7, 513]),
+            map: new Map([["key", "value"]]),
+            list: [undefined],
+            absent: undefined,
+        });
+        const out = convert({
+            formatversion: 5,
+            characters: [
+                {
+                    chaId: "archivist",
+                    name: "Archivist",
+                    chats: [
+                        {
+                            id: "chat",
+                            extra: values(),
+                            toolCalls: {
+                                t1: {
+                                    call: { id: "t1", name: "fn", arg: new Date("2024-01-02T03:04:05.000Z") },
+                                    response: [],
+                                },
+                            },
+                            message: [msg("user", "keep", { chatId: "message", extra: values() })],
+                        },
+                    ],
+                },
+            ],
+        });
+        const [chat] = chatsOf(out, "archivist");
+        const expected = {
+            date: "2024-01-02T03:04:05.000Z",
+            bytes: { "0": 7, "1": 513 },
+            map: {},
+            list: [null],
+        };
+        expect(chat.extra).toStrictEqual(expected);
+        expect(chat.message).toStrictEqual([msg("user", "keep", { chatId: "message", extra: expected })]);
+        expect(chat.toolCalls).toEqual({
+            t1: { call: { id: "t1", name: "fn", arg: "2024-01-02T03:04:05.000Z" }, response: [] },
+        });
+        expect(converted(out, "messagepack-value")).toEqual({
+            code: "messagepack-value",
+            count: 9,
+            examples: ["Archivist (Date)", "Archivist (Uint16Array)", "Archivist (Map)", "Archivist (undefined)"],
+        });
+    });
+
     function importSwipes(messages: Dict[], name = "Swipes") {
         const out = convert({
             formatversion: 5,

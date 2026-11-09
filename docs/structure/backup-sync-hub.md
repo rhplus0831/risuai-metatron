@@ -146,6 +146,9 @@ and keeps what spans files.
 - `server/src/data/upstream/importDatabase.ts` `convertUpstreamDatabase`, a writer of resources: pure and synchronous,
   run in the import worker; its module header and `convertPresets` comment hold the settings, preset, key, and persona
   rules, and `importCharacters.ts` the library's.
+- A legacy save's MessagePack-only value (binary, a `Date`, a map or set, an `undefined` array element) in a setting,
+  plugin storage value, chat, or message is stored in its JSON form and reported `messagepack-value` (`importRecords.ts`
+  `storedValue`/`storedForm`); an `undefined` object property is dropped unreported.
 
 ### Upstream library import
 

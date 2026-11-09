@@ -255,16 +255,25 @@ export function convertPluginStorage(
     const dictionary = Array.isArray(existing) ? Object.fromEntries(Object.entries(existing)) : existing;
     const foldable = existing === undefined || isPlainObject(dictionary);
     const v3: Record<string, unknown> = {};
+    // An override replaces the old value's conversion notes along with the value.
+    const keptConversions = new Map<Record<string, unknown>, Map<string, PendingReport>>([
+        [out, new Map()],
+        [v3, new Map()],
+    ]);
     // Each value in its real envelope, so a value past the depth limit costs only itself.
     const keep = (target: Record<string, unknown>, key: string, entry: unknown, path: string) => {
         const envelope = { [key]: entry };
-        const stored = storedValue(target === v3 ? { [PLUGIN_STORAGE_KEY]: envelope } : envelope);
+        const conversions = new PendingReport();
+        const stored = storedValue(target === v3 ? { [PLUGIN_STORAGE_KEY]: envelope } : envelope, (kind) =>
+            conversions.converted("messagepack-value", `${path} (${kind})`),
+        );
         const data = stored.ok ? (stored.value as Record<string, unknown>) : undefined;
         const values = target === v3 ? (data?.[PLUGIN_STORAGE_KEY] as Record<string, unknown> | undefined) : data;
         if (!stored.ok || !values || !Object.hasOwn(values, key)) {
             pending.excluded("invalid-setting", path);
             return false;
         }
+        keptConversions.get(target)!.set(key, conversions);
         if (stored.copied) {
             pending.excluded("invalid-data", path);
         }
@@ -400,6 +409,11 @@ export function convertPluginStorage(
         pending.excluded("invalid-setting", "pluginCustomStorage");
         pending.flush(report);
         return null;
+    }
+    for (const values of keptConversions.values()) {
+        for (const conversions of values.values()) {
+            pending.take(conversions);
+        }
     }
     for (const key of legacyKeys) {
         pending.converted("legacy-plugin-storage", key);

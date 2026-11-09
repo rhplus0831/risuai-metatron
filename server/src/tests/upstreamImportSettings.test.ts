@@ -16,9 +16,10 @@ import type { UpstreamImportReport } from "../../../shared/upstreamBackup.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, ResourceValidationError, serialize } from "../data/resourceStore.ts";
 import { convertUpstreamDatabase, type UpstreamConversion } from "../data/upstream/importDatabase.ts";
+import { decodeUpstreamSave, encodeUpstreamDatabase } from "../data/upstream/risuSave.ts";
 
 // The upstream flat `Database` → settings, presets, personas, and secrets converter, on plain
-// synthetic objects (never a real backup). Covers the counterexamples (own-`undefined` root overlay,
+// synthetic objects and legacy save bytes. Covers the counterexamples (own-`undefined` root overlay,
 // preset network repair, Hypa seeding, Ollama cloud migration, original-index selection, canonical
 // profile dedup, translator index rules, unbound preset OpenAI keys, custom-model lookup rules,
 // removed-feature reporting, per-entry recovery), input immutability, serialized fixed points,
@@ -230,6 +231,74 @@ const EMITTED_KINDS: ResourceKindName[] = [
 const CREATED_KINDS: ResourceKindName[] = [RESOURCE_KIND.modules, RESOURCE_KIND.plugins, RESOURCE_KIND.pluginStorage];
 
 describe("convertUpstreamDatabase: records", () => {
+    it("reports decoded settings values once per value while preserving their JSON forms", () => {
+        const expected = [
+            {
+                date: "2024-01-02T03:04:05.000Z",
+                bytes: { "0": 7, "1": 513 },
+                map: {},
+                list: [null],
+            },
+            "2024-01-02T03:04:05.000Z",
+        ];
+        const out = convertUpstreamDatabase(
+            {
+                formatversion: 5,
+                characters: [],
+                additionalParams: [
+                    {
+                        date: new Date("2024-01-02T03:04:05.000Z"),
+                        bytes: new Uint16Array([7, 513]),
+                        map: new Map([["key", "value"]]),
+                        list: [undefined],
+                        absent: undefined,
+                    },
+                    new Date("2024-01-02T03:04:05.000Z"),
+                ],
+            },
+            { now: 1 },
+        );
+        expect(record<Record<string, unknown>>(out, SECTION_KIND.providers).additionalParams).toStrictEqual(expected);
+        expect(converted(out, "messagepack-value")).toEqual({
+            code: "messagepack-value",
+            count: 5,
+            examples: [
+                "additionalParams (Date)",
+                "additionalParams (Uint16Array)",
+                "additionalParams (Map)",
+                "additionalParams (undefined)",
+            ],
+        });
+
+        const json = convertUpstreamDatabase(
+            { formatversion: 5, characters: [], additionalParams: expected },
+            { now: 1 },
+        );
+        expect(record<Record<string, unknown>>(json, SECTION_KIND.providers).additionalParams).toStrictEqual(expected);
+        expect(converted(json, "messagepack-value")).toBeUndefined();
+    });
+
+    it("reports legacy binary plugin storage after decoding real MessagePack save bytes", () => {
+        const bytes = encodeUpstreamDatabase({
+            formatversion: 5,
+            characters: [],
+            pluginCustomStorage: { blob: new Uint8Array([0, 128, 255]) },
+        });
+        const decoded = decodeUpstreamSave(bytes, { maxDecodedBytes: 1024 * 1024 });
+        expect(decoded.database.pluginCustomStorage).toStrictEqual({ blob: new Uint8Array([0, 128, 255]) });
+
+        const out = convertUpstreamDatabase(decoded.database, { now: 1 });
+        expect(record(out, RESOURCE_KIND.pluginStorage)).toStrictEqual({
+            blob: { "0": 0, "1": 128, "2": 255 },
+            _pluginStorage: { blob: { "0": 0, "1": 128, "2": 255 } },
+        });
+        expect(converted(out, "messagepack-value")).toEqual({
+            code: "messagepack-value",
+            count: 1,
+            examples: ["pluginCustomStorage.blob (Uint8Array)"],
+        });
+    });
+
     it("does not fold an owned dictionary into legacy storage when the legacy dictionary is absent", () => {
         const out = convertUpstreamDatabase(
             {
@@ -935,6 +1004,6 @@ describe("convertUpstreamDatabase: recovery", () => {
         const out = convertUpstreamDatabase(db);
         expect(presetNamed(out, "P0").temperature).toBe(PRESET_DEFAULTS.temperature);
         expect(record<Record<string, unknown>>(out, SECTION_KIND.providers).useStreaming).toBe(true);
-        expect(excluded(out, "invalid-setting")).toBeUndefined();
+        expect(excluded(out, "invalid-setting")?.examples).toEqual(["loreBookToken"]);
     });
 });

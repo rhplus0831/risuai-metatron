@@ -31,6 +31,12 @@ export const UPSTREAM_CONVERTED_CODES = [
     "character-id-replaced",
     /** A character's `postHistoryInstructions` moved into its selected chat's note; examples are names. */
     "post-history-instructions-to-note",
+    /**
+     * A decoded value of a kind JSON does not hold (binary data, a date, a map or set, another class
+     * instance, or an `undefined` array element) was stored in its JSON form, one per value. Examples
+     * name its storage key, setting field, or character and decoded kind, as `name (Kind)`.
+     */
+    "messagepack-value",
 ] as const;
 
 /**

@@ -1,3 +1,4 @@
+import { types } from "node:util";
 import { plainClone } from "../../../../shared/presets.ts";
 import { type ResourceKindName, SINGLETON_RESOURCE_ID } from "../../../../shared/resources.ts";
 import {
@@ -80,44 +81,88 @@ export function normalizeRecord(
     return storeNormalize(kind, undefined);
 }
 
+/** Reports kind changes in accepted data; exotic objects are leaves, even if they hide cycles. */
+function reportMessagepackValues(value: unknown, converted: (kind: string) => void): void {
+    if (Array.isArray(value)) {
+        for (const entry of value) {
+            if (entry === undefined) {
+                converted("undefined");
+            } else {
+                reportMessagepackValues(entry, converted);
+            }
+        }
+        return;
+    }
+    if (value === null || typeof value !== "object" || types.isBoxedPrimitive(value)) {
+        return;
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+        const name = value.constructor?.name;
+        converted(typeof name === "string" && name !== "" ? name : "Object");
+        return;
+    }
+    for (const key of Object.keys(value)) {
+        reportMessagepackValues((value as Record<string, unknown>)[key], converted);
+    }
+}
+
 /** The stored (JSON round trip) form of a small source object, a non-finite number becoming `null`. */
-export function storedForm(value: Record<string, unknown>): Record<string, unknown> {
+export function storedForm(
+    value: Record<string, unknown>,
+    converted?: (kind: string) => void,
+): Record<string, unknown> {
+    let stored: Record<string, unknown>;
     try {
-        return serialize(value).stored as Record<string, unknown>;
+        stored = serialize(value).stored as Record<string, unknown>;
     } catch (error) {
         if (!(error instanceof ResourceValidationError)) {
             throw error;
         }
-        return serialize(plainClone(value)).stored as Record<string, unknown>;
+        stored = serialize(plainClone(value)).stored as Record<string, unknown>;
     }
+    if (converted) {
+        reportMessagepackValues(value, converted);
+    }
+    return stored;
 }
 
 /**
  * The stored form of `value` (`serialize`), else of its JSON copy (`copied`), else nothing: a value
  * the store cannot hold at all (a cycle, nesting past its depth limit, a bigint).
  */
-export function storedValue(value: unknown): { ok: true; value: unknown; copied: boolean } | { ok: false } {
+export function storedValue(
+    value: unknown,
+    converted?: (kind: string) => void,
+): { ok: true; value: unknown; copied: boolean } | { ok: false } {
+    let stored: unknown;
+    let copied = false;
     try {
-        return { ok: true, value: serialize(value).stored, copied: false };
+        stored = serialize(value).stored;
     } catch (error) {
         if (!(error instanceof ResourceValidationError)) {
             throw error;
         }
-    }
-    let copy: unknown;
-    try {
-        copy = plainClone(value);
-    } catch {
-        return { ok: false };
-    }
-    try {
-        return { ok: true, value: serialize(copy).stored, copied: true };
-    } catch (error) {
-        if (!(error instanceof ResourceValidationError)) {
-            throw error;
+        let copy: unknown;
+        try {
+            copy = plainClone(value);
+        } catch {
+            return { ok: false };
         }
-        return { ok: false };
+        try {
+            stored = serialize(copy).stored;
+        } catch (error) {
+            if (!(error instanceof ResourceValidationError)) {
+                throw error;
+            }
+            return { ok: false };
+        }
+        copied = true;
     }
+    if (converted) {
+        reportMessagepackValues(value, converted);
+    }
+    return { ok: true, value: stored, copied };
 }
 
 /** A shallow copy that keeps every own enumerable key (an own `__proto__` stays a key). */

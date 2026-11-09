@@ -217,7 +217,15 @@ export function convertUpstreamDatabase(db: unknown, options: UpstreamConversion
         for (const [field, value] of Object.entries(input)) {
             const result = tryNormalize(kinds.get(section)!, { [field]: value });
             if (result.ok) {
-                Object.assign(recovered, storedForm({ [field]: value }));
+                Object.assign(
+                    recovered,
+                    storedForm({ [field]: value }, (kind) =>
+                        addUpstreamReportEntry(report.converted, "messagepack-value", `${field} (${kind})`),
+                    ),
+                );
+                if (result.copied) {
+                    invalid(field);
+                }
             } else {
                 invalid(field);
             }

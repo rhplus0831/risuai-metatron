@@ -1810,6 +1810,8 @@ export const languageKorean = {
             "legacy-plugin-storage": "구버전 플러그인 데이터를 플러그인 저장소로 이전했습니다",
             "character-id-replaced": "ID가 잘못되었거나 중복된 캐릭터에 새 ID를 부여했습니다",
             "post-history-instructions-to-note": "Post-History 지시문을 채팅 노트로 이동했습니다",
+            "messagepack-value":
+                "구버전 저장 형식의 바이너리 데이터, 날짜 등의 값을 JSON으로 변환해 저장했습니다 (읽는 방식이 달라질 수 있습니다)",
         },
         excluded: {
             "unknown-setting": "이 앱에서 지원하지 않는 설정",
