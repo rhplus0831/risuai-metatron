@@ -2093,6 +2093,109 @@ describe("the job's chat", () => {
         stubs.pin.mock.results.every((result) => (result.value as ReturnType<typeof vi.fn>).mock.calls.length === 1);
     const order = (fn: { mock: { invocationCallOrder: number[] } }, index = 0) => fn.mock.invocationCallOrder[index];
 
+    it("keeps a boot-discovered chat loading and stoppable across a failed read and retry, then clears loading before attaching", async () => {
+        const reading = deferred();
+        const first = deferred<unknown>();
+        const retrying = deferred();
+        const retry = deferred();
+        stubs.saved.mockReturnValue(["j"]);
+        stubs.read.mockResolvedValue(status);
+        stubs.load.mockImplementationOnce(() => {
+            reading.resolve();
+            return first.promise.then(() => {
+                throw new Error("offline");
+            });
+        });
+        stubs.sleep.mockImplementationOnce(() => {
+            retrying.resolve();
+            return retry.promise;
+        });
+        const boot = commands.resumeServerJobs();
+        await reading.promise;
+        expect([...get(commands.loadingJobChats)]).toEqual([["j", "c\u0000k"]]);
+        expect(commands.followedJobsOf(get(commands.followedJobs), ref)).toEqual(["j"]);
+        // This is the same cancellation entrypoint the participant Stop uses during the load.
+        await (await import("../network/generationJobs")).abortGenerationJob("j");
+        expect(stubs.abort).toHaveBeenCalledExactlyOnceWith("j");
+        first.resolve(undefined);
+        await retrying.promise;
+        expect([...get(commands.loadingJobChats)]).toEqual([["j", "c\u0000k"]]);
+        retry.resolve();
+        await whenAttached(1);
+        expect(get(commands.loadingJobChats).size).toBe(0);
+        expect(commands.followedJobsOf(get(commands.followedJobs), ref)).toEqual(["j"]);
+        endWith(follows()[0], done);
+        await boot;
+        // An authoritative replay never starts a load or leaves a loading marker behind.
+        stubs.load.mockClear();
+        expect(await commands.followJobToEnd("replay", ref, kept(done))).toEqual(done);
+        expect(stubs.load).not.toHaveBeenCalled();
+        expect(get(commands.loadingJobChats).size).toBe(0);
+    });
+
+    it.each(["gone", "rejected"] as const)(
+        "clears a discovered chat's loading marker after %s reads",
+        async (outcome) => {
+            const reading = deferred();
+            const answer = deferred();
+            stubs.read.mockResolvedValue(status);
+            stubs.load.mockImplementation(async () => {
+                reading.resolve();
+                await answer.promise;
+                if (outcome === "rejected") throw new Error("offline");
+                return undefined;
+            });
+            const end = commands.followJobToEnd("j");
+            await reading.promise;
+            expect([...get(commands.loadingJobChats)]).toEqual([["j", "c\u0000k"]]);
+            answer.resolve();
+            expect(await end).toBe("lost");
+            expect(stubs.load).toHaveBeenCalledTimes(outcome === "gone" ? 1 : 5);
+            expect(get(commands.loadingJobChats).size).toBe(0);
+            expect(get(commands.followedJobs).size).toBe(0);
+        },
+    );
+
+    it("clears only the settled job's loading marker when two jobs share a chat and another chat loads", async () => {
+        const answers = [deferred<unknown>(), deferred<unknown>(), deferred<unknown>()];
+        const started = [deferred(), deferred(), deferred()];
+        for (let i = 0; i < answers.length; i++)
+            stubs.load.mockImplementationOnce(() => {
+                started[i].resolve();
+                return answers[i].promise;
+            });
+        const other = { chaId: "c", chatId: "other" };
+        const ends = [
+            commands.followJobToEnd("old", ref),
+            commands.followJobToEnd("new", ref),
+            commands.followJobToEnd("other", other),
+        ];
+        await Promise.all(started.map((gate) => gate.promise));
+        expect([...get(commands.loadingJobChats)]).toEqual([
+            ["old", "c\u0000k"],
+            ["new", "c\u0000k"],
+            ["other", "c\u0000other"],
+        ]);
+        answers[0].resolve({});
+        await whenAttached(1);
+        expect([...get(commands.loadingJobChats)]).toEqual([
+            ["new", "c\u0000k"],
+            ["other", "c\u0000other"],
+        ]);
+        endWith(follows()[0], done);
+        await ends[0];
+        answers[2].resolve({});
+        await whenAttached(2);
+        expect([...get(commands.loadingJobChats)]).toEqual([["new", "c\u0000k"]]);
+        endWith(follows()[1], done);
+        await ends[2];
+        answers[1].resolve({});
+        await whenAttached(3);
+        endWith(follows()[2], done);
+        await ends[1];
+        expect(get(commands.loadingJobChats).size).toBe(0);
+    });
+
     it("pins the target before the flush, loads it after the flush and before the create, holds the pin while the job runs, and releases it once on every exit", async () => {
         stubs.create.mockResolvedValue({ outcome: "created", jobId: "j" });
         const run = commands.runServerButton(char, "go", ref);

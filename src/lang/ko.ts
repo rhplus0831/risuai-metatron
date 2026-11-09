@@ -1158,6 +1158,7 @@ export const languageKorean = {
     rerollRepliesNotRestored:
         "새 답변이 생성되지 않았으며, 다른 곳에서 이 채팅을 생성 중이거나 최신 상태를 불러오지 못해 리롤 전에 지운 답변을 안전하게 되돌리지 못했습니다.",
     serverJob: {
+        chatLoading: "채팅 불러오는 중…",
         stoppedElsewhere: "다른 탭이나 기기에서 이 작업을 중지했습니다.",
         stopOther: {
             label: "이 채팅에서 실행 중인 작업 중지",

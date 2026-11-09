@@ -7,7 +7,6 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [assets](#assets) (1)
 - [backup-sync-hub](#backup-sync-hub) (1)
 - [cbs-rendering](#cbs-rendering) (2)
-- [chat-pipeline](#chat-pipeline) (1)
 - [diagnostics](#diagnostics) (1)
 - [memory](#memory) (1)
 - [persistence](#persistence) (1)
@@ -41,13 +40,6 @@ Guide: [CBS Template Language and Message Rendering](../structure/cbs-rendering.
 - The server checks scope limits on the scope loaded for that request, so a target whose request also named a large
   non-member source character fails permanently beside it; a chat's own members are always loaded, so its rows normally
   load the same scope.
-
-## chat-pipeline
-
-Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-pipeline.md#known-hazards).
-
-- A boot resume that discovers its chat but cannot load it shows Stop during the load retries, until the follow ends as
-  lost.
 
 ## diagnostics
 

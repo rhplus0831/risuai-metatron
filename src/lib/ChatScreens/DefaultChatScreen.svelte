@@ -73,7 +73,7 @@
     } from "src/ts/process/chatStatus.svelte";
     import { isLocalSend, localSends } from "src/ts/process/localSends";
     import { createSendAborts } from "src/ts/process/sendAborts.svelte";
-    import { followedJobs, followedJobsOf, stopChatJob } from "src/ts/process/serverCommands";
+    import { followedJobs, followedJobsOf, loadingJobChats, stopChatJob } from "src/ts/process/serverCommands";
     import HandoffControls from "./HandoffControls.svelte";
     import { jobStages, chatStageOf } from "src/ts/process/jobStages";
     import { abortGenerationJob } from "src/ts/network/generationJobs";
@@ -752,6 +752,10 @@
     const sendAborts = createSendAborts();
     // Stop shows for this screen's send in the selected chat or any followed job of it.
     const stoppable = $derived(sendAborts.has(currentChatRef()) || ownedJobIds.length > 0);
+    const loadingJobChat = $derived.by(() => {
+        const ref = currentChatRef();
+        return ref !== null && followedJobsOf($loadingJobChats, ref).length > 0;
+    });
     const foreignStoppable = $derived.by(() => {
         const ref = currentChatRef();
         return !stoppable && ref !== null && foreignJobChatKeys().has(chatStatusKey(ref));
@@ -1277,6 +1281,11 @@
                             style:height={inputHeight}
                         >
                             <div class="loadmove chat-process-stage-{processStage}" class:autoload={autoMode}></div>
+                            {#if loadingJobChat}
+                                <span class="ml-2 text-sm whitespace-nowrap" role="status"
+                                    >{language.serverJob.chatLoading}</span
+                                >
+                            {/if}
                         </button>
                         <HandoffControls jobIds={ownedJobIds} height={inputHeight} />
                     {:else if bindingIncomplete}
@@ -1314,6 +1323,11 @@
                             style:height={inputHeight}
                         >
                             <div class="loadmove"></div>
+                            {#if loadingJobChat}
+                                <span class="ml-2 text-sm whitespace-nowrap" role="status"
+                                    >{language.serverJob.chatLoading}</span
+                                >
+                            {/if}
                         </button>
                     {/if}
                     {#if currentCharacter?.chaId !== "§playground"}

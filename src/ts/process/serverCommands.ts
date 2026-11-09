@@ -223,6 +223,10 @@ const replayedStatuses = new Map<string, GenerationStatus>();
  */
 export const followedJobs = writable<ReadonlyMap<string, string>>(new Map());
 
+const loadingChats = writable<ReadonlyMap<string, string>>(new Map());
+/** Jobs whose discovered chats are still loading, including retries; Stop remains available. */
+export const loadingJobChats = readonly(loadingChats);
+
 const viewers = writable<ReadonlySet<string>>(new Set());
 /** Jobs this tab follows as their creator while another tab owns them. */
 export const viewingJobs = readonly(viewers);
@@ -399,7 +403,7 @@ export function followJobToEnd(
                 release ??= pinChat(target);
             }
             // A terminal already received is authoritative even if the chat cannot be loaded.
-            const loaded = target !== "lost" && (replayedStatuses.has(jobId) || (await loadJobChat(target)));
+            const loaded = target !== "lost" && (replayedStatuses.has(jobId) || (await loadJobChat(target, jobId)));
             const replay = replayedStatuses.get(jobId);
             // Discovery's ended status stands, as a replay does, when the chat cannot be loaded.
             const read = discovered === "lost" ? undefined : discovered.status;
@@ -701,18 +705,27 @@ export function refreshChatAfterPush(ref: ChatRef): void {
  * The job's chat, loaded (the caller pinned it): a failed read is retried like `discover`; false when
  * it is gone or could not be loaded.
  */
-async function loadJobChat(ref: ChatRef): Promise<boolean> {
-    for (let read = 0; read < MAX_ATTACHES; read++) {
-        if (read > 0) {
-            await sleep(retryDelay(read));
+async function loadJobChat(ref: ChatRef, jobId: string): Promise<boolean> {
+    loadingChats.update((jobs) => new Map(jobs).set(jobId, chatKeyOf(ref)));
+    try {
+        for (let read = 0; read < MAX_ATTACHES; read++) {
+            if (read > 0) {
+                await sleep(retryDelay(read));
+            }
+            try {
+                return (await ensureChatLoaded(ref)) !== undefined;
+            } catch (error) {
+                console.error("[Generation]", error);
+            }
         }
-        try {
-            return (await ensureChatLoaded(ref)) !== undefined;
-        } catch (error) {
-            console.error("[Generation]", error);
-        }
+        return false;
+    } finally {
+        loadingChats.update((jobs) => {
+            const next = new Map(jobs);
+            next.delete(jobId);
+            return next;
+        });
     }
-    return false;
 }
 
 /**

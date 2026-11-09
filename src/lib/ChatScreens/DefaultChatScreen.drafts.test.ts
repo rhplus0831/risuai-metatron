@@ -468,6 +468,74 @@ for (const type of ["done", "error"] as const) {
     });
 }
 
+it.each([
+    { locale: "en", role: "participant", label: "Loading chat…" },
+    { locale: "ko", role: "foreign", label: "채팅 불러오는 중…" },
+    { locale: "de", role: "participant", label: "Loading chat…" },
+])(
+    "shows $locale loading text on the selected chat's $role Stop and keeps cancellation usable",
+    async ({ locale, role, label }) => {
+        const { target, click } = await mountComposer();
+        const { changeLanguage } = await import("src/lang");
+        changeLanguage(locale);
+        const { language: strings } = await import("src/lang");
+        const chat = await import("src/ts/storage/chatStore.svelte");
+        const commands = await import("src/ts/process/serverCommands");
+        const transport = await import("src/ts/network/generationJobs");
+        const sync = await import("src/ts/storage/resourceSync.svelte");
+        vi.spyOn(sync, "refreshStaleChat").mockResolvedValue(true);
+        const abort = vi.spyOn(transport, "abortGenerationJob").mockResolvedValue();
+        let finish!: (value: undefined) => void;
+        const answer = new Promise<undefined>((resolve) => {
+            finish = resolve;
+        });
+        vi.spyOn(chat, "ensureChatLoaded").mockReturnValueOnce(answer);
+        const ref = { chaId: "c", chatId: "a" };
+        const following = commands.followJobToEnd(
+            "loading",
+            ref,
+            undefined,
+            role === "foreign" ? { ticket: "takeover" } : {},
+        );
+        flushSync();
+        const stop = () =>
+            target.querySelector<HTMLButtonElement>(
+                role === "participant"
+                    ? '[aria-labelledby="cancel"]'
+                    : `button[aria-label="${strings.serverJob.stopOther.label}"]`,
+            );
+        expect(stop()?.querySelector('[role="status"]')?.textContent).toBe(label);
+        expect(stop()?.disabled).toBe(false);
+        selectChat("c", "b");
+        flushSync();
+        expect(target.querySelector('[role="status"]')).toBeNull();
+        selectChat("c", "a");
+        flushSync();
+        expect(stop()?.querySelector('[role="status"]')?.textContent).toBe(label);
+        if (role === "participant") {
+            click(stop());
+            expect(abort).toHaveBeenCalledExactlyOnceWith("loading");
+            expect(io.confirm).not.toHaveBeenCalled();
+        } else {
+            io.confirm.mockResolvedValueOnce(true);
+            io.generationFetch
+                .mockResolvedValueOnce(
+                    Response.json({ jobId: "loading", kind: "send", owned: false, stage: "generating" }),
+                )
+                .mockResolvedValueOnce(Response.json({ aborted: true }));
+            click(stop());
+            await until(() => io.generationFetch.mock.calls.length === 2);
+            expect(io.confirm).toHaveBeenCalledTimes(1);
+            expect(io.generationFetch.mock.calls[1][0]).toBe("/api/generations/stop");
+            expect(JSON.parse(String(io.generationFetch.mock.calls[1][1]?.body)).jobId).toBe("loading");
+            expect(abort).not.toHaveBeenCalled();
+        }
+        finish(undefined);
+        await drive(following);
+        expect(target.querySelector('[role="status"]')).toBeNull();
+    },
+);
+
 it("offers Stop beside Send for an unfollowed lock, busy refusal, or replay, and confirms the looked-up job", async () => {
     const { target, click } = await mountComposer();
     const chat = await import("src/ts/storage/chatStore.svelte");
