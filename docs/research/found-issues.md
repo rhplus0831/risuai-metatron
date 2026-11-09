@@ -15,7 +15,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (3)
 - [Chat screen and input](#chat-screen-and-input) (4)
-- [Client and plugins](#client-and-plugins) (8)
+- [Client and plugins](#client-and-plugins) (6)
 
 ## Chat store, sync, and change feeds
 
@@ -225,20 +225,6 @@ Left after the Stop B fix commit (30bee445, 2026-10-05) and kept in memory until
 
 **Why it matters:** the capture gap lets a plugin act behind a blocking notice; the pinned URLs grow with assets rendered; the flakes return whenever suites run in parallel.
 **Suggested handling:** mention when working nearby and check the code first; treat the flakes as known unless one fails alone.
-
-### A stray }} ends CBS highlighting
-
-`src/ts/gui/highlight.ts` `simpleCBSHighlightParser` (~358–478): the `}}` branch does `depth--` without a floor. Text such as `}} {{char}}` (a JSON snippet in a prompt or lorebook editor) leaves `depth` at -1; the next `{{` raises it to 0, which `checkHighlight` skips, so `{{char}}` and every later call stay unhighlighted. Writes at index -1 are dropped silently. Found by the Found Issues Sweep's C1 (2026-11-05). Owner: cbs-rendering.
-
-**Why it matters:** editor highlighting disappears for the rest of the text after one stray close pair.
-**Suggested handling:** clamp the depth at 0 (ignore an unmatched `}}`).
-
-### Inlay explorer hard-codes two strings
-
-`src/lib/Playground/PlaygroundInlayExplorer.svelte` renders the card `Delete` button label (~250) and the load-more `Loading...` (~258) as literal English, while the rest of the component reads `language.playground.*`. Found by the Found Issues Sweep's J1 (2026-11-05).
-
-**Why it matters:** STRUCTURE.md U2; non-English users see English there.
-**Suggested handling:** move both to `language.playground` keys; `PlaygroundInlayExplorer.test.ts` finds the button by the text "Delete", so update that lookup.
 
 ### JSON and V3 card imports keep base64 text until the save ends
 
