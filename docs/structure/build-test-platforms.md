@@ -85,6 +85,8 @@
     `prettier-plugin-svelte`, `proseWrap: "always"` for `STRUCTURE.md` and `docs/structure/`.
 - `.prettierignore` (its comments give the reasons): `.ignore`'s payloads, all of `public/` (so `public/sw.js` keeps its
   own style), lockfiles, snapshots, `dist/`, `.claude/worktrees/`, and `src/ts/plugins/apiV3/risuai.d.ts`.
+- `.npmrc` (its comments give the reasons): pnpm's settings, among them the three-day `minimum-release-age` that
+  resolution applies to every new version.
 
 ### Dev runner
 
