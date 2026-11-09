@@ -182,7 +182,8 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - The plugin's internal `name` is its identity: storage, IPC allowlists, arguments and grant timestamps use it; grants
   use script hashes. Updates must keep the name.
 - Only API 3.0 exists. Plugins run only inside the iframe, never in the main document.
-- RPC values and streams: `v3.svelte.ts` and `factory.ts` module headers.
+- RPC values and streams: `v3.svelte.ts` and `factory.ts` module headers. A host callback's arguments are serialized
+  like call results, so a remote-required instance (a `SafeMutationObserver` record list) reaches the guest as a proxy.
 - A host call's abort controllers (one the host creates per call, plus one per guest-supplied signal) live until every
   response stream finishes (done, error, guest cancel, unread expiry, rollback, or termination). Calls and callbacks
   that throw or return no streams release their controllers at once. Termination aborts the live ones and closes both

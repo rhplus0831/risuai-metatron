@@ -171,6 +171,39 @@ afterEach(() => {
 });
 
 describe("the guest bridge's data copies", () => {
+    it("passes remote callback arguments as proxies whose host method calls resolve", async () => {
+        const guest = await startGuest();
+        const registering = guest.risuai.createMutationObserver(async (records: { length(): Promise<number> }) =>
+            records.length(),
+        );
+        const registration = guest.calls.at(-1)!;
+        const callback = registration.args![0] as { __type: string; id: string };
+        expect(callback.__type).toBe("CALLBACK_REF");
+        await guest.deliver({ type: "RESPONSE", reqId: registration.reqId });
+        await registering;
+
+        const invoking = guest.deliver({
+            type: "INVOKE_CALLBACK",
+            reqId: "mutation-callback",
+            id: callback.id,
+            args: [{ __type: "REMOTE_REF", id: "mutation-records" }],
+        });
+        const call = guest.calls.at(-1)!;
+        expect(call).toMatchObject({
+            type: "CALL_INSTANCE",
+            id: "mutation-records",
+            method: "length",
+            args: [],
+        });
+        await guest.deliver({ type: "RESPONSE", reqId: call.reqId, result: 1 });
+        await invoking;
+        expect(guest.calls.find((message) => message.type === "CALLBACK_RETURN")).toEqual({
+            type: "CALLBACK_RETURN",
+            reqId: "mutation-callback",
+            result: 1,
+        });
+    });
+
     it("type-checks the declared legacy calls and awaits remote createElement instances across the guest bridge", async () => {
         const declaration = path.resolve(import.meta.dirname, "risuai.d.ts");
         const virtualFile = path.resolve(import.meta.dirname, "guest-api-contract.ts");

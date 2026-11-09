@@ -75,6 +75,39 @@ afterEach(() => {
     vi.unstubAllGlobals();
 });
 
+it("serializes remote-required callback arguments as callable host references", async () => {
+    const registered = deferred<(...args: unknown[]) => Promise<unknown>>();
+    api.keep = registered.resolve;
+    send({ type: "CALL_ROOT", reqId: "keep", method: "keep", args: [{ __type: "CALLBACK_REF", id: "cb-1" }] });
+    const wrapper = await registered.promise;
+    const record = new (class {
+        __classType = "REMOTE_REQUIRED";
+        #type = "childList";
+        getType() {
+            return this.#type;
+        }
+    })();
+    const running = wrapper(record);
+    const invoke = lastPosted().data;
+    try {
+        expect(invoke).toMatchObject({
+            type: "INVOKE_CALLBACK",
+            id: "cb-1",
+            args: [{ __type: "REMOTE_REF", id: expect.any(String) }],
+        });
+
+        const answered = deferred<unknown>();
+        vi.spyOn(guestWindow!, "postMessage").mockImplementation((data) => {
+            if (data.type === "RESPONSE" && data.reqId === "record-type") answered.resolve(data);
+        });
+        send({ type: "CALL_INSTANCE", reqId: "record-type", id: invoke.args[0].id, method: "getType", args: [] });
+        expect(await answered.promise).toEqual({ type: "RESPONSE", reqId: "record-type", result: "childList" });
+    } finally {
+        send({ type: "CALLBACK_RETURN", reqId: invoke.reqId, result: "delivered" });
+        await expect(running).resolves.toBe("delivered");
+    }
+});
+
 describe("SandboxHost activity", () => {
     it("is busy until the guest's script settled, then idle, and tells its listener", () => {
         expect(host.isIdle()).toBe(false);

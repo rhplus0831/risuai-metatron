@@ -721,6 +721,40 @@ describe("v3 DOM listener targets and cleanup", () => {
         }
     });
 
+    it("reports added and removed elements through each mutation record's node lists", async () => {
+        const api = await makeApi();
+        const root = await api.getRootDocument();
+        const removedElement = document.createElement("span");
+        removedElement.setAttribute("x-node", "removed-node");
+        element.appendChild(removedElement);
+        let observer!: SafeMutationObserver;
+        const reported = new Promise<SafeClassArray<SafeMutationRecord>>((resolve) => {
+            observer = api.createMutationObserver(resolve);
+        });
+        try {
+            await observer.observe(root.querySelector("#plugin-event-target"), { childList: true });
+            const addedElement = document.createElement("span");
+            addedElement.setAttribute("x-node", "added-node");
+            element.appendChild(addedElement);
+            element.removeChild(removedElement);
+
+            const records = await reported;
+            expect(await records.length()).toBe(2);
+            const addition = (await records.at(0))!;
+            const removal = (await records.at(1))!;
+            const addedNodes = await addition.getAddedNodes();
+            const removedNodes = await removal.getRemovedNodes();
+            expect(await addedNodes.length()).toBe(1);
+            expect(await (await addedNodes.at(0))!.getAttribute("x-node")).toBe("added-node");
+            expect(await (await addition.getRemovedNodes()).length()).toBe(0);
+            expect(await (await removal.getAddedNodes()).length()).toBe(0);
+            expect(await removedNodes.length()).toBe(1);
+            expect(await (await removedNodes.at(0))!.getAttribute("x-node")).toBe("removed-node");
+        } finally {
+            await observer.disconnect();
+        }
+    });
+
     it("removes prior listener IDs through re-queried wrappers while keeping document and element targets independent", async () => {
         const api = await makeApi();
         const root = await api.getRootDocument();

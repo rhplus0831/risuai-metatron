@@ -1,6 +1,7 @@
 /**
  * Iframe-only plugin execution and bidirectional RPC. `SandboxHost.run` installs the sandbox, CSP,
  * and `GUEST_BRIDGE_SCRIPT`; calls, callbacks, abort signals, and stream credit/cancel cross this bridge.
+ * Host callback arguments use the same value conversion as call results.
  * Both message listeners check source before data: the host accepts only its iframe window and the
  * guest only its parent. Never log RPC payloads or answers: fetch headers and bodies can contain secrets.
  * Abort controllers outlive a returned stream until every stream finishes or is cleaned up;
@@ -390,7 +391,7 @@ await (async function() {
                         if (a.aborted) { controller.abort(); }
                         return controller.signal;
                     }
-                    return a;
+                    return deserializeResult(a);
                 });
                 const result = await fn(...deserializedArgs);
                 response.result = result;
@@ -694,7 +695,7 @@ export class SandboxHost {
                                     }
                                     return ref;
                                 }
-                                return arg;
+                                return this.serialize(arg);
                             });
 
                             const message = {
