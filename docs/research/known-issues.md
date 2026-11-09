@@ -5,7 +5,7 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 ## Contents
 
 - [assets](#assets) (1)
-- [backup-sync-hub](#backup-sync-hub) (2)
+- [backup-sync-hub](#backup-sync-hub) (1)
 - [cbs-rendering](#cbs-rendering) (11)
 - [chat-pipeline](#chat-pipeline) (9)
 - [chat-store](#chat-store) (1)
@@ -33,7 +33,6 @@ Guide: [Assets: Sources, Client, Queues, Batch Codec](../structure/assets.md#kno
 
 Guide: [Backups, Realm Hub](../structure/backup-sync-hub.md#known-hazards).
 
-- `RealmMain` renders `hubAdditionalHTML` via `{@html}`.
 - The RisuRealm terms gate is client-side only: `GET /hub-proxy/*` (unauthenticated) and `POST /api/import/realm` do not
   check `ui.realmTermsAccepted`.
 

@@ -2241,7 +2241,7 @@ export type hubType = {
 
 /**
  * Last non-empty HTML from an object-shaped listing; array/empty answers retain it.
- * `src/lib/UI/Realm/RealmMain.svelte` renders it directly with `{@html}` without sanitization.
+ * `src/lib/UI/Realm/RealmMain.svelte` sanitizes it with `trimMarkdown` before rendering with `{@html}`.
  */
 export let hubAdditionalHTML = "";
 

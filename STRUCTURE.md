@@ -91,8 +91,8 @@ server. Start with the task or source path you have.
 
 - S1. Sanitize untrusted HTML before `{@html}`. For chat Markdown, follow `ParseMarkdown` with `trimMarkdown` or
   `trimMarkdownSharingStyles` (DOMPurify). Keep custom CSS scoped to `.chattext` and `x-risu-` class names. Safe boot's
-  `css` category disables custom CSS and GUI HTML. See [rendering](docs/structure/cbs-rendering.md) and the
-  [known Realm sink](docs/research/known-issues.md#backup-sync-hub).
+  `css` category disables custom CSS and GUI HTML. Realm's additional hub HTML also passes through `trimMarkdown`. See
+  [rendering](docs/structure/cbs-rendering.md).
 - S2. Preserve the character, module, and trigger `lowLevelAccess` checks on server Lua network/LLM calls and low-level
   trigger effects. See [scripts and triggers](docs/structure/scripts-triggers.md).
 

@@ -3,6 +3,7 @@
     import { ArrowLeft, ArrowRight, MenuIcon, SearchIcon, XIcon } from "@lucide/svelte";
     import { alertInput } from "src/ts/alert";
     import { language } from "src/lang";
+    import { trimMarkdown } from "src/ts/parser/parser.svelte";
     import RisuHubIcon from "./RealmHubIcon.svelte";
     import RealmPopUp from "./RealmPopUp.svelte";
     import RealmBlockedCreators from "./RealmBlockedCreators.svelte";
@@ -16,6 +17,7 @@
      * `src/ts/realmTerms.ts`, and decline leaves the Realm screen. Reactive creator filtering keeps
      * cards hidden when either popup host or another tab changes the shared block list; missing
      * creator metadata stays visible. The menu's management dialog refetches after unblocking.
+     * Additional hub HTML passes through the shared DOMPurify helper before insertion.
      */
 
     let openedData: null | hubType = $state(null);
@@ -137,7 +139,7 @@
         {language.random}
     </button>
 </div>
-{@html hubAdditionalHTML}
+{@html trimMarkdown(hubAdditionalHTML)}
 <div class="w-full flex gap-4 p-2 flex-wrap justify-center">
     {#key visibleCharas}
         {#each visibleCharas as chara}
