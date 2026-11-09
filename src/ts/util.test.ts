@@ -30,14 +30,6 @@ function pickerInput() {
     return input!;
 }
 
-describe("searchTagList", () => {
-    it("matches the last segment against values and aliases case-insensitively and returns stored values", () => {
-        for (const query of ["female, oc", "female, OC", "female, original-character", "female, ORIGINAL-CHARACTER"]) {
-            expect(util.searchTagList(query), query).toEqual(["OC"]);
-        }
-    });
-});
-
 describe("replacePlaceholders", () => {
     it("uses the supplied name for every char marker, falling back to the selected name or an empty string", () => {
         records.initializeRecords({ characters: [{ chaId: "selected", type: "character", name: "Selected" }] });

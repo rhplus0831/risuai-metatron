@@ -8,15 +8,8 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 The inbox was emptied on 2026-11-09 by the Found Issues Clearance plan (retired; `git show e8758c2a8:docs/plan/found-issues-clearance.md`): every entry was fixed by one of its slices, recorded as a Limitation or Issue in its guide, or closed with a reason in slice H1's commit. The eighteenth batch, that run's own findings, moved in the same day.
 
+The eighteenth batch was cleared the same day by a Sol implementer with session verification (seven entries fixed with regression tests; the rendered-translation quote entry was closed as not reproduced: a scratch replay of the rendered path with identity Google and LLM translators kept quoted font names, `url("…")` and `content:"…"` intact in every one of twelve cases).
+
 ## Contents
 
-- [Client and plugins](#client-and-plugins) (1)
-
-## Client and plugins
-
-### searchTagList has no production caller
-
-`src/ts/util.ts` `searchTagList` (~1041) and the `TagList` it reads (~818) have no caller in `src/`, `server/` or `shared/`; only `src/ts/util.test.ts` uses it. Found Issues Clearance F5 fixed its OC match as its plan said. Found 2026-11-09 by F5.
-
-**Why it matters:** dead exported code that slices keep fixing and documenting.
-**Suggested handling:** remove both (after `rg TagList`) or wire them into the tag input they were meant for.
+None.
