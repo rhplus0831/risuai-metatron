@@ -10,7 +10,7 @@ Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (sec
 
 - [Chat store, sync, and change feeds](#chat-store-sync-and-change-feeds) (3)
 - [Server jobs and prompt assembly](#server-jobs-and-prompt-assembly) (3)
-- [Server routes and resource store](#server-routes-and-resource-store) (5)
+- [Server routes and resource store](#server-routes-and-resource-store) (4)
 - [LLM requests and providers](#llm-requests-and-providers) (9)
 - [Request history and diagnostics](#request-history-and-diagnostics) (2)
 - [Display transform](#display-transform) (3)
@@ -105,13 +105,6 @@ Excluded by the Implementation Audit Fixes plan (2026-11-05) as an unverified le
 
 **Why it matters:** an export taken while a plugin or script rewrites a custom-key asset may not be a consistent snapshot.
 **Suggested handling:** pause an export before it opens such an asset, replace the asset through the normal write path, and inspect the archive; then decide what consistency custom keys promise.
-
-### Upstream `.bin` import converts MessagePack-only values without a report
-
-`server/src/data/upstream/risuSave.ts` decodes a legacy (`\x07`–`\x09`) save with msgpackr, so a value can be a `Uint8Array`, a `Date` (timestamp extension), or `undefined`. The converter stores it through `serialize`/`storedValue` (`importRecords.ts`), whose `JSON.stringify` succeeds: binary becomes an index object (`{"0":..}`), a date an ISO string, an `undefined` property disappears and an array hole becomes `null`, with `copied: false` and no report entry. A non-finite top-level number in a settings section is repaired by `plainClone` to `null` and then defaulted (a nested one stays `null`), and the section loop (`importDatabase.ts` ~214–228) ignores `copied`, so that loss is not reported either (characters, chats, and plugin values report `invalid-data`). The realistic holder is `pluginCustomStorage`; upstream's own `Database` fields are JSON-like, and block saves are JSON already. Found 2026-11-07 while comparing with the Fastify fork's MessagePack `undefined` marker fix (its `de5b8214e`); this fork's msgpackr decodes that marker as `undefined`, so it does not arise here.
-
-**Why it matters:** a plugin's binary or dated value comes back changed after an upstream import, with nothing in the report to say so.
-**Suggested handling:** have `storedValue`/`storedForm` report a value whose JSON form differs in kind (typed array, `Date`, `Map`/`Set`), and report `copied` in the settings loop.
 
 ## LLM requests and providers
 
