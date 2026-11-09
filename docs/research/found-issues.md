@@ -311,10 +311,9 @@ Three writers can leave a nested number field `NaN` or `null`, which the record 
 
 The client half of "Asset-scale transport and job leftovers" under Server jobs and prompt assembly. The `getFileSrc` URL pinning is in "Stop B leftovers" and the inlay `mediaObjectUrls` in "Fallback media object URLs outlive the blob cache", so they are not repeated; the plan archive holds the options for the pinning (an avatar hold-release, or a parser placeholder with `fileSrcCache` removed). Kept in memory until 2026-11-08; identifiers re-checked that day, not re-measured.
 
-- `src/ts/parser/parser.svelte.ts` ~482 `fileSrcCache` is an unbounded path-to-src Map (cbs-rendering.md lists it among the parser caches).
 - Heap D3: `Batch.previous` held by an `{#await}` closure, about 17 MB after a server modules copy; not fixed.
 - The experimental Google translator still translates per stream frame (upstream behavior; `src/ts/translator/translator.ts` ~500).
-- A client JSON chat import can carry non-string message `data` (not validated in `prepareMessages`, `src/ts/storage/chatStore.svelte.ts` ~1597) and remount once; the `checkIfAtBottom` layout read remains (`src/lib/ChatScreens/Chats.svelte` ~961).
+- A client JSON chat import remounts once; the `checkIfAtBottom` layout read remains (`src/lib/ChatScreens/Chats.svelte` ~961). (Non-string message `data` is refused since Found Issues Clearance slice F9.)
 - Asset UIs: the first filter query after an edit of the field copies the live state once (about 0.3 to 0.6 s at 100k assets).
 - The parser's fuzzy asset lookup is untested for owner teardown and very large lists at the parser level.
 
