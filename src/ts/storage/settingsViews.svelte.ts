@@ -642,7 +642,7 @@ function sectionView(section: SectionKind): object {
                 // on read only; the records stay unchanged until the user selects an algorithm.
                 const memory = trackedRecord<SettingsViews["memoryTranslateMedia"]>("memoryTranslateMedia");
                 if (!memory) return value;
-                return memory.hanuraiEnable
+                const derived = memory.hanuraiEnable
                     ? "hanuraiMemory"
                     : memory.hypav2
                       ? "hypaMemoryV2"
@@ -651,6 +651,8 @@ function sectionView(section: SectionKind): object {
                         : memory.supaModelType !== "none"
                           ? "supaMemory"
                           : "none";
+                // An absent selector with nothing enabled stays absent (fresh boots and fixtures), not "none".
+                return value === undefined && derived === "none" ? value : derived;
             },
             (value) => writeRecordField(section, field, value),
         );
