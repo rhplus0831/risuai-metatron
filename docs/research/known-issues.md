@@ -8,7 +8,7 @@ Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 
 - [diagnostics](#diagnostics) (1)
 - [memory](#memory) (1)
 - [persistence](#persistence) (1)
-- [plugin-sandbox](#plugin-sandbox) (2)
+- [plugin-sandbox](#plugin-sandbox) (1)
 - [resource-sync](#resource-sync) (1)
 - [self-host-server](#self-host-server) (3)
 - [server-resources](#server-resources) (1)
@@ -48,8 +48,6 @@ Guide: [Plugins: v3 Sandbox, Host API, Hooks, Storage, Permissions](../structure
 - Consented capabilities reach further than their names suggest: `mainDom` allows document-wide queries and mutation
   through `getRootDocument` and forwards the keys typed into every field that is not a password input or marked
   `data-plugin-secret`; `nativeFetch` lets a plugin choose its headers.
-- A plugin event listener lives until the wrapper that registered it removes it by id or plugins reload: removing
-  its element from the page keeps it (and the element).
 
 ## resource-sync
 

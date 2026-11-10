@@ -976,6 +976,30 @@ describe("v3 DOM listener targets and cleanup", () => {
         },
     );
 
+    it("removes unfired once listeners by ID and on reload from live element and document targets", async () => {
+        const root = await (await makeApi()).getRootDocument();
+        const targets = [root.querySelector("#plugin-event-target"), root];
+        const listener = vi.fn();
+        const options = { once: true, capture: true };
+        for (const target of targets) await target.addEventListener("click", listener, options);
+        element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        expect(listener).toHaveBeenCalledTimes(2);
+        listener.mockClear();
+
+        for (const target of targets) {
+            const id = await target.addEventListener("click", listener, options);
+            target.removeEventListener("click", id);
+        }
+        element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        expect(listener).not.toHaveBeenCalled();
+
+        for (const target of targets) await target.addEventListener("click", listener, options);
+        await loadV3Plugins([]);
+        element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        document.body.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        expect(listener).not.toHaveBeenCalled();
+    });
+
     it("removes element and document-wide listeners from their registered targets on reload", async () => {
         const api = await makeApi();
         const root = await api.getRootDocument();

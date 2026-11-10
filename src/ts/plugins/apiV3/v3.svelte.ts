@@ -201,9 +201,18 @@ type TrackedEventListener = {
     listener: EventListenerOrEventListenerObject;
     options: AddEventListenerOptions;
 };
-const pluginEventListeners: TrackedEventListener[] = [];
+// Weaken the whole registration: retaining its listener would also retain the guest callback
+// and, for once listeners, the wrapper. Live targets keep records through pluginEventIds below.
+const pluginEventListeners: WeakRef<TrackedEventListener>[] = [];
 // Re-querying the same target must retain the IDs returned by earlier wrappers.
 const pluginEventIds = new WeakMap<EventTarget, Map<string, TrackedEventListener>>();
+
+function prunePluginEventListeners(removed?: TrackedEventListener) {
+    for (let i = pluginEventListeners.length - 1; i >= 0; i--) {
+        const tracked = pluginEventListeners[i].deref();
+        if (!tracked || tracked === removed) pluginEventListeners.splice(i, 1);
+    }
+}
 
 /**
  * `data-plugin-secret` marks fields where a password or credential can be typed as visible text.
@@ -511,7 +520,8 @@ class SafeElement {
             options: realOptions,
         };
         this.#eventIdMap.set(id, tracked);
-        pluginEventListeners.push(tracked);
+        prunePluginEventListeners();
+        pluginEventListeners.push(new WeakRef(tracked));
         tracked.eventTarget.addEventListener(tracked.type, tracked.listener, tracked.options);
         return id;
     }
@@ -522,8 +532,7 @@ class SafeElement {
         const tracked = this.#eventIdMap.get(id);
         if (tracked) {
             tracked.eventTarget.removeEventListener(tracked.type, tracked.listener, tracked.options);
-            const idx = pluginEventListeners.indexOf(tracked);
-            if (idx !== -1) pluginEventListeners.splice(idx, 1);
+            prunePluginEventListeners(tracked);
             this.#eventIdMap.delete(id);
         }
     }
@@ -3640,7 +3649,9 @@ export async function loadV3Plugins(plugins: RisuPlugin[]) {
     clearPluginProviders();
     customV3ProviderMetaStore.length = 0;
 
-    for (const entry of pluginEventListeners) {
+    for (const registration of pluginEventListeners) {
+        const entry = registration.deref();
+        if (!entry) continue;
         entry.eventTarget.removeEventListener(entry.type, entry.listener, entry.options);
         pluginEventIds.get(entry.eventTarget)?.clear();
     }
