@@ -89,10 +89,13 @@
 
 ### Serialization
 
-- Adapter entrypoints: `projectCollection`, `characterProjection`, `moduleProjection`, `shareSavedText`,
-  `canonicalCharacter`, `canonicalShape`. Record wrapper stamps and copy rules belong to
+- Adapter entrypoints: `projectCollection`, `characterProjection`, `moduleProjection`, `savedProjection`,
+  `shareSavedText`, `canonicalCharacter`, `canonicalShape`. Record wrapper stamps and copy rules belong to
   [persistence](persistence.md#record-wrappers). Across the boundary, serialization preparation must succeed before
   cache taint is committed; a local `reloadKeys` value holding record state is detached before adoption.
+- A module or character projection equal to the saved text is the saved string itself, in the field-text caches and in
+  the journal's cached projection, whichever path projected. String identity has no unit test:
+  `util/playwright/measureHeap.mjs` checks that no step holds a duplicated large record text.
 
 ### Batch composition
 

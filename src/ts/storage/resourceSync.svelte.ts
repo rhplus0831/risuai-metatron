@@ -1963,10 +1963,11 @@ function collectionProjection(collection: Collection): Projection | undefined {
  * Uncacheable records and shapes with JSON hooks use whole serialization, with no cache or parts.
  */
 function moduleProjection(list: unknown): Projection {
+    const savedKey = collectionKey(RESOURCE_KIND.modules);
     const cached = moduleTexts;
     moduleTexts = null;
     if (!Array.isArray(list) || hasJsonHook(list) || moduleItemFieldStamp(list, "") === null) {
-        return { text: JSON.stringify(list), parts: null };
+        return savedProjection(savedKey, { text: JSON.stringify(list), parts: null });
     }
     const writer: JsonWriter = { pieces: [], length: 0 };
     const items = new WeakMap<object, FieldTextCache["fields"]>();
@@ -1975,7 +1976,7 @@ function moduleProjection(list: unknown): Projection {
     for (let index = 0; index < list.length; index += 1) {
         const item = list[index];
         if (!isPlainObject(item) || hasJsonHook(item)) {
-            return { text: JSON.stringify(list), parts: null };
+            return savedProjection(savedKey, { text: JSON.stringify(list), parts: null });
         }
         const fields: [string, string][] = [];
         const sources: { value: unknown; stamp: number }[] = [];
@@ -1984,7 +1985,7 @@ function moduleProjection(list: unknown): Projection {
             const value = item[key];
             const stamp = moduleItemFieldStamp(item, key);
             if (stamp === null || hasJsonHook(value)) {
-                return { text: JSON.stringify(list), parts: null };
+                return savedProjection(savedKey, { text: JSON.stringify(list), parts: null });
             }
             const hit = previous?.get(key);
             const text =
@@ -2010,14 +2011,15 @@ function moduleProjection(list: unknown): Projection {
         // A missed stamp would lose an edit. Reported, not repaired, as for characters.
         console.error("[Save] modules: the field-text cache differs from a whole serialization");
     }
-    moduleTexts = { source: text, items };
     const ids = itemIds(list);
-    return {
+    const projection = savedProjection(savedKey, {
         text,
         parts: ids
             ? { type: "items", itemKey: "id", source: text, items: spans.map((span, i) => ({ id: ids[i], ...span })) }
             : null,
-    };
+    });
+    moduleTexts = { source: projection.text, items };
+    return projection;
 }
 
 /**
@@ -2057,7 +2059,7 @@ function characterProjection(character: character | groupChat): Projection {
     const cached = characterTexts.get(id);
     characterTexts.delete(id);
     if (hasJsonHook(copy)) {
-        return objectProjection(copy);
+        return savedProjection(characterKey(id), objectProjection(copy));
     }
     const fields: [string, string][] = [];
     const sources: { value: unknown; stamp: number | null }[] = [];
@@ -2070,7 +2072,7 @@ function characterProjection(character: character | groupChat): Projection {
             text = cached!.source.slice(hit.start, hit.end);
         } else {
             if (hasJsonHook(value)) {
-                return objectProjection(copy);
+                return savedProjection(characterKey(id), objectProjection(copy));
             }
             text = JSON.stringify(value);
             if (text === undefined) {
@@ -2087,9 +2089,13 @@ function characterProjection(character: character | groupChat): Projection {
         // A missed stamp: the cache would lose an edit. Reported, not repaired, so tests see it.
         console.error(`[Save] character ${id}: the field-text cache differs from a whole serialization`);
     }
+    const projection = savedProjection(characterKey(id), {
+        text,
+        parts: { type: "fields", source: text, fields: spans },
+    });
     if (sources.every((source) => source.stamp !== null)) {
         rememberCharacterText(id, {
-            source: text,
+            source: projection.text,
             fields: new Map(
                 spans.map(([key, start, end], index) => [
                     key,
@@ -2098,7 +2104,23 @@ function characterProjection(character: character | groupChat): Projection {
             ),
         });
     }
-    return { text, parts: { type: "fields", source: text, fields: spans } };
+    return projection;
+}
+
+/**
+ * Share a fresh projection with its saved text before any field cache or journal retains it. This
+ * equality check replaces the callers' content comparison with a reference comparison on a match;
+ * cached journal projections need no new comparison until their existing collection/intent checks.
+ */
+function savedProjection(key: string, projection: Projection): Projection {
+    const saved = persisted.get(key);
+    if (saved && projection.text === saved.text) {
+        projection.text = saved.text;
+        if (projection.parts) {
+            projection.parts.source = saved.text;
+        }
+    }
+    return projection;
 }
 
 /** Caches a character's projection (`characterTexts`), dropping the oldest past the bounds. */
@@ -2118,12 +2140,18 @@ function rememberCharacterText(id: string, cache: FieldTextCache) {
 }
 
 /**
- * After a projection whose text equals the saved one (`collectOperations`): the field-text cache
- * that projection filled keeps the saved string instead, so the projection's equal copy (a large
- * record's whole text) can be freed. The spans stay valid: the texts are equal. A cache whose source
- * differs from `projected` (a whole serialization filled none) is left alone.
+ * After an existing comparison proves equality, rebind the field cache and any journal projection
+ * to the held saved, in-doubt or refused string. The spans stay valid: the texts are equal. A cache
+ * whose source differs from `projected` (a whole serialization filled none) is left alone.
  */
 function shareSavedText(kind: string, id: string, projected: string, saved: string) {
+    const projection = journalRecords.get(recordKey(kind, id))?.projection?.value;
+    if (projection && projection.text === projected) {
+        projection.text = saved;
+        if (projection.parts) {
+            projection.parts.source = saved;
+        }
+    }
     // A whole serialization can answer undefined (a `toJSON` hook) and fills no cache.
     if (kind === RESOURCE_KIND.modules) {
         if (moduleTexts !== null && moduleTexts.source === projected) {

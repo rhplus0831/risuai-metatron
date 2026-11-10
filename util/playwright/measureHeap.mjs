@@ -848,6 +848,15 @@ try {
         check("fonts: gone after the chat", faces["module-assets"] === faces.boot && faces.home === faces.boot, faces),
     );
 
+    // One string per equal record text (`shareSavedText`, `savedProjection`): string identity is not
+    // observable from a unit test, so this count is the check.
+    const duplicated = rows.filter((row) => row.duplicateStrings.groups > 0);
+    check(
+        "strings: no duplicated large record text",
+        duplicated.length === 0,
+        duplicated.length ? duplicated.map((row) => ({ step: row.step, ...row.duplicateStrings })) : undefined,
+    );
+
     check("no page errors", pageErrors.length === 0, pageErrors.length ? pageErrors : undefined);
     const egress = unexpectedEgress(blocked);
     check("no unexpected egress", egress.length === 0, egress.length ? egress : undefined);
