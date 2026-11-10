@@ -76,8 +76,8 @@ comparison ties rounds together.
   by position. The byte budget comes from `RouteLimits.memoryPackageRoundBytes` in `server/src/app.ts`, default
   `MAX_READ_RESPONSE_BYTES`; `roundOf` defines charging before body reads and the soft first-record rule. `/runs` feeds
   the Log; `/cost` is [rebuild's cost preview](rebuild.md#the-cost-preview), with no record sent.
-- The Log and its JSON export show a run's `patchInput` only while the run keeps it: an older run has lost its patch
-  prompt to [the prune](writer.md#a-writer-run).
+- The Log and its JSON export show `patchInput` only for runs whose prompts [the prune](writer.md#a-writer-run) retains:
+  every pending run and the newest failed or skipped run, even with a newer recorded run.
 - `readStructuredMemoryHealth` calls `POST /health` for [the badge](read.md#the-health-badge), charging live pages,
   events and runs, reading no messages. An answer can be a prefix the tab resumes; a chat over the round budget answers
   `unavailable`, in contents too. The route header defines the caps.
@@ -90,9 +90,10 @@ the changes to stored records.
 
 1. The route checks ids, body and edit shape, then the epoch, then the fence. From the epoch check through
    `store.memory.write` there is no await. `server/src/app.ts` supplies the fence: a queued/running task, a job or
-   generation lock, or a rebuild's run, including a stopped one, refuses 409 `fenced`. A record-now job or send's gap
-   run has no task, so the job fence keeps [a writer's retry](writer.md#a-writer-run) of an old answer, and the rebuild
-   fence its swap, from overwriting the edit.
+   generation lock, or a rebuild's run, including a stopped one, refuses 409 `fenced`. A send's gap run has no task;
+   in-job [record now](writer.md#record-now) publishes `openJobStatus` when the service exists. The job fence keeps
+   [a writer's retry](writer.md#a-writer-run) of an old answer, and the rebuild fence its swap, from overwriting the
+   edit.
 2. The route reads the stored record, applies the pure edit and calls `store.memory.write` at the client's revision. A
    no-op still sends an empty change set through the revision check, so a stale edit is refused too.
 3. `StructuredMemoryEditAnswer` gives the current record and the revision the next edit must name.
@@ -147,7 +148,8 @@ snapshots like a checkpoint write.
   count). `MemoryRun.analysis` keeps the bounded draft before evidence checks and deduplication, so the log shows what
   the model said even when `eventId` names something else. `MemoryRun.receipt` holds what the run listed; a message's
   `generationInfo.memory` is its copy, or what the send said ([Receipts](read.md#receipts)).
-- A grade is the sum of a record's axes, 0 to 9; a record without axes has none.
+- The writer computes event and knowledge grades as the sum of their axes, 0 to 9, omitting `grade` without axes. Pages
+  can hold a person's grade without axes; `gradeByUser` marks that choice (`applyPageEdit`).
 
 ### Memory tables
 
@@ -241,7 +243,8 @@ group: no walk reads them.
 - The state after a history entry is the next entry's `before` or the live section; no `after` is stored.
 - On a character page, a section's `heading` holds a `CHARACTER_SECTION_SLOTS` key, not display text. Other page types
   use free headings.
-- Code owns grades: a draft carries scored axes, and only the stored `MemoryEvent` and `MemoryKnowledge` carry `grade`.
+- The writer's drafts carry scored axes; code computes `grade` on `MemoryEvent` and `MemoryKnowledge`. `MemoryPage` also
+  has `grade`: a person's page edit sets `gradeByUser`, and clearing the grade removes both fields (`applyPageEdit`).
 
 ## Recipes
 
@@ -275,7 +278,6 @@ group: no walk reads them.
   [projection](projection.md#tests).
 - Focused command: `pnpm --silent test:agent structuredMemory memoryStore restoreStage backups edits`. No `slow` or
   `e2e` membership of its own; `backups.test.ts` holds other slow cases.
-- Not tested: the types and limits themselves, which `pnpm check` covers only for the code that uses them.
 
 ## Known Hazards
 

@@ -174,8 +174,8 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 ## Coupling
 
 - Plugin consumers: `bootstrap.ts`, `PluginSettings.svelte`, `globalApi.svelte.ts`, `modellist.ts`
-  (`customV3ProviderMetaStore`). Hook-registry consumers: `ModelSettings.svelte`, `request.ts`, `transformClient.ts`,
-  `jobChannel.ts`, `tokenizer.ts`.
+  (`customV3ProviderMetaStore`). Hook-registry consumers: `src/lib/Setting/Pages/Model/ModelProfileEditor.svelte`,
+  `request.ts`, `transformClient.ts`, `jobChannel.ts`, `tokenizer.ts`.
 
 ## Invariants
 
@@ -200,7 +200,8 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - `risuFetch` and `nativeFetch` refuse a URL whose host is a blocked name or a subdomain of one (`urlBlacklist`,
   `assertPluginUrlAllowed`): the URL is parsed alone and against the page, the hostname lowercased and its trailing dots
   stripped. A blocked name in a path or query passes, and the transport receives the caller's original string.
-- Main-document DOM access requires the v3 `getRootDocument` permission plus the Safe wrappers.
+- Main-document DOM access uses `getRootDocument`, which requires the `mainDom` permission and returns the Safe
+  wrappers.
 - Any new v3 UI or hook must call `addPluginUnloadCallback` and sanitize external HTML and URLs.
 - A plugin or MCP write goes through a mutation module (`characterStore.svelte.ts`, `collectionStore.svelte.ts`,
   `pluginStorageStore.svelte.ts`, the chat module); a new host setter or tool never writes a record or a chat directly.
@@ -244,7 +245,6 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - A plugin changes the installed plugin list only through `setDatabase({ plugins })`, which asks the user to confirm
   each new or changed plugin. `setDatabaseLite` drops `plugins` before it applies anything; the call's other keys still
   apply.
-- `risu-set-module-info` checks every recognized field's type before it writes any field or `enabledModules`.
 - `updateModule` validates a detached patched copy, then applies the patch to the live module in place, so a plugin's or
   editor's retained module reference stays current.
 
@@ -334,9 +334,11 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 
 - Full character reads use `withChatsCopy`; records hold no chats. Outside hooks, `getDatabase` and `getChats` use
   `withDetachedDatabaseChats`: flush, then shared unloaded reads or `src/ts/plugins/apiV3/detachedChatCache.ts`, never
-  installed; held chats stay pinned until the synchronous copy. A fully held page skips the flush. Unsafe copies and
-  hooks load (a page, its members: `withHeldChatPage`). A failed flush or read falls back to that loading; after a
-  restore halt every such call rejects, a fully held page included.
+  installed; held chats stay pinned until the synchronous copy. A fully held current page skips the flush. Unsafe copies
+  and failed flushes or reads fall back to loading. Restore halts reject these outside-hook reads, fully held pages
+  included.
+- Full-chat reads inside hooks use `withChatsLoaded`, loading whole characters. Outside-hook page fallbacks use
+  `withHeldChatPage` (JSDoc); more than 32 missing members use the whole-character loader.
 - The server projects a detached read by its saved memory algorithm, so a switch before the final assembly discards the
   unloaded copies and reads once more after flushing the setting; a second switch loads.
 - `getDatabase(keys, { chats: "summaries" })` reads, flushes, pins, and loads no chat (`chatSummaryList` in

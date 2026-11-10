@@ -39,9 +39,9 @@ server. Start with the task or source path you have.
   gate. While iterating, pass affected files or directories to the wrapper. Also run affected slow tests and browser
   specs, and `pnpm build` for build changes. Agents use the wrapper and leave `HUMAN` unset, except for a command the
   wrapper cannot run (listing tests, a flag it lacks). See the [test commands](docs/structure/test-harness.md#recipes).
-- V2. Unit tests are `*.test.ts`, colocated or in a sibling `tests/` directory. Vitest defaults to happy-dom. Server
-  tests select Node. Domain guides name focused tests and gaps. The [test harness](docs/structure/test-harness.md) owns
-  setup, mocks, and the network guard.
+- V2. Unit tests are `*.test.ts`, colocated or in a sibling `tests/` directory. Vitest defaults to happy-dom. A file
+  selects Node with `@vitest-environment node`. Domain guides name focused tests and gaps. The
+  [test harness](docs/structure/test-harness.md) owns setup, mocks, and the network guard.
 - V3. Gate tests run independently of wall time, CPU speed, and scheduling. Control clocks and synchronization. Tag
   tests of real deadlines or performance `slow`. The gate timeout guards against hangs. Add tests only for changed code
   and a plausible wrong implementation they would catch. See [test rules](docs/structure/test-harness.md#test-rules).
@@ -60,7 +60,8 @@ server. Start with the task or source path you have.
 
 - D1. The tab holds settings views, character records, and chat-store state. A legacy `Database` snapshot is a detached
   copy. Route chat writes through `chatStore.svelte.ts`. Carry `Chat.id` and the message's `Message.chatId` across
-  awaits. Bind chat fields through getters/setters or a synchronized editing copy.
+  awaits. Bind chat fields through getters/setters or a synchronized editing copy. Pin a chat before loading it and
+  across later awaits ([chat pins](docs/structure/chat-store.md#pins-and-eviction)).
 - D2. Give each persisted field a shared type and an owning record. Settings fields also need ownership in
   `shared/sections.ts` and server defaults or migration in `server/src/data/normalize/`. Boot installs normalized server
   records. Chat and message readers supply defaults for missing fields. Settings views can fall back to tab selection,
@@ -129,42 +130,42 @@ server. Start with the task or source path you have.
 
 ### Client, content and extensions
 
-| Task                                                                                         | Guide                                                      |
-| -------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Boot, safe boot, navigation, URL/history, screen stores, flags and hotkeys                   | [app-shell](docs/structure/app-shell.md)                   |
-| Chat/sidebar UI, GUI primitives, portals and theme                                           | [ui-theming](docs/structure/ui-theming.md)                 |
-| Settings pages, preset pickers, prompt editor and i18n                                       | [settings-i18n](docs/structure/settings-i18n.md)           |
-| Character cards, groups, modules, personas and lore editor                                   | [characters-modules](docs/structure/characters-modules.md) |
-| Asset URLs, thumbnails, asset client, queues and batch codec                                 | [assets](docs/structure/assets.md)                         |
-| globalApi facade, save entry points, writers, chat fold, utilities, alerts, notices and Iris | [global-api](docs/structure/global-api.md)                 |
-| Regex, trigger v2, Lua editors and shared script engines                                     | [scripts-triggers](docs/structure/scripts-triggers.md)     |
-| Plugin v3 sandbox, host API, hooks, providers, storage, permissions and reload               | [plugin-sandbox](docs/structure/plugin-sandbox.md)         |
-| MCP client registry, internal and remote clients, RisuAccess and tool dispatch               | [mcp](docs/structure/mcp.md)                               |
-| Backups, upstream import/export, Realm hub, creator blocking and settings reports            | [backup-sync-hub](docs/structure/backup-sync-hub.md)       |
+| Task                                                                              | Guide                                                      |
+| --------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Boot, safe boot, navigation, URL/history, screen stores, flags and hotkeys        | [app-shell](docs/structure/app-shell.md)                   |
+| Chat/sidebar UI, GUI primitives, portals and theme                                | [ui-theming](docs/structure/ui-theming.md)                 |
+| Settings pages, preset pickers, prompt editor and i18n                            | [settings-i18n](docs/structure/settings-i18n.md)           |
+| Character cards, groups, modules, personas and lore editor                        | [characters-modules](docs/structure/characters-modules.md) |
+| Asset URLs, thumbnails, asset client, queues and batch codec                      | [assets](docs/structure/assets.md)                         |
+| globalApi facade, writers, chat fold, utilities, alerts, notices and Iris         | [global-api](docs/structure/global-api.md)                 |
+| Regex, trigger v2, Lua editors and shared script engines                          | [scripts-triggers](docs/structure/scripts-triggers.md)     |
+| Plugin v3 sandbox, host API, hooks, providers, storage, permissions and reload    | [plugin-sandbox](docs/structure/plugin-sandbox.md)         |
+| MCP client registry, internal and remote clients, RisuAccess and tool dispatch    | [mcp](docs/structure/mcp.md)                               |
+| Backups, upstream import/export, Realm hub, creator blocking and settings reports | [backup-sync-hub](docs/structure/backup-sync-hub.md)       |
 
 ### Records, synchronization and jobs
 
-| Task                                                                               | Guide                                              |
-| ---------------------------------------------------------------------------------- | -------------------------------------------------- |
-| Persisted fields, records, settings views, normalization and chat bindings         | [persistence](docs/structure/persistence.md)       |
-| Boot cache, save loop, batches, conflicts, merges, credential writes and transport | [resource-sync](docs/structure/resource-sync.md)   |
-| Tab feed connection, incoming record/chat changes, feed locks and restore halt     | [live-updates](docs/structure/live-updates.md)     |
-| Chat writes, job hydration, chat checkpoints and restore floor                     | [chat-store](docs/structure/chat-store.md)         |
-| Draft journal, composer rows, boot recovery and recovery drafts                    | [draft-recovery](docs/structure/draft-recovery.md) |
-| Network/proxy, aux fetch, request log, tab job channel, handoff and Web Push       | [network-jobs](docs/structure/network-jobs.md)     |
-| Request history, checked failures, push diagnostics, reports and support shares    | [diagnostics](docs/structure/diagnostics.md)       |
+| Task                                                                                                | Guide                                              |
+| --------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| Persisted fields, records, settings views, field ownership and chat bindings                        | [persistence](docs/structure/persistence.md)       |
+| Boot cache, save entry points and loop, batches, conflicts, merges, credential writes and transport | [resource-sync](docs/structure/resource-sync.md)   |
+| Tab feed connection, incoming record/chat changes, feed locks and restore halt                      | [live-updates](docs/structure/live-updates.md)     |
+| Chat writes, job hydration, chat checkpoints and restore floor                                      | [chat-store](docs/structure/chat-store.md)         |
+| Draft journal, composer rows, boot recovery and recovery drafts                                     | [draft-recovery](docs/structure/draft-recovery.md) |
+| Network/proxy, aux fetch, request log, tab job channel, handoff and Web Push                        | [network-jobs](docs/structure/network-jobs.md)     |
+| Request history, checked failures, push diagnostics, reports and support shares                     | [diagnostics](docs/structure/diagnostics.md)       |
 
 ### Server, build and repository tools
 
-| Task                                                                                   | Guide                                                          |
-| -------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| Hono routes, auth, static serving, assets, thumbnails, proxy, push and Docker          | [self-host-server](docs/structure/self-host-server.md)         |
-| Server resource store, chat tables, checkpoints, snapshots, backups and file imports   | [server-resources](docs/structure/server-resources.md)         |
-| Server generation jobs, job channel, transforms, LLM and token routes                  | [server-generation](docs/structure/server-generation.md)       |
-| Server live-update socket, hello, frame admission, chat entries and publication budget | [live-update-feed](docs/structure/live-update-feed.md)         |
-| Build, dev runner, worker/PWA, upstream checks, CI and releases                        | [build-test-platforms](docs/structure/build-test-platforms.md) |
-| Test wrapper, slow tests, network guard, Playwright stack and two-client checks        | [test-harness](docs/structure/test-harness.md)                 |
-| Guide edits, path ownership, fact ledgers, budgets and issue placement                 | [Doc Maintenance](docs/structure/README.md)                    |
+| Task                                                                                                | Guide                                                          |
+| --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Hono routes, auth, static serving, assets, thumbnails, proxy, push and Docker                       | [self-host-server](docs/structure/self-host-server.md)         |
+| Server resource store, normalization, chat tables, checkpoints, snapshots, backups and file imports | [server-resources](docs/structure/server-resources.md)         |
+| Server generation jobs, job channel, transforms, LLM and token routes                               | [server-generation](docs/structure/server-generation.md)       |
+| Server live-update socket, hello, frame admission, chat entries and publication budget              | [live-update-feed](docs/structure/live-update-feed.md)         |
+| Build, dev runner, documentation checks and tools, worker/PWA, upstream checks, CI and releases     | [build-test-platforms](docs/structure/build-test-platforms.md) |
+| Test wrapper, slow tests, network guard, Playwright stack and two-client checks                     | [test-harness](docs/structure/test-harness.md)                 |
+| Guide edits, path ownership, fact ledgers, budgets and issue placement                              | [Doc Maintenance](docs/structure/README.md)                    |
 
 For unfinished work, see [active plans](docs/plan/README.md). Completed plans and retrieval commands are in the
 [archive](docs/archived-plan/README.md).
@@ -192,8 +193,14 @@ Search-excluded payloads in `.ignore` are `server/assets/token/`, `public/plugin
   such as `assets/<hash>.<ext>` read and written through asset helpers.
 - **Realm / Hub** is the card service reached through the GET-only `/hub-proxy`. **Iris** is the built-in assistant
   using RisuAccess MCP tools.
+- A **resource epoch** identifies the active database; a restore or import replaces it and invalidates older mutation
+  tokens. A **revision** identifies one record's stored version. See
+  [epoch rules](docs/structure/server-resources.md#epoch-and-response-rules).
 
 ## Doc Maintenance
 
 For the guide outline, size limits, fact-ledger checks, and issue inbox, see
 [Doc Maintenance](docs/structure/README.md).
+
+Last full audit: 2026-11-10, every guide and this index read against the source at `e44b4786b`
+([report](docs/audit/structure-audit-2026-11-10.md)).

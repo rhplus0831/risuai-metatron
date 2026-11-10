@@ -110,8 +110,8 @@ inlay, whose tag stays as text. Images use `getFileSrc` ([assets](assets.md)). A
 
 ### Other parsers and editors
 
-- `src/ts/parser/chatML.ts`: the ChatML splitter (`parseChatML`), used by `sendChat`'s `chatML` cards, the translator,
-  and memory.
+- `src/ts/parser/chatML.ts`: the client ChatML splitter (`parseChatML`), used by `src/ts/process/memory/hypav3.ts`;
+  prompt-card ChatML uses `server/src/prompt/triggers.ts` `parseChatML` from `server/src/prompt/assemble.ts`.
 - `src/ts/parser/partialEdit.ts`: rendered text back to markdown ranges (module header;
   `findAllOriginalRangesFromText`/`FromHtml`, `replaceRange`, `EDITABLE_BLOCK_SELECTORS`).
 - `src/ts/gui/highlight.ts`: editor highlighting and autocomplete (module header; `highlighter`, `removeHighlight`,
@@ -152,9 +152,8 @@ inlay, whose tag stays as text. Images use `getFileSrc` ([assets](assets.md)). A
   header.
 - The server (`server/src/prompt/transform.ts`) runs Lua `editDisplay`, the `display` trigger, CBS, and the regex
   scripts; the tab's `editdisplay` plugin handlers run read-only between its two calls ([Invariants](#invariants)).
-- Capacity (2026-11-09, `measureTransformLua.mjs --snapshot`): on a 2,000-message chat of 6 MiB, a scope charges 39 KB
-  of `MAX_SNAPSHOT_BYTES` (8 MiB; the transcript is a shared entry) and a 3 KB message 55 KB, so a 64-target chunk fits
-  whole up to about 40 KB per message ([measurement](../audit/transform-snapshot-2026-11.md)).
+- Two-call transform chunks share the transcript charge and must fit the snapshot and retained-scope budgets; consult
+  the [capacity measurement](../audit/transform-snapshot-2026-11.md) before changing those budgets.
 - `ChatBody` shows provisional text on its stored and plain display paths; translation inputs and auto-translate probes
   wait for the answer.
 
@@ -213,11 +212,10 @@ inlay, whose tag stays as text. Images use `getFileSrc` ([assets](assets.md)). A
 
 ### Caches
 
-- Parser and page caches: the parser's file-source (`fileSrcCache`, 2,000 entries, oldest first), encoded-metadata and
-  CSS scope (`scopeCss`: by the CSS after CBS, 256 entries / 4 MiB) maps, the fallback's media object URLs in
-  `files/inlays.ts` (`mediaObjectUrls`), the scoped evaluators (`scopedEvaluators`), the asset maps (reset by
-  `resetAssetsCache` and by `syncAssetsCache` in an `$effect.root` and at the start of an asset parse), and global
-  `CSS.highlights`.
+- Parser and page caches: the parser's file-source (`fileSrcCache`, 2,000 entries, oldest first) and CSS scope
+  (`scopeCss`: by the CSS after CBS, 256 entries / 4 MiB) maps, the fallback's media object URLs in `files/inlays.ts`
+  (`mediaObjectUrls`), the scoped evaluators (`scopedEvaluators`), the asset maps (reset by `resetAssetsCache` and by
+  `syncAssetsCache` in an `$effect.root` and at the start of an asset parse), and global `CSS.highlights`.
 - Server transform (`server/src/prompt/transformCache.ts`): an LRU of text and emotions, 512 entries / 16 MiB, at most
   512 KiB per entry. Its key, the character identities and the all-cached probe are the `server/src/prompt/transform.ts`
   header ([server generation](server-generation.md)). The key holds the stored chat revision, so after a save, rows that
@@ -322,6 +320,9 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
 - Server host and limits: `pnpm --silent test:agent server/src/tests/cbs*.test.ts`.
 - Server transform:
   `pnpm --silent test:agent server/src/tests/{transform,transformService,transformBudget,dynamicAssets}.test.ts`.
+- Shared toggles: `pnpm --silent test:agent shared/prompt/toggles.test.ts`.
+- Editor component checks (`src/lib/ChatScreens/tests/PartialEditControllerIme.test.ts`,
+  `src/lib/Others/MonacoEditor.test.ts`) run with the [UI checks](ui-theming.md#tests).
 - `src/ts/parser/tests/cbs/lib.ts`: the `cbs` helper writes a `{{op::args}}` string; `holdMockedChats` installs fixture
   characters and chats the way boot does.
 - Host parity: `server/src/tests/fixtures/cbs-parity.json` holds hand-derived cases pinning the legacy quirks, run
@@ -366,9 +367,9 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
   A fan-out of `call::` (a function calling itself twice) is bounded by the work budget only, so on the server it fails
   the job. Decision: the limits are policy (`server/src/jobs/cbsHost.ts`); the `call::` trade-off is pinned in
   `server/src/tests/cbsCallDepth.test.ts`.
-- A chat switch sends no new transform target, but up to `MAX_TRANSFORM_SNAPSHOTS_PER_CLIENT` chunks already sent can
-  cross it. They are cancelled when the last subscriber leaves (`transformClient.ts`), after the unmount work, which
-  took about 370 ms at 600 rows, so the server can still finish one. Decision: Found Issues Decisions (owner,
+- A chat switch sends no new transform target, but already-dispatched chunks can finish before row unmount cancels their
+  last subscribers (`transformClient.ts`). The tab's `MAX_TRANSFORM_SNAPSHOTS_PER_CLIENT` admission cap applies only to
+  chunks with plugin handlers; chunks without handlers acquire no permit. Decision: Found Issues Decisions (owner,
   2026-11-08), [measurement](../audit/render-work-budget-2026-11-05.md#acceptance-after-slices-14).
 - A chat write the render does not read still moves the chat revision in the transform key: with `useAutoSuggestions`
   on, a suggestion save (`Suggestion.svelte`, `setChatMeta`) costs one server re-render of the rows on the next visit,
@@ -378,10 +379,10 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
   stored the snapshot: it lives until its 30 s TTL and counts toward `MAX_TRANSFORM_SNAPSHOTS_PER_CLIENT`, so the next
   chunk can evict a live one (`SnapshotExpired`, a raw row, one retry round). Decision: Implementation Audit Fixes R4
   (2026-11-06), to avoid holding a permit 30 s on every scroll-away abort.
-- A Re-render's cache bypass (`noCacheNext`) is consumed when its operation is created and restored only on withdrawal
-  before dispatch or a whole-chunk cancel: a dispatched target withdrawn from a surviving chunk loses it, so a
-  same-input replacement sends `noCache: false` and can read the server's old cache entry. Decision: excluded as an edge
-  (2026-11-05),
+- A Re-render's cache bypass (`noCacheNext`) is consumed when its operation is created. A `cancelled` settlement
+  restores it, including departures in a surviving chunk (`transformClient.ts` `restoreBypass`, `departed`, `settle`).
+  Before that settlement a same-input replacement can send `noCache: false` and read the old server cache. Decision:
+  excluded as an edge (2026-11-05),
   [RW3](../manual-audit/archive/render-work-budget-2026-11-05.md#rw3--a-departed-forced-refresh-can-leave-its-replacement-using-the-old-server-cache).
 - A permanent display failure is not remembered: when another target of the same row fails transiently (a legacy
   rendered translation's paragraph beside an oversized original), that row's retry round rerenders it whole, so the

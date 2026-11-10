@@ -143,7 +143,8 @@ Decisions: Structured Memory slice 7d, archive, unless an entry names another.
   page reads as live until a tool writes it, and its detail shows Restore.
 - An older build refuses a chat file holding a `merge` or `split` history entry whole, since its `restore.ts` checks the
   closed list.
-- Trash has no size limit or expiry: a page stays until a person deletes it forever.
+- Trash has no size limit or expiry: a page stays until a person deletes it forever or a
+  [fresh rebuild](rebuild.md#what-a-rebuild-keeps) commits its swap.
 - After a rebuild or a merge, a restored page can cite events that no longer exist. An id naming no event is not
   retracted, so nothing flags it.
 - What a person took back on a merge's source stays on the trashed source, so the writer can propose it on the target.

@@ -52,7 +52,8 @@
 ### Server translation
 
 - `server/src/translation/runner.ts`: detached stored-message translator; `createTranslationRunner`, `handOff`,
-  `TRANSLATION_DEADLINE_MS`, `MAX_RUNNING_TRANSLATIONS`.
+  `TRANSLATION_DEADLINE_MS`, `MAX_RUNNING_TRANSLATIONS`. The `createTranslationRunner` contract owns admission,
+  lifetime/write fencing, and detached request restrictions; consult it before changing provider or plugin integration.
 - `server/src/routes/translate.ts`: authenticated HTTP boundary; `registerTranslateRoutes`
   ([server-generation](server-generation.md)).
 - `shared/translation/route.ts`: tab/server request and answer contract; `TRANSLATE_MESSAGE_PATH`,
@@ -206,6 +207,9 @@ on the rendered path; cache buttons remain for LLM. Auto-translate is a [chat se
 - Browser LLM cache: LocalForage `LLMTranslateCache` (`LLMCacheStorage` in `src/ts/translator/translator.ts`) uses
   `llm:<hash>:<source>` keys, separate from stored `Message.translation`. See `llmCacheKeyPrefix` for hash inputs and
   legacy-key compatibility. Beside it: `llmInFlight` and `llmGenerations`, per key in flight.
+- The in-memory non-LLM pair cache is separate from `LLMTranslateCache`. The module header and `translate` contract in
+  `src/ts/translator/translator.ts` own its composer/render consumers and shared producers; direct TTS/playground
+  `runTranslator` calls bypass it.
 - Chat translation settings: the chat fields `translatorPresetId`, `autoTranslate`, `translateBotOnly`,
   `bilingualDisplay`, `bilingualEmphasis`, `bilingualSentences`, stored as sent and carried by the chat summary (list
   fields, `CHAT_TRANSLATION_FIELD_TYPES`), read through `shared/translation/chatSettings.ts`
@@ -247,10 +251,9 @@ on the rendered path; cache buttons remain for LLM. Auto-translate is a [chat se
   `createTranslatorPreset`) turns the old `{ prompt, maxResponse }` shape into one inherited step. The tab creates and
   imports presets with `createTranslatorPreset`, so what it writes is what the server stores.
 - The step editor finds each step by the preset's id and the step's id at every read and write (nested steps have no
-  by-id identity in the records) and writes only what the normalizer keeps as is: a blank name and an invalid or already
-  used output key stay local drafts, shown with a hint and dropped for good once the stored value they were typed over
-  (for a key, also the other steps' keys) changes; a cleared or invalid response size is not written, and the field
-  shows the stored size again when committed. So the tab's copy stays the server's normalized text.
+  by-id identity in the records) and writes only what the normalizer keeps as is.
+  `src/lib/Setting/Pages/Translation/TranslatorStepEditor.svelte`'s component contract owns local draft invalidation and
+  commit behavior.
 - Both `translateHTML` paths apply `edittrans` last (`applyEdittransRegex`: the one regex the tab still runs, a plain
   `RegExp` replacement with no Lua or trigger); the DOM skip rules are the `translateHTML` comment.
 
@@ -270,6 +273,9 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
 - Server translation: `pnpm --silent test:agent server/src/tests/translate.test.ts`.
 - Chat row:
   `pnpm --silent test:agent src/lib/ChatScreens/Chat.test.ts src/lib/ChatScreens/PartialEditController.test.ts src/lib/SideBars/ChatTranslationPanel.test.ts`.
+- Rendered-row lifetime: `pnpm --silent test:agent src/lib/ChatScreens/ChatBody.svelte.test.ts`. Preset/step UI
+  (`TranslatorPresetSettings.test.ts`): [settings tests](settings-i18n.md#tests); sentence grouping and style pruning:
+  [rendering tests](cbs-rendering.md#tests).
 - Server translation uses `Echo`, a temporary store, and fake LLM requests and token counts.
 - `translateHtmlLifetime.test.ts` and `translateHtmlWorkers.test.ts` stub the Google `fetch`; the workers test holds
   each answer, reading the open-request count at its peak.
@@ -279,9 +285,6 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
 
 ### Limitations
 
-- The experimental Google translator (`useExperimentalGoogleTranslator`) sends one request per stream frame for a
-  message translated while it streams (upstream behavior). Decision: Audit Findings and Performance Leftovers,
-  [archive](../archived-plan/README.md); Found Issues Clearance (owner, 2026-11-09).
 - The write-back's Markdown pass (`applyMarkdownToNode` in `src/ts/parser/parser.svelte.ts`, markdown-it with
   `html: true`) turns escaped markup in a translated paragraph back into tags on the single- and multi-sentence paths;
   `ChatBody` sanitizes the result. Escaping before the pass would break code spans, angle-bracket links, and KaTeX.

@@ -68,17 +68,20 @@ The panel sends repairs through [the edit route](records.md#the-edit-route). A `
 run: the old event remains until [the writer commit](writer.md#the-writer-task) replaces it, and a replacement older
 than later evidence uses the [historical path](writer.md#a-writer-run).
 
-Loading a checkpoint starts no work: a restored `rerecord` mark [waits for a press](writer.md#the-writers-windows). See
-[State](#state) for the two persisted repair fields.
+Loading a checkpoint starts no work. Its restored `rerecord` marks persist; a later automatic hand-off can process a
+mark that still reads `changed` under a non-`manual` cadence (`automaticRerecords` in
+`server/src/prompt/memory/structured/reconcile.ts`). Other marks wait for a press. See [State](#state) for the two
+persisted repair fields.
 
 ### Retraction and edits
 
-`applyGroup` classifies confirmed removals as `retracted` and raw edits to `role`, `data` or `saying` as `rewritten`;
-the reaction marks a citing event only when the message no longer hashes as its stored source version read it, so a
-markup-only write leaves a version 3 event unmarked and marks a version 1 or 2 one; `onMessagesChanged` delivers the
-notice after the chat transaction commits. `app.ts` wires it to `reconcileMessageChanges`, whose header owns the record
-reaction and thread/section effects. Memory reconciliation is a separate write: a crash between the chat commit and its
-notice leaves the event readable as `missing` or `changed` for a later repair.
+`applyGroup` classifies confirmed removals as `retracted`, and edits to `role`, raw `data` or the normalized group
+speaker (`saying`) as `rewritten`; the reaction marks a citing event only when the message no longer hashes as its
+stored source version read it, so a markup-only write leaves a version 3 event unmarked and marks a version 1 or 2 one;
+`onMessagesChanged` delivers the notice after the chat transaction commits. `app.ts` wires it to
+`reconcileMessageChanges`, whose header owns the record reaction and thread/section effects. Memory reconciliation is a
+separate write: a crash between the chat commit and its notice leaves the event readable as `missing` or `changed` for a
+later repair.
 
 For a user-confirmed delete, `removeAfterAsking` checks coverage and asks before carrying `retract` through the save;
 the chat store guide owns its save and lock checks. `/cut`, `/del`, `runMultisend`, rerolls, scripts, server triggers
@@ -229,8 +232,9 @@ takes over.
 
 ## Recipes
 
-- A new reconciliation reason: add it to the ordered list in `reconcileMemoryEvents`, where the first that holds wins,
-  and read it only through the reconciled copy, never stored.
+- A new reconciliation reason: add it to the ordered checks in `staleReasonOf` in `shared/structuredMemory.ts`, where
+  the first that holds wins. Read computed reasons through `reconcileMemoryEvents`'s copy; reconciliation changes no
+  stored row.
 - A new repair: add it to the `repair` cases `applyEventRepair` applies, through
   [the edit route](records.md#the-edit-route), and send any retraction through `withRetractedEvidence`.
 - A new field on a record a copy must carry: `inheritedRecords` keeps every field as stored but `createdRevision` and
@@ -296,8 +300,8 @@ takes over.
   in the message order, so it crosses unless it follows a behind change. Decision: Structured Memory slice 5c, archive.
 - A chat's records over [the restore](#chat-files)'s body cap cannot be restored, and the export does not warn: the file
   holds them and the import shows the size notice. Decision: Structured Memory slice 5f, archive.
-- HTML, TXT, and jsonl chat files carry no records, so a chat imported from one starts with a coverage gap. Decision:
-  Structured Memory slice 5f, archive.
+- HTML and jsonl chat files carry no records, so a chat imported from either starts with a coverage gap. TXT export also
+  carries no records; `importChat` has no TXT import branch. Decision: Structured Memory slice 5f, archive.
 - [Adoption](#adopting-hypav3-summaries) refuses a chat that holds a record, such as one recorded before the hold or a
   summary written after the first record: nothing merges them with events. Decision: Structured Memory slice 6a,
   archive.

@@ -113,6 +113,8 @@ The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credent
   and stores.
 - [App shell](app-shell.md): collector startup; [network-jobs](network-jobs.md): tab logs and job/feed hooks;
   [test-harness](test-harness.md): crash-process tests.
+- [Memory](memory.md#background-memory-task) owns detached tasks. `createMemoryTaskHost` in
+  `server/src/prompt/memory/memoryTaskHost.ts` documents their separate request-history grouping and task failures.
 
 ## Invariants
 
@@ -161,14 +163,18 @@ The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credent
 - UI Vitest:
   `pnpm --silent test:agent src/lib/Setting/Pages/Advanced/DiagnosticsPanel.test.ts src/lib/Others/RequestLogs/ServerRequestHistory.test.ts`.
   The panels mount with mocked report/history clients.
+- Run `pnpm --silent test:agent src/ts/network/requestHistory.test.ts src/lib/Others/RequestLogs/LogField.test.ts` for
+  share-error parsing and request-log copy feedback. The transport test stubs `authFetch`. The component tests stub
+  `copyText`.
 - Slow: `server/src/tests/diagnosticsCrash.test.ts` starts fresh Node processes; select it through
   [test-harness](test-harness.md).
-- E2E: none.
+- E2E coverage includes `e2e/settingsPages.spec.ts`, which opens Advanced settings and its accordions with page-error
+  checks. The Diagnostics panel has mount smoke coverage. Report actions and the history/alert workflow have no
+  dedicated browser assertions.
 - Not tested: the full viewer/alert flow, production Docker+sftp isolation, pulling and withdrawing a shared job, and
   saving a phone browser report. These manual checks are tracked in the [archive](../archived-plan/README.md). The
-  viewer, the failure alert's two buttons, the popup's job filter, the Diagnostics panel, and `LogField`'s copy failure
-  state were never opened in a browser. No test covers a global middleware's early return or a `http` event for an
-  answer slower than 5 s.
+  viewer, the failure alert's two buttons, the popup's job filter, and `LogField`'s copy failure state were never opened
+  in a browser. No test covers a global middleware's early return or a `http` event for an answer slower than 5 s.
 
 ## Known Hazards
 

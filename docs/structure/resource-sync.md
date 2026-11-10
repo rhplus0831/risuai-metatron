@@ -296,6 +296,9 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
 - Focused: `pnpm --silent test:agent src/ts/storage/tests/resourceSync*.test.ts`. `slow`: a long-chat case in
   `src/ts/storage/tests/resourceSyncHydration.test.ts`. `e2e`: `e2e/multiClient.spec.ts`; the live-update client's are
   [live-updates](live-updates.md#tests).
+- Boot-cache suites: see [app-shell](app-shell.md#tests).
+- Transport and pure merge:
+  `pnpm --silent test:agent src/ts/storage/tests/resourceClient.test.ts src/ts/storage/tests/recordMerge.test.ts`.
 - Adapter tests use the real Svelte module, a fresh module graph, and fake timers per test.
 - `src/ts/storage/tests/fakeResourceServer.ts`: an in-memory `authFetch` resource-route fake with batch, lost-answer,
   failure, and ordering hooks; `src/ts/storage/tests/serverKinds.ts` and `materialize(fake)` keep its record set aligned

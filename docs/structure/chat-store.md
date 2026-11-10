@@ -114,7 +114,8 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 
 - `Message.translation` shows only while its `sourceHash` matches (`storedTranslation`, [translation](translation.md)).
   Tab edits go through `saveStoredTranslationEdit`, the server runner writes the translations it makes, and
-  `setMessageTranslation` is the one op that changes it on an existing message.
+  `setMessageTranslation` edits an existing row's translation; `replaceChat` and `selectCandidate` also change it (the
+  `ChatOp` contract in `shared/chats.ts`).
 
 ### Selection
 
@@ -254,6 +255,8 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 ## Tests
 
 - Focused: `pnpm --silent test:agent chatStore resourceSyncChats chatCheckpoints`.
+- Loading and lore drafts: `pnpm --silent test:agent chatLazyLoading loreOverridesDraft.fence`; the
+  [memory tests](memory.md#tests) cover the local lore fence.
 - `src/ts/storage/tests/{chatStore.test.ts,resourceSyncChats.test.ts}` use
   [`StoreBackedServer`](resource-sync.md#tests).
 - `src/ts/checkpoints/tests/checkpointServer.ts` wraps that store with the real checkpoint service and controls load

@@ -143,8 +143,9 @@ The transport below retains this tab's in-memory log.
 - Use `globalFetch`/`fetchNative` for every remote call so that proxy, Node routing, and logs apply; a call that needs a
   stored LLM credential uses `auxFetch` with a `server/src/llm/auxOps.ts` row instead (the tab never reads a
   credential).
-- Do not bypass the proxy auth headers. On Node, the server's `sanitizeTargetUrl` is a second SSRF boundary for proxy
-  jobs only.
+- Do not bypass the proxy auth headers. `/proxy` and `/proxy2` accept any target after JWT authentication, with no
+  address or local-network restriction; see [Proxying](self-host-server.md#proxying) and the
+  `server/src/routes/proxy.ts` contract.
 - The job channel's rules (UI order, the barrier, one root callback) are in the `jobChannel.ts` header; its failure
   classes are under [Job channel](#job-channel).
 
@@ -163,6 +164,8 @@ The transport below retains this tab's in-memory log.
 ## Tests
 
 - Vitest: `pnpm --silent test:agent src/ts/network src/ts/globalApiNativeFetch.test.ts`.
+- Tab request-log retention: run `src/ts/globalApiRetention.test.ts`, included in the
+  [assets test command](assets.md#tests).
 - Client test fakes: job-follow tests use `FakeSocket` and fake timers; push tests use
   `fakeSubscription`/`FakeNotification`. Typed shared double: `src/ts/network/tests/generationJobsMock.ts`.
 - Browser probe: `util/playwright/checkJobProtocol.mjs` (a real v3 plugin provider answers job callbacks,
@@ -187,11 +190,11 @@ The transport below retains this tab's in-memory log.
   now: a tab duplicated after its page released the id on `pagehide` and before the next page claimed it shares the id
   with that page, and a tab killed without `pagehide` (and not reported as `wasDiscarded`) mints a new id on return and
   loses reload recovery of its jobs. Decision: U1, [audit](../manual-audit/archive/job-protocol-2026-10-29.md).
-- A notification click whose route is `/` (a payload without a chat route, `safeRoute` in `public/sw.js`) only focuses a
-  window. Whether the enable button keeps its user activation when it waits behind a reconcile, and whether
-  `navigator.serviceWorker.ready` names the old worker during an upgrade, are browser behaviors the tests cannot show
-  (left to a real-browser check). Decision: Web Push (`e148f7276`, [archive](../archived-plan/README.md)); Found Issues
-  Clearance (owner, 2026-11-09).
+- A notification click whose route is `/` (a payload without a chat route, `safeRoute` in `public/sw.js`) focuses an
+  existing window or opens `/` if none exists. Whether the enable button keeps its user activation when it waits behind
+  a reconcile, and whether `navigator.serviceWorker.ready` names the old worker during an upgrade, are browser behaviors
+  the tests cannot show (left to a real-browser check). Decision: Web Push (`e148f7276`,
+  [archive](../archived-plan/README.md)); Found Issues Clearance (owner, 2026-11-09).
 
 ### Gotchas
 

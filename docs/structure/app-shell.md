@@ -169,7 +169,9 @@ the sidebar's open state have no route.
 
 ### Escape order
 
-Escape closes the topmost layer only, in this order:
+Escape priority is below; the global `initHotkey` handler also applies its terminal notice, IME, and text-entry guards
+(`src/ts/hotkey.ts`, export comment). An accepted Escape that answers the last dialog can also close settings
+([Alert dialog keys](#alert-dialog-keys)).
 
 1. An alert ([Alert dialog keys](#alert-dialog-keys) has where Escape stops while a dialog is shown or queued).
 2. The prompt comparison (`PromptDiffModal`, a capture listener).
@@ -188,12 +190,14 @@ Escape's place among the other layers is in [Escape order](#escape-order).
 
 - A newly shown dialog of `AlertComp`'s main branch (not the `wait`, `wait2`, or `progress` statuses) takes the focus:
   the panel itself (`tabindex="-1"`, so a stray Space clicks no button) or an `input` dialog's own field.
-- It returns the focus to the element it took it from once no dialog is shown or queued (the saved element lives at
-  module scope, since `AlertComp` unmounts in the gap between dialogs). So Enter and Escape reach `hotkey.ts` even when
-  the dialog appeared over the composer.
-- The dialog key gate (`createDialogKeyGate`) decides whether a stroke may answer: Enter answers `ask`/`normal`/`error`
-  with "yes" and an `input` dialog with its field's value, a new Enter on a dialog button is left to that button's
-  click, and Escape answers "".
+- Once no dialog is shown or queued, `AlertComp` restores the saved focus only if the original element remains connected
+  and the active element is null, the body, or inside the dialog; focus moved elsewhere is preserved. The saved element
+  lives at module scope across dialog unmounts. The dialog's initial focus lets Enter and Escape reach `hotkey.ts` over
+  the composer.
+- The dialog key gate (`createDialogKeyGate`) decides whether a stroke may answer: Enter calls
+  `answerConfirm(true, shown)` for `ask` (preserving checkbox state;
+  [alert helpers](global-api.md#alert-helpers-and-alertcomp)), answers `normal`/`error` with "yes" and `input` with its
+  field's value, leaves a fresh Enter on a dialog button to its click, and Escape answers "".
 - While a dialog is shown or queued, Escape stops at the document (window listeners of panels underneath never see it)
   and plain-key hotkeys (Space's `focusInput`) do not run.
 - Settings close with an Escape only when no dialog remains after it, so a rejected Escape leaves the dialog and
@@ -225,6 +229,8 @@ selection lives in `src/ts/storage/selection.svelte.ts`.
 - `stores.svelte.ts` is imported almost everywhere, with the highest fan-out in the repo. Changing a store's semantics
   affects the UI, process, plugins, and sync code.
 - `bootstrap.ts` depends on storage, `globalApi.svelte.ts`, plugins, model registry, modules, and observers.
+- Service-worker edits in `bootstrap.ts` also follow [asset capability and cache recovery](assets.md#flows) and the
+  [worker probe and signing contract](build-test-platforms.md#direct-assets).
 - `isNodeServer` is consumed only by `main.ts`. `isMobile`/`isIOS` are consumed by UI code.
 
 ## Invariants
@@ -238,6 +244,9 @@ selection lives in `src/ts/storage/selection.svelte.ts`.
 - No selected character is home. Components read the selected character as
   `const currentCharacter = $derived(selectedCharacter())` and the list as `characterList()`, never by an index; a
   handler that awaits captures the `chaId` first and finds the character again after the await.
+- Popup editor openers follow the session contract on `src/ts/popupEditorSession.svelte.ts` `openPopupEditorSession`,
+  `isPopupEditorSessionCurrent`, and `closePopupEditorSession`; fields tied to records also follow
+  [GUI primitives](ui-theming.md#gui-primitives).
 - Call `startResourceSync()` only once, from `loadData`; it ignores a second call.
 - `isNodeServer` and `aiDisclosureEnabled` depend on the server's `index.html` (`serveCachedIndex` in
   `server/src/http/staticCache.ts`, for `/`, `/index.html`, and the client routes) or the Vite dev plugin

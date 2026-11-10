@@ -155,8 +155,10 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
   while the image provider is DALL-E or Imagen, or when a status link asked for them; see [settings](settings-i18n.md).
 - `src/lib/UI/GUI/CredentialSelect.svelte`: the per-profile key select.
 - `src/lib/UI/ModelList.svelte`, `src/lib/UI/ModelGrid.svelte`, `src/lib/UI/OpenrouterProviderList.svelte`,
-  `src/lib/UI/NanoGPTDashboard.svelte`, `src/lib/UI/NanoGPTProviderPicker.svelte`: pickers and panels that write only
-  their bindable `value`; slot writes are `src/lib/Setting/Pages/Model/ProfileSlotSelect.svelte`'s (see `Coupling`).
+  `src/lib/UI/NanoGPTProviderPicker.svelte`: pickers that write only their bindable `value`; slot writes are
+  `src/lib/Setting/Pages/Model/ProfileSlotSelect.svelte`'s (see `Coupling`).
+- `src/lib/UI/NanoGPTDashboard.svelte`: the edited profile's account panel, which writes global
+  `settings.providers.nanogptSubscriptionState`; its header defines the stale-answer guard.
 
 ## Flows
 
@@ -335,7 +337,8 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
   tokenizer tests ([test-harness](test-harness.md) `Fixtures`).
 - Browser checks outside the gate: `util/playwright/checkCredentialTraffic.mjs` (coverage and exclusions in the file)
   and `checkLlmTransport.mjs`.
-- Not tested: proxy routing in the tab. `checkCredentialTraffic.mjs` omits non-OpenAI provider sends, several
+- Not tested: `globalFetch` routing beyond `fetchNative`'s transport-branch checks (see
+  [network jobs](network-jobs.md#tests)). `checkCredentialTraffic.mjs` omits non-OpenAI provider sends, several
   discovery/account calls, previews, and Whisper through its component.
 
 ## Known Hazards
@@ -343,8 +346,8 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
 ### Limitations
 
 - The `/proxy2` media, memory, and count rows (`AUX_OPS` rows without a `slot`) use their flat default keys and accept
-  no profile; only the discovery rows resolve one. Decision: owner, 2026-11-10 (known-issues review): the profile
-  editor's model list was the case that mattered.
+  no profile; discovery and NanoGPT account rows accept a matching profile. See `server/src/llm/auxOps.ts` `planAuxOp`.
+  Decision: owner, 2026-11-10 (known-issues review): the profile editor's model list was the case that mattered.
 
 - An overload error event inside an Anthropic stream becomes redacted `Error:<message>` answer text (an OpenAI Responses
   error event becomes the answer too; an OpenAI Chat `error` event fails the stream). There is no in-stream retry;
@@ -357,15 +360,17 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
   plan without them, so the recheck can drop removable entries they kept. Decision: Found Issues Clearance Q2,
   2026-11-09.
 - Request capture: a stream capture flushed by an abort, a cancel, or a read error is not trimmed for a trailing
-  credential prefix (`trimPartial` runs only when the 4 MiB bound cut it, `server/src/llm/requests.ts`) and can end in
-  U+FFFD; an adapter's `addLog` (the Anthropic batch) counts logged text, not wire bytes; exchanges are stored in
-  completion order, not start order. Decision: Request History and Diagnostics trade-offs (`ab11ea9d0`,
-  [archive](../archived-plan/README.md)), recorded by Found Issues Clearance (owner, 2026-11-09).
+  credential prefix (`trimPartial` runs only when the 4 MiB + 16 KiB `STREAM_CAPTURE_BYTES` bound cuts it,
+  `server/src/llm/requests.ts`) and can end in U+FFFD; an adapter's `addLog` (the Anthropic batch) counts logged text,
+  not wire bytes; exchanges are stored in completion order, not start order. Decision: Request History and Diagnostics
+  trade-offs (`ab11ea9d0`, [archive](../archived-plan/README.md)), recorded by Found Issues Clearance (owner,
+  2026-11-09).
 - Auxiliary requests still tokenize bias strings with the main model, not their own profile's tokenizer. Decision:
   `shared/llm/request.ts` `tokenizer`.
-- A legacy plugin `custom` tokenizer counts with `cl100k_base` on screen and in server requests; its `tokenizerFunc` is
-  never called, and delayed on-screen counts do not track the plugin tokenizer map. Decision: Server Tokenizer D1 and
-  Combine Audit Fixes, [archive](../archived-plan/README.md).
+- A legacy plugin `custom` tokenizer counts with `cl100k_base` on screen and for `/api/llm/request` calls using the
+  tab-supplied scope. Job prompt counts use `pluginTokenizer: "none"` and `o200k_base`. Its `tokenizerFunc` is never
+  called, and delayed on-screen counts do not track the plugin tokenizer map. Decision: Server Tokenizer D1 and Combine
+  Audit Fixes, [archive](../archived-plan/README.md).
 - The server's `gemma` tokenizer loads `llama/llama3.json`, so Gemma counts are Llama 3 counts (also for on-screen
   counts). Decision: `server/src/prompt/tokenizers/gemma.ts` header.
 - NanoGPT's `providers.nanogptSubscriptionState` and `nanogptUseSubscriptionEndpoint` remain global: two profiles on

@@ -22,7 +22,7 @@
   `writeRestoreJournal`, `heldRecordSnapshot`, `adoptRecoveredRecord`, `adoptRecoveredChat`.
 - `src/ts/storage/recoveryDrafts.svelte.ts`: reactive draft view; `recoveryDrafts`, `exportDrafts`.
 - `src/lib/Others/ReloadNotice.svelte`: draft notice and Review entrypoint; `recoveryDrafts.open`. Owned by
-  [UI and theming](ui-theming.md).
+  [global API](global-api.md#terminal-and-reload-notices).
 - `src/lib/Others/RecoveryDrafts.svelte`: review dialog; `recoveryDraftDetails`, `applyRecoveryDraft`. Owned by
   [UI and theming](ui-theming.md).
 - `src/ts/process/composerDrafts.svelte.ts`: composer timing and journal-row lifecycle; `createComposer`,

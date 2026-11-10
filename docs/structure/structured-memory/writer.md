@@ -150,9 +150,9 @@ page, scene and link changes by id for one store write.
 
 `changeSection` starts evidence afresh for a replaced body, retains it when a disputed join or identical text remains,
 and keeps `disputed` while the body still holds the join. Highlights follow the chat-or-preset rule, with rebuilds using
-`none`; `addLinks` puts shift destinations first and keeps the newest `pageRefsPerItem` links. `promptThreads` gives
-threads about people on stage priority over older ones. Repeat planning refuses candidate pages but still creates a
-missing scene page and applies the scene rewrite.
+`none`; `addLinks` moves each shift destination to the newest end and keeps the newest `pageRefsPerItem` links.
+`promptThreads` gives threads about people on stage priority over older ones. Repeat planning refuses candidate pages
+but still creates a missing scene page and applies the scene rewrite.
 
 ### The scene page
 
@@ -260,8 +260,9 @@ Compaction changes no event, and a warning does not fail the run.
   window rebuilds its prompt. Replay resends the original context. Decision: Structured Memory D3, archive.
 - An interrupted run never counts toward the pause, so a model that only ever overruns the task deadline does not pause
   recording. Decision: Structured Memory D3, archive.
-- An edit during a reply is picked up by the send after it: `due` is read before the reply, and the marks wait.
-  Decision: Structured Memory slice 5b, archive.
+- `due` is captured before the reply, so an edit alone cannot make that send hand off a writer. A hand-off already due
+  or satisfying a waiting manual start plans from fresh stored messages and can take the new repair mark. Decision:
+  Structured Memory slice 5b, archive.
 - A failed patch call costs the retry its analysis call again: the window replays from the start, because one page
   refresh must not close a window. Decision: Structured Memory D3, archive.
 - A page locked or changed in a way a patch cannot apply is refused whole, so one bad patch delays that page's other

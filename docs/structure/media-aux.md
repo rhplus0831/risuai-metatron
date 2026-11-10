@@ -109,6 +109,8 @@ here, under `src/lib/Playground/`:
 
 - TTS depends on `database.svelte.ts`, `globalFetch`, `runTranslator` (Hugging Face non-English),
   `transformers.ts:runVITS` (synthesis only; it never opens an `AudioContext`), and plugin v3 (hook registration).
+- OpenAI TTS's per-character `oaiTTSConfig` and stored-key path, DALL-E/Imagen, and Whisper follow
+  [network jobs: Auxiliary credentials](network-jobs.md#auxiliary-credentials), including the custom TTS URL/key rule.
 - The VITS model import (`transformers.ts` `registerOnnxModel`, the character's TTS settings) takes the picked zip as a
   `File` and reads it by its central directory (`process/zipFile.ts` over `shared/charxImport.ts`'s parsers), never
   scanning entry bytes for signatures.
@@ -122,26 +124,31 @@ here, under `src/lib/Playground/`:
 ## Invariants
 
 - Provider discriminators are literal and case-sensitive: `VOICEVOX`, `Imagen`, `openai-compat`, `comfy` vs `comfyui`.
-  Saved `ttsMode: 'none'` is migrated to `''`.
+  Character creation/import maps `ttsMode: 'none'` to `''`; normalization of an existing character preserves the
+  supplied value.
 - TTS postprocessors run through `playAudio`; the GPT-SoVITS non-default-gain path calls `runPostprocessorPipeline`
   before `playProcessedAudio`. Web Speech and VITS bypass postprocessors.
 - `generateAIImage(..., 'inlay')` does not persist its result. The caller must persist it.
-- Aux-model keys use the persisted misspelling `seperate*`. `submodel` is not an auxiliary slot: it always uses the sub
-  slot. The root `seperateModels.<mode>` is a derived model id (the slot's profile's, `""` for an unset or dangling
-  slot), never stored.
+- Aux-model keys use the persisted misspelling `seperate*`. `submodel` is not an auxiliary slot: it uses the sub slot
+  under normal slot routing. `seperateModels.<mode>` is derived by `shared/sections.ts` `modelIdOfSlot`: a bare slot's
+  `modelId`, a profile slot's resolved model id, or `""` for an unset/dangling slot. The root is never stored; request
+  routing follows [LLM requests](llm-requests.md#invariants).
 
 ## Recipes
 
 ### Add a TTS provider
 
-`ttsMode` in `CharConfig.svelte`, the `database.svelte.ts` fields and defaults, and a `sayTTS` case that routes through
-`playAudio`. Verify the manual button, auto speech, `speak`, `stopTTS`, and hooks.
+- Add `ttsMode` and provider controls in `src/lib/SideBars/CharConfig.svelte`, character fields in `shared/database.ts`,
+  shared defaults in `shared/characters.ts`, provider defaults in `CharConfig.svelte`, and a `sayTTS` case through
+  `playAudio` in `src/ts/process/tts.ts`. Global settings follow [persistence](persistence.md#recipes). Verify the
+  manual button, auto speech, `speak`, `stopTTS`, and hooks.
 
 ### Add an image backend
 
-A branch in `generateAIImage` that handles both inlay and emotion modes, plus DB settings in
-`ImageGenerationSettings.svelte` (menu 19, `/settings/image-generation`). Verify `inlayScreen`, triggers, and the
-playground.
+- Add a branch in `generateAIImageForProvider` in `src/ts/process/stableDiff.ts`, preserving `generateAIImage`'s
+  cancellation boundary and `deliverGeneratedImage` for inlay/emotion delivery. Add controls in
+  `src/lib/Setting/Pages/ImageGenerationSettings.svelte` (menu 19, `/settings/image-generation`); persisted fields
+  follow [persistence](persistence.md#recipes). Verify `runInlayScreen`, triggers, and the playground.
 
 ### Change aux routing
 
@@ -163,8 +170,11 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
 - Media: `pnpm --silent test:agent src/ts/media`.
 - `ttsPlayback.test.ts` and `imageDelivery.test.ts` replace network boundaries with `fetch`/`globalFetch`/aux-fetch
   fakes; TTS also stubs `AudioContext`.
-- Not tested: `auxFetchJson` abort, other provider request bodies/integration, real audio decoding, Stop-menu
-  visibility, and interactive playground flows.
+- `auxFetchJson` abort: [network tests](network-jobs.md#tests).
+- Playground preview/retry and deletion: `src/ts/process/imageDelivery.test.ts` and
+  `src/lib/Playground/PlaygroundInlayExplorer.test.ts`.
+- Not tested: full provider request-body coverage, live-provider integration, real audio decoding, Stop-menu visibility,
+  and interactive playground flows beyond image-preview retry and inlay-preview/deletion.
 
 ## Known Hazards
 

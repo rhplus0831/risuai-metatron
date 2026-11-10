@@ -103,6 +103,9 @@ The tab's own requests (`/api/llm/request`) run their tool loops on the server t
   ([MCP registry](#mcp-registry)).
 - Remote servers' refresh tokens are the `authRefreshes` collection, which the tab and a server job both write (a kept
   [limitation](#limitations)); the Google search key and engine id are `googleSearchCredentials`.
+- A server OAuth refresh may finish after its caller ends: `McpClient` preserves a rotated grant through
+  `McpIo.writeRotatedRefresh`. `jobTools.ts` and `registry.ts` allow that write only for the original epoch and previous
+  stored grant; access-token publication still observes cancellation.
 
 ## Coupling
 
@@ -112,6 +115,9 @@ The tab's own requests (`/api/llm/request`) run their tool loops on the server t
 - `server/src/mcp/` runs a job's tools on the server; the job's channel and callbacks are
   [server generation](server-generation.md)'s. `shared/mcp/` holds the tools both sides run, and `shared/mcp/sse.ts`
   frames events for both clients.
+- MCP discovery consumes enabled modules' `mcp.url` (`getModuleMcps`). The dedicated `importMCPModule` saves that field
+  through `addModule`; ordinary module imports strip it. Preserve
+  [the module import rule](characters-modules.md#card-formats) when changing MCP import or discovery.
 
 ## Invariants
 
@@ -125,13 +131,18 @@ The tab's own requests (`/api/llm/request`) run their tool loops on the server t
   null stays chatless. Only implicit targeting without a chat argument (the Playground) uses the current selection, and
   a tab request without a chat sends its tool calls with the chat selected when it began (`requestServer` in
   `src/ts/process/request/transport.ts`); module discovery keeps its own fallback.
+- Preserve optional trailing caller signals: tab requests pass them through `getTools`/`callTool` in `mcp.ts`; job
+  callbacks pass them to `readyTabClient` for tab clients and directly to the named client's listings/calls. Remote MCP
+  and Google Search forward signals to network work and throw on abort. `request.ts` converts aborted discovery to an
+  `Aborted` failure; `transport.ts` converts callback errors to failed outcomes.
 
 ## Recipes
 
-- Add an internal MCP server: subclass `MCPClientLike` (`getToolList`, `callTool`), add a switch case in
-  `mcp.ts:initializeMCPs`, and optionally add a choice to `importMCPModule`. If its tools act on a chat, add
-  `callToolForChat(chatRef, name, args, scope?)` and address that chat by id (it is pinned and loaded only while a
-  request's events run); `callTool` stays the no-request path.
+- Add an internal MCP server: subclass `MCPClientLike` (`getToolList`, `callTool`), register it in `mcp.ts:syncMCPs`,
+  and optionally expose it in `importMCPModule`. Also route server jobs in `server/src/mcp/internal.ts`/`jobTools.ts`,
+  or use `TAB_MCP_IDENTIFIERS` (`shared/jobs.ts`), `readyTabClient`, and `jobChannel.ts` for a tab client. Chat clients
+  implement `callToolForChat(chatRef, name, args, scope?)` by stable id; their chat stays pinned and loaded during the
+  request, and `callTool` remains the no-request path.
 - Change the tool loop: `mcp.ts` `getTools`/`callTool` plus every server adapter (`server/src/llm/openAI/requests.ts`,
   `openAI/responses.ts`, `google.ts`, `anthropic.ts`) and the callback leg (`server/src/llm/requests.ts`,
   `src/ts/process/request/transport.ts`).
@@ -144,8 +155,8 @@ The tab's own requests (`/api/llm/request`) run their tool loops on the server t
 - `slow`: none. `e2e`: `e2e/lazyChats.spec.ts` (RisuAccess history).
 - `mcplib.test.ts`: a fake `fetchNative`. `mcpLeases.test.ts`: a fake `MCPClient` with gated calls.
 - `server/src/tests/mcp.test.ts`: injected `fetch`. `mcpInternal.test.ts`: the job tool set over a real store.
-- Not tested: filesystem MCP tools and PDF rendering; cancellation while the job channel's dynamic MCP module import is
-  pending.
+- `filesystemclient.test.ts` covers filesystem tool advertisement and dispatch without a selected directory. Not tested:
+  filesystem I/O and PDF rendering; cancellation while the job channel's dynamic MCP registry import is pending.
 
 ## Known Hazards
 

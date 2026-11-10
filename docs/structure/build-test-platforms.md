@@ -42,8 +42,8 @@
   budgets and targets are the [README](README.md)'s.
 - `near` does not fail: a file, a heading, or the index's invariants section over its target, with the bytes left. The
   verdict line ends with the bytes of the guides and `STRUCTURE.md` together, a trend figure with no limit. `--report`
-  prints the sizes, every finding, and each guide's stale identifiers (below) and exits 0; use plain `pnpm check:docs`
-  as the gate.
+  prints the sizes, content/link/path/ownership findings, and each guide's stale-identifier count (below), but omits
+  `verified` findings; it exits 0. Use plain `pnpm check:docs` as the gate.
 - Not validated: identifiers in code spans, and a path without a `/` (`package.json`, `vitest.*`). Confirm them with
   targeted `rg` searches; the link rule checks only relative Markdown destinations and heading anchors.
 - The guide tools; each header comment holds its contract:
@@ -158,8 +158,8 @@ in [self-host-server](self-host-server.md).
 
 - GitHub Actions runs `.github/workflows/ci.yml`, one job, `check`, on pushes to `metatron` and `main` and on pull
   requests that target them; a newer run for the same ref cancels the older one. It sets up Node 24, runs
-  `corepack enable` (so `pnpm` is the `packageManager` version), and caches the pnpm store at `$RUNNER_TEMP/pnpm-store`
-  (`PNPM_STORE_DIR`), keyed on `pnpm-lock.yaml`.
+  `corepack enable` (so `pnpm` is the `packageManager` version), and caches the pnpm store at
+  `${{ runner.temp }}/pnpm-store` (`PNPM_STORE_DIR`), keyed on `pnpm-lock.yaml`.
 - It then runs `util/ci/check.sh`, whose header lists the steps: `pnpm install --frozen-lockfile`, `pnpm check`,
   `pnpm format:check`, `pnpm check:tests`, `pnpm check:docs`, `CI=1 pnpm test` (no `slow` tag), and `pnpm build`.
   `pnpm test:slow` and `pnpm test:e2e` are not in CI.
@@ -188,6 +188,9 @@ The manifest's `share_target` POST reaches the worker's `/sw/share`, which cache
 and redirects to `/#share_<kind>`. `characterCards.characterURLImport` uses `importPendingShare` to read the pending
 file directly from Cache Storage even on an uncontrolled page, deleting it only after a truthy import result. A thrown,
 falsy, or cancelled import retains it; missing Cache Storage or a missing entry does nothing.
+
+For module shares, the `characterURLImport` contract in `src/ts/characterCards.ts` defines consumption after addition
+even without a save acknowledgement; see [Module import](characters-modules.md#module-import).
 
 ### Worker Web Push
 
@@ -280,10 +283,15 @@ Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
   WebCrypto key, a recording `fetch`, its own `Date`, and a fake `caches` for the `/sw/img/` route.
 - `server/src/tests/swAuth.test.ts` is the signer parity check: it signs with the worker's code and checks the token
   against the real auth store through `GET /api/asset/<hex>`.
+- Build identity and the standalone Vite project:
+  `pnpm --silent test:agent shared/tests/buildInfo.test.ts server/src/tests/buildInfo.test.ts` (node, no slow tags). The
+  server tests use temporary git repositories and build files; the compiler check records emitted paths and checks they
+  stay under the compiler cache without writing generated files.
 - `util/agentDevHost.test.ts` and `util/agentDataSandbox.test.ts` (node) cover the `dev:agent` runner's host resolution
   and the sandbox.
-- `util/{docsBudget,docsRead,docsOwner,docsContracts,docsLedger,guideReads}.test.ts` (node) run the documentation
-  scripts over small fixtures in a temporary directory, through their exported functions.
+- `util/{docsBudget,docsRead,docsOwner,docsContracts,docsLedger,docsDue,guideReads}.test.ts` (node) run the
+  documentation scripts through exported functions over temporary fixtures; `docsDue` uses temporary git repositories to
+  check ownership, commit counts, and verification records.
 - Not tested: the `/sw/check` route, the `fetch` handler's default `/sw/*` and `/tf` responses, the rest of the `push`
   display (icon, title and body fallbacks), and the userscript; verify those manually.
 - Not tested: the documentation scripts' command lines (exit codes, output streams).

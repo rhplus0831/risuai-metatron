@@ -263,9 +263,9 @@ matched-entry identities.
 - Browser checks: `util/playwright/checkServerSend.mjs`, `checkServerJobMatrix.mjs`, `checkSidebarChatStatus.mjs`, and
   `checkStreamingModes.mjs`. `checkJobProtocol.mjs` drives the job client with a real plugin provider
   ([test-harness](test-harness.md)).
-- Not tested: in-tab Jinja rendering; mounted screen wiring for the paste write, input translation invalidation, and
-  auto mode closing the chat; IME behavior on real devices (Android Korean, desktop Japanese); Stop on a resumed job
-  beside another chat's send.
+- Not tested: mounted screen wiring for the paste write, input translation invalidation, and auto mode ending when
+  `selection.chatOpen` becomes false; IME behavior on real devices (Android Korean, desktop Japanese); Stop on a resumed
+  job beside another chat's send.
 - Not tested: the DevTool preview and autopilot beyond `src/lib/SideBars/DevTool.test.ts`; check by hand.
 
 ## Known Hazards
@@ -287,9 +287,9 @@ matched-entry identities.
   - Plugin hooks and providers of one tab stay serialized by the server's per-client channel lane
     (`server-generation.md`): a slow provider in one chat delays another chat's hooks; a queued callback's deadline
     starts at dispatch.
-- The server's `refreshChat` (`server/src/jobs/jobScope.ts`) reloads the stored chat after job writes and callbacks that
-  may write, so an unrelated edit to that chat while the job runs can enter a later prompt stage. Decision: that file's
-  header.
+- The job's chat stays live: `refreshChat` (`server/src/jobs/jobScope.ts`) reads a changed revision before writes and
+  after callbacks that may write; `refreshChatAfterWrite` adopts an eligible own change and otherwise refreshes.
+  Unrelated edits can therefore enter a later prompt stage. Decision: that file's header.
 - `svelte/store` runs every `writable.set` subscriber through one module-level `subscriber_queue`: a subscriber that
   throws leaves the queue mid-run for the whole page, so later store updates anywhere may not notify. `beginLocalSend`
   (`src/ts/process/localSends.ts`) rolls back its own entry on a throw but cannot repair the queue; no known subscriber

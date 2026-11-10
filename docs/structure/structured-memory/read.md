@@ -273,12 +273,6 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
 
 ## Known Hazards
 
-### Issues
-
-- A paraphrase of an old message that shares no query term is not found: in the evidence lane semantic scoring only
-  reranks lexical matches, to keep embedding at `lexicalCandidates` texts a pass. The pages lane has similarity as a
-  channel of its own.
-
 ### Limitations
 
 - `verified` reads assembly's returned prompt. Plugin replacers and `request` triggers run later on every attempt, so
@@ -294,8 +288,9 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
 - Coverage's gap and leaving rows read stored text, where a send reads processed text and the greeting: a reply a script
   blanks counts as a turn here, and uncovered history that no longer fits also trims at send time. The panel says so,
   and a preview is the exact form. Decision: Structured Memory D8, archive.
-- A press that re-records an event also records the ordinary windows open under its message, as any press does, with no
-  cost preview. Decision: Structured Memory D3, archive.
+- A press that re-records an event can also record ordinary windows open under its message if the re-record windows
+  leave room under `maxWriterWindows`. The shared `pressMemoryRecord` cost preview and confirmation apply
+  ([cost preview](rebuild.md#the-cost-preview)). Decision: Structured Memory D3, archive.
 - Coverage counts tokens with the tab's scope, whose model settings fall back when a chat's binding is missing, and a
   refresh with unchanged texts does not recount after a tokenizer change.
 - A test run refuses a Plugin `memory` slot or a `request` trigger, because a tab callback saves its mutations even when
@@ -330,6 +325,9 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
 
 ### Gotchas
 
+- The evidence lane's older-message search requires lexical overlap and embeds at most `lexicalCandidates` excerpts per
+  pass for semantic reranking; sources of retrieved events bypass the lexical gate. The pages lane has similarity as a
+  channel of its own. `evidenceItems` in `server/src/prompt/memory/structured/retrieve.ts` owns both evidence paths.
 - `eventVectorTexts` is what the writer warms; a retrieval that embeds other text pays for every event again.
 - Every number in `RETRIEVAL_LIMITS` is a starting value, and a cosine threshold does not mean the same on every model.
   The stage is the scene page's `participants`, so a named thread waits for them.

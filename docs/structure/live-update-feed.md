@@ -39,6 +39,9 @@
 samples omit that field; other failures close. [Reconciliation](live-updates.md#feed-connection) uses the map, bounded
 replay, or whole listing.
 
+- `hello.rerollInPlace` advertises [in-place rerolls](server-generation.md#reroll-in-place); `eventFeed.ts`
+  `serverRerollsInPlace` consumes it for the screen's [Reroll](chat-pipeline.md#reroll) decision.
+
 `change.cursor` is its refs' newest committed log row, nested commits included, never resampled during dispatch.
 Streaming-only frames have none; older servers omit both cursors.
 
@@ -110,7 +113,9 @@ row ids, removals, count, changed metadata field names).
 
 ## Invariants
 
-- The feed publishes only what the resource store committed ([Invariants](server-resources.md#invariants)).
+- Resource, chat, and order refs in `change` frames describe only committed store writes
+  ([Invariants](server-resources.md#invariants)); `publishStreaming` can publish locks without a write, and `memoryTask`
+  and `handoff` frames describe process-local transitions (`shared/events.ts`).
 - A frame is never split ([Publication budget](#publication-budget)); a frame a socket cannot take closes that socket
   ([Frame admission](#frame-admission)).
 
@@ -127,7 +132,8 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
 
 - `chatMetadataCoalescingEvents.test.ts` identifies the job fixture's SQLite connection by its epoch and counts
   transactions on it, so background writes in other stores cannot alter the coalescing assertion.
-- Feed: `pnpm --silent test:agent server/src/tests/{changeFeed,events,chatMetadataCoalescingEvents}.test.ts`.
+- Feed:
+  `pnpm --silent test:agent server/src/tests/{changeFeed,chatFeedPatches,events,chatMetadataCoalescingEvents}.test.ts`.
 - Not tested: none here; the client's reconnect and replay are [live-updates](live-updates.md)'s.
 
 ## Known Hazards

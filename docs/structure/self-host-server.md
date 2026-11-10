@@ -10,8 +10,9 @@
   - The launcher scripts.
   - The client/server contract of the above, seen from the server side.
 - Neighbors: [server resources](server-resources.md) owns the resource store, chats, checkpoints, snapshots, backups,
-  file imports, and their routes; [server generation and live channels](server-generation.md) owns jobs, transforms, the
-  LLM and token routes, and the live-update feed.
+  file imports, and their routes; [server generation](server-generation.md) owns jobs, transforms, and token routes;
+  [LLM requests](llm-requests.md#server-request-layer) owns the LLM routes; [live-update feed](live-update-feed.md) owns
+  the feed and its socket.
 - Domain-specific runtime semantics stay with their owner guides; request history and diagnostics have a dedicated
   [owner](diagnostics.md).
 - Client counterparts, owned by other guides:
@@ -35,8 +36,8 @@ A module's contract is its doc comments; an entry names its path, role, and iden
 - `server/src/app.ts` the assembly of state, routes, and lifecycle: `createServerContext`, `RouteLimits`,
   `attachWebSocket`, `startBackgroundTasks`, `beginShutdown`, `dispose`.
 - `RISU_AI_DISCLOSURE`: `1` or `true` (trimmed, any case) turns the client's AI disclosure on (the empty-chat warning,
-  the request-info disclaimer, and the model button on every chat row); unset or any other value leaves it off.
-  `createServerContext` reads it once, so a change needs a restart and a page reload.
+  the request-info disclaimer, and the model button on rows with generation model metadata); unset or any other value
+  leaves it off. `createServerContext` reads it once, so a change needs a restart and a page reload.
 - `RISU_PASSWORD_SHA256`; `RISU_MAX_IMPORT_BYTES` ([backup routes](server-resources.md#backup-routes));
   `RISU_MAX_UPSTREAM_DB_BYTES` ([upstream backups](server-resources.md#upstream-backups));
   `RISU_UPSTREAM_IMPORT_HEAP_MB`, `RISU_UPSTREAM_EXPORT_HEAP_MB`, and `RISU_RESTORE_HEAP_MB`
@@ -87,7 +88,8 @@ Route lookup order:
 
 `app.ts` builds four buckets, each keyed by client IP. A WebSocket upgrade has no HTTP limiter.
 
-- The authenticated limiter, 2000/min: the proxy, resource, and job routes and every other route not named below.
+- The authenticated limiter, 2000/min: proxy, resource, job, push, request-history, diagnostics, and the other API
+  services outside the storage/auth/login buckets. The client index and `dist/` static handlers have no limiter.
 - The storage limiter, 2000/min, with its own bucket so an asset burst (a module import or export) cannot starve
   resource sync: the [storage routes](#storage-routes).
 - The auth limiter, 2000/min: `/api/test_auth` and `/api/crypto` share it.
@@ -304,8 +306,8 @@ and the jobs' parts are in [store state](server-resources.md#process-memory) and
   - `ws`, for the upgrade handler.
   - `proxy-addr` and `ipaddr.js`.
   - Node `crypto`/`fs`/`http`/`https`/`net`/`sqlite`.
-  - `sharp` 0.34.5, for the asset thumbnails. Its prebuilt `@img/sharp-*` binary loads without the install script, which
-    `pnpm.neverBuiltDependencies` keeps off; a host without one gets the `unavailable` redirect.
+  - `sharp` 0.35.5, for the asset thumbnails. Its prebuilt `@img/sharp-*` binary loads without an install lifecycle
+    script; a host without a loadable encoder gets the `unavailable` redirect.
   - All of the above are prod dependencies because the Docker runtime stage installs `--prod`.
 - Client dependencies that use this server: `serverAuth.ts`, `assetClient.ts`, `resourceClient.ts`, `globalApi` proxy
   code, `characterCards.hubURL` (`/hub-proxy`), `util.ts` DPoP storage.
@@ -325,8 +327,9 @@ and the jobs' parts are in [store state](server-resources.md#process-memory) and
   cache answers any same-origin request of that URL without reaching the server, including a plugin's `nativeFetch`; the
   service worker passes a request whose destination it does not sign through unsigned instead of answering 401 itself.
   Do not reopen this without a new finding.
-- Every server publish or reuse of an asset key goes through `claimAssetKey`; a handout of an existing inlay id first
-  takes `claimInlayId`.
+- Asset publication and reuse follow the `claimAssetKey` contract in `server/src/routes/storage.ts`, including its
+  restore/import exception; `/api/assets/missing` uses sorted `withAssetLocks` through verification and lease renewal. A
+  handout of an existing inlay id first takes `claimInlayId`.
 - File publication flushes staged file data before rename and syncs its directory where supported. Preserve atomic
   replacement and the ordering of durable writes; `EINVAL` and `EPERM` from directory sync are tolerated.
 - A push or auth state change is one operation on the ordered writer: read, derive, write durably, install, never a file
@@ -379,6 +382,9 @@ belong to [test-harness](test-harness.md); `slow` and `e2e` memberships are in i
   `pnpm --silent test:agent server/src/tests/{app,listenConfig,shutdown,shutdownAdmission}.test.ts`.
 - Storage and HTTP:
   `pnpm --silent test:agent server/src/tests/{assets,assetRoute,assetPreview,assetVerification,assetThumbnails,proxy}.test.ts`.
+- Asset mark and sweep: `pnpm --silent test:agent server/src/tests/assetLifecycle.test.ts` covers retention roots,
+  snapshot rechecks, and claim safety. Run its timed recognizer case through the
+  [slow-test table](test-harness.md#slow-test-table).
 - Ordered, durable writes: `pnpm --silent test:agent server/src/tests/{orderedWriter,durableWrite}.test.ts`.
 - Diagnostics and request history coverage belongs to [diagnostics](diagnostics.md); client transport tests to
   [network and jobs](network-jobs.md).

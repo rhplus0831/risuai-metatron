@@ -115,9 +115,11 @@ refusal the memory step recovered from or outlived replaces no later error.
 
 ### Prompt job execution
 
-- `createGenerationRunner` sends `command` jobs to `runCommand`; other kinds go to `runPromptJob`, which delegates one
-  send to `runPromptSend` and emits `done` after it returns. Command sequences call `runPromptSend` per part
-  ([Command sequences](#command-sequences)). `runPromptJob`'s comment is the send's order.
+- `createGenerationRunner`'s comment in `server/src/jobs/commandRunner.ts` owns dispatch, including the `memoryRecord`,
+  `memoryTest`, and `memoryRebuild` exceptions. Button, form, and manual commands use `runCommand`; other kinds use
+  `runPromptJob`. `runPromptJob` delegates one send to `runPromptSend` and emits `done` after it returns; command
+  sequences use `runPromptSend` per part ([Command sequences](#command-sequences)). `runPromptJob`'s comment is the
+  send's order.
 - `assemblePrompt` runs per speaker; its `AssemblyHost` supplies the job's services. Assembly's prompt and lore behavior
   is owned by [chat pipeline](chat-pipeline.md); memory algorithms are owned by [memory](memory.md).
 - Right before assembly's final token recheck, `AssemblyHost.toolSchemaTokens` lists the job's MCP tools once
@@ -214,6 +216,9 @@ Rules: the comments of `participantJob`, `attach`, `switchOwner`, `takeover`, `a
   `disconnected`.
 
 ## State
+
+- `JobScope` in `server/src/jobs/jobScope.ts` owns the frozen configuration and live overlay contract shared by the
+  prompt runner, CBS, and Lua bindings.
 
 ### Job receipts
 

@@ -54,9 +54,12 @@ Client entry modules re-export `shared/` modules: `src/ts/storage/database.svelt
 
 ### Mutation modules
 
-The external contracts (plugins, MCP, imports) write these records only through the modules below and the chat module; a
-refusal changes nothing (`shared/mutationValidation.ts`). An object value must be plain (`isPlainObject` in
-`shared/valueKinds.ts`: prototype `Object.prototype` or `null`), so a `Map`, a `Date`, or a class instance is refused.
+In the tab, external contracts (plugins, MCP, imports) write these records through the modules below and the chat
+module. Server RisuAccess uses `server/src/mcp/internal.ts` and shared validation; see
+[server job tools](mcp.md#server-job-tools). A thrown `MutationValidationError` leaves that mutation unchanged
+(`shared/mutationValidation.ts`). Legacy model-root refusals in `writeModelRoot` warn and skip the refused field or
+auxiliary mode while other changes can apply. An object value must be plain (`isPlainObject` in `shared/valueKinds.ts`:
+prototype `Object.prototype` or `null`), so a `Map`, a `Date`, or a class instance is refused.
 
 - `src/ts/storage/characterStore.svelte.ts`: characters (`characterList`, `characterSnapshot`, `selectedCharacter`,
   `addCharacter`, `adoptCharacter`, `updateCharacter`, `CHARACTER_FIXED_FIELDS`, `replaceCharacterAt`,
@@ -138,13 +141,15 @@ write, read back, then delete only a local entry still holding the imported valu
 
 ### Device caches
 
-The browser-local stores that remain are rebuildable caches or this device's own state, not user data: nothing cleans
-them up, and a backup does not carry them.
+The browser-local stores that remain are rebuildable caches or this device's own state, not user data: a backup does not
+carry them. The Translation page can clear `LLMTranslateCache` through `clearLLMCache`
+(`src/ts/translator/translator.ts`).
 
 - `hypaVector` (LocalForage): embeddings of the browser's `HypaProcesser`, by text and model, for file attachments,
   graph memory, the embedding playground, and the HypaV3 modal.
-- `tfCache` (Cache API): Transformers.js model files (`runTransformers`, `runEmbedding`, `runVITS`, the ONNX
-  registration in `CharConfig.svelte`).
+- `tfCache` (Cache API): downloaded Transformers.js model files (`runTransformers`, `runEmbedding`, `runVITS`). ONNX
+  registration in `CharConfig.svelte` saves server assets through `registerOnnxModel` and `saveAssets`; `character.vits`
+  holds the asset map that `runVITS` reads.
 - `LLMTranslateCache` (LocalForage): translations keyed `llm:<hash>:<source>`, hashing the pipeline signature, the
   languages, and the translator note ([translation](translation.md)); bare-source entries are never read or migrated.
 - `localStorage`: `risu-selection`, `risu-selected-chats`, the plugin `SafeLocalStorage` (`safe_plugin_*`, documented to
@@ -239,9 +244,11 @@ them up, and a backup does not carry them.
 
 - `Message` is defined in `shared/database.ts`; `chatId` is its stable per-chat id, assigned by the module.
 - `generationInfo.context` (`ContextReport`) is stored as the server wrote it: it travels in checkpoints, exports,
-  backups, and every generation patch of its message, and a text edit keeps it. Its size is bounded by the section
-  kinds, the 8-entry trim queue, the 8 named rejected lore entries, and at most three HypaV3 budget reductions. Readers
-  use `parseContextReport`; data without a valid report reads as none.
+  backups, and every generation patch of its message, and a text edit keeps it.
+- Context reports have one section per kind, an 8-entry trim queue, up to 8 named rejected lore entries, and at most
+  three HypaV3 budget reductions. Structured Memory also adds manifest items (`memory.items` has no fixed row cap) and
+  up to `CONTEXT_MEMORY_EXCLUDED` excluded rows ([structured memory](structured-memory/README.md#scope)). Readers use
+  `parseContextReport`; data without a valid report reads as none.
 - `candidates`, `selected`, `candidatesRevision`, `scriptstateCheckpoint` (`shared/rerollCandidates.ts`): a reply's
   alternatives, its own fields the selected one's. Op writes refuse a bad field; imports and reads drop it. The store
   owns `candidatesRevision`; an append clears other checkpoints.
@@ -321,6 +328,8 @@ them up, and a backup does not carry them.
 ## Tests
 
 - Focused: `pnpm --silent test:agent records settingsViews presetViews characterStore collectionStore bootSnapshot`.
+- Chat bindings and toggles: `pnpm --silent test:agent chatBinding chatToggles togglePresets togglePresetValues`; these
+  check binding resolution and writes, toggle inheritance, and preset application through chat metadata operations.
 - `src/ts/storage/tests/mutationStoresHarness.ts` boots mutation tests through `installBootRecords` against
   [`StoreBackedServer`](resource-sync.md#tests), with two of each preset kind, a plugin, and a two-chat character.
 - `src/ts/storage/tests/installFlatDatabase.ts` and its `installFlatDatabaseWithChats` helper move root preset fields
@@ -335,7 +344,9 @@ them up, and a backup does not carry them.
   the shared partition tables, and `src/ts/storage/tests/characterOrderRepair.test.ts` defers `readRefs`.
 - `slow`: two real-time comparisons in `src/ts/storage/tests/projectionBindings.test.ts`. `e2e`:
   `e2e/0-idleReload.spec.ts`, `settingsPages`, `recordsCharacters`, `presetSelection`, `personaBinding`, `chatBinding`.
-- Not tested: `maintainCharacters` beyond the trash pruning (its `checkCharOrderAtBoot` call is not driven).
+- Boot order repair: `src/ts/bootstrap.journalRecovery.test.ts` drives `maintainCharacters` after a recovered character
+  deletion and checks its order cleanup; `src/ts/storage/tests/characterOrderRepair.test.ts` checks complete-inventory
+  repair directly.
 - Not tested: the records' cost beyond a loose bound: the benchmark asserts nested-write ratios under 10× and nothing
   about the lorebook drag or preset reorder; `measureRecords.mjs` and `measureCharacters.mjs` are manual.
 

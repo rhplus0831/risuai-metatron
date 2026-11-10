@@ -214,8 +214,9 @@ and keeps what spans files.
   under `_pluginStorage`): preserve the upstream forms and precedence documented on `convertPluginStorage`; cold-record
   classification and selection are documented on `server/src/data/upstream/archive.ts` `readColdRecord`/`readColdEntry`.
   The prepared import commits as a staged full replacement ([server-resources](server-resources.md#upstream-backups)).
-- A backup restore replaces every resource and only adds assets that do not exist yet; the app reloads afterwards
-  because every revision the tab held is void (new epoch).
+- A backup restore replaces every resource and installs assets under
+  [the content-name rule](server-resources.md#backup-and-import-internals) (`server/src/routes/backups.ts`
+  `restoreValidated`); the app reloads afterwards because every revision the tab held is void (new epoch).
 - A refused snapshot or archive, one over the server's restore memory limit (`RISU_RESTORE_HEAP_MB`) included, is
   refused before maintenance, so it ends no running job and takes no safety snapshot; the route's `error` text is what
   the tab shows.
@@ -225,8 +226,8 @@ and keeps what spans files.
 ## Recipes
 
 - Add a partial-backup asset category: `selectPartialBackupAssets` in `shared/backups.ts`, its labels and inventory
-  mapping in `backuplocal.ts` `partialAssets`, and the staged-resource query in `server/src/routes/backups.ts` if
-  another kind is needed (a full backup already takes every asset).
+  mapping in `backuplocal.ts` `partialAssets`, and the staged-resource query in `server/src/data/exportScrub/worker.ts`
+  if another kind is needed (a full backup already takes every asset).
 - Change the archive format: the server side (see `server-resources.md`) and `tryReadManifest` here. Add a round-trip
   test.
 - Change what the RisuAI-compatible backup carries: the projection is `exportDatabase.ts`
@@ -240,20 +241,24 @@ and keeps what spans files.
 ## Tests
 
 - Client/Realm tests:
-  `pnpm --silent test:agent src/ts/drive src/ts/alertUpstreamImportReport.test.ts src/ts/characterCardsRealmImport.test.ts src/ts/realmBlocking.test.ts shared/tests/backups.test.ts`.
+  `pnpm --silent test:agent src/ts/drive src/ts/alertUpstreamImportReport.test.ts src/ts/characterCardsRealmImport.test.ts src/ts/realmBlocking.test.ts src/lib/UI/Realm/RealmMain.test.ts shared/tests/backups.test.ts`.
 - Upstream conversion tests:
   `pnpm --silent test:agent server/src/tests/{upstreamArchive,upstreamRisuSave,upstreamImportReport,upstreamImportSettings,upstreamImportCharacters,upstreamImportRoute,upstreamExport,upstreamExportRoute}.test.ts`.
 - `slow`:
   `pnpm --silent test:agent --tags-filter=slow server/src/tests/{upstreamImportWorker,upstreamExportWorker}.test.ts`;
   these exercise cold worker boots and heap limits.
+- The additional tagged import check in `upstreamImportCharacters.test.ts` follows
+  [Slow-test table](test-harness.md#slow-test-table); include it when changing `importCharacters.ts` or
+  `importRecords.ts`.
 - Backup tests fake `authFetch`, `LocalWriter` and resource flushes; the snapshot test runs the real export route, Realm
   tests local server/Realm stand-ins, the report dialog and restore-selection hooks alert and storage fakes.
 - Manual compatibility check: `util/upstream/checkBinCompat.mjs` runs upstream's decoder/defaults against pinned
   `legacy` or `current` targets; `--bin` checks an existing export. The `current` target also runs upstream's plugin
   storage migration ([build/test platforms](build-test-platforms.md#files)).
-- Not tested: terms-dialog rendering, `RealmMain` leaving on decline, `LocalWriter`/streamSaver integration, settings
-  report redaction, and a backup restored in upstream's own app. There is no dedicated e2e spec for this area; the
-  compatibility script does not run upstream's `LoadLocalBackup` UI.
+- Settings-report redaction: `pnpm --silent test:agent src/ts/storage/tests/snapshots.test.ts` (`buildSettingsReport`).
+- Not tested: terms-dialog rendering, `RealmMain` leaving on decline, `LocalWriter`/streamSaver integration, and a
+  backup restored in upstream's own app. There is no dedicated e2e spec for this area; the compatibility script does not
+  run upstream's `LoadLocalBackup` UI.
 
 ## Known Hazards
 

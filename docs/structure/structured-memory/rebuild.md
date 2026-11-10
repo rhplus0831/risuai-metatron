@@ -199,7 +199,8 @@ beside the rebuild buttons. The comparison starts no work; a person must press. 
   `store.memory.rebuild` reads a staged one.
 - A rebuild writes no chat: no receipt, no `hypaV3Data`.
 - A window that did not record spends nothing more until a person resumes.
-- An event is replaced only by what cites everything it said.
+- In `rebuild` mode, an event is replaced only by what cites everything it said; `fresh` removes every live event when
+  the run swaps.
 
 ## Recipes
 
@@ -253,8 +254,9 @@ Decisions: Structured Memory slice 6b, archive, unless an entry names another.
 ### Gotchas
 
 - A snapshot's size includes a stopped run's staged rows, prompts in `input` included, until the run ends.
-- A rebuild's runs join the Log whole and are never pruned, so a long chat's rebuild adds about its prompts in storage,
-  which every checkpoint save then reads ([Limitations](lifecycle.md#limitations)).
+- A rebuild's run rows join the Log, but prompt retention follows [the writer's replay rule](writer.md#a-writer-run):
+  staged settlements prune staged prompts and the swap prunes the combined history. Checkpoint saves still read the
+  remaining run text ([Limitations](lifecycle.md#limitations)).
 - `seq` is storage order, so after a backfill the last stored event is an old one: `admissionState` and `previousTitle`
   read it, and the next ordinary window can compare against it. The read path sorts by place.
 - A swap holds the event loop for one parse of the chat's pages and events, in one synchronous step.

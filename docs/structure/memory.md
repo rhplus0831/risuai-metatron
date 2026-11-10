@@ -88,7 +88,8 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 - Memory runs only when `nowChatroom.supaMemory` is set on the character or group.
 - The priority order is `db.hanuraiEnable` → `db.hypav2` → `db.hypaV3` → otherwise `supaMemory` (as selected by
   `supaModelType`).
-- The selected result is written to the current chat's algorithm field.
+- SupaMemory, HypaV2, and HypaV3 return data for the current chat's algorithm field; Hanurai returns prompt history and
+  token counts or an overflow alert, with no persistent memory.
 - `memoryAlgorithmType`'s `structuredMemory` selects [its step](structured-memory/writer.md#the-writer-task) ahead of
   that order; no other value is read.
 
@@ -100,10 +101,11 @@ embeddings, and token counts to the job or task.
 
 ### Server persistence
 
-`assemblePrompt` writes memory as chat metadata against the chat stored at write time. SupaMemory, HypaV2, and Hanurai
-write once per run; HypaV3 checkpoints summaries, then writes its selection. The merge helpers in `shared/memory.ts` own
-stale-write behavior. Previews write memory too, before their provider request; algorithm errors become the job's
-`throwError`.
+`assemblePrompt` writes returned memory as chat metadata against the chat stored at write time. SupaMemory and HypaV2
+write at most once per step; Hanurai writes no memory field. HypaV3 checkpoints summaries, then writes its selection.
+The merge helpers in `shared/memory.ts` own stale-write behavior. Previews can write memory too, before any provider
+request. Algorithm error results use the job's `throwError`; Hanurai's alert result raises `SendError` without an inlay
+error message.
 
 ### HypaV3 parts
 
@@ -119,8 +121,9 @@ production calls the parts. Source validation before a summary save is described
 ordinary input jobs select and hand due work to the detached task service, and a job summarizes synchronously only when
 the required summary request needs the tab (a Plugin `memory` model or an applicable `request` trigger). `generate` runs
 an initial summary pass. Without the task service, input V3 work stays in the job instead of handing off. A server
-summary attempt using a local WebLLM model fails with `localSummarization`; sends needing no new summary still work. The
-source comments own the conditions and selection details.
+summary attempt using a local WebLLM model throws `LOCAL_SUMMARIZATION_UNSUPPORTED`; sends needing no new summary still
+work. A detached task instead skips with `localSummarization`. The source comments own the conditions and selection
+details.
 
 ### Summary writers
 
@@ -152,11 +155,12 @@ it matches a removable entry), so a prompt still over the context with them ends
 
 ### The no-memory trim question
 
-When a memory method is configured but the owner's `supaMemory` is off, a no-memory trim asks before dropping chat
-history; a trim that drops only blank history entries (no text, no multimodals: the final re-check's rule) asks nothing.
-The owner sees `alertSelect` in [the job channel](network-jobs.md#job-channel): enable memory, trim once, or ignore
-future prompts by recording `memoryTrimAck`. An unanswered or invalid answer ends the job. The late removable-message
-cleanup after formatting still applies.
+For input jobs, when a memory method is configured but the owner's `supaMemory` is off, a no-memory trim asks before
+dropping chat history unless `memoryTrimAck` still applies; a trim that drops only blank history entries (no text, no
+multimodals: the final re-check's rule) asks nothing. `preview` and `previewPrompt` trim without asking. The owner sees
+`alertSelect` in [the job channel](network-jobs.md#job-channel): enable memory, trim once, or ignore future prompts by
+recording `memoryTrimAck`. An unanswered or invalid answer ends the job. The late removable-message cleanup after
+formatting still applies.
 
 ## State
 
@@ -260,6 +264,9 @@ lookahead starts at stored coverage and does not defer summaries.
   `VOYAGE_CONTEXT_MODELS` plus its `HypaModel` value; the settings list both tables.
 - Add a contextual provider: `contextualEmbedding.ts`, the grouped paths in `HypaProcessorV2`, and
   `HypaProcesserEx.addSummaryChunksContextual`.
+- For embedding-model and contextual-provider changes, also follow the server/tab contract in
+  `server/src/prompt/embeddings.ts` and the tab's `localModels` comment in `src/ts/process/memory/hypamemory.ts`; update
+  the server's corresponding registries, providers, and processor dispatches.
 - Change V3 behavior: the server's parts (both implementations; the job step and the task call them), the client's mains
   when the change reaches the legacy composition the fixture pins, `HypaV3Settings`, `createHypaV3Preset`, and the
   settings bindings.
@@ -297,8 +304,10 @@ lookahead starts at stored coverage and does not defer summaries.
   recorded, status and `pendingManual` set by the test.
 - Fences: `src/lib/Others/HypaV3Modal.fence.test.ts`; `src/ts/storage/tests/localLoreDraft.fence.test.ts`, over the real
   chat module.
-- Not tested: Voyage models in the Playground; modal search and category editing; standalone rate-limiter behavior;
-  browser Transformers wrappers; real-browser overlay gating, stop control, sidebar badge, and reconnect fence.
+- Rate limiter: `server/src/tests/embeddings.test.ts` covers standalone cancellation, retry scheduling, and fail-fast
+  behavior with fake timers.
+- Not tested: Voyage models in the Playground; modal search and category editing; browser Transformers wrappers;
+  real-browser overlay gating, stop control, sidebar badge, and reconnect fence.
 - Not tested end to end: the runner's completion-key check or its `captionImage` and local-generation wiring.
 
 ## Known Hazards

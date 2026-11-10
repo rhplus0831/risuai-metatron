@@ -106,8 +106,9 @@ None is in the gate; all are in `util/playwright/`.
 
 ### Fixtures
 
-- `util/playwright/captureBootFixtures.mjs`: captures the first-boot snapshot and preset fixtures in
-  `src/ts/storage/tests/fixtures/boot/` (see its README).
+- `util/playwright/captureBootFixtures.mjs`: capture driver for the flat `Database` API; its imports do not match the
+  app's exports, so it cannot capture the boot fixtures. Follow `src/ts/storage/tests/fixtures/boot/README.md` for
+  fixture provenance and deliberate default updates.
 - Frozen browser references: the per-family token ids in `server/src/tests/fixtures/tokens/browser-ids.json` and the
   browser-path fixtures in `server/src/tests/fixtures/baseline/` (preview prompts, `ParseMarkdown` HTML, `encode`
   routing, lore regex, the `igp` send). No capture harness exists: the tab exports no `encode`, and
@@ -276,7 +277,8 @@ A module mocked in more than one test file gets one shared, typed factory in a `
 factories' doc comments say what their defaults answer. Load a factory inside the hoisted `vi.mock` factory and pass the
 file's own handles as `overrides`. A partial mock over `importOriginal` needs no factory.
 
-- `src/ts/tests/alertMock.ts` `createAlertMock(overrides)`: every other client test that mocks `alert` uses it.
+- `src/ts/tests/alertMock.ts` `createAlertMock(overrides)`: shared typed defaults for client `alert` mocks; load it
+  inside the hoisted `vi.mock` factory and pass the test's own handles as overrides.
 - `src/ts/tests/storesMock.ts` `createStoresMock(overrides)`: all handwritten stores mocks use it.
 - `src/ts/tests/bootMocks.ts` `createBootMock(module, overrides)`: typed boot service defaults for both bootstrap suites
   and every whole `resourceSync` mock; each `vi.mock` stays in its test file and loads it inside so hoisting stays
@@ -394,8 +396,3 @@ test, follow [Recipes](#recipes); `readSlowTable` in `util/testInventory.mjs` ha
 - A Vitest file that reaches the settings views or the records needs the client environment (happy-dom): the records use
   Svelte's client `$state`, so `@vitest-environment node` fits only pure schema tests. Install a flat fixture with
   `src/ts/storage/tests/installFlatDatabase.ts`.
-- Under parallel whole suites (load average near 30, 2026-10-18 and 19)
-  `src/ts/storage/tests/resourceSyncFieldCache.test.ts` and the cold `boot()` of the first cases of
-  `src/ts/storage/tests/chatStore.test.ts` and `src/ts/storage/tests/resourceSyncChats.test.ts` have hit the 5,000 ms
-  default; each passed alone, and the whole-suite lock makes the case rare. Treat a failure there as load unless it also
-  fails alone; a warm-up import in `beforeAll` would remove the cold boot.

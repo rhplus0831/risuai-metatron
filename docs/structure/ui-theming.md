@@ -39,6 +39,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   `src/lib/ChatScreens/ClosedChatScreen.svelte`; sending and rerolling belong to [chat pipeline](chat-pipeline.md).
 - `src/lib/ChatScreens/messageJump.ts` `runMessageJump` and `messageJumpWindow`: jump decisions, testable without the
   screen. The chat column width and `metatron` card theme are in `src/styles.css`.
+- Screenshot capture uses `src/lib/ChatScreens/screenshotCapture.ts` `prepareScreenshotCapture`; preserve its source
+  contract. Follow [asset sources](assets.md#asset-sources) for `withFileSrcFetch` and `SCREENSHOT_CAPTURE_OPTIONS`.
 
 ### Composer
 
@@ -49,6 +51,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `src/lib/ChatScreens/composerPlaceholder.ts` owns the main placeholder. `DefaultChatScreen.svelte` also handles
   incomplete chat bindings, the Stop button's `processStage` ring, and the loading label beside Stop while a discovered
   job's chat loads.
+- `src/lib/ChatScreens/HandoffControls.svelte` renders handoff and take-back beside Stop from the screen's followed job
+  ids; presence, target selection, and requests belong to [network jobs](network-jobs.md#generation-job-client).
 
 ### Transcript rows and the mount hold
 
@@ -190,7 +194,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - Message identity: `Chats` keys a row by the chat and `chatId` (a message without one by its index); see
   `updateChatBody` and the per-row effect for remount conditions. Never read every row's text in the structural effect;
   per-chunk transcript JavaScript work must not grow with mounted row count.
-- `Chat.updateRow` changes only supplied position/streaming fields, `isComment`, or display-only `name` and `img` props;
+- `Chat.updateRow` changes only supplied position/streaming fields, `isComment`, `messageGenerationInfo`,
+  `candidateCount`, `candidateIndex`, `candidateCarrier`, `rerollIcon`, or display-only `name` and `img` props;
   name/image updates never reset the `ChatBody` key.
 - Chat structure operations go through the [chat module](chat-store.md#chat-writes) (`createChat`, `deleteChat`,
   `reorderChats`, `setChatMeta` for `folderId`) and [select](chat-store.md#selection) with `changeChatTo`/`selectChat`;
@@ -200,7 +205,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - A locked message (`isMessageLocked`: generating, or its final write not yet acknowledged) has its edit, delete, and
   regenerate controls disabled; reroll and chat deletion alert `chatGenerating` while the chat holds a lock.
 - HTML boundaries:
-  - `ChatBody`, `BackgroundDom`, suggestions, and plugin panels use `{@html}` only on sanitized parser output.
+  - `ChatBody` sanitizes body HTML through `shownBody` and renders the fixed `LOADING_HTML` literal while translation
+    loads; `BackgroundDom` and suggestions render sanitized parser output. Plugin panels render HTML sanitized with
+    DOMPurify by `setChatPanel` in `src/ts/plugins/apiV3/v3.svelte.ts`.
   - `renderGuiHtmlPart` whitelists tags and allows only `https` links.
   - Custom CSS is injected via `CustomCSSStore` and must stay disabled in `SafeModeStore`; so must the `customHTML`
     theme's GUI HTML (`Chat.svelte` renders the classic row instead).
@@ -227,9 +234,10 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 
 ## Tests
 
-- Focused: `pnpm --silent test:agent src/lib/ChatScreens src/lib/SideBars src/lib/UI src/lib/Others src/ts/gui`, plus
-  `src/ts/{tokenCountField,messageSearch,chatLoadPages,screenshotCaptureCache,stores.popupEditorSession}.test.ts` for
-  the logic outside those folders.
+- Focused:
+  `pnpm --silent test:agent src/lib/ChatScreens src/lib/SideBars src/lib/UI src/lib/Others src/lib/Mobile src/ts/gui`,
+  plus `src/ts/{tokenCountField,messageSearch,chatLoadPages,screenshotCaptureCache,stores.popupEditorSession}.test.ts`
+  for the logic outside those folders.
 - `slow`: none in this guide's paths.
 - `e2e` for the chat screen: `e2e/serverTransform.spec.ts` (row render lifecycle: final render once, existing rows
   untouched, an open details stays open), `e2e/chatBinding.spec.ts` (incomplete-binding mark, composer placeholder and
@@ -289,11 +297,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   [archive](../archived-plan/README.md); Found Issues Clearance (owner, 2026-11-09).
 - Older rows do not rerender merely because the chat length changes. Length-dependent CBS updates when that row next
   renders (edit, reload, remount, etc.). Decision: `docs/research/risunest-ideas.md`.
-- The screenshot export's renderer peak grows with the row count (about 1.4 GiB at 150 fixture rows, 3.3–3.9 GiB at 600)
-  although each page stays under `MAX_EXPORT_PIXELS`: html-to-image's per-row clone (every computed property, custom
-  ones included, inlined on every element), its SVG data URL, and the decoded image are garbage the browser reclaims
-  lazily, and nothing holds them, so no per-page release bounds the peak. Copying fewer custom properties halves it but
-  changed pixels in the tried variants. Decision: measured miss recorded 2026-11-09
+- Screenshot export's renderer peak grows with row count despite bounded pages: html-to-image creates per-row clone,
+  SVG, and decoded-image garbage that the browser reclaims lazily. Per-page releases do not bound this peak; reducing
+  copied custom properties needs pixel comparisons. Decision: measured miss recorded 2026-11-09
   ([audit](../audit/screenshot-memory-2026-11.md)).
 
 ### Gotchas

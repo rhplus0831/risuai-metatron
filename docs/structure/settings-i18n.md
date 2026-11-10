@@ -175,6 +175,8 @@ section.
 
 - Depends on `database.svelte.ts` (types, presets), `getModelInfo`/`LLMFlags`, platform flags, GUI helpers, the
   translator, and prompt tokenization.
+- Storage cleanup previews use `src/lib/Setting/Pages/Storage/StorageAssetPreview.svelte`; follow the lease-free
+  `loadAssetPreview` contract in `src/ts/storage/assetLifecycleClient.ts` ([asset client](assets.md#asset-client)).
 
 ## Invariants
 
@@ -203,8 +205,8 @@ section.
   `normalizePreset` uses; a field of how a model is reached or what it accepts goes to `MODEL_PROFILE_FIELDS` and the
   `ModelProfile` type instead, a slot choice to `MODEL_PRESET_FIELDS` and the `ModelPreset` type), edited on its owner's
   page (`ModelProfilesSettings`, `ModelSettings`, or `PromptPresetSettings`), and never be a secret.
-- Credentials belong in the `llmSecrets` section (a named key in its `credentials` map, bound by a profile's
-  `credentialId`), and `downloadPreset` blanks the endpoint fields.
+- LLM credentials belong in the `llmSecrets` section (a named key in its `credentials` map, bound by a profile's
+  `credentialId`); `downloadPreset` omits endpoint fields and credentials.
 - A credential field is edited with `src/lib/UI/GUI/SecretInput.svelte` (`path` a `shared/llmSecrets.ts` `SecretPath`):
   it shows the stored key's status (set with its last four characters, not set, saving), replaces it on Enter or the
   button (once; the field empties), and clears it; the draft is dropped when the path changes.
@@ -262,6 +264,8 @@ section.
 
 - Focused:
   `pnpm --silent test:agent src/ts/setting src/lib/Setting src/ts/storage/tests/settingsViews.test.ts src/ts/storage/tests/settingWrappers.test.ts src/lib/UI/GUI/guiRendering.test.ts src/lang`.
+- Prompt diff: `pnpm --silent test:agent src/lib/Others/PromptDiffModal.escape.test.ts`; its header describes the
+  comparison, alert, and global-hotkey isolation contract.
 - `slow`: none in this area.
 - `e2e`: `e2e/settingsPages.spec.ts` (page mounting, subsequent no-write traversal, and control writes),
   `e2e/presetSelection.spec.ts` (an edit in the real settings UI followed by a hotkey switch; the selection per client
@@ -277,7 +281,8 @@ section.
   over.
 - `src/lang/triggerDescPlaceholders.test.ts`: every locale's `triggerDesc` names the same `{{field}}` placeholders as
   English, since `TriggerV2List` fills them from the effect's fields by name.
-- No focused test covers the manual `changeLanguage` branch or prompt-template editing past a type switch.
+- `src/ts/storage/tests/settingWrappers.test.ts` covers manual Spanish selection and retaining Spanish on mount;
+  `src/lib/Setting/Pages/presetPages.test.ts` covers initializing text when a persona prompt item switches to `chatML`.
 
 ## Known Hazards
 
@@ -289,8 +294,8 @@ section.
 
 ### Gotchas
 
-- The setting conditions read `ctx.preset` (prompt preset) or `ctx.modelPreset` (model preset): a condition on a model
-  field must read `ctx.modelPreset`.
+- Conditions read `ctx.preset` for prompt fields, `ctx.modelPreset` for slot configuration, and `ctx.modelProfile` for
+  connection and capacity fields; model capability gates read `ctx.modelInfo`.
 - The preset list (`botpreset.svelte`) reads every row through its record wrapper, which keeps a 50-preset reorder just
   outside its target; keyed rows made it slower, and a plain-row projection is untried
   ([preset reorder audit](../audit/preset-reorder-2026-10-05.md)).

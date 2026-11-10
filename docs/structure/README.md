@@ -61,7 +61,12 @@ prefix. Indexes and READMEs have a free outline.
    it was last read against the code), is due a read-and-verify pass: one session, section by section against the
    source, fixing what drifted and recording the rest in the issue inbox. The pass runs
    `pnpm docs:due --verified <guide>` before its commit, which records the revision it read in
-   `docs/structure/verified.json`. No other edit of a guide updates the record. There is no whole-tree pass.
+   `docs/structure/verified.json`. No other edit of a guide updates the record.
+7. Between full audits there is no whole-tree pass. The owner calls a full audit from time to time: every guide and the
+   index get the read-and-verify pass in one run, the findings are checked by a second reader before they land, and the
+   run records every guide with `pnpm docs:due --verified`, writes its report under `docs/audit/`, and updates the
+   `Last full audit` line in [STRUCTURE.md](../../STRUCTURE.md#doc-maintenance) with its date, the revision it read, and
+   the report.
 
 ## Size limits
 

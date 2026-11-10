@@ -151,8 +151,9 @@ compatible with existing readers ([card formats](#card-formats)).
 ### Drops and deep links
 
 `src/App.svelte` passes drops to `importDroppedFile`; `characterURLImport` handles links, shares, and launch-queue
-files. Cards and modules upload as `File`/`Blob`, while preset imports read bytes. Module shares are consumed after the
-module is added ([module import](#module-import)).
+files. CharX/JPEG cards and `.risum` modules upload as `File`/`Blob`; PNG cards stream through the tab's PNG reader and
+upload extracted assets, while preset imports read bytes. Module shares are consumed after the module is added
+([module import](#module-import)).
 
 ## State
 
@@ -250,9 +251,9 @@ module is added ([module import](#module-import)).
 
 ## Recipes
 
-- Add a card field: `createBaseV2`/`createBaseV3`, `importCharacterCardSpec`, and the `character` type plus its default
-  in the server's character normalizer (`normalizeCharacter`). Verify PNG, JSON, and CharX round trips and old Tavern
-  input.
+- Add a card field: `createBaseV2`/`createBaseV3`, `importCharacterCardSpec`, the `character` type in
+  `shared/database.ts`, and its default in `normalizeCharacter` (`shared/characters.ts`;
+  [persistence](persistence.md#invariants)). Verify PNG, JSON, and CharX round trips and old Tavern input.
 - Add an asset kind: the tuple creation in `CharConfig.svelte`/`AssetInput.svelte`, the asset typing in `createBaseV3`,
   the embedding in `exportCharacterCard`, and the resolution in `importCharacterCardSpec`.
 - Add a module capability: `RisuModule`, `ModuleMenu.svelte`, `exportModuleLegacy`/`readModule` and the server reader
@@ -267,6 +268,8 @@ module is added ([module import](#module-import)).
 
 - Focused tab tests:
   `pnpm --silent test:agent src/ts/characterCards src/ts/characters src/ts/exportBatches src/ts/assetList src/ts/personaImport src/ts/process/modulesImport src/ts/process/lorebook src/lib/SideBars/LoreBook src/lib/SideBars/CharConfig src/lib/Setting/Pages/Module src/lib/Setting/Pages/PersonaSettings src/ts/storage/tests/{moduleCache,personaModuleLinks,moduleImportClient,charxImportClient}`.
+- Persona picker and catalog UI tests:
+  `pnpm --silent test:agent src/lib/Setting/listedPersona.test.ts src/lib/Others/GridCatalog.test.ts`.
 - Focused server/shared tests:
   `pnpm --silent test:agent server/src/tests/{importCharx,importModule,importRealm,jobModules}.test.ts shared/tests/{rpack,personaModules}.test.ts`.
 - `slow`: `pnpm --silent test:agent --tags-filter=slow server/src/tests/{importPngCaps,importCharx}.test.ts`; `e2e`:

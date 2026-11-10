@@ -160,7 +160,8 @@ of a committed reset whose answer was lost says `reset: false`.
 - `shared/structuredMemory.test.ts` drives `projectHypaV3Data` and the seal with plain records; it needs no fakes.
 - `server/src/tests/structuredMemoryRoutes.test.ts` drives the revision and projection reads and the reset route with
   the feed on a real app; `memoryStore.test.ts` the write path and the budget charge; `upstreamExport.test.ts` the
-  export. Each takes `projectionHistory` from `tests/memoryFixtures.ts`.
+  export. The route and export tests take `projectionHistory` from `server/src/tests/memoryFixtures.ts`;
+  `memoryStore.test.ts` uses local records.
 - The tab: `src/ts/storage/tests/chatStore.test.ts`, `hostApi.test.ts`, `chatMemoryInherit.test.ts`, and
   `HypaV3Modal.fence.test.ts`; `hostApiMemory.test.ts` for a plugin read's refresh, on a scripted `authFetch`, and for a
   read after the reset; `StructuredMemoryPanel.test.ts` for the reset control.

@@ -140,8 +140,10 @@ meets `unanswered`. The budget is soft: an answer's first group is served whatev
 stays readable, and a chat or a collection is never split. The groups, their order, and the charge (a
 [projection](structured-memory/projection.md#the-hypav3-projection) read, asked by the routes and done under structured
 memory, `overlaysMemoryProjection`, adds the chats' `memory_events`) are `readRefsWithinBudget`'s comment. A `chatRows`
-entry (one group, charged its rows and stored metadata) answers its rows and named fields as stored (no projection) at
-exactly its revision, else `moved` with the current one (null: gone), never `unanswered`.
+entry is one budget group, charged its named rows and, when metadata fields are requested, the whole stored metadata. A
+served entry answers stored rows and fields (no projection) at the requested revision, or `moved` with the current
+revision (null: gone). Unserved entries appear in `unanswered.chatRows`; a moved entry costs zero but remains subject to
+the group-order cutoff.
 
 ### Chat summaries
 
@@ -176,7 +178,8 @@ numeric legacy value to the newest chat `lastDate`, but leave absence as absence
   retained memory-task input (`onChatInvalidated`).
 - Automatic checkpoints (`autoSave`) run only after a job ends with a final `done`, when the chat policy's user-turn
   threshold is met (`countUserTurns`, no message row read).
-- By-id writes read touched rows by id (`TOUCHED_ROWS_SQL`) and counts from the `messageCounts` memo, not `COUNT(*)`.
+- By-id writes read touched rows by id (`TOUCHED_ROWS_SQL`); `messageCount` uses the `messageCounts` memo when available
+  and falls back to `COUNT(*)` on a miss.
 - Reroll snapshots (`scriptstateCheckpoint`, candidates' `scriptstateAfter`) follow position: after an `append` only the
   newest non-comment message or a live job's row keeps them; `setMessage`/`patchMessage` cannot restore them on a row
   holding none unless an admitted generation or the lock owner writes (`candidateRows` reports `cleared`).
@@ -290,6 +293,8 @@ settings sections and collections, no `root` record; tables as in version 2).
   it rebuilds missing and stale rows, and every row when `summaryProjectionVersion` differs from
   `SUMMARY_PROJECTION_VERSION` (bump it when the shape changes). A `meta` that cannot be projected rolls that
   transaction back and closes the store, stopping the open.
+- For summary-shape changes, follow [Boot cache](resource-sync.md#boot-cache) and the `CHAT_SUMMARY_FORMAT` contract in
+  `shared/chats.ts` as well as the stored projection version.
 - A reader that finds a stale or missing row computes it from `meta` and rewrites it outside a transaction, best-effort,
   as neither a store write nor a feed event; inside a transaction it answers the computed text and writes nothing.
 
@@ -307,9 +312,9 @@ check, `snapshotTableGroup`.
 - `checkpointPageRefs` (`checkpointSeq` referencing `chatCheckpoints.seq` with `ON DELETE CASCADE`, `hash`, indexed).
 - `chatCheckpointPolicy` (`chatSeq` primary key referencing `chats.seq` with `ON DELETE CASCADE`, `autoEvery`,
   `autoKeep`, `lastAutoTurns`).
-- A checkpoint delete or prune removes the pages its own checkpoints freed, in the caller's transaction, and scans
-  nothing else; the table-wide sweep runs at open, and a restore keeps only the snapshot's referenced pages, so a
-  deleted chat's or character's pages wait for the next open.
+- A checkpoint delete or prune removes only the pages its own checkpoints freed, in the caller's transaction, and scans
+  nothing else. Cascades leave unreferenced pages for store open or a scheduled `createAssetLifecycle` tick; a restore
+  keeps only referenced pages. See [Asset mark](self-host-server.md#asset-mark) for scheduling.
 
 ### Store open and normalization
 

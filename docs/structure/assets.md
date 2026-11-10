@@ -101,7 +101,7 @@ the worker's signing: [build/test](build-test-platforms.md#direct-assets); the a
 ## Tests
 
 - Vitest:
-  `pnpm --silent test:agent src/ts/globalApi{Retention,Thumbnails}.test.ts src/ts/screenshotCaptureCache.test.ts src/ts/storage/tests/asset{Client,Queue,LifecycleClient}.test.ts shared/tests/assetBatch.test.ts`.
+  `pnpm --silent test:agent src/ts/globalApi{Retention,Thumbnails}.test.ts src/ts/screenshotCaptureCache.test.ts src/ts/storage/tests/asset{Client,Queue,ReadQueue,LifecycleClient}.test.ts shared/tests/assetBatch.test.ts`.
 - Asset fixture: `src/ts/storage/tests/assetClientMock.ts` (`createAssetClientMock`) reports every asset missing.
   `src/ts/storage/tests/assetClient.test.ts` uses fake routes controlled through mocked `authFetch` and
   `answer.current`.

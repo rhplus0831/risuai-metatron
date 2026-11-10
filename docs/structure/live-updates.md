@@ -35,6 +35,8 @@ Identifiers the flows below name are not repeated here.
 - A same-epoch `hello` replaces feed locks before `reconcileRemote`; a different epoch [halts](#restore-halt). Refs
   reach the resource adapter, with chat bodies and summaries following [Chat live updates](#chat-live-updates). Handoff
   offers and presence go to `src/ts/network/handoff.ts`; socket resume/liveness is in `socketLiveness.ts`.
+- `hello.rerollInPlace` feeds `serverRerollsInPlace`; its connection-scoped contract is on the export in `eventFeed.ts`,
+  and its screen consumer is [Reroll](chat-pipeline.md#reroll).
 
 ### Live updates
 
@@ -115,6 +117,9 @@ Identifiers the flows below name are not repeated here.
   memory and lore-draft fences read the feed locks.
 - [Draft recovery](draft-recovery.md#journal-writes): the restore journal `haltForRestore` waits for. The terminal
   notice it shows is [global-api](global-api.md)'s.
+- [Plugin sandbox](plugin-sandbox.md#gotchas): detached chat-cache reuse depends on `eventFeed.ts` `liveFeedCurrent`;
+  preserve its module-header contract when changing reconciliation, liveness or resume
+  (`src/ts/plugins/apiV3/detachedChatCache.ts` `bodyCurrent`).
 
 ## Invariants
 
@@ -136,7 +141,7 @@ Identifiers the flows below name are not repeated here.
 ## Tests
 
 - Focused:
-  `pnpm --silent test:agent src/ts/network/eventFeed.test.ts src/ts/storage/tests/resourceSync{Live,FeedPatches,Patches,Notices,Refresh,Chats}.test.ts`.
+  `pnpm --silent test:agent src/ts/network/{eventFeed,socketLiveness}.test.ts src/ts/storage/tests/resourceSync{Live,FeedPatches,Patches,Notices,Refresh,Chats}.test.ts`.
   `slow`: none of its own. `e2e`: `e2e/terminalNotice.spec.ts`, restore halt; `e2e/multiClientGeneration.spec.ts`, feed
   locks.
 - The adapter tests and fakes are [resource-sync](resource-sync.md#tests)'s: `FakeResourceServer`, and

@@ -81,8 +81,9 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
   `globalscript` record is not an execution source or edited in the UI, though `regexFiles.ts` uses it as the default
   export list. Characters store `customscript`, `triggerscript`, and `lowLevelAccess`; modules store `regex`, `trigger`,
   and `lowLevelAccess`.
-- Runtime variables are strings persisted as `chat.scriptstate['$'+key]`; display-mode triggers use temporary variables
-  only. A reroll in place restores what its previous reply set, unless changed since; a failed one undoes its own writes
+- Runtime variables live in `chat.scriptstate['$'+key]`; readers return text, while Lua setters preserve raw finite
+  numbers and booleans (see Invariants). Display/request triggers write temporary variables only. A reroll in place
+  restores what its previous reply set, unless changed since; a failed one undoes its own writes
   ([server generation](server-generation.md#reroll-in-place)).
 - The tab starts command jobs and `/api/transform`; the server owns Lua, triggers, send-script stages, and request
   triggers. See [server-generation](server-generation.md) for job and host semantics, [cbs-rendering](cbs-rendering.md)
@@ -126,8 +127,11 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
 - Lua `request` restrictions (`server/src/lua/egress.ts`): HTTPS only, URL at most 120 characters, the three banned Risu
   prefixes, no `localhost` and only public addresses, 30 requests per minute per server, a 10 s timeout and a 2 MB
   answer; it requires low-level access.
-- Lua character getters return `""` when the run has no resolvable character, and the stored value (possibly
-  `undefined`) for a resolvable one; character setters return without writing when no character resolves.
+- Lua `getName` and `getCharacterFirstMessage` return `""` when no character resolves and the stored field (possibly
+  `undefined`) otherwise, without an access check. `getDescription` and `getBackgroundEmbedding` first return `nil` on
+  refused access; allowed reads use the same missing-character rule, except `getDescription` throws "Character is a
+  group" for a group. Character setters do not write a missing character. See
+  `server/src/lua/bindings.ts:createLuaBindings`.
 - Lua `setDescription` refuses a non-string value ("Invalid data type") and writes nothing.
 - The store refuses non-finite numbers. Lua `setChatVar`/`setChatVarChanged` store one as the text `getChatVar` returns
   (`0/0` as "NaN"), other values raw; Lua message and local-lore text takes any number or boolean as its text. A trigger
@@ -187,6 +191,9 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
   pin metadata batching, final trigger application, Lua host values, and worker limits.
 - v2 editor summaries: `src/lib/SideBars/Scripts/triggerEffectDisplay.test.ts` covers escaping, the numeric indent, and
   unchanged plain output.
+- Slow cases in `server/src/tests/{scriptWorker,luaRuntime,manualTriggers,triggerRuntime,promptRunner}.test.ts` require
+  an explicit opt-in; see the [slow-test table](test-harness.md#slow-test-table). Run an affected file with
+  `pnpm --silent test:agent --all <file>` to include its ordinary and slow cases.
 - Gaps: other v2 editor behavior and `Chat.svelte`'s trigger-id owner token are not directly tested.
 
 ## Known Hazards
@@ -195,10 +202,11 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
 
 - `triggercode` effects have no runtime case. Only `triggerlua` executes. Decision: `triggercode` is legacy and
   unsupported (`TriggerList.svelte`, Files above).
-- Trigger and command runs are not atomic: each trigger effect and each mutating command is its own job write (a command
-  pipeline rereads the chat before each command), so a later refused effect leaves the earlier writes committed, and a
-  command's wait can expose an intermediate revision; only the final `applyTriggerChat` diff is one write. Decision:
-  owner, 2026-11-10 (known-issues review): no transaction or rollback policy is wanted.
+- Trigger and command runs are not atomic: character/lore writes and mutating commands can commit before the run ends;
+  `scriptstate` and `note` setters batch, while message effects edit a working copy applied by `applyTriggerChat` in one
+  atomic write. A command pipeline rereads the chat before each command, and waits can expose intermediate revisions.
+  See `server/src/jobs/chatResult.ts:applyTriggerChat`. Decision: owner, 2026-11-10 (known-issues review): no
+  transaction or rollback policy is wanted.
 - A regex script with `ableFlag` set whose action metadata leaves the flags empty runs with the legacy `g` flag.
   `server/src/tests/regex.test.ts` pins it as a quirk. Decision: owner, 2026-11-10 (known-issues review): compatibility
   with existing cards.
