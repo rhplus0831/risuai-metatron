@@ -2826,6 +2826,8 @@ export const languageKorean = {
             },
         },
         timeline: {
+            view: "사건 보기",
+            views: { titles: "제목", story: "줄거리" },
             empty: "이 채팅에는 아직 기록된 사건이 없습니다.",
             turnsAgo: (turns: number) => `${turns}턴 전`,
             stale: (reason: string) => (reason ? `원문과 어긋남: ${reason}` : "원문과 어긋남"),

@@ -41,7 +41,8 @@ Read each module's header or component contract, then read the named export's co
   `sectionReverts`, `keepAll`.
 - `src/lib/Others/StructuredMemory/UnsupportedTab.svelte`: the Evidence missing tab, `PagesTab` under
   `only="unsupported"`.
-- `src/lib/Others/StructuredMemory/TimelineTab.svelte`: event view and repairs; `reconciled`, `sendRepair`, `rerecord`.
+- `src/lib/Others/StructuredMemory/TimelineTab.svelte`: event titles and story views and repairs; `reconciled`,
+  `readStory`, `sendRepair`, `rerecord`.
 - `src/lib/Others/StructuredMemory/ThreadsTab.svelte`: thread view and state editor; `read`, `setState`.
 - `src/lib/Others/StructuredMemory/LogTab.svelte`: run viewer; `readRound`, `exportLog`.
 - `src/lib/Others/StructuredMemory/MemoryEventFacts.svelte`: an event's state changes, knowledge, relationship shifts,
@@ -152,6 +153,12 @@ An opened Timeline event shows what it changed under its key lines: state change
 thread changes, through `MemoryEventFacts`, the component the Log renders a run's extraction with. Timeline passes the
 `memoryEventView` it already made, unconverted, with page and thread titles from the contents read it does once per
 `refresh`; an id with no title shows as the id, and the Log, which passes no titles, shows ids.
+
+Timeline has two views, `titles` and `story`, a choice that lasts while the tab is mounted. `story` lists the same rows
+in message order without retracted events, each with its story time and summary as plain text; pressing a row still
+opens its details and repairs. Summaries come from `/story` (`readStructuredMemoryStory`), read when `story` is chosen
+and again when `refresh` moves while it is; the previous summaries stay until the new read settles. A row with no
+summary shows its title alone, and a failed read shows the failure line over rows that keep their titles.
 
 ### The Evidence missing tab
 

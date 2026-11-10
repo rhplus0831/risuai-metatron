@@ -13,6 +13,7 @@
         readStructuredMemoryContents,
         readStructuredMemoryCoverage,
         readStructuredMemoryRecord,
+        readStructuredMemoryStory,
         reconcileMemoryCoverage,
         type MemoryPanelTabProps,
         type MemoryPanelTarget,
@@ -23,12 +24,14 @@
     import { characterList } from "src/ts/storage/characterStore.svelte";
     import { findChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import Button from "src/lib/UI/GUI/Button.svelte";
+    import SegmentedControl from "src/lib/UI/GUI/SegmentedControl.svelte";
     import {
         ADOPTED_WRITER_RUN,
         memoryAnchorState,
         memoryRerecordTarget,
         type StructuredMemoryCoverageEvent,
         type StructuredMemoryEdit,
+        type StructuredMemoryStoryEvent,
     } from "../../../../shared/structuredMemory.ts";
     import MemoryEventFacts from "./MemoryEventFacts.svelte";
     import MemoryLinkButton from "./MemoryLinkButton.svelte";
@@ -37,7 +40,10 @@
 
     /**
      * Timeline reads server/src/routes/structuredMemory.ts's coverage answer, which already has each
-     * event's message ids, status, and title at one revision; listing events reads no individual record.
+     * event's message ids, status, and title at one revision; the initial titles view reads no individual
+     * record. The view choice lasts while mounted. Story reads summaries once per refresh when chosen,
+     * joining them by id with the coverage rows and leaving out retracted events. Missing summaries or
+     * a failed story read leave the titles visible; coverage and story can come from different revisions.
      * Rows use `reconcileMemoryCoverage` and `memoryTimelineRows` in src/ts/process/structuredMemory.svelte.ts
      * over held messages, with a per-mount hash memo. An unloaded chat leaves the facts unreconciled.
      * Storage sequence is not message order, especially after backfill. Opening an event reads its record
@@ -66,6 +72,12 @@
     let facts = $state.raw<StructuredMemoryCoverage | null>(null);
     let failure = $state<string | null>(null);
     let readNumber = 0;
+    let view = $state<"titles" | "story">("titles");
+    let stories = $state.raw<ReadonlyMap<string, StructuredMemoryStoryEvent>>(new Map());
+    let storyFailure = $state<string | null>(null);
+    /** The `refresh` the story was last read at, including a failed read. */
+    let storyRead: number | null = null;
+    let storyNumber = 0;
     /** One repair at a time: while one is out the buttons are off. */
     let sending = $state(false);
 
@@ -89,6 +101,7 @@
     // With no chat held there is nothing to compare, which says nothing of its events.
     const reconciled = $derived(facts && heldChat ? reconcileMemoryCoverage(facts, messages, hashOf) : facts);
     const rows = $derived(reconciled ? memoryTimelineRows(reconciled.events, messages) : []);
+    const visibleRows = $derived(view === "story" ? rows.filter(({ event }) => event.status !== "retracted") : rows);
     const usedEvents = $derived(memoryItemsUsed(messages, "event"));
     const messageIndexes = $derived(memoryMessageIndexes(messages));
 
@@ -117,6 +130,23 @@
         if (number === titlesNumber && result.outcome === "ok" && sameChat(ref)) {
             pageTitles = new Map(result.value.pages.map(({ id, title }) => [id, title]));
             threadTitles = new Map(result.value.threads.map(({ id, title }) => [id, title]));
+        }
+    }
+
+    /** A story failure keeps the coverage rows readable as titles. Only the newest read can fill them. */
+    async function readStory() {
+        const ref = chatRef;
+        const number = ++storyNumber;
+        const result = await readStructuredMemoryStory(ref);
+        if (number !== storyNumber || !sameChat(ref)) {
+            return;
+        }
+        if (result.outcome === "ok") {
+            stories = new Map(result.value.events.map((event) => [event.id, event]));
+            storyFailure = null;
+        } else {
+            stories = new Map();
+            storyFailure = memoryReadFailureText(result);
         }
     }
 
@@ -149,6 +179,23 @@
             }
         });
     });
+
+    $effect(() => {
+        const atRefresh = refresh;
+        if (view !== "story") {
+            return;
+        }
+        untrack(() => {
+            if (storyRead !== atRefresh) {
+                storyRead = atRefresh;
+                void readStory();
+            }
+        });
+    });
+
+    function storyTimeText({ text, ordinal }: StructuredMemoryStoryEvent["storyTime"]): string {
+        return text + (ordinal === undefined ? "" : ` (${ordinal})`);
+    }
 
     function openRow(id: string) {
         openId = id;
@@ -239,7 +286,7 @@
         if (!target || target === focused) {
             return;
         }
-        const index = rows.findIndex(({ event }) => event.id === target.id);
+        const index = visibleRows.findIndex(({ event }) => event.id === target.id);
         if (index < 0) {
             return;
         }
@@ -270,9 +317,7 @@
             {/if}
             {#if openEvent.storyTime.text !== ""}
                 <p>
-                    {logText.storyTime}: {openEvent.storyTime.text}{openEvent.storyTime.ordinal === undefined
-                        ? ""
-                        : ` (${openEvent.storyTime.ordinal})`}
+                    {logText.storyTime}: {storyTimeText(openEvent.storyTime)}
                 </p>
             {/if}
             {#if openEvent.participants.length > 0}
@@ -340,17 +385,31 @@
 {/snippet}
 
 <div class="flex flex-col min-w-0 gap-2 text-sm" data-memory-timeline data-read-only={readOnly}>
+    <SegmentedControl
+        bind:value={view}
+        options={[
+            { value: "titles", label: text.views.titles },
+            { value: "story", label: text.views.story },
+        ]}
+        margin={false}
+        size="sm"
+        label={text.view}
+    />
+    {#if view === "story" && storyFailure !== null && failure === null}
+        <p role="alert" class="text-draculared" data-memory-panel-failure>{storyFailure}</p>
+    {/if}
     {#if failure !== null}
         <p role="alert" class="text-draculared" data-memory-panel-failure>{failure}</p>
     {:else if !facts}
         <p class="text-textcolor2">{panelText.loading}</p>
-    {:else if rows.length === 0}
+    {:else if visibleRows.length === 0}
         <p class="text-textcolor2">{text.empty}</p>
     {:else}
         <ul class="flex flex-col min-w-0 gap-2" bind:this={list}>
-            {#each rows.slice(0, shown) as row (row.event.id)}
+            {#each visibleRows.slice(0, shown) as row (row.event.id)}
                 {@const { event, turnsAgo } = row}
                 {@const expanded = openId === event.id}
+                {@const story = view === "story" ? stories.get(event.id) : undefined}
                 <li
                     class="flex flex-col min-w-0 border rounded-md border-darkborderc break-words"
                     data-memory-event={event.id}
@@ -371,6 +430,11 @@
                             <span class={event.status === "retracted" ? "line-through text-textcolor2" : ""}>
                                 {event.title}
                             </span>
+                            {#if story && story.storyTime.text !== ""}
+                                <span class="text-textcolor2">
+                                    {logText.storyTime}: {storyTimeText(story.storyTime)}
+                                </span>
+                            {/if}
                             <span class="flex flex-wrap gap-x-2 text-textcolor2">
                                 {#if turnsAgo !== null}
                                     <span>{text.turnsAgo(turnsAgo)}</span>
@@ -392,6 +456,11 @@
                                     >
                                 {/if}
                             </span>
+                            {#if story?.summary}
+                                <span class="whitespace-pre-wrap break-words" data-memory-event-summary>
+                                    {story.summary}
+                                </span>
+                            {/if}
                         </span>
                     </button>
                     {#if expanded}
@@ -400,13 +469,13 @@
                 </li>
             {/each}
         </ul>
-        {#if rows.length > shown}
+        {#if visibleRows.length > shown}
             <button
                 type="button"
                 class="self-start px-2 py-1 my-1 transition-colors border rounded-md border-darkborderc text-textcolor2 hover:text-textcolor"
                 onclick={() => (shown += ROWS_AT_ONCE)}
             >
-                {panelText.showMore(rows.length - shown)}
+                {panelText.showMore(visibleRows.length - shown)}
             </button>
         {/if}
     {/if}

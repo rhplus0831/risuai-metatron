@@ -417,6 +417,7 @@ export const ROUTE_TEMPLATES = [
     "/api/memory/structured/default-prompts",
     "/api/memory/structured/:characterId/:chatId/package",
     "/api/memory/structured/:characterId/:chatId/coverage",
+    "/api/memory/structured/:characterId/:chatId/story",
     "/api/memory/structured/:characterId/:chatId/runs",
     "/api/memory/structured/:characterId/:chatId/threads",
     "/api/memory/structured/:characterId/:chatId/projection",

@@ -45,6 +45,8 @@ import {
     type StructuredMemoryRevertAnswer,
     type StructuredMemoryRevisionsAnswer,
     type StructuredMemoryRunsRound,
+    type StructuredMemoryStoryEvent,
+    type StructuredMemoryStoryRound,
     type StructuredMemoryThreadsRound,
 } from "../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
@@ -282,6 +284,12 @@ type RoundRead = {
  *   them with the messages it holds, so this reads no chat. The list comes from the contents, so a
  *   recorded run's body is never read. Bytes, `cursor`, `revision`, and the refusals work as in the
  *   package round.
+ * - `GET /api/memory/structured/:characterId/:chatId/story?cursor=N&revision=R`: one round of the chat's
+ *   events in contents order, including retracted events, answered `StructuredMemoryStoryRound`: each
+ *   event's id, summary, story time, and participants as stored, without cutting or normalizing. Title,
+ *   status, and order are not repeated: the tab joins by id with the coverage facts it holds. Rounds
+ *   charge stored bytes like the package round. Bytes, `cursor`, `revision`, and refusals work as in
+ *   the package round.
  * - `GET /api/memory/structured/:characterId/:chatId/runs?cursor=N&revision=R`: one round of the chat's
  *   runs, newest first, answered `StructuredMemoryRunsRound`, each without `input` and
  *   `settingsFingerprint`. A round also stops at `MEMORY_RUNS_ROUND_ROWS` runs. Cursor 0 starts at the
@@ -657,6 +665,22 @@ export function registerStructuredMemoryRoutes(
                 }
             }
             return { revision, events, runs, next } satisfies StructuredMemoryCoverageRound;
+        }),
+    );
+
+    app.get(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/story`, limiter, authenticated, (c) =>
+        answerRound(c, ({ characterId, chatId, revision, cursor, read }) => {
+            const listed = store.memory.readKinds(characterId, chatId, ["events"])!.events.map(({ id, bytes }) => ({
+                id,
+                bytes,
+            }));
+            const { rows, next } = roundOf(listed, cursor, packageRoundBytes);
+            const events: StructuredMemoryStoryEvent[] = [];
+            for (const row of rows) {
+                const { id, summary, storyTime, participants } = read("events", row.id);
+                events.push({ id, summary, storyTime, participants });
+            }
+            return { revision, events, next } satisfies StructuredMemoryStoryRound;
         }),
     );
 

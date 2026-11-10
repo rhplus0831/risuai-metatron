@@ -32,8 +32,8 @@
     `memorySectionOverBudget`, `ReadEntry`, `RawWindow`, `rawWindow`, `coveredMessages`, `memoryEventCovers`.
   - Read contracts: `STRUCTURED_MEMORY_PATH`, `MEMORY_RECORD_KINDS`, `MEMORY_RUNS_ROUND_ROWS`,
     `StructuredMemoryContentsAnswer`, `StructuredMemoryRecordAnswer`, `StructuredMemoryPackageRound`,
-    `StructuredMemoryCoverageRound`, `StructuredMemoryRunsRound`, `StructuredMemoryThreadsRound`,
-    `StructuredMemoryLogRun`, `StructuredMemoryHealthAnswer`.
+    `StructuredMemoryCoverageRound`, `StructuredMemoryStoryRound`, `StructuredMemoryRunsRound`,
+    `StructuredMemoryThreadsRound`, `StructuredMemoryLogRun`, `StructuredMemoryHealthAnswer`.
   - Edit and lifecycle contracts: `StructuredMemoryEdit`, `StructuredMemoryEditAnswer`, `StructuredMemoryRevertAnswer`,
     `StructuredMemoryFileRecords`, `StructuredMemoryFileEntry`, `MEMORY_RESTORE_BODY_BYTES`,
     `StructuredMemoryInheritAnswer`, `StructuredMemoryRestoreAnswer`, `StructuredMemoryAdoptAnswer`,
@@ -55,8 +55,9 @@
   `writerPaused`. Owner: [writer](writer.md).
 - `src/ts/process/structuredMemory.svelte.ts`: tab route client and package renderer; `StructuredMemoryResult`,
   `readStructuredMemoryContents`, `readStructuredMemoryRecord`, `readStructuredMemoryCoverage`,
-  `readStructuredMemoryRuns`, `readStructuredMemoryHealth`, `editStructuredMemory`, `buildStructuredMemoryPackage`,
-  `buildStructuredMemoryLog`, `renderMemoryPage`, `renderMemoryTimeline`, `renderMemoryThreads`, `memoryPagePath`.
+  `readStructuredMemoryStory`, `readStructuredMemoryRuns`, `readStructuredMemoryHealth`, `editStructuredMemory`,
+  `buildStructuredMemoryPackage`, `buildStructuredMemoryLog`, `renderMemoryPage`, `renderMemoryTimeline`,
+  `renderMemoryThreads`, `memoryPagePath`.
 
 ## Flows
 
@@ -71,6 +72,10 @@ comparison ties rounds together.
   `store.memory.readContents` and `store.memory.readRecord`. A tab joins the panel's in-flight contents read unless a
   write answer settled since it began. Coverage sends stored facts (`status`, `sources`, `keptState`, `rerecord`) for
   [the tab to reconcile](read.md#the-memory-panel) against its held messages, reading no chat.
+- `/story` sends each event's `summary`, `storyTime` and `participants` as stored, retracted events included, for
+  [Timeline's story view](read.md#pages-timeline-and-threads), which joins them by id with the coverage rows it holds.
+  Its rounds charge stored bytes as `/coverage`'s do. `readStructuredMemoryStory` gives the tab only well-shaped display
+  fields, since a snapshot row can lack them.
 - Package and [chat-file](lifecycle.md#chat-files) reads collect `/package` and `/threads` at one revision. A round
   reads the revision alone and lists only its kinds: `/runs` and `/threads` by `seq` cursor (`readKindPage`), the others
   by position. The byte budget comes from `RouteLimits.memoryPackageRoundBytes` in `server/src/app.ts`, default

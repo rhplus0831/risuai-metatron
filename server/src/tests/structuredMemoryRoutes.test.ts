@@ -887,6 +887,67 @@ it("serves coverage facts in storage order without reading recorded runs or disc
     }
 });
 
+it("serves story in stored-byte rounds including retracted events with exactly four stored fields", async () => {
+    const oversized = {
+        ...event("z", "Mira reached the gate."),
+        storyTime: { text: "Dawn", ordinal: 2 },
+        participants: ["mira", "captain"],
+        keyLines: [{ speaker: "Mira", text: "문😀".repeat(500) }],
+    };
+    const retracted = { ...event("a", "The rumor was withdrawn."), status: "retracted" as const };
+    const last = event("m", "The gate opened.");
+    // The first stored record exceeds the budget, but all three story projections fit in it.
+    const budget = bytes(retracted) + bytes(last);
+    expect(bytes(oversized)).toBeGreaterThan(budget);
+    const s = await server({ routeLimits: { memoryPackageRoundBytes: budget } });
+    const revision = s.write({ events: [oversized, retracted, last] });
+    const expected = [
+        {
+            id: "z",
+            summary: "Mira reached the gate.",
+            storyTime: { text: "Dawn", ordinal: 2 },
+            participants: ["mira", "captain"],
+        },
+        { id: "a", summary: "The rumor was withdrawn.", storyTime: { text: "Morning" }, participants: [] },
+        { id: "m", summary: "The gate opened.", storyTime: { text: "Morning" }, participants: [] },
+    ];
+    expect(bytes(expected)).toBeLessThan(budget);
+
+    const first = await answer(await s.request(`${base}/story`));
+    expect(first).toEqual({ revision, events: [expected[0]], next: 1 });
+    const second = await answer(
+        await s.request(`${base}/story?${new URLSearchParams({ cursor: String(first.next), revision })}`),
+    );
+    expect(second).toEqual({ revision, events: expected.slice(1), next: null });
+    const joined = [...first.events, ...second.events];
+    expect(joined).toEqual(expected);
+    for (const record of joined) {
+        expect(Object.keys(record).sort()).toEqual(["id", "participants", "storyTime", "summary"]);
+    }
+});
+
+it("returns an empty story round for a cursor past the end", async () => {
+    const s = await server();
+    const revision = s.write({ events: [event("only")] });
+    expect(await answer(await s.request(`${base}/story?${new URLSearchParams({ cursor: "99", revision })}`))).toEqual({
+        revision,
+        events: [],
+        next: null,
+    });
+});
+
+it("refuses a story read for a missing chat or a stale revision", async () => {
+    const s = await server();
+    const initial = s.store.memory.readContents(characterId, chatId)!.revision;
+    const revision = s.write({ events: [event("new")] });
+    expect(
+        await answer(await s.request(`${base.replace(encodeURIComponent(chatId), "gone")}/story`), 404),
+    ).toMatchObject({ reason: "chatGone" });
+    expect(
+        await answer(await s.request(`${base}/story?${new URLSearchParams({ cursor: "0", revision: initial })}`), 409),
+    ).toEqual({ error: expect.any(String), revision });
+});
+
 it.each(["coverage", "runs"])(
     "budgets %s before reading bodies and serves the first oversized record",
     async (route) => {

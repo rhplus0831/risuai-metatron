@@ -877,6 +877,19 @@ export type StructuredMemoryCoverageRound = {
     next: number | null;
 };
 
+/** An event's story as stored, joined by id with the coverage facts for its title, status, and order. */
+export type StructuredMemoryStoryEvent = Pick<MemoryEvent, "id" | "summary" | "storyTime" | "participants">;
+
+/**
+ * One round of the story route, including retracted events. `next` is the position to continue from
+ * in the chat's event list, or null when the list is done.
+ */
+export type StructuredMemoryStoryRound = {
+    revision: string;
+    events: StructuredMemoryStoryEvent[];
+    next: number | null;
+};
+
 /**
  * What a person can change of a chat's memory, one change per request. The tab never sends a record:
  * this closed union is all an edit can say, so history, provenance, a page's type, and ids cannot be

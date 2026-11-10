@@ -23,6 +23,7 @@ import {
     buildStructuredMemoryPackage,
     buildStructuredMemoryLog,
     readStructuredMemoryCoverage,
+    readStructuredMemoryStory,
     readStructuredMemoryFile,
     joinMemoryCoverage,
     memoryRunView,
@@ -441,6 +442,62 @@ it("shows missing receipts only on the newest eligible assistant and distinguish
     ] as const) {
         expect(memoryReceiptView(receipt, { newest: false, taskLive: false })).toMatchObject({ kind, action });
     }
+});
+
+it("restarts the story after a second-round revision conflict, discarding earlier events and filling missing display fields", async () => {
+    authFetch
+        .mockResolvedValueOnce(
+            Response.json({
+                revision: "r1",
+                events: [
+                    {
+                        id: "discarded",
+                        summary: "This version must not survive.",
+                        storyTime: { text: "Yesterday" },
+                        participants: ["old"],
+                    },
+                ],
+                next: 1,
+            }),
+        )
+        .mockResolvedValueOnce(Response.json({ revision: "r2" }, { status: 409 }))
+        .mockResolvedValueOnce(
+            Response.json({
+                revision: "r2",
+                events: [
+                    {
+                        id: "current",
+                        summary: "Mira arrived.",
+                        storyTime: { text: "Dawn", ordinal: 3 },
+                        participants: ["mira"],
+                    },
+                ],
+                next: 1,
+            }),
+        )
+        .mockResolvedValueOnce(Response.json({ revision: "r2", events: [{ id: "restored" }], next: null }));
+
+    expect(await readStructuredMemoryStory(ref)).toEqual({
+        outcome: "ok",
+        value: {
+            revision: "r2",
+            events: [
+                {
+                    id: "current",
+                    summary: "Mira arrived.",
+                    storyTime: { text: "Dawn", ordinal: 3 },
+                    participants: ["mira"],
+                },
+                { id: "restored", summary: "", storyTime: { text: "" }, participants: [] },
+            ],
+        },
+    });
+    expect(authFetch.mock.calls.map(([url]) => url)).toEqual([
+        `${base}/story`,
+        `${base}/story?cursor=1&revision=r1`,
+        `${base}/story`,
+        `${base}/story?cursor=1&revision=r2`,
+    ]);
 });
 
 it.each(["coverage", "log"])(

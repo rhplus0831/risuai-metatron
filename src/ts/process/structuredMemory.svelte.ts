@@ -72,6 +72,8 @@ import {
     type StructuredMemoryRunsRound,
     type StructuredMemorySettings,
     type StructuredMemorySlotWarnings,
+    type StructuredMemoryStoryEvent,
+    type StructuredMemoryStoryRound,
     type StructuredMemoryTestResult,
     type StructuredMemoryThreadsRound,
 } from "../../../shared/structuredMemory.ts";
@@ -111,6 +113,8 @@ import { authFetch } from "../storage/serverAuth";
  * messages with the record facts the coverage route answers, because the tab holds the chat's whole
  * message list and a route has no job scope. `reconcileMemoryCoverage` brings those facts up to the held
  * messages first, with the same rule a send uses, so an edit shows at once and with no request.
+ * `readStructuredMemoryStory` collects stored summaries at one revision for Timeline's story view,
+ * normalizing their display fields before the tab joins them by id with its coverage rows.
  * `memoryRunView` turns a stored run into what a Log row shows, `memoryPageTree` and
  * `memoryPageHistoryView` a page into its rows, and `memoryWriterNotice` the current state into the
  * panel's writer line. A receipt's link reaches a panel that is not there yet through
@@ -157,6 +161,9 @@ type ImportFiles = { files: StructuredMemoryImportFile[] };
 
 /** The chat's memory as the coverage route lists it, every round read at one revision. */
 export type StructuredMemoryCoverage = Omit<StructuredMemoryCoverageRound, "next">;
+
+/** The chat's event stories, normalized for display, with every round read at one revision. */
+export type StructuredMemoryStory = Omit<StructuredMemoryStoryRound, "next">;
 
 /**
  * What an export takes of the chat's memory, read at one revision. `rows` says whether the chat holds a
@@ -642,6 +649,36 @@ function parseCoverageRound(body: AnswerBody, cursor: number): StructuredMemoryC
     return typeof revision === "string" && Array.isArray(events) && Array.isArray(runs) && isForward(next, cursor)
         ? (body as StructuredMemoryCoverageRound)
         : null;
+}
+
+/** Restored rows can lack story fields or hold other shapes; only string ids can join the coverage. */
+function parseStoryRound(body: AnswerBody, cursor: number): StructuredMemoryStoryRound | null {
+    const { revision, events, next } = body;
+    if (typeof revision !== "string" || !Array.isArray(events) || !isForward(next, cursor)) {
+        return null;
+    }
+    return {
+        revision,
+        events: storedItems(events).flatMap((event): StructuredMemoryStoryEvent[] => {
+            if (typeof event.id !== "string") {
+                return [];
+            }
+            const storyTime =
+                isPlainObject(event.storyTime) && typeof event.storyTime.text === "string" ? event.storyTime : {};
+            return [
+                {
+                    id: event.id,
+                    summary: storedText(event.summary) ?? "",
+                    storyTime: {
+                        text: storedText(storyTime.text) ?? "",
+                        ...present("ordinal", storedCount(storyTime.ordinal)),
+                    },
+                    participants: storedTexts(event.participants),
+                },
+            ];
+        }),
+        next: next as number | null,
+    };
 }
 
 function parseThreadsRound(body: AnswerBody, cursor: number): StructuredMemoryThreadsRound | null {
@@ -1204,6 +1241,19 @@ export function readStructuredMemoryCoverage(ref: ChatRef): Promise<StructuredMe
             }
         });
         return read.outcome === "ok" ? { outcome: "ok", value: { revision: read.value, events, runs } } : read;
+    });
+}
+
+/** Every event's story at one revision; a changed round restarts the read with nothing kept. */
+export function readStructuredMemoryStory(ref: ChatRef): Promise<StructuredMemoryResult<StructuredMemoryStory>> {
+    return readAtOneRevision(async () => {
+        const events: StructuredMemoryStoryEvent[] = [];
+        const read = await readRounds(`${chatPath(ref)}/story`, parseStoryRound, (round) => {
+            for (const event of round.events) {
+                events.push(event);
+            }
+        });
+        return read.outcome === "ok" ? { outcome: "ok", value: { revision: read.value, events } } : read;
     });
 }
 

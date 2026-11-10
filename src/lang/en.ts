@@ -2941,6 +2941,8 @@ export const languageEnglish = {
             },
         },
         timeline: {
+            view: "Timeline view",
+            views: { titles: "Titles", story: "Story" },
             empty: "This chat has no recorded events yet.",
             turnsAgo: (turns: number) => (turns === 1 ? "1 turn ago" : `${turns} turns ago`),
             stale: (reason: string) => (reason ? `Sources changed: ${reason}` : "Sources changed"),

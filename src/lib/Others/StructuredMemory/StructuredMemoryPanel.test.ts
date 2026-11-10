@@ -788,11 +788,13 @@ it("opens Pages by default and Timeline for a pending target, with reading tabs 
     await open();
     expect(query('[data-memory-panel="pages"]')).not.toBeNull();
     expect(query('[data-memory-page="p"]')?.textContent).toContain("The gate");
-    const tabLabels = () =>
-        [...target.querySelectorAll<HTMLButtonElement>("[data-segment-btn]")].map((button) =>
-            button.textContent?.trim(),
-        );
     const tabs = language.structuredMemory.panel;
+    const tabLabels = () =>
+        [
+            ...target.querySelectorAll<HTMLButtonElement>(
+                `[role="group"][aria-label="${tabs.sections}"] [data-segment-btn]`,
+            ),
+        ].map((button) => button.textContent?.trim());
     expect(tabLabels()).toEqual([
         tabs.pages,
         tabs.timeline,
@@ -1559,6 +1561,103 @@ function serveAnchoredEvent() {
     });
     return state;
 }
+
+it("reads story once per refresh, showing unretracted summaries in message order and keeping titles on failure", async () => {
+    serveMemory();
+    const messages = findChat(ref)!.message;
+    // A backfilled early event comes after the later event in storage and in both route answers.
+    const events = [
+        { id: "later", title: "Gate opens", status: "active", index: 2 },
+        { id: "retracted", title: "Withdrawn rumor", status: "retracted", index: 1 },
+        { id: "earlier", title: "Mira arrives", status: "active", index: 0 },
+        { id: "missing", title: "An untold ending", status: "active", index: 3 },
+    ];
+    const earlySummary = "The <em>gate</em> waited.\n**Mira arrived.**";
+    let storyFails = false;
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.includes("/coverage"))
+            return Response.json({
+                revision: "r1",
+                events: events.map(({ index, ...event }) => ({
+                    ...event,
+                    messageIds: [messages[index].chatId],
+                    sourceIndex: index,
+                    sources: [{ messageId: messages[index].chatId, index, hash: memoryMessageHash(messages[index]) }],
+                })),
+                runs: [],
+                next: null,
+            });
+        if (url.includes("/story")) {
+            if (storyFails) throw new Error("story offline");
+            return Response.json({
+                revision: "r1",
+                events: [
+                    { id: "later", summary: "The gate opened.", storyTime: { text: "" }, participants: [] },
+                    { id: "retracted", summary: "A discarded rumor.", storyTime: { text: "Night" }, participants: [] },
+                    { id: "earlier", summary: earlySummary, storyTime: { text: "Dawn" }, participants: ["mira"] },
+                ],
+                next: null,
+            });
+        }
+        if (url.endsWith("/records/events/earlier"))
+            return Response.json({ revision: "r1", data: { id: "earlier", summary: "Details of Mira's arrival." } });
+        return fetch(url, init, options);
+    });
+    const viewButton = (view: "titles" | "story") =>
+        [...target.querySelectorAll<HTMLButtonElement>("[data-memory-timeline] [data-segment-btn]")].find(
+            (button) => button.textContent?.trim() === language.structuredMemory.timeline.views[view],
+        );
+    const chooseView = async (view: "titles" | "story") => {
+        const button = viewButton(view);
+        expect(button).toBeDefined();
+        button!.click();
+        await settle();
+        expect(button!.getAttribute("aria-pressed")).toBe("true");
+    };
+    const rowIds = () =>
+        [...target.querySelectorAll<HTMLElement>("[data-memory-event]")].map((row) => row.dataset.memoryEvent);
+    const summaries = () =>
+        [...target.querySelectorAll("[data-memory-event-summary]")].map((summary) => summary.textContent?.trim());
+
+    await open();
+    await chooseTab("timeline");
+    expect(viewButton("titles")?.getAttribute("aria-pressed")).toBe("true");
+    expect(reads("story")).toHaveLength(0);
+    expect(summaries()).toEqual([]);
+    expect(rowIds()).toContain("retracted");
+
+    await chooseView("story");
+    expect(reads("story")).toHaveLength(1);
+    expect(query("[data-memory-panel-failure]")).toBeNull();
+    expect(rowIds()).toEqual(["earlier", "later", "missing"]);
+    expect(summaries()).toEqual([earlySummary, "The gate opened."]);
+    expect(query('[data-memory-event="earlier"]')?.textContent).toContain("Mira arrives");
+    expect(query('[data-memory-event="earlier"]')?.textContent).toContain("Dawn");
+    expect(query('[data-memory-event="earlier"] [data-memory-event-summary]')?.childElementCount).toBe(0);
+    expect(query('[data-memory-event="later"]')?.textContent).not.toContain(language.structuredMemory.log.storyTime);
+    expect(query('[data-memory-event="missing"]')?.textContent).toContain("An untold ending");
+    expect(query('[data-memory-event="missing"] [data-memory-event-summary]')).toBeNull();
+
+    click('[data-memory-event="earlier"] > button');
+    await settle();
+    expect(query('[data-memory-event="earlier"] > button')?.getAttribute("aria-expanded")).toBe("true");
+    expect(query('[data-memory-event="earlier"]')?.textContent).toContain("Details of Mira's arrival.");
+    click('[data-memory-event="earlier"] > button');
+    await chooseView("titles");
+    expect(summaries()).toEqual([]);
+    await chooseView("story");
+    expect(reads("story")).toHaveLength(1);
+
+    storyFails = true;
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(reads("story")).toHaveLength(2);
+    expect(query("[data-memory-panel-failure]")?.textContent).toContain("story offline");
+    expect(rowIds()).toEqual(["earlier", "later", "missing"]);
+    for (const title of ["Mira arrives", "Gate opens", "An untold ending"]) expect(target.textContent).toContain(title);
+    expect(summaries()).toEqual([]);
+});
 
 it("shows an opened Timeline event's changes below its key lines, using page and thread titles with id fallbacks", async () => {
     const state = serveAnchoredEvent();
