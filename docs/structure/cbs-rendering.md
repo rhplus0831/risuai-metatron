@@ -196,9 +196,9 @@ inlay, whose tag stays as text. Images use `getFileSrc` ([assets](assets.md)). A
 - `trimMarkdownSharingStyles` and the `src/ts/parser/chatStyles.ts` header have the placeholder, ordering, and
   retained-sheet rules; `ChatBody` prunes bilingual pairs before the styles are taken out.
 - Equal CSS after CBS is scoped once ([Caches](#caches)) and reaches the registry as one `css` string.
-- Retained layer and scope sheets keep the first declaration order of layers and the parent of implicit scopes. Their
-  order against a newer row's shared sheet can reverse, which matters only for conflicts the layer and scope-proximity
-  steps do not already decide.
+- Retained layer sheets keep the first declaration order of layers. Their order against a newer row's shared sheet can
+  reverse, which matters only for conflicts the layer step does not already decide. An `@scope` rule does not parse
+  (`@adobe/css-tools`), so its sheet takes the CSS error fallback and is never retained.
 - The registry's hidden container sits at the end of `.default-chat-screen`, after the rows, greeting, `BackgroundDom`,
   suggestions, and plugin panels. Custom-GUI sheets in `Chat.svelte` stay at their row positions.
 - `Chats` mounts its rows with its contexts (`getAllContexts`). Without a registry (`BookmarkList`, an `App` sibling,
@@ -254,9 +254,11 @@ inlay, whose tag stays as text. Images use `getFileSrc` ([assets](assets.md)). A
   - Selectors are prefixed with `.chattext`.
   - Classes get the `x-risu-` prefix.
   - `<risu-style>` uses a hex round-trip so decoded CSS cannot re-enter the HTML parser.
+  - Both trim functions scope every `style` element of the sanitized tree, whatever its spelling, attributes, or nesting
+    in at-rules, so scoping never depends on the encoder having matched the tag. A selector that already starts with the
+    emitted `.chattext ` scope is kept, because translated HTML is trimmed twice.
 - On the chat screen a row's shared `<style>` elements keep their attributes and an inert `/**/` comment, and custom-GUI
-  and layer/scope sheets remain at their row positions: [Shared styles](#shared-styles) has the rule and its cascade
-  limits.
+  and layer sheets remain at their row positions: [Shared styles](#shared-styles) has the rule and its cascade limits.
 - Code that serializes or clones a row (plugins reading `.chattext`, `html-to-image` screenshots, which inline computed
   styles) gets the placeholders without the shared CSS, plus any retained sheets.
 - A row whose sheet was removed after a real gap (a `{#key}` reload, a remount) gets a new one. Rows `Chats` trims are

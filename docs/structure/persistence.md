@@ -78,7 +78,8 @@ contract; use these identifiers to trace installation, writes, and save-loop cou
 - Installation and writes: `initializeRecords`, `applyRaw`, `replaceRecord`, `batchRecordWrites`,
   `setRecordWriteListener`, `setCharacterWriteListener`.
 - Wrapper identity and list operations: `trackedRecord`, `BY_ID_FIELDS`, `moveRecordListItem`, `replaceRecordList`,
-  `DetachedWrapperError`, `DuplicateIdError`.
+  `DetachedWrapperError`, `DuplicateIdError`, `recordValueIdentity` (a wrapper keeps its identity when a raw replacement
+  puts another object at its path; this token does not).
 - Save projections and adoption: `characterFieldStamp`, `moduleItemFieldStamp`, `adoptCharacterValue`,
   `adoptModuleValue`, `adoptPluginStorageValue`, `applyRawCharacter`, `patchRawCharacter`.
 - Credential routing: `CredentialRefusedError`; the external mutation boundary is described above.

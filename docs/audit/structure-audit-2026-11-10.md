@@ -140,7 +140,7 @@ recurring real ones are Lua and trigger effects that run in `server/src/` (owned
 
 ## Not applied
 
-- Five code defects, recorded in [found issues](../research/found-issues.md#structure-audit-2026-11-10): a `<style>`
+- Five code defects, recorded in [found issues](../research/found-issues.md): a `<style>`
   with an attribute or in capitals escapes CSS scoping; a popup editor draft can land on another row with equal text;
   chat files keep reroll candidates' memory receipts; a background memory request cannot be shared for support;
   `pnpm check:changed` skips the e2e program. Each was traced by two readers and none was run.
@@ -153,6 +153,9 @@ recurring real ones are Lua and trigger effects that run in `server/src/` (owned
 
 A sixth inbox entry came from a corrected claim: `util/playwright/captureBootFixtures.mjs` imports exports the app no
 longer has.
+
+All eight entries left the inbox the same day: the five defects were reproduced and fixed, the driver was deleted, and
+the two notes moved to the audit report and the module comment (the found-issues header has the summary).
 
 ## Other checks
 

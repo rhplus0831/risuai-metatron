@@ -130,7 +130,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `src/lib/UI/GUI/TextAreaInput.svelte`: textarea or CBS-highlighted contenteditable that opens the popup editor
   (`popupEditor`, `popupEditorContext`). A field tied to a selected record passes its id as `popupEditorContext`;
   wrappers that forward it include `RegexList`, `TriggerList`, `PromptDataItem`, `MultiLangInput`, and
-  `SettingTextarea`.
+  `SettingTextarea`. A row of an index-bound list (`PromptDataItem`, `RegexData`) adds `recordValueIdentity` of its row,
+  in an object replaced only when owner or row changes: a remote list replacement then drops the draft.
 - `src/lib/UI/GUI/LazyFileSrc.svelte` (object-URL ownership is in [assets](assets.md)) and
   `src/lib/UI/GUI/LazyCharImage.svelte` (256/512 server thumbnails, `thumb`) defer reads until near the viewport.
 
@@ -267,13 +268,6 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   attempts fail, confirm its recovery badges, then restart the server and reopen the chat.
 
 ## Known Hazards
-
-### Issues
-
-- Unconfirmed: `popupEditorContext` distinguishes an owner, not a repeated row within it. Prompt-template
-  (`src/lib/UI/PromptDataItem.svelte`) and regex (`src/lib/SideBars/Scripts/RegexData.svelte`) rows pass the
-  preset/character id, so if another client reorders same-text rows while a popup is open, its draft may write to the
-  row now at that index. See [settings](settings-i18n.md) and [scripts/triggers](scripts-triggers.md).
 
 ### Limitations
 
