@@ -81,7 +81,9 @@ describe("trimMarkdownSharingStyles", () => {
     it("shares an attributed style with its sanitized attributes, the placeholder keeping them", async () => {
         const md = await notrim('<style media="all">.probe { color: blue }</style><span class="probe">x</span>');
         const shared = trimMarkdownSharingStyles(md);
-        expect(shared.styles).toEqual([{ css: ".probe { color: blue }", attributes: [["media", "all"]] }]);
+        expect(shared.styles).toEqual([
+            { css: ".chattext .x-risu-probe{color:blue;}", attributes: [["media", "all"]] },
+        ]);
         expect(shared.html).toContain('<style media="all">/**/</style>');
     });
 
@@ -94,15 +96,28 @@ describe("trimMarkdownSharingStyles", () => {
     });
 
     it.each([
-        ["@layer", "@layer c2a { .probe { color: red } }"],
-        ["layer()", "@import url(x.css) layer(a);"],
-        ["@scope", "@scope { .probe { color: red } }"],
-    ])("keeps a sheet with %s inline, untouched", async (_name, css) => {
-        // A raw `<STYLE>` is not encoded (the encoder's regex is exact), so it survives sanitizing as is.
+        ["@layer", "@layer c2a { .probe { color: red } }", "@layer c2a{.chattext .x-risu-probe{color:red;}}"],
+        ["layer()", "@import url(x.css) layer(a);", "@import url(x.css) layer(a);"],
+    ])("keeps a prepared sheet with %s inline", async (_name, css, scoped) => {
         const md = await notrim(`<STYLE>${css}</STYLE><span class="probe">x</span>`);
         const shared = trimMarkdownSharingStyles(md);
         expect(shared.styles).toEqual([]);
-        expect(shared.html).toContain(`<style>${css}</style>`);
+        expect(shared.html).toContain(`<style>${scoped}</style>`);
+    });
+
+    it("uses the CSS error fallback for unsupported scope syntax", async () => {
+        const previous = settings.ui.returnCSSError;
+        try {
+            settings.ui.returnCSSError = false;
+            const shared = trimMarkdownSharingStyles(
+                await notrim("<style>@scope { .probe { color: red } }</style><p>x</p>"),
+            );
+            expect(shared.styles).toEqual([]);
+            expect(shared.html).not.toContain("<style");
+            expect(parseHtml(shared.html).textContent.trim()).toBe("x");
+        } finally {
+            settings.ui.returnCSSError = previous;
+        }
     });
 
     it("keeps an empty style untouched", () => {
@@ -111,26 +126,27 @@ describe("trimMarkdownSharingStyles", () => {
         expect(shared.html).toBe("<style></style><p>x</p>");
     });
 
-    it("restores <risu-style> only on the case-sensitive guard trimMarkdown uses", () => {
+    it.each(["RISU-STYLE", "risu-style"])("restores and shares %s regardless of tag case", (tag) => {
         const hex = Buffer.from(".probe{color:red}").toString("hex");
-        const upper = `<RISU-STYLE>${hex}</RISU-STYLE>`;
-        expect(trimMarkdownSharingStyles(upper)).toEqual({ html: trimMarkdown(upper), styles: [] });
-        expect(trimMarkdown(upper)).toContain("<risu-style>");
-
-        const lower = `<risu-style>${hex}</risu-style>`;
-        expect(trimMarkdownSharingStyles(lower).styles).toEqual([
-            { css: ".chattext .x-risu-probe{color:red;}", attributes: [] },
-        ]);
+        const html = `<${tag}>${hex}</${tag}>`;
+        expect(trimMarkdownSharingStyles(html)).toEqual({
+            html: "<style>/**/</style>",
+            styles: [{ css: ".chattext .x-risu-probe{color:red;}", attributes: [] }],
+        });
+        expect(trimMarkdown(html)).toBe("<style>.chattext .x-risu-probe{color:red;}</style>");
     });
 
     it("runs prepare on the tree before taking the styles out, so a side holding only a style is kept", () => {
-        const side = `<div class="${BILINGUAL_MUTED_CLASS}"><style>.chattext .x{color:blue}</style></div>`;
-        const html = `<style>.chattext p{color:red}</style><div class="${BILINGUAL_PAIR_CLASS}"><p>Hello</p>${side}</div>`;
+        const side = `<div class="${BILINGUAL_MUTED_CLASS}"><style>.chattext .x-risu-x{color:blue;}</style></div>`;
+        const html = `<style>.chattext p{color:red;}</style><div class="${BILINGUAL_PAIR_CLASS}"><p>Hello</p>${side}</div>`;
         const legacy = pruneEmptyBilingualPairs(trimMarkdown(html));
         expect(legacy).toContain(side);
 
         const shared = trimMarkdownSharingStyles(html, pruneEmptyBilingualPairsIn);
-        expect(shared.styles.map((style) => style.css)).toEqual([".chattext p{color:red}", ".chattext .x{color:blue}"]);
+        expect(shared.styles.map((style) => style.css)).toEqual([
+            ".chattext p{color:red;}",
+            ".chattext .x-risu-x{color:blue;}",
+        ]);
         expect(shared.html).toBe(legacy.replaceAll(/<style>[^<]*<\/style>/g, "<style>/**/</style>"));
     });
 

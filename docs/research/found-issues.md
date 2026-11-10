@@ -12,28 +12,13 @@ The eighteenth batch was cleared the same day by a Sol implementer with session 
 
 ## Contents
 
-- [Structure audit 2026-11-10](#structure-audit-2026-11-10): 2
+- [Structure audit 2026-11-10](#structure-audit-2026-11-10): 1
 
 ## Structure audit 2026-11-10
 
 Found by the Sol auditors of the [full guide audit](../audit/structure-audit-2026-11-10.md) while reading each guide
 against the source at `e44b4786b`. Each of the first five was traced through the code by its auditor and, separately, by
 a Luna checker; none was run. They are code defects, so the audit recorded them here and changed no source.
-
-### A `<style>` with an attribute or in capitals reaches the page with unscoped CSS
-
-`encodeStyle` in `src/ts/parser/parser.svelte.ts:1319` matches only a lowercase, attribute-free `<style>` (`styleRegex`),
-and `trimPurifyConfig` (`:1157`) allows ordinary `style` elements. A message holding
-`<style media="all">body{display:none}</style>`, or `<STYLE>`, is therefore never turned into `<risu-style>`:
-`trimMarkdown` returns the sanitizer's output without scoping (`:1208`), the shared-style path copies the raw CSS
-(`:1275`, chosen by `src/lib/ChatScreens/ChatBody.svelte:575`), and `src/ts/parser/chatStyles.ts:82` installs it as a
-live stylesheet.
-
-**Why it matters:** index rule S1 and the rendering guide require chat CSS to stay under `.chattext`; a card, a model
-reply, or a script can style or hide the whole page.
-
-**Suggested handling:** reproduce in a mounted `ChatBody` with both spellings; then match `<style` case-insensitively
-with attributes in `encodeStyle`, or scope every `style` element the sanitizer returns.
 
 ### A popup editor's draft can land on another row that holds the same text
 

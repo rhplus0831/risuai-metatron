@@ -42,6 +42,7 @@ let registry: ChatStyleRegistry;
 // starved test worker could reach it and get the decoder's fallback instead of the sheet. A stopped
 // clock leaves only the work limit, which these small sheets never reach.
 beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     vi.spyOn(performance, "now").mockReturnValue(0);
 });
 afterEach(async () => {
@@ -49,6 +50,7 @@ afterEach(async () => {
     registry?.destroy();
     document.body.innerHTML = "";
     vi.restoreAllMocks();
+    vi.useRealTimers();
 });
 
 /** Waits (timer by timer, so the parser's awaits settle) until `ready` holds. */
@@ -56,7 +58,7 @@ async function until(ready: () => boolean) {
     for (let round = 0; round < 50; round++) {
         flushSync();
         if (ready()) return;
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        await vi.advanceTimersByTimeAsync(0);
     }
     flushSync();
     expect(ready()).toBe(true);
@@ -78,6 +80,22 @@ function render(bodies: Body[]) {
 }
 
 describe("ChatBody under a chat style registry", () => {
+    it("shares scoped CSS and sanitized attributes from an attributed message style", async () => {
+        const { target } = render([
+            {
+                id: "a",
+                idx: 0,
+                msgDisplay:
+                    '<style media="all" onload="bad()">body{display:none}.probe{color:red}</style><p class="probe">hello</p>',
+            },
+        ]);
+        await until(() => rendered(target, "a"));
+        expect(sheets()).toEqual([".chattext body{display:none;}" + RED]);
+        expect(registry.container.firstElementChild?.getAttribute("media")).toBe("all");
+        expect(registry.container.firstElementChild?.hasAttribute("onload")).toBe(false);
+        expect(rowStyles(target, "a")).toEqual(["/**/"]);
+    });
+
     it("shares one sheet between rows of the same style and leaves placeholders in the rows", async () => {
         const { target } = render([
             { id: "b", idx: 1, msgDisplay: styled(".probe{color:red}", "newer") },

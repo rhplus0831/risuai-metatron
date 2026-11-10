@@ -73,9 +73,9 @@ import cssSelectorParser from "postcss-selector-parser";
  *   the limit message; style restoration (`decodeStyleContent`) turns it, like any failure of a style's CBS or CSS
  *   parse, into its CSS error fallback. Successful CSS scoping is cached by the exact text after CBS evaluation.
  * - `ParseMarkdown` renders a message body; `trimMarkdown` (and `trimMarkdownSharingStyles` for a chat row whose
- *   styles are shared, `chatStyles.ts`) sanitizes it. A bare lowercase `<style>...</style>` with a body (no
- *   attributes: `styleRegex`) travels hex-encoded as `<risu-style>` through Markdown and the sanitizer, and only
- *   those two restore it as a scoped `<style>`; any other style element is not encoded and takes none of that path.
+ *   styles are shared, `chatStyles.ts`) sanitizes it. Style tags in any case, with their attributes, travel
+ *   hex-encoded as `<risu-style>` through Markdown and the sanitizer. Both trim functions scope every style in
+ *   the sanitized tree, including ordinary styles the encoder did not recognize, and retain sanitized attributes.
  * - The DOMPurify hooks below apply to every `DOMPurify.sanitize` in the tab once this module is loaded, among
  *   them: an `iframe` other than a YouTube embed is removed; classes get the `x-risu-` prefix (`hljs*` and
  *   already-prefixed ones excepted); an `href` other than `http(s)://` is emptied.
@@ -1040,8 +1040,8 @@ function parseThoughtsAndTools(data: string) {
  *    `back` mode, else `message`), skipped without a character or a transform context;
  * 3. the asset pass again, only when the script stage changed the text; then `parseInlayAssets`;
  * 4. `<Thoughts>` to a collapsed `<details>`, `<tool_call>` to a notice;
- * 5. each bare `<style>...</style>` with a body (`styleRegex`: lowercase, no attributes) to a hex `<risu-style>`,
- *    so Markdown and the sanitizer leave that CSS alone; other style elements are left as they are;
+ * 5. each `<style ...>...</style>` in any case to a hex `<risu-style>`, carrying its attributes,
+ *    so Markdown and the sanitizer leave that CSS alone; the trim step scopes any ordinary styles too;
  * 6. Markdown (`renderHighlightableMarkdown`), in `normal` and `notrim` modes only;
  * 7. `trimMarkdown`, except in `notrim`, which answers the Markdown output unsanitized.
  *
@@ -1189,7 +1189,8 @@ const trimPurifyConfig = {
 
 /**
  * Sanitizes rendered HTML (DOMPurify with `trimPurifyConfig` and this module's hooks), then turns each
- * `<risu-style>` element into a `<style>`: its CSS decoded, CBS-parsed again (`risuChatParser`, the selected
+ * `<risu-style>` element into a `<style>`, retaining sanitized attributes. Every style's CSS, including ordinary
+ * styles the encoder missed, is CBS-parsed again (`risuChatParser`, the selected
  * chat), class selectors prefixed `x-risu-` and every selector scoped under `.chattext`, and an `@import` whose
  * raw value starts with `data:` emptied (a quoted or `url(...)` data import is kept). A style whose CBS or CSS
  * parse fails (a `CbsLimitError` included) becomes text: `CSS ERROR: ...` with `returnCSSError`, else nothing.
@@ -1201,12 +1202,12 @@ export function trimMarkdown(data: string) {
         return "";
     }
 
-    // Without a <risu-style> there is nothing to decode, so the plain string
-    // result is already final. Note the tag itself is not trusted input:
-    // risu-style is in ADD_TAGS, so cards, model output and user scripts can
-    // author one directly. Only its position in the parsed tree is relied on.
-    if (!data.includes("<risu-style")) {
-        return DOMPurify.sanitize(data, trimPurifyConfig);
+    // Plain messages keep the string path. Check the sanitized output too: only the
+    // parsed tree decides which elements need scoping, never the encoder's spelling.
+    if (!/<(?:risu-)?style/i.test(data)) {
+        const sanitized = DOMPurify.sanitize(data, trimPurifyConfig);
+        if (!/<(?:risu-)?style/i.test(sanitized)) return sanitized;
+        data = sanitized;
     }
 
     // Decoded CSS must never be handed back to the HTML sanitizer as <style>
@@ -1228,18 +1229,25 @@ export function trimMarkdown(data: string) {
     return root.innerHTML;
 }
 
-/** Turns each `<risu-style>` element of `trimMarkdown`'s sanitized tree into its `<style>`. */
-function restoreStyles(root: HTMLElement) {
-    // Only real <risu-style> elements are decoded. A <risu-style> that survived
-    // inside an attribute value is not an element, so it is left as inert text
-    // and a <style> tag can never be restored into an attribute context.
-    for (const el of Array.from(root.querySelectorAll("risu-style"))) {
-        const decoded = decodeStyleContent(el.textContent ?? "");
+/** Restores encoded styles and scopes ordinary styles in the sanitized tree through the same CSS path. */
+function restoreStyles(root: HTMLElement | DocumentFragment) {
+    // Only actual elements are processed; tag text inside an attribute stays inert.
+    // Snapshot both kinds before replacing any, so a restored style is scoped once.
+    for (const el of Array.from(root.querySelectorAll("risu-style, style, template"))) {
+        // Template contents have their own tree, outside querySelectorAll's descendants.
+        if (el.localName === "template") {
+            const content = (el as HTMLTemplateElement).content;
+            if (content) restoreStyles(content);
+            continue;
+        }
+        const text = el.textContent ?? "";
+        const decoded = decodeStyleContent(text, el.localName === "risu-style");
         if (decoded.css === undefined) {
             el.replaceWith(root.ownerDocument.createTextNode(decoded.fallback ?? ""));
             continue;
         }
         const style = root.ownerDocument.createElement("style");
+        for (const { name, value } of Array.from(el.attributes)) style.setAttribute(name, value);
         // <style> is RAWTEXT, so '</style' is the only sequence that can end the
         // block early and leak the rest of the CSS as markup once this string is
         // parsed again ('\/' is still '/' inside CSS).
@@ -1269,7 +1277,7 @@ export function trimMarkdownSharingStyles(
     if (!root) {
         return { html: "", styles: [] };
     }
-    if (data.includes("<risu-style")) restoreStyles(root);
+    restoreStyles(root);
     prepare?.(root);
     const styles: ChatStyle[] = [];
     for (const style of Array.from(root.querySelectorAll("style"))) {
@@ -1316,10 +1324,10 @@ export function parseMarkdownSafe(
     });
 }
 
-const styleRegex = /\<style\>(.+?)\<\/style\>/gms;
+const styleRegex = /<style(\s(?:[^>"']|"[^"]*"|'[^']*')*)?>(.*?)<\/style\s*>/gis;
 function encodeStyle(txt: string) {
-    return txt.replaceAll(styleRegex, (f, c1) => {
-        return "<risu-style>" + Buffer.from(c1).toString("hex") + "</risu-style>";
+    return txt.replaceAll(styleRegex, (_match, attributes: string = "", content: string) => {
+        return "<risu-style" + attributes + ">" + Buffer.from(content).toString("hex") + "</risu-style>";
     });
 }
 
@@ -1330,27 +1338,38 @@ function decodeStyleRule(rule: CssAtRuleAST) {
                 let slt: string = rule.selectors[i];
                 if (slt) {
                     const parser = cssSelectorParser((root) => {
-                        root.walkClasses((classes) => {
-                            if (classes.type === "class" && !classes.value.startsWith("x-risu-")) {
-                                classes.value = "x-risu-" + classes.value;
+                        root.each((selector) => {
+                            const first = selector.first;
+                            const next = selector.nodes[1];
+                            // Translated HTML can pass through trim again. Recognize only the
+                            // leading descendant scope we emit; all other classes still get prefixed.
+                            const scoped =
+                                first?.type === "class" &&
+                                first.value === "chattext" &&
+                                next?.type === "combinator" &&
+                                next.value === " ";
+                            selector.walkClasses((classes) => {
+                                if ((!scoped || classes !== first) && !classes.value.startsWith("x-risu-")) {
+                                    classes.value = "x-risu-" + classes.value;
+                                }
+                            });
+                            if (!scoped) {
+                                selector.prepend(cssSelectorParser.combinator({ value: " " }));
+                                selector.prepend(cssSelectorParser.className({ value: "chattext" }));
                             }
                         });
                     });
 
                     slt = parser.processSync(slt);
 
-                    rule.selectors[i] = ".chattext " + slt;
+                    rule.selectors[i] = slt;
                 }
             }
         }
     }
-    if (
-        rule.type === "media" ||
-        rule.type === "supports" ||
-        rule.type === "document" ||
-        rule.type === "host" ||
-        rule.type === "container"
-    ) {
+    // Grouping rules carry nested style rules. Statement layers have no rules,
+    // while keyframes and declaration blocks use different AST fields.
+    if ("rules" in rule && rule.rules) {
         for (let i = 0; i < rule.rules.length; i++) {
             rule.rules[i] = decodeStyleRule(rule.rules[i]);
         }
@@ -1404,13 +1423,13 @@ function scopeCss(text: string): string {
 }
 
 /**
- * Decodes one <risu-style> body, evaluates CBS for the selected chat, then reuses scoped CSS by that result.
+ * Decodes an encoded style body when requested, evaluates CBS for the selected chat, then reuses scoped CSS.
  * Returns the CSS on its own so the caller can put it into a real <style> element instead of a markup string.
  * On a CBS or CSS error the style is dropped and `fallback` holds the text that takes its place.
  */
-function decodeStyleContent(hexText: string): { css?: string; fallback?: string } {
+function decodeStyleContent(text: string, encoded: boolean): { css?: string; fallback?: string } {
     try {
-        let text = Buffer.from(hexText, "hex").toString("utf-8");
+        if (encoded) text = Buffer.from(text, "hex").toString("utf-8");
         text = risuChatParser(text);
         return { css: scopeCss(text) };
     } catch (error) {

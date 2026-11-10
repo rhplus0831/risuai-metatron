@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { applyMarkdownToNode, ParseMarkdown, trimMarkdown } from "../parser.svelte";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import { applyMarkdownToNode, ParseMarkdown, trimMarkdown, trimMarkdownSharingStyles } from "../parser.svelte";
 
 //#region module mocks
 
@@ -19,6 +19,15 @@ vi.mock(import("../../globalApi.svelte"), async () =>
 vi.mock(import("../../stores.svelte"), async () => (await import("src/ts/tests/storesMock")).createStoresMock({}));
 
 //#endregion
+
+import { settings } from "../../storage/settingsViews.svelte";
+
+beforeEach(() => {
+    vi.spyOn(performance, "now").mockReturnValue(0);
+});
+afterEach(() => {
+    vi.restoreAllMocks();
+});
 
 const parse = (html: string) => new DOMParser().parseFromString(html, "text/html").body;
 
@@ -181,10 +190,10 @@ describe("trimMarkdown style handling", () => {
         }
     });
 
-    it("decodes a lone risu-style element that carries attributes", async () => {
+    it("decodes an attributed risu-style element and retains its sanitized class", async () => {
         const hex = Buffer.from(".mybox { color: red; }").toString("hex");
         const out = await ParseMarkdown(`<risu-style class="z">${hex}</risu-style>`, null, "back");
-        expect(out).toContain("<style>.chattext .x-risu-mybox{color:red;}</style>");
+        expect(out).toContain('<style class="x-risu-z">.chattext .x-risu-mybox{color:red;}</style>');
         expect(out).not.toContain("risu-style");
     });
 
@@ -203,5 +212,99 @@ describe("trimMarkdown style handling", () => {
             const body = parse(await ParseMarkdown(input, null, mode));
             expect(body.querySelector("[onmouseover]")).toBeNull();
         }
+    });
+});
+
+// Exercise both public trim boundaries; shared sheets and inline sheets must obey the same scope.
+describe.each([
+    ["trimMarkdown", (html: string) => trimMarkdown(html)],
+    [
+        "trimMarkdownSharingStyles",
+        (html: string) => {
+            const result = trimMarkdownSharingStyles(html);
+            return result.styles.length ? result.styles.map((style) => style.css).join("") : result.html;
+        },
+    ],
+] as const)("%s style boundaries", (_name, trim) => {
+    it.each(["style", "STYLE"])("scopes %s with attributes after Markdown parsing", async (tag) => {
+        const md = await ParseMarkdown(
+            `<${tag} media="all" onload="bad()">body{display:none}.probe{color:red}</${tag}><p>x</p>`,
+            null,
+            "notrim",
+        );
+        expect(trim(md)).toContain(".chattext body{display:none;}.chattext .x-risu-probe{color:red;}");
+        // Check attributes on both the real inline sheet and the shared placeholder separately.
+        const html = _name === "trimMarkdown" ? trimMarkdown(md) : trimMarkdownSharingStyles(md).html;
+        const style = parse(html).querySelector("style");
+        expect(style?.getAttribute("media")).toBe("all");
+        expect(style?.hasAttribute("onload")).toBe(false);
+    });
+
+    it("preserves markup-like CSS in an attributed uppercase style with a quoted greater-than sign", async () => {
+        const md = await ParseMarkdown(
+            `<STYLE media="screen and (width > 1px)" type="text/css">.probe::after{content:"<b>"}</STYLE><p>x</p>`,
+            null,
+            "notrim",
+        );
+        expect(trim(md)).toContain('.chattext .x-risu-probe::after{content:"<b>";}');
+    });
+
+    it("scopes a raw slash-spelled style that bypasses the encoder", () => {
+        expect(trim('<style/media="all">body{display:none}.probe{color:red}</style><p>x</p>')).toContain(
+            ".chattext body{display:none;}.chattext .x-risu-probe{color:red;}",
+        );
+    });
+
+    it("scopes a raw style in template contents", () => {
+        const html = trim("<div><template><style>body{display:none}</style></template></div>");
+        const template = parse(html).querySelector("template");
+        expect(template?.content.querySelector("style")?.textContent).toBe(".chattext body{display:none;}");
+    });
+
+    it("keeps selectors unchanged when already trimmed HTML is trimmed again", async () => {
+        const md = await ParseMarkdown('<style>.probe{color:red}</style><p class="probe">x</p>', null, "notrim");
+        const first = trimMarkdown(md);
+        expect(trim(first)).toContain(".chattext .x-risu-probe{color:red;}");
+        expect(trim(first)).not.toMatch(/x-risu-chattext|x-risu-x-risu-|\.chattext \.chattext/);
+    });
+
+    it.each([false, true])("uses the CSS error fallback for raw invalid CSS with returnCSSError=%s", (showError) => {
+        const previous = settings.ui.returnCSSError;
+        try {
+            settings.ui.returnCSSError = showError;
+            const html = trim("<style>.broken{color:red;</style><p>kept</p>");
+            const root = parse(html);
+            expect(root.querySelector("style, risu-style")).toBeNull();
+            expect(root.querySelector("p")?.textContent).toBe("kept");
+            if (showError) expect(root.textContent).toMatch(/^CSS ERROR: .+kept$/);
+            else expect(root.textContent).toBe("kept");
+        } finally {
+            settings.ui.returnCSSError = previous;
+        }
+    });
+
+    it.each([
+        ["layer", "@layer a{", "}"],
+        ["starting-style", "@starting-style{", "}"],
+        ["media", "@media all{", "}"],
+        ["supports", "@supports (display:grid){", "}"],
+        ["document", "@document url-prefix(){", "}"],
+        ["host", "@host{", "}"],
+        ["container", "@container (width > 1px){", "}"],
+        ["nested grouping rules", "@layer a{@starting-style{@media all{", "}}}"],
+    ])("scopes inner selectors in %s", async (_kind, open, close) => {
+        const md = await ParseMarkdown(
+            `<style>${open}body{display:none}.p{opacity:0}${close}</style><p>x</p>`,
+            null,
+            "notrim",
+        );
+        expect(trim(md)).toContain(`${open}.chattext body{display:none;}.chattext .x-risu-p{opacity:0;}${close}`);
+    });
+
+    it("preserves statement layers, keyframes and font-face declarations", async () => {
+        const sheet =
+            "@layer a, b;@keyframes spin{from{opacity:0;}to{opacity:1;}}@font-face{font-family:demo;src:url(x.woff);}";
+        const md = await ParseMarkdown(`<style>${sheet}</style><p>x</p>`, null, "notrim");
+        expect(trim(md)).toContain(`<style>${sheet}</style>`);
     });
 });
