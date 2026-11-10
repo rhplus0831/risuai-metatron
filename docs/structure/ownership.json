@@ -1,7 +1,10 @@
 {
   "comment": "Path ownership: the guide that owns each repository path. Ordered, first match wins: specific rules first, the fallback directories last. Query with `pnpm docs:owner <path>`; `pnpm check:docs` validates it; util/docsOwner.mjs states the glob syntax and the shared-file rules.",
   "rules": [
-    { "match": "{STRUCTURE.md,docs/structure/ownership.json,docs/structure/**/*.md}", "guide": "README" },
+    {
+      "match": "{STRUCTURE.md,docs/structure/ownership.json,docs/structure/verified.json,docs/structure/**/*.md}",
+      "guide": "README"
+    },
     {
       "match": "shared/jobs.ts",
       "guide": "server-generation",

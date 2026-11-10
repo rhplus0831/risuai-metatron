@@ -5,7 +5,9 @@ agent needs to choose files, change a contract, and verify the result.
 
 ## Place the fact
 
-- Keep repository-wide rules in [STRUCTURE.md](../../STRUCTURE.md#repository-wide-invariants).
+- Keep repository-wide rules in [STRUCTURE.md](../../STRUCTURE.md#repository-wide-invariants). A rule belongs there only
+  when a change that never opens the owning guide can break it. Every other rule is the owning guide's invariant,
+  because every add/change task reads the index section whole.
 - Document a single module's invariant, order, or failure behavior in a header or on the governing export. See
   `shared/sections.ts` for an example. Put interactions across modules, processes, or tabs in the owning guide and link
   to that contract elsewhere.
@@ -52,29 +54,33 @@ prefix. Indexes and READMEs have a free outline.
    rule, routes to the wrong guide, or leaves a rule without matches. Exact and shared rules precede directory
    fallbacks.
 5. Format changed files with Prettier and run `pnpm check:docs`. It checks relative Markdown links and anchors,
-   repository paths in code spans, the guide outline, budgets, and the ownership manifest. It expands braces and globs
-   for path checks and allows git-ignored runtime paths. Verify identifiers and bare file names in source. Run
-   `pnpm check:tests` after changing the slow-test table.
-6. A guide whose `pnpm docs:ledger --stale` count rises, or that has gathered many commits since it was last read
-   against the code, is due a read-and-verify pass: one session, section by section against the source, fixing what
-   drifted and recording the rest in the issue inbox. There is no whole-tree pass.
+   repository paths in code spans, the guide outline, budgets, the ownership manifest, and the verification record. It
+   expands braces and globs for path checks and allows git-ignored runtime paths. Verify identifiers and bare file names
+   in source. Run `pnpm check:tests` after changing the slow-test table.
+6. A guide whose `pnpm docs:ledger --stale` count rises, or that leads `pnpm docs:due` (the commits to its paths since
+   it was last read against the code), is due a read-and-verify pass: one session, section by section against the
+   source, fixing what drifted and recording the rest in the issue inbox. The pass runs
+   `pnpm docs:due --verified <guide>` before its commit, which records the revision it read in
+   `docs/structure/verified.json`. No other edit of a guide updates the record. There is no whole-tree pass.
 
 ## Size limits
 
-The index, every guide, and every README share the same limits. A trim or split should reach the target. If adding a
-topic would cross a target, move it to its owner or split the guide.
+The index, every guide, and every README share the file, heading, item, and parenthesis limits. A trim or split should
+reach the target. If adding a topic would cross a target, move it to its owner or split the guide.
 
 | Unit                                                               |       Target |          Limit |
 | ------------------------------------------------------------------ | -----------: | -------------: |
 | File                                                               | 36,000 bytes |   40,000 bytes |
 | Own text under one heading                                         |  7,000 bytes |    8,000 bytes |
+| `Repository-Wide Invariants` in the index, with its subsections    |  8,000 bytes |   10,000 bytes |
 | List item or table row, including continuation text and code spans |              | 600 characters |
 | Nested parentheses outside code spans                              |              |       2 levels |
 
 `pnpm check:docs` reports `near` over a target and fails over a limit. Its verdict line also prints the bytes of the
 guides and the index together, a trend figure with no limit: a reader takes one section at a time, so the leaf and item
-limits bound a read, not the tree. A change adds its facts to the owning guide and does not trim a guide it would not
-otherwise touch. Trims are passes of their own, aimed first at large guides that `pnpm docs:reads` shows are rarely
+limits bound a read, not the tree. The index is the exception: every add/change task reads its invariants whole, so that
+section has a limit over its subsections. A change adds its facts to the owning guide and does not trim a guide it would
+not otherwise touch. Trims are passes of their own, aimed first at large guides that `pnpm docs:reads` shows are rarely
 read. See the [documentation checker](build-test-platforms.md#documentation-check) for exact rule coverage and its
 report mode.
 

@@ -1,0 +1,4 @@
+{
+  "comment": "The commit each guide was last read against the source at (Doc Maintenance, read-and-verify pass). Written by `pnpm docs:due --verified <guide>...`; `pnpm docs:due` counts the commits to each guide's paths since. util/docsDue.mjs states the format.",
+  "guides": {}
+}

@@ -5,6 +5,9 @@
 //   - `ceiling`: a file over the guide budget;
 //   - `leaf`: a heading of any level whose own text, up to the next heading, is over the leaf budget. Text before
 //     a file's first heading is in no leaf and counts only toward the guide budget;
+//   - `index-section`: the `## Repository-Wide Invariants` section of `STRUCTURE.md`, with its subsections, over the
+//     index-section budget. The Agent Read Protocol has every add/change task read that section whole, so its
+//     subtree is one read and the leaf budget alone does not bound it. An index without the heading has no finding;
 //   - `item`: a list item or table row over the item budget;
 //   - `paren-depth`: a heading, item, row, or paragraph with parentheses nested too deep outside code spans;
 //   - `sections` and `hazards`: a guide's `##` headings, or its `Known Hazards` `###` headings, off the fixed outline
@@ -22,9 +25,12 @@
 //     JSON or has a bad rule, a rule matches no tracked path or only paths an earlier rule owns, a tracked path under
 //     `src/`, `server/`, `shared/`, `util/`, `e2e/`, or `public/` has no rule, or a rule names no guide. Tracked
 //     paths are what git lists, untracked files it does not ignore included; outside a repository there are none
-//     and a missing manifest has no rules, so the rule finds nothing.
-// It also prints, without failing, one `near` line per file over the guide target and per heading over the leaf
-// target, each with the bytes left under its budget: the targets are where a trim or a split lands, so a guide
+//     and a missing manifest has no rules, so the rule finds nothing;
+//   - `verified`: the verification record (`docs/structure/verified.json`, read by `util/docsDue.mjs`) is not JSON,
+//     has a bad shape, names something that is no guide, or holds a commit that is not 40 hex digits. Whether the
+//     commit exists is not checked: a shallow clone lacks old commits.
+// It also prints, without failing, one `near` line per file over the guide target, per heading over the leaf
+// target, and for the index section over its target, each with the bytes left under its budget: the targets are where a trim or a split lands, so a guide
 // keeps room for the changes that follow instead of sitting at the budget, where every edit fails the gate. The
 // verdict line ends with the bytes of the guides and `STRUCTURE.md` together, a trend figure with no limit: a
 // reader takes one section at a time, so what bounds a read is the leaf and item budgets, not the tree.
@@ -43,6 +49,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, globSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { checkVerified, VERIFIED_FILE } from "./docsDue.mjs";
 import { checkOwnership, OWNERSHIP_FILE } from "./docsOwner.mjs";
 
 export const GUIDE_BYTES_BUDGET = 40_000;
@@ -50,6 +57,10 @@ export const LEAF_BYTES_BUDGET = 8_000;
 /** Where a trim or a split lands: over a target the check warns (`near`), over a budget it fails. */
 export const GUIDE_BYTES_TARGET = 36_000;
 export const LEAF_BYTES_TARGET = 7_000;
+/** The `##` section of `STRUCTURE.md` that a task reads whole, so it is budgeted with its subsections. */
+export const INDEX_SECTION = "Repository-Wide Invariants";
+export const INDEX_SECTION_BYTES_BUDGET = 10_000;
+export const INDEX_SECTION_BYTES_TARGET = 8_000;
 export const ITEM_CHARS_BUDGET = 600;
 export const PAREN_DEPTH_BUDGET = 2;
 
@@ -514,6 +525,10 @@ function measureFile(root, rel, readAnchors, checkPath) {
         h3Count: sections.filter((section) => section.level === 3).length,
         sections,
         largestLeaf,
+        indexSection:
+            rel === INDEX_DOC
+                ? (sections.find((section) => section.level === 2 && section.heading === INDEX_SECTION) ?? null)
+                : null,
         longItems,
         maxParenDepth,
         deepSegments,
@@ -548,23 +563,34 @@ function trackedPaths(root) {
     }
 }
 
+/** The names `pnpm docs:read` takes for the guides at `guidePaths`. */
+const guideNameSet = (guidePaths) =>
+    new Set(
+        guidePaths.map((rel) =>
+            rel
+                .slice(GUIDE_DIR.length + 1)
+                .replace(/\.md$/, "")
+                .replace(/\/README$/, ""),
+        ),
+    );
+
 /** The `ownership` problems of the manifest under `root`, against its tracked paths and the guides in `guidePaths`. */
 function ownershipProblems(root, guidePaths) {
     const file = path.join(root, OWNERSHIP_FILE);
     const text = existsSync(file) ? readFileSync(file, "utf8") : null;
-    const names = guidePaths.map((rel) =>
-        rel
-            .slice(GUIDE_DIR.length + 1)
-            .replace(/\.md$/, "")
-            .replace(/\/README$/, ""),
-    );
-    return checkOwnership(text, trackedPaths(root), new Set(names));
+    return checkOwnership(text, trackedPaths(root), guideNameSet(guidePaths));
+}
+
+/** The `verified` problems of the verification record under `root`, against the guides in `guidePaths`. */
+function verifiedProblems(root, guidePaths) {
+    const file = path.join(root, VERIFIED_FILE);
+    return checkVerified(existsSync(file) ? readFileSync(file, "utf8") : null, guideNameSet(guidePaths));
 }
 
 /**
- * The measurement of the repository at `root`, as plain data: `{ guides, index, ownership, totals }`. `guides`
- * is sorted by path; `index` is `STRUCTURE.md`, which `totals` leaves out except in `treeBytes`; `ownership` is the
- * manifest's `{ line, message }` problems.
+ * The measurement of the repository at `root`, as plain data: `{ guides, index, ownership, verified, totals }`.
+ * `guides` is sorted by path; `index` is `STRUCTURE.md`, which `totals` leaves out except in `treeBytes`;
+ * `ownership` and `verified` are the `{ line, message }` problems of the manifest and the verification record.
  */
 export function measureDocs(root) {
     const readAnchors = anchorReader(root);
@@ -588,6 +614,7 @@ export function measureDocs(root) {
         guides,
         index,
         ownership: ownershipProblems(root, paths),
+        verified: verifiedProblems(root, paths),
         totals: {
             guideCount: guides.length,
             bytes,
@@ -615,7 +642,7 @@ export function measureDocs(root) {
 
 /**
  * What fails for a `measureDocs` result, as `{ path, line, rule, message }` findings, each file's in rule order,
- * the ownership manifest's last. The tree total is not checked.
+ * then the ownership manifest's and the verification record's. The tree total is not checked.
  */
 export function checkDocs(measure) {
     const findings = [];
@@ -635,6 +662,16 @@ export function checkDocs(measure) {
                 );
             }
         }
+        if (file.indexSection && file.indexSection.bytes > INDEX_SECTION_BYTES_BUDGET) {
+            const { line, heading, bytes } = file.indexSection;
+            const over = bytes - INDEX_SECTION_BYTES_BUDGET;
+            add(
+                file.path,
+                line,
+                "index-section",
+                `"${heading}" ${bytes} bytes with subsections, budget ${INDEX_SECTION_BYTES_BUDGET}, ${over} over`,
+            );
+        }
         for (const { line, kind, length } of file.longItems) {
             add(file.path, line, "item", `${kind} ${length} characters, budget ${ITEM_CHARS_BUDGET}`);
         }
@@ -652,12 +689,13 @@ export function checkDocs(measure) {
         for (const { line, kind, label } of file.labels) add(file.path, line, "label", `${kind} ${label}`);
     }
     for (const { line, message } of measure.ownership ?? []) add(OWNERSHIP_FILE, line, "ownership", message);
+    for (const { line, message } of measure.verified ?? []) add(VERIFIED_FILE, line, "verified", message);
     return findings;
 }
 
 /**
  * What is over a target but within its budget, as `near` warnings in the shape of `checkDocs` findings, each
- * with the bytes left under the budget. A file or heading over its budget has a finding instead.
+ * with the bytes left under the budget. A file, heading, or index section over its budget has a finding instead.
  */
 export function nearTarget(measure) {
     const warnings = [];
@@ -675,6 +713,16 @@ export function nearTarget(measure) {
                     `"${heading}" ${ownBytes} bytes, target ${LEAF_BYTES_TARGET}, ${left} under the budget`,
                 );
             }
+        }
+        const section = file.indexSection;
+        if (section && section.bytes > INDEX_SECTION_BYTES_TARGET && section.bytes <= INDEX_SECTION_BYTES_BUDGET) {
+            const left = INDEX_SECTION_BYTES_BUDGET - section.bytes;
+            add(
+                file.path,
+                section.line,
+                `"${section.heading}" ${section.bytes} bytes with subsections, target ${INDEX_SECTION_BYTES_TARGET}, ` +
+                    `${left} under the budget`,
+            );
         }
     }
     return warnings;

@@ -37,12 +37,13 @@
 ### Documentation check
 
 - `util/docsBudget.mjs` (`pnpm check:docs`): plain Node over `STRUCTURE.md` and the guides, one `path:line rule message`
-  per finding; its header defines each rule. Failing rules: `ceiling`, `leaf`, `item`, `paren-depth`, `sections`,
-  `hazards`, `unresolved-link`, `self-link`, `label`, `missing-path`, and `ownership`. The budgets and targets are the
-  [README](README.md)'s.
-- `near` does not fail: a file or heading over its target, with the bytes left. The verdict line ends with the bytes of
-  the guides and `STRUCTURE.md` together, a trend figure with no limit. `--report` prints the sizes, every finding, and
-  each guide's stale identifiers (below) and exits 0; use plain `pnpm check:docs` as the gate.
+  per finding; its header defines each rule. Failing rules: `ceiling`, `leaf`, `index-section`, `item`, `paren-depth`,
+  `sections`, `hazards`, `unresolved-link`, `self-link`, `label`, `missing-path`, `ownership`, and `verified`. The
+  budgets and targets are the [README](README.md)'s.
+- `near` does not fail: a file, a heading, or the index's invariants section over its target, with the bytes left. The
+  verdict line ends with the bytes of the guides and `STRUCTURE.md` together, a trend figure with no limit. `--report`
+  prints the sizes, every finding, and each guide's stale identifiers (below) and exits 0; use plain `pnpm check:docs`
+  as the gate.
 - Not validated: identifiers in code spans, and a path without a `/` (`package.json`, `vitest.*`). Confirm them with
   targeted `rg` searches; the link rule checks only relative Markdown destinations and heading anchors.
 - The guide tools; each header comment holds its contract:
@@ -53,6 +54,9 @@
     identifiers that neither the guide nor a file it names (`--strict`: no glob) holds; exit 1 on any.
     `pnpm docs:ledger --stale [<guide>...]`: the names in code spans of any section that no source text or file path
     holds, one `path:line stale <id>` each; a report of drift, exit 0.
+  - `pnpm docs:due [<guide>...]` (`util/docsDue.mjs`): per guide, the commits to its owned paths since the commit in
+    `docs/structure/verified.json`, or since the guide was added when it has none; a report, exit 0.
+    `pnpm docs:due --verified <guide>...` records `HEAD` for the guides a read-and-verify pass read.
   - `pnpm docs:reads [--out <file>] [<dir>...]` (`util/guideReads.mjs`): guide reads counted over local session
     transcripts, for a one-off `docs/audit/guide-reads-<date>.md`; not a gate.
 

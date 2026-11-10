@@ -18,6 +18,7 @@
     "docs:owner": "node util/docsOwner.mjs",
     "docs:contracts": "node util/docsContracts.mjs",
     "docs:ledger": "node util/docsLedger.mjs",
+    "docs:due": "node util/docsDue.mjs",
     "docs:reads": "node util/guideReads.mjs",
     "test": "vitest run --tags-filter=!slow",
     "test:agent": "node util/agentTest.mjs",

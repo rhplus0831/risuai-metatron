@@ -12,6 +12,9 @@ import {
     GUIDE_BYTES_BUDGET,
     GUIDE_BYTES_TARGET,
     GUIDE_SECTIONS,
+    INDEX_SECTION,
+    INDEX_SECTION_BYTES_BUDGET,
+    INDEX_SECTION_BYTES_TARGET,
     ITEM_CHARS_BUDGET,
     LEAF_BYTES_BUDGET,
     LEAF_BYTES_TARGET,
@@ -290,6 +293,52 @@ describe("documentation budgets", () => {
             const measure = measureDocs(tree({ "STRUCTURE.md": headingAtSize("# STRUCTURE", bytes) }));
             expect(checkDocs(measure)).toEqual(bytes === 8_000 ? [] : [finding("STRUCTURE.md", 1, "leaf")]);
         }
+    });
+
+    it("holds the index's invariants section, with its subsections, to its own budget and target", () => {
+        expect([INDEX_SECTION_BYTES_TARGET, INDEX_SECTION_BYTES_BUDGET]).toEqual([8_000, 10_000]);
+        // The section heading and its blank line are 31 bytes; two leaves keep each under the leaf target.
+        const section = (bytes: number) =>
+            `## ${INDEX_SECTION}\n\n` + headingAtSize("### One", 5_000) + headingAtSize("### Two", bytes - 5_031);
+        const index = (bytes: number) =>
+            "# STRUCTURE\n\n## Agent Read Protocol\n\nSteps.\n\n" +
+            section(bytes) +
+            headingAtSize("## Choose By Task", 6_000);
+        for (const bytes of [8_000, 8_001, 10_000, 10_001]) {
+            const measure = measureDocs(tree({ "STRUCTURE.md": index(bytes) }));
+            expect(measure.index.indexSection).toMatchObject({ heading: INDEX_SECTION, line: 7, bytes });
+            expect(checkDocs(measure)).toEqual(bytes === 10_001 ? [finding("STRUCTURE.md", 7, "index-section")] : []);
+            expect(nearTarget(measure)).toEqual(
+                bytes === 8_000 || bytes === 10_001 ? [] : [finding("STRUCTURE.md", 7, "near")],
+            );
+        }
+        expect(formatCheck([], nearTarget(measureDocs(tree({ "STRUCTURE.md": index(8_001) }))))).toBe(
+            `STRUCTURE.md:7 near "${INDEX_SECTION}" 8001 bytes with subsections, target 8000, 1999 under the budget\n` +
+                "[check:docs] OK, 1 near the budget\n",
+        );
+        expect(checkDocs(measureDocs(tree({ "STRUCTURE.md": index(10_001) })))[0].message).toBe(
+            `"${INDEX_SECTION}" 10001 bytes with subsections, budget 10000, 1 over`,
+        );
+        // Only the index has the section: the same heading in an area folder's README is an ordinary heading.
+        const readme = "docs/structure/area/README.md";
+        const measure = measureDocs(tree({ [readme]: `# Area\n\n${section(10_001)}` }));
+        expect(measure.guides.find((file) => file.path === readme)?.indexSection).toBeNull();
+        expect(checkDocs(measure)).toEqual([]);
+        expect(nearTarget(measure)).toEqual([]);
+    });
+
+    it("rejects a verification record that names no guide or holds a short commit", () => {
+        const record = "docs/structure/verified.json";
+        const commit = "c".repeat(40);
+        const text = (guides: Record<string, string>) => `${JSON.stringify({ guides }, null, 2)}\n`;
+        expect(checkDocs(measureDocs(tree({ [record]: text({ example: commit }) })))).toEqual([]);
+        const findings = checkDocs(measureDocs(tree({ [record]: text({ example: "c0ffee1", gone: commit }) })));
+        expect(findings).toEqual([finding(record, 3, "verified"), finding(record, 4, "verified")]);
+        expect(findings.map((entry) => entry.message)).toEqual([
+            "example: not a full 40-character commit",
+            "gone: not a guide",
+        ]);
+        expect(checkDocs(measureDocs(tree({ [record]: "{" })))).toEqual([finding(record, 1, "verified")]);
     });
 
     it("holds an area folder's README to the budgets but not to the guide outline", () => {
