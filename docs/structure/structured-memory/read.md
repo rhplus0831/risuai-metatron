@@ -36,8 +36,9 @@ Read each module's header or component contract, then read the named export's co
 - `src/lib/ChatScreens/DefaultChatScreen.svelte` and `src/lib/SideBars/CharConfig.svelte`: panel openers.
 - `src/lib/Others/StructuredMemory/CoverageTab.svelte`: message coverage view; `reconciled`, `coverage`, `countedChats`.
 - `src/lib/Others/StructuredMemory/PreviewTab.svelte`: preview view; `run`.
-- `src/lib/Others/StructuredMemory/PagesTab.svelte`: page view and section editor, also the filtered view of flagged
-  sections; `readRecord`, `sendChange`, `keepRecord`, `openAskedEntry`, `only`, `sectionReverts`, `keepAll`.
+- `src/lib/Others/StructuredMemory/PagesTab.svelte`: page read and manage views, title filter, and section editor, also
+  the filtered view of flagged sections; `readRecord`, `sendChange`, `keepRecord`, `openAskedEntry`, `only`,
+  `sectionReverts`, `keepAll`.
 - `src/lib/Others/StructuredMemory/UnsupportedTab.svelte`: the Evidence missing tab, `PagesTab` under
   `only="unsupported"`.
 - `src/lib/Others/StructuredMemory/TimelineTab.svelte`: event view and repairs; `reconciled`, `sendRepair`, `rerecord`.
@@ -114,8 +115,9 @@ contract owns display and revert behavior.
 ### The memory panel
 
 `src/App.svelte` mounts the panel under `hypaV3ModalOpen`; the `DefaultChatScreen` menu and `CharConfig` button open it
-in place of older memory flags. The component contract owns tab mounting and refresh. Preview runs only on its button
-since its local send moves `refresh`.
+in place of older memory flags. The component contract owns tab mounting and refresh. `TABS` puts the content tabs first
+(Pages, Timeline, Threads, Evidence missing), then Coverage, Preview, Log, and Settings, so a panel opens on Pages
+unless `takeMemoryPanelTarget` names a tab. Preview runs only on its button since its local send moves `refresh`.
 
 Contents from `server/src/routes/structuredMemory.ts` supplies `adoption`, `rebuild`, `recordedLanguage`, `health`, and
 `unsupportedPages`; the tab's HypaV3 mirror decides none. A [held chat](lifecycle.md#the-adoption-choice) offers
@@ -137,6 +139,12 @@ Timeline reads coverage's `messageIds` at one revision, keeping `readContents` f
 rounds; `memory_events.seq` is storage order. `memoryTimelineRows` owns message order and aging. Pages hosts
 [page tools](pages.md); each tab's contract holds its view rules. `open(target)` becomes the chosen tab's `focus`;
 `jump(messageId)` opens the chat with `setChatOpen`, calls `requestMessageJump`, then closes the panel.
+
+A page opens in `read`: its title, type and aliases, its links, and each section with a body as plain text, the marks as
+badges. `manage` is the checking view, with every control, provenance, and the history. The choice lasts while Pages is
+mounted; Evidence missing, a page in the trash, and a jump to a history entry show `manage`. Links name live pages by
+title and select them; an id with no live page is a disabled button. A title filter narrows the tree before
+`memoryPageTree` groups it, so an emptied type loses its header; the trash list is not filtered.
 
 ### The Evidence missing tab
 

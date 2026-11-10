@@ -2823,6 +2823,11 @@ export const languageEnglish = {
         pages: {
             empty: "This chat has no memory pages yet.",
             select: "Select a page to read it.",
+            view: "Page view",
+            views: { read: "Read", manage: "Manage" },
+            links: "Linked pages",
+            filter: "Find a page by title",
+            filterNone: "No page title matches.",
             types: {
                 character: "Character",
                 location: "Location",

@@ -95,12 +95,12 @@
     const adoptText = language.structuredMemory.adopt;
     const rebuildText = language.structuredMemory.rebuild;
     const TABS: { value: string; label: string; component: Component<MemoryPanelTabProps> }[] = [
-        { value: "coverage", label: text.coverage, component: CoverageTab },
-        { value: "preview", label: text.preview, component: PreviewTab },
         { value: "pages", label: text.pages, component: PagesTab },
-        { value: "unsupported", label: text.unsupported, component: UnsupportedTab },
         { value: "timeline", label: text.timeline, component: TimelineTab },
         { value: "threads", label: text.threads, component: ThreadsTab },
+        { value: "unsupported", label: text.unsupported, component: UnsupportedTab },
+        { value: "coverage", label: text.coverage, component: CoverageTab },
+        { value: "preview", label: text.preview, component: PreviewTab },
         { value: "log", label: text.log, component: LogTab },
         { value: "settings", label: text.settings, component: SettingsTab },
     ];

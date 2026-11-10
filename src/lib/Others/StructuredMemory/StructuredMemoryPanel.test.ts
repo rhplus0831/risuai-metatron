@@ -191,7 +191,7 @@ it("switches Coverage and Log with SegmentedControl and refreshes after each cha
         [{ characterId: "c", revision: revision(1), ids: ["k", "other"] }],
     );
     await open();
-    expect(query('[data-memory-panel="coverage"]')).not.toBeNull();
+    await chooseTab("coverage");
     expect(target.querySelectorAll("[data-segment-btn]")).toHaveLength(7);
     expect(query('[data-segment-btn][aria-pressed="true"]')?.textContent).toBe(
         language.structuredMemory.panel.coverage,
@@ -255,8 +255,7 @@ it("switches Coverage and Log with SegmentedControl and refreshes after each cha
     click("[data-memory-panel-refresh]");
     await settle();
     expect(reads()).toHaveLength(count + 1);
-    click("[data-segment-btn]:nth-of-type(6)");
-    await settle();
+    await chooseTab("log");
     expect(query('[data-memory-panel="log"]')).not.toBeNull();
     expect(query("[data-memory-log]")?.dataset.readOnly).toBe("false");
     count = reads("runs").length;
@@ -277,6 +276,7 @@ it("shows rows before token counts and ignores counts from an older coverage joi
         return answer.promise;
     });
     await open();
+    await chooseTab("coverage");
     expect(query('[data-memory-coverage-row="covered"]')).not.toBeNull();
     expect(tokenAnswers.flatMap(({ texts }) => texts).sort()).toEqual(["a0", "u0"]);
     expect(query("[data-memory-coverage-gap]")?.textContent).toContain(
@@ -310,7 +310,7 @@ it("shows rows before token counts and ignores counts from an older coverage joi
     );
 });
 
-it.each(["coverage", "log"])(
+it.each(["coverage", "log"] as const)(
     "ignores older %s reads and another chat's answers, and replaces rows with failures",
     async (tab) => {
         const pending: ReturnType<typeof deferred<Response>>[] = [];
@@ -323,10 +323,7 @@ it.each(["coverage", "log"])(
             return answer.promise;
         });
         await open();
-        if (tab === "log") {
-            click("[data-segment-btn]:nth-of-type(6)");
-            await settle();
-        }
+        await chooseTab(tab);
         click("[data-memory-panel-refresh]");
         await settle();
         const body = (id: string) => (tab === "coverage" ? facts(id, ["u0"]) : logRound(id));
@@ -364,6 +361,7 @@ it("pages a long coverage group and renders message text literally", async () =>
         ),
     );
     await open();
+    await chooseTab("coverage");
     click("[data-memory-coverage-group]");
     expect(target.querySelectorAll("[data-memory-coverage-row]")).toHaveLength(200);
     expect(target.textContent).toContain(literal);
@@ -410,8 +408,7 @@ it("shows run metrics and extracted items beside their verified or unverified qu
             : fetch(url, init, options),
     );
     await open();
-    click("[data-segment-btn]:nth-of-type(6)");
-    await settle();
+    await chooseTab("log");
     const row = query('[data-memory-run="failed"]')!;
     expect(row.textContent).toContain(language.structuredMemory.log.range(2, 5, 2));
     expect(row.textContent).toContain(language.structuredMemory.receipt.tokens(23, 17));
@@ -459,8 +456,7 @@ it("restarts Log pagination on a changed revision without keeping older rows", a
         );
     });
     await open();
-    click("[data-segment-btn]:nth-of-type(6)");
-    await settle();
+    await chooseTab("log");
     const more = [...target.querySelectorAll("button")].find(
         (button) => button.textContent.trim() === language.structuredMemory.log.loadMore,
     )!;
@@ -482,7 +478,7 @@ it("App mounts the structured panel only for structuredMemory and keeps the lega
     instance = mount(App, { target });
     flushSync();
     await settle();
-    expect(query('[data-memory-panel="coverage"]')).not.toBeNull();
+    expect(query('[data-memory-panel="pages"]')).not.toBeNull();
     expect(query("[data-risu-memory-task]")).toBeNull();
     settings.ui.memoryAlgorithmType = "hypaV3";
     flushSync();
@@ -563,6 +559,7 @@ it("badges only verified events from the newest valid report on Coverage rows, c
         return fetch(url, init, options);
     });
     await open();
+    await chooseTab("coverage");
     const group = query('[data-memory-coverage-group="covered"]')!;
     expect(group.querySelectorAll("[data-memory-used]")).toHaveLength(1);
     click('[data-memory-coverage-group="covered"]');
@@ -576,8 +573,7 @@ it("badges only verified events from the newest valid report on Coverage rows, c
         expect.stringContaining("used-u"),
         expect.stringContaining("used-a"),
     ]);
-    click("[data-segment-btn]:nth-of-type(6)");
-    await settle();
+    await chooseTab("log");
     const runs = [...target.querySelectorAll("[data-memory-run]")];
     expect(runs.map((row) => !!row.querySelector("[data-memory-used]"))).toEqual([true, false, false, false]);
     // A newer valid report of another kind stops the search; the older structured reports remain stored.
@@ -586,8 +582,7 @@ it("badges only verified events from the newest valid report on Coverage rows, c
     });
     await settle();
     expect(target.querySelectorAll("[data-memory-used]")).toHaveLength(0);
-    click("[data-segment-btn]:first-of-type");
-    await settle();
+    await chooseTab("coverage");
     expect(target.querySelectorAll("[data-memory-used]")).toHaveLength(0);
     click('[data-memory-coverage-group="covered"]');
     expect(target.querySelectorAll("[data-memory-used]")).toHaveLength(0);
@@ -617,8 +612,7 @@ it("runs Preview only on its button and keeps the job's memory block and manifes
             : fetch(url, init, options),
     );
     await open();
-    click("[data-segment-btn]:nth-of-type(2)");
-    await settle();
+    await chooseTab("preview");
     click("[data-memory-panel-refresh]");
     await settle();
     expect(io.runServerJob).not.toHaveBeenCalled();
@@ -767,7 +761,7 @@ function serveMemory() {
     });
     return state;
 }
-async function chooseTab(name: "pages" | "timeline" | "threads" | "settings") {
+async function chooseTab(name: "pages" | "timeline" | "threads" | "coverage" | "preview" | "log" | "settings") {
     const button = [...target.querySelectorAll<HTMLButtonElement>("[data-segment-btn]")].find(
         (button) => button.textContent?.trim() === language.structuredMemory.panel[name],
     );
@@ -776,6 +770,262 @@ async function chooseTab(name: "pages" | "timeline" | "threads" | "settings") {
     await settle();
     expect(query(`[data-memory-panel="${name}"]`)).not.toBeNull();
 }
+
+const pageViewButton = (view: "read" | "manage") =>
+    [...target.querySelectorAll<HTMLButtonElement>("[data-memory-page-detail] [data-segment-btn]")].find(
+        (button) => button.textContent?.trim() === language.structuredMemory.pages.views[view],
+    );
+async function choosePageView(view: "read" | "manage") {
+    const button = pageViewButton(view);
+    expect(button).toBeDefined();
+    button!.click();
+    await settle();
+    expect(button!.getAttribute("aria-pressed")).toBe("true");
+}
+
+it("opens Pages by default and Timeline for a pending target, with reading tabs first", async () => {
+    serveMemory();
+    await open();
+    expect(query('[data-memory-panel="pages"]')).not.toBeNull();
+    expect(query('[data-memory-page="p"]')?.textContent).toContain("The gate");
+    const tabLabels = () =>
+        [...target.querySelectorAll<HTMLButtonElement>("[data-segment-btn]")].map((button) =>
+            button.textContent?.trim(),
+        );
+    const tabs = language.structuredMemory.panel;
+    expect(tabLabels()).toEqual([
+        tabs.pages,
+        tabs.timeline,
+        tabs.threads,
+        tabs.coverage,
+        tabs.preview,
+        tabs.log,
+        tabs.settings,
+    ]);
+
+    await unmount(instance!);
+    instance = undefined;
+    requestMemoryPanelTarget(ref, { tab: "timeline", id: "event" });
+    await open();
+    expect(query('[data-memory-panel="timeline"]')).not.toBeNull();
+    expect(query('[data-memory-panel="pages"]')).toBeNull();
+    expect(target.textContent).toContain("The gate opened");
+
+    serveUnsupported();
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(tabLabels()).toEqual([
+        tabs.pages,
+        tabs.timeline,
+        tabs.threads,
+        `${tabs.unsupported} (3)`,
+        tabs.coverage,
+        tabs.preview,
+        tabs.log,
+        tabs.settings,
+    ]);
+});
+
+it("reads page text without editing controls and remembers Manage across page selections", async () => {
+    const state = serveUnsupported();
+    const page = state.pages[0];
+    page.aliases = ["North entrance", "Old gate"];
+    page.sections = [
+        {
+            ...page.sections[0],
+            body: "The <em>gate</em> stays shut.\nWait for dawn.",
+            disputed: true,
+            userCorrected: true,
+        },
+        { ...page.sections[0], heading: "Blank", body: " \n\t", unsupported: false },
+    ];
+    page.history = [
+        {
+            id: "writer-change",
+            heading: "Facts",
+            kind: "change",
+            highlighted: false,
+            before: { body: "Earlier memory", provenance: [], sources: [] },
+            at: 1,
+        },
+    ];
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="p"]');
+    await settle();
+    expect(query("[data-memory-section-body]")?.textContent).toBe("The <em>gate</em> stays shut.\nWait for dawn.");
+    expect(query("[data-memory-section-edit]")).toBeNull();
+    expect(pageViewButton("read")?.getAttribute("aria-pressed")).toBe("true");
+    expect(query("[data-memory-page-detail] h2")?.textContent).toBe("The gate");
+    const metadata = query("[data-memory-page-detail] h2")!.nextElementSibling!;
+    expect(metadata.textContent).toContain(language.structuredMemory.pages.types.location);
+    expect(metadata.textContent).toContain("North entrance, Old gate");
+    expect(query('[data-memory-section="Facts"] h3')?.textContent).toBe("Facts");
+    expect(query('[data-memory-section="Blank"]')).toBeNull();
+    expect(query("[data-memory-section-body] em")).toBeNull();
+    for (const flag of ["disputed", "unsupported", "userCorrected"] as const) {
+        const badge = query(`[data-memory-flag="${flag}"]`);
+        expect(badge?.textContent?.trim()).toBe(language.structuredMemory.pages.flags[flag]);
+        expect(badge?.closest("button")).toBeNull();
+    }
+    expect(query('[data-memory-section="Facts"]')?.textContent).toContain(language.structuredMemory.pages.locked);
+    for (const selector of [
+        '[data-memory-section] input[type="checkbox"]',
+        "[data-memory-provenance]",
+        "[data-memory-source]",
+        "[data-memory-page-tools]",
+        "[data-memory-page-mode]",
+        "[data-memory-page-grade]",
+        "[data-memory-history-id]",
+    ]) {
+        expect(query(selector)).toBeNull();
+    }
+
+    await choosePageView("manage");
+    expect(query("[data-memory-section-edit]")).not.toBeNull();
+    expect(query('[data-memory-section] input[type="checkbox"]')).not.toBeNull();
+    expect(query('[data-memory-provenance="event"]')).not.toBeNull();
+    expect(query('[data-memory-source="u0"]')).not.toBeNull();
+    expect(query("[data-memory-page-tools]")).not.toBeNull();
+    expect(query('[data-memory-history-id="writer-change"]')).not.toBeNull();
+    click('[data-memory-page="clear"]');
+    await settle();
+    expect(pageViewButton("manage")?.getAttribute("aria-pressed")).toBe("true");
+    expect(query("[data-memory-section-edit]")).not.toBeNull();
+
+    await choosePageView("read");
+    click('[data-memory-page="p"]');
+    await settle();
+    expect(pageViewButton("read")?.getAttribute("aria-pressed")).toBe("true");
+    expect(query("[data-memory-section-edit]")).toBeNull();
+    click('[data-memory-trash-page="trash"]');
+    await settle();
+    expect(query("[data-memory-page-detail] [data-segment-btn]")).toBeNull();
+    expect(query("[data-memory-page-tools]")).not.toBeNull();
+    expect(query("[data-memory-untrash]")).not.toBeNull();
+    click('[data-memory-page="p"]');
+    await settle();
+    expect(pageViewButton("read")?.getAttribute("aria-pressed")).toBe("true");
+
+    await chooseUnsupported();
+    expect(query("[data-memory-page-detail] [data-segment-btn]")).toBeNull();
+    expect(query("[data-memory-page-filter]")).toBeNull();
+    expect(query("[data-memory-section-edit]")).not.toBeNull();
+    expect(query("[data-memory-section-keep]")).not.toBeNull();
+});
+
+it("opens Manage and the requested history diff for a page history target", async () => {
+    const state = serveMemory();
+    state.page.history = [
+        {
+            id: "older-change",
+            heading: "Facts",
+            kind: "change",
+            highlighted: false,
+            before: { body: "First memory", provenance: [], sources: [] },
+            at: 1,
+        },
+        {
+            id: "writer-change",
+            heading: "Facts",
+            kind: "change",
+            highlighted: false,
+            before: { body: "Earlier memory", provenance: [], sources: [] },
+            at: 2,
+        },
+    ];
+    requestMemoryPanelTarget(ref, { tab: "pages", id: "p", historyId: "writer-change" });
+    await open();
+    expect(query('[data-memory-panel="pages"]')).not.toBeNull();
+    expect(query('[data-memory-page="p"]')?.getAttribute("aria-current")).toBe("true");
+    expect(pageViewButton("manage")?.getAttribute("aria-pressed")).toBe("true");
+    expect(query("[data-memory-section-edit]")).not.toBeNull();
+    const row = '[data-memory-history-id="writer-change"]';
+    expect(query(`${row} button[aria-expanded]`)?.getAttribute("aria-expanded")).toBe("true");
+    expect(query(`${row} [data-memory-history-diff] [data-memory-diff="removed"]`)?.textContent).toBe("Earlier");
+    expect(query(`${row} [data-memory-history-diff] [data-memory-diff="added"]`)?.textContent).toBe("Original");
+    expect(query('[data-memory-history-id="older-change"] button[aria-expanded]')?.getAttribute("aria-expanded")).toBe(
+        "false",
+    );
+    expect(query('[data-memory-history-id="older-change"] [data-memory-history-diff]')).toBeNull();
+});
+
+it("filters page titles without case or surrounding spaces and removes empty type groups", async () => {
+    const state = servePageTools();
+    state.pages[1].aliases = ["Gate"];
+    state.pages[1].sections[0].body = "Gate is mentioned only in this body";
+    state.pages[2].title = "Current scene";
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="target"]');
+    await settle();
+    expect(query("[data-memory-section-body]")?.textContent).toBe("Gate is mentioned only in this body");
+    const input = target.querySelector<HTMLInputElement>("[data-memory-page-filter] input")!;
+    expect(input).not.toBeNull();
+    expect(
+        query("[data-memory-page-filter]")!.compareDocumentPosition(query("[data-memory-page]")!) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(query('[data-memory-page-group="scene"]')).not.toBeNull();
+    expect(query('[data-memory-page-group="location"]')).not.toBeNull();
+    const filter = async (value: string) => {
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        await settle();
+    };
+    await filter("  GaTe  ");
+    expect(
+        [...target.querySelectorAll<HTMLElement>("[data-memory-page]")].map(({ dataset }) => dataset.memoryPage),
+    ).toEqual(["p"]);
+    expect(query('[data-memory-page="p"]')?.textContent).toContain("The gate");
+    expect(query('[data-memory-page-group="location"]')).not.toBeNull();
+    expect(query('[data-memory-page-group="scene"]')).toBeNull();
+    expect(query("[data-memory-page-filter-none]")).toBeNull();
+
+    await filter("no such title");
+    expect(target.querySelectorAll("[data-memory-page]")).toHaveLength(0);
+    expect(target.querySelectorAll("[data-memory-page-group]")).toHaveLength(0);
+    expect(target.querySelectorAll("[data-memory-page-filter-none]")).toHaveLength(1);
+    expect(query("[data-memory-page-filter-none]")?.textContent).toBe(language.structuredMemory.pages.filterNone);
+
+    await filter(" \t ");
+    expect(target.querySelectorAll("[data-memory-page]")).toHaveLength(3);
+    expect(query('[data-memory-page-group="scene"]')).not.toBeNull();
+    expect(query("[data-memory-page-filter-none]")).toBeNull();
+});
+
+it("follows live page links by title in both views and disables unknown page ids", async () => {
+    const state = servePageTools();
+    state.pages[0].links = ["target", "missing-page"];
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="p"]');
+    await settle();
+    for (const view of ["read", "manage"] as const) {
+        if (view === "manage") await choosePageView(view);
+        expect(pageViewButton(view)?.getAttribute("aria-pressed")).toBe("true");
+        const live = target.querySelector<HTMLButtonElement>(
+            '[data-memory-page-links] [data-memory-page-link="target"]',
+        )!;
+        const missing = target.querySelector<HTMLButtonElement>(
+            '[data-memory-page-links] [data-memory-page-link="missing-page"]',
+        )!;
+        expect(live?.textContent).toBe("The harbor");
+        expect(live?.disabled).toBe(false);
+        expect(missing?.textContent).toBe("missing-page");
+        expect(missing?.disabled).toBe(true);
+        missing.click();
+        await settle();
+        expect(query('[data-memory-page="p"]')?.getAttribute("aria-current")).toBe("true");
+        click('[data-memory-page-link="target"]');
+        await settle();
+        expect(query('[data-memory-page="target"]')?.getAttribute("aria-current")).toBe("true");
+        expect(query("[data-memory-page-detail] h2")?.textContent).toBe("The harbor");
+        expect(query("[data-memory-page-links]")).toBeNull();
+        click('[data-memory-page="p"]');
+        await settle();
+    }
+});
 
 it.each(["pages", "threads"] as const)("makes exactly one contents request per refresh with %s open", async (tab) => {
     const state = serveMemory();
@@ -838,10 +1088,10 @@ it("rereads contents and the active tab when the open chat is installed, and whe
         return fetch(url, init, options);
     });
     await open();
+    await chooseTab("coverage");
     expect(contentsRequests()).toHaveLength(1);
     expect(reads("coverage")).toHaveLength(1);
-    click("[data-segment-btn]:nth-of-type(6)");
-    await settle();
+    await chooseTab("log");
     expect(contentsRequests()).toHaveLength(1);
     expect(reads("runs")).toHaveLength(1);
     expect(query('[data-memory-panel="log"]')?.textContent).toContain("before-load");
@@ -915,6 +1165,7 @@ it("sends one page change with the copy revision and uses each successful answer
     ).toEqual(["scene", "p"]);
     click('[data-memory-page="scene"]');
     await settle();
+    await choosePageView("manage");
     expect(query("[data-memory-page-mode]")).toBeNull();
     click('[data-memory-page="p"]');
     await settle();
@@ -964,6 +1215,7 @@ it("releases a corrected section from its badge only after the person confirms",
     await chooseTab("pages");
     click('[data-memory-page="p"]');
     await settle();
+    await choosePageView("manage");
     const badge = '[data-memory-flag="userCorrected"]';
     expect(query(badge)?.textContent?.trim()).toBe(language.structuredMemory.pages.flags.userCorrected);
     vi.mocked(alertConfirm).mockResolvedValueOnce(false);
@@ -1020,6 +1272,7 @@ it.each(["pages", "threads"] as const)(
         if (tab === "pages") {
             click('[data-memory-page="p"]');
             await settle();
+            await choosePageView("manage");
         } else {
             click("[data-memory-thread] button");
             await settle();
@@ -1079,6 +1332,7 @@ it("closes an overtaken section draft with a changed notice when the writer fenc
     await chooseTab("pages");
     click('[data-memory-page="p"]');
     await settle();
+    await choosePageView("manage");
     press("[data-memory-section-edit]");
     typeSection("My unsaved draft");
     const release = beginLocalSend(ref)!;
@@ -1168,6 +1422,7 @@ it("follows record links between tabs and opens the chat and closes the panel fo
     expect(query('[data-memory-panel="pages"]')).not.toBeNull();
     expect(query('[data-memory-page="p"]')?.getAttribute("aria-current")).toBe("true");
     expect(query("[data-memory-section-body]")?.textContent).toBe("Original memory");
+    await choosePageView("manage");
     click('[data-memory-provenance="event"]');
     await settle();
     expect(query('[data-memory-panel="timeline"]')).not.toBeNull();
@@ -1176,6 +1431,7 @@ it("follows record links between tabs and opens the chat and closes the panel fo
     click('[data-memory-participant="p"]');
     await settle();
     expect(query('[data-memory-page="p"]')?.getAttribute("aria-current")).toBe("true");
+    await choosePageView("manage");
     click('[data-memory-source="u0"]');
     expect(selection.chatOpen).toBe(true);
     expect(pendingMessageJump()).toMatchObject({ ref, messageId: "u0" });
@@ -1307,6 +1563,7 @@ function serveAnchoredEvent() {
 it("moves edited held sources from covered to stale in Coverage and Timeline without rereading memory", async () => {
     serveAnchoredEvent();
     await open();
+    await chooseTab("coverage");
     expect(query('[data-memory-coverage-count="covered"]')?.textContent).toContain("2");
     const requests = reads().length;
     setMessageText(ref, "a0", "Edited reply");
@@ -1442,8 +1699,7 @@ it("shows a send's stale reason in the panel manifest", async () => {
     };
     io.runServerJob.mockResolvedValue(previewAnswer({ messages: [], context }));
     await open();
-    click("[data-segment-btn]:nth-of-type(2)");
-    await settle();
+    await chooseTab("preview");
     click("[data-memory-preview-run]");
     await settle();
     expect(query('[data-memory-manifest-excluded="stale"]')?.textContent).toContain("Gate opened");
@@ -1523,6 +1779,7 @@ it("disables adoption while read-only, posts once without a body, then toasts an
         url.endsWith("/adopt") ? response.promise : fetch(url, init, options),
     );
     await open();
+    await chooseTab("coverage");
     const held = JSON.parse(JSON.stringify(findChat(ref)));
     const button = () => query("[data-memory-adopt-action]")!.closest("button")!;
     const release = beginLocalSend(ref)!;
@@ -1955,8 +2212,7 @@ it("shows the current custom mode on the panel and the stored custom mode on Log
     structured.fineTuning = false;
     flushSync();
     expect(query("[data-memory-custom-prompt]")).toBeNull();
-    click("[data-segment-btn]:nth-of-type(6)");
-    await settle();
+    await chooseTab("log");
     expect(query('[data-memory-run="failed"]')?.textContent).toContain("Custom prompt");
 });
 
@@ -2016,6 +2272,7 @@ it("selects the page named by a merge answer and rereads contents, then restores
     await chooseTab("pages");
     click('[data-memory-page="p"]');
     await settle();
+    await choosePageView("manage");
     const select = target.querySelector<HTMLSelectElement>("[data-memory-merge-target]")!;
     const querySelector = select.querySelector.bind(select);
     // happy-dom does not implement :checked for a select's selected option.
@@ -2060,6 +2317,7 @@ it("offers only restore and permanent deletion for trash and only export as a sc
     expect(query("[data-memory-export-lore]")).toBeNull();
     click('[data-memory-page="scene"]');
     await settle();
+    await choosePageView("manage");
     expect(target.querySelectorAll("[data-memory-page-tools] button")).toHaveLength(1);
     expect(query("[data-memory-export-lore]")).not.toBeNull();
     expect(query("[data-memory-trash]")).toBeNull();
@@ -2086,6 +2344,7 @@ it("appends an inactive lore entry that cannot activate even when a section name
     await chooseTab("pages");
     click('[data-memory-page="p"]');
     await settle();
+    await choosePageView("manage");
     press("[data-memory-export-lore]");
     await settle();
     const chat = JSON.parse(JSON.stringify(findChat(ref)!)) as Chat;
@@ -2195,6 +2454,7 @@ it("sends only selected headings and aliases from the split form and opens the n
     await chooseTab("pages");
     click('[data-memory-page="p"]');
     await settle();
+    await choosePageView("manage");
     press("[data-memory-split-open]");
     click('[data-memory-split-heading="Access"] input');
     click('[data-memory-split-alias="Boat"] input');
@@ -2382,10 +2642,10 @@ it("filters missing evidence, keeps with the tab preference, advances pages and 
     const labels = [...target.querySelectorAll("[data-segment-btn]")].map((button) => button.textContent?.trim());
     expect(
         labels.slice(
-            labels.indexOf(language.structuredMemory.panel.pages),
-            labels.indexOf(language.structuredMemory.panel.pages) + 2,
+            labels.indexOf(language.structuredMemory.panel.threads),
+            labels.indexOf(language.structuredMemory.panel.threads) + 2,
         ),
-    ).toEqual([language.structuredMemory.panel.pages, `${language.structuredMemory.panel.unsupported} (3)`]);
+    ).toEqual([language.structuredMemory.panel.threads, `${language.structuredMemory.panel.unsupported} (3)`]);
     await chooseUnsupported();
     expect(
         [...target.querySelectorAll<HTMLElement>("[data-memory-page]")].map(({ dataset }) => dataset.memoryPage),

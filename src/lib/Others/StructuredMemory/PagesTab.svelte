@@ -25,6 +25,7 @@
     import Button from "src/lib/UI/GUI/Button.svelte";
     import CheckInput from "src/lib/UI/GUI/CheckInput.svelte";
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
+    import SegmentedControl from "src/lib/UI/GUI/SegmentedControl.svelte";
     import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
@@ -51,6 +52,13 @@
      * the server decides all other fields. A refusal restores the copy and rereads; a success supplies the
      * next revision. A revert waits for the server's answer because only it knows the restored content.
      *
+     * Read is the initial view: title, type, aliases, links, and non-blank sections with plain text flags.
+     * Manage holds the page tools, section controls, sources, and history. The choice lasts across page
+     * selections while mounted; trash and `only: "unsupported"` show Manage without changing that choice.
+     * Links name live pages by title and select them, or open Pages from the unsupported view; missing
+     * links show disabled ids, and sending disables live links. A title-only filter narrows the tree before
+     * grouping and resets its row limit when changed; the trash stays unfiltered.
+     *
      * An open section editor keeps its base body. A read or revert that changes that body closes the editor
      * with `changed`, so an old draft cannot replace new writer text. Read-only keeps the draft and disables
      * Save; the read when it falls checks the same base. Titles, aliases, types, and links have no editor.
@@ -58,7 +66,7 @@
      *
      * History's after-state comes from `memoryPageHistoryView` in src/ts/process/structuredMemory.svelte.ts;
      * no after-state is stored. One diff opens at a time and renders as spans. A target with `historyId`
-     * opens that diff only after its page is held, then scrolls after render.
+     * selects Manage and opens that diff only after its page is held, then scrolls after render.
      * With `only: "unsupported"`, this same view lists flagged pages and sections, selects the next
      * flagged page after resolution, and offers evidence keeps and the latest retracted writer revert.
      * Keeps can mark text user-corrected for rebuilds; that choice lasts only while the tab is mounted.
@@ -102,6 +110,7 @@
     let contentsNumber = 0;
 
     let selectedId = $state<string | null>(null);
+    let view = $state<string | number>("read");
     /** The tab's copy of the selected page, with the revision the next edit names. */
     let copy = $state.raw<StructuredMemoryRecordAnswer<"pages"> | null>(null);
     let recordFailure = $state<string | null>(null);
@@ -124,6 +133,7 @@
     let importReport = $state.raw<StructuredMemoryImportAnswer | null>(null);
 
     let shownRows = $state(ROWS_AT_ONCE);
+    let query = $state("");
     /** The open history entry and its diff, one at a time. */
     let openEntry = $state<string | null>(null);
     let diff = $state.raw<MemoryDiffPart[] | "failed" | null>(null);
@@ -136,11 +146,13 @@
     const usedPages = $derived(memoryItemsUsed(messages, "page"));
     const messageIndexes = $derived(memoryMessageIndexes(messages));
     const eventTitles = $derived(new Map<string, string>(contents?.events.map(({ id, title }) => [id, title])));
+    const pageTitles = $derived(new Map<string, string>(contents?.pages.map(({ id, title }) => [id, title])));
     const unsupportedIds = $derived(new Set(contents?.unsupportedPages));
+    const normalizedQuery = $derived(query.trim().toLowerCase());
     const listedPages = $derived(
         only === "unsupported"
             ? (contents?.pages ?? []).filter(({ id }) => unsupportedIds.has(id))
-            : (contents?.pages ?? []),
+            : (contents?.pages ?? []).filter(({ title }) => title.toLowerCase().includes(normalizedQuery)),
     );
     /** The tree in order, a group's first row carrying its type, so "show more" counts rows. */
     const treeRows = $derived(
@@ -182,6 +194,7 @@
     const draftFits = $derived(draft.trim() !== "" && draft.length <= sectionBodyChars);
     /** The copy is a page in the trash: read-only, with Restore and Delete forever alone. */
     const inTrash = $derived(copy?.data.trashedAt !== undefined);
+    const effectiveView = $derived(only === "unsupported" || inTrash ? "manage" : view);
     /** The live pages the copy can merge into: its type, not itself. */
     const mergeTargets = $derived(
         copy && contents ? contents.pages.filter(({ type, id }) => type === copy.data.type && id !== copy.data.id) : [],
@@ -361,6 +374,9 @@
         if (target && only !== "unsupported") {
             untrack(() => {
                 const { id, historyId } = target;
+                if (historyId !== undefined) {
+                    view = "manage";
+                }
                 askedEntry = historyId === undefined ? null : { pageId: id, historyId };
                 select(id);
                 void openAskedEntry();
@@ -376,6 +392,11 @@
                 shownRows = index + 1;
             }
         });
+    });
+
+    $effect(() => {
+        query;
+        shownRows = ROWS_AT_ONCE;
     });
 
     /**
@@ -1035,83 +1056,143 @@
     {/if}
 {/snippet}
 
-{#snippet pageDetail(page: MemoryPage)}
-    <h2 class="text-base font-semibold break-words">{page.title}</h2>
-    <p class="text-textcolor2">{codeText(text.types, page.type)}</p>
-    {#if page.aliases.length > 0}
-        <p class="break-words">{text.aliases}: {page.aliases.join(", ")}</p>
-    {/if}
-    {#if page.trashedAt !== undefined}
-        <p class="text-textcolor2" data-memory-trashed>{toolText.trashed}</p>
-        <div class="flex flex-wrap items-center gap-2" data-memory-page-tools>
-            <Button size="sm" disabled={controlsOff} onclick={untrashPage}>
-                <span data-memory-untrash>{toolText.restore}</span>
-            </Button>
-            <Button size="sm" styled="outlined" disabled={controlsOff} onclick={purgePage}>
-                <span data-memory-purge>{toolText.purge}</span>
-            </Button>
+{#snippet pageLinks(page: MemoryPage)}
+    {#if page.links.length > 0}
+        <div class="flex flex-wrap items-center gap-1" data-memory-page-links>
+            <span class="text-xs text-textcolor2">{text.links}</span>
+            {#each page.links as id}
+                <MemoryLinkButton
+                    label={pageTitles.get(id) ?? id}
+                    disabled={sending || !pageTitles.has(id)}
+                    onclick={() => (only === "unsupported" ? open({ tab: "pages", id }) : select(id))}
+                    data-memory-page-link={id}
+                />
+            {/each}
         </div>
+    {/if}
+{/snippet}
+
+{#snippet pageDetail(page: MemoryPage)}
+    {#if only !== "unsupported" && !inTrash}
+        <SegmentedControl
+            bind:value={view}
+            options={[
+                { value: "read", label: text.views.read },
+                { value: "manage", label: text.views.manage },
+            ]}
+            margin={false}
+            size="sm"
+            label={text.view}
+        />
+    {/if}
+    <h2 class="text-base font-semibold break-words">{page.title}</h2>
+    {#if effectiveView === "read"}
+        <p class="text-textcolor2 break-words">
+            {codeText(text.types, page.type)}
+            {#if page.aliases.length > 0}
+                · {text.aliases}: {page.aliases.join(", ")}
+            {/if}
+        </p>
+        {@render pageLinks(page)}
+        {#each page.sections.filter(({ body }) => body.trim() !== "") as section}
+            <section class="flex flex-col min-w-0 gap-1 break-words" data-memory-section={section.heading}>
+                <div class="flex flex-wrap items-center gap-2">
+                    <h3 class="font-semibold">{codeText(text.headings, section.heading)}</h3>
+                    {#each FLAGS as flag (flag)}
+                        {#if section[flag]}
+                            <span class="px-1.5 rounded-sm bg-darkbutton text-textcolor2" data-memory-flag={flag}>
+                                {text.flags[flag]}
+                            </span>
+                        {/if}
+                    {/each}
+                    {#if section.locked}
+                        <span class="px-1.5 rounded-sm bg-darkbutton text-textcolor2">{text.locked}</span>
+                    {/if}
+                </div>
+                <p class="whitespace-pre-wrap" data-memory-section-body>{section.body}</p>
+            </section>
+        {:else}
+            <p class="text-textcolor2">{text.noSections}</p>
+        {/each}
     {:else}
-        <div class="flex flex-wrap gap-3">
-            {#if page.type !== "scene"}
+        <p class="text-textcolor2">{codeText(text.types, page.type)}</p>
+        {#if page.aliases.length > 0}
+            <p class="break-words">{text.aliases}: {page.aliases.join(", ")}</p>
+        {/if}
+        {@render pageLinks(page)}
+        {#if page.trashedAt !== undefined}
+            <p class="text-textcolor2" data-memory-trashed>{toolText.trashed}</p>
+            <div class="flex flex-wrap items-center gap-2" data-memory-page-tools>
+                <Button size="sm" disabled={controlsOff} onclick={untrashPage}>
+                    <span data-memory-untrash>{toolText.restore}</span>
+                </Button>
+                <Button size="sm" styled="outlined" disabled={controlsOff} onclick={purgePage}>
+                    <span data-memory-purge>{toolText.purge}</span>
+                </Button>
+            </div>
+        {:else}
+            <div class="flex flex-wrap gap-3">
+                {#if page.type !== "scene"}
+                    <label class="flex flex-col gap-1">
+                        <span class="text-textcolor2">{text.contextMode}</span>
+                        <SelectInput
+                            size="sm"
+                            value={page.contextMode}
+                            disabled={controlsOff}
+                            onchange={(event) => setContextMode(event.currentTarget.value as MemoryContextMode)}
+                            data-memory-page-mode
+                        >
+                            {#each MEMORY_CONTEXT_MODES as mode (mode)}
+                                <OptionInput value={mode}>{text.contextModes[mode]}</OptionInput>
+                            {/each}
+                        </SelectInput>
+                    </label>
+                {/if}
                 <label class="flex flex-col gap-1">
-                    <span class="text-textcolor2">{text.contextMode}</span>
+                    <span class="text-textcolor2">{text.grade}</span>
                     <SelectInput
                         size="sm"
-                        value={page.contextMode}
+                        value={page.grade ?? ""}
                         disabled={controlsOff}
-                        onchange={(event) => setContextMode(event.currentTarget.value as MemoryContextMode)}
-                        data-memory-page-mode
+                        onchange={(event) => setGrade(event.currentTarget.value)}
+                        data-memory-page-grade
                     >
-                        {#each MEMORY_CONTEXT_MODES as mode (mode)}
-                            <OptionInput value={mode}>{text.contextModes[mode]}</OptionInput>
+                        <OptionInput value="">{text.noGrade}</OptionInput>
+                        {#each GRADES as grade (grade)}
+                            <OptionInput value={grade}>{grade}</OptionInput>
                         {/each}
                     </SelectInput>
                 </label>
-            {/if}
-            <label class="flex flex-col gap-1">
-                <span class="text-textcolor2">{text.grade}</span>
-                <SelectInput
-                    size="sm"
-                    value={page.grade ?? ""}
-                    disabled={controlsOff}
-                    onchange={(event) => setGrade(event.currentTarget.value)}
-                    data-memory-page-grade
-                >
-                    <OptionInput value="">{text.noGrade}</OptionInput>
-                    {#each GRADES as grade (grade)}
-                        <OptionInput value={grade}>{grade}</OptionInput>
-                    {/each}
-                </SelectInput>
-            </label>
-        </div>
-        {@render pageTools(page)}
-    {/if}
-    {#if only === "unsupported"}
-        <Button size="sm" styled="outlined" disabled={controlsOff} onclick={keepAll}>
-            <span data-memory-keep-all>{unsupportedText.keepAll}</span>
-        </Button>
-    {/if}
-    {@const sections = only === "unsupported" ? page.sections.filter(({ unsupported }) => unsupported) : page.sections}
-    {#if sections.length === 0}
-        <p class="text-textcolor2">{text.noSections}</p>
-    {:else}
-        {#each sections as section}
-            {@render sectionBlock(section)}
-        {/each}
-    {/if}
-    <h3 class="font-semibold">{text.history}</h3>
-    {#if history.length === 0}
-        <p class="text-textcolor2">{text.noHistory}</p>
-    {:else}
-        <ul
-            class="flex flex-col min-w-0 border-t divide-y divide-darkborderc border-darkborderc"
-            bind:this={historyList}
-        >
-            {#each history as entry}
-                {@render historyRow(entry)}
+            </div>
+            {@render pageTools(page)}
+        {/if}
+        {#if only === "unsupported"}
+            <Button size="sm" styled="outlined" disabled={controlsOff} onclick={keepAll}>
+                <span data-memory-keep-all>{unsupportedText.keepAll}</span>
+            </Button>
+        {/if}
+        {@const sections =
+            only === "unsupported" ? page.sections.filter(({ unsupported }) => unsupported) : page.sections}
+        {#if sections.length === 0}
+            <p class="text-textcolor2">{text.noSections}</p>
+        {:else}
+            {#each sections as section}
+                {@render sectionBlock(section)}
             {/each}
-        </ul>
+        {/if}
+        <h3 class="font-semibold">{text.history}</h3>
+        {#if history.length === 0}
+            <p class="text-textcolor2">{text.noHistory}</p>
+        {:else}
+            <ul
+                class="flex flex-col min-w-0 border-t divide-y divide-darkborderc border-darkborderc"
+                bind:this={historyList}
+            >
+                {#each history as entry}
+                    {@render historyRow(entry)}
+                {/each}
+            </ul>
+        {/if}
     {/if}
 {/snippet}
 
@@ -1162,62 +1243,72 @@
         {@render importControls()}
     {:else}
         <div class="flex flex-col min-w-0 gap-3 sm:flex-row">
-            <ul class="flex flex-col min-w-0 gap-0.5 sm:w-52 sm:shrink-0">
-                {#each treeRows.slice(0, shownRows) as { row, group } (row.id)}
-                    {#if group !== null}
-                        <li class="mt-1 text-textcolor2" data-memory-page-group={group}>
-                            {codeText(text.types, group)}
-                        </li>
-                    {/if}
-                    <li class="min-w-0">
-                        <button
-                            type="button"
-                            class={"flex flex-wrap items-center w-full min-w-0 px-2 py-1 text-left transition-colors rounded-md gap-x-2 hover:bg-selected disabled:cursor-not-allowed" +
-                                (row.id === selectedId ? " bg-selected" : "")}
-                            aria-current={row.id === selectedId}
-                            disabled={sending}
-                            onclick={() => select(row.id)}
-                            data-memory-page={row.id}
-                        >
-                            <span class="min-w-0 break-words">{row.title}</span>
-                            {#if usedPages.has(row.id)}
-                                <span class="px-1.5 rounded-sm bg-darkbutton text-secondary-500" data-memory-used
-                                    >{panelText.usedInLastSend}</span
-                                >
-                            {/if}
-                        </button>
-                    </li>
-                {/each}
-                {#if treeRows.length > shownRows}
-                    <li>
-                        <button
-                            type="button"
-                            class="px-2 py-1 my-1 transition-colors border rounded-md border-darkborderc text-textcolor2 hover:text-textcolor"
-                            onclick={() => (shownRows += ROWS_AT_ONCE)}
-                        >
-                            {panelText.showMore(treeRows.length - shownRows)}
-                        </button>
-                    </li>
+            <div class="flex flex-col min-w-0 gap-2 sm:w-52 sm:shrink-0">
+                {#if only !== "unsupported"}
+                    <div data-memory-page-filter>
+                        <TextInput bind:value={query} placeholder={text.filter} size="sm" fullwidth />
+                    </div>
                 {/if}
-                {#if only !== "unsupported" && contents.trash.length > 0}
-                    <li class="mt-2 text-textcolor2" data-memory-trash-group>{toolText.trash}</li>
-                    {#each contents.trash as row (row.id)}
+                <ul class="flex flex-col min-w-0 gap-0.5">
+                    {#if normalizedQuery !== "" && listedPages.length === 0}
+                        <li class="text-textcolor2" data-memory-page-filter-none>{text.filterNone}</li>
+                    {/if}
+                    {#each treeRows.slice(0, shownRows) as { row, group } (row.id)}
+                        {#if group !== null}
+                            <li class="mt-1 text-textcolor2" data-memory-page-group={group}>
+                                {codeText(text.types, group)}
+                            </li>
+                        {/if}
                         <li class="min-w-0">
                             <button
                                 type="button"
-                                class={"flex flex-wrap items-center w-full min-w-0 px-2 py-1 text-left transition-colors rounded-md gap-x-2 text-textcolor2 hover:bg-selected disabled:cursor-not-allowed" +
+                                class={"flex flex-wrap items-center w-full min-w-0 px-2 py-1 text-left transition-colors rounded-md gap-x-2 hover:bg-selected disabled:cursor-not-allowed" +
                                     (row.id === selectedId ? " bg-selected" : "")}
                                 aria-current={row.id === selectedId}
                                 disabled={sending}
                                 onclick={() => select(row.id)}
-                                data-memory-trash-page={row.id}
+                                data-memory-page={row.id}
                             >
                                 <span class="min-w-0 break-words">{row.title}</span>
+                                {#if usedPages.has(row.id)}
+                                    <span class="px-1.5 rounded-sm bg-darkbutton text-secondary-500" data-memory-used
+                                        >{panelText.usedInLastSend}</span
+                                    >
+                                {/if}
                             </button>
                         </li>
                     {/each}
-                {/if}
-            </ul>
+                    {#if treeRows.length > shownRows}
+                        <li>
+                            <button
+                                type="button"
+                                class="px-2 py-1 my-1 transition-colors border rounded-md border-darkborderc text-textcolor2 hover:text-textcolor"
+                                onclick={() => (shownRows += ROWS_AT_ONCE)}
+                            >
+                                {panelText.showMore(treeRows.length - shownRows)}
+                            </button>
+                        </li>
+                    {/if}
+                    {#if only !== "unsupported" && contents.trash.length > 0}
+                        <li class="mt-2 text-textcolor2" data-memory-trash-group>{toolText.trash}</li>
+                        {#each contents.trash as row (row.id)}
+                            <li class="min-w-0">
+                                <button
+                                    type="button"
+                                    class={"flex flex-wrap items-center w-full min-w-0 px-2 py-1 text-left transition-colors rounded-md gap-x-2 text-textcolor2 hover:bg-selected disabled:cursor-not-allowed" +
+                                        (row.id === selectedId ? " bg-selected" : "")}
+                                    aria-current={row.id === selectedId}
+                                    disabled={sending}
+                                    onclick={() => select(row.id)}
+                                    data-memory-trash-page={row.id}
+                                >
+                                    <span class="min-w-0 break-words">{row.title}</span>
+                                </button>
+                            </li>
+                        {/each}
+                    {/if}
+                </ul>
+            </div>
             <div class="flex flex-col flex-1 min-w-0 gap-2" data-memory-page-detail>
                 {#if recordFailure !== null}
                     <p role="alert" class="text-draculared" data-memory-page-failure>{recordFailure}</p>

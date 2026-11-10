@@ -2708,6 +2708,11 @@ export const languageKorean = {
         pages: {
             empty: "이 채팅에는 아직 생성된 기억 문서가 없습니다.",
             select: "내용을 확인할 문서를 선택하세요.",
+            view: "문서 보기",
+            views: { read: "읽기", manage: "관리" },
+            links: "연결된 문서",
+            filter: "제목으로 문서 찾기",
+            filterNone: "제목이 일치하는 문서가 없습니다.",
             types: {
                 character: "인물",
                 location: "장소",
