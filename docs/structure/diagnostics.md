@@ -219,6 +219,9 @@ The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credent
   `[Generation socket] proto=…`): the Diagnostics events (`DIAGNOSTIC_EVENT_KINDS`, `shared/diagnostics.ts`) and
   `logEvent` carry none, so a protocol floor decision would read console logs. Decision: Found Issues Clearance Q8
   (owner, 2026-11-09): no floor is planned.
+- Daily event appends are unsynced, so a power loss can lose recent events; whole-file state, report, and share writes
+  flush their staged files before rename. Decision: owner, 2026-11-10 (known-issues review): events are diagnostics, not
+  user data.
 
 ### Gotchas
 

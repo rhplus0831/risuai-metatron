@@ -340,6 +340,10 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
   2026-11-09).
 - A page restored from the back-forward cache may still wait for an unload answer; `flushResources` gives up after 20 s.
   Decision: owner, 2026-11-10 (known-issues review).
+- A save's echo arriving before its acknowledgement schedules a cycle 50 ms later (`noteRemoteChanges`), so continuous
+  typing can save more often than the debounce. [Measurements](../audit/projection-bindings-2026-10-04.md) no longer
+  show extra saves. Decision: owner, 2026-11-10 (known-issues review): coalescing waits for a measurement that shows
+  them.
 
 ### Gotchas
 

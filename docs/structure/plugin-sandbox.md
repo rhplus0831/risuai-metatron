@@ -252,6 +252,11 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 
 ## Recipes
 
+- Add a field where a password or credential is typed as visible text: `<TextInput secret>` or
+  `alertInput(msg, undefined, undefined, { secret: true })`, so `isSecretKeyEvent` (`v3.svelte.ts`) keeps its keys from
+  plugin listeners. A password input needs nothing.
+- Add a method to a host wrapper class: define it on the class or the instance. `getInstanceMethod` (`factory.ts`)
+  refuses a name that comes from `Object.prototype` or `Function.prototype`.
 - Add a v3 API function:
   1. Implement it in `v3.svelte.ts:makeRisuaiAPIV3`. Nested objects need flat host functions plus `_getAliases`.
      Constants go in `_getPropertiesForInitialization`.
@@ -331,6 +336,10 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   reads back as `{}`, a typed array as an index object, a `Date` as a string, `NaN` and `Infinity` as `null`, and an
   `undefined` property is dropped; a `bigint` or a cycle throws. `getLocalPluginStorage().setItem` refuses those values
   instead (`isJsonValue`). Decision: upstream parity, Found Issues Decisions (owner, 2026-11-08).
+- With `mainDom` consent a plugin can query and change the whole document (`getRootDocument`) and receives the keys
+  typed into every field that is not a password input or marked `data-plugin-secret`; `nativeFetch` lets a plugin choose
+  its request headers. Decision: owner, 2026-11-10 (known-issues review): the consent is the boundary, and plugin
+  providers send their own API keys.
 
 ### Gotchas
 

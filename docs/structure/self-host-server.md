@@ -101,7 +101,10 @@ Route lookup order:
 
 - `GET`/`POST /proxy`, `/proxy2`: `checkAuth`, a registered JWT only; the stored password digest in `risu-auth` gets the
   usual JWT failure. Auxiliary operations: `server/src/llm/auxOps.ts` ([LLM requests](llm-requests.md)).
-- `GET /hub-proxy/*`: configured hub (default `https://sv.risuai.xyz`).
+- `GET /hub-proxy/*`: configured hub (default `https://sv.risuai.xyz`), unauthenticated. `hubHeaders` puts
+  `UNTRUSTED_CONTENT_CSP` (`server/src/http/securityHeaders.ts`, shared with `assetHeaders`) and `nosniff` on every
+  answer, the limiter's 429 and the route's 502 included, and the hub's `Set-Cookie` is dropped, so a hub document
+  opened through this origin gets an opaque origin and runs no script.
 
 ### Push routes
 
@@ -172,7 +175,8 @@ deletes past-grace candidates; its batches and synchronous turn are `sweep`'s co
    to `/api/set_password`, then logs in; with an unknown key it calls `/api/login`, which registers the public-key hash
    and answers `{ status: "success" }`, with no token.
 2. Every HTTP and WebSocket request, the proxy routes included, carries a JWT the tab signs itself (`createAuth`,
-   `src/ts/storage/serverAuth.ts`, five minutes). A failed check answers 400 (`failureBodies`), 401 on the asset route;
+   `src/ts/storage/serverAuth.ts`, five minutes). `verifyJwt` needs a finite `exp`, not past and at most 24 hours ahead
+   of the server clock (`MAX_JWT_FUTURE_SECONDS`). A failed check answers 400 (`failureBodies`), 401 on the asset route;
    sockets share the rule (`isAuthorizedToken`). The password digest is checked only by `/api/login`, never accepted as
    `risu-auth`.
 
@@ -413,6 +417,14 @@ belong to [test-harness](test-harness.md); `slow` and `e2e` memberships are in i
 - The thumbnail cache has no byte cap. It holds at most two sizes per asset, an asset's removal removes its entries, and
   a changed source (the key carries its stat) leaves a stale entry for the startup sweep, so it grows with the asset
   library, not without bound. Decision: owner, 2026-11-10 (known-issues review).
+- JWT validation checks the registered key, ES256, the signature, and `exp`, not issuer, audience, `typ`, or `iat`: the
+  browser signs its own tokens and the server issues none. Decision: owner, 2026-11-10 (known-issues review).
+- `/hub-proxy` is unauthenticated: the Realm icons load it from `<img>`, which cannot carry `risu-auth`, so anyone who
+  reaches the server can read the public hub through it (GET only, rate limited, an allowlist of request headers).
+  Decision: owner, 2026-11-10 (known-issues review): the sandbox and `nosniff` headers on its answers are the
+  protection.
+- `/api/asset/*` verification is in memory and stat-based; it starts empty after restart and cannot detect an outside
+  same-size edit that restores the full stat. Decision: owner, 2026-11-10 (known-issues review).
 
 ### Gotchas
 

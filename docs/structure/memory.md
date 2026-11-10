@@ -361,6 +361,9 @@ lookahead starts at stored coverage and does not defer summaries.
 - No API embedding batch (`HypaProcesser.getEmbeds`, `HypaProcessorV2`) counts tokens before sending, so long inputs can
   exceed provider limits; contextual batches likewise count inputs and chunks, not tokens. Decision: owner, 2026-11-10
   (known-issues review): the provider reports the overflow.
+- The custom embedding URL is fetched directly by the server with no local-target restriction. Only an authenticated tab
+  writes `hypaCustomSettings`, no card or module supplies the URL, and a local embedding server is a supported setup.
+  Decision: owner, 2026-11-10 (known-issues review): the same trust as `/proxy`.
 
 ### Gotchas
 

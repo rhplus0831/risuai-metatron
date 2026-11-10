@@ -268,3 +268,6 @@ and keeps what spans files.
   resources are fetched by the tab (`getHubResources`); a CharX card's embedded `module.risum` is read in the tab
   (`readModule`), which stores its assets; `planPngFile` (`server/src/routes/importPng.ts`) reads one key prefix per
   tEXt chunk.
+- The RisuRealm terms gate is client-side only: `GET /hub-proxy/*` (unauthenticated) and `POST /api/import/realm` do not
+  check `ui.realmTermsAccepted`. Decision: owner, 2026-11-10 (known-issues review): the gate is a notice to the server's
+  owner, not a security boundary.
