@@ -11,7 +11,7 @@
   of `shared/structuredMemory.ts`, the memory parts of `server/src/data/checkpointStore.ts`,
   `server/src/data/resourceStore.ts`, `shared/chatCheckpoints.ts`, and `src/ts/characters.ts`.
 - See [structured memory](records.md) for the records these rules act on, the tables and store, and the edit route that
-  carries a repair, and [the archive](../../archived-plan/README.md) for the design and remaining work.
+  carries a repair, and [the archive](../../archived-plan/README.md) for the design.
 - Not here:
   - The records, the projection and the reset, the writer, the read path, the rebuild, and the page tools →
     [the area README](README.md).

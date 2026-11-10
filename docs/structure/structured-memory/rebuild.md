@@ -10,7 +10,7 @@
   `server/src/data/memoryStore.ts`, and the controls in `src/lib/Others/StructuredMemory/StructuredMemoryPanel.svelte`
   and `memoryRecordPress.ts`.
 - See [structured memory](records.md) for records and a memory write, and [the archive](../../archived-plan/README.md)
-  for the design and remaining work.
+  for the design.
 - Not here:
   - The records, the projection, the writer, the lifecycle, the read path with the rest of the panel, and the page tools
     → [the area README](README.md).

@@ -12,8 +12,9 @@ agent needs to choose files, change a contract, and verify the result.
   `shared/sections.ts` for an example. Put interactions across modules, processes, or tabs in the owning guide and link
   to that contract elsewhere.
 - Put measurements from a run in `docs/reports/measurements/` and an audit's findings in `docs/reports/audits/`. Keep
-  the editing consequence and report link in the guide. Keep completed plans and phase history in the
-  [archive](../archived-plan/README.md). The [docs index](../README.md) says which folder takes what.
+  the editing consequence and report link in the guide. The [plan archive](../archived-plan/README.md) indexes completed
+  plans and takes no run notes: what a plan left open goes to `docs/backlog/`. The [docs index](../README.md) says which
+  folder takes what.
 
 Use paths and current identifiers as lookup anchors. A `db.<field>` name refers to the flat persisted `Database` field,
 which settings views and server projections can expose. Describe present behavior and its reason (STRUCTURE T5). Source,

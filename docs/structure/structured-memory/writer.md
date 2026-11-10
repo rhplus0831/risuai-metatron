@@ -8,8 +8,7 @@
 - Paths: `server/src/prompt/memory/structured/{window,writer,prompts,analysis,pages,patches,compact,recordJob}.ts`, the
   writer's task kind in `server/src/prompt/memory/memoryTasks.ts`, and `structuredMemoryStep` in
   `server/src/prompt/assemble.ts`.
-- Algorithm selection: [structured memory](records.md); design and remaining work:
-  [the archive](../../archived-plan/README.md).
+- Algorithm selection: [structured memory](records.md); design: [the archive](../../archived-plan/README.md).
 - Not here:
   - The records, the projection, the read path, the lifecycle, the rebuild, and the page tools →
     [the area README](README.md).

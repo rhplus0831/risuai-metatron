@@ -173,7 +173,7 @@ The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credent
   checks. The Diagnostics panel has mount smoke coverage. Report actions and the history/alert workflow have no
   dedicated browser assertions.
 - Not tested: the full viewer/alert flow, production Docker+sftp isolation, pulling and withdrawing a shared job, and
-  saving a phone browser report. These manual checks are tracked in the [archive](../archived-plan/README.md). The
+  saving a phone browser report. These manual checks are tracked in [manual checks](../backlog/manual-checks.md). The
   viewer, the failure alert's two buttons, the popup's job filter, and `LogField`'s copy failure state were never opened
   in a browser. No test covers a global middleware's early return or a `http` event for an answer slower than 5 s.
 

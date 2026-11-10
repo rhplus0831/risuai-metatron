@@ -5,7 +5,8 @@
 The `structuredMemory` algorithm keeps a chat's memory as records (events, pages with sections, threads) in tables of
 `data/resources.sqlite`, written by a writer task on the server and read into the prompt by a read path, with a
 projection that answers readers expecting HypaV3's `hypaV3Data`. The seven guides below own it; pick the one whose row
-names the task. The design and its remaining work are in [the archive](../../archived-plan/README.md).
+names the task. The design is in [the archive](../../archived-plan/README.md); what the plan left open is in the
+[backlog](../../README.md).
 
 Not here: the other algorithms, the selection chain, the memory task service, and embeddings → [memory](../memory.md);
 the resource store's connection, epoch, and transactions → [server resources](../server-resources.md).

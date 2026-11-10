@@ -374,8 +374,8 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
 - The server's `gemma` tokenizer loads `llama/llama3.json`, so Gemma counts are Llama 3 counts (also for on-screen
   counts). Decision: `server/src/prompt/tokenizers/gemma.ts` header.
 - NanoGPT's `providers.nanogptSubscriptionState` and `nanogptUseSubscriptionEndpoint` remain global: two profiles on
-  different accounts share subscription state and endpoint selection. A model-profile follow-up (Remaining Follow-Ups in
-  the [archive](../archived-plan/README.md)). Decision: owner, 2026-11-10 (known-issues review).
+  different accounts share subscription state and endpoint selection. A model-profile follow-up
+  ([deferred work](../backlog/deferred-work.md#model-profiles)). Decision: owner, 2026-11-10 (known-issues review).
 - Multimodal counts remain approximate: Claude/Gemini images use the GPT-4o fallback; video/audio/signature entries use
   a flat 85 tokens. Decision: owner, 2026-11-10 (known-issues review).
 

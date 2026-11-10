@@ -10,8 +10,8 @@
   `rebuild.ts`: [the rebuild guide](rebuild.md)), and `src/ts/process/structuredMemory.svelte.ts` (its receipt and panel
   parts: [the read path guide](read.md)).
 - The Memory settings page selects it, ahead of the flags. Production has its [writer](writer.md), and `assemblePrompt`
-  runs [the read path](read.md). The page exposes only the preset fields something reads. Its design and remaining work
-  are in [the archive](../../archived-plan/README.md).
+  runs [the read path](read.md). The page exposes only the preset fields something reads. Its design is in
+  [the archive](../../archived-plan/README.md).
 - Not here:
   - The HypaV3 projection, its seal and the tab's mirror, a plugin read's refresh, and the reset →
     [projection](projection.md).

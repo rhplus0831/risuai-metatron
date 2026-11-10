@@ -296,7 +296,7 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
   entry (every `CharXWriter` entry) by scanning its bytes for the signatures `0x04034b50`, `0x08074b50`, and
   `0x02014b50`: a stored entry whose bytes hold one is cut short and the parser goes on inside it (`unexpected EOF`, an
   unknown compression type), losing the entries after it, `card.json` included. It also keeps a skipped entry's
-  compressed bytes in `Unzip` until it is dropped. Decision: Large Asset Import and Export, Remaining Follow-Ups,
+  compressed bytes in `Unzip` until it is dropped. Decision: Large Asset Import and Export, kept limits,
   [archive](../archived-plan/README.md).
 - An excluded CharX entry (over 50 MiB) that the card references (`embeded://` or `__asset:`) makes
   `importCharacterCardSpec` throw `asset … not found`, so the import fails; both readers exclude alike. Decision: Large

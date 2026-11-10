@@ -10,7 +10,7 @@
   `src/lib/Setting/Pages/StructuredMemoryPrompts.svelte`, and the receipt and panel parts of
   `src/ts/process/structuredMemory.svelte.ts`.
 - See [structured memory](records.md) for the records the read path reads and how the algorithm is selected, and
-  [the archive](../../archived-plan/README.md) for the design and remaining work.
+  [the archive](../../archived-plan/README.md) for the design.
 - Not here:
   - The records, the projection, the writer, the lifecycle, the rebuild, and the page tools →
     [the area README](README.md).
