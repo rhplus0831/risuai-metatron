@@ -104,8 +104,8 @@ const UUID_TEXT = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 /** A request id the server issues (`randomUUID`). */
 export const SHARE_REQUEST_ID = new RegExp(`^${UUID_TEXT}$`);
 
-/** A job id the server issues: a generation job's `randomUUID`, or a translation run's `translate-<UUID>`. */
-export const SHARE_JOB_ID = new RegExp(`^(?:translate-)?${UUID_TEXT}$`);
+/** A history job id: a generation UUID, a translation run's `translate-<UUID>`, or a memory task's `memory-<UUID>`. */
+export const SHARE_JOB_ID = new RegExp(`^(?:(?:translate|memory)-)?${UUID_TEXT}$`);
 
 /**
  * What a share is of: a job (every request of it), or a request that ran without a job (a tab's own

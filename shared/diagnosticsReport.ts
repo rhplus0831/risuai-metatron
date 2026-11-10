@@ -6,6 +6,7 @@ import {
     projectBrowserEvent,
     projectServerEvent,
 } from "./diagnostics.ts";
+import { SHARE_JOB_ID } from "./requestHistory.ts";
 
 /**
  * The Diagnostics panel's report: the browser's events and the server's state and events as one
@@ -15,8 +16,8 @@ import {
  *
  * Content-free by construction: every value goes through a projection here, whatever the caller
  * passed. What a kept report can hold is what the projections admit: ids of the server's shapes (a
- * UUID, a translation run's `translate-<UUID>`), enumerations, counts, booleans, times, route
- * templates, catalog model ids, provider error codes (`^[A-Za-z0-9_.-]{1,64}$`), and application
+ * UUID, a translation run's `translate-<UUID>`, a memory task's `memory-<UUID>`), enumerations,
+ * counts, booleans, times, route templates, catalog model ids, provider error codes (`^[A-Za-z0-9_.-]{1,64}$`), and application
  * stack frames (a file path of the app's shape, its line and column). A provider code and a frame's
  * file name are the only strings with a free shape; the content-free rule permits both. The check
  * is of shape, not of provenance: a text written by hand to fit the format passes.
@@ -96,7 +97,6 @@ const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const APP_VERSION = /^\d{1,4}(?:\.\d{1,6}){1,3}$/;
 const NODE_VERSION = /^\d{1,3}\.\d{1,3}\.\d{1,3}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const TRANSLATION_RUN = /^translate-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** Node's `process.platform` and `process.arch` values; any other is `other`. */
 const PLATFORMS = [
     "aix",
@@ -135,8 +135,8 @@ function isoTime(value: unknown): string | null {
 /**
  * An event of the report: the side's projection, then the report's rules: a time in range (else no
  * event; a `lastAt` out of range is dropped), and ids of the server's shapes only (a `requestId` a
- * UUID; a `jobId` a UUID, or a translation run's id on a `request` event). The id pattern of the
- * projection admits any short word; the server issues only these.
+ * UUID; a `jobId` a UUID, or a translation run's or memory task's id on a `request` event). The id
+ * pattern of the projection admits any short word; the server issues only these.
  */
 function reportEvent(origin: "server" | "browser", input: unknown): DiagnosticEvent | null {
     const event = origin === "server" ? projectServerEvent(input) : projectBrowserEvent(input);
@@ -152,8 +152,7 @@ function reportEvent(origin: "server" | "browser", input: unknown): DiagnosticEv
     if (event.jobId !== undefined) {
         const jobId = event.jobId;
         const ok =
-            typeof jobId === "string" &&
-            (UUID.test(jobId) || (event.kind === "request" && TRANSLATION_RUN.test(jobId)));
+            typeof jobId === "string" && (UUID.test(jobId) || (event.kind === "request" && SHARE_JOB_ID.test(jobId)));
         if (!ok) {
             delete event.jobId;
         }

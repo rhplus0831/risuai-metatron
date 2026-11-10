@@ -13,7 +13,7 @@ The eighteenth batch was cleared the same day by a Sol implementer with session 
 ## Contents
 
 - [Plugin sandbox](#plugin-sandbox): 1
-- [Structure audit 2026-11-10](#structure-audit-2026-11-10): 7
+- [Structure audit 2026-11-10](#structure-audit-2026-11-10): 6
 
 ## Plugin sandbox
 
@@ -65,21 +65,6 @@ it is rare.
 
 **Suggested handling:** reproduce with a two-client e2e check; then carry a row identity (the prompt item's or script's
 id) in `popupEditorContext`. Once reproduced, move the guide's bullet to known issues.
-
-### A background memory request cannot be shared for support and loses its job id in a report
-
-`server/src/prompt/memory/memoryTaskHost.ts:187` gives a detached memory task's requests the job id `memory-<uuid>`.
-`SHARE_JOB_ID` in `shared/requestHistory.ts:108` accepts only a UUID or `translate-<uuid>`, so "Share for support" on
-such a row answers 400 (`server/src/routes/requestHistory.ts:38`, `:158`); sharing by the row's request id resolves to
-the same job target and fails in `server/src/diagnostics/journal.ts:175`, answered as 500
-(`server/src/diagnostics/share.ts:121`). `shared/diagnosticsReport.ts:152` keeps a job id only when it is a UUID or a
-`translate-` id, so a combined report drops the memory task's grouping.
-
-**Why it matters:** the diagnostics guide promises that sharing any request of a job copies every request of that job;
-background memory requests are the ones a user most often cannot explain alone.
-
-**Suggested handling:** admit `memory-<uuid>` in `SHARE_JOB_ID` and in the report's job id rule, with a route test on a
-history row written by the memory task host.
 
 ### `pnpm check:changed` passes an e2e type error without running a compiler
 

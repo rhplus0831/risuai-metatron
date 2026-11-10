@@ -33,6 +33,7 @@ const JOB = "0f6c2b1e-9a7d-4c3e-8b21-5d4e6f7a8b9c";
 const REQUEST = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
 const OTHER_JOB = "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e";
 const TRANSLATION_RUN = `translate-${JOB}`;
+const MEMORY_TASK = `memory-${JOB}`;
 const CATALOG_MODEL = BASE_LLM_MODELS[0].id;
 /** 2026-10-13T10:15:00.000Z. */
 const EXPORTED = Date.UTC(2026, 9, 13, 10, 15);
@@ -300,7 +301,7 @@ describe("buildDiagnosticReport: the v1 text", () => {
         ]);
     });
 
-    it("admits a job id only as a UUID, or a translation run's `translate-<UUID>` on a `request` event; a request id only as a UUID", () => {
+    it("admits UUID job and request ids, and translation or memory job ids only on request events", () => {
         const line = (event: Record<string, unknown>) =>
             eventLines(buildDiagnosticReport(input({ server: { state: state(), events: [event] }, browser: [] })))[0];
         expect(line({ at: AT, kind: "request", requestId: REQUEST, jobId: JOB })).toBe(
@@ -313,6 +314,15 @@ describe("buildDiagnosticReport: the v1 text", () => {
             `${ISO(AT)} server job {"phase":"done"}`,
         );
         expect(line({ at: AT, kind: "runtime", origin: "dispose", jobId: TRANSLATION_RUN })).toBe(
+            `${ISO(AT)} server runtime {"origin":"dispose"}`,
+        );
+        expect(line({ at: AT, kind: "request", requestId: MEMORY_TASK, jobId: MEMORY_TASK })).toBe(
+            `${ISO(AT)} server request {"jobId":"${MEMORY_TASK}"}`,
+        );
+        expect(line({ at: AT, kind: "job", phase: "done", jobId: MEMORY_TASK })).toBe(
+            `${ISO(AT)} server job {"phase":"done"}`,
+        );
+        expect(line({ at: AT, kind: "runtime", origin: "dispose", jobId: MEMORY_TASK })).toBe(
             `${ISO(AT)} server runtime {"origin":"dispose"}`,
         );
         expect(line({ at: AT, kind: "job", phase: "done", jobId: JOB.toUpperCase() })).toBe(

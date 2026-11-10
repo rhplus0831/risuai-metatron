@@ -925,6 +925,38 @@ describe("the routes", () => {
         expect((await listShares(s)).body).toEqual({ items: [] });
     });
 
+    it.each(["job id", "request id"])("shares a memory task by %s and lists its grouped requests", async (target) => {
+        const s = await server();
+        const jobId = `memory-${OTHER_JOB}`;
+        for (const id of [REQ(1), REQ(2)]) {
+            s.context.requestHistory.begin(row(id, { jobId, source: "memory", mode: "memory" }));
+            s.context.requestHistory.finish(id, { status: "success" });
+        }
+
+        const response = await share(s, {
+            ...(target === "job id" ? { jobId } : { requestId: REQ(2) }),
+            shared: true,
+        });
+        expect(response.status).toBe(200);
+        const result = (await response.json()) as RequestHistoryShareResult;
+        expect(result).toMatchObject({ jobId, requestId: null, shared: true, ids: [REQ(1), REQ(2)] });
+        const listed = await listShares(s);
+        expect(listed.res.status).toBe(200);
+        expect(listed.body).toEqual({ items: [{ jobId, requestId: null, sharedAt: result.sharedAt }] });
+        const name = `${stamp(result.sharedAt!)}-job-${jobId}.json`;
+        expect(readdirSync(sharedDir(s))).toEqual([name]);
+        expect(readShare(sharedDir(s), name).requests.map((request: { id: string }) => request.id)).toEqual([
+            REQ(1),
+            REQ(2),
+        ]);
+
+        const withdrawn = await share(s, { jobId, shared: false });
+        expect(withdrawn.status).toBe(200);
+        expect(await withdrawn.json()).toMatchObject({ jobId, shared: false, sharedAt: null });
+        expect((await listShares(s)).body).toEqual({ items: [] });
+        expect(readdirSync(sharedDir(s))).toEqual([]);
+    });
+
     it("answers 500 with the older-copies refusal code beside the error when commitShare fails", async () => {
         vi.useFakeTimers({ toFake: ["Date"] });
         vi.setSystemTime(NOON);
