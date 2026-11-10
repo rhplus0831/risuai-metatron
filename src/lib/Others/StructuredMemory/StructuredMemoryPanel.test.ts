@@ -948,6 +948,42 @@ it("sends one page change with the copy revision and uses each successful answer
     ]);
 });
 
+it("releases a corrected section from its badge only after the person confirms", async () => {
+    const state = serveMemory();
+    state.page.sections[0].userCorrected = true;
+    const { userCorrected, ...released } = state.page.sections[0];
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url.endsWith("/edits")
+            ? Promise.resolve(
+                  Response.json({ revision: "released", kind: "pages", data: { ...state.page, sections: [released] } }),
+              )
+            : fetch(url, init, options),
+    );
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="p"]');
+    await settle();
+    const badge = '[data-memory-flag="userCorrected"]';
+    expect(query(badge)?.textContent?.trim()).toBe(language.structuredMemory.pages.flags.userCorrected);
+    vi.mocked(alertConfirm).mockResolvedValueOnce(false);
+    press(badge);
+    await settle();
+    expect(alertConfirm).toHaveBeenLastCalledWith(
+        language.structuredMemory.pages.releaseConfirm(language.structuredMemory.pages.headings.Facts ?? "Facts"),
+    );
+    expect(sentEdits()).toEqual([]);
+    expect(query(badge)).not.toBeNull();
+    vi.mocked(alertConfirm).mockResolvedValueOnce(true);
+    press(badge);
+    await settle();
+    expect(sentEdits()).toEqual([
+        { revision: "read-revision", edit: { kind: "sectionRelease", pageId: "p", heading: "Facts" } },
+    ]);
+    expect(query(badge)).toBeNull();
+    expect(query("[data-memory-section-body]")?.textContent).toBe("Original memory");
+});
+
 it.each(["pages", "threads"] as const)(
     "undoes a refused %s edit, gives notice, rereads and retains the next successful revision",
     async (tab) => {
@@ -2008,11 +2044,14 @@ it("selects the page named by a merge answer and rereads contents, then restores
 
 it("offers only restore and permanent deletion for trash and only export as a scene page tool", async () => {
     const state = servePageTools();
-    state.trash = [{ ...editablePage(), id: "trashed", trashedAt: 1 }];
+    const corrected = editablePage();
+    corrected.sections[0].userCorrected = true;
+    state.trash = [{ ...corrected, id: "trashed", trashedAt: 1 }];
     await open();
     await chooseTab("pages");
     click('[data-memory-trash-page="trashed"]');
     await settle();
+    expect(query('[data-memory-flag="userCorrected"]')?.tagName).toBe("SPAN");
     expect(query("[data-memory-untrash]")?.textContent).toBe(language.structuredMemory.pages.tools.restore);
     expect(query("[data-memory-purge]")?.textContent).toBe(language.structuredMemory.pages.tools.purge);
     expect(target.querySelectorAll("[data-memory-page-tools] button")).toHaveLength(2);

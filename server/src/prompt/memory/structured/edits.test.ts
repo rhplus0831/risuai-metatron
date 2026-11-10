@@ -170,6 +170,26 @@ it("parses a closed section keep and preserves text, evidence sources and marks 
     expect(flagged.sections[0].unsupported).toBe(true);
 });
 
+it("releases a corrected section by removing its mark alone, and changes nothing of an unmarked one", () => {
+    const edit = { kind: "sectionRelease" as const, pageId: "p", heading: "Facts" };
+    expect(parseMemoryEdit({ ...edit, userCorrected: true, body: "forged", locked: false })).toEqual(edit);
+    expect(parseMemoryEdit({ ...edit, heading: null })).toBeNull();
+    const marked: MemoryPage = {
+        ...page,
+        sections: [
+            { ...page.sections[0], userCorrected: true, unsupported: true, locked: true, pinned: true },
+            { ...page.sections[0], heading: "Other", userCorrected: true },
+        ],
+    };
+    const { userCorrected, ...released } = marked.sections[0];
+    expect(applyPageEdit(marked, edit, stamp)).toEqual({ ...marked, sections: [released, marked.sections[1]] });
+    expect(marked.sections[0].userCorrected).toBe(true);
+    expect(applyPageEdit(page, edit, stamp)).toBeNull();
+    expect(() => applyPageEdit(marked, { ...edit, heading: "Gone" }, stamp)).toThrow(
+        expect.objectContaining({ reason: "sectionGone" }),
+    );
+});
+
 it("keeps only flagged sections, never clears a prior correction, refuses a missing heading, and leaves body edits flagged", () => {
     const keep = { kind: "sectionKeep" as const, pageId: "p", heading: "Facts", preserve: false };
     for (const preserve of [false, true]) expect(applyPageEdit(page, { ...keep, preserve }, stamp)).toBeNull();

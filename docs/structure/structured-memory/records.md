@@ -106,6 +106,9 @@ the keep drops the retracted ids from the section's `provenance` with its `unsup
 `flagUnsupportedSections` leaves the section alone at the next retraction; evidence that is retracted later flags it
 again.
 
+A `sectionRelease` removes `userCorrected`, whether a body edit or a preserving keep set it, and nothing else: no body,
+lock, timestamp, or history changes. The writer may then rewrite and compact the text, and a full rebuild drops it.
+
 ### The revert route
 
 The tab's `revertStructuredMemoryChange` reads the page's current revision, then calls `POST .../revert`. The route uses
@@ -297,8 +300,8 @@ group: no walk reads them.
 - A round is bounded but the tab holds the whole package, and `zipSync` runs on the main thread. The table of contents
   has no budget of its own: it grows with the record count and the titles. Decision: Server Byte Budgets D2, archive.
 - A `sectionKeep` without `preserve` leaves text that no message supports and no mark protects, so a full rebuild drops
-  it. With `preserve` the section is `userCorrected`, which no control removes: it then survives rebuilds and is never
-  compacted until the writer replaces the text. A person's body edit still keeps `unsupported`. Decision: owner,
+  it. With `preserve` the section is `userCorrected`: it then survives rebuilds and is never compacted until the writer
+  replaces the text or a person releases it. A person's body edit still keeps `unsupported`. Decision: owner,
   2026-11-10.
 - A page's creation cannot be reverted: that would delete the page and everything citing it. Decision: Structured Memory
   slice 7b, archive.

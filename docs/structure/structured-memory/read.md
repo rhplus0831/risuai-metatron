@@ -160,6 +160,9 @@ messages decide stale status. Keep sends the held anchor state; Re-record marks 
 `memoryRerecordTarget`. The server fence decides after `readOnly` disables controls. Settings writes chat overrides
 through `setChatMeta` in `src/ts/storage/chatStore.svelte.ts`.
 
+Outside the trash a section's `userCorrected` badge is a button: after `alertConfirm` it sends `sectionRelease`, the one
+control that takes the mark off.
+
 ### The writer line
 
 `memoryWriterNotice` combines contents, current settings, and the newest receipt; its comment owns priority. Contents'

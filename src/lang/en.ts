@@ -2847,6 +2847,9 @@ export const languageEnglish = {
             noSections: "This page has no sections yet.",
             locked: "Locked",
             flags: { disputed: "Disputed", unsupported: "Unsupported", userCorrected: "Corrected by you" },
+            release: "Remove this mark",
+            releaseConfirm: (heading: string) =>
+                `Remove the “Corrected by you” mark from “${heading}”? The text stays, but the memory model may then rewrite and shorten it freely, and a full rebuild no longer keeps it.`,
             edit: "Edit",
             unsupported: {
                 keep: "Keep",

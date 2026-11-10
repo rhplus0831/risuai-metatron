@@ -882,13 +882,15 @@ export type StructuredMemoryCoverageRound = {
  * this closed union is all an edit can say, so history, provenance, a page's type, and ids cannot be
  * forged. A `page` edit names at least one of its fields, and a null `grade` clears the grade. A
  * `sectionKeep` clears unsupported evidence and drops retracted provenance without changing text or
- * history; `preserve` marks it user-corrected for a rebuild. An `event` edit is a repair of a stale
+ * history; `preserve` marks it user-corrected for a rebuild. A `sectionRelease` takes that mark off again,
+ * whichever edit set it, and hands the text back to the writer. An `event` edit is a repair of a stale
  * event, and `keep` names the `memoryAnchorState` the person saw.
  */
 export type StructuredMemoryEdit =
     | { kind: "section"; pageId: string; heading: string; body: string }
     | { kind: "sectionLock"; pageId: string; heading: string; locked: boolean }
     | { kind: "sectionKeep"; pageId: string; heading: string; preserve: boolean }
+    | { kind: "sectionRelease"; pageId: string; heading: string }
     | { kind: "page"; pageId: string; contextMode?: MemoryContextMode; grade?: number | null }
     | { kind: "thread"; threadId: string; state: MemoryThreadState }
     | { kind: "event"; eventId: string; repair: "rerecord" | "retract" }

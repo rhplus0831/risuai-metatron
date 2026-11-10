@@ -28,6 +28,8 @@ import { isPlainObject } from "../../../../../shared/valueKinds.ts";
  *   person's edit is the review a dispute waits for, and `userCorrected` says who wrote the text.
  * - Keeping an unsupported section clears its flag and drops retracted provenance, retaining all text,
  *   sources, and other marks. It optionally sets `userCorrected` for a full rebuild and takes no history.
+ * - Releasing a section removes `userCorrected` and nothing else: the text is the writer's to change,
+ *   compact, and drop at a full rebuild again. The lock, the text, and the history stay as they are.
  * - The scene page stays `always`: it is the stage every send reads.
  * - A thread that moves from an ended state to a non-ended state loses `closedBy`; moving between
  *   ended states keeps it.
@@ -115,6 +117,9 @@ export function parseMemoryEdit(value: unknown): StructuredMemoryEdit | null {
         const { preserve } = value;
         return typeof preserve === "boolean" ? { kind, pageId, heading, preserve } : null;
     }
+    if (kind === "sectionRelease" && typeof heading === "string") {
+        return { kind, pageId, heading };
+    }
     if (kind === "page") {
         const { grade } = value;
         const contextMode = MEMORY_CONTEXT_MODES.find((entry) => entry === value.contextMode);
@@ -190,6 +195,16 @@ function keepSection(
     };
 }
 
+/** No history entry and no `updatedAt`: the body did not change, only who answers for it. */
+function releaseSection(page: MemoryPage, heading: string): MemoryPage | null {
+    const section = sectionOf(page, heading);
+    if (!section.userCorrected) {
+        return null;
+    }
+    const { userCorrected, ...released } = section;
+    return { ...page, sections: withSection(page, section, released) };
+}
+
 function editFields(page: MemoryPage, { contextMode, grade }: Extract<PageEdit, { kind: "page" }>): MemoryPage | null {
     const edited: MemoryPage = { ...page };
     if (contextMode !== undefined && contextMode !== page.contextMode) {
@@ -216,8 +231,9 @@ function editFields(page: MemoryPage, { contextMode, grade }: Extract<PageEdit, 
  * `edit` over `page`, the page as stored: the page to store, or null for no change. A `MemoryEditRefusal`
  * says why it does not fit. A section body's change is kept in the page's history as one `edit` entry,
  * bounded by `pageHistoryEntries`, with no `eventId`: it is a person's change, not a writer's.
- * A section keep reads the events' stored statuses and writes no history. A page's grade edit sets
- * `gradeByUser`; a null grade clears both fields. The route refuses pages in the trash before applying.
+ * A section keep reads the events' stored statuses and writes no history, and neither does a release. A
+ * page's grade edit sets `gradeByUser`; a null grade clears both fields. The route refuses pages in the
+ * trash before applying.
  */
 export function applyPageEdit(
     page: MemoryPage,
@@ -232,6 +248,8 @@ export function applyPageEdit(
             return editLock(page, edit.heading, edit.locked);
         case "sectionKeep":
             return keepSection(page, edit.heading, edit.preserve, events);
+        case "sectionRelease":
+            return releaseSection(page, edit.heading);
         case "page":
             return editFields(page, edit);
     }

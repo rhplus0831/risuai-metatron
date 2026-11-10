@@ -323,6 +323,7 @@ type RoundRead = {
  *   like any other. An event's repair reads the chat as stored, a `retract` excepted, which reads none.
  *   A `sectionKeep` clears the unsupported flag and retracted provenance using contents' event statuses,
  *   optionally marks it user-corrected for a rebuild, and changes no body, timestamp, or history.
+ *   A `sectionRelease` takes that mark off and changes nothing else.
  *   400 for a malformed edit or one the record refuses, a page in the trash included, 404 `chatGone` or
  *   `recordGone` (a heading the page lacks too), 409 `{ error, reason: "fenced" }` while `fenced` holds,
  *   409 `{ error, reason: "changed" }` when a `keep` names a state the chat has left, and

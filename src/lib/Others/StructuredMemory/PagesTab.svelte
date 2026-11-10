@@ -702,6 +702,26 @@
         }
     }
 
+    /** Asks first: the mark is all that keeps a full rebuild and the compaction off the text. */
+    async function releaseSection(heading: string) {
+        if (!copy || controlsOff) {
+            return;
+        }
+        const ref = chatRef;
+        const pageId = copy.data.id;
+        if (
+            !(await alertConfirm(text.releaseConfirm(codeText(text.headings, heading)))) ||
+            !sameChat(ref) ||
+            copy?.data.id !== pageId
+        ) {
+            return;
+        }
+        void send(
+            { kind: "sectionRelease", pageId, heading },
+            withSection(copy.data, heading, { userCorrected: false }),
+        );
+    }
+
     function startEdit({ heading, body }: MemorySection) {
         editor = { heading, base: body };
         draft = body;
@@ -753,7 +773,18 @@
         <div class="flex flex-wrap items-center gap-2">
             <h3 class="flex-1 min-w-0 font-semibold">{codeText(text.headings, section.heading)}</h3>
             {#each FLAGS as flag (flag)}
-                {#if section[flag]}
+                {#if section[flag] && flag === "userCorrected" && !inTrash}
+                    <button
+                        type="button"
+                        class="px-1.5 rounded-sm bg-darkbutton text-textcolor2 enabled:hover:text-textcolor enabled:cursor-pointer"
+                        disabled={controlsOff}
+                        title={text.release}
+                        data-memory-flag={flag}
+                        onclick={() => releaseSection(section.heading)}
+                    >
+                        {text.flags[flag]}
+                    </button>
+                {:else if section[flag]}
                     <span class="px-1.5 rounded-sm bg-darkbutton text-textcolor2" data-memory-flag={flag}>
                         {text.flags[flag]}
                     </span>

@@ -2734,6 +2734,9 @@ export const languageKorean = {
             noSections: "이 페이지에는 아직 작성된 섹션이 없습니다.",
             locked: "잠김",
             flags: { disputed: "내용 충돌", unsupported: "근거 누락", userCorrected: "직접 수정됨" },
+            release: "이 표시 해제",
+            releaseConfirm: (heading: string) =>
+                `“${heading}” 섹션의 "직접 수정됨" 표시를 해제할까요? 내용은 그대로 남지만, 이후 메모리 모델이 자유롭게 고쳐 쓰거나 압축할 수 있고 전체 재생성에서도 보존되지 않습니다.`,
             edit: "편집",
             unsupported: {
                 keep: "내용 유지",
