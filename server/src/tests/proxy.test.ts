@@ -1,7 +1,9 @@
 // @vitest-environment node
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
+    allowListenerOrigin,
     allowTestLoopbackOrigin,
     createSigner,
     createTestServer,
@@ -261,6 +263,45 @@ describe("/proxy2", () => {
 });
 
 describe("/hub-proxy", () => {
+    async function expectSandboxHeaders(response: Response) {
+        const asset = await server.app.request("/api/asset/" + Buffer.from("assets/policy.txt").toString("hex"));
+        const policy = asset.headers.get("content-security-policy");
+        expect(policy?.split(";").map((directive) => directive.trim())).toContain("sandbox");
+        expect.soft(response.headers.get("content-security-policy")).toBe(policy);
+        expect.soft(response.headers.get("x-content-type-options")).toBe("nosniff");
+        expect.soft(response.headers.get("set-cookie")).toBeNull();
+        expect.soft(response.headers.getSetCookie()).toEqual([]);
+    }
+
+    it("sandboxes hub HTML on success and error, replaces the hub CSP, and strips every cookie", async () => {
+        const html = "<!doctype html><script>document.cookie = 'hub=ran'</script>";
+        const hub = createServer((request, response) => {
+            response.writeHead(request.url === "/error" ? 503 : 200, {
+                "content-type": "text/html; charset=iso-8859-1",
+                "content-security-policy": "default-src * 'unsafe-inline'",
+                "set-cookie": ["session=hub; Path=/; HttpOnly", "preferences=hub; Path=/"],
+            });
+            response.end(html);
+        });
+        onTestFinished(() => {
+            hub.closeAllConnections();
+            hub.close();
+        });
+        await new Promise<void>((resolve) => hub.listen(0, "127.0.0.1", resolve));
+        server = createTestServer({ password: "pw", realm: { hubURL: allowListenerOrigin(hub) } });
+
+        for (const [url, status] of [
+            ["/hub-proxy/html", 200],
+            ["/hub-proxy/error", 503],
+        ] as const) {
+            const response = await server.app.request(url);
+            expect(response.status, url).toBe(status);
+            expect(response.headers.get("content-type"), url).toBe("text/html; charset=iso-8859-1");
+            expect(await response.text(), url).toBe(html);
+            await expectSandboxHeaders(response);
+        }
+    });
+
     it("reaches only the hub (never x-risu-node-path), strips risu-auth, and follows one redirect within the hub's origin", async () => {
         server = createTestServer({ password: "pw", realm: { hubURL: upstream.url } });
         const res = await server.app.request("/hub-proxy/echo?viahub=1", {
@@ -326,7 +367,7 @@ describe("/hub-proxy", () => {
         }
     });
 
-    it("answers a redirect to another origin to the browser as it is, without fetching it", async () => {
+    it("sandboxes a redirect to another origin while passing its Location to the browser without fetching it", async () => {
         server = createTestServer({ password: "pw", realm: { hubURL: upstream.url } });
         const res = await server.app.request("/hub-proxy/redirect-off/docs/lua");
         expect(res.status).toBe(302);
@@ -334,9 +375,10 @@ describe("/hub-proxy", () => {
         expect(res.headers.get("x-first")).toBe("yes");
         expect(await res.text()).toBe("moved");
         expect(upstream.requests.map((r) => r.url)).toEqual(["/redirect-off/docs/lua"]);
+        await expectSandboxHeaders(res);
     });
 
-    it("answers 502 when the hub cannot be reached", async () => {
+    it("sandboxes its own 502 when the hub cannot be reached", async () => {
         // Nothing listens on port 1: the test wants the refused connection.
         onTestFinished(allowTestLoopbackOrigin("http://127.0.0.1:1"));
         server = createTestServer({ password: "pw", realm: { hubURL: "http://127.0.0.1:1" } });
@@ -344,5 +386,6 @@ describe("/hub-proxy", () => {
         expect(failed.status).toBe(502);
         expect(((await failed.json()) as { error: string }).error).toMatch(/^Proxy request failed: /);
         expect(upstream.requests).toHaveLength(0);
+        await expectSandboxHeaders(failed);
     });
 });

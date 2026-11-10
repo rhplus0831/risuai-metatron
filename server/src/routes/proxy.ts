@@ -1,5 +1,6 @@
 import { isRecordId } from "../../../shared/ids.ts";
 import type { Context, Hono, MiddlewareHandler } from "hono";
+import { UNTRUSTED_CONTENT_CSP } from "../http/securityHeaders.ts";
 import { planAuxOp, type AuxCredential } from "../llm/auxOps.ts";
 import { createRedactor } from "../llm/redact.ts";
 import type { AppEnv } from "../types.ts";
@@ -23,8 +24,10 @@ import type { AuthStore } from "./auth.ts";
  *
  * GET /hub-proxy/* uses no auth and only the configured hub (default https://sv.risuai.xyz), forwarding
  * its suffix/query with the hub Origin and allowlisted content and x-risuai-info headers. It follows at most one same-origin
- * redirect, passing external redirects back to the browser. Its responses strip only obsolete
- * encoding/framing headers; stream failures close the body and request failures answer 502.
+ * redirect, passing external redirects back to the browser. Its responses strip obsolete
+ * encoding/framing headers and all Set-Cookie fields, replace the hub's CSP with the asset sandbox
+ * policy, and set nosniff. The sandbox and nosniff also cover the limiter's 429 and request failures'
+ * 502; stream failures close the body. Content-Type is passed through only when the hub sends it.
  */
 
 const DEFAULT_HUB_URL = "https://sv.risuai.xyz";
@@ -40,7 +43,7 @@ const strippedProxyResponseHeaders = [
     "content-length",
     "transfer-encoding",
 ];
-const strippedHubResponseHeaders = ["content-encoding", "content-length", "transfer-encoding"];
+const strippedHubResponseHeaders = ["content-encoding", "content-length", "transfer-encoding", "set-cookie"];
 // Hop-by-hop or recomputed by fetch(); `risu-auth` must never leave this server.
 const strippedProxyRequestHeaders = [
     "host",
@@ -56,6 +59,13 @@ const strippedProxyRequestHeaders = [
     "risu-aux-profile",
 ];
 const nullBodyStatuses = new Set([101, 204, 205, 304]);
+
+/** Wrap hub answers, including limiter refusals, errors, and redirects, with the asset sandbox. */
+const hubHeaders: MiddlewareHandler<AppEnv> = async (c, next) => {
+    await next();
+    c.header("Content-Security-Policy", UNTRUSTED_CONTENT_CSP);
+    c.header("X-Content-Type-Options", "nosniff");
+};
 
 /**
  * Upstream request headers for `/proxy*`: the decoded `risu-header` object (or the incoming
@@ -403,8 +413,10 @@ export function registerProxyRoutes(
      * Realm hub proxy (GET only, no auth): only ever the hub. The path and query after `/hub-proxy`
      * go to `hubURL`; one redirect within the hub's origin is followed, and a redirect elsewhere (the
      * hub's documentation links) is answered to the browser as it is, never fetched by this server.
+     * Every answer, including 429 and 502, gets the asset sandbox CSP and nosniff; hub cookies are
+     * stripped and its Content-Type (or absence) is preserved.
      */
-    app.get("/hub-proxy/*", limiter, async (c) => {
+    app.get("/hub-proxy/*", hubHeaders, limiter, async (c) => {
         try {
             const url = new URL(c.req.url);
             const externalURL = hubURL + url.pathname.replace(/^\/hub-proxy/, "") + url.search;

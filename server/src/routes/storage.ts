@@ -26,6 +26,7 @@ import {
 import { bumpAssetLease, withAssetLocks } from "../http/assetLeases.ts";
 import { readJsonBody } from "../http/body.ts";
 import { isMissingFileError, iteratorStream, STORAGE_READ_FLAGS, storedFileRecord } from "../http/recordStream.ts";
+import { UNTRUSTED_CONTENT_CSP } from "../http/securityHeaders.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 import { limitedBody, RequestBodyError } from "./limitedBody.ts";
@@ -520,10 +521,7 @@ function thumbnailFailure(c: Context<AppEnv>, hex: string, error: unknown): Resp
  */
 export const assetHeaders: MiddlewareHandler<AppEnv> = async (c, next) => {
     await next();
-    c.header(
-        "Content-Security-Policy",
-        "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'",
-    );
+    c.header("Content-Security-Policy", UNTRUSTED_CONTENT_CSP);
     c.header("X-Content-Type-Options", "nosniff");
     c.header("Cross-Origin-Resource-Policy", "same-origin");
     c.header("Accept-Ranges", "bytes");
