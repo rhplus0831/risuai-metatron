@@ -96,7 +96,9 @@ Read `rebuildPlan` in `server/src/prompt/memory/structured/rebuild.ts`.
 `rebuildSeed` supplies `begin` before the writer starts; `seededPage` keeps a person's page choices and, by id, the
 pages a retained thread's `who` names; `rebuildChanges` owns replacement and carry rules. Events are not seeded: carry
 is decided against live records at the swap, so a retraction during the run counts. See
-[page tools](pages.md#what-a-merge-or-split-does-to-history) for the `reshaped` mark.
+[page tools](pages.md#what-a-merge-or-split-does-to-history) for the `reshaped` mark. A page a person renamed or gave
+aliases (`namedByUser`) seeds like one with a person's grade or context mode: its id, title, and aliases, and only its
+marked sections, so a language change does not retitle it. A fresh rebuild forgets it, like every mark.
 
 No chat or `hypaV3Data` is written. An adopted chat's stored summaries stay until [reset](projection.md#the-reset), and
 the projection stands aside while they remain. The live store's write also preserves an adoption decline.

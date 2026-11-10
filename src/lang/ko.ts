@@ -2799,6 +2799,13 @@ export const languageKorean = {
                 mergeConfirm: (source: string, target: string) =>
                     `"${source}" 문서를 "${target}" 문서로 병합할까요? 모든 섹션, 별칭, 참조가 "${target}"(으)로 이전되고 중복 섹션은 하나로 합쳐지며, "${source}" 문서는 변경 이력과 함께 휴지통으로 이동합니다.`,
                 split: "문서 분리",
+                rename: "제목 변경",
+                renameTitle: "문서 제목",
+                editAliases: "별칭 (이명) 편집",
+                alias: "별칭 (이명)",
+                addAlias: "추가",
+                removeAlias: "제거",
+                aliasCount: (count: number, limit: number) => `별칭 ${count} / ${limit}개`,
                 splitTitle: "새 문서 제목",
                 splitHeadings: "분리할 섹션",
                 splitAliases: "분리할 별칭",

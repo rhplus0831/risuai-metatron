@@ -952,10 +952,10 @@ export async function revertStructuredMemoryChange(
 }
 
 /**
- * Sends one person's tool over a page as a whole, named against the memory read at `revision`: to the
- * trash and back, deleted for good, merged into another page, or split. The answer's revision is what the
- * next edit names, and its `data` the page the tab shows next, null after a purge. The caller shows the
- * notice for a refusal; a 400's text says what the pages refused.
+ * Sends one person's tool over a page as a whole, named against the memory read at `revision`: to the trash and back,
+ * deleted for good, merged into another page, split, renamed, or given new aliases. The answer's revision is what the
+ * next edit names, and its `data` the page the tab shows next, null after a purge. The caller shows the notice for a
+ * refusal; a 400's text says what the pages refused.
  */
 export function structuredMemoryPageTool(
     ref: ChatRef,

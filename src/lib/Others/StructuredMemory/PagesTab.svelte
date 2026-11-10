@@ -69,7 +69,8 @@
      *
      * An open section editor keeps its base body. A read or revert that changes that body closes the editor
      * with `changed`, so an old draft cannot replace new writer text. Read-only keeps the draft and disables
-     * Save; the read when it falls checks the same base. Titles, aliases, types, and links have no editor.
+     * Save; the read when it falls checks the same base. Title and alias drafts also close when their
+     * stored base changes, so they cannot overwrite a newer name. Types and links have no editor.
      * Section headings use `pages.headings`, with unknown keys shown literally. All record text stays plain.
      *
      * History's after-state comes from `memoryPageHistoryView` in src/ts/process/structuredMemory.svelte.ts;
@@ -101,7 +102,7 @@
     /** The rows a list renders at once; a long chat stays cheap behind "show more". */
     const ROWS_AT_ONCE = 200;
     const FLAGS = ["disputed", "unsupported", "userCorrected"] as const;
-    const { sectionBodyChars, gradeMax, labelChars } = STRUCTURED_MEMORY_LIMITS;
+    const { sectionBodyChars, gradeMax, labelChars, aliasesPerPage } = STRUCTURED_MEMORY_LIMITS;
     const GRADES = Array.from({ length: gradeMax + 1 }, (_, grade) => grade);
     /** What makes a lore entry inactive, read by the lore activation as a decorator. */
     const LORE_INACTIVE = "@@dont_activate";
@@ -129,6 +130,13 @@
     /** The open section editor, with the body it opened on. */
     let editor = $state.raw<{ heading: string; base: string } | null>(null);
     let draft = $state("");
+
+    /** Naming drafts keep the stored value they opened on, independent of edits to the local text. */
+    let renameBase = $state<string | null>(null);
+    let renameTitle = $state("");
+    let aliasesBase = $state.raw<string[] | null>(null);
+    let aliasesDraft = $state<string[]>([]);
+    let aliasInput = $state("");
 
     /** The merge target a person chose, among the live pages of the copy's type. */
     let mergeTargetId = $state("");
@@ -221,6 +229,14 @@
     });
     const controlsOff = $derived(readOnly || sending);
     const draftFits = $derived(draft.trim() !== "" && draft.length <= sectionBodyChars);
+    const renameFits = $derived(
+        renameTitle.trim() !== "" && renameTitle.length <= labelChars && renameTitle.trim() !== copy?.data.title,
+    );
+    const aliasesChanged = $derived(
+        aliasesBase !== null &&
+            (aliasesDraft.length !== aliasesBase.length ||
+                aliasesDraft.some((alias, index) => alias !== aliasesBase[index])),
+    );
     /** The copy is a page in the trash: read-only, with Restore and Delete forever alone. */
     const inTrash = $derived(copy?.data.trashedAt !== undefined);
     const effectiveView = $derived(only === "unsupported" || inTrash ? "manage" : view);
@@ -332,9 +348,26 @@
         return opened !== null && page.sections.find(({ heading }) => heading === opened.heading)?.body !== opened.base;
     }
 
-    /** Keeps `record` as the copy; an open editor it overruns closes with the notice, unless `noticed`. */
+    /** Closes naming drafts whose stored bases no longer match, including a page moved to the trash. */
+    function closeOverrunNaming(page: MemoryPage) {
+        if (page.trashedAt !== undefined || page.type === "scene" || renameBase !== page.title) {
+            renameBase = null;
+        }
+        if (
+            page.trashedAt !== undefined ||
+            page.type === "scene" ||
+            (aliasesBase !== null &&
+                (aliasesBase.length !== page.aliases.length ||
+                    aliasesBase.some((alias, index) => alias !== page.aliases[index])))
+        ) {
+            aliasesBase = null;
+        }
+    }
+
+    /** Keeps `record` as the copy; closes overrun drafts, with a section notice unless already `noticed`. */
     function keepRecord(record: StructuredMemoryRecordAnswer<"pages">, noticed = false) {
         copy = record;
+        closeOverrunNaming(record.data);
         if (editorOverrun(record.data)) {
             editor = null;
             if (!noticed) {
@@ -382,6 +415,7 @@
             if (result.outcome === "refused" && (result.reason === "recordGone" || result.reason === "chatGone")) {
                 copy = null;
                 editor = null;
+                resetTools();
             }
             return;
         }
@@ -452,6 +486,11 @@
 
     /** Forgets what the tools held of the page shown before. */
     function resetTools() {
+        renameBase = null;
+        renameTitle = "";
+        aliasesBase = null;
+        aliasesDraft = [];
+        aliasInput = "";
         mergeTargetId = "";
         splitOpen = false;
         splitHeadings = [];
@@ -578,6 +617,7 @@
                     return false;
                 }
                 copy = { revision: answer.revision, data: answer.data };
+                closeOverrunNaming(answer.data);
                 if (edit.kind === "section") {
                     editor = null;
                 }
@@ -693,6 +733,26 @@
             },
             toolText.refused,
         );
+    }
+
+    function startRename(page: MemoryPage) {
+        renameBase = page.title;
+        renameTitle = page.title;
+    }
+
+    function startAliases(page: MemoryPage) {
+        aliasesBase = [...page.aliases];
+        aliasesDraft = [...page.aliases];
+        aliasInput = "";
+    }
+
+    function addAlias() {
+        const alias = aliasInput.trim();
+        if (controlsOff || alias === "") {
+            return;
+        }
+        aliasesDraft = [...aliasesDraft, alias];
+        aliasInput = "";
     }
 
     function trashPage() {
@@ -1107,6 +1167,97 @@
     </li>
 {/snippet}
 
+{#snippet renameControl(page: MemoryPage)}
+    {#if renameBase !== null}
+        <div class="flex flex-col min-w-0 gap-2" data-memory-rename-form>
+            <label class="flex flex-col min-w-0 gap-1" data-memory-rename-input>
+                <span class="text-textcolor2">{toolText.renameTitle}</span>
+                <TextInput size="sm" bind:value={renameTitle} disabled={controlsOff} fullwidth />
+            </label>
+            <div class="flex flex-wrap justify-end gap-2">
+                <Button size="sm" styled="outlined" disabled={controlsOff} onclick={() => (renameBase = null)}>
+                    <span data-memory-rename-cancel>{text.cancel}</span>
+                </Button>
+                <Button
+                    size="sm"
+                    disabled={controlsOff || !renameFits}
+                    onclick={() => runTool({ kind: "rename", pageId: page.id, title: renameTitle })}
+                >
+                    <span data-memory-rename-save>{text.save}</span>
+                </Button>
+            </div>
+        </div>
+    {:else}
+        <div>
+            <Button size="sm" styled="outlined" disabled={controlsOff} onclick={() => startRename(page)}>
+                <span data-memory-rename>{toolText.rename}</span>
+            </Button>
+        </div>
+    {/if}
+{/snippet}
+
+{#snippet aliasesControl(page: MemoryPage)}
+    {#if aliasesBase !== null}
+        <div class="flex flex-col min-w-0 gap-2 p-2 border rounded-md border-darkborderc" data-memory-aliases-form>
+            <span class="text-textcolor2">{text.aliases}</span>
+            {#each aliasesDraft as alias, index (index)}
+                <div class="flex items-start justify-between min-w-0 gap-2">
+                    <span class="min-w-0 break-words">{alias}</span>
+                    <Button
+                        size="sm"
+                        styled="outlined"
+                        className="shrink-0"
+                        disabled={controlsOff}
+                        onclick={() => (aliasesDraft = aliasesDraft.filter((_, row) => row !== index))}
+                    >
+                        <span data-memory-alias-remove={index}>{toolText.removeAlias}</span>
+                    </Button>
+                </div>
+            {/each}
+            <div class="flex flex-wrap items-end min-w-0 gap-2">
+                <label class="flex flex-col flex-1 min-w-0 gap-1" data-memory-alias-input>
+                    <span class="text-textcolor2">{toolText.alias}</span>
+                    <TextInput size="sm" bind:value={aliasInput} disabled={controlsOff} fullwidth />
+                </label>
+                <Button
+                    size="sm"
+                    styled="outlined"
+                    disabled={controlsOff || aliasInput.trim() === ""}
+                    onclick={addAlias}
+                >
+                    <span data-memory-alias-add>{toolText.addAlias}</span>
+                </Button>
+            </div>
+            <div class="flex flex-wrap items-center justify-between gap-2">
+                <span
+                    class={aliasesDraft.length > aliasesPerPage ? "text-draculared" : "text-textcolor2"}
+                    data-memory-alias-count
+                >
+                    {toolText.aliasCount(aliasesDraft.length, aliasesPerPage)}
+                </span>
+                <div class="flex gap-2">
+                    <Button size="sm" styled="outlined" disabled={controlsOff} onclick={() => (aliasesBase = null)}>
+                        <span data-memory-aliases-cancel>{text.cancel}</span>
+                    </Button>
+                    <Button
+                        size="sm"
+                        disabled={controlsOff || !aliasesChanged}
+                        onclick={() => runTool({ kind: "aliases", pageId: page.id, aliases: [...aliasesDraft] })}
+                    >
+                        <span data-memory-aliases-save>{text.save}</span>
+                    </Button>
+                </div>
+            </div>
+        </div>
+    {:else}
+        <div>
+            <Button size="sm" styled="outlined" disabled={controlsOff} onclick={() => startAliases(page)}>
+                <span data-memory-aliases-edit>{toolText.editAliases}</span>
+            </Button>
+        </div>
+    {/if}
+{/snippet}
+
 {#snippet pageTools(page: MemoryPage)}
     <div class="flex flex-wrap items-center gap-2" data-memory-page-tools>
         <Button size="sm" styled="outlined" disabled={readOnly} onclick={() => exportToLore(page)}>
@@ -1290,9 +1441,15 @@
             <p class="text-textcolor2">{text.noSections}</p>
         {/each}
     {:else}
+        {#if page.type !== "scene" && !inTrash}
+            {@render renameControl(page)}
+        {/if}
         <p class="text-textcolor2">{codeText(text.types, page.type)}</p>
         {#if page.aliases.length > 0}
             <p class="break-words">{text.aliases}: {page.aliases.join(", ")}</p>
+        {/if}
+        {#if page.type !== "scene" && !inTrash}
+            {@render aliasesControl(page)}
         {/if}
         {@render pageLinks(page)}
         {#if page.trashedAt !== undefined}

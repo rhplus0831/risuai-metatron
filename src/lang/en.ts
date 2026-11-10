@@ -2914,6 +2914,13 @@ export const languageEnglish = {
                 mergeConfirm: (source: string, target: string) =>
                     `Merge "${source}" into "${target}"? Its sections, aliases, and every reference to it move to "${target}", a section both pages have is joined, and "${source}" goes to the trash with its history.`,
                 split: "Split",
+                rename: "Rename",
+                renameTitle: "Page title",
+                editAliases: "Edit aliases",
+                alias: "Alias",
+                addAlias: "Add",
+                removeAlias: "Remove",
+                aliasCount: (count: number, limit: number) => `${count} / ${limit} aliases`,
                 splitTitle: "Title of the new page",
                 splitHeadings: "Sections to move",
                 splitAliases: "Aliases to move",

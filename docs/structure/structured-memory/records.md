@@ -276,6 +276,8 @@ group: no walk reads them.
   use free headings.
 - The writer's drafts carry scored axes; code computes `grade` on `MemoryEvent` and `MemoryKnowledge`. `MemoryPage` also
   has `grade`: a person's page edit sets `gradeByUser`, and clearing the grade removes both fields (`applyPageEdit`).
+- `MemoryPage.namedByUser` marks a title or alias list a person chose with a [page tool](pages.md#rename-and-aliases);
+  absent means the writer's naming.
 
 ## Recipes
 

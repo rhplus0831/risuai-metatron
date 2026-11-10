@@ -3010,6 +3010,42 @@ it("serves default frames and format and rules only to authenticated requests in
     }
 });
 
+it("persists renamed titles and replacement aliases through page tools and record reads", async () => {
+    const s = await server();
+    const original = { ...page("p"), aliases: ["Quay"] };
+    const revision = s.write({ pages: [original] });
+    const renamed = await answer(
+        await s.json(`${base}/page-tools`, {
+            revision,
+            tool: { kind: "rename", pageId: "p", title: "  Harbor  " },
+        }),
+    );
+    const expectedRename = { ...original, title: "Harbor", aliases: ["Quay", "Place p"], namedByUser: true };
+    expect(renamed).toEqual({ revision: expect.any(String), data: expectedRename });
+    expect(renamed.revision).not.toBe(revision);
+    expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual({
+        revision: renamed.revision,
+        data: expectedRename,
+    });
+    expect((await answer(await s.request(base))).pages).toEqual([
+        expect.objectContaining({ id: "p", title: "Harbor" }),
+    ]);
+
+    const aliased = await answer(
+        await s.json(`${base}/page-tools`, {
+            revision: renamed.revision,
+            tool: { kind: "aliases", pageId: "p", aliases: [" Port ", "Landing"] },
+        }),
+    );
+    const expectedAliases = { ...expectedRename, aliases: ["Port", "Landing"] };
+    expect(aliased).toEqual({ revision: expect.any(String), data: expectedAliases });
+    expect(aliased.revision).not.toBe(renamed.revision);
+    expect(await answer(await s.request(`${base}/records/pages/p`))).toEqual({
+        revision: aliased.revision,
+        data: expectedAliases,
+    });
+});
+
 it("merges aliases, evidence, marks and every page reference in one revision", async () => {
     const s = await server();
     const source = page("source", "Source facts");
@@ -3319,7 +3355,8 @@ it("imports readable files with individual refusals and leaves every occupied or
 });
 
 it("checks epochs, fences, revisions and body limits before page tools or imports can write", async () => {
-    for (const route of ["page-tools", "import"]) {
+    for (const kind of ["trash", "rename", "aliases", "import"] as const) {
+        const route = kind === "import" ? "import" : "page-tools";
         const s = await server({ routeLimits: { memoryRestoreBodyBytes: 1024 } });
         const revision =
             route === "page-tools"
@@ -3327,7 +3364,18 @@ it("checks epochs, fences, revisions and body limits before page tools or import
                 : s.store.memory.readContents(characterId, chatId)!.revision;
         const body =
             route === "page-tools"
-                ? { revision, tool: { kind: "trash", pageId: "p" } }
+                ? {
+                      revision,
+                      tool: {
+                          kind,
+                          pageId: "p",
+                          ...(kind === "rename"
+                              ? { title: "Harbor" }
+                              : kind === "aliases"
+                                ? { aliases: ["Port"] }
+                                : {}),
+                      },
+                  }
                 : { revision, files: [importPageFile] };
         const before = memorySnapshot(s, chatId);
         for (const epoch of [null, "wrong-epoch"]) {

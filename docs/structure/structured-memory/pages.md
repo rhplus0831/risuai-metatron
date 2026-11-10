@@ -2,8 +2,8 @@
 
 ## Scope
 
-- Owns what a person does to a `structuredMemory` page as a whole: the trash, merge, split, the lorebook export, and
-  importing a Markdown package.
+- Owns what a person does to a `structuredMemory` page as a whole: the trash, merge, split, rename, the alias list, the
+  lorebook export, and importing a Markdown package.
 - Paths: `applyPageTool` and `parseMemoryPageTool` in `server/src/prompt/memory/structured/pages.ts`,
   `server/src/prompt/memory/structured/importPackage.ts`, the `page-tools` and `import` routes in
   `server/src/routes/structuredMemory.ts`, the tool controls of `src/lib/Others/StructuredMemory/PagesTab.svelte`, and
@@ -16,13 +16,13 @@
 
 Read the named contract with its code; the shared modules also serve other structured-memory guides.
 
-- `shared/structuredMemory.ts`: page-tool and import contracts; `MemoryPage.trashedAt`, `reshaped`,
+- `shared/structuredMemory.ts`: page-tool and import contracts; `MemoryPage.trashedAt`, `reshaped`, `namedByUser`,
   `StructuredMemoryContents.trash`, `MEMORY_HISTORY_CHANGE_KINDS`, `StructuredMemoryPageTool`,
   `StructuredMemoryPageToolAnswer`, `MEMORY_PACKAGE_VERSION`, `StructuredMemoryImportFile`, `MEMORY_IMPORT_REFUSALS`,
   `StructuredMemoryImportRefusal`, `StructuredMemoryImportAnswer`.
 - `server/src/prompt/memory/structured/pages.ts`: pure page tools; `MemoryPageToolRefusal`, `parseMemoryPageTool`,
   `pageToolIds`, `PageToolRecords`, `PageToolResult`, `applyPageTool`, `mergedPages`, `joinedSection`, `withAliases`,
-  `remappedEvent`, `splitPages`, `toolEntry`, `withHistory`.
+  `remappedEvent`, `splitPages`, `renamedPage`, `aliasedPage`, `toolEntry`, `withHistory`.
 - `server/src/prompt/memory/structured/importPackage.ts`: pure package grammar and admission; `parseMemoryPackage`,
   `Reader.metadata`, `readPage`, `fencedEntry`, `readTimeline`, `packageVersion`, `admitted`.
 - `server/src/data/memoryStore.ts`: trash column and listing boundary; `TRASHED_PAGE_COLUMN`, `recordRow`, `listing`.
@@ -41,6 +41,18 @@ Read the named contract with its code; the shared modules also serve other struc
 route calls `applyPageTool`, checks the flagged pages with `flagUnsupportedSections`, and writes one change set at the
 tab's revision. The tab selects the answered page and rereads contents. Checks and order follow
 [the edit route](records.md#the-edit-route), so a running or stopped rebuild refuses it 409 `fenced`.
+
+### Rename and aliases
+
+`rename` sets a live page's title; `aliases` replaces its whole alias list. Neither takes the scene or a trashed page,
+and no name may be one another live page of the type goes by (`pageNames`): trashed pages and other types do not count.
+A rename may take the page's own alias, which leaves the list; the old title joins the aliases unless its `nameKey`
+equals the new title's or an alias holds it. An alias list is trimmed, non-blank, at most `labelChars` each, distinct by
+`nameKey`, not the title, and at most `aliasesPerPage` long. A merge's `withAliases` never cuts, so a stored list can
+pass the cap: a rename refuses only a list it would grow past it, and the tab's alias editor saves a whole draft, so one
+save can bring the list back under the cap. An equal title or alias list writes nothing. Both set `namedByUser`, which
+[a rebuild](rebuild.md#what-a-rebuild-keeps) seeds, and neither writes history. In `manage`, an open rename or alias
+draft closes when a read brings another stored title or list, so it never overwrites a newer name.
 
 ### The trash
 
@@ -94,7 +106,7 @@ inactive decorator. This chat write is outside the memory revision and fence.
 - `/inherit`, `/restore`, and `/import` count `contents.trash` as a row, so no write reaches a trashed row by id.
   `/adopt` does not, matching `adoptionHold`, so a chat with only trash can still be adopted.
 - A trashed name is unknown to the writer, which may create that name again.
-- `restore.ts` checks `trashedAt` and `reshaped`, so a record type's new field cannot go unchecked.
+- `restore.ts` checks `trashedAt`, `reshaped`, and `namedByUser`, so a record type's new field cannot go unchecked.
 
 ## Invariants
 
@@ -102,7 +114,9 @@ inactive decorator. This chat write is outside the memory revision and fence.
   column ([Limitations](#limitations)).
 - A reader of pages starts from `contents.pages`. A new reader by id must refuse or show a trashed page on purpose.
 - The scene page takes no tool but export. `recordRow` refuses a trashed scene, a snapshot's included.
-- A tool's `merge` and `split` entries never carry an `eventId`.
+- A tool's `merge` and `split` entries never carry an `eventId`. A rename and an alias edit write no history entry,
+  since an older build checks the closed list of kinds.
+- A rename or an alias edit never gives a page a new name another live page of its type goes by, and cuts no alias.
 - A merge writes reference changes in events, threads, and live pages in one change set, so no partial remapping is
   visible.
 - A tool or import that would not fit is refused, never cut.
@@ -141,6 +155,9 @@ Decisions: Structured Memory slice 7d, archive, unless an entry names another.
   from the record, so a trashed page reaches its sends and writer again, while its panel tree, which groups by known
   types, hides the row. A write there sets the column to the true type and keeps `trashedAt`; after rolling forward that
   page reads as live until a tool writes it, and its detail shows Restore.
+- A receipt keeps the title of its time, so after a rename an older receipt names the old title.
+- An older build's rebuild does not read `namedByUser`, so a renamed page with nothing else of a person's on it is
+  written anew there; the field itself survives the older build's restore, which keeps unknown fields.
 - An older build refuses a chat file holding a `merge` or `split` history entry whole, since its `restore.ts` checks the
   closed list.
 - Trash has no size limit or expiry: a page stays until a person deletes it forever or a

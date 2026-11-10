@@ -489,6 +489,8 @@ export interface MemoryPage {
      * as it is. It outlives the bounded history.
      */
     reshaped?: true;
+    /** A person chose this page's title or aliases, so a rebuild keeps its identity. */
+    namedByUser?: true;
 }
 
 /** An open promise, foreshadowing, or question. */
@@ -950,13 +952,16 @@ export type StructuredMemoryRevertAnswer = {
  * pages, headings, and aliases, never a record. `trash` keeps the page by id with everything on it, out of
  * every list; `untrash` brings it back; `purge` removes a trashed page for good. `merge` folds `sourceId`
  * into `targetId`, a live page of the same type, and trashes the source; `split` moves `headings`, a strict
- * subset of the page's, and `aliases`, a subset of its own, to a new page of its type titled `title`. The
- * scene page takes none of them.
+ * subset of the page's, and `aliases`, a subset of its own, to a new page of its type titled `title`.
+ * `rename` changes the title and keeps the old one as an alias; `aliases` replaces the alias list.
+ * Both preserve the person's naming through a rebuild. The scene page takes none of them.
  */
 export type StructuredMemoryPageTool =
     | { kind: "trash"; pageId: string }
     | { kind: "untrash"; pageId: string }
     | { kind: "purge"; pageId: string }
+    | { kind: "rename"; pageId: string; title: string }
+    | { kind: "aliases"; pageId: string; aliases: string[] }
     | { kind: "merge"; sourceId: string; targetId: string }
     | { kind: "split"; pageId: string; headings: string[]; title: string; aliases: string[] };
 

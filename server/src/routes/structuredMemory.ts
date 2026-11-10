@@ -504,15 +504,15 @@ type RoundRead = {
  *   and capped at 64 KiB.
  * - `POST /api/memory/structured/:characterId/:chatId/page-tools` `{ revision, tool }`: one person's tool over a page
  *   as a whole (`StructuredMemoryPageTool`, `applyPageTool` in `server/src/prompt/memory/structured/pages.ts`): to the
- *   trash and back, deleted for good, merged into another page of its type, or split into two, answered
- *   `StructuredMemoryPageToolAnswer` with the page the tab shows next, null after a purge. A merge moves references in
- *   events, threads, and live pages in the same write, which reads the chat's events and threads; a restored page is
- *   flagged against the events as they stand (`flagUnsupportedSections`). A tool that changes nothing, a trash of a
- *   trashed page or a restore of a live one, still names a revision. 400 for a malformed tool or one the pages refuse
- *   (the scene page, a trashed page in a merge or split, two types, a joined section or a page past its limit, a title
- *   a live page of the type goes by), 404 `chatGone` or `recordGone`, 409 `{ error, reason: "fenced" }`
- *   while `fenced` holds, and 409 `{ error, revision }` when `revision` is not the current token. The body is read
- *   after authentication and capped at 64 KiB.
+ *   trash and back, deleted for good, merged into another page of its type, split into two, renamed, or given a
+ *   replacement alias list, answered `StructuredMemoryPageToolAnswer` with the page the tab shows next, null after a
+ *   purge. A merge moves references in events, threads, and live pages in the same write, which reads the chat's events
+ *   and threads; a restored page is flagged against the events as they stand (`flagUnsupportedSections`). A tool that
+ *   changes nothing, a trash of a trashed page or a restore of a live one, still names a revision. 400 for a malformed
+ *   tool or one the pages refuse (the scene page, a trashed page in a merge, split, rename, or alias edit, two types, a
+ *   joined section or a page past its limit, a title or alias another live page of the type goes by), 404 `chatGone` or
+ *   `recordGone`, 409 `{ error, reason: "fenced" }` while `fenced` holds, and 409 `{ error, revision }` when `revision`
+ *   is not the current token. The body is read after authentication and capped at 64 KiB.
  * - `POST /api/memory/structured/:characterId/:chatId/import` `{ revision, files: { path, text }[] }`: gives a chat the
  *   records of a Markdown package the tab unzipped, answered `StructuredMemoryImportAnswer`. The files are read back by
  *   the package's grammar (`server/src/prompt/memory/structured/importPackage.ts`), each record's shape by

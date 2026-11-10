@@ -196,11 +196,13 @@ const toolRecords = (
     threads: () => threads,
 });
 
-it("parses every page tool shape and its page ids and refuses a split without headings", () => {
+it("parses page tools and their ids, trims rename titles and refuses blank or oversized titles", () => {
     const cases: { tool: StructuredMemoryPageTool; ids: string[] }[] = [
         { tool: { kind: "trash", pageId: "source" }, ids: ["source"] },
         { tool: { kind: "untrash", pageId: "source" }, ids: ["source"] },
         { tool: { kind: "purge", pageId: "source" }, ids: ["source"] },
+        { tool: { kind: "rename", pageId: "source", title: "Harbor" }, ids: ["source"] },
+        { tool: { kind: "aliases", pageId: "source", aliases: ["Port", "Quay"] }, ids: ["source"] },
         { tool: { kind: "merge", sourceId: "source", targetId: "target" }, ids: ["source", "target"] },
         {
             tool: { kind: "split", pageId: "source", headings: ["Gate"], title: "Harbor", aliases: ["Port"] },
@@ -216,6 +218,173 @@ it("parses every page tool shape and its page ids and refuses a split without he
     expect(
         parseMemoryPageTool({ kind: "split", pageId: "source", headings: [], title: "Harbor", aliases: [] }),
     ).toBeNull();
+    for (const [title, expected] of [
+        ["  Harbor \n", "Harbor"],
+        ["x".repeat(LIMITS.labelChars), "x".repeat(LIMITS.labelChars)],
+    ]) {
+        expect(parseMemoryPageTool({ kind: "rename", pageId: "source", title })).toEqual({
+            kind: "rename",
+            pageId: "source",
+            title: expected,
+        });
+    }
+    for (const title of [" \t\n", "x".repeat(LIMITS.labelChars + 1)]) {
+        expect(parseMemoryPageTool({ kind: "rename", pageId: "source", title })).toBeNull();
+    }
+});
+
+it("renames a page without history, preserving the old name once and promoting its own alias", () => {
+    for (const { title, aliases, expected } of [
+        { title: "Harbor", aliases: ["Quay"], expected: ["Quay", "Old Port"] },
+        { title: "QUAY", aliases: [" Quay "], expected: ["Old Port"] },
+        { title: "OLD PORT", aliases: ["Quay"], expected: ["Quay"] },
+        { title: "Harbor", aliases: ["old port", "Quay"], expected: ["old port", "Quay"] },
+    ]) {
+        const original = page("source", { title: "Old Port", aliases });
+        const renamed = { ...original, title, aliases: expected, namedByUser: true };
+        expect(
+            applyPageTool(
+                toolRecords([original]),
+                { kind: "rename", pageId: "source", title },
+                { now: 200, newId: () => "unexpected-history" },
+            ),
+            title,
+        ).toStrictEqual({
+            changes: { pages: [renamed] },
+            shown: renamed,
+            flag: [],
+        });
+        expect(original).not.toHaveProperty("namedByUser");
+        expect(original.aliases).toEqual(aliases);
+    }
+});
+
+it("refuses a rename only when another live page of the same type owns the title or alias", () => {
+    const original = page("source", { title: "Old Port" });
+    const stamp = { now: 200, newId: () => "unused" };
+    for (const names of [{ title: "  HARBOR  " }, { title: "Beacon", aliases: ["  HARBOR  "] }]) {
+        const other = page("other", names);
+        const tool = { kind: "rename", pageId: "source", title: "Harbor" } as const;
+        expect(() => applyPageTool(toolRecords([original, other]), tool, stamp)).toThrow(
+            expect.objectContaining({ reason: "invalid", constructor: MemoryPageToolRefusal }),
+        );
+        for (const allowed of [
+            { ...other, trashedAt: 100 },
+            { ...other, type: "character" as const },
+        ]) {
+            expect(applyPageTool(toolRecords([original, allowed]), tool, stamp).shown).toEqual({
+                ...original,
+                title: "Harbor",
+                aliases: ["Old Port"],
+                namedByUser: true,
+            });
+        }
+    }
+});
+
+it("refuses alias growth past the cap without cutting names but permits a non-growing rename", () => {
+    const aliases = Array.from({ length: LIMITS.aliasesPerPage }, (_, i) => `Alias ${i}`);
+    const original = page("source", { title: "Old Port", aliases });
+    const stamp = { now: 200, newId: () => "unused" };
+    expect(() =>
+        applyPageTool(toolRecords([original]), { kind: "rename", pageId: "source", title: "Harbor" }, stamp),
+    ).toThrow(
+        expect.objectContaining({
+            reason: "invalid",
+            message: expect.stringContaining(String(LIMITS.aliasesPerPage)),
+        }),
+    );
+    expect(original).toEqual(page("source", { title: "Old Port", aliases }));
+    const overfull = { ...original, aliases: [...aliases, "Quay"] };
+    const renamed = { ...overfull, title: "Quay", aliases: [...aliases, "Old Port"], namedByUser: true };
+    expect(
+        applyPageTool(toolRecords([overfull]), { kind: "rename", pageId: "source", title: "Quay" }, stamp),
+    ).toStrictEqual({ changes: { pages: [renamed] }, shown: renamed, flag: [] });
+});
+
+it("refuses naming tools on the scene, trash and missing pages", () => {
+    const records = toolRecords([
+        page("scene", { type: "scene", contextMode: "always" }),
+        page("trashed", { trashedAt: 100 }),
+    ]);
+    for (const [pageId, reason] of [
+        ["scene", "invalid"],
+        ["trashed", "invalid"],
+        ["missing", "gone"],
+    ]) {
+        for (const tool of [
+            { kind: "rename", pageId, title: "Harbor" },
+            { kind: "aliases", pageId, aliases: ["Port"] },
+        ] satisfies StructuredMemoryPageTool[]) {
+            expect(() => applyPageTool(records, tool, { now: 200, newId: () => "unused" })).toThrow(
+                expect.objectContaining({ reason, constructor: MemoryPageToolRefusal }),
+            );
+        }
+    }
+});
+
+it("replaces the whole alias list with trimmed personal names without writing history", () => {
+    const original = page("source", { title: "Harbor", aliases: ["Old alias"] });
+    const records = toolRecords([
+        original,
+        page("trashed", { title: "Port", trashedAt: 100 }),
+        page("character", { type: "character", aliases: ["Captain"] }),
+    ]);
+    for (const aliases of [[" Port ", " Captain "], []]) {
+        const updated = { ...original, aliases: aliases.length ? ["Port", "Captain"] : [], namedByUser: true };
+        expect(
+            applyPageTool(
+                records,
+                { kind: "aliases", pageId: "source", aliases },
+                { now: 200, newId: () => "unexpected-history" },
+            ),
+        ).toStrictEqual({
+            changes: { pages: [updated] },
+            shown: updated,
+            flag: [],
+        });
+    }
+});
+
+it("refuses duplicate, title, occupied, blank, oversized and excess aliases", () => {
+    const original = page("source", { title: "Harbor", aliases: ["Old alias"] });
+    const records = toolRecords([original, page("other", { title: " Beacon ", aliases: [" QUAY "] })]);
+    const invalid = [
+        ["Port", " PORT "],
+        [" HARBOR "],
+        ["beacon"],
+        ["quay"],
+        [" \t"],
+        ["x".repeat(LIMITS.labelChars + 1)],
+        Array.from({ length: LIMITS.aliasesPerPage + 1 }, (_, i) => `Alias ${i}`),
+    ];
+    for (const aliases of invalid) {
+        expect(
+            () =>
+                applyPageTool(
+                    records,
+                    { kind: "aliases", pageId: "source", aliases },
+                    { now: 200, newId: () => "unused" },
+                ),
+            JSON.stringify(aliases),
+        ).toThrow(expect.objectContaining({ reason: "invalid", constructor: MemoryPageToolRefusal }));
+    }
+    expect(original).toEqual(page("source", { title: "Harbor", aliases: ["Old alias"] }));
+});
+
+it("leaves equal titles and alias lists unwritten and unmarked", () => {
+    const original = page("source", { title: "Harbor", aliases: ["Port", "Quay"] });
+    for (const tool of [
+        { kind: "rename", pageId: "source", title: "Harbor" },
+        { kind: "aliases", pageId: "source", aliases: ["Port", "Quay"] },
+    ] satisfies StructuredMemoryPageTool[]) {
+        expect(applyPageTool(toolRecords([original]), tool, { now: 200, newId: () => "unused" })).toStrictEqual({
+            changes: {},
+            shown: original,
+            flag: [],
+        });
+        expect(original).not.toHaveProperty("namedByUser");
+    }
 });
 
 it("trashes and restores a whole page without changing its references or content", () => {

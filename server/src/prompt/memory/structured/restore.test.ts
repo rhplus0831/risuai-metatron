@@ -21,6 +21,22 @@ it("keeps genuine records beyond writer limits whole, removing only runs and sou
     expect(parseRestoredRecords(body)).toEqual(expected);
 });
 
+it("preserves a true personal naming mark and refuses false or string marks", () => {
+    const { pages, events, threads } = memoryRecords(["saved"]);
+    const records = {
+        pages: [{ ...pages[0], title: "Harbor", aliases: ["Old Port"], namedByUser: true }],
+        events,
+        threads,
+    };
+    expect(parseRestoredRecords(records)).toEqual(records);
+    for (const namedByUser of [false, "true"]) {
+        expect(
+            parseRestoredRecords({ ...records, pages: [{ ...records.pages[0], namedByUser }] }),
+            JSON.stringify(namedByUser),
+        ).toBeNull();
+    }
+});
+
 it("refuses malformed nested records instead of accepting or repairing them", () => {
     const valid = memoryRecords(["saved"]);
     const corruptions = [

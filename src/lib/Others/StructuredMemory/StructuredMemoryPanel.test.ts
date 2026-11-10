@@ -2606,6 +2606,88 @@ it("selects the page named by a merge answer and rereads contents, then restores
     expect(alertError).toHaveBeenCalledWith(language.structuredMemory.pages.tools.refused("Try again later"));
 });
 
+it("sends rename and alias drafts through page tools and displays the answered page", async () => {
+    const state = servePageTools();
+    state.pages[0].aliases = ["Gatehouse"];
+    const fetch = io.authFetch.getMockImplementation()!;
+    const requests: unknown[] = [];
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/page-tools")) return fetch(url, init, options);
+        expect(url).toBe("/api/memory/structured/c/k/page-tools");
+        expect(init?.method).toBe("POST");
+        const body = JSON.parse(init!.body as string);
+        requests.push(body);
+        if (requests.length === 1) {
+            state.pages[0] = {
+                ...state.pages[0],
+                title: "North gate",
+                aliases: ["Gatehouse", "The gate"],
+                namedByUser: true,
+            };
+            state.revision = "after-rename";
+        } else {
+            state.pages[0] = { ...state.pages[0], aliases: ["The gate", "Watchtower"], namedByUser: true };
+            state.revision = "after-aliases";
+        }
+        return Response.json({ revision: state.revision, data: state.pages[0] });
+    });
+    const type = (selector: string, value: string) => {
+        const input = target.querySelector<HTMLInputElement>(selector)!;
+        expect(input).not.toBeNull();
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        flushSync();
+    };
+    await open();
+    click('[data-memory-page="p"]');
+    await settle();
+    expect(query("[data-memory-rename]")).toBeNull();
+    expect(query("[data-memory-aliases-edit]")).toBeNull();
+    await choosePageView("manage");
+
+    press("[data-memory-rename]");
+    type("[data-memory-rename-input] input", "Discarded name");
+    press("[data-memory-rename-cancel]");
+    expect(query("[data-memory-rename-input]")).toBeNull();
+    expect(requests).toEqual([]);
+    press("[data-memory-rename]");
+    expect(target.querySelector<HTMLInputElement>("[data-memory-rename-input] input")!.value).toBe("The gate");
+    type("[data-memory-rename-input] input", "North gate");
+    press("[data-memory-rename-save]");
+    await settle();
+    expect(requests).toEqual([{ revision: "before-tool", tool: { kind: "rename", pageId: "p", title: "North gate" } }]);
+    expect(query("[data-memory-rename-input]")).toBeNull();
+    expect(query("[data-memory-page-detail] h2")?.textContent).toBe("North gate");
+    expect(query("[data-memory-page-detail]")?.textContent).toContain("Gatehouse, The gate");
+    expect(query('[data-memory-page="p"]')?.textContent).toContain("North gate");
+
+    press("[data-memory-aliases-edit]");
+    press('[data-memory-alias-remove="0"]');
+    type("[data-memory-alias-input] input", "Discarded alias");
+    press("[data-memory-alias-add]");
+    press("[data-memory-aliases-cancel]");
+    expect(query("[data-memory-alias-input]")).toBeNull();
+    expect(requests).toHaveLength(1);
+    expect(query("[data-memory-page-detail]")?.textContent).toContain("Gatehouse, The gate");
+
+    press("[data-memory-aliases-edit]");
+    press('[data-memory-alias-remove="0"]');
+    type("[data-memory-alias-input] input", "Watchtower");
+    press("[data-memory-alias-add]");
+    press("[data-memory-aliases-save]");
+    await settle();
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toEqual({
+        revision: "after-rename",
+        tool: { kind: "aliases", pageId: "p", aliases: ["The gate", "Watchtower"] },
+    });
+    expect(query("[data-memory-alias-input]")).toBeNull();
+    expect(query("[data-memory-page-detail] h2")?.textContent).toBe("North gate");
+    expect(query("[data-memory-page-detail]")?.textContent).toContain("The gate, Watchtower");
+    expect(query("[data-memory-page-detail]")?.textContent).not.toContain("Gatehouse");
+    expect(alertError).not.toHaveBeenCalled();
+});
+
 it("offers only restore and permanent deletion for trash and only export as a scene page tool", async () => {
     const state = servePageTools();
     const corrected = editablePage();
@@ -2622,6 +2704,8 @@ it("offers only restore and permanent deletion for trash and only export as a sc
     expect(query("[data-memory-section-edit]")).toBeNull();
     expect(query("[data-memory-page-mode]")).toBeNull();
     expect(query("[data-memory-export-lore]")).toBeNull();
+    expect(query("[data-memory-rename]")).toBeNull();
+    expect(query("[data-memory-aliases-edit]")).toBeNull();
     click('[data-memory-page="scene"]');
     await settle();
     await choosePageView("manage");
@@ -2630,6 +2714,8 @@ it("offers only restore and permanent deletion for trash and only export as a sc
     expect(query("[data-memory-trash]")).toBeNull();
     expect(query("[data-memory-split-open]")).toBeNull();
     expect(query("[data-memory-merge]")).toBeNull();
+    expect(query("[data-memory-rename]")).toBeNull();
+    expect(query("[data-memory-aliases-edit]")).toBeNull();
 });
 
 it("appends an inactive lore entry that cannot activate even when a section names the activate decorator", async () => {

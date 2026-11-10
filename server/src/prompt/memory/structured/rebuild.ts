@@ -158,13 +158,16 @@ const sectionMarked = ({ locked, pinned, suppressed, userCorrected }: MemorySect
  * the scene no attendance. The scene's `always` is code's, not a choice. A page a person merged or
  * split (`reshaped`) seeds with all of its sections and history: the arrangement is theirs, and a page
  * seeded without it would be written anew or, with nothing marked, removed at the swap.
- * A non-scene page also seeds when its grade is a person's (`gradeByUser`) or its `contextMode` is not
- * `auto`, even with no marked section: these are choices the rebuild must not discard.
+ * A non-scene page also seeds when its grade or naming is a person's (`gradeByUser`, `namedByUser`) or
+ * its `contextMode` is not `auto`, even with no marked section: these choices, including the title and
+ * aliases, survive the rebuild.
  * A page named by a retained thread also seeds, keeping the id its `who` stores.
  */
 function seededPage(page: MemoryPage, namedByThread: boolean): MemoryPage | null {
     const sections = page.reshaped ? page.sections : page.sections.filter(sectionMarked);
-    const chosen = page.type !== "scene" && (page.gradeByUser === true || page.contextMode !== "auto");
+    const chosen =
+        page.type !== "scene" &&
+        (page.gradeByUser === true || page.contextMode !== "auto" || page.namedByUser === true);
     if (sections.length === 0 && !chosen && !page.reshaped && !namedByThread) {
         return null;
     }

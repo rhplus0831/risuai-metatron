@@ -192,6 +192,32 @@ it("seeds nothing for a fresh rebuild and its swap removes every live record and
     ]);
 });
 
+it("keeps a page marked only by personal naming through a rebuild seed and swap but drops it on a fresh rebuild", () => {
+    const named: MemoryPage = {
+        ...memoryRecords(["place"]).pages[0],
+        title: "Harbor",
+        aliases: ["Old Port", "Quay"],
+        namedByUser: true,
+    };
+    const live = { pages: [named], threads: [], events: [] };
+    const expected = { ...named, sections: [], history: [], links: [] };
+    const seed = rebuildSeed("rebuild", live);
+    expect(seed).toEqual({ pages: [expected], threads: [] });
+    // A completed window is required for a swap, even when the writer never mentions this page.
+    const events = [event("new", ["u1", "a1"])];
+    const changes = rebuildChanges("rebuild", live, { pages: seed.pages!, threads: seed.threads!, events });
+    expect(changes).not.toBeNull();
+    expect(changes?.pages).toEqual([expected]);
+    expect(changes?.remove?.pages).toEqual([]);
+
+    const fresh = rebuildSeed("fresh", live);
+    expect(fresh).toEqual({ pages: [], threads: [] });
+    const reset = rebuildChanges("fresh", live, { pages: fresh.pages!, threads: fresh.threads!, events });
+    expect(reset).not.toBeNull();
+    expect(reset?.pages).toEqual([]);
+    expect(reset?.remove?.pages).toEqual(["place"]);
+});
+
 it("reads planned windows from current messages with fresh anchors and skips removed or disabled sources", () => {
     const edited = { ...messages[2], data: "Edited user" };
     const current = [messages[0], edited, { ...messages[3], disabled: true }, messages[5]];

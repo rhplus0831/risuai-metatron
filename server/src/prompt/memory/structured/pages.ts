@@ -841,7 +841,8 @@ const isTextList = (value: unknown): value is string[] =>
 /**
  * The tool a request's `value` holds, or null for one that is malformed: unknown fields are dropped, a
  * merge names two different pages, and a split names at least one heading and a title that has text and
- * fits `labelChars`. What the pages make of it is `applyPageTool`'s.
+ * fits `labelChars`. A rename takes the same trimmed title; aliases takes a string list unchanged so
+ * `applyPageTool` can explain which entry or name conflicts with the pages as they stand.
  */
 export function parseMemoryPageTool(value: unknown): StructuredMemoryPageTool | null {
     if (!isPlainObject(value)) {
@@ -859,6 +860,15 @@ export function parseMemoryPageTool(value: unknown): StructuredMemoryPageTool | 
     }
     if (kind === "trash" || kind === "untrash" || kind === "purge") {
         return { kind, pageId };
+    }
+    if (kind === "rename") {
+        const { title } = value;
+        return typeof title === "string" && title.trim() !== "" && title.length <= LIMITS.labelChars
+            ? { kind, pageId, title: title.trim() }
+            : null;
+    }
+    if (kind === "aliases") {
+        return isTextList(value.aliases) ? { kind, pageId, aliases: value.aliases } : null;
     }
     if (kind === "split") {
         const { headings, title, aliases } = value;
@@ -1162,12 +1172,98 @@ function splitPages(
 }
 
 /**
+ * Renames a live page, preserving its old title as an alias unless that key is already retained.
+ * Its own alias may become the title, but another live page of the type cannot already use that name.
+ * A stored alias list over the cap may stay that size or shrink; a rename never silently cuts names.
+ */
+function renamedPage(
+    records: PageToolRecords,
+    { pageId, title }: Extract<StructuredMemoryPageTool, { kind: "rename" }>,
+): PageToolResult {
+    const page = livePage(records, pageId, "renamed");
+    if (title === page.title) {
+        return { changes: {}, shown: page, flag: [] };
+    }
+    const key = nameKey(title);
+    if (
+        records
+            .pages()
+            .some(
+                (other) =>
+                    other.id !== page.id &&
+                    other.type === page.type &&
+                    !trashed(other) &&
+                    pageNames(other).includes(key),
+            )
+    ) {
+        throw new MemoryPageToolRefusal("invalid", `A ${page.type} page already goes by "${title}"`);
+    }
+    const aliases = page.aliases.filter((alias) => nameKey(alias) !== key);
+    const oldKey = nameKey(page.title);
+    if (oldKey !== key && !aliases.some((alias) => nameKey(alias) === oldKey)) {
+        aliases.push(page.title);
+    }
+    if (aliases.length > LIMITS.aliasesPerPage && aliases.length > page.aliases.length) {
+        throw new MemoryPageToolRefusal(
+            "invalid",
+            `Keeping the old title would exceed the limit of ${LIMITS.aliasesPerPage} aliases per page`,
+        );
+    }
+    const renamed: MemoryPage = { ...page, title, aliases, namedByUser: true };
+    return { changes: { pages: [renamed] }, shown: renamed, flag: [] };
+}
+
+/** Replaces a live page's aliases with a bounded, distinct list that names no other live page of its type. */
+function aliasedPage(
+    records: PageToolRecords,
+    { pageId, aliases }: Extract<StructuredMemoryPageTool, { kind: "aliases" }>,
+): PageToolResult {
+    const page = livePage(records, pageId, "given new aliases");
+    if (aliases.length > LIMITS.aliasesPerPage) {
+        throw new MemoryPageToolRefusal("invalid", `A page can have at most ${LIMITS.aliasesPerPage} aliases`);
+    }
+    const trimmed = aliases.map((alias) => alias.trim());
+    const taken = new Set(
+        records
+            .pages()
+            .filter((other) => other.id !== page.id && other.type === page.type && !trashed(other))
+            .flatMap(pageNames),
+    );
+    const keys = new Set<string>();
+    for (const alias of trimmed) {
+        if (alias === "") {
+            throw new MemoryPageToolRefusal("invalid", "An alias cannot be blank");
+        }
+        if (alias.length > LIMITS.labelChars) {
+            throw new MemoryPageToolRefusal("invalid", `An alias can have at most ${LIMITS.labelChars} characters`);
+        }
+        const key = nameKey(alias);
+        if (keys.has(key)) {
+            throw new MemoryPageToolRefusal("invalid", `The alias "${alias}" is repeated`);
+        }
+        if (key === nameKey(page.title)) {
+            throw new MemoryPageToolRefusal("invalid", `The alias "${alias}" matches the page's title`);
+        }
+        if (taken.has(key)) {
+            throw new MemoryPageToolRefusal("invalid", `A ${page.type} page already goes by "${alias}"`);
+        }
+        keys.add(key);
+    }
+    if (trimmed.length === page.aliases.length && trimmed.every((alias, index) => alias === page.aliases[index])) {
+        return { changes: {}, shown: page, flag: [] };
+    }
+    const aliased: MemoryPage = { ...page, aliases: trimmed, namedByUser: true };
+    return { changes: { pages: [aliased] }, shown: aliased, flag: [] };
+}
+
+/**
  * `tool` over `records`, the chat as stored: what to write and what to show. A `MemoryPageToolRefusal`
  * says why it does not fit, and the scene page takes no tool at all. A trash of a trashed page and a
  * restore of a live one change nothing and show the page as it is; a purge takes only a trashed page. A
  * restored page is flagged by the route against the events as they stand now, since they may have been
  * retracted while it was away (`server/src/routes/structuredMemory.ts`). Restoring a name that now
- * collides with a live page is allowed: a merge can settle it.
+ * collides with a live page is allowed: a merge can settle it. Rename and aliases preserve the person's
+ * naming without a history entry or section flag; an identical title or valid alias list writes nothing.
  */
 export function applyPageTool(
     records: PageToolRecords,
@@ -1179,6 +1275,10 @@ export function applyPageTool(
             return mergedPages(records, tool.sourceId, tool.targetId, stamp);
         case "split":
             return splitPages(records, tool, stamp);
+        case "rename":
+            return renamedPage(records, tool);
+        case "aliases":
+            return aliasedPage(records, tool);
     }
     const page = records.page(tool.pageId);
     if (!page) {

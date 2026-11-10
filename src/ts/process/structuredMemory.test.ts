@@ -317,9 +317,12 @@ it("stops a partial package immediately on 412 and notifies the epoch mismatch l
     expect(replaced.mock.calls).toEqual([["replacement"]]);
 });
 
-it("round trips section bodies and summaries containing headings and delimiters without page history", () => {
+it("round trips personal page naming, section bodies and summaries containing delimiters without page history", () => {
     const bodies = ["first\n## x\n```md\n---\n```\nlast\n\n", "", "tail\n"];
     const p = page("p");
+    p.title = "Harbor";
+    p.aliases = ["Place", "Quay"];
+    p.namedByUser = true;
     p.sections = bodies.map((body, i) => ({
         ...p.sections[0],
         heading: i === 0 ? "  Section\t 0\n details  " : `Section ${i}`,
