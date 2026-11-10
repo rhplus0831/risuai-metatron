@@ -109,7 +109,10 @@ type RunState = {
 
 type PreparedEngine = { engine: LuaEngine; bind: (state: RunState) => void };
 
-/** The parts of wasmoon 1.16's C API the hook needs; not in its public types. */
+/**
+ * This module uses wasmoon 1.16.0's private engine extension table and C API, outside its public types
+ * (see `installValueGuard` and `installHook`). Recheck both on every wasmoon upgrade.
+ */
 type LuaWasmInternals = {
     module: { addFunction(fn: (L: number, ar: number) => void, signature: string): number };
     lua_pushstring(L: number, s: string): void;

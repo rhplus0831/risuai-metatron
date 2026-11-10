@@ -13,7 +13,7 @@ The eighteenth batch was cleared the same day by a Sol implementer with session 
 ## Contents
 
 - [Plugin sandbox](#plugin-sandbox): 1
-- [Structure audit 2026-11-10](#structure-audit-2026-11-10): 4
+- [Structure audit 2026-11-10](#structure-audit-2026-11-10): 3
 
 ## Plugin sandbox
 
@@ -78,16 +78,3 @@ The audit left the bullet as it is because the figures had no destination.
 
 **Suggested handling:** add the before and after figures to the audit report's checkpoint section from the archive
 entry, then shorten the guide bullet to the consequence and the link.
-
-### The wasmoon private-API note sits in the server-generation guide, not at the module
-
-`docs/structure/server-generation.md` (Known Hazards) says `server/src/lua/runtime.ts` uses wasmoon 1.16's private
-extension table and C API, "which must be rechecked on a wasmoon upgrade". It is one module's dependency, the module
-belongs to scripts-triggers by `pnpm docs:owner`, and the comments at `LuaWasmInternals`, `installValueGuard`, and
-`installHook` describe the private API without the upgrade condition. The audit left the bullet because deleting it
-would lose that condition.
-
-**Why it matters:** an editor upgrading wasmoon reads the module or the scripts guide, not server generation.
-
-**Suggested handling:** add the recheck-on-upgrade sentence to the `LuaWasmInternals` comment, then delete the guide
-bullet (a source edit, so it runs the V1 gate).
