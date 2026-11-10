@@ -1092,9 +1092,9 @@ function translateRenderedLLM(
 /**
  * Uses the detached context captured before the caller's first await. Cache lookup precedes input
  * reasoning removal, which precedes style placeholders; blank stripped input caches "" without a
- * request. Send Text As-Is bypasses placeholders. Otherwise each `<risu-style>…</risu-style>` regex
- * match becomes an indexed `<style-data>` placeholder; `(.+?)` can span an empty block into the next.
- * Reply placeholders are replaced with captured inner text only; the matched outer wrapper is not restored.
+ * request. Send Text As-Is bypasses placeholders. Otherwise each `<risu-style ...>…</risu-style>` block,
+ * in any letter case and with optional quoted attributes, becomes an indexed `<style-data>` placeholder.
+ * Reply placeholders restore the complete captured block, retaining its attributes and encoded CSS.
  * Steps use `src/ts/process/request/request.ts` in translate mode: explicit profiles use profileId,
  * inherited steps the translate slot, all with the captured request ids. A step failure alerts,
  * marks `failure` and returns the caller's original text. An observed abort rejects without that
@@ -1129,14 +1129,14 @@ async function translateLLM(
         if (!isNewest || isNewest()) await writeLLMCacheEntry(cacheKey, "");
         return "";
     }
-    // Without Send Text As-Is, each regex match becomes an indexed placeholder; reply substitutions
-    // restore the captured inner text without the matched outer `<risu-style>` wrapper.
-    const styleDecodeRegex = /\<risu-style\>(.+?)\<\/risu-style\>/gms;
+    // Protect the whole block so neither encoded CSS nor its attributes reach the model.
+    // Match quoted '>' characters as the Markdown style encoder does, and keep empty blocks separate.
+    const styleDecodeRegex = /<risu-style(\s(?:[^>"']|"[^"]*"|'[^']*')*)?>(.*?)<\/risu-style\s*>/gis;
     let styleDecodes: string[] = [];
     const sourceText = context.sendTextAsIs
         ? requestText
-        : requestText.replace(styleDecodeRegex, (match, p1) => {
-              styleDecodes.push(p1);
+        : requestText.replace(styleDecodeRegex, (match) => {
+              styleDecodes.push(match);
               return `<style-data style-index="${styleDecodes.length - 1}"></style-data>`;
           });
 

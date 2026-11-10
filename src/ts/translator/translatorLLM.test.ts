@@ -822,7 +822,7 @@ describe("Send Text As-Is", () => {
         turnOff();
         succeed("D1", ' <style-data style-index="0"></style-data> 첫째 ', "D2", "둘째");
         await expect(runTranslator(SOURCE, false, "ko", "en")).resolves.toBe(
-            ".a{color:red} 첫째\n\n\n{{img::x}}\n둘째",
+            "<risu-style>.a{color:red}</risu-style> 첫째\n\n\n{{img::x}}\n둘째",
         );
         expect(
             requests()
@@ -844,7 +844,7 @@ describe("Send Text As-Is", () => {
         expect(requests()[0].messages[0].content).toBe(`Draft ${html} into ko from en`);
         turnOff();
         succeed("D", '<p>안녕</p><style-data style-index="0"></style-data>');
-        await expect(translateHTML(html, false, "", -1)).resolves.toBe("<p>안녕</p>.b{}");
+        await expect(translateHTML(html, false, "", -1)).resolves.toBe("<p>안녕</p><risu-style>.b{}</risu-style>");
         expect(requests()[2].messages[0].content).toBe(
             'Draft <p>Hi</p><style-data style-index="0"></style-data>\n\n<p>There</p> into ko from en',
         );
@@ -1116,9 +1116,9 @@ describe("Exclude Chain-of-Thought", () => {
     it("translateHTML strips before the <risu-style> placeholders, so a style inside a removed block cannot come back from the style table; raw tags go, a rendered <details> stays", async () => {
         const html = "<think>secret <risu-style>.x{}</risu-style></think><p>Hi</p><risu-style>.b{}</risu-style>";
         succeed('<p>안녕</p><style-data style-index="0"></style-data><style-data style-index="1"></style-data>');
-        await expect(translateHTML(html, false, "", -1)).resolves.toBe("<p>안녕</p>.b{}");
+        await expect(translateHTML(html, false, "", -1)).resolves.toBe("<p>안녕</p><risu-style>.b{}</risu-style>");
         expect(contents()).toEqual(['Other <p>Hi</p><style-data style-index="0"></style-data>']);
-        expect(await exportLLMCacheAsJSON()).toEqual({ [keyOf(ON, html)]: "<p>안녕</p>.b{}" });
+        expect(await exportLLMCacheAsJSON()).toEqual({ [keyOf(ON, html)]: "<p>안녕</p><risu-style>.b{}</risu-style>" });
 
         // The accepted scope: the markdown step has already turned `<Thoughts>` into `<details>` on
         // the rendered path, which is kept; only raw tags (translateBeforeHTMLFormatting's text) go.
@@ -1254,5 +1254,48 @@ describe("Exclude Chain-of-Thought", () => {
         expect(vi.mocked(globalFetch).mock.calls[0][1]).toMatchObject({ body: { text: ["<think>r</think>Hello"] } });
         expect(request.requestChatData).not.toHaveBeenCalled();
         expect(await exportLLMCacheAsJSON()).toEqual({});
+    });
+});
+
+describe.each([
+    ["translateHTML", (source: string) => translateHTML(source, false, "", -1, false, null)],
+    ["runTranslator", (source: string) => runTranslator(source, false, "ko", "en")],
+] as const)("%s style placeholders", (_name, translateSource) => {
+    beforeEach(() => {
+        settings.translatorPresets.items[0].steps = createTranslatorPreset("Echo", {
+            id: "echo",
+            prompt: "{{slot::content}}",
+            maxResponse: 64,
+        }).steps;
+        request.requestChatData.mockImplementationOnce(async (arg) => ({
+            type: "success",
+            result: arg.formated[0].content.replace("Hello", "Translated"),
+        }));
+    });
+
+    it.each([
+        ["media attributes", '<risu-style media="all">', "</risu-style>"],
+        [
+            "quoted greater-than signs and mixed tag case",
+            `<RiSu-StYle\nmedia="screen and (width > 1px)" data-note='a > b'>`,
+            "</rISU-style >",
+        ],
+    ])("protects and restores the entire block with %s", async (_case, open, close) => {
+        const hex = Buffer.from(".probe{color:red}").toString("hex");
+        const block = `${open}${hex}${close}`;
+        const result = await translateSource(`Hello ${block} world`);
+        expect(requests().map((entry) => entry.messages[0].content)).toEqual([
+            'Hello <style-data style-index="0"></style-data> world',
+        ]);
+        expect(result).toBe(`Translated ${block} world`);
+    });
+
+    it("gives adjacent empty and attributed blocks independent placeholders", async () => {
+        const blocks = '<risu-style></risu-style><risu-style media="all">6162</risu-style>';
+        const result = await translateSource(`Hello ${blocks} world`);
+        expect(requests().map((entry) => entry.messages[0].content)).toEqual([
+            'Hello <style-data style-index="0"></style-data><style-data style-index="1"></style-data> world',
+        ]);
+        expect(result).toBe(`Translated ${blocks} world`);
     });
 });
