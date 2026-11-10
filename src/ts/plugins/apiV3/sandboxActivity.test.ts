@@ -1,6 +1,7 @@
 import { MessageChannel as NodeMessageChannel, MessagePort as NodeMessagePort } from "node:worker_threads";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SandboxHost } from "./factory";
+import { controlCollection } from "./tests/controlledCollection";
 
 // `SandboxHost` activity (`plugin-sandbox.md`): `isIdle()` once the guest's
 // script settled while no guest-to-host call, host-to-guest callback, or bridged stream is open, or
@@ -54,13 +55,19 @@ const settledScript = () => {
     changed.mockClear();
 };
 /** The guest hands the host a callback reference; the host returns the wrapper the API received. */
-async function callbackFromGuest(): Promise<(...args: unknown[]) => Promise<unknown>> {
+async function callbackFromGuest(sendCount = 1): Promise<(...args: unknown[]) => Promise<unknown>> {
     let wrapper!: (...args: unknown[]) => Promise<unknown>;
     api.keep = (fn: (...args: unknown[]) => Promise<unknown>) => {
         wrapper = fn;
     };
-    send({ type: "CALL_ROOT", reqId: "keep", method: "keep", args: [{ __type: "CALLBACK_REF", id: "cb-1" }] });
-    await vi.waitFor(() => expect(lastPosted().data).toMatchObject({ type: "RESPONSE", reqId: "keep" }));
+    expect(
+        await callHost({
+            type: "CALL_ROOT",
+            reqId: "keep",
+            method: "keep",
+            args: [{ __type: "CALLBACK_REF", id: "cb-1", sendCount }],
+        }),
+    ).toEqual({ type: "RESPONSE", reqId: "keep", result: undefined });
     expect(host.isIdle()).toBe(true);
     return wrapper;
 }
@@ -122,6 +129,49 @@ it("serializes remote-required callback arguments as callable host references", 
         send({ type: "CALLBACK_RETURN", reqId: invoke.reqId, result: "delivered" });
         await expect(running).resolves.toBe("delivered");
     }
+});
+
+describe("SandboxHost callback lifetime", () => {
+    let collection: ReturnType<typeof controlCollection>;
+    beforeEach(() => {
+        host.terminate();
+        collection = controlCollection();
+        host = new SandboxHost(api);
+        host.run(document.createElement("iframe"), "");
+        settledScript();
+    });
+
+    it("reuses a retained callback wrapper and releases its latest send count when collected", async () => {
+        const wrapper = await callbackFromGuest(1);
+        expect(await callbackFromGuest(3)).toBe(wrapper);
+        expect(await callbackFromGuest(2)).toBe(wrapper);
+
+        collection.collect(wrapper)();
+        expect(lastPosted().data).toEqual({ type: "RELEASE_CALLBACK", id: "cb-1", sendCount: 3 });
+    });
+
+    it("keeps a replacement callback cached when its old wrapper finalizes", async () => {
+        const old = await callbackFromGuest(1);
+        const finalizeOld = collection.collect(old);
+        const replacement = await callbackFromGuest(2);
+        expect(replacement).not.toBe(old);
+
+        finalizeOld();
+        expect(lastPosted().data).toEqual({ type: "RELEASE_CALLBACK", id: "cb-1", sendCount: 1 });
+        expect(await callbackFromGuest(3)).toBe(replacement);
+        collection.collect(replacement)();
+        expect(lastPosted().data).toEqual({ type: "RELEASE_CALLBACK", id: "cb-1", sendCount: 3 });
+    });
+
+    it("does not post a callback release after termination", async () => {
+        const wrapper = await callbackFromGuest();
+        const finalize = collection.collect(wrapper);
+        host.terminate();
+        posted = [];
+
+        finalize();
+        expect(posted).toEqual([]);
+    });
 });
 
 describe("SandboxHost remote instance lifetime", () => {

@@ -12,23 +12,10 @@ The eighteenth batch was cleared the same day by a Sol implementer with session 
 
 ## Contents
 
-- [Plugin sandbox](#plugin-sandbox): 4
+- [Plugin sandbox](#plugin-sandbox): 3
 - [Structure audit 2026-11-10](#structure-audit-2026-11-10): 8
 
 ## Plugin sandbox
-
-### The guest bridge never drops a registered callback, so proxies it captures are never released
-
-`GUEST_BRIDGE_SCRIPT` in `src/ts/plugins/apiV3/factory.ts:69` keeps every function a plugin passed to the host in
-`callbackRegistry` (set at `:94`) until the sandbox ends; nothing removes an entry when the host drops its listener. A
-callback that captures a guest proxy (a `SafeElement`) keeps that proxy reachable, so the `FinalizationRegistry`
-release added by Upstream Intake 2 slice 2 never fires for it, and the host `instanceRegistry` entry stays too. Found by
-the slice 2 challenger; not reproduced.
-
-**Why it matters:** a long-running plugin that adds and removes listeners still grows both registries until reload.
-
-**Suggested handling:** a host-side callback release message (like `RELEASE_INSTANCE`) when the host drops its
-callback wrapper, deleting the guest's `callbackRegistry` entry.
 
 ### A host callback whose post fails leaves the refs it serialized in `instanceRegistry`
 

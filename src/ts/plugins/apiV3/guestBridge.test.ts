@@ -3,9 +3,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import path from "node:path";
 import ts from "typescript";
 import { SandboxHost } from "./factory";
+import { controlCollection } from "./tests/controlledCollection";
 
 const guestGlobals = new Map(
-    ["HTMLIFrameElement", "window", "ImageBitmap", "FinalizationRegistry"].map((name) => [
+    ["HTMLIFrameElement", "window", "ImageBitmap", "FinalizationRegistry", "WeakRef"].map((name) => [
         name,
         Object.getOwnPropertyDescriptor(globalThis, name),
     ]),
@@ -130,6 +131,31 @@ async function startGuest(userCode = "", options: { throws?: boolean } = {}) {
     return { risuai: guestWindow.risuai, calls, posts, deliver, window: guestWindow };
 }
 
+/** Connects both real RPC halves over in-memory windows, including structured cloning. */
+function connectHost(guest: Awaited<ReturnType<typeof startGuest>>, api: Record<string, unknown>) {
+    const host = new SandboxHost(api);
+    let receiveOnHost!: (event: MessageEvent) => void;
+    vi.stubGlobal("window", {
+        addEventListener(_type: string, listener: typeof receiveOnHost) {
+            receiveOnHost = listener;
+        },
+        removeEventListener() {},
+    });
+    vi.stubGlobal("HTMLIFrameElement", FakeIframe);
+    const iframe = new FakeIframe();
+    iframe.contentWindow = guest.window as unknown as Window;
+    // Simulate the two window endpoints, including postMessage's structured clone.
+    guest.window.postMessage = (message: unknown, _origin: string, ports: MessagePort[] = []) =>
+        guest.deliver(structuredClone(message), ports);
+    const postToHost = guest.window.parent.postMessage;
+    guest.window.parent.postMessage = (message: unknown, origin: string, ports: MessagePort[] = []) => {
+        postToHost(message, origin, ports);
+        receiveOnHost({ data: structuredClone(message), ports, source: guest.window } as unknown as MessageEvent);
+    };
+    host.run(iframe as unknown as HTMLIFrameElement, "");
+    return host;
+}
+
 /** Register through the guest API, then invoke the callback with the host's wire-format signals. */
 async function invokeProvider(
     guest: Awaited<ReturnType<typeof startGuest>>,
@@ -250,6 +276,67 @@ describe("the guest bridge's remote instance lifetime", () => {
     });
 });
 
+describe("the guest bridge's callback lifetime", () => {
+    async function register(guest: Awaited<ReturnType<typeof startGuest>>, callback: () => unknown) {
+        const registering = guest.risuai.keep(callback);
+        const call = guest.calls.at(-1)!;
+        await guest.deliver({ type: "RESPONSE", reqId: call.reqId });
+        await registering;
+        return call.args![0] as { __type: "CALLBACK_REF"; id: string; sendCount: number };
+    }
+
+    it("answers a finalized host wrapper's callback invocation with the unknown-callback error", async () => {
+        const guest = await startGuest();
+        const collection = controlCollection();
+        let wrapper!: () => Promise<unknown>;
+        const host = connectHost(guest, {
+            keep: (fn: typeof wrapper) => {
+                wrapper = fn;
+            },
+        });
+        try {
+            const callback = vi.fn(() => "before release");
+            await guest.risuai.keep(callback);
+            const ref = guest.calls.find((call) => call.method === "keep")!.args![0] as { id: string };
+            await expect(wrapper()).resolves.toBe("before release");
+            collection.collect(wrapper)();
+
+            await guest.deliver({ type: "INVOKE_CALLBACK", id: ref.id, reqId: "released" });
+            expect(guest.calls.at(-1)).toEqual({
+                type: "CALLBACK_RETURN",
+                reqId: "released",
+                error: "Callback not found or released",
+            });
+            expect(callback).toHaveBeenCalledTimes(1);
+        } finally {
+            host.terminate();
+        }
+    });
+
+    it("keeps a callback callable when a release predates its latest send", async () => {
+        const guest = await startGuest();
+        const callback = () => "sent again";
+        const first = await register(guest, callback);
+        await register(guest, callback);
+        await guest.deliver({ type: "RELEASE_CALLBACK", id: first.id, sendCount: first.sendCount });
+
+        await guest.deliver({ type: "INVOKE_CALLBACK", id: first.id, reqId: "resent" });
+        expect(guest.calls.at(-1)).toEqual({ type: "CALLBACK_RETURN", reqId: "resent", result: "sent again" });
+    });
+
+    it("re-registers a held callback with the same id and a higher count after release", async () => {
+        const guest = await startGuest();
+        const callback = () => "registered again";
+        const first = await register(guest, callback);
+        await guest.deliver({ type: "RELEASE_CALLBACK", id: first.id, sendCount: first.sendCount });
+        const second = await register(guest, callback);
+        expect(second).toEqual({ ...first, sendCount: first.sendCount + 1 });
+
+        await guest.deliver({ type: "INVOKE_CALLBACK", id: second.id, reqId: "restored" });
+        expect(guest.calls.at(-1)).toEqual({ type: "CALLBACK_RETURN", reqId: "restored", result: "registered again" });
+    });
+});
+
 describe("the guest bridge's data copies", () => {
     it("passes remote callback arguments as proxies whose host method calls resolve", async () => {
         const guest = await startGuest();
@@ -365,28 +452,12 @@ describe("the guest bridge's data copies", () => {
         const guest = await startGuest();
         const data = () => JSON.parse('{"__proto__":{"stored":"plugin data"}}');
         let returnedOnHost: unknown;
-        const host = new SandboxHost({
+        const host = connectHost(guest, {
             getStoredValue: data,
             async receiveCallback(callback: () => Promise<unknown>) {
                 returnedOnHost = await callback();
             },
         });
-        let receiveOnHost!: (event: MessageEvent) => void;
-        vi.stubGlobal("window", {
-            addEventListener(_type: string, listener: typeof receiveOnHost) {
-                receiveOnHost = listener;
-            },
-            removeEventListener() {},
-        });
-        vi.stubGlobal("HTMLIFrameElement", FakeIframe);
-        const iframe = new FakeIframe();
-        iframe.contentWindow = guest.window as unknown as Window;
-        // Simulate the two window endpoints, including postMessage's structured clone.
-        guest.window.postMessage = (message: unknown, _origin: string, ports: MessagePort[] = []) =>
-            guest.deliver(structuredClone(message), ports);
-        guest.window.parent.postMessage = (message: unknown, _origin: string, ports: MessagePort[] = []) =>
-            receiveOnHost({ data: structuredClone(message), ports, source: guest.window } as unknown as MessageEvent);
-        host.run(iframe as unknown as HTMLIFrameElement, "");
         try {
             const receivedInGuest = await guest.risuai.getStoredValue();
             await guest.risuai.receiveCallback(data);

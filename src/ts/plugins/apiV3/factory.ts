@@ -4,6 +4,8 @@
  * Host callback arguments use the same value conversion as call results.
  * Finalized guest proxies release refs in microtask batches; IDs are monotonic per host and released
  * refs passed back are refused.
+ * Host callback wrappers are weakly cached; finalization releases the guest callback only if its
+ * send count still matches, so resending a function protects it from an older wrapper's release.
  * Both message listeners check source before data: the host accepts only its iframe window and the
  * guest only its parent. Never log RPC payloads or answers: fetch headers and bodies can contain secrets.
  * Abort controllers outlive a returned stream until every stream finishes or is cleaned up;
@@ -17,6 +19,7 @@ type MsgType =
     | "CALLBACK_RETURN"
     | "RESPONSE"
     | "RELEASE_INSTANCE"
+    | "RELEASE_CALLBACK"
     | "ABORT_SIGNAL"
     | "SCRIPT_SETTLED";
 
@@ -25,6 +28,7 @@ interface RpcMessage {
     reqId?: string;
     id?: string;
     ids?: string[];
+    sendCount?: number;
     method?: string;
     args?: any[];
     result?: any;
@@ -48,6 +52,13 @@ interface RemoteRef {
 interface CallbackRef {
     __type: "CALLBACK_REF";
     id: string;
+    sendCount: number;
+}
+
+interface CallbackCacheEntry {
+    id: string;
+    sendCount: number;
+    wrapper: WeakRef<Function>;
 }
 
 interface AbortSignalRef {
@@ -86,14 +97,14 @@ await (async function() {
 
     function serializeArg(arg) {
         if (typeof arg === 'function') {
-            const existingId = callbackIdByFunction.get(arg);
-            if (existingId) {
-                return { __type: 'CALLBACK_REF', id: existingId };
+            let registration = callbackIdByFunction.get(arg);
+            if (!registration) {
+                registration = { id: 'cb_' + Math.random().toString(36).substring(2), sendCount: 0 };
+                callbackIdByFunction.set(arg, registration);
             }
-            const id = 'cb_' + Math.random().toString(36).substring(2);
-            callbackRegistry.set(id, arg);
-            callbackIdByFunction.set(arg, id);
-            return { __type: 'CALLBACK_REF', id: id };
+            registration.sendCount++;
+            callbackRegistry.set(registration.id, { fn: arg, sendCount: registration.sendCount });
+            return { __type: 'CALLBACK_REF', ...registration };
         }
         if (arg && typeof arg === 'object') {
             const refId = proxyRefRegistry.get(arg);
@@ -381,8 +392,14 @@ await (async function() {
             }
         }
 
+        else if (data.type === 'RELEASE_CALLBACK' && data.id) {
+            if (callbackRegistry.get(data.id)?.sendCount === data.sendCount) {
+                callbackRegistry.delete(data.id);
+            }
+        }
+
         else if (data.type === 'INVOKE_CALLBACK' && data.id) {
-            const fn = callbackRegistry.get(data.id);
+            const fn = callbackRegistry.get(data.id)?.fn;
             const response = { type: 'CALLBACK_RETURN', reqId: data.reqId };
             const usedAbortIds = [];
             let transferables = [];
@@ -519,7 +536,19 @@ export class SandboxHost {
     private abortControllers = new Map<string, AbortController>();
     private hostCallControllers = new Set<AbortController>();
     private messageHandlerRef: ((event: MessageEvent) => void) | null = null;
-    private callbackWrapperCache = new Map<string, Function>();
+    private callbackWrapperCache = new Map<string, CallbackCacheEntry>();
+    private callbackReleaseRegistry = new FinalizationRegistry<CallbackCacheEntry>((entry) => {
+        if (this.callbackWrapperCache.get(entry.id) === entry) this.callbackWrapperCache.delete(entry.id);
+        if (this.terminated) return;
+        try {
+            this.iframe?.contentWindow?.postMessage(
+                { type: "RELEASE_CALLBACK", id: entry.id, sendCount: entry.sendCount } as RpcMessage,
+                "*",
+            );
+        } catch (_) {
+            // Termination clears the guest registry if its window is already gone.
+        }
+    });
 
     private pendingCallbacks = new Map<string, { resolve: Function; reject: Function }>();
 
@@ -667,7 +696,11 @@ export class SandboxHost {
                 const cbRef = arg as CallbackRef;
 
                 const cached = this.callbackWrapperCache.get(cbRef.id);
-                if (cached) return cached;
+                const retained = cached?.wrapper.deref();
+                if (retained) {
+                    cached.sendCount = Math.max(cached.sendCount, cbRef.sendCount);
+                    return retained;
+                }
 
                 const wrapper = async (...innerArgs: any[]) => {
                     return new Promise((resolve, reject) => {
@@ -734,7 +767,9 @@ export class SandboxHost {
                         }
                     });
                 };
-                this.callbackWrapperCache.set(cbRef.id, wrapper);
+                const entry = { id: cbRef.id, sendCount: cbRef.sendCount, wrapper: new WeakRef(wrapper) };
+                this.callbackWrapperCache.set(cbRef.id, entry);
+                this.callbackReleaseRegistry.register(wrapper, entry);
                 return wrapper;
             }
             if (arg && arg.__type === "REMOTE_REF") {
