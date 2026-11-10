@@ -584,6 +584,7 @@ async function requestHTTPResponsesAPI(
         let attempt = 0;
         do {
             attempt++;
+            if (attempt > 1) arg.ctx.reportRetry?.();
             resRec = await requestHTTPResponsesAPI(requestURL, body, headers, arg, networkOptions);
             if (resRec.type !== "fail") {
                 break;
@@ -808,6 +809,7 @@ function wrapResponsesToolStream(
                 let ok = false;
                 do {
                     attempt++;
+                    if (attempt > 1) arg.ctx.reportRetry?.();
                     resRec = await arg.ctx.transport.fetchStream(requestURL, {
                         body: JSON.stringify(toExternalResponsesBody(body)),
                         method: "POST",

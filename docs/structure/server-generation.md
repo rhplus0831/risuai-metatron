@@ -166,6 +166,9 @@ client (a participant's `DELETE` too) is attributed; `stop`'s comment holds the 
 - Each dispatched question or callback uses the minimum of its own deadline, the job's absence deadline
   (`ownerAbsentSince + OWNER_ABSENT_MS`, 120 s), and its parent's effective deadline. Attach expires overdue requests,
   clears absence, sends its snapshot and replays open requests in request/notice order.
+- A job re-sending a failed provider request reports `{ type: "retry" }` (`JobEventInput`); the registry counts the
+  reports since the stage last changed and sends the `retry` event with the count, then `retry: null` after a changed
+  stage's event. The snapshot replays a count only, as it does the stage.
 - `sendSocket` terminates a socket (owner or viewer) whose queue plus a frame passes 4 MiB, leaving as on a drop.
 - `provider` callbacks offer `chunks: "append"`: `handleMessage` joins appends for `onChunk`, asks `chunkResync` on gaps
   and holds success for the final `seq`.

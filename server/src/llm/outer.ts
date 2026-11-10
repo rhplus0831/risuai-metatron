@@ -76,6 +76,8 @@ export type OuterRequestDeps = {
     signal: AbortSignal;
     /** One attempt (`requestChatDataMain`) with the mode's own model. */
     attempt: (arg: RequestArgs) => Promise<requestDataResponse>;
+    /** Reports immediately before a re-sent attempt; the retry budget is not a request count. */
+    reportRetry?: () => void;
     /** The plugins' `replacerbeforeRequest` hooks, in order (a job's channel callback). */
     beforeRequest?: (formated: OpenAIChat[], model: ModelModeExtended) => Promise<OpenAIChat[]>;
     /** The plugins' `replacerafterRequest` hooks, in order. */
@@ -126,6 +128,7 @@ export async function requestChatDataOuter(
     const arg: RequestArgs = { ...rest };
     let da: requestDataResponse;
     let trys = 0;
+    let attempted = false;
 
     if (escape) {
         arg.useStreaming = false;
@@ -162,6 +165,10 @@ export async function requestChatDataOuter(
             }
         }
 
+        if (attempted && !deps.signal.aborted) {
+            deps.reportRetry?.();
+        }
+        attempted = true;
         da = await deps.attempt({ ...arg });
 
         if (deps.signal.aborted) {

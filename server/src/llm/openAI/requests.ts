@@ -886,6 +886,7 @@ export async function requestHTTPOpenAI(
 
                 do {
                     attempt++;
+                    if (attempt > 1) arg.ctx.reportRetry?.();
                     resRec = await requestHTTPOpenAI(replacerURL, body, headers, arg, networkOptions);
 
                     if (resRec.type != "fail") {
@@ -1325,6 +1326,7 @@ function wrapToolStream(
 
                         do {
                             attempt++;
+                            if (attempt > 1) arg.ctx.reportRetry?.();
                             resRec = await arg.ctx.transport.fetchStream(replacerURL, {
                                 body: JSON.stringify(body),
                                 method: "POST",

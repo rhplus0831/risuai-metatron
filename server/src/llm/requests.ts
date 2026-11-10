@@ -380,6 +380,8 @@ function redactResponse(response: requestDataResponse, redactor: Redactor): requ
  */
 export type JobRequestSpec = {
     jobId: string;
+    /** Reports an adapter's re-send to the job that owns this request. */
+    reportRetry?: RequestContext["reportRetry"];
     loaded: LoadedRequestDb;
     mode: ModelModeExtended;
     arg: RequestArgs;
@@ -615,6 +617,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
         intercept: RequestContext["intercept"];
         /** A job's request: its tab's plugin providers (`RequestContext.pluginProvider`). */
         pluginProvider?: RequestContext["pluginProvider"];
+        reportRetry?: RequestContext["reportRetry"];
         supportsInlayImage: () => boolean;
         /** A job's own request: models the server knows only through a tab (see `runInJob`). */
         browserOnlyModels?: boolean;
@@ -663,6 +666,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
             userName: p.loaded.userName,
             signal: p.controller.signal,
             transport,
+            ...(p.reportRetry ? { reportRetry: p.reportRetry } : {}),
             ...(tracker.hook ? { firstByte: tracker.hook } : {}),
             describe: (model) => {
                 const redactor = p.redactor();
@@ -800,6 +804,7 @@ export function createLlmRequests(options: LlmRequestsOptions) {
         };
         const ctx = buildContext({
             loaded: spec.loaded,
+            reportRetry: spec.reportRetry,
             tokenScope: spec.tokenScope,
             controller,
             redactor: () => redactor,

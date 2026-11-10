@@ -894,6 +894,8 @@ export type GenerationEvent =
     | { type: "preset"; epoch: string; presetId: string }
     /** The job's current stage, sent only when it changes, retained and replayed on attach while it runs. */
     | { type: "stage"; epoch: string; stage: GenerationStage }
+    /** Re-sent provider requests since the last stage change; null clears it live, attach replays only a count. */
+    | { type: "retry"; epoch: string; retry: number | null }
     | GenerationResourceEvent
     | GenerationChatPatchEvent
     | { type: "progress"; epoch: string; payload: unknown }

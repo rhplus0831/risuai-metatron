@@ -32,6 +32,8 @@ export type RequestContext = {
     /** The request's own signal (the client went away, the server is shutting down). */
     signal: AbortSignal;
     transport: Transport;
+    /** A job's own request only: reports immediately before an adapter re-sends a failed provider request. */
+    reportRetry?: () => void;
     /**
      * The first byte of a provider's answer on a path outside `transport` (a local model's answer, a
      * WebSocket's first frame, an SDK's own fetch, Horde's terminal response); the request layer keeps

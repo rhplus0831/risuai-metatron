@@ -577,6 +577,7 @@ async function requestGoogle(
             return failure;
         }
 
+        arg.ctx.reportRetry?.();
         return requestGoogle(url, body, headers, arg, retry);
     };
 
@@ -882,6 +883,7 @@ async function requestGoogle(
         let attempt = 0;
         do {
             attempt++;
+            if (attempt > 1) arg.ctx.reportRetry?.();
             resRec = await requestGoogle(url, body, headers, arg);
 
             if (resRec.type != "fail") {
@@ -1236,6 +1238,7 @@ function wrapToolStream(
 
                         do {
                             attempt++;
+                            if (attempt > 1) arg.ctx.reportRetry?.();
                             resRec = await arg.ctx.transport.fetchStream(url, {
                                 headers: headers,
                                 body: JSON.stringify(body),

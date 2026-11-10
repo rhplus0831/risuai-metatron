@@ -536,6 +536,46 @@ it.each([
     },
 );
 
+it("shows the selected participant job's retry label beside the Stop spinner in English and Korean", async () => {
+    const { target } = await mountComposer();
+    const { changeLanguage } = await import("src/lang");
+    const { followedJobs } = await import("src/ts/process/serverCommands");
+    const { applyGenerationEvent } = await import("src/ts/network/generationJobs");
+    const ref = { chaId: "c", chatId: "a" };
+    const epoch = io.server!.epoch;
+    const stop = () => target.querySelector('[aria-labelledby="cancel"]');
+    try {
+        changeLanguage("en");
+        followedJobs.set(
+            new Map([
+                ["retry-job", a],
+                ["other-job", b],
+            ]),
+        );
+        applyGenerationEvent("other-job", { chaId: "c", chatId: "b" }, { type: "retry", epoch, retry: 9 });
+        applyGenerationEvent("retry-job", ref, { type: "stage", epoch, stage: "generating" });
+        flushSync();
+        expect(stop()?.querySelector(".loadmove")).not.toBeNull();
+        expect(stop()?.querySelector('[role="status"]')).toBeNull();
+
+        applyGenerationEvent("retry-job", ref, { type: "retry", epoch, retry: 1 });
+        flushSync();
+        expect(stop()?.querySelector(".loadmove")?.nextElementSibling?.textContent).toBe("Retry 1");
+        changeLanguage("ko");
+        applyGenerationEvent("retry-job", ref, { type: "retry", epoch, retry: 2 });
+        flushSync();
+        expect(stop()?.querySelector(".loadmove")?.nextElementSibling?.textContent).toBe("재시도 2회");
+        applyGenerationEvent("retry-job", ref, { type: "stage", epoch, stage: "finishing" });
+        applyGenerationEvent("retry-job", ref, { type: "retry", epoch, retry: null });
+        flushSync();
+        expect(stop()?.querySelector(".loadmove")).not.toBeNull();
+        expect(stop()?.querySelector('[role="status"]')).toBeNull();
+    } finally {
+        followedJobs.set(new Map());
+        changeLanguage("en");
+    }
+});
+
 it("offers Stop beside Send for an unfollowed lock, busy refusal, or replay, and confirms the looked-up job", async () => {
     const { target, click } = await mountComposer();
     const chat = await import("src/ts/storage/chatStore.svelte");

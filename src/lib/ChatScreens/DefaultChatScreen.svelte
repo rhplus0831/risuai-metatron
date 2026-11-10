@@ -75,7 +75,7 @@
     import { createSendAborts } from "src/ts/process/sendAborts.svelte";
     import { followedJobs, followedJobsOf, loadingJobChats, stopChatJob } from "src/ts/process/serverCommands";
     import HandoffControls from "./HandoffControls.svelte";
-    import { jobStages, chatStageOf } from "src/ts/process/jobStages";
+    import { jobStages, jobRetries, chatStageOf } from "src/ts/process/jobStages";
     import { abortGenerationJob } from "src/ts/network/generationJobs";
     import { sleep } from "../../ts/util";
     import { language } from "../../lang";
@@ -752,6 +752,13 @@
     const sendAborts = createSendAborts();
     // Stop shows for this screen's send in the selected chat or any followed job of it.
     const stoppable = $derived(sendAborts.has(currentChatRef()) || ownedJobIds.length > 0);
+    const retryCount = $derived.by(() => {
+        for (let i = ownedJobIds.length - 1; i >= 0; i--) {
+            const count = $jobRetries.get(ownedJobIds[i]);
+            if (count !== undefined) return count;
+        }
+        return null;
+    });
     const loadingJobChat = $derived.by(() => {
         const ref = currentChatRef();
         return ref !== null && followedJobsOf($loadingJobChats, ref).length > 0;
@@ -1284,6 +1291,11 @@
                             {#if loadingJobChat}
                                 <span class="ml-2 text-sm whitespace-nowrap" role="status"
                                     >{language.serverJob.chatLoading}</span
+                                >
+                            {/if}
+                            {#if retryCount !== null}
+                                <span class="ml-2 text-sm whitespace-nowrap" role="status"
+                                    >{language.serverJob.retried.replace("{count}", () => String(retryCount))}</span
                                 >
                             {/if}
                         </button>

@@ -1753,6 +1753,7 @@ export const languageEnglish = {
         "The reroll brought no reply, and the replies it removed could not be put back safely: this chat is being generated elsewhere, or its latest copy could not be read.",
     serverJob: {
         chatLoading: "Loading chat…",
+        retried: "Retry {count}",
         stoppedElsewhere: "This job was stopped from another tab or device.",
         stopOther: {
             label: "Stop this chat's running job",

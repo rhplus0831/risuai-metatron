@@ -255,7 +255,9 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
 - Tokenization does not follow a per-call `profileId`: a request's tokenizer scope is still the main model's (the tab's
   `context.tokenizer`, a job's `tokenScopeFor`), so token biases and bans of a per-call request use the main model's
   tokenizer (translation sends none).
-- Tool-call and overload retries stay bounded and abortable; the adapter and `outer.ts` comments own the retry limits.
+- Tool-call and overload retries stay bounded and abortable; the adapter and `outer.ts` comments own the retry limits. A
+  job's own request reports each re-send right before it (`reportRetry` on `OuterRequestDeps` and `RequestContext`,
+  supplied by `server/src/lua/bindings.ts`); the [job registry](server-generation.md) counts the reports.
 
 ### Compatibility Model-Root Writes
 

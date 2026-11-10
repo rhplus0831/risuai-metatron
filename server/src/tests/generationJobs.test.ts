@@ -449,6 +449,87 @@ describe("job chat checkpoints", () => {
 });
 
 describe("the presentation stage", () => {
+    it("counts retries for every participant, including before a stage, and resets only after a changed stage", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        const { store, jobs, create, run, follow } = setup();
+        const started = withResolvers<RunningJob>();
+        run(async (job) => {
+            started.resolve(job);
+            await aborted(job);
+        });
+        const jobId = create();
+        const job = await started.promise;
+        const creator = await follow(jobId);
+        expect(jobs.handoff(jobId, { clientId: "tab", target: "worker" }, store.epoch()).ok).toBe(true);
+        const takeover = jobs.takeover(jobId, { clientId: "worker" }, store.epoch());
+        if (!takeover.ok) throw new Error(JSON.stringify(takeover));
+        const worker = await follow(jobId, "worker", `&ticket=${takeover.body.ticket}`);
+        await creator.fence();
+        expect(creator.events.filter((event) => event.type === "handoff").at(-1)).toMatchObject({ owner: "other" });
+
+        job.emit({ type: "retry" });
+        job.emit({ type: "retry" });
+        job.emit({ type: "stage", stage: "generating" });
+        job.emit({ type: "retry" });
+        job.emit({ type: "stage", stage: "generating" });
+        job.emit({ type: "retry" });
+        job.emit({ type: "stage", stage: "finishing" });
+        job.emit({ type: "stage", stage: "finishing" });
+        job.emit({ type: "retry" });
+        const epoch = store.epoch();
+        for (const participant of [creator, worker]) {
+            await participant.fence();
+            expect(participant.events.filter((event) => event.type === "stage" || event.type === "retry")).toEqual([
+                { type: "retry", epoch, retry: 1 },
+                { type: "retry", epoch, retry: 2 },
+                { type: "stage", epoch, stage: "generating" },
+                { type: "retry", epoch, retry: null },
+                { type: "retry", epoch, retry: 1 },
+                { type: "retry", epoch, retry: 2 },
+                { type: "stage", epoch, stage: "finishing" },
+                { type: "retry", epoch, retry: null },
+                { type: "retry", epoch, retry: 1 },
+            ]);
+        }
+    });
+
+    it("replays the current retry count after the stage on attach and omits it when absent, reset, or ended", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        const { store, create, run, follow, revision } = setup();
+        const started = withResolvers<RunningJob>();
+        const finish = withResolvers<void>();
+        const completed = run(async (job) => {
+            started.resolve(job);
+            await Promise.race([finish.promise, aborted(job)]);
+        });
+        cleanups.push(() => finish.resolve());
+        const jobId = create();
+        const job = await started.promise;
+        const epoch = store.epoch();
+        const snapshot = async () => {
+            const socket = await follow(jobId);
+            await socket.fence();
+            return socket.events.filter((event) => event.type === "stage" || event.type === "retry");
+        };
+        job.emit({ type: "stage", stage: "generating" });
+        expect(await snapshot()).toEqual([{ type: "stage", epoch, stage: "generating" }]);
+
+        job.emit({ type: "retry" });
+        job.emit({ type: "retry" });
+        expect(await snapshot()).toEqual([
+            { type: "stage", epoch, stage: "generating" },
+            { type: "retry", epoch, retry: 2 },
+        ]);
+
+        job.emit({ type: "stage", stage: "finishing" });
+        expect(await snapshot()).toEqual([{ type: "stage", epoch, stage: "finishing" }]);
+        job.emit({ type: "retry" });
+        job.emit({ type: "done", revision: revision() });
+        finish.resolve();
+        await completed;
+        expect(await snapshot()).toEqual([]);
+    });
+
     it("sends a repeated stage once and sends each changed stage to the owner", async () => {
         const { store, create, run, follow } = setup();
         let ready!: (job: RunningJob) => void;

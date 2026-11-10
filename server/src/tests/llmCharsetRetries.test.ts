@@ -34,6 +34,8 @@ describe("requestChatDataOuter", () => {
             input?: Partial<Parameters<typeof requestChatDataOuter>[0]>;
             banCharacterset?: string[];
             afterRequest?: OuterRequestDeps["afterRequest"];
+            beforeRequest?: OuterRequestDeps["beforeRequest"];
+            reportRetry?: OuterRequestDeps["reportRetry"];
         } = {},
     ) {
         let attempts = 0;
@@ -45,6 +47,8 @@ describe("requestChatDataOuter", () => {
             },
             signal: options.signal ?? new AbortController().signal,
             afterRequest: options.afterRequest,
+            beforeRequest: options.beforeRequest,
+            reportRetry: options.reportRetry,
             attempt: async (arg) => {
                 const index = attempts++;
                 if (index >= answers.length) {
@@ -56,6 +60,60 @@ describe("requestChatDataOuter", () => {
         });
         return { result, attempts };
     }
+
+    it("reports immediately before each resend after a failure or banned answer, but not on give-up", async () => {
+        const events: string[] = [];
+        const failed: requestDataResponse = { type: "fail", result: "upstream failed" };
+        expect(
+            await run([failed, latin, failed], {
+                requestRetrys: 2,
+                beforeRequest: async (messages) => {
+                    events.push("prepare");
+                    return messages;
+                },
+                onAttempt: (index) => events.push(`attempt ${index + 1}`),
+                reportRetry: () => events.push("retry"),
+            }),
+        ).toEqual({ result: failed, attempts: 3 });
+        expect(events).toEqual([
+            "prepare",
+            "attempt 1",
+            "prepare",
+            "retry",
+            "attempt 2",
+            "prepare",
+            "retry",
+            "attempt 3",
+        ]);
+    });
+
+    it("reports nothing for a first success, noRetry failure, exhausted budget, or abort before a resend", async () => {
+        const reports: string[] = [];
+        const reportRetry = () => reports.push("retry");
+        const failed: requestDataResponse = { type: "fail", result: "upstream failed" };
+        const noRetry: requestDataResponse = { ...failed, noRetry: true };
+        expect(await run([clean], { reportRetry })).toEqual({ result: clean, attempts: 1 });
+        expect(await run([noRetry], { reportRetry })).toEqual({ result: noRetry, attempts: 1 });
+        expect(await run([failed], { requestRetrys: 0, reportRetry })).toEqual({ result: failed, attempts: 1 });
+
+        const stopped = new AbortController();
+        stopped.abort();
+        expect(await run([], { signal: stopped.signal, reportRetry })).toEqual({
+            result: { type: "fail", result: "Aborted" },
+            attempts: 0,
+        });
+        const betweenAttempts = new AbortController();
+        expect(
+            await run([failed], {
+                signal: betweenAttempts.signal,
+                onAttempt: () => {
+                    setImmediate(() => betweenAttempts.abort());
+                },
+                reportRetry,
+            }),
+        ).toEqual({ result: { type: "fail", result: "Aborted" }, attempts: 1 });
+        expect(reports).toEqual([]);
+    });
 
     it("disables both streaming flags for an escape request even with forceStreaming and escapes its success", async () => {
         expect(

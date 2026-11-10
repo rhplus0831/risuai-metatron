@@ -33,7 +33,13 @@ import type { MessageGuard } from "../jobs/generationLock.ts";
 import { createJobCbsHost, jobModuleLorebooks, serverCbsLimits, type ServerCbsTimeLimits } from "../jobs/cbsHost.ts";
 import type { JobChannel } from "../jobs/channel.ts";
 import { historyInsertionAnchor } from "../jobs/chatResult.ts";
-import { failureOf, JobWriteConflictError, markFailure, type RunningJob } from "../jobs/generationJobs.ts";
+import {
+    failureOf,
+    GenerationJobEndedError,
+    JobWriteConflictError,
+    markFailure,
+    type RunningJob,
+} from "../jobs/generationJobs.ts";
 import {
     chatMetadataFor,
     flushChatMetadata,
@@ -941,6 +947,17 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     /** The native `request` trigger every request runs (`setRequestTrigger`), or none. */
     let requestTrigger: ((formated: OpenAIChat[]) => Promise<OpenAIChat[]>) | null = null;
 
+    /** A late retry report may race the job's end; other emission failures still propagate. */
+    const reportRetry = () => {
+        try {
+            job.emit({ type: "retry" });
+        } catch (error) {
+            if (!(error instanceof GenerationJobEndedError)) {
+                throw error;
+            }
+        }
+    };
+
     /**
      * A request of the job: the client's outer `requestChatData` around the server request layer. A
      * failure it throws that names no stage yet is the request's (its tool list included); a script's
@@ -1014,11 +1031,13 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         return requestChatDataOuter(arg, mode, {
             db,
             signal,
+            reportRetry,
             ...(requestTrigger ? { requestTrigger } : {}),
             isFatal: (error) => error instanceof LuaJobFatalError || fatalError !== null || signal.aborted,
             attempt: (attemptArg) =>
                 deps.llm.runInJob({
                     jobId: job.id,
+                    reportRetry,
                     loaded: scope.request,
                     mode,
                     arg: attemptArg,

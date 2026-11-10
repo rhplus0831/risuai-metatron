@@ -35,7 +35,7 @@ import { applyHydration, applyPatchHydration, flushResources } from "../storage/
 import type { ChannelTransport } from "./jobChannel";
 import { watchResume, watchSocket } from "./socketLiveness";
 import { recordClientEvent } from "../diagnostics/collector";
-import { dropJobStage, setJobStage } from "../process/jobStages";
+import { dropJobStage, setJobRetry, setJobStage } from "../process/jobStages";
 
 /**
  * The client transport of server generation jobs (`shared/jobs.ts`): create, status, abort, and the
@@ -1009,6 +1009,8 @@ export function followGenerationJob(
         ws = socket;
         socket.onopen = () => {
             if (!cancelled) {
+                // Open precedes this socket's messages; its snapshot restores only a non-null retry count.
+                setJobRetry(jobId, null);
                 wasOpened = true;
                 watch.opened();
                 resolveOpened(true);
@@ -1352,6 +1354,9 @@ export function applyGenerationEvent(
         case "stage":
             // The job's latest presentation stage, kept per job for the selected chat's spinner.
             setJobStage(jobId, ref, event.stage);
+            return;
+        case "retry":
+            setJobRetry(jobId, event.retry);
             return;
         case "preset":
             // A `presetChain` pick is the job's own: neither the tab's selection nor the chat's binding

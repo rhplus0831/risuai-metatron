@@ -41,7 +41,8 @@
   `followGenerationJob`); protocol details are in [network jobs](network-jobs.md).
 - `src/ts/process/localSends.ts`: the tab's send registry (`localSends`, `beginLocalSend`, `isLocalSend`,
   `anyLocalSend`).
-- `src/ts/process/jobStages.ts`: job presentation stages (`setJobStage`, `dropJobStage`, `chatStageOf`).
+- `src/ts/process/jobStages.ts`: job presentation stages and retry counts (`setJobStage`, `setJobRetry`, `jobRetries`,
+  `dropJobStage`, `chatStageOf`).
 - `src/ts/process/chatStatus.svelte.ts`: the per-tab status sources ([State](#state)), `chatStatusKey`, `isChatBusy`,
   `foreignJobs`.
   - `isChatBusy` is a per-chat preflight; the resource flush and server admission still apply.
@@ -187,6 +188,9 @@ in [network jobs](network-jobs.md#job-recovery).
 - `followedJobs` (`serverCommands.ts`) and `jobStages` describe current follows; stages leave when the follow ends.
   `loadingJobChats` marks a discovered job while `loadJobChat` runs (retries included): the screen shows
   `serverJob.chatLoading` beside Stop, which stays usable.
+- `jobRetries` counts the provider requests a followed job re-sent since its stage last changed: the screen shows
+  `serverJob.retried` beside Stop for the selected chat's newest job with a count. The server's `retry` event sets and
+  clears it; a follow's socket opening drops it before the snapshot restores a count, and the follow's end removes it.
 - `chatStore.svelte.ts` owns loaded chats and every write ([chat store](chat-store.md)); autosave does not.
 - Chats load on demand. Async operations pin and load their captured targets; unavailable chats are gone to synchronous
   readers, never an excuse to use another selection ([pins and eviction](chat-store.md#pins-and-eviction)).

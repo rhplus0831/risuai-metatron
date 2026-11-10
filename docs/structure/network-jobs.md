@@ -4,8 +4,8 @@
 
 - Owns the tab's network: `globalFetch`/`fetchNative` routing and the proxy headers, this tab's in-memory request log,
   `auxFetch` for calls that need a stored LLM credential, the local-network policy, the generation job client (ids,
-  saved jobs, the follow, events, stages), the job channel dispatcher (notices, questions, hooks, callbacks, MCP in the
-  tab), and this browser's Web Push.
+  saved jobs, the follow, events, stages, retry counts), the job channel dispatcher (notices, questions, hooks,
+  callbacks, MCP in the tab), and this browser's Web Push.
 - Paths: the fetch functions and log of `src/ts/globalApi.svelte.ts`, `src/ts/network/` except
   `src/ts/network/requestHistory.ts` ([diagnostics](diagnostics.md)), `src/ts/network/eventFeed.ts` and
   `src/ts/network/socketLiveness.ts` ([live-updates](live-updates.md)); `shared/localNetwork.ts` and

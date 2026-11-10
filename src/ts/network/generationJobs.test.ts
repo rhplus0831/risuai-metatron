@@ -1254,6 +1254,60 @@ describe("the event dispatcher and the resume", () => {
         }
     });
 
+    it("applies retry counts independently of stages and removes them on clear, release, detach, and end", async () => {
+        const { jobRetries } = await import("../process/jobStages");
+        const other = { chaId: "other", chatId: "chat" };
+        transport.applyGenerationEvent("other-job", other, { type: "retry", epoch: EPOCH, retry: 4 });
+        transport.applyGenerationEvent("j1", ref, { type: "retry", epoch: EPOCH, retry: 1 });
+        expect(get(jobRetries).get("j1")).toBe(1);
+        transport.applyGenerationEvent("j1", ref, { type: "retry", epoch: EPOCH, retry: 3 });
+        transport.applyGenerationEvent("j1", ref, { type: "stage", epoch: EPOCH, stage: "generating" });
+        expect([...get(jobRetries)]).toEqual([
+            ["other-job", 4],
+            ["j1", 3],
+        ]);
+        transport.applyGenerationEvent("j1", ref, { type: "retry", epoch: EPOCH, retry: null });
+        expect([...get(jobRetries)]).toEqual([["other-job", 4]]);
+
+        transport.applyGenerationEvent("j1", ref, { type: "retry", epoch: EPOCH, retry: 1 });
+        transport.releaseGenerationJob("j1");
+        expect([...get(jobRetries)]).toEqual([["other-job", 4]]);
+        // Detach must also clear a count received before any presentation stage.
+        transport.applyGenerationEvent("j1", ref, { type: "retry", epoch: EPOCH, retry: 2 });
+        transport.detachGenerationJob("j1");
+        expect([...get(jobRetries)]).toEqual([["other-job", 4]]);
+        transport.applyGenerationEvent("other-job", other, { type: "done", epoch: EPOCH, revision: null });
+        expect([...get(jobRetries)]).toEqual([]);
+    });
+
+    it("clears stale retries on each socket open before replaying a current count or a snapshot without retries", async () => {
+        const { jobRetries } = await import("../process/jobStages");
+        transport.applyGenerationEvent("resumed", ref, { type: "retry", epoch: EPOCH, retry: 4 });
+        const dispatch = (event: Parameters<Transport["applyGenerationEvent"]>[2]) =>
+            transport.applyGenerationEvent("resumed", ref, event);
+        const first = startFollow("resumed", dispatch);
+        stubs.auth[0].resolve("jwt");
+        await flush();
+        const firstSocket = FakeSocket.instances[0];
+        firstSocket.open();
+        expect(get(jobRetries).has("resumed")).toBe(false);
+        firstSocket.message({ type: "stage", epoch: EPOCH, stage: "generating" });
+        expect(get(jobRetries).has("resumed")).toBe(false);
+        firstSocket.message({ type: "retry", epoch: EPOCH, retry: 2 });
+        expect(get(jobRetries).get("resumed")).toBe(2);
+        first.close();
+        await first.closed;
+
+        startFollow("resumed", dispatch);
+        stubs.auth[1].resolve("jwt");
+        await flush();
+        const secondSocket = FakeSocket.instances[1];
+        secondSocket.open();
+        expect(get(jobRetries).has("resumed")).toBe(false);
+        secondSocket.message({ type: "stage", epoch: EPOCH, stage: "finishing" });
+        expect(get(jobRetries).has("resumed")).toBe(false);
+    });
+
     it("records stage events under their job and chat, replacing the job's previous stage", async () => {
         const { jobStages } = await import("../process/jobStages");
         transport.applyGenerationEvent("j1", ref, { type: "stage", epoch: EPOCH, stage: "preparing" });

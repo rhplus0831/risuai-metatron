@@ -211,9 +211,10 @@ export type JobChanges = {
 export type JobWriteResult = AppliedChanges & { written?: WrittenChanges };
 
 type Distribute<T> = T extends unknown ? Omit<T, "epoch"> : never;
-/** Runner chunks carry cumulative text; the registry computes the wire delta and adds the epoch. */
+/** The registry computes chunk deltas and retry counts from runner reports, and adds the epoch. */
 export type JobEventInput =
-    | Distribute<Exclude<GenerationEvent, { type: "ping" | "chatPatch" | "chunk" }>>
+    | Distribute<Exclude<GenerationEvent, { type: "ping" | "chatPatch" | "chunk" | "retry" }>>
+    | { type: "retry" }
     | Omit<GenerationChunkEvent, "epoch" | "base" | "keep">;
 type TerminalInput = Distribute<GenerationTerminalEvent>;
 
@@ -513,6 +514,8 @@ type Job = {
     preset: Extract<GenerationEvent, { type: "preset" }> | null;
     /** The current presentation stage, retained for attach while the job runs. */
     stage: GenerationStage | null;
+    /** Re-sent provider requests since the last stage change, also retained for jobs without a stage. */
+    retry: number | null;
     /** What the job's callbacks act on (each send can pick a preset: `setCallbackPreset`). */
     targets: CallbackTargets;
     /** Records the job sent (`kind\0id`, or `chats\0characterId\0id`), re-sent fresh on attach. */
@@ -1663,6 +1666,7 @@ export function createGenerationJobs(options: {
         job.ended = true;
         clearHandoff(job);
         job.stage = null;
+        job.retry = null;
         job.endedAt = clock();
         job.terminal = terminal as GenerationTerminalEvent;
         job.memoryControl = null;
@@ -1964,6 +1968,11 @@ export function createGenerationJobs(options: {
                 if (input.type === "resource" && HIDDEN_HYDRATION_KINDS.includes(input.kind)) {
                     throw new Error(`${input.kind} records are never sent to the client`);
                 }
+                if (input.type === "retry") {
+                    job.retry = (job.retry ?? 0) + 1;
+                    send(job, { type: "retry", epoch: job.epoch, retry: job.retry });
+                    return;
+                }
                 const event = { ...input, epoch: job.epoch };
                 switch (event.type) {
                     case "accepted":
@@ -2014,7 +2023,12 @@ export function createGenerationJobs(options: {
                             return;
                         }
                         job.stage = event.stage;
-                        break;
+                        send(job, event);
+                        if (job.retry !== null) {
+                            job.retry = null;
+                            send(job, { type: "retry", epoch: job.epoch, retry: null });
+                        }
+                        return;
                     case "resource":
                         track(
                             job,
@@ -2307,6 +2321,7 @@ export function createGenerationJobs(options: {
             attachStamps: new Map(),
             preset: null,
             stage: null,
+            retry: null,
             targets: {
                 chatRef: { chaId: characterId, chatId },
                 presetId: body.context.presetId ?? "",
@@ -2631,6 +2646,7 @@ export function createGenerationJobs(options: {
             const events: GenerationEvent[] = freshRecords(job);
             if (job.preset) events.push(job.preset);
             if (!job.ended && job.stage !== null) events.push({ type: "stage", epoch: job.epoch, stage: job.stage });
+            if (!job.ended && job.retry !== null) events.push({ type: "retry", epoch: job.epoch, retry: job.retry });
             const current = currentReply(job);
             if (current) events.push(current);
             for (const event of events) sendSocket(job, ws, JSON.stringify(event));

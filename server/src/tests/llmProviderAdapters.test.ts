@@ -219,6 +219,7 @@ type Scenario = {
     formats?: Record<string, LLMFormat>;
     /** The request's abort controller (Stop), when the case aborts it. */
     controller?: AbortController;
+    reportRetry?: RequestContext["reportRetry"];
     upstream: (call: Upstream) => CannedResponse;
 };
 
@@ -318,6 +319,7 @@ async function run(scenario: Scenario): Promise<Recorded> {
         userName: loaded.userName,
         signal: controller.signal,
         transport,
+        reportRetry: scenario.reportRetry,
         alertError: (message) => alerts.push(String(message)),
         redactText: (text) => text,
         tokenizeNum: async (text) => tokenize(text),
@@ -3011,6 +3013,7 @@ describe("the Gemini overload re-request (crosscheck side finding)", () => {
         anti?: boolean;
         streaming?: boolean;
         controller?: AbortController;
+        reportRetry?: RequestContext["reportRetry"];
     }) {
         const { failures, retries = 2, anti = true, streaming = false, controller } = options;
         const state = { sent: 0, ended: false };
@@ -3025,6 +3028,7 @@ describe("the Gemini overload re-request (crosscheck side finding)", () => {
             },
             arg: { ...prompt(), useStreaming: streaming },
             controller,
+            reportRetry: options.reportRetry,
             upstream: () => {
                 state.sent += 1;
                 if (state.sent <= failures) {
@@ -3063,6 +3067,22 @@ describe("the Gemini overload re-request (crosscheck side finding)", () => {
             expect(vi.getTimerCount()).toBe(0);
         });
     }
+
+    it("reports one overload resend when its delay ends, before the second provider request", async () => {
+        const reportRetry = vi.fn(() => {
+            expect(state.sent).toBe(1);
+        });
+        const { state, pending, waiting } = overloaded({ failures: 1, reportRetry });
+        expect(await waiting()).toBe(1);
+        expect(reportRetry).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(999);
+        expect(reportRetry).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        const recorded = await pending;
+        expect(recorded.calls).toHaveLength(2);
+        expect(recorded.result).toEqual({ type: "success", result: "ok now" });
+        expect(reportRetry).toHaveBeenCalledTimes(1);
+    });
 
     it("answers from the re-request that gets through", async () => {
         const { pending, waiting } = overloaded({ failures: 1, retries: 2 });
