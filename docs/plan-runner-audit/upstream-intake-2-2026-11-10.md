@@ -1,6 +1,6 @@
 # Upstream Intake 2 Plan audit, 2026-11-10
 
-- Plan: `docs/plan/upstream-intake-2.md`
+- Plan: `docs/plan/upstream-intake-2.md`, retired; its last version is `git show 4d1542d92:docs/plan/upstream-intake-2.md`
 - Commit audited: `78086423f` (`dev`)
 - Mode: `full`
 - Model: GPT-6.1-Sol (`xhigh`), read-only; report written by the plan-runner orchestrator (Claude Opus 5.5)

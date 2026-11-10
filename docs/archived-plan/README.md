@@ -68,6 +68,7 @@ git show 211ac71e2:docs/plan/multi-client-e2e.md
 git show d745dcb8f:docs/plan/storage-settings-page.md
 git show 2beca50d5:docs/plan/found-issues-decisions.md
 git show e8758c2a8:docs/plan/found-issues-clearance.md
+git show 4d1542d92:docs/plan/upstream-intake-2.md
 git ls-tree -r --name-only 9d09288b -- docs/plan/PLAN.md docs/plan/phases/
 ```
 
@@ -140,6 +141,7 @@ it is not a current architecture guide.
 | Module Headers                           | `25537bb26`: `docs/plan/module-headers.md`                                | [self-host server](../structure/self-host-server.md), [chat pipeline](../structure/chat-pipeline.md), [global API](../structure/global-api.md), [LLM requests](../structure/llm-requests.md), [persistence](../structure/persistence.md): the source module headers and export doc comments their `Files` entries name                                                                                                                                                                      |
 | Found Issues Decisions                   | `2beca50d5`: `docs/plan/found-issues-decisions.md`                        | [LLM requests](../structure/llm-requests.md), [server generation](../structure/server-generation.md), [plugins](../structure/plugin-sandbox.md), [self-host server](../structure/self-host-server.md), the [structured memory](../structure/structured-memory/README.md) pages; E1's Limitations in their owning guides                                                                                                                                                                     |
 | Found Issues Clearance                   | `e8758c2a8`: `docs/plan/found-issues-clearance.md`                        | [LLM requests](../structure/llm-requests.md), [translation](../structure/translation.md), [UI theming](../structure/ui-theming.md), [diagnostics](../structure/diagnostics.md), [assets](../structure/assets.md), [test harness](../structure/test-harness.md); H1's Limitations in their owning guides                                                                                                                                                                                     |
+| Upstream Intake 2                        | `4d1542d92`: `docs/plan/upstream-intake-2.md`                             | [upstream ledger](../research/upstream-ledger.md) (its rows for `f50b5942..4d87a70ff`), [plugins](../structure/plugin-sandbox.md), [self-host server](../structure/self-host-server.md), [scripts and triggers](../structure/scripts-triggers.md), [CBS rendering](../structure/cbs-rendering.md), [global API](../structure/global-api.md), [characters and modules](../structure/characters-modules.md)                                                                                   |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -1330,6 +1332,20 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     thinking model accepting the replayed signature (C4); the request-log copy-failure display (D3); and a
     real-browser `measureHeap.mjs` run after a module delete, if a heap plan returns (Q16).
   - Found by the run: eight entries in `docs/research/found-issues.md` (`e8758c2a8`).
+- Upstream Intake 2:
+  - All 14 slices landed on `dev` on 2026-11-10 (plan-runner, every slice under delegate-implementation with Codex
+    implementing): 1 (`8657b12f2`), 2 (`42dabe136`), 3 (`70a6a82ab`), 4 (`0b15c934b`), 5 (`2861e45c4`), 6
+    (`d5f6e25c3`), 7 (`43fbd918e`), 8 (`1e464cecc`), 9 (`08603a57e`), 10 (`a33d622e1`), 11 (`78ff8a290`), 12
+    (`dbf446dc3`), 13 (`d77de065e`), 14 (`65a9c51a6`). The ledger covers `25001174..4d87a70ff` and the compatibility
+    version is `2026.10.295`. Slice 14 ran the whole suite on the source `dev` ends with (10,055 passed, 67 skipped),
+    and `e2e/pluginSandbox.spec.ts` passed three of four runs on `dev` afterwards.
+  - Revised before the run: the plan-runner audit's ten fixed findings (`54c2d0b27`,
+    [report](../plan-runner-audit/upstream-intake-2-2026-11-10.md)). During the run, slice 11 also raised
+    `ReloadNotice.svelte` above the alert layer, and slice 4 refuses an unknown permission name before a stored grant.
+  - Not verified: AUD-11, the real userscript transport cancelling a `fetchNative` body (slice 13 tested a stub); the
+    deferred ledger rows keep their triggers in [the ledger](../research/upstream-ledger.md).
+  - Found by the run: four entries in `docs/research/found-issues.md` (`a182694c6`, `4d1542d92`), one of them the
+    one-off failure of slice 11's full-screen alert e2e test.
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry
   above.

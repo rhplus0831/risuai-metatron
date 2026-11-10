@@ -3,8 +3,8 @@
 This records which upstream RisuAI commits Metatron has integrated, matched, excluded or
 deferred, and how to perform the next intake. It preserves the Inventory from the Upstream
 Integration plan (archived; `git show 2e359afde:docs/plan/upstream-integration.md`) and,
-for `f50b5942..4d87a70ff`, from the Upstream Intake 2 plan, `docs/plan/upstream-intake-2.md`
-(which will move to `docs/archived-plan/` when retired), checked against the code and port
+for `f50b5942..4d87a70ff`, from the Upstream Intake 2 plan (archived;
+`git show 4d1542d92:docs/plan/upstream-intake-2.md`), checked against the code and port
 history below.
 Paths refer to Metatron unless explicitly marked upstream; identifiers are lookup anchors.
 
