@@ -48,8 +48,7 @@ Guide: [Plugins: v3 Sandbox, Host API, Hooks, Storage, Permissions](../structure
 - Consented capabilities reach further than their names suggest (never reviewed): `mainDom` lets a plugin listen on
   `document` through `getRootDocument` and forwards keys (except from the terminal notice's opening until reload), so a
   plugin could observe typing in the password or credential prompts; `mainDom` also allows document-wide queries and
-  mutation; `nativeFetch` lets a plugin choose its headers; the RPC dispatcher in `factory.ts` looks callables up
-  without an allowlist.
+  mutation; `nativeFetch` lets a plugin choose its headers.
 - A plugin event listener lives until the wrapper that registered it removes it by id or plugins reload: removing
   its element from the page keeps it (and the element).
 

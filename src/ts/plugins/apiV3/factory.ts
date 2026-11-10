@@ -74,6 +74,18 @@ export function hostCallSignal(): AbortSignal | undefined {
     return currentHostCallSignal;
 }
 
+/** Instance methods may be inherited from API classes, but never from the built-in prototypes. */
+function getInstanceMethod(instance: any, method: unknown): Function | undefined {
+    if (typeof method !== "string" || method === "constructor") return;
+    for (let owner = instance; owner && owner !== Object.prototype && owner !== Function.prototype;) {
+        if (Object.hasOwn(owner, method)) {
+            const fn = instance[method];
+            return typeof fn === "function" ? fn : undefined;
+        }
+        owner = Object.getPrototypeOf(owner);
+    }
+}
+
 const GUEST_BRIDGE_SCRIPT = `
 await (async function() {
     const pendingRequests = new Map();
@@ -1123,21 +1135,25 @@ export class SandboxHost {
                 this.pendingHostCalls++;
                 try {
                     const args = this.deserializeArgs(data.args || [], usedAbortIds);
+                    const methodName = typeof data.method === "string" ? data.method : "<non-string>";
                     let result: any;
 
                     const previousCallSignal = currentHostCallSignal;
                     currentHostCallSignal = callController.signal;
                     try {
                         if (data.type === "CALL_ROOT") {
-                            const fn = this.apiFactory[data.method!];
-                            if (typeof fn !== "function") throw new Error(`API method ${data.method} not found`);
+                            const fn =
+                                typeof data.method === "string" && Object.hasOwn(this.apiFactory, data.method)
+                                    ? this.apiFactory[data.method]
+                                    : undefined;
+                            if (typeof fn !== "function") throw new Error(`API method ${methodName} not found`);
                             result = fn(...args);
                         } else {
                             const instance = this.instanceRegistry.get(data.id!);
                             if (!instance) throw new Error("Instance not found or released");
-                            if (typeof instance[data.method!] !== "function")
-                                throw new Error(`Method ${data.method} missing on instance`);
-                            result = instance[data.method!](...args);
+                            const fn = getInstanceMethod(instance, data.method);
+                            if (!fn) throw new Error(`Method ${methodName} missing on instance`);
+                            result = fn.apply(instance, args);
                         }
                     } finally {
                         currentHostCallSignal = previousCallSignal;

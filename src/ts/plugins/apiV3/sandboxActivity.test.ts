@@ -34,7 +34,7 @@ const send = (data: unknown, ports: MessagePort[] = []) => {
 };
 const lastPosted = () => posted[posted.length - 1];
 
-async function callHost(data: { type: string; reqId: string; method: string; id?: string; args?: unknown[] }) {
+async function callHost(data: { type: string; reqId: string; method: unknown; id?: string; args?: unknown[] }) {
     const answered = deferred<{ type: string; reqId: string; result?: any; error?: string }>();
     const postMessage = guestWindow!.postMessage;
     const posting = vi.spyOn(guestWindow!, "postMessage").mockImplementation((response, origin, ports) => {
@@ -96,6 +96,115 @@ afterEach(() => {
     host.terminate();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+});
+
+describe("SandboxHost RPC method lookup", () => {
+    it("refuses inherited root functions and non-string names without calling them, while own API functions work", async () => {
+        const own = vi.fn(() => "own result");
+        const inherited = vi.fn(() => "inherited result");
+        api.own = own;
+        Object.setPrototypeOf(api, { inherited });
+        try {
+            for (const method of [
+                "missing",
+                "inherited",
+                "constructor",
+                "__defineGetter__",
+                "hasOwnProperty",
+                "valueOf",
+                "toString",
+                ["own"],
+                null,
+            ]) {
+                const response = await callHost({ type: "CALL_ROOT", reqId: "refused-root", method });
+                expect.soft(response).toEqual({
+                    type: "RESPONSE",
+                    reqId: "refused-root",
+                    error: expect.stringMatching(/^API method .+ not found$/),
+                });
+            }
+            expect(own).not.toHaveBeenCalled();
+            expect(inherited).not.toHaveBeenCalled();
+            expect(await callHost({ type: "CALL_ROOT", reqId: "own-root", method: "own" })).toEqual({
+                type: "RESPONSE",
+                reqId: "own-root",
+                result: "own result",
+            });
+            expect(own).toHaveBeenCalledTimes(1);
+        } finally {
+            Object.setPrototypeOf(api, Object.prototype);
+        }
+    });
+
+    it("refuses built-in and non-string instance names without effects and preserves own and base-class methods", async () => {
+        class BaseElement {
+            #value = "base value";
+            getValue() {
+                return this.#value;
+            }
+        }
+        class DocumentElement extends BaseElement {
+            __classType = "REMOTE_REQUIRED";
+            own = vi.fn(() => "instance value");
+        }
+        const instance = new DocumentElement();
+        api.create = () => instance;
+        const { result: ref } = await callHost({ type: "CALL_ROOT", reqId: "create", method: "create" });
+        expect(ref).toEqual({ __type: "REMOTE_REF", id: expect.any(String) });
+
+        for (const method of [
+            "missing",
+            "constructor",
+            "__defineGetter__",
+            "hasOwnProperty",
+            "valueOf",
+            "toString",
+            ["own"],
+            null,
+        ]) {
+            const response = await callHost({
+                type: "CALL_INSTANCE",
+                reqId: "refused-instance",
+                id: ref.id,
+                method,
+                args: ["injected", { __type: "CALLBACK_REF", id: "getter" }],
+            });
+            expect.soft(response).toEqual({
+                type: "RESPONSE",
+                reqId: "refused-instance",
+                error: expect.stringMatching(/^Method .+ missing on instance$/),
+            });
+        }
+        expect(Object.hasOwn(instance, "injected")).toBe(false);
+        expect(instance.own).not.toHaveBeenCalled();
+        for (const [method, result] of [
+            ["own", "instance value"],
+            ["getValue", "base value"],
+        ]) {
+            expect(await callHost({ type: "CALL_INSTANCE", reqId: method, id: ref.id, method })).toEqual({
+                type: "RESPONSE",
+                reqId: method,
+                result,
+            });
+        }
+    });
+
+    it("refuses Function.prototype methods on callable instances without invoking the function", async () => {
+        const called = vi.fn();
+        const instance = Object.assign(called, { __classType: "REMOTE_REQUIRED" });
+        api.create = () => instance;
+        const { result: ref } = await callHost({ type: "CALL_ROOT", reqId: "create", method: "create" });
+        expect(ref).toEqual({ __type: "REMOTE_REF", id: expect.any(String) });
+
+        for (const method of ["call", "apply", "bind", "toString"]) {
+            expect.soft(await callHost({ type: "CALL_INSTANCE", reqId: method, id: ref.id, method })).toEqual({
+                type: "RESPONSE",
+                reqId: method,
+                error: `Method ${method} missing on instance`,
+            });
+        }
+        expect(called).not.toHaveBeenCalled();
+    });
 });
 
 it("serializes remote-required callback arguments as callable host references", async () => {
