@@ -36,9 +36,9 @@ Read each module's header or component contract, then read the named export's co
 - `src/lib/ChatScreens/DefaultChatScreen.svelte` and `src/lib/SideBars/CharConfig.svelte`: panel openers.
 - `src/lib/Others/StructuredMemory/CoverageTab.svelte`: message coverage view; `reconciled`, `coverage`, `countedChats`.
 - `src/lib/Others/StructuredMemory/PreviewTab.svelte`: preview view; `run`.
-- `src/lib/Others/StructuredMemory/PagesTab.svelte`: page read and manage views, title filter, and section editor, also
-  the filtered view of flagged sections; `readRecord`, `sendChange`, `keepRecord`, `openAskedEntry`, `only`,
-  `sectionReverts`, `keepAll`.
+- `src/lib/Others/StructuredMemory/PagesTab.svelte`: page read and manage views, title filter, text search, events
+  naming a page, and section editor, also the filtered view of flagged sections; `readRecord`, `sendChange`,
+  `keepRecord`, `openAskedEntry`, `only`, `sectionReverts`, `keepAll`.
 - `src/lib/Others/StructuredMemory/UnsupportedTab.svelte`: the Evidence missing tab, `PagesTab` under
   `only="unsupported"`.
 - `src/lib/Others/StructuredMemory/TimelineTab.svelte`: event titles and story views and repairs; `reconciled`,
@@ -148,6 +148,20 @@ badges. `manage` is the checking view, with every control, provenance, and the h
 mounted; Evidence missing, a page in the trash, and a jump to a history entry show `manage`. Links name live pages by
 title and select them; an id with no live page is a disabled button. A title filter narrows the tree before
 `memoryPageTree` groups it, so an emptied type loses its header; the trash list is not filtered.
+
+The title filter's Search text button or form submit reads `/find?q=...` through `findStructuredMemory`, including in
+chats with events but no pages. The action is disabled for blank or over-100-character trimmed input and while reading.
+The hits replace the tree, its no-match line, and show-more control while the trimmed input equals the searched text;
+editing it to anything else drops the hits and restores the filtered tree. Page hits show title, heading when present,
+and excerpt and select that page; event hits show title and excerpt and open Timeline. Text stays plain. An empty read
+or failure has its own line; `more` says the list was cut at `MEMORY_FIND_HITS_MAX` (200). Active searches rerun on
+`refresh`; older answers from another chat, input, read, or refresh cannot replace them. Evidence missing has no search.
+
+Both page detail views, the scene page included, offer a closed Events naming this page disclosure for each selection.
+Opening it reads `/find?page=...` once per selection and `refresh`; an open row rereads when `refresh` moves, and a
+closed one waits for its next open. Event links show their titles in ascending `sourceIndex` order, nulls last, and open
+Timeline. Empty, failure, and truncated reads have their own lines. Selection, chat, refresh, and read-number guards
+discard old answers; search-hit and event-link buttons are disabled while a page edit is pending.
 
 An opened Timeline event shows what it changed under its key lines: state changes, knowledge, relationship shifts, and
 thread changes, through `MemoryEventFacts`, the component the Log renders a run's extraction with. Timeline passes the

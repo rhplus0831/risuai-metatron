@@ -890,6 +890,23 @@ export type StructuredMemoryStoryRound = {
     next: number | null;
 };
 
+/** Bounds for text queries, each hit's display fields, and a collected find result. */
+export const MEMORY_FIND_QUERY_CHARS = 100;
+export const MEMORY_FIND_EXCERPT_CHARS = 160;
+export const MEMORY_FIND_HITS_MAX = 200;
+
+/** One matching place in a live page, or one non-retracted event. All display text is plain. */
+export type StructuredMemoryFindHit =
+    | { kind: "page"; id: string; title: string; heading: string | null; excerpt: string }
+    | { kind: "event"; id: string; title: string; sourceIndex: number | null; excerpt: string };
+
+/** A find round's cursor walks live pages then non-retracted events for text, or only events for a page id. */
+export type StructuredMemoryFindRound = {
+    revision: string;
+    hits: StructuredMemoryFindHit[];
+    next: number | null;
+};
+
 /**
  * What a person can change of a chat's memory, one change per request. The tab never sends a record:
  * this closed union is all an edit can say, so history, provenance, a page's type, and ids cannot be

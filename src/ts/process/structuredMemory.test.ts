@@ -24,6 +24,7 @@ import {
     buildStructuredMemoryLog,
     readStructuredMemoryCoverage,
     readStructuredMemoryStory,
+    findStructuredMemory,
     readStructuredMemoryFile,
     joinMemoryCoverage,
     memoryRunView,
@@ -497,6 +498,31 @@ it("restarts the story after a second-round revision conflict, discarding earlie
         `${base}/story?cursor=1&revision=r1`,
         `${base}/story`,
         `${base}/story?cursor=1&revision=r2`,
+    ]);
+});
+
+it("stops collecting find rounds at 200 hits and reports more", async () => {
+    const hits = Array.from({ length: 201 }, (_, index) => ({
+        kind: "event" as const,
+        id: `event-${index}`,
+        title: `Event ${index}`,
+        sourceIndex: index,
+        excerpt: "The gate & door opened.",
+    }));
+    authFetch
+        .mockResolvedValueOnce(Response.json({ revision: "r1", hits: hits.slice(0, 199), next: 310 }))
+        .mockResolvedValueOnce(Response.json({ revision: "r1", hits: hits.slice(199), next: 500 }))
+        .mockImplementation(async () => {
+            throw new Error("Read beyond the hit cap");
+        });
+
+    expect(await findStructuredMemory(ref, { q: "gate & door" })).toEqual({
+        outcome: "ok",
+        value: { revision: "r1", hits: hits.slice(0, 200), more: true },
+    });
+    expect(authFetch.mock.calls.map(([url]) => url)).toEqual([
+        `${base}/find?q=gate%20%26%20door`,
+        `${base}/find?q=gate%20%26%20door&cursor=310&revision=r1`,
     ]);
 });
 

@@ -926,6 +926,150 @@ it("serves story in stored-byte rounds including retracted events with exactly f
     }
 });
 
+it("finds case-insensitive literal text in live pages and unretracted events", async () => {
+    const s = await server();
+    const titled = { ...page("title"), title: "North GATE.* entrance", aliases: ["North GATE.* entrance"] };
+    const aliased = { ...page("alias"), aliases: ["Old gate.* road", "Another GATE.* name"] };
+    const firstMatch = "First GaTe.* crossing";
+    const longBody = `${"x".repeat(180)}${firstMatch}${"y".repeat(180)}Last GaTe.* crossing`;
+    const sectioned = page("sections", longBody);
+    sectioned.sections.push({ ...sectioned.sections[0], heading: "Access", body: "Use the gAtE.* at dawn." });
+    const revision = s.write({
+        pages: [titled, aliased, sectioned, { ...titled, id: "trash", trashedAt: 1 }, page("miss", "gatehouse")],
+        events: [
+            {
+                ...event("summary", "The GATE.* opened."),
+                keyLines: [{ speaker: "Mira", text: "The GATE.* opened." }],
+                sources: [{ messageId: "m3", hash: "h", index: 3 }],
+            },
+            { ...event("key-line"), keyLines: [{ speaker: "Mira", text: "Meet at the gaTE.*." }] },
+            { ...event("event-title"), title: "Beyond the GaTe.*" },
+            { ...event("retracted", "GATE.*"), status: "retracted" },
+            event("miss", "gatehouse"),
+        ],
+    });
+
+    const result = await answer(await s.request(`${base}/find?${new URLSearchParams({ q: "gAtE.*" })}`));
+    expect(result).toEqual({
+        revision,
+        hits: [
+            {
+                kind: "page",
+                id: "title",
+                title: "North GATE.* entrance",
+                heading: null,
+                excerpt: "North GATE.* entrance",
+            },
+            { kind: "page", id: "alias", title: "Place alias", heading: null, excerpt: "Old gate.* road" },
+            { kind: "page", id: "sections", title: "Place sections", heading: "Facts", excerpt: expect.any(String) },
+            {
+                kind: "page",
+                id: "sections",
+                title: "Place sections",
+                heading: "Access",
+                excerpt: "Use the gAtE.* at dawn.",
+            },
+            { kind: "event", id: "summary", title: "Event summary", sourceIndex: 3, excerpt: "The GATE.* opened." },
+            {
+                kind: "event",
+                id: "key-line",
+                title: "Event key-line",
+                sourceIndex: null,
+                excerpt: "Meet at the gaTE.*.",
+            },
+            {
+                kind: "event",
+                id: "event-title",
+                title: "Beyond the GaTe.*",
+                sourceIndex: null,
+                excerpt: "Beyond the GaTe.*",
+            },
+        ],
+        next: null,
+    });
+    const excerpt: string = result.hits[2].excerpt;
+    expect(excerpt.length).toBeLessThanOrEqual(160);
+    expect(longBody).toContain(excerpt);
+    expect(excerpt).toContain("GaTe.*");
+    expect(longBody.indexOf(excerpt)).toBeLessThanOrEqual(longBody.indexOf(firstMatch) + "First ".length);
+    expect(excerpt).not.toContain("Last");
+});
+
+it("finds each event naming a page through participants, state, knowledge, knowers or either relationship end", async () => {
+    const s = await server();
+    const pageId = "gate/문";
+    const stateChange = { pageId, section: "Facts", before: "closed", after: "open", quote: "Open" };
+    const knowledge = { pageId, fact: "Open", stance: "knows" as const, quote: "Open" };
+    const relationship = { from: pageId, to: "other", direction: "closer", note: "Trust" };
+    const revision = s.write({
+        pages: [page(pageId)],
+        events: [
+            {
+                ...event("participant"),
+                participants: [pageId],
+                sources: [
+                    { messageId: "m9", hash: "h", index: 9 },
+                    { messageId: "lost", hash: null, index: null },
+                    { messageId: "m2", hash: "h", index: 2 },
+                ],
+            },
+            { ...event("state"), stateChanges: [stateChange] },
+            { ...event("knowledge"), knowledge: [knowledge] },
+            { ...event("knower"), knowledge: [{ ...knowledge, pageId: "other", knowers: [pageId] }] },
+            { ...event("from"), relationshipShifts: [relationship] },
+            { ...event("to"), relationshipShifts: [{ ...relationship, from: "other", to: pageId }] },
+            { ...event("multiple"), participants: [pageId], stateChanges: [stateChange], knowledge: [knowledge] },
+            { ...event("retracted"), status: "retracted", participants: [pageId] },
+            { ...event("text-only", pageId), title: pageId, participants: [`${pageId}-other`] },
+        ],
+    });
+    expect(await answer(await s.request(`${base}/find?${new URLSearchParams({ page: pageId })}`))).toEqual({
+        revision,
+        hits: ["participant", "state", "knowledge", "knower", "from", "to", "multiple"].map((id) => ({
+            kind: "event",
+            id,
+            title: `Event ${id}`,
+            sourceIndex: id === "participant" ? 2 : null,
+            excerpt: "",
+        })),
+        next: null,
+    });
+});
+
+it.each([
+    ["q with page", { q: "gate", page: "p" }],
+    ["neither q nor page", {}],
+    ["blank q", { q: " \t\n " }],
+    ["q over 100 characters", { q: "x".repeat(101) }],
+] satisfies [string, Record<string, string>][])("rejects find with %s", async (_name, query) => {
+    const s = await server();
+    await answer(await s.request(`${base}/find?${new URLSearchParams(query)}`), 400);
+});
+
+it("joins find rounds at one revision, charging stored bytes even for nonmatching records", async () => {
+    const oversized = page("nonmatching", "문😀".repeat(500));
+    const matchingPage = page("matching", "A beacon shines.");
+    const matchingEvent = event("matching", "The beacon faded.");
+    const budget = bytes(matchingPage) + bytes(matchingEvent);
+    expect(bytes(oversized)).toBeGreaterThan(budget);
+    const s = await server({ routeLimits: { memoryPackageRoundBytes: budget } });
+    const revision = s.write({ pages: [oversized, matchingPage], events: [matchingEvent] });
+    const expected = [
+        { kind: "page", id: "matching", title: "Place matching", heading: "Facts", excerpt: "A beacon shines." },
+        { kind: "event", id: "matching", title: "Event matching", sourceIndex: null, excerpt: "The beacon faded." },
+    ];
+    expect(bytes(expected)).toBeLessThan(budget);
+    const first = await answer(await s.request(`${base}/find?q=beacon`));
+    expect(first).toEqual({ revision, hits: [], next: 1 });
+    const continuation = `${base}/find?${new URLSearchParams({ q: "beacon", cursor: String(first.next), revision })}`;
+    const second = await answer(await s.request(continuation));
+    expect(second).toEqual({ revision, hits: expected, next: null });
+    expect([...first.hits, ...second.hits]).toEqual(expected);
+
+    const changed = s.write({ events: [event("new", "A new beacon.")] });
+    expect(await answer(await s.request(continuation), 409)).toEqual({ error: expect.any(String), revision: changed });
+});
+
 it("returns an empty story round for a cursor past the end", async () => {
     const s = await server();
     const revision = s.write({ events: [event("only")] });

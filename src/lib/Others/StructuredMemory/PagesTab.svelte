@@ -5,6 +5,7 @@
     import { alertConfirm, alertError, alertToast } from "src/ts/alert";
     import {
         editStructuredMemory,
+        findStructuredMemory,
         importStructuredMemoryPackage,
         memoryItemsUsed,
         memoryMessageIndexes,
@@ -32,6 +33,8 @@
     import type { loreBook } from "../../../../shared/database.ts";
     import {
         MEMORY_CONTEXT_MODES,
+        MEMORY_FIND_HITS_MAX,
+        MEMORY_FIND_QUERY_CHARS,
         STRUCTURED_MEMORY_LIMITS,
         type MemoryContextMode,
         type MemoryPage,
@@ -39,6 +42,7 @@
         type StructuredMemoryContentsAnswer,
         type StructuredMemoryEdit,
         type StructuredMemoryEditAnswer,
+        type StructuredMemoryFindHit,
         type StructuredMemoryImportAnswer,
         type StructuredMemoryPageTool,
         type StructuredMemoryRecordAnswer,
@@ -57,7 +61,11 @@
      * selections while mounted; trash and `only: "unsupported"` show Manage without changing that choice.
      * Links name live pages by title and select them, or open Pages from the unsupported view; missing
      * links show disabled ids, and sending disables live links. A title-only filter narrows the tree before
-     * grouping and resets its row limit when changed; the trash stays unfiltered.
+     * grouping and resets its row limit when changed; the trash stays unfiltered. Search text submits
+     * that input, including in chats with only events, and replaces the tree with bounded plain-text hits
+     * until the trimmed input changes. Active searches rerun on refresh. Both detail views offer a closed
+     * events-naming-this-page row, read once per selection and refresh when opened, in source order with
+     * unknown positions last. Chat, selection, refresh, and read-number guards discard old answers.
      *
      * An open section editor keeps its base body. A read or revert that changes that body closes the editor
      * with `changed`, so an old draft cannot replace new writer text. Read-only keeps the draft and disables
@@ -134,6 +142,19 @@
 
     let shownRows = $state(ROWS_AT_ONCE);
     let query = $state("");
+    let composing = false;
+    type FindResult = { hits: StructuredMemoryFindHit[]; more: boolean };
+    let searched = $state<string | null>(null);
+    let searchResult = $state.raw<FindResult | null>(null);
+    let searchFailure = $state<string | null>(null);
+    let searching = $state(false);
+    let searchNumber = 0;
+    let searchRead: number | null = null;
+    let namingOpen = $state(false);
+    let namingResult = $state.raw<FindResult | null>(null);
+    let namingFailure = $state<string | null>(null);
+    let namingNumber = 0;
+    let namingRead: number | null = null;
     /** The open history entry and its diff, one at a time. */
     let openEntry = $state<string | null>(null);
     let diff = $state.raw<MemoryDiffPart[] | "failed" | null>(null);
@@ -148,7 +169,15 @@
     const eventTitles = $derived(new Map<string, string>(contents?.events.map(({ id, title }) => [id, title])));
     const pageTitles = $derived(new Map<string, string>(contents?.pages.map(({ id, title }) => [id, title])));
     const unsupportedIds = $derived(new Set(contents?.unsupportedPages));
-    const normalizedQuery = $derived(query.trim().toLowerCase());
+    const trimmedQuery = $derived(query.trim());
+    const normalizedQuery = $derived(trimmedQuery.toLowerCase());
+    const queryFits = $derived(trimmedQuery.length > 0 && trimmedQuery.length <= MEMORY_FIND_QUERY_CHARS);
+    const showingSearch = $derived(only !== "unsupported" && searched !== null && trimmedQuery === searched);
+    const namingEvents = $derived(
+        (namingResult?.hits ?? [])
+            .filter((hit) => hit.kind === "event")
+            .toSorted((a, b) => (a.sourceIndex ?? Infinity) - (b.sourceIndex ?? Infinity)),
+    );
     const listedPages = $derived(
         only === "unsupported"
             ? (contents?.pages ?? []).filter(({ id }) => unsupportedIds.has(id))
@@ -216,6 +245,69 @@
     );
 
     const sameChat = (ref: ChatRef) => ref.chaId === chatRef.chaId && ref.chatId === chatRef.chatId;
+
+    function clearSearch() {
+        searchNumber += 1;
+        searched = null;
+        searchResult = null;
+        searchFailure = null;
+        searching = false;
+        searchRead = null;
+    }
+
+    /** Only the latest search at this refresh and input may replace the tree. */
+    async function searchText(q: string) {
+        const ref = chatRef;
+        const atRefresh = refresh;
+        const number = ++searchNumber;
+        searchRead = atRefresh;
+        searched = q;
+        searching = true;
+        searchResult = null;
+        searchFailure = null;
+        const result = await findStructuredMemory(ref, { q });
+        if (
+            number !== searchNumber ||
+            !sameChat(ref) ||
+            atRefresh !== refresh ||
+            searched !== q ||
+            trimmedQuery !== q
+        ) {
+            return;
+        }
+        searching = false;
+        if (result.outcome === "ok") {
+            searchResult = result.value;
+        } else {
+            searchFailure = memoryReadFailureText(result);
+        }
+    }
+
+    function submitSearch(event: SubmitEvent) {
+        event.preventDefault();
+        if (queryFits && !searching && !composing) {
+            void searchText(trimmedQuery);
+        }
+    }
+
+    /** Closed rows cache their answer until the next selection or refresh. */
+    async function readNamingEvents(id: string) {
+        const ref = chatRef;
+        const atRefresh = refresh;
+        const number = ++namingNumber;
+        namingRead = atRefresh;
+        namingResult = null;
+        namingFailure = null;
+        const result = await findStructuredMemory(ref, { page: id });
+        if (number !== namingNumber || !sameChat(ref) || selectedId !== id || atRefresh !== refresh) {
+            return;
+        }
+        if (result.outcome === "ok") {
+            namingResult = result.value;
+        } else {
+            namingFailure = memoryReadFailureText(result);
+        }
+    }
 
     /** Reads the contents. An answer for another chat, or one a newer read replaced, changes nothing. */
     async function readContents() {
@@ -311,11 +403,51 @@
         untrack(() => read());
     });
 
-    // An import's report belongs to the chat it was made in.
+    // Import reports and searches belong to the chat they were made in.
     $effect(() => {
         chatRef.chaId;
         chatRef.chatId;
-        untrack(() => (importReport = null));
+        untrack(() => {
+            importReport = null;
+            clearSearch();
+        });
+    });
+
+    $effect(() => {
+        const q = trimmedQuery;
+        const atRefresh = refresh;
+        untrack(() => {
+            if (searched !== null && q !== searched) {
+                clearSearch();
+            } else if (searched !== null && searchRead !== atRefresh) {
+                void searchText(searched);
+            }
+        });
+    });
+
+    $effect(() => {
+        selectedId;
+        chatRef.chaId;
+        chatRef.chatId;
+        untrack(() => {
+            namingNumber += 1;
+            namingOpen = false;
+            namingResult = null;
+            namingFailure = null;
+            namingRead = null;
+        });
+    });
+
+    $effect(() => {
+        const id = selectedId;
+        const atRefresh = refresh;
+        if (namingOpen && id !== null) {
+            untrack(() => {
+                if (namingRead !== atRefresh) {
+                    void readNamingEvents(id);
+                }
+            });
+        }
     });
 
     /** Forgets what the tools held of the page shown before. */
@@ -1072,6 +1204,49 @@
     {/if}
 {/snippet}
 
+{#snippet eventsNamingPage()}
+    <div class="flex flex-col min-w-0 gap-2" data-memory-page-events>
+        <button
+            type="button"
+            class="flex items-center self-start min-w-0 gap-2 text-left transition-colors text-textcolor2 hover:text-textcolor"
+            aria-expanded={namingOpen}
+            onclick={() => (namingOpen = !namingOpen)}
+        >
+            {#if namingOpen}
+                <ChevronDownIcon size={16} class="shrink-0" />
+            {:else}
+                <ChevronRightIcon size={16} class="shrink-0" />
+            {/if}
+            <span>{text.eventsNaming}</span>
+        </button>
+        {#if namingOpen}
+            {#if namingFailure !== null}
+                <p role="alert" class="text-draculared" data-memory-page-events-failure>{namingFailure}</p>
+            {:else if namingResult === null}
+                <p class="text-textcolor2">{panelText.loading}</p>
+            {:else}
+                <ul class="flex flex-col items-start min-w-0 gap-1">
+                    {#each namingEvents as event (event.id)}
+                        <li class="min-w-0 max-w-full">
+                            <MemoryLinkButton
+                                label={event.title}
+                                disabled={sending}
+                                onclick={() => open({ tab: "timeline", id: event.id })}
+                                data-memory-page-event={event.id}
+                            />
+                        </li>
+                    {:else}
+                        <li class="text-textcolor2">{text.eventsNamingNone}</li>
+                    {/each}
+                </ul>
+                {#if namingResult.more}
+                    <p class="text-textcolor2" data-memory-page-events-more>{text.findMore(MEMORY_FIND_HITS_MAX)}</p>
+                {/if}
+            {/if}
+        {/if}
+    </div>
+{/snippet}
+
 {#snippet pageDetail(page: MemoryPage)}
     {#if only !== "unsupported" && !inTrash}
         <SegmentedControl
@@ -1194,6 +1369,68 @@
             </ul>
         {/if}
     {/if}
+    {@render eventsNamingPage()}
+{/snippet}
+
+{#snippet searchControls()}
+    {#if only !== "unsupported"}
+        <form
+            class="flex items-start min-w-0 gap-2"
+            data-memory-page-filter
+            onsubmit={submitSearch}
+            oncompositionstart={() => (composing = true)}
+            oncompositionend={() => (composing = false)}
+        >
+            <div class="flex-1 min-w-0">
+                <TextInput bind:value={query} placeholder={text.filter} size="sm" fullwidth />
+            </div>
+            <button
+                type="submit"
+                class="shrink-0 px-2 py-1 transition-colors border rounded-md border-darkborderc text-textcolor2 hover:text-textcolor disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={!queryFits || searching}
+                data-memory-search-text
+            >
+                {text.searchText}
+            </button>
+        </form>
+    {/if}
+{/snippet}
+
+{#snippet searchHits()}
+    <div class="flex flex-col min-w-0 gap-2" data-memory-find-hits>
+        {#if searchFailure !== null}
+            <p role="alert" class="text-draculared" data-memory-find-failure>{searchFailure}</p>
+        {:else if searchResult === null}
+            <p class="text-textcolor2">{panelText.loading}</p>
+        {:else}
+            <ul class="flex flex-col min-w-0 gap-1">
+                {#each searchResult.hits as hit}
+                    <li class="min-w-0">
+                        <button
+                            type="button"
+                            class="flex flex-col w-full min-w-0 gap-1 px-2 py-1 text-left transition-colors rounded-md break-words hover:bg-selected disabled:cursor-not-allowed"
+                            disabled={sending}
+                            onclick={() =>
+                                hit.kind === "page" ? select(hit.id) : open({ tab: "timeline", id: hit.id })}
+                            data-memory-find-kind={hit.kind}
+                            data-memory-find-id={hit.id}
+                        >
+                            <span class="font-semibold">{hit.title}</span>
+                            {#if hit.kind === "page" && hit.heading !== null}
+                                <span class="text-textcolor2">{codeText(text.headings, hit.heading)}</span>
+                            {/if}
+                            <span class="whitespace-pre-wrap">{hit.excerpt}</span>
+                        </button>
+                    </li>
+                {:else}
+                    <li class="text-textcolor2">{text.searchNone}</li>
+                {/each}
+            </ul>
+            {#if searchResult.more}
+                <p class="text-textcolor2" data-memory-find-more>{text.findMore(MEMORY_FIND_HITS_MAX)}</p>
+            {/if}
+        {/if}
+    </div>
 {/snippet}
 
 {#snippet importControls()}
@@ -1239,75 +1476,81 @@
     {:else if only === "unsupported" && listedPages.length === 0}
         <p class="text-textcolor2" data-memory-unsupported-resolved>{unsupportedText.resolved}</p>
     {:else if contents.pages.length === 0 && contents.trash.length === 0}
-        <p class="text-textcolor2">{text.empty}</p>
-        {@render importControls()}
+        {@render searchControls()}
+        {#if showingSearch}
+            {@render searchHits()}
+        {:else}
+            <p class="text-textcolor2">{text.empty}</p>
+            {@render importControls()}
+        {/if}
     {:else}
         <div class="flex flex-col min-w-0 gap-3 sm:flex-row">
             <div class="flex flex-col min-w-0 gap-2 sm:w-52 sm:shrink-0">
-                {#if only !== "unsupported"}
-                    <div data-memory-page-filter>
-                        <TextInput bind:value={query} placeholder={text.filter} size="sm" fullwidth />
-                    </div>
-                {/if}
-                <ul class="flex flex-col min-w-0 gap-0.5">
-                    {#if normalizedQuery !== "" && listedPages.length === 0}
-                        <li class="text-textcolor2" data-memory-page-filter-none>{text.filterNone}</li>
-                    {/if}
-                    {#each treeRows.slice(0, shownRows) as { row, group } (row.id)}
-                        {#if group !== null}
-                            <li class="mt-1 text-textcolor2" data-memory-page-group={group}>
-                                {codeText(text.types, group)}
-                            </li>
+                {@render searchControls()}
+                {#if showingSearch}
+                    {@render searchHits()}
+                {:else}
+                    <ul class="flex flex-col min-w-0 gap-0.5">
+                        {#if normalizedQuery !== "" && listedPages.length === 0}
+                            <li class="text-textcolor2" data-memory-page-filter-none>{text.filterNone}</li>
                         {/if}
-                        <li class="min-w-0">
-                            <button
-                                type="button"
-                                class={"flex flex-wrap items-center w-full min-w-0 px-2 py-1 text-left transition-colors rounded-md gap-x-2 hover:bg-selected disabled:cursor-not-allowed" +
-                                    (row.id === selectedId ? " bg-selected" : "")}
-                                aria-current={row.id === selectedId}
-                                disabled={sending}
-                                onclick={() => select(row.id)}
-                                data-memory-page={row.id}
-                            >
-                                <span class="min-w-0 break-words">{row.title}</span>
-                                {#if usedPages.has(row.id)}
-                                    <span class="px-1.5 rounded-sm bg-darkbutton text-secondary-500" data-memory-used
-                                        >{panelText.usedInLastSend}</span
-                                    >
-                                {/if}
-                            </button>
-                        </li>
-                    {/each}
-                    {#if treeRows.length > shownRows}
-                        <li>
-                            <button
-                                type="button"
-                                class="px-2 py-1 my-1 transition-colors border rounded-md border-darkborderc text-textcolor2 hover:text-textcolor"
-                                onclick={() => (shownRows += ROWS_AT_ONCE)}
-                            >
-                                {panelText.showMore(treeRows.length - shownRows)}
-                            </button>
-                        </li>
-                    {/if}
-                    {#if only !== "unsupported" && contents.trash.length > 0}
-                        <li class="mt-2 text-textcolor2" data-memory-trash-group>{toolText.trash}</li>
-                        {#each contents.trash as row (row.id)}
+                        {#each treeRows.slice(0, shownRows) as { row, group } (row.id)}
+                            {#if group !== null}
+                                <li class="mt-1 text-textcolor2" data-memory-page-group={group}>
+                                    {codeText(text.types, group)}
+                                </li>
+                            {/if}
                             <li class="min-w-0">
                                 <button
                                     type="button"
-                                    class={"flex flex-wrap items-center w-full min-w-0 px-2 py-1 text-left transition-colors rounded-md gap-x-2 text-textcolor2 hover:bg-selected disabled:cursor-not-allowed" +
+                                    class={"flex flex-wrap items-center w-full min-w-0 px-2 py-1 text-left transition-colors rounded-md gap-x-2 hover:bg-selected disabled:cursor-not-allowed" +
                                         (row.id === selectedId ? " bg-selected" : "")}
                                     aria-current={row.id === selectedId}
                                     disabled={sending}
                                     onclick={() => select(row.id)}
-                                    data-memory-trash-page={row.id}
+                                    data-memory-page={row.id}
                                 >
                                     <span class="min-w-0 break-words">{row.title}</span>
+                                    {#if usedPages.has(row.id)}
+                                        <span
+                                            class="px-1.5 rounded-sm bg-darkbutton text-secondary-500"
+                                            data-memory-used>{panelText.usedInLastSend}</span
+                                        >
+                                    {/if}
                                 </button>
                             </li>
                         {/each}
-                    {/if}
-                </ul>
+                        {#if treeRows.length > shownRows}
+                            <li>
+                                <button
+                                    type="button"
+                                    class="px-2 py-1 my-1 transition-colors border rounded-md border-darkborderc text-textcolor2 hover:text-textcolor"
+                                    onclick={() => (shownRows += ROWS_AT_ONCE)}
+                                >
+                                    {panelText.showMore(treeRows.length - shownRows)}
+                                </button>
+                            </li>
+                        {/if}
+                        {#if only !== "unsupported" && contents.trash.length > 0}
+                            <li class="mt-2 text-textcolor2" data-memory-trash-group>{toolText.trash}</li>
+                            {#each contents.trash as row (row.id)}
+                                <li class="min-w-0">
+                                    <button
+                                        type="button"
+                                        class={"flex flex-wrap items-center w-full min-w-0 px-2 py-1 text-left transition-colors rounded-md gap-x-2 text-textcolor2 hover:bg-selected disabled:cursor-not-allowed" +
+                                            (row.id === selectedId ? " bg-selected" : "")}
+                                        aria-current={row.id === selectedId}
+                                        disabled={sending}
+                                        onclick={() => select(row.id)}
+                                        data-memory-trash-page={row.id}
+                                    >
+                                        <span class="min-w-0 break-words">{row.title}</span>
+                                    </button>
+                                </li>
+                            {/each}
+                        {/if}
+                    </ul>
+                {/if}
             </div>
             <div class="flex flex-col flex-1 min-w-0 gap-2" data-memory-page-detail>
                 {#if recordFailure !== null}

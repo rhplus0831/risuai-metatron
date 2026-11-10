@@ -32,8 +32,10 @@
     `memorySectionOverBudget`, `ReadEntry`, `RawWindow`, `rawWindow`, `coveredMessages`, `memoryEventCovers`.
   - Read contracts: `STRUCTURED_MEMORY_PATH`, `MEMORY_RECORD_KINDS`, `MEMORY_RUNS_ROUND_ROWS`,
     `StructuredMemoryContentsAnswer`, `StructuredMemoryRecordAnswer`, `StructuredMemoryPackageRound`,
-    `StructuredMemoryCoverageRound`, `StructuredMemoryStoryRound`, `StructuredMemoryRunsRound`,
-    `StructuredMemoryThreadsRound`, `StructuredMemoryLogRun`, `StructuredMemoryHealthAnswer`.
+    `StructuredMemoryCoverageRound`, `StructuredMemoryStoryRound`, `StructuredMemoryFindHit`,
+    `StructuredMemoryFindRound`, `MEMORY_FIND_QUERY_CHARS`, `MEMORY_FIND_EXCERPT_CHARS`, `MEMORY_FIND_HITS_MAX`,
+    `StructuredMemoryRunsRound`, `StructuredMemoryThreadsRound`, `StructuredMemoryLogRun`,
+    `StructuredMemoryHealthAnswer`.
   - Edit and lifecycle contracts: `StructuredMemoryEdit`, `StructuredMemoryEditAnswer`, `StructuredMemoryRevertAnswer`,
     `StructuredMemoryFileRecords`, `StructuredMemoryFileEntry`, `MEMORY_RESTORE_BODY_BYTES`,
     `StructuredMemoryInheritAnswer`, `StructuredMemoryRestoreAnswer`, `StructuredMemoryAdoptAnswer`,
@@ -55,9 +57,9 @@
   `writerPaused`. Owner: [writer](writer.md).
 - `src/ts/process/structuredMemory.svelte.ts`: tab route client and package renderer; `StructuredMemoryResult`,
   `readStructuredMemoryContents`, `readStructuredMemoryRecord`, `readStructuredMemoryCoverage`,
-  `readStructuredMemoryStory`, `readStructuredMemoryRuns`, `readStructuredMemoryHealth`, `editStructuredMemory`,
-  `buildStructuredMemoryPackage`, `buildStructuredMemoryLog`, `renderMemoryPage`, `renderMemoryTimeline`,
-  `renderMemoryThreads`, `memoryPagePath`.
+  `readStructuredMemoryStory`, `findStructuredMemory`, `readStructuredMemoryRuns`, `readStructuredMemoryHealth`,
+  `editStructuredMemory`, `buildStructuredMemoryPackage`, `buildStructuredMemoryLog`, `renderMemoryPage`,
+  `renderMemoryTimeline`, `renderMemoryThreads`, `memoryPagePath`.
 
 ## Flows
 
@@ -76,6 +78,22 @@ comparison ties rounds together.
   [Timeline's story view](read.md#pages-timeline-and-threads), which joins them by id with the coverage rows it holds.
   Its rounds charge stored bytes as `/coverage`'s do. `readStructuredMemoryStory` gives the tab only well-shaped display
   fields, since a snapshot row can lack them.
+- `/find` takes exactly one of `q` (trimmed, 1 to `MEMORY_FIND_QUERY_CHARS`, 100, characters) and `page` (a resource
+  id); both, neither, or an invalid value is 400. Text search walks live pages then non-retracted events in contents
+  order; page lookup walks only non-retracted events. Retracted events are neither charged nor read. Both use
+  `roundOf`'s stored-byte budget, positional cursor, and revision checks, with the same query on every round.
+  - Text matching is a plain substring, lowercased per code point with offsets mapped back to the original text. A page
+    gives at most one title/alias hit together (first matching title, then aliases), plus a hit per matching section
+    body. An event gives one hit, preferring summary, key lines, then title for its excerpt. Page lookup finds
+    participants, state-change pageIds, knowledge pageIds or knowers, and relationship from/to, with an empty excerpt.
+  - Each hit's title, heading, and excerpt is capped at `MEMORY_FIND_EXCERPT_CHARS` (160); excerpts center on the first
+    match without splitting surrogate pairs. A page contributes at most `MEMORY_FIND_HITS_MAX` (200) hits, and a round
+    ends after the row that reaches that cap, with `next` at the following row (null at the list's end), so an answer
+    holds fewer than twice the cap even for restored records.
+  - `findStructuredMemory` collects at one revision, restarting with nothing kept on a change, and stops at 200 hits.
+    `more` means hits were dropped or a round remains unread; exactly 200 with no round left is not truncated. The
+    client drops unknown hit kinds or non-string ids and normalizes display fields before
+    [Pages shows them](read.md#pages-timeline-and-threads).
 - Package and [chat-file](lifecycle.md#chat-files) reads collect `/package` and `/threads` at one revision. A round
   reads the revision alone and lists only its kinds: `/runs` and `/threads` by `seq` cursor (`readKindPage`), the others
   by position. The byte budget comes from `RouteLimits.memoryPackageRoundBytes` in `server/src/app.ts`, default

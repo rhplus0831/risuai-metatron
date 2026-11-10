@@ -2828,6 +2828,11 @@ export const languageEnglish = {
             links: "Linked pages",
             filter: "Find a page by title",
             filterNone: "No page title matches.",
+            searchText: "Search text",
+            searchNone: "Nothing matches.",
+            findMore: (max: number) => `Showing the first ${max} matches.`,
+            eventsNaming: "Events naming this page",
+            eventsNamingNone: "No event names this page.",
             types: {
                 character: "Character",
                 location: "Location",

@@ -11,6 +11,7 @@ import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     isSealedHypaV3Data,
+    MEMORY_FIND_HITS_MAX,
     MEMORY_HEALTH_CHATS_MAX,
     MEMORY_PACKAGE_VERSION,
     MEMORY_PAGE_TYPES,
@@ -52,6 +53,8 @@ import {
     type StructuredMemoryEditAnswer,
     type StructuredMemoryFileEntry,
     type StructuredMemoryFileRecords,
+    type StructuredMemoryFindHit,
+    type StructuredMemoryFindRound,
     type StructuredMemoryHealthAnswer,
     type StructuredMemoryHealthFacts,
     type StructuredMemoryImportAnswer,
@@ -115,6 +118,8 @@ import { authFetch } from "../storage/serverAuth";
  * messages first, with the same rule a send uses, so an edit shows at once and with no request.
  * `readStructuredMemoryStory` collects stored summaries at one revision for Timeline's story view,
  * normalizing their display fields before the tab joins them by id with its coverage rows.
+ * `findStructuredMemory` collects text hits or events naming a page at one revision, keeping at most
+ * MEMORY_FIND_HITS_MAX hits and saying whether it dropped hits or left another round unread.
  * `memoryRunView` turns a stored run into what a Log row shows, `memoryPageTree` and
  * `memoryPageHistoryView` a page into its rows, and `memoryWriterNotice` the current state into the
  * panel's writer line. A receipt's link reaches a panel that is not there yet through
@@ -681,6 +686,37 @@ function parseStoryRound(body: AnswerBody, cursor: number): StructuredMemoryStor
     };
 }
 
+/** Display fields from restored records can be missing or malformed; an unknown hit has no target. */
+function parseFindRound(body: AnswerBody, cursor: number): StructuredMemoryFindRound | null {
+    const { revision, hits, next } = body;
+    if (typeof revision !== "string" || !Array.isArray(hits) || !isForward(next, cursor)) {
+        return null;
+    }
+    return {
+        revision,
+        hits: storedItems(hits).flatMap((hit): StructuredMemoryFindHit[] => {
+            if (typeof hit.id !== "string") {
+                return [];
+            }
+            const common = { id: hit.id, title: storedText(hit.title) ?? "", excerpt: storedText(hit.excerpt) ?? "" };
+            if (hit.kind === "page") {
+                return [{ kind: "page", ...common, heading: storedText(hit.heading) ?? null }];
+            }
+            if (hit.kind === "event") {
+                return [
+                    {
+                        kind: "event",
+                        ...common,
+                        sourceIndex: Number.isSafeInteger(hit.sourceIndex) ? (hit.sourceIndex as number) : null,
+                    },
+                ];
+            }
+            return [];
+        }),
+        next: next as number | null,
+    };
+}
+
 function parseThreadsRound(body: AnswerBody, cursor: number): StructuredMemoryThreadsRound | null {
     const { revision, threads, next } = body;
     return typeof revision === "string" && Array.isArray(threads) && isForward(next, cursor)
@@ -1139,12 +1175,13 @@ type RoundsOptions = {
 
 /**
  * One whole read of a route's rounds: every round names `options.revision`, or without one the rounds
- * after the first name the first's, each goes through `take`, and the answer is that revision.
+ * after the first name the first's, each goes through `take`, and the answer is that revision. Returning
+ * false from `take` stops after that round; a path's existing query is kept on every round.
  */
 async function readRounds<Round extends { revision: string; next: number | null }>(
     path: string,
     parse: (body: AnswerBody, cursor: number) => Round | null,
-    take: (round: Round) => void,
+    take: (round: Round) => void | boolean,
     options: RoundsOptions = {},
 ): Promise<StructuredMemoryResult<string>> {
     const { signal } = options;
@@ -1152,14 +1189,16 @@ async function readRounds<Round extends { revision: string; next: number | null 
     let cursor = 0;
     for (;;) {
         const position = cursor;
-        const query = revision === undefined ? "" : `?cursor=${position}&revision=${encodeURIComponent(revision)}`;
+        const separator = path.includes("?") ? "&" : "?";
+        const query =
+            revision === undefined ? "" : `${separator}cursor=${position}&revision=${encodeURIComponent(revision)}`;
         const round = await readAnswer(`${path}${query}`, (body) => parse(body, position), roundRefusalOf, { signal });
         if (round.outcome !== "ok") {
             return round;
         }
-        take(round.value);
+        const keepReading = take(round.value);
         revision ??= round.value.revision;
-        if (round.value.next === null) {
+        if (round.value.next === null || keepReading === false) {
             return { outcome: "ok", value: revision };
         }
         cursor = round.value.next;
@@ -1254,6 +1293,27 @@ export function readStructuredMemoryStory(ref: ChatRef): Promise<StructuredMemor
             }
         });
         return read.outcome === "ok" ? { outcome: "ok", value: { revision: read.value, events } } : read;
+    });
+}
+
+/** Bounded hits at one revision; a changed round restarts with no hits or truncation state kept. */
+export function findStructuredMemory(
+    ref: ChatRef,
+    query: { q: string } | { page: string },
+): Promise<StructuredMemoryResult<{ revision: string; hits: StructuredMemoryFindHit[]; more: boolean }>> {
+    const search = "q" in query ? `q=${encodeURIComponent(query.q)}` : `page=${encodeURIComponent(query.page)}`;
+    return readAtOneRevision(async () => {
+        const hits: StructuredMemoryFindHit[] = [];
+        let more = false;
+        const read = await readRounds(`${chatPath(ref)}/find?${search}`, parseFindRound, (round) => {
+            const remaining = MEMORY_FIND_HITS_MAX - hits.length;
+            hits.push(...round.hits.slice(0, remaining));
+            if (hits.length === MEMORY_FIND_HITS_MAX) {
+                more = round.hits.length > remaining || round.next !== null;
+                return false;
+            }
+        });
+        return read.outcome === "ok" ? { outcome: "ok", value: { revision: read.value, hits, more } } : read;
     });
 }
 

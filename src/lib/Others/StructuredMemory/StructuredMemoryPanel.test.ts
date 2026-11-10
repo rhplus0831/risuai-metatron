@@ -828,6 +828,138 @@ it("opens Pages by default and Timeline for a pending target, with reading tabs 
     ]);
 });
 
+it("searches page and event text, selects hits, and restores the tree when cleared", async () => {
+    const state = serveMemory();
+    state.page.sections[0].heading = "Watch";
+    state.page.sections[0].body = "A <b>beacon</b> shines.\nWait here.";
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.startsWith("/api/memory/structured/c/k/find?")) {
+            expect(new URL(url, "http://memory.test").searchParams.get("q")).toBe("beacon");
+            return Response.json({
+                revision: state.revision,
+                hits: [
+                    {
+                        kind: "page",
+                        id: "p",
+                        title: "The gate",
+                        heading: "Watch",
+                        excerpt: state.page.sections[0].body,
+                    },
+                    { kind: "event", id: "event", title: "Opening", sourceIndex: 0, excerpt: "The beacon went dark." },
+                ],
+                next: null,
+            });
+        }
+        return fetch(url, init, options);
+    });
+    const setFilter = async (value: string) => {
+        const input = target.querySelector<HTMLInputElement>("[data-memory-page-filter] input")!;
+        expect(input).not.toBeNull();
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        await settle();
+    };
+
+    await open();
+    click('[data-memory-page="scene"]');
+    await settle();
+    await setFilter("beacon");
+    expect(reads("find")).toHaveLength(0);
+    expect(query("[data-memory-search-text]")?.textContent?.trim()).toBe(language.structuredMemory.pages.searchText);
+    click("[data-memory-search-text]");
+    await settle();
+    expect(reads("find")).toHaveLength(1);
+    expect(query("[data-memory-page]")).toBeNull();
+    expect(
+        [...target.querySelectorAll<HTMLElement>("[data-memory-find-id]")].map((hit) => [
+            hit.dataset.memoryFindKind,
+            hit.dataset.memoryFindId,
+        ]),
+    ).toEqual([
+        ["page", "p"],
+        ["event", "event"],
+    ]);
+    const pageHit = query('[data-memory-find-id="p"]')!;
+    for (const text of ["The gate", "Watch", state.page.sections[0].body]) expect(pageHit.textContent).toContain(text);
+    expect(pageHit.querySelector("b")).toBeNull();
+    expect(query('[data-memory-find-id="event"]')?.textContent).toContain("Opening");
+    expect(query('[data-memory-find-id="event"]')?.textContent).toContain("The beacon went dark.");
+
+    click('[data-memory-find-id="p"]');
+    await settle();
+    expect(query('[data-memory-panel="pages"]')).not.toBeNull();
+    expect(query("[data-memory-page-detail] h2")?.textContent).toBe("The gate");
+    expect(query("[data-memory-page-detail]")?.textContent).toContain(state.page.sections[0].body);
+    await setFilter("");
+    expect(query("[data-memory-find-hits]")).toBeNull();
+    expect(query('[data-memory-page="p"]')?.getAttribute("aria-current")).toBe("true");
+    expect(query('[data-memory-page="scene"]')).not.toBeNull();
+    expect(reads("find")).toHaveLength(1);
+
+    await setFilter("beacon");
+    query("[data-memory-page-filter]")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await settle();
+    expect(reads("find")).toHaveLength(2);
+    click('[data-memory-find-id="event"]');
+    await settle();
+    expect(query('[data-memory-panel="timeline"]')).not.toBeNull();
+    expect(query('[data-memory-event="event"] > button')?.getAttribute("aria-expanded")).toBe("true");
+    expect(query('[data-memory-event="event"]')?.textContent).toContain("The gate opened");
+});
+
+it("opens events naming a page in source order with unanchored events last and links to Timeline", async () => {
+    const state = serveMemory();
+    const events = [
+        { id: "unanchored", title: "Undated rumor", sourceIndex: null },
+        { id: "later", title: "Gate opens", sourceIndex: 2 },
+        { id: "earlier", title: "Mira arrives", sourceIndex: 0 },
+    ];
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.startsWith("/api/memory/structured/c/k/find?")) {
+            expect(new URL(url, "http://memory.test").searchParams.get("page")).toBe("p");
+            return Response.json({
+                revision: state.revision,
+                hits: events.map((event) => ({ kind: "event", ...event, excerpt: "" })),
+                next: null,
+            });
+        }
+        if (url.includes("/coverage"))
+            return Response.json({
+                revision: state.revision,
+                events: events.map((event) => ({ ...event, status: "active", messageIds: [] })),
+                runs: [],
+                next: null,
+            });
+        const event = events.find(({ id }) => url.endsWith(`/records/events/${id}`));
+        if (event)
+            return Response.json({ revision: state.revision, data: { ...event, summary: `Details: ${event.title}.` } });
+        return fetch(url, init, options);
+    });
+    const eventLinks = () => [...target.querySelectorAll<HTMLElement>("[data-memory-page-event]")];
+
+    await open();
+    click('[data-memory-page="p"]');
+    await settle();
+    expect(query("[data-memory-page-events] > button")?.getAttribute("aria-expanded")).toBe("false");
+    expect(query("[data-memory-page-events] > button")?.textContent).toContain(
+        language.structuredMemory.pages.eventsNaming,
+    );
+    expect(eventLinks()).toHaveLength(0);
+    expect(reads("find")).toHaveLength(0);
+    click("[data-memory-page-events] > button");
+    await settle();
+    expect(eventLinks().map((link) => link.dataset.memoryPageEvent)).toEqual(["earlier", "later", "unanchored"]);
+    expect(eventLinks().map((link) => link.textContent)).toEqual(["Mira arrives", "Gate opens", "Undated rumor"]);
+    expect(reads("find")).toHaveLength(1);
+    click('[data-memory-page-event="later"]');
+    await settle();
+    expect(query('[data-memory-panel="timeline"]')).not.toBeNull();
+    expect(query('[data-memory-event="later"] > button')?.getAttribute("aria-expanded")).toBe("true");
+    expect(query('[data-memory-event="later"]')?.textContent).toContain("Details: Gate opens.");
+});
+
 it("reads page text without editing controls and remembers Manage across page selections", async () => {
     const state = serveUnsupported();
     const page = state.pages[0];

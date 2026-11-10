@@ -7,6 +7,9 @@ import {
     ADOPTED_WRITER_RUN,
     hypaV3DataHoldsSummaries,
     isSealedHypaV3Data,
+    MEMORY_FIND_EXCERPT_CHARS,
+    MEMORY_FIND_HITS_MAX,
+    MEMORY_FIND_QUERY_CHARS,
     MEMORY_HEALTH_CHATS_MAX,
     MEMORY_HEALTH_ROUND_BYTES,
     MEMORY_RECORD_KINDS,
@@ -29,6 +32,8 @@ import {
     type StructuredMemoryDefaultPromptsAnswer,
     type StructuredMemoryEdit,
     type StructuredMemoryEditAnswer,
+    type StructuredMemoryFindHit,
+    type StructuredMemoryFindRound,
     type StructuredMemoryHealthAnswer,
     type StructuredMemoryImportAnswer,
     type StructuredMemoryImportFile,
@@ -234,6 +239,142 @@ function firstSourceIndex(sources: unknown): number | null {
     return first;
 }
 
+/** Per-code-point lowercase, with each resulting code unit mapped to its original code point's start. */
+function lowerFindText(value: string): { text: string; offsets: number[] } {
+    let text = "";
+    let offset = 0;
+    const offsets: number[] = [];
+    for (const point of value) {
+        const lower = point.toLowerCase();
+        text += lower;
+        for (let index = 0; index < lower.length; index += 1) {
+            offsets.push(offset);
+        }
+        offset += point.length;
+    }
+    return { text, offsets };
+}
+
+/** A bounded display field, with neither edge cutting between the halves of a surrogate pair. */
+function findTextWindow(value: unknown, start = 0): string {
+    if (typeof value !== "string") {
+        return "";
+    }
+    const splitsPair = (index: number) =>
+        index > 0 &&
+        value.charCodeAt(index - 1) >= 0xd800 &&
+        value.charCodeAt(index - 1) <= 0xdbff &&
+        value.charCodeAt(index) >= 0xdc00 &&
+        value.charCodeAt(index) <= 0xdfff;
+    start = Math.max(0, Math.min(start, value.length - MEMORY_FIND_EXCERPT_CHARS));
+    if (splitsPair(start)) {
+        start -= 1;
+    }
+    let end = Math.min(value.length, start + MEMORY_FIND_EXCERPT_CHARS);
+    if (splitsPair(end)) {
+        end -= 1;
+    }
+    return value.slice(start, end);
+}
+
+/** A plain substring match's excerpt, centered on its original position even when lowercase expands. */
+function findExcerpt(value: unknown, query: string): string | null {
+    if (typeof value !== "string") {
+        return null;
+    }
+    const lowered = lowerFindText(value);
+    const index = lowered.text.indexOf(query);
+    if (index < 0) {
+        return null;
+    }
+    const start = lowered.offsets[index];
+    const end = lowered.offsets[index + query.length] ?? value.length;
+    return findTextWindow(value, start - Math.floor(Math.max(0, MEMORY_FIND_EXCERPT_CHARS - (end - start)) / 2));
+}
+
+/** Title and aliases share one hit; each matching section adds one, bounded even for restored pages. */
+function findPageHits(id: string, page: unknown, query: string): StructuredMemoryFindHit[] {
+    if (!isPlainObject(page)) {
+        return [];
+    }
+    const title = findTextWindow(page.title);
+    const hits: StructuredMemoryFindHit[] = [];
+    for (const field of [page.title, ...(Array.isArray(page.aliases) ? page.aliases : [])]) {
+        const excerpt = findExcerpt(field, query);
+        if (excerpt !== null) {
+            hits.push({ kind: "page", id, title, heading: null, excerpt });
+            break;
+        }
+    }
+    for (const section of Array.isArray(page.sections) ? page.sections : []) {
+        if (!isPlainObject(section)) {
+            continue;
+        }
+        const excerpt = findExcerpt(section.body, query);
+        if (excerpt !== null) {
+            hits.push({ kind: "page", id, title, heading: findTextWindow(section.heading), excerpt });
+            if (hits.length === MEMORY_FIND_HITS_MAX) {
+                break;
+            }
+        }
+    }
+    return hits;
+}
+
+/** An event names a page through participants, state, knowledge (including knowers), or relationships. */
+function eventNamesPage(event: Record<string, unknown>, pageId: string): boolean {
+    return (
+        (Array.isArray(event.participants) && event.participants.includes(pageId)) ||
+        (Array.isArray(event.stateChanges) &&
+            event.stateChanges.some((item) => isPlainObject(item) && item.pageId === pageId)) ||
+        (Array.isArray(event.knowledge) &&
+            event.knowledge.some(
+                (item) =>
+                    isPlainObject(item) &&
+                    (item.pageId === pageId || (Array.isArray(item.knowers) && item.knowers.includes(pageId))),
+            )) ||
+        (Array.isArray(event.relationshipShifts) &&
+            event.relationshipShifts.some(
+                (item) => isPlainObject(item) && (item.from === pageId || item.to === pageId),
+            ))
+    );
+}
+
+/** One hit per event; text excerpts prefer summary, then key lines, then the already displayed title. */
+function findEventHits(id: string, event: unknown, query: { q: string } | { page: string }): StructuredMemoryFindHit[] {
+    if (!isPlainObject(event)) {
+        return [];
+    }
+    let excerpt: string | null = null;
+    if ("page" in query) {
+        if (eventNamesPage(event, query.page)) {
+            excerpt = "";
+        }
+    } else {
+        excerpt = findExcerpt(event.summary, query.q);
+        for (const line of Array.isArray(event.keyLines) ? event.keyLines : []) {
+            if (excerpt !== null) {
+                break;
+            }
+            if (isPlainObject(line)) {
+                excerpt = findExcerpt(line.text, query.q);
+            }
+        }
+        excerpt ??= findExcerpt(event.title, query.q);
+    }
+    return excerpt === null
+        ? []
+        : [
+              {
+                  kind: "event",
+                  id,
+                  title: findTextWindow(event.title),
+                  sourceIndex: firstSourceIndex(event.sources),
+                  excerpt,
+              },
+          ];
+}
+
 /** The id of the record `edit` addresses. */
 function editedRecordId(edit: StructuredMemoryEdit): string {
     switch (edit.kind) {
@@ -290,6 +431,18 @@ type RoundRead = {
  *   status, and order are not repeated: the tab joins by id with the coverage facts it holds. Rounds
  *   charge stored bytes like the package round. Bytes, `cursor`, `revision`, and refusals work as in
  *   the package round.
+ * - `GET /api/memory/structured/:characterId/:chatId/find?cursor=N&revision=R`: exactly one of `q` (trimmed,
+ *   1..MEMORY_FIND_QUERY_CHARS characters) and `page` (a resource id), otherwise 400. Text search walks
+ *   live pages then non-retracted events; page lookup walks only non-retracted events, in contents order.
+ *   Retracted events are neither charged nor read. Plain substring matching lowercases per code point:
+ *   pages give one title/alias hit together, then one per matching section body; events give one hit,
+ *   preferring summary, key lines, then title for the excerpt. Page lookup matches participants, state
+ *   pageIds, knowledge pageIds/knowers, and relationship from/to, with an empty excerpt. Answers are
+ *   StructuredMemoryFindRound. Every display field is capped at MEMORY_FIND_EXCERPT_CHARS; excerpts
+ *   center on the first match mapped to original offsets, with no split surrogate pairs. A page adds
+ *   at most MEMORY_FIND_HITS_MAX hits; a round ends after the row that reaches that cap, with next at
+ *   the following row (null at the end), so an answer has fewer than twice the cap. Stored bytes,
+ *   cursor, revision, and refusals work as in the package round; keep the same query on every round.
  * - `GET /api/memory/structured/:characterId/:chatId/runs?cursor=N&revision=R`: one round of the chat's
  *   runs, newest first, answered `StructuredMemoryRunsRound`, each without `input` and
  *   `settingsFingerprint`. A round also stops at `MEMORY_RUNS_ROUND_ROWS` runs. Cursor 0 starts at the
@@ -683,6 +836,54 @@ export function registerStructuredMemoryRoutes(
             return { revision, events, next } satisfies StructuredMemoryStoryRound;
         }),
     );
+
+    app.get(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/find`, limiter, authenticated, (c) => {
+        const q = c.req.query("q");
+        const page = c.req.query("page");
+        if ((q === undefined) === (page === undefined)) {
+            return c.json({ error: "Exactly one of q and page is required" }, 400);
+        }
+        const trimmed = q?.trim();
+        if (trimmed !== undefined && (trimmed.length === 0 || trimmed.length > MEMORY_FIND_QUERY_CHARS)) {
+            return c.json({ error: `q must have 1 to ${MEMORY_FIND_QUERY_CHARS} characters` }, 400);
+        }
+        if (page !== undefined && !isValidResourceId(page)) {
+            return c.json({ error: "page must be an id" }, 400);
+        }
+        const query: { q: string } | { page: string } =
+            trimmed !== undefined ? { q: lowerFindText(trimmed).text } : { page: page! };
+        return answerRound(c, ({ characterId, chatId, revision, cursor, read }) => {
+            const contents = store.memory.readKinds(
+                characterId,
+                chatId,
+                "q" in query ? ["pages", "events"] : ["events"],
+            )!;
+            const listed = [
+                ...contents.pages.map(({ id, bytes }) => ({ kind: "pages", id, bytes }) as const),
+                ...contents.events
+                    .filter(({ status }) => status !== "retracted")
+                    .map(({ id, bytes }) => ({ kind: "events", id, bytes }) as const),
+            ];
+            const round = roundOf(listed, cursor, packageRoundBytes);
+            let next = round.next;
+            const hits: StructuredMemoryFindHit[] = [];
+            for (let index = 0; index < round.rows.length; index += 1) {
+                const { kind, id } = round.rows[index];
+                const record = read(kind, id);
+                hits.push(
+                    ...(kind === "pages" && "q" in query
+                        ? findPageHits(id, record, query.q)
+                        : findEventHits(id, record, query)),
+                );
+                if (hits.length >= MEMORY_FIND_HITS_MAX) {
+                    const following = cursor + index + 1;
+                    next = following < listed.length ? following : null;
+                    break;
+                }
+            }
+            return { revision, hits, next } satisfies StructuredMemoryFindRound;
+        });
+    });
 
     app.get(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/runs`, limiter, authenticated, (c) =>
         answerRound(c, ({ characterId, chatId, revision, cursor, read }) => {
