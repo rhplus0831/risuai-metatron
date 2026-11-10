@@ -58,7 +58,7 @@
     `docs/structure/verified.json`, or since the guide was added when it has none; a report, exit 0.
     `pnpm docs:due --verified <guide>...` records `HEAD` for the guides a read-and-verify pass read.
   - `pnpm docs:reads [--out <file>] [<dir>...]` (`util/guideReads.mjs`): guide reads counted over local session
-    transcripts, for a one-off `docs/audit/guide-reads-<date>.md`; not a gate.
+    transcripts, for a one-off `docs/reports/measurements/guide-reads-<date>.md`; not a gate.
 
 ### Config files
 
@@ -212,7 +212,7 @@ even without a save acknowledgement; see [Module import](characters-modules.md#m
 ## State
 
 - Compatibility version: `version.json` and `src/ts/storage/database.svelte.ts` `appVer` (marked `APP_VERSION_POINT`),
-  the upstream RisuAI release the [upstream ledger](../research/upstream-ledger.md) has triaged through. CBS
+  the upstream RisuAI release the [upstream ledger](../backlog/upstream-ledger.md) has triaged through. CBS
   `{{metadata::version}}` and `{{metadata::majorver}}`, card exports, the boot cache, and the server's
   `serverAppVersion` read it. `getVersionString` appends `appSubVer` when set.
 - Build id: committer date (`YYYY.MM.DD`), nine hex digits of the commit, and `-dirty` when `git status` lists a change;
@@ -308,6 +308,6 @@ Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
   (`public/sw.js` lets every navigation fall through): the next document has
   `navigator.serviceWorker.controller === null`, so the app runs in the blob fallback instead of direct asset mode.
   Chrome keeps control, and so does a real Firefox build
-  ([observation](../audit/direct-assets-browser-control-2026-10-24.md)).
+  ([observation](../reports/measurements/direct-assets-browser-control-2026-10-24.md)).
 - The compression step in `pnpm build` costs build time and image size. Quality 9 above 16 MiB exists because quality 11
-  on the ONNX Runtime `.wasm` took too long ([numbers](../audit/build-compression-2026-10-29.md)).
+  on the ONNX Runtime `.wasm` took too long ([numbers](../reports/measurements/build-compression-2026-10-29.md)).

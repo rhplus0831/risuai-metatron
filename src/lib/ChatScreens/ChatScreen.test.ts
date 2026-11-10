@@ -7,7 +7,7 @@ import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { getCustomBackground } from "src/ts/util";
 
 // The chat screen's root is its own stacking context (crosscheck row 12,
-// `docs/research/pocketrisu-fix-crosscheck.md`): bot HTML with `position: fixed` and a high
+// `docs/reports/surveys/pocketrisu-fix-crosscheck.md`): bot HTML with `position: fixed` and a high
 // z-index stays inside it, under the app's popups and alerts (its siblings in `App.svelte`), in
 // every theme. The screen's children are stubs; only the root is read.
 

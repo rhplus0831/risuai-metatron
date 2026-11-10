@@ -11,9 +11,9 @@ agent needs to choose files, change a contract, and verify the result.
 - Document a single module's invariant, order, or failure behavior in a header or on the governing export. See
   `shared/sections.ts` for an example. Put interactions across modules, processes, or tabs in the owning guide and link
   to that contract elsewhere.
-- Put measurements from a run in `docs/audit/`, or `docs/manual-audit/` for owner-requested audits. Keep the editing
-  consequence and report link in the guide. Keep completed plans and phase history in the
-  [archive](../archived-plan/README.md).
+- Put measurements from a run in `docs/reports/measurements/` and an audit's findings in `docs/reports/audits/`. Keep
+  the editing consequence and report link in the guide. Keep completed plans and phase history in the
+  [archive](../archived-plan/README.md). The [docs index](../README.md) says which folder takes what.
 
 Use paths and current identifiers as lookup anchors. A `db.<field>` name refers to the flat persisted `Database` field,
 which settings views and server projections can expose. Describe present behavior and its reason (STRUCTURE T5). Source,
@@ -64,9 +64,9 @@ prefix. Indexes and READMEs have a free outline.
    `docs/structure/verified.json`. No other edit of a guide updates the record.
 7. Between full audits there is no whole-tree pass. The owner calls a full audit from time to time: every guide and the
    index get the read-and-verify pass in one run, the findings are checked by a second reader before they land, and the
-   run records every guide with `pnpm docs:due --verified`, writes its report under `docs/audit/`, and updates the
-   `Last full audit` line in [STRUCTURE.md](../../STRUCTURE.md#doc-maintenance) with its date, the revision it read, and
-   the report.
+   run records every guide with `pnpm docs:due --verified`, writes its report under `docs/reports/audits/`, and updates
+   the `Last full audit` line in [STRUCTURE.md](../../STRUCTURE.md#doc-maintenance) with its date, the revision it read,
+   and the report.
 
 ## Size limits
 
@@ -88,7 +88,7 @@ section has a limit over its subsections.
 
 A change adds its facts to the owning guide and does not trim a guide it would not otherwise touch. A target does not
 stop it: a change that leaves a new `near` line still records its facts, names the line in its report, and adds a
-[found issues](../research/found-issues.md) entry for the split or trim unless one already names that guide. Splits and
+[found issues](../backlog/found-issues.md) entry for the split or trim unless one already names that guide. Splits and
 trims are passes of their own, aimed first at `near` lines and at large guides that `pnpm docs:reads` shows are rarely
 read. Only a limit stops a change, and then the split lands first, as its own commit. See the
 [documentation checker](build-test-platforms.md#documentation-check) for exact rule coverage and its report mode.
@@ -99,13 +99,13 @@ Under `Known Hazards`, use these `###` headings in order. Omit empty headings an
 bullet.
 
 - `Issues` holds unreproduced claims, each prefixed `Unconfirmed:`. Confirmed defects and advertised but unwired
-  behavior live in [known issues](../research/known-issues.md), one queue over every guide (moved there on 2026-11-10):
-  a confirmed claim moves there, and an entry is deleted when the defect is fixed.
+  behavior live in [known issues](../backlog/known-issues.md), one queue over every guide (moved there on 2026-11-10): a
+  confirmed claim moves there, and an entry is deleted when the defect is fixed.
 - `Limitations` holds behavior the owner chose or a consequence of a recorded choice. End the bullet with a short
   decision reference. If the decision is reversed, move the outstanding defect to known issues.
 - `Gotchas` holds facts that can mislead an editor, such as ordering requirements, test environment differences, or a
   plausible-looking file with no callers.
 
-Use [found issues](../research/found-issues.md) for out-of-scope findings that still need verification or an owner. When
+Use [found issues](../backlog/found-issues.md) for out-of-scope findings that still need verification or an owner. When
 a finding is checked and placed, describe it under its owning guide's section of known issues (or in the guide itself as
 a Limitation or Gotcha) and retire the inbox entry. For a confirmed limitation, include the owner's decision.

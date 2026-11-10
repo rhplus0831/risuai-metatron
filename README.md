@@ -116,7 +116,7 @@ The server makes every provider request itself, so inside the container `localho
 
 - [STRUCTURE.md](STRUCTURE.md): The index of the architecture guides, for contributors and coding agents.
 - [plugins.md](plugins.md): The plugin author guide.
-- [docs/research/upstream-ledger.md](docs/research/upstream-ledger.md): Which Risuai changes this fork has taken.
+- [docs/backlog/upstream-ledger.md](docs/backlog/upstream-ledger.md): Which Risuai changes this fork has taken.
 
 ## Upstream and license
 

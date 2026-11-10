@@ -282,7 +282,7 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   `.chat-message-container.far`.
 - `src/lib/Others/PopupEditor.svelte` keeps only the text across its Monaco toggle: the textarea or the Monaco model is
   recreated, so selection and undo history are lost. One model across the switch is a larger editor-lifetime change.
-  Observed by the [cross-plan review](../manual-audit/archive/cross-plan-2026-10-29.md#noted-not-recommended-to-fix).
+  Observed by the [cross-plan review](../reports/audits/cross-plan-2026-10-29.md#noted-not-recommended-to-fix).
   Decision: text-only toggle contract kept, commit `634bc14c7`.
 - Pixel anchoring across far and near row toggles was checked only by a manual Chrome script, with no kept test, and the
   chat list was never driven in Firefox or Safari (far-row containment, anchoring, the newest-first reveal). A client
@@ -290,11 +290,11 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   chat rendering perf series and slice 3f (2026-10-14, 2026-10-16), Audit Findings and Performance Leftovers,
   [archive](../archived-plan/README.md); Found Issues Clearance (owner, 2026-11-09).
 - Older rows do not rerender merely because the chat length changes. Length-dependent CBS updates when that row next
-  renders (edit, reload, remount, etc.). Decision: `docs/research/risunest-ideas.md`.
+  renders (edit, reload, remount, etc.). Decision: `docs/reports/surveys/risunest-ideas.md`.
 - Screenshot export's renderer peak grows with row count despite bounded pages: html-to-image creates per-row clone,
   SVG, and decoded-image garbage that the browser reclaims lazily. Per-page releases do not bound this peak; reducing
   copied custom properties needs pixel comparisons. Decision: measured miss recorded 2026-11-09
-  ([audit](../audit/screenshot-memory-2026-11.md)).
+  ([audit](../reports/measurements/screenshot-memory-2026-11.md)).
 
 ### Gotchas
 

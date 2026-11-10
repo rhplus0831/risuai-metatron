@@ -214,8 +214,8 @@ owns the ordering details.
 and pinned chats. `chatStatus.svelte.ts` owns state selection; `watchChatVisibility` owns the read triggers.
 `MEMORY_HEALTH_STATES` gives the worst-state order, while `CHAT_STATUS_PRIORITY` keeps health below unseen replies. The
 health route's prefix and byte budget are described in [records](records.md#the-read-routes) and its
-[measurement](../../audit/structured-memory-health-read-2026-11-03.md). Contents' health feeds the writer line; a send's
-`writerState` gets `pending` with reason `repair` from in-hand `records.events`.
+[measurement](../../reports/measurements/structured-memory-health-read-2026-11-03.md). Contents' health feeds the writer
+line; a send's `writerState` gets `pending` with reason `repair` from in-hand `records.events`.
 
 In `noteJobDone`, an `error` terminal coded `memoryRequiredOverCap` sets that chat's mark, a preview's included; a
 `done` with a `messageId` clears only that chat's. `DefaultChatScreen` shows health under `ContextMeter` even with the
@@ -340,10 +340,11 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
 - `selectMemory` takes 520–584 ms on a 1,000-turn send, mostly tokenizing (296–356 ms) and cache reads. Counting each
   text once per selection did not help (9 of about 2,190 counts were repeats; tried and reverted); the gain needs it to
   reuse the counts `assemble.ts` already took for `currentTokens`. Decision: Found Issues Decisions (owner, 2026-11-08),
-  [audit](../../audit/structured-memory-2026-11-03.md).
+  [audit](../../reports/measurements/structured-memory-2026-11-03.md).
 - Small contexts starve the last lanes: at 16,384 tokens of context the `threads` lane gets nothing once event lines
   carry three quotes (found at 32,768), and a query naming two events loses one of them in a long chat at 32,768 too.
-  Decision: Found Issues Decisions (owner, 2026-11-08), [audit](../../audit/structured-memory-2026-11-03.md).
+  Decision: Found Issues Decisions (owner, 2026-11-08),
+  [audit](../../reports/measurements/structured-memory-2026-11-03.md).
 
 ### Gotchas
 

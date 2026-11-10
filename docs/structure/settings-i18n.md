@@ -298,7 +298,7 @@ section.
   connection and capacity fields; model capability gates read `ctx.modelInfo`.
 - The preset list (`botpreset.svelte`) reads every row through its record wrapper, which keeps a 50-preset reorder just
   outside its target; keyed rows made it slower, and a plain-row projection is untried
-  ([preset reorder audit](../audit/preset-reorder-2026-10-05.md)).
+  ([preset reorder audit](../reports/measurements/preset-reorder-2026-10-05.md)).
 - `pluginDevelopMode`, `forceProxyAsOpenAI`, `moveInsteadOfCopyOnCMPConvert`, and `personaNote` are persisted `ui`
   toggles with no reader and no settings item; their fields, defaults, and `shared/sections.ts` places stay for saved
   data.

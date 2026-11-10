@@ -2581,7 +2581,7 @@ describe("model profiles", () => {
     });
 });
 
-// PocketRisu's shared-code fixes that applied here (`docs/research/pocketrisu-fix-crosscheck.md`).
+// PocketRisu's shared-code fixes that applied here (`docs/reports/surveys/pocketrisu-fix-crosscheck.md`).
 describe("a whitespace-only system prompt (crosscheck row 2)", () => {
     const blankSystem = (): RequestArgs => ({
         ...prompt(),

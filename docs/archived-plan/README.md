@@ -133,15 +133,15 @@ it is not a current architecture guide.
 | Render Work Budget                       | `a72c5f736`: `docs/plan/render-work-budget.md`                            | [CBS and rendering](../structure/cbs-rendering.md), [UI and theming](../structure/ui-theming.md), [translation](../structure/translation.md), [test harness](../structure/test-harness.md) (`measureRenderWork.mjs`)                                                                                                                                                                                                                                                                        |
 | Plugin Storage and Data API              | `f521f3d63`: `docs/plan/plugin-storage.md`                                | [plugins](../structure/plugin-sandbox.md) (State, Gotchas, Tests), [resource sync](../structure/resource-sync.md) (Record patches), [server resources](../structure/server-resources.md) (kinds, resource routes), [chat store](../structure/chat-store.md) (detached reads, `chatSummaryList`), [backup sync hub](../structure/backup-sync-hub.md) (Upstream database export), [test harness](../structure/test-harness.md) (`measurePluginData.mjs`), `plugins.md`                        |
 | Reroll Candidates                        | `7a4e8d113`: `docs/plan/reroll-candidates.md`                             | [chat pipeline](../structure/chat-pipeline.md) (Reroll), [chat store](../structure/chat-store.md) (`selectCandidate`), [server generation](../structure/server-generation.md) (in-place reroll job), [memory](../structure/memory.md) (commit boundary), [backup sync hub](../structure/backup-sync-hub.md) (candidates on export and import)                                                                                                                                               |
-| Found Issues Sweep                       | `b37776a72`: `docs/plan/found-issues-sweep.md`                            | The owning guides' Known Hazards; the deferred groups and accepted notes stay in [found-issues](../research/found-issues.md)                                                                                                                                                                                                                                                                                                                                                                |
+| Found Issues Sweep                       | `b37776a72`: `docs/plan/found-issues-sweep.md`                            | The owning guides' Known Hazards; the deferred groups and accepted notes stay in [found-issues](../backlog/found-issues.md)                                                                                                                                                                                                                                                                                                                                                                 |
 | Implementation Audit Fixes               | `607a33d74`: `docs/plan/implementation-audit-fixes.md`                    | [server resources](../structure/server-resources.md), [server](../structure/self-host-server.md), [server generation](../structure/server-generation.md), [chat store](../structure/chat-store.md), [plugins](../structure/plugin-sandbox.md), [translation](../structure/translation.md), [CBS and rendering](../structure/cbs-rendering.md), [assets](../structure/assets.md) (Q1), the [structured memory](../structure/structured-memory/README.md) pages                               |
-| Chat Store and Structured Memory Sweep   | `e99fca9a7`: `docs/plan/store-memory-sweep.md`                            | [resource sync](../structure/resource-sync.md), [chat store](../structure/chat-store.md), [chat pipeline](../structure/chat-pipeline.md), [server resources](../structure/server-resources.md), [plugins](../structure/plugin-sandbox.md), [draft recovery](../structure/draft-recovery.md), the [structured memory](../structure/structured-memory/README.md) pages; the deferred groups' entries stay in [found-issues](../research/found-issues.md)                                      |
+| Chat Store and Structured Memory Sweep   | `e99fca9a7`: `docs/plan/store-memory-sweep.md`                            | [resource sync](../structure/resource-sync.md), [chat store](../structure/chat-store.md), [chat pipeline](../structure/chat-pipeline.md), [server resources](../structure/server-resources.md), [plugins](../structure/plugin-sandbox.md), [draft recovery](../structure/draft-recovery.md), the [structured memory](../structure/structured-memory/README.md) pages; the deferred groups' entries stay in [found-issues](../backlog/found-issues.md)                                       |
 | Multi-Client Data Safety Checks          | `211ac71e2`: `docs/plan/multi-client-e2e.md`                              | [resource sync](../structure/resource-sync.md), [chat store](../structure/chat-store.md) (Q3 Limitation), [draft recovery](../structure/draft-recovery.md), [live updates](../structure/live-updates.md), [server generation](../structure/server-generation.md), [test harness](../structure/test-harness.md)                                                                                                                                                                              |
 | Storage Settings Page                    | `d745dcb8f`: `docs/plan/storage-settings-page.md`                         | [settings](../structure/settings-i18n.md), [app shell](../structure/app-shell.md), [assets](../structure/assets.md), [server](../structure/self-host-server.md)                                                                                                                                                                                                                                                                                                                             |
 | Module Headers                           | `25537bb26`: `docs/plan/module-headers.md`                                | [self-host server](../structure/self-host-server.md), [chat pipeline](../structure/chat-pipeline.md), [global API](../structure/global-api.md), [LLM requests](../structure/llm-requests.md), [persistence](../structure/persistence.md): the source module headers and export doc comments their `Files` entries name                                                                                                                                                                      |
 | Found Issues Decisions                   | `2beca50d5`: `docs/plan/found-issues-decisions.md`                        | [LLM requests](../structure/llm-requests.md), [server generation](../structure/server-generation.md), [plugins](../structure/plugin-sandbox.md), [self-host server](../structure/self-host-server.md), the [structured memory](../structure/structured-memory/README.md) pages; E1's Limitations in their owning guides                                                                                                                                                                     |
 | Found Issues Clearance                   | `e8758c2a8`: `docs/plan/found-issues-clearance.md`                        | [LLM requests](../structure/llm-requests.md), [translation](../structure/translation.md), [UI theming](../structure/ui-theming.md), [diagnostics](../structure/diagnostics.md), [assets](../structure/assets.md), [test harness](../structure/test-harness.md); H1's Limitations in their owning guides                                                                                                                                                                                     |
-| Upstream Intake 2                        | `4d1542d92`: `docs/plan/upstream-intake-2.md`                             | [upstream ledger](../research/upstream-ledger.md) (its rows for `f50b5942..4d87a70ff`), [plugins](../structure/plugin-sandbox.md), [self-host server](../structure/self-host-server.md), [scripts and triggers](../structure/scripts-triggers.md), [CBS rendering](../structure/cbs-rendering.md), [global API](../structure/global-api.md), [characters and modules](../structure/characters-modules.md)                                                                                   |
+| Upstream Intake 2                        | `4d1542d92`: `docs/plan/upstream-intake-2.md`                             | [upstream ledger](../backlog/upstream-ledger.md) (its rows for `f50b5942..4d87a70ff`), [plugins](../structure/plugin-sandbox.md), [self-host server](../structure/self-host-server.md), [scripts and triggers](../structure/scripts-triggers.md), [CBS rendering](../structure/cbs-rendering.md), [global API](../structure/global-api.md), [characters and modules](../structure/characters-modules.md)                                                                                    |
 
 The archived Web Push file still says “planned”; the implementation shipped in
 `e148f7276`. Its historical status text must not be used as the current feature state.
@@ -154,7 +154,7 @@ The archived Status and Decisions paragraphs list its commits and the choices ea
 Still open: `e2e/settingsPages.spec.ts` was updated in each slice but never run; the fetched
 WaveSpeed model list still resets when Image Generation is left; the subtitle tool's Whisper mode
 uses the OpenAI key with no status or link there.
-Data-Loss Under Concurrency (the fix plan for `docs/manual-audit/data-loss-concurrency-2026-10-18.md`)
+Data-Loss Under Concurrency (the fix plan for `docs/reports/audits/data-loss-concurrency-2026-10-18.md`)
 landed all 18 slices on 2026-10-18 and 2026-10-19; the archived Status line lists each slice's
 commit and its "Decisions made by landed slices" paragraph records the choices the slices made
 (1a's `setMessage` rule, 1c's summary merge rule, 5a's `onStorageDiscarded` event, 6b's 100-id
@@ -321,7 +321,7 @@ slice on metatron between 2026-10-21 and 2026-10-22:
   - It fixed four scheduler races.
   - It passed three overload runs and four parallel suites.
 
-The inventory `docs/audit/timing-dependent-tests-2026-10-19.md` is complete. It is a historical
+The inventory `docs/reports/audits/timing-dependent-tests-2026-10-19.md` is complete. It is a historical
 record: a new real-time dependency is a V3 violation, not a new row. Still open:
 
 - Kept by decision:
@@ -424,7 +424,7 @@ e2e spec (17 specs, 35 tests), `pnpm build`, `docker build`, and a container smo
 `metatron` hash. The index's Status line is the per-slice record in landing order.
 
 Static Audit Fixes (the 2026-10-23 static audit's data-loss, network, and resource findings,
-`docs/audit/static-audit-2026-10-23.md`) landed all 14 slices: SA1 Toggle preset additions merge across tabs (`84ff35294`); SA2 An adopted character create learns its chat order (`ada2e3139`); SA3 Refused data stays protected and can be released (`4f545bc02`); SA4 Refused data is shown with export, retry, and discard (`072e0f68d`); SA5 The live feed backs off until reconciliation succeeds (`8a3a6d00b`); SA6 The restore watcher aborts its timed-out read (`8c6a67465`); SA7 Image generation takes a signal; ComfyUI polls its prompt only (`5bcc152a7`); SA8 Stop aborts TTS requests and retries (`fda8d2b35`); SA9 The upstream export prepares in a worker (`f3c4b942a`); SA10 The local model queue admits by count and bytes (`c317b2bd4`); SA11 Job callbacks abort image work (`99ad3aada`); SA12 Durable writes for assets, snapshots, push, and diagnostics (`9c460b847`); SA13 Auth files are durable, damage-safe, and rate limited (`aaa118e9e`); SA14 Queued callbacks fail together when nobody is attached (`3811ebfd9`). Still open:
+`docs/reports/audits/static-audit-2026-10-23.md`) landed all 14 slices: SA1 Toggle preset additions merge across tabs (`84ff35294`); SA2 An adopted character create learns its chat order (`ada2e3139`); SA3 Refused data stays protected and can be released (`4f545bc02`); SA4 Refused data is shown with export, retry, and discard (`072e0f68d`); SA5 The live feed backs off until reconciliation succeeds (`8a3a6d00b`); SA6 The restore watcher aborts its timed-out read (`8c6a67465`); SA7 Image generation takes a signal; ComfyUI polls its prompt only (`5bcc152a7`); SA8 Stop aborts TTS requests and retries (`fda8d2b35`); SA9 The upstream export prepares in a worker (`f3c4b942a`); SA10 The local model queue admits by count and bytes (`c317b2bd4`); SA11 Job callbacks abort image work (`99ad3aada`); SA12 Durable writes for assets, snapshots, push, and diagnostics (`9c460b847`); SA13 Auth files are durable, damage-safe, and rate limited (`aaa118e9e`); SA14 Queued callbacks fail together when nobody is attached (`3811ebfd9`). Still open:
 no two-tab browser check of the toggle preset merge (SA1); the refused-data banner's placement on
 mobile, Firefox, and Safari (SA4, checked in Chromium at 1280×800 and 390×844); Stop and cancel
 against real providers (ComfyUI, Wavespeed, a live provider request; SA7, SA8); the export worker's
@@ -437,7 +437,7 @@ together only for jobs opened at or before the expired root's dispatch (the orch
 the narrowing on code grounds; `server-generation.md` Generation channels). SA2 closed the open-bug-fixes
 A3 leftover, removed from this file.
 
-Chat Checkpoints (RisuBard save slots, `docs/research/risubard-survey.md` §2.3.1) landed all 6
+Chat Checkpoints (RisuBard save slots, `docs/reports/surveys/risubard-survey.md` §2.3.1) landed all 6
 slices: CC1 Checkpoint tables and store (`b8b75f2e6`); CC2 Snapshots, restore, and archives carry checkpoints (`8f16dd41e`); CC3 Routes, load, restore floor, and the busy check (`30dfc52cf`); CC4 Auto-checkpoint after a finished job (`a5398dd28`); CC5 Client checkpoint module and dialog (`f3635120b`); CC6 Persistence guide update (`56a21a914`). Measured (CC4, a 2000-message chat of about 10 MB): an auto checkpoint
 takes about 110–170 ms synchronously when it saves and about 30 ms when nothing needs saving.
 Still open: one browser check of the Checkpoints dialog's auto-policy row against the real policy
@@ -483,13 +483,13 @@ after the pause (TK4 skipped it because TK3 landed later); the capture scripts c
 re-capture token ids in the browser, so the frozen `browser-ids.json` is the reference (TK2, TK4;
 project memory on the capture guard).
 
-Generation Stage Spinner (`docs/research/chat-generation-stage-colors-analysis.md`) landed all 4 slices:
+Generation Stage Spinner (`docs/reports/audits/chat-generation-stage-colors-analysis.md`) landed all 4 slices:
 GS1 Stage contract and its retention in the job registry (`e1b49f057`); GS2 The runner reports its stages (`df489ec91`); GS3 The tab keeps each job's stage (`54e553623`); GS4 The spinner shows the selected chat's stage (`34c7fe355`). Still open: a visual check with a real provider (GS4; `.loadmove` has a 0.5 s color
 transition, so a stage as short as a mock's blends); an attach replays only the current stage, so a
 quick memory step can hide the first `preparing` (project memory).
 
 Upstream Integration (ports of upstream RisuAI up to `f50b5942`, inventory of all 79 upstream commits)
-landed all 23 slices: UP1 Current upstream block saves import (`ffc4d03aa`); UP2 Upstream plugin storage index imports (`3c80346dc`); UP3 The save harness gains the current upstream target (`43bb3c63d`); UP4 The guest bridge accepts only its parent's messages (`128e6949c`); UP5 The lite setter cannot change the plugin list (`052b6cad9`); UP6 SafeElement listeners attach to their element (`717a371f5`); UP7 Lore keep and don't-activate flags are per entry (`e555f2f0c`); UP8 HypaV3 contextual vectors keep their identity (`15ea7614f`); UP9 Gemini tool responses carry no role (`4b9d23ada`); UP10 CBS prefillsupported reads the model's flag (`5909b8dfc`); UP11 Claude 5 Opus and adaptive-only thinking (`9bd9501b6`); UP12 Gemini catalog entries and a unique id check (`e4ea7c5a3`); UP13 Wasmoon stops proxying JS objects (`385cc8da0`); UP14 Lua axLLM picks its model slot (`39f94aaff`); UP15 Lua image generation takes a NovelAI orientation (`3a9404635`); UP16 Lua form submission (`2285021da`); UP17 Select text does not clip in Safari (`9d85d9b8f`); UP18 Card export survives a missing portrait (`1bb7c82a3`); UP19 Creating a module adds it once (`0d0927d7c`); UP20 Realm creator blocking (`eb44b166c`); UP21 A chat parse error shows its stack (`695a13dc0`); UP22 Keep-alive audio counts as audible (`15503de1f`); UP23 Upstream ledger (`513808713`). The lasting ledger is `docs/research/upstream-ledger.md` (79
+landed all 23 slices: UP1 Current upstream block saves import (`ffc4d03aa`); UP2 Upstream plugin storage index imports (`3c80346dc`); UP3 The save harness gains the current upstream target (`43bb3c63d`); UP4 The guest bridge accepts only its parent's messages (`128e6949c`); UP5 The lite setter cannot change the plugin list (`052b6cad9`); UP6 SafeElement listeners attach to their element (`717a371f5`); UP7 Lore keep and don't-activate flags are per entry (`e555f2f0c`); UP8 HypaV3 contextual vectors keep their identity (`15ea7614f`); UP9 Gemini tool responses carry no role (`4b9d23ada`); UP10 CBS prefillsupported reads the model's flag (`5909b8dfc`); UP11 Claude 5 Opus and adaptive-only thinking (`9bd9501b6`); UP12 Gemini catalog entries and a unique id check (`e4ea7c5a3`); UP13 Wasmoon stops proxying JS objects (`385cc8da0`); UP14 Lua axLLM picks its model slot (`39f94aaff`); UP15 Lua image generation takes a NovelAI orientation (`3a9404635`); UP16 Lua form submission (`2285021da`); UP17 Select text does not clip in Safari (`9d85d9b8f`); UP18 Card export survives a missing portrait (`1bb7c82a3`); UP19 Creating a module adds it once (`0d0927d7c`); UP20 Realm creator blocking (`eb44b166c`); UP21 A chat parse error shows its stack (`695a13dc0`); UP22 Keep-alive audio counts as audible (`15503de1f`); UP23 Upstream ledger (`513808713`). The lasting ledger is `docs/backlog/upstream-ledger.md` (79
 rows: integrated 32, equivalent 20, excluded 22, deferred 5 with revisit triggers; the intake
 procedure for the next scan). Decisions: D2 reversed the Stop B lore flag choice (UP7); the
 `--bin` harness gained the `current` target and the migration pass (UP3). Still open: importing a
@@ -575,8 +575,8 @@ and Safari; the deferred Recalculate (it needs a preview job that writes nothing
 issues); and the memory-mode "may run memory" hint, which was not built.
 
 Deep Audit Fixes (the bounded, confirmed findings of the two 2026-10-26 audits,
-[server/client stabilization](../research/deep-audit/server-client-stabilization.md) and
-[server migration](../research/deep-audit-with-fable/server-migration-audit.md), plus the
+[server/client stabilization](../reports/audits/deep-audit/server-client-stabilization.md) and
+[server migration](../reports/audits/deep-audit-with-fable/server-migration-audit.md), plus the
 found-issues list and the agents' memory leftovers) landed all 9 slices on `dev` on 2026-10-26
 through the plan runner (`delegate-implementation` for every slice, Codex implementers and
 challengers), one cherry-picked commit each: 1 trigger results merge `scriptstate` and the other
@@ -713,7 +713,7 @@ over the snapshot budget fails every uncached target (3); four kinds beyond the 
 were dropped, since no display path reads them (5); a refilled key may hold other random, clock or
 plugin text while `same` confirms the tab's older text (7); a GUI reset advances the tab cache's
 generation without clearing it, and a synchronous source hash with an exact source check replaces
-`sha256(source)` (8). Findings outside the plan went to `docs/research/found-issues.md` (Display
+`sha256(source)` (8). Findings outside the plan went to `docs/backlog/found-issues.md` (Display
 transform). Still open: the device checks on the Android PWA over mobile data (A → B → A shows rows
 at once; no disturbing flicker after a send; repeated switches answer only `same`).
 
@@ -748,7 +748,7 @@ as one unit, both sides reordering a collection conflicts, and a merged empty re
 conflicts (11). Q3 did not hold as planned: headless Chrome 156 restored the page from the
 back/forward cache while it held its journal owner lock (`pageshow.persisted`, `notRestoredReasons:
 null`; a draft recovery Gotcha), and pending writes across such a cached return were not driven.
-Findings outside the plan went to `docs/research/found-issues.md` (Save journal and recovery). Still
+Findings outside the plan went to `docs/backlog/found-issues.md` (Save journal and recovery). Still
 open: the device checks (an Android PWA killed from the task switcher, the iOS Home Screen app,
 Safari including the bfcache return, Firefox), the recovery dialog at phone width, and the
 "Recovered changes" row shown while drafts exist (unit-tested only).
@@ -999,7 +999,7 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     log and `?since=` cursor. A reconnect after a change made while hidden reads a 536-byte
     replay instead of the 88,727-byte listing (measureBoot resume-away, 425 → 358 ms); the
     listing stays the fallback when the log no longer covers the tab's cursor.
-  - Found by the run (in `docs/research/found-issues.md`): measureBoot gaps; a
+  - Found by the run (in `docs/backlog/found-issues.md`): measureBoot gaps; a
     `readersCharacters` e2e timeout behind the Safe boot notice. The server import and
     restore skipping existing assets on existence alone was fixed after the audit (U2).
 - Per-Event Server Work:
@@ -1015,7 +1015,7 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     falls to it (D2 row diffs, `917273384`: about 1,700 bytes per checkpoint, 0 observer
     whole reads instead of 4); in place of a text delta on the job socket, the owner's
     `chatPatch` names its streamed row (D3, `f906c864e`: 33,265 → 498 bytes per checkpoint).
-  - Found by the run (in `docs/research/found-issues.md`): a first metadata write that may
+  - Found by the run (in `docs/backlog/found-issues.md`): a first metadata write that may
     still diff (cause unconfirmed), duplicate `loreOverrides` kept after an acknowledged
     write, the test-only `isBarrierFailure`, and the `perChatSends` `localStorage` failure
     with its `serverTransform` knock-on.
@@ -1036,7 +1036,7 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     under the default 2048 MiB by what the 100 MiB request cap admits), the version-2 import
     finishes through a shutdown instead of stopping, and `eventsFor`, reports and shares still
     write synchronously.
-  - Found by the run (in `docs/research/found-issues.md`): routes that still re-measure a
+  - Found by the run (in `docs/backlog/found-issues.md`): routes that still re-measure a
     counted body, the `chatCheckpoints` copy of the body limiter, the test-only
     `checkpoints.sweep`, the login that appends a known key hash again, the "every start"
     normalizer comments, `discardRefusedChat` without a deadline, and the unseeded
@@ -1054,7 +1054,7 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     and was not run.
   - Not planned (the plan's Later list): a per-plan docs budget compared through `--report`, and
     a second reader pass over the smallest guides for the prose rules.
-  - Found by the run: 33 entries in `docs/research/found-issues.md`, under Client and plugins,
+  - Found by the run: 33 entries in `docs/backlog/found-issues.md`, under Client and plugins,
     Build, drivers, and e2e, and Guides, among others.
 - Structured Memory:
   - All 31 slices landed on 2026-11-02 and 2026-11-03 (plan-runner); `dev` moved to `0cd49a3d3`.
@@ -1063,13 +1063,13 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     quote their required slots, import goes only into an empty chat, and screening reaches the
     writer only.
   - Q2 (replace HypaV3 by default) stays open until a real-model A/B from the recipe in
-    `docs/audit/structured-memory-2026-11-03.md`. `MEMORY_CALL_OVERHEAD_TOKENS` went to 3,000
+    `docs/reports/measurements/structured-memory-2026-11-03.md`. `MEMORY_CALL_OVERHEAD_TOKENS` went to 3,000
     without that check (owner, 2026-11-08).
   - Untested: 69 device, browser, and real-model checks listed per slice in the run's final
     report, among them Firefox and Safari, Android PWA, a real V3 plugin, and real provider costs.
   - Rollback cost: an older build refuses a snapshot with the `memory_state` column, reads a
     trashed page as live, and refuses a chat file holding `merge` or `split` history entries.
-  - Found by the run: 17 entries under Structured Memory in `docs/research/found-issues.md`.
+  - Found by the run: 17 entries under Structured Memory in `docs/backlog/found-issues.md`.
 - Server Plugin Runtime:
   - Retired by the owner on 2026-11-03 before any slice landed. It proposed an opt-in
     QuickJS-wasm runtime in the script worker pool (`//@runtime server`) running the hook half
@@ -1087,14 +1087,14 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     STRUCTURE.md from 33,151 to 19,083 bytes; per-module facts moved into source doc comments, every trim
     carried a fact ledger checked by `pnpm docs:ledger`, and `TREE_BYTES_RATCHET` stands at 825,000.
   - Path Ownership became `ownership.json`, validated by `pnpm check:docs` and queried by `check:changed`.
-  - Use was measured in `docs/audit/guide-reads-2026-11-05-wave3.md`: whole-file guide reads fell from
+  - Use was measured in `docs/reports/measurements/guide-reads-2026-11-05-wave3.md`: whole-file guide reads fell from
     30.6% of section-capable reads before `docs:read` to 5.7% in waves 2 and 3.
   - Owner decision: the 40,000-byte ceiling, 36,000 target, 8,000 leaf, and 600-character item budgets stay
     (option A of that audit); revisit when a guide passes 36,000.
   - Not planned (the plan's Later list): a check that a `Files` entry's backticked identifiers exist in its
     path, and a `Files` generator from the owned modules' exports.
   - Found by the run: 51 findings, as 34 new entries and one updated entry, across most sections of
-    `docs/research/found-issues.md`.
+    `docs/backlog/found-issues.md`.
 - Job Handoff:
   - All four slices landed on 2026-11-05 (plan-runner, on `dev`): `d60741baf` (server creator/owner,
     takeover tickets, offers), `5ea1222a4` (tab roles, worker policy, the creator's view), `c9344075d` (presence
@@ -1105,7 +1105,7 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     behind another job's expired root can end before the `absent` offer's 50 s budget.
   - Still open: the device checks (a phone with its screen off handing a job to a PC worker, a PC worker minimized
     for over 5 minutes, the phone's toast, stream, Stop and "Take back", the "Hand off to" menu across two browsers).
-  - Found by the run: 4 entries in `docs/research/found-issues.md` (a retaken job's dropped live stream, a current
+  - Found by the run: 4 entries in `docs/backlog/found-issues.md` (a retaken job's dropped live stream, a current
     owner taking its own offer, the role event's missing `clientName`, a cancelled hook overlapping the worker's
     next callback).
 - Render Work Budget:
@@ -1114,9 +1114,9 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     transform and translation requests are cancelled only when their last subscriber leaves, translation has a
     global cap of 10 provider requests, identical CSS is scoped once in a bounded cache, and the screenshot export
     writes capped PNG pages through a Blob.
-  - Measured in `docs/audit/render-work-budget-2026-11-05.md`: three acceptance items met (no parser or
+  - Measured in `docs/reports/measurements/render-work-budget-2026-11-05.md`: three acceptance items met (no parser or
     translation call after a switch, one preparation per sheet); two not met and moved to
-    `docs/research/found-issues.md` by owner decision (more than one transform chunk in flight at a switch, the
+    `docs/backlog/found-issues.md` by owner decision (more than one transform chunk in flight at a switch, the
     screenshot peak growing with rows). Traces stay out of git in the main checkout's git directory.
   - Not planned (the plan's Later list): F3 and F6 (the mount profile did not settle between single runs), an
     early release of a cancelled chunk's server snapshot, reversing Q4 (let dispatched transform requests finish)
@@ -1125,7 +1125,7 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
   - Owner device checklist, open: Firefox and Safari page size at Safari's canvas limit, iOS Safari's canvas area
     against `MAX_EXPORT_PIXELS`, a multi-page export in an image viewer, a failed export's error alert and scroll
     restore in a real browser, a phone switching chats mid-auto-translate, far-row containment.
-  - Found by the run: five entries in `docs/research/found-issues.md` (the two unmet items, the black page fill,
+  - Found by the run: five entries in `docs/backlog/found-issues.md` (the two unmet items, the black page fill,
     the run left alive by raw streaming, `getFileSrc` never rejecting).
 - Asset Lifecycle:
   - All five slices landed on 2026-11-05 (plan-runner, on `dev`): `b7095d591` (the mark, the ledger, the report and
@@ -1135,11 +1135,11 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     `36a8e6e1e`, and `1f85bea4b`. Each slice's deviations from its text are listed under it in the archived file.
   - Owner-visible behavior: a card import ends with an error when a key its record names is gone and its bytes
     are not in hand; the sweep's synchronous turn re-marks the whole live store (about 1.7 s idle, 2.8–3.1 s under
-    load on the audit seed, `docs/audit/asset-scan-2026-11-05.md`), during which every request waits.
+    load on the audit seed, `docs/reports/measurements/asset-scan-2026-11-05.md`), during which every request waits.
   - Still open: the device checks (a Docker volume on a nearly full disk: the 507 answers of the restore, the
     backup import, the upstream commit, the upstream export prepare, and the manual snapshot, and the snapshot
     tick logging once and skipping); a clicked-through check of the Storage panel beyond the driver.
-  - Found by the run: 2 entries in `docs/research/found-issues.md` (a declined lowLevelAccess on a JSON card
+  - Found by the run: 2 entries in `docs/backlog/found-issues.md` (a declined lowLevelAccess on a JSON card
     falling through to the off-spec import, `docs:owner` sending the asset lifecycle client to persistence).
 - Incremental Chat Transport:
   - All six slices landed on 2026-11-05 (plan-runner, on `dev`): `f033d69ce` (Slice 0, the validated message position
@@ -1154,7 +1154,7 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     until it reloads (D8); while a Job Handoff viewer is attached, the owner gets its streamed rows whole.
   - Still open: Firefox, Safari and mobile runs of the reconnect and the feed; the two-device check of a long reply
     watched from a second device; an owner reloading mid-stream on a real device (`streamed` rows and the resync).
-  - Found by the run: 4 entries in `docs/research/found-issues.md` (the change log's row-count bound, `proto` absent
+  - Found by the run: 4 entries in `docs/backlog/found-issues.md` (the change log's row-count bound, `proto` absent
     from Diagnostics, `measureChats.mjs` and safe boot, a `checkServerSend` alert after its reload).
 - Plugin Storage and Data API:
   - All 11 slices landed on 2026-11-05 (plan-runner, on `dev`): `c140f2db7` (Slice 0, the measurement driver),
@@ -1177,7 +1177,7 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
   - Not planned (the plan's Later list): a streamed `getDatabase` transfer into the iframe, device-local large storage
     spaces, owners for `getLocalPluginStorage()` and the top-level custom keys, and changing `getDatabase()`'s default
     once the developer access recorder has run on the owner's plugins (Q5).
-  - Found by the run: 5 entries in `docs/research/found-issues.md` (the feed still sending `pluginStorage` and plugin
+  - Found by the run: 5 entries in `docs/backlog/found-issues.md` (the feed still sending `pluginStorage` and plugin
     toggles whole, `flushResources` after a restore halt, Reset permissions leaving a running plugin's capabilities, a
     multi-tab removal bringing deleted data back, the global-api guide's checkbox confirm).
 - Reroll Candidates:
@@ -1192,7 +1192,7 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
   - Not planned (the plan's Later list): a single-candidate delete control, a boot sweep writing back the previous
     candidate after a process death, bundle candidates for multi-reply tails, PocketRisu `swipes` in the `.bin`
     export, and pruning older messages' candidates at the commit boundary.
-  - Found by the run: 2 entries in `docs/research/found-issues.md` (the dead dynamic reroll icon variant, the
+  - Found by the run: 2 entries in `docs/backlog/found-issues.md` (the dead dynamic reroll icon variant, the
     Structured Memory decision pointers that still say "plan").
 - Found Issues Sweep:
   - All 26 slices landed on 2026-11-05 (plan-runner, on `dev`); the archived Status line lists each slice's
@@ -1205,8 +1205,8 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     detach, plugin lifecycle, the render failure channel, screenshot memory, token counting, the trim question
     design, transform key and measurements, snapshot storage sizing, named-page matching, `proto` diagnostics,
     a mounted DefaultChatScreen harness, the `/sw/img` reproduction, the Structured Memory follow-up); their
-    entries stay in `docs/research/found-issues.md`.
-  - Found by the run: 10 entries in `docs/research/found-issues.md` (the trim question counting blank history,
+    entries stay in `docs/backlog/found-issues.md`.
+  - Found by the run: 10 entries in `docs/backlog/found-issues.md` (the trim question counting blank history,
     a combined translation paragraph written as HTML, `/multisend` keeping its quotes, scheme and local ui
     writers skipping the display apply, `#import_preset` after a refusal, a stray `}}` ending CBS highlighting,
     two hard-coded inlay explorer strings, `docs:contracts` on EPIPE, chat-pipeline's non-fencing refusal list).
@@ -1225,8 +1225,8 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     `@import` webfont and confirm the font is fetched once and the image uses it; the 150-row driver fixture has no
     `@import` webfont, so it was not measured.
   - Not planned: the 12 excluded findings and the deferred media URL lifetimes (AL U1) moved to
-    `docs/research/found-issues.md` at retirement; the seven reports are in `docs/manual-audit/archive/`.
-  - Found by the run: 18 entries in `docs/research/found-issues.md` (append cleanup order, the feed text diff
+    `docs/backlog/found-issues.md` at retirement; the seven reports are in `docs/reports/audits/`.
+  - Found by the run: 18 entries in `docs/backlog/found-issues.md` (append cleanup order, the feed text diff
     prefix, lockless foreign Stop marks, untargeted handoff offers, slash commands during a reroll, trigger
     copies, HypaV3 chunk scans, Lua image asset claims, transform snapshot aborts, the translator's status,
     eviction and provider switch, screenshot `@import` growth, embedded card base64 retention, bulk plugin
@@ -1240,13 +1240,13 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     repeats, so `selectMemory` time did not drop; the cause is in found-issues "Evaluation findings".
   - Deferred groups (read path budget, named-page matching, checkpoint save hold, plugin index reads, create-state
     proof, Svelte's subscriber queue, refresh and trim costs) are in the archived plan's Deferred section; their
-    entries stay in `docs/research/found-issues.md`.
+    entries stay in `docs/backlog/found-issues.md`.
   - Still open, browser checks: with two tabs on one chat, Record now inside a job shows the same memory task in
     both (B1, `73b930395`); in the cardboard theme an expanded receipt's details overlap the bottom-right icon box
     by about 3px (B3, `e3595f06f`); a follow lost to a dropped connection, then a same-page retake of that job,
     shows the live stream (A2, `e295ee89b`; covered only by `generationJobs.test.ts`); the gray `unavailable`
     health badge with its help icon (B8, `250932f90`).
-  - Found by the run: six entries in `docs/research/found-issues.md` (`6bdc08205`: the feed row base hash cost, two
+  - Found by the run: six entries in `docs/backlog/found-issues.md` (`6bdc08205`: the feed row base hash cost, two
     more cyrb53 copies, pluginStorage plain-input adoption, boot replay sending a real `hypaV3Data`, preset
     highlight settings in the writer fingerprint, `records.md`'s stale splitters sentence).
 - Multi-Client Data Safety Checks:
@@ -1262,7 +1262,7 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
   - Deferred (the archived plan's Deferred section): S8 restore and import with two tabs, two server processes on one
     data directory, the open inline-editor draft loss case, a notice for a replaced same-message edit, other browsers,
     the `pnpm test:e2e` runtime budget.
-  - Found by the run: one entry in `docs/research/found-issues.md` (`99bb605e0`: `pnpm check` does not type-check
+  - Found by the run: one entry in `docs/backlog/found-issues.md` (`99bb605e0`: `pnpm check` does not type-check
     `e2e/`, with a TS2339 in `e2e/multiClient.spec.ts`).
 - Storage Settings Page:
   - Settings → Advanced → Storage moved to its own Data-group page (menu 23, slug `storage`) with a disk bar that
@@ -1272,7 +1272,7 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     A (`9f7094ec6`), E (`28a0d02bf`), D (`d4f074614`), B (`7a29d191d`), C (`8f88ede1e`).
   - Still open, device checks: no horizontal scroll in the Storage rows at about 360px on a real phone; the hatched
     outside-RisuAI segment stays visible in every theme.
-  - Found by the run: one entry in `docs/research/found-issues.md` (`a6eac283f`: `StorageController.owners` has no
+  - Found by the run: one entry in `docs/backlog/found-issues.md` (`a6eac283f`: `StorageController.owners` has no
     reader).
 - Module Headers:
   - All five slices landed on `dev` on 2026-11-08 (plan-runner): 1 self-host-server (`b786a0938`), 2
@@ -1292,22 +1292,22 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
   - Not planned (the plan's Later list): a `missing-header` rule in `pnpm check:docs`, the identifier check and
     `Files` generator Guides To Source left, and the same measure over the remaining guides; Slice 6's
     server-generation path list is in the archived file.
-  - Found by the run: 29 entries in `docs/research/found-issues.md` (`25537bb26`), 16 of them under the new LLM
+  - Found by the run: 29 entries in `docs/backlog/found-issues.md` (`25537bb26`), 16 of them under the new LLM
     requests and providers section. The plan's D7 sweep session is for the owner to start; it was not run.
 - Found Issues Decisions:
   - All eleven slices landed on `dev` on 2026-11-09 (plan-runner, every slice under delegate-implementation with
     Opus implementing): A1 (`844846d9b`), A2 (`697557b4a`), A3 (`d2f4a2596`), B1 (`d4b76d821`), B2 (`174565cde`),
     B3 (`ccf6980aa`), B4 (`fc708d953`), C1 (`9deff3578`), D1 (`bafa4359d`), D2 (`03f729fd4`), E1 (`02cd93f4d`). The
-    eighteen decided entries left `docs/research/found-issues.md`. The full gate passed on the combined tree at
+    eighteen decided entries left `docs/backlog/found-issues.md`. The full gate passed on the combined tree at
     `2beca50d5`: 9,588 tests, the 63 slow tests, and the 54 e2e specs the run reached.
   - Revised before the run: D2 prunes against the settled outcome (`871b8e29f`, finding G1 of the
-    [second audit](../plan-runner-audit/found-issues-decisions-2026-11-08-2.md)).
+    [second audit](../reports/audits/plan-runner/found-issues-decisions-2026-11-08-2.md)).
   - D2 prunes inside the store's write transaction; its challenger found two bugs in pruning on append. A 2,000-run
     checkpoint save went from 751.54 ms to 19.55 ms and the run data from 79 MB to 236 KB. A crafted restore whose
     keys are unicode-escaped can slip past the SQL prefilter and keep its bytes; retries are unaffected.
   - Manual checks not run: A3's optional `checkJobHandoff.mjs` `prefer` check, and B2's two-tab check that a reset
     plugin asks for its permission again.
-  - Found by the run: two entries in `docs/research/found-issues.md` (`426fdbce0`).
+  - Found by the run: two entries in `docs/backlog/found-issues.md` (`426fdbce0`).
 - Found Issues Clearance:
   - All 39 slices landed on `dev` on 2026-11-09 (plan-runner, every slice under delegate-implementation with Codex
     implementing): A1 (`d1a40c7ce`), A2 (`b6423360e`), A3 (`daca54e6b`), A4 (`0ea39e750`), A5 (`000cbfd7f`), B1
@@ -1317,13 +1317,13 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     (`535a6e7f1`), F1 (`98128cebb`), F2 (`79d4f2c47`), F3 (`084d57119`), F4 (`044dc9e4b`), F5 (`7aca72529`), F6
     (`279c57807`), F7 (`af549771e`), F8 (`1e271629e`), F9 (`6a26398e6`), F10 (`361b211d2`), G1 (`9cfd74d76`), G2
     (`a030fd212`), G3 (`529bbd582`), G4 (`504f8d42a`), H1 (`b9d766f6c`). The 86 inbox entries left
-    `docs/research/found-issues.md` (fixed, recorded in their guides, or closed in H1's commit). The full checks
+    `docs/backlog/found-issues.md` (fixed, recorded in their guides, or closed in H1's commit). The full checks
     passed on the combined tree at `179e08fc5`: 9,806 tests with the slow tag and the 52 e2e tests the run's changes
     select.
   - Revised during the run: G3 detects harness reloads instead of a warm-up (`307dd273c`); C4 saves signatures in
     the `model` mode only and hides their markers in chat (owner decision, `21cbf1e2b`); D1 narrows the escape fix
     to the provider input and H1 records the Markdown pass (owner decision). E4 missed its memory target and
-    recorded the miss in `docs/audit/screenshot-memory-2026-11.md`.
+    recorded the miss in `docs/reports/measurements/screenshot-memory-2026-11.md`.
   - Manual checks not run (the plan's Owner checklist): the chat list on Firefox and Safari (far-row containment,
     pixel anchoring, the newest-first reveal); a live Realm import with a tab closed after prepare and a 503 during
     commit (B5); Docker with a chrooted sftp account reading `shared/` and not `save/data/`; Web Push in Chrome and
@@ -1331,7 +1331,7 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     click); the chatPatch transport in a real browser; a `/sw/img` URL after a lost controller (F1); a Gemini
     thinking model accepting the replayed signature (C4); the request-log copy-failure display (D3); and a
     real-browser `measureHeap.mjs` run after a module delete, if a heap plan returns (Q16).
-  - Found by the run: eight entries in `docs/research/found-issues.md` (`e8758c2a8`).
+  - Found by the run: eight entries in `docs/backlog/found-issues.md` (`e8758c2a8`).
 - Upstream Intake 2:
   - All 14 slices landed on `dev` on 2026-11-10 (plan-runner, every slice under delegate-implementation with Codex
     implementing): 1 (`8657b12f2`), 2 (`42dabe136`), 3 (`70a6a82ab`), 4 (`0b15c934b`), 5 (`2861e45c4`), 6
@@ -1340,11 +1340,11 @@ found`; the in-tab `CharXImporter` (test-only) keeps fflate's signature hazard
     version is `2026.10.295`. Slice 14 ran the whole suite on the source `dev` ends with (10,055 passed, 67 skipped),
     and `e2e/pluginSandbox.spec.ts` passed three of four runs on `dev` afterwards.
   - Revised before the run: the plan-runner audit's ten fixed findings (`54c2d0b27`,
-    [report](../plan-runner-audit/upstream-intake-2-2026-11-10.md)). During the run, slice 11 also raised
+    [report](../reports/audits/plan-runner/upstream-intake-2-2026-11-10.md)). During the run, slice 11 also raised
     `ReloadNotice.svelte` above the alert layer, and slice 4 refuses an unknown permission name before a stored grant.
   - Not verified: AUD-11, the real userscript transport cancelling a `fetchNative` body (slice 13 tested a stub); the
-    deferred ledger rows keep their triggers in [the ledger](../research/upstream-ledger.md).
-  - Found by the run: four entries in `docs/research/found-issues.md` (`a182694c6`, `4d1542d92`), one of them the
+    deferred ledger rows keep their triggers in [the ledger](../backlog/upstream-ledger.md).
+  - Found by the run: four entries in `docs/backlog/found-issues.md` (`a182694c6`, `4d1542d92`), one of them the
     one-off failure of slice 11's full-screen alert e2e test.
 - Consolidated browser/production verification debt was tracked in the audit/performance
   plan's Phase 5, now archived; its still-open items are listed with that plan's entry

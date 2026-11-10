@@ -230,7 +230,7 @@
 - A missing-chat Apply creates its chat under the draft's id for a retry to find; a destination that another tab deleted
   after the create landed is created again by an Apply retried after a reload (the server keeps no tombstone). Decision:
   DD3,
-  [durable drafts audit](../manual-audit/archive/durable-drafts-2026-10-29.md#dd3--retrying-a-missing-chat-apply-creates-another-copy).
+  [durable drafts audit](../reports/audits/durable-drafts-2026-10-29.md#dd3--retrying-a-missing-chat-apply-creates-another-copy).
 - After two failed split-journal writes (or with the journal off or the row skipped), the prefix can dispatch without a
   durable split record. Oversized pending batches become drafts instead of replaying a prefix; see
   [Split confirmation](#split-confirmation). Decision: Durable Drafts D7, archive.
@@ -251,9 +251,9 @@
   overwritten by a by-id op, because the server has no field preconditions. Decision: Durable Drafts D2 (e), Review
   record point 11, archive.
 - Chrome discards a journal write begun in `pagehide` when the page unloads
-  ([observation](../audit/durable-drafts-observations-2026-10-29.md)), so the hide flush protects only a page that stays
-  alive hidden, such as a backgrounded PWA killed later. Crash and kill protection is per-cycle writes and the 500 ms
-  journal timer; there is no `localStorage` fallback. Decision: the archive's Durable Drafts entry.
+  ([observation](../reports/measurements/durable-drafts-observations-2026-10-29.md)), so the hide flush protects only a
+  page that stays alive hidden, such as a backgrounded PWA killed later. Crash and kill protection is per-cycle writes
+  and the 500 ms journal timer; there is no `localStorage` fallback. Decision: the archive's Durable Drafts entry.
 - A kill between an edit and its cycle's journal commit loses that edit unless its batch already reached the server. The
   500 ms save debounce and journal timer are nominal scheduling, not a maximum loss window: queueing, throttling, and
   failed transactions can extend it. Decision: Durable Drafts D7, archive.
@@ -278,13 +278,13 @@
   settlement keeps it as a plain draft, but a reload before that settlement cannot tell it from the send's text put back
   after a failure: `composerDrafts.svelte.ts` `restore` finds the message landed and deletes the draft, so the retyped
   text is lost. Keeping it would bring sent text back after every uncertain landed end
-  ([JR1](../manual-audit/archive/cross-plan-2026-10-29.md#jr1--a-landed-send-deletes-an-identical-drafts-journal-row)).
+  ([JR1](../reports/audits/cross-plan-2026-10-29.md#jr1--a-landed-send-deletes-an-identical-drafts-journal-row)).
   Decision: owner, 2026-11-10.
 
 ### Gotchas
 
 - A back/forward cache return with the owner lock held is possible
-  ([observed](../audit/durable-drafts-observations-2026-10-29.md) in one headless configuration, no guarantee for headed
-  Chrome or an installed PWA): do not assume the lock keeps the page out of the cache.
+  ([observed](../reports/measurements/durable-drafts-observations-2026-10-29.md) in one headless configuration, no
+  guarantee for headed Chrome or an installed PWA): do not assume the lock keeps the page out of the cache.
 - Recovery compares adapter-produced compact JSON with `sameJson`, which ignores object key order only for equal-length
   texts; arbitrary pretty-printed equivalents are not recognized.

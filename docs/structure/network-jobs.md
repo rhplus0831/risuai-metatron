@@ -189,7 +189,7 @@ The transport below retains this tab's in-memory log.
 - The job owner identity's claim marker is copied with `sessionStorage`, so it reflects the source page when copied, not
   now: a tab duplicated after its page released the id on `pagehide` and before the next page claimed it shares the id
   with that page, and a tab killed without `pagehide` (and not reported as `wasDiscarded`) mints a new id on return and
-  loses reload recovery of its jobs. Decision: U1, [audit](../manual-audit/archive/job-protocol-2026-10-29.md).
+  loses reload recovery of its jobs. Decision: U1, [audit](../reports/audits/job-protocol-2026-10-29.md).
 - A notification click whose route is `/` (a payload without a chat route, `safeRoute` in `public/sw.js`) focuses an
   existing window or opens `/` if none exists. Whether the enable button keeps its user activation when it waits behind
   a reconcile, and whether `navigator.serviceWorker.ready` names the old worker during an upgrade, are browser behaviors

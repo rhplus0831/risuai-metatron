@@ -149,7 +149,7 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
 - Feed payload construction runs on the serving thread: a rename reads/parses the last row via `messages_position` for
   `lastMessageAt`; a message-op group does this before and after, inside its transaction. A group past 8 KiB reads every
   touched row until all body forms pass the cap. Decision: Per-Event Server Work D6, archive; ST04 in the
-  [server migration audit](../research/deep-audit-with-fable/server-migration-audit.md).
+  [server migration audit](../reports/audits/deep-audit-with-fable/server-migration-audit.md).
 - Summary comparison uses stored projection text without parsing metadata, unless that projection is missing or stale
   (`freshSummaryText` rebuilds it from parsed metadata). A metadata change past `MAX_FEED_PATCH_BYTES` parses metadata
   before and after for the field diff. Decision: Server Byte Budgets D4 and Per-Event Server Work D7, archive.

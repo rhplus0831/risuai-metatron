@@ -97,7 +97,7 @@ None is in the gate; all are in `util/playwright/`.
   process; `probeDirectAssets.mjs` probes the direct asset mechanics on its own server, not the app.
 - `measureRenderWork.mjs` (dev stack, under `offline.sh`, Linux): render work of a styled, auto-translated chat when it
   opens and after a switch away, its mount trace, its screenshot's peak memory
-  ([results](../audit/render-work-budget-2026-11-05.md)).
+  ([results](../reports/measurements/render-work-budget-2026-11-05.md)).
 - Call counts by name: CDP `Profiler.startPreciseCoverage({ callCount: true, detailed: true })` before navigation,
   `takePreciseCoverage` (it resets) per phase; a function's first range is its call count (without `detailed`, also each
   `await` resumption). Time an uninstrumented run.
@@ -126,7 +126,7 @@ None is in the gate; all are in `util/playwright/`.
    output before any lock.
 2. A whole-suite run (no file filter) takes the machine-wide lock, so whole-suite runs from every checkout and worktree
    queue instead of sharing the CPUs; queued runs finish one after another in the single run's time
-   ([timings](../audit/test-suite-lock-2026-10-30.md)).
+   ([timings](../reports/measurements/test-suite-lock-2026-10-30.md)).
 3. The Vitest child (`AGENT_TEST=1`) runs with the reporter, which holds its output and writes per-file results to the
    file `RISU_REPORT_RESULTS_FILE` names.
 4. When at most `MAX_RERUN_FILES` files failed and no error was unhandled, the wrapper reruns each alone with the file

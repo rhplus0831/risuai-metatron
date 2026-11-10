@@ -273,7 +273,7 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 ### Limitations
 
 - `CHAT_READ_DEADLINE_MS` bounds one `readRefs` call, not a whole load: a load can make three passes of 500-chat calls
-  plus a summary list read. Decision: U1, [durable drafts audit](../manual-audit/archive/durable-drafts-2026-10-29.md).
+  plus a summary list read. Decision: U1, [durable drafts audit](../reports/audits/durable-drafts-2026-10-29.md).
 - A same-id recreation reconciles only the chats this client knows: a chat another tab created survives, and a reused
   id's `replace` on a changed base conflicts (409), eligible content kept as a recovery draft. Explicit recreation
   releases old chat refusals from holding the reorder. Decision: `chatStore.svelte.ts` re-add reconciliation.
@@ -314,6 +314,6 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 - An observing tab sees a job's reply at its 3 s checkpoints, then the final text; a disconnected tab catches up on
   reconnect.
 - A character wrapper's `chats` view builds a fresh array per read: read one chat through `findChat`, not by scanning
-  `chats` ([observation](../audit/chat-scan-observations-2026-10-24.md)).
+  `chats` ([observation](../reports/measurements/chat-scan-observations-2026-10-24.md)).
 - `installRead` treats an incomparable revision as older, `adoptChatRead` as not older; only fixtures with tokens like
   `r1` reach the difference.

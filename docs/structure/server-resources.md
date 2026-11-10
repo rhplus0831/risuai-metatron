@@ -413,16 +413,16 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
 - A restore keeps four things on the serving thread: the install's SQL copy, one synchronous transaction that blocks
   every request for its length, reads included (and leaves a WAL about the size of the database for the checkpoint after
   it); the safety snapshot's `backupTo`; the asset links; and the re-hash, whose chunks yield. The install's time grows
-  with the store and the longest chat ([measured](../audit/server-measurements-2026-11-01.md)). Decision: Server Byte
-  Budgets D5, archive.
+  with the store and the longest chat ([measured](../reports/measurements/server-measurements-2026-11-01.md)). Decision:
+  Server Byte Budgets D5, archive.
 - The restore worker's and the upstream workers' heap limits (`RISU_RESTORE_HEAP_MB`, `RISU_UPSTREAM_IMPORT_HEAP_MB`,
   `RISU_UPSTREAM_EXPORT_HEAP_MB`) bound the V8 heap only, not Buffers or SQLite memory, and an inherited
   `--max-old-space-size` overrides them.
 - One row far larger than that limit can abort the whole process instead of ending the worker
-  ([observed](../audit/server-measurements-2026-11-01.md)): the store and epoch stay as they were, and the next start
-  empties the staging. At the default 2048 no row the 100 MiB request cap admits reaches it; a much lower limit can.
-  Decision: a ceiling against a runaway file, not process isolation (`server/src/data/restore/validateRunner.ts` header;
-  V8-only scope, Server Byte Budgets D5, archive).
+  ([observed](../reports/measurements/server-measurements-2026-11-01.md)): the store and epoch stay as they were, and
+  the next start empties the staging. At the default 2048 no row the 100 MiB request cap admits reaches it; a much lower
+  limit can. Decision: a ceiling against a runaway file, not process isolation
+  (`server/src/data/restore/validateRunner.ts` header; V8-only scope, Server Byte Budgets D5, archive).
 - Validation reads as it checks and stops at the first refusal in reading order (a refused row is reported before a
   later unreadable one); a walk never holds a whole table (`walkSnapshotFile`).
 - The upstream import stages on the default kinds, as the export reads with them, so a store with custom kinds is

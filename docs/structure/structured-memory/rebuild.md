@@ -156,7 +156,7 @@ whole-chat replace, so that run can then only be abandoned.
 `readStructuredMemoryCost` calls `GET .../cost`; the route uses `memoryWorkCost` and answers
 `StructuredMemoryCostAnswer` without writing or accepting a record. The route comment owns query admission, the builder
 owns window counting, and the shared answer and `memoryCostTokens` own the
-[estimate](../../audit/structured-memory-2026-11-03.md).
+[estimate](../../reports/measurements/structured-memory-2026-11-03.md).
 
 `pressMemoryRebuild` asks for rebuild/backfill when cost is nonzero or unknown; a zero-window preview ends with a toast.
 `pressMemoryRecord` asks at two calls or more, or an unreadable preview with unknown cost, before submitting the job.
@@ -225,8 +225,9 @@ beside the rebuild buttons. The comparison starts no work; a person must press. 
   `pnpm --silent test:agent rebuild memoryStore memoryTasks structuredMemoryRoutes StructuredMemoryPanel MemoryReceiptLine`.
   No `slow` or `e2e` membership of its own.
 - Not tested: a real browser or a real provider. `MEMORY_CALL_OVERHEAD_TOKENS` (3,000) and the 3-byte rule rest on the
-  [2026-11-03 fixtures](../../audit/structured-memory-2026-11-03.md), scripted pages counted by three tokenizer
-  families: about 2,100 tokens of overhead per call in English and 2,800–3,700 in Korean, growing with the cast.
+  [2026-11-03 fixtures](../../reports/measurements/structured-memory-2026-11-03.md), scripted pages counted by three
+  tokenizer families: about 2,100 tokens of overhead per call in English and 2,800–3,700 in Korean, growing with the
+  cast.
 
 ## Known Hazards
 

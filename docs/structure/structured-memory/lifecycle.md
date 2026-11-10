@@ -300,9 +300,9 @@ takes over.
 - A checkpoint save reads and hashes every record's text in one synchronous step, however little changed, so its
   event-loop hold grows with the chat's memory. Only the replay target holds a prompt once a settling commit
   [prunes the rest](writer.md#a-writer-run), which takes old runs' prompts out of the save
-  ([measurements](../../audit/structured-memory-2026-11-03.md#checkpoint-save)). Old runs keep their prompts until that
-  commit, also after an older checkpoint's restore. A load parses every record on top. Decision: Structured Memory slice
-  5d, archive; the prune, owner, 2026-11-08.
+  ([measured](../../reports/measurements/structured-memory-2026-11-03.md#checkpoint-save)). Old runs keep their prompts
+  until that commit, also after an older checkpoint's restore. A load parses every record on top. Decision: Structured
+  Memory slice 5d, archive; the prune, owner, 2026-11-08.
 - A tab closed before [the inherit](#copies-and-branches) posts leaves the new chat with no records and no notice:
   nothing retries it. Decision: Structured Memory slice 5c, archive.
 - A send that reaches the new chat before the inherit is fenced or finds records, so that chat keeps a gap. Decision:

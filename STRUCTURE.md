@@ -111,8 +111,8 @@ server. Start with the task or source path you have.
 ### Release
 
 - R1. Update `version.json` and `appVer` (`APP_VERSION_POINT` in `src/ts/storage/database.svelte.ts`) together when the
-  upstream compatibility release advances in the [ledger](docs/research/upstream-ledger.md). The displayed build ID
-  comes from `shared/buildInfo.ts`. See [build and release](docs/structure/build-test-platforms.md).
+  upstream compatibility release advances in the [ledger](docs/backlog/upstream-ledger.md). The displayed build ID comes
+  from `shared/buildInfo.ts`. See [build and release](docs/structure/build-test-platforms.md).
 
 ## Choose By Task
 
@@ -203,4 +203,4 @@ For the guide outline, size limits, fact-ledger checks, and issue inbox, see
 [Doc Maintenance](docs/structure/README.md).
 
 Last full audit: 2026-11-10, every guide and this index read against the source at `e44b4786b`
-([report](docs/audit/structure-audit-2026-11-10.md)).
+([report](docs/reports/audits/structure-audit-2026-11-10.md)).

@@ -153,7 +153,7 @@ inlay, whose tag stays as text. Images use `getFileSrc` ([assets](assets.md)). A
 - The server (`server/src/prompt/transform.ts`) runs Lua `editDisplay`, the `display` trigger, CBS, and the regex
   scripts; the tab's `editdisplay` plugin handlers run read-only between its two calls ([Invariants](#invariants)).
 - Two-call transform chunks share the transcript charge and must fit the snapshot and retained-scope budgets; consult
-  the [capacity measurement](../audit/transform-snapshot-2026-11.md) before changing those budgets.
+  the [capacity measurement](../reports/measurements/transform-snapshot-2026-11.md) before changing those budgets.
 - `ChatBody` shows provisional text on its stored and plain display paths; translation inputs and auto-translate probes
   wait for the answer.
 
@@ -372,7 +372,7 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
 - A chat switch sends no new transform target, but already-dispatched chunks can finish before row unmount cancels their
   last subscribers (`transformClient.ts`). The tab's `MAX_TRANSFORM_SNAPSHOTS_PER_CLIENT` admission cap applies only to
   chunks with plugin handlers; chunks without handlers acquire no permit. Decision: Found Issues Decisions (owner,
-  2026-11-08), [measurement](../audit/render-work-budget-2026-11-05.md#acceptance-after-slices-14).
+  2026-11-08), [measurement](../reports/measurements/render-work-budget-2026-11-05.md#acceptance-after-slices-14).
 - A chat write the render does not read still moves the chat revision in the transform key: with `useAutoSuggestions`
   on, a suggestion save (`Suggestion.svelte`, `setChatMeta`) costs one server re-render of the rows on the next visit,
   and a `{{random}}` row can change. Decision: Found Issues Decisions (owner, 2026-11-08).
@@ -385,7 +385,7 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
   restores it, including departures in a surviving chunk (`transformClient.ts` `restoreBypass`, `departed`, `settle`).
   Before that settlement a same-input replacement can send `noCache: false` and read the old server cache. Decision:
   excluded as an edge (2026-11-05),
-  [RW3](../manual-audit/archive/render-work-budget-2026-11-05.md#rw3--a-departed-forced-refresh-can-leave-its-replacement-using-the-old-server-cache).
+  [RW3](../reports/audits/render-work-budget-2026-11-05.md#rw3--a-departed-forced-refresh-can-leave-its-replacement-using-the-old-server-cache).
 - A permanent display failure is not remembered: when another target of the same row fails transiently (a legacy
   rendered translation's paragraph beside an oversized original), that row's retry round rerenders it whole, so the
   permanent target is requested and its toast shown again every round. A fix would remember terminal outcomes per
