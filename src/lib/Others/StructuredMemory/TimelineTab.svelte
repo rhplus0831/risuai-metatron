@@ -30,6 +30,7 @@
         type StructuredMemoryCoverageEvent,
         type StructuredMemoryEdit,
     } from "../../../../shared/structuredMemory.ts";
+    import MemoryEventFacts from "./MemoryEventFacts.svelte";
     import MemoryLinkButton from "./MemoryLinkButton.svelte";
     import { pressMemoryRecord } from "./memoryRecordPress";
     import { memoryReadFailureText, memoryReasonText } from "./memoryText";
@@ -40,8 +41,8 @@
      * Rows use `reconcileMemoryCoverage` and `memoryTimelineRows` in src/ts/process/structuredMemory.svelte.ts
      * over held messages, with a per-mount hash memo. An unloaded chat leaves the facts unreconciled.
      * Storage sequence is not message order, especially after backfill. Opening an event reads its record
-     * and reads page titles once per refresh. All model and message text stays plain; `ADOPTED_WRITER_RUN`
-     * identifies HypaV3 adoption without a model call.
+     * and reads page and thread titles once per refresh. All model and message text stays plain;
+     * `ADOPTED_WRITER_RUN` identifies HypaV3 adoption without a model call.
      *
      * Repairs name the coverage revision and reread whether accepted or refused: a record answer alone
      * cannot replace a status derived from held messages. Keep sends the held anchor state; an unsaved
@@ -74,8 +75,9 @@
     let openEvent = $state.raw<MemoryRunEventView | null>(null);
     let openFailure = $state<string | null>(null);
     let openNumber = 0;
-    /** Page titles by id; null until read, and a failed read leaves the ids. */
+    /** Page and thread titles by id; null until read, and a failed read leaves the ids. */
     let pageTitles = $state.raw<ReadonlyMap<string, string> | null>(null);
+    let threadTitles = $state.raw<ReadonlyMap<string, string> | null>(null);
     /** The `refresh` the titles were last read at. */
     let titlesRead: number | null = null;
     let titlesNumber = 0;
@@ -114,6 +116,7 @@
         const result = await readStructuredMemoryContents(ref);
         if (number === titlesNumber && result.outcome === "ok" && sameChat(ref)) {
             pageTitles = new Map(result.value.pages.map(({ id, title }) => [id, title]));
+            threadTitles = new Map(result.value.threads.map(({ id, title }) => [id, title]));
         }
     }
 
@@ -298,6 +301,7 @@
                     </blockquote>
                 {/each}
             {/if}
+            <MemoryEventFacts event={openEvent} {pageTitles} {threadTitles} />
         {/if}
         {#if event.messageIds.length > 0}
             <div class="flex flex-wrap items-center gap-1">

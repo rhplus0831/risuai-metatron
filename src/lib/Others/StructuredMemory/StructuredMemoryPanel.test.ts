@@ -1560,6 +1560,82 @@ function serveAnchoredEvent() {
     return state;
 }
 
+it("shows an opened Timeline event's changes below its key lines, using page and thread titles with id fallbacks", async () => {
+    const state = serveAnchoredEvent();
+    state.event.keyLines = [{ speaker: "Mira", text: "I opened the gate and kept my promise." }];
+    state.event.stateChanges = [
+        { pageId: "gate-page", section: "state", before: "closed", after: "open", quote: "I opened the gate" },
+        { pageId: "missing-page", section: "state", before: "locked", after: "unlocked", quote: "" },
+    ];
+    state.event.knowledge = [
+        {
+            pageId: "secret-page",
+            fact: "The watch changes at dawn",
+            stance: "believes",
+            knowers: ["mira-page", "missing-knower"],
+            quote: "The watch changes at dawn",
+        },
+    ];
+    state.event.relationshipShifts = [
+        { from: "mira-page", to: "captain-page", direction: "trust increases", note: "the promise was kept" },
+    ];
+    state.event.openThreads = {
+        add: [],
+        close: ["promise-thread", "missing-thread"],
+        transitions: [{ threadId: "search-thread", to: "progress" }],
+    };
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.includes("/coverage")) return Response.json({ ...facts("e", ["u0", "a0"]), revision: state.revision });
+        if (url === "/api/memory/structured/c/k")
+            return Response.json({
+                revision: state.revision,
+                pages: [
+                    { id: "gate-page", title: "The gate", type: "location", bytes: 100 },
+                    { id: "secret-page", title: "Watch schedule", type: "concept", bytes: 100 },
+                    { id: "mira-page", title: "Mira", type: "character", bytes: 100 },
+                    { id: "captain-page", title: "The captain", type: "character", bytes: 100 },
+                ],
+                threads: [
+                    { id: "promise-thread", title: "A promise", state: "done", bytes: 100 },
+                    { id: "search-thread", title: "Find the key", state: "progress", bytes: 100 },
+                ],
+                events: [{ id: "e", title: state.event.title, status: "active", bytes: 100 }],
+                runs: [],
+            });
+        return fetch(url, init, options);
+    });
+
+    await open();
+    await chooseTab("timeline");
+    click('[data-memory-event="e"] > button');
+    await settle();
+
+    const row = query('[data-memory-event="e"]')!;
+    expect(row.querySelector("button")?.getAttribute("aria-expanded")).toBe("true");
+    expect(row.textContent).toContain("I opened the gate and kept my promise.");
+    const changes = [
+        "The gate / state: closed → open",
+        "missing-page / state: locked → unlocked",
+        "Watch schedule (believes): The watch changes at dawn",
+        `${language.structuredMemory.log.knowers}: Mira, missing-knower`,
+        "Mira → The captain: trust increases (the promise was kept)",
+        `${language.structuredMemory.log.threadClosed}: A promise`,
+        `${language.structuredMemory.log.threadClosed}: missing-thread`,
+        "Find the key → progress",
+    ];
+    const paragraphs = [...row.querySelectorAll("p")].map((paragraph) => paragraph.textContent?.trim());
+    expect(paragraphs).toEqual(expect.arrayContaining(changes));
+    for (const change of changes) {
+        expect(row.textContent!.indexOf(change)).toBeGreaterThan(
+            row.textContent!.indexOf("I opened the gate and kept my promise."),
+        );
+    }
+    for (const id of ["gate-page", "secret-page", "mira-page", "captain-page", "promise-thread", "search-thread"]) {
+        expect(row.textContent).not.toContain(id);
+    }
+});
+
 it("moves edited held sources from covered to stale in Coverage and Timeline without rereading memory", async () => {
     serveAnchoredEvent();
     await open();

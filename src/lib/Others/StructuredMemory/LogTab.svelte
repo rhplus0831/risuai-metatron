@@ -14,6 +14,7 @@
     import { findChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import type { StructuredMemoryLogRun } from "../../../../shared/structuredMemory.ts";
+    import MemoryEventFacts from "./MemoryEventFacts.svelte";
     import { codeText, memoryReadFailureText, memoryReasonText } from "./memoryText";
 
     /**
@@ -158,43 +159,7 @@
                 {@render quote(line.text, line.unverified)}
             {/each}
         {/if}
-        {#if event.stateChanges.length > 0}
-            <h3 class="font-semibold">{text.stateChanges}</h3>
-            {#each event.stateChanges as change}
-                <p>{change.pageId} / {change.section}: {change.before} → {change.after}</p>
-                {@render quote(change.quote, change.unverified)}
-            {/each}
-        {/if}
-        {#if event.knowledge.length > 0}
-            <h3 class="font-semibold">{text.knowledge}</h3>
-            {#each event.knowledge as item}
-                <p>{item.pageId} ({codeText(text.stances, item.stance)}): {item.fact}</p>
-                {#if item.knowers.length > 0}
-                    <p>{text.knowers}: {item.knowers.join(", ")}</p>
-                {/if}
-                {@render quote(item.quote, item.unverified)}
-            {/each}
-        {/if}
-        {#if event.relationshipShifts.length > 0}
-            <h3 class="font-semibold">{text.relationshipShifts}</h3>
-            {#each event.relationshipShifts as shift}
-                <p>{shift.from} → {shift.to}: {shift.direction}{shift.note ? ` (${shift.note})` : ""}</p>
-            {/each}
-        {/if}
-        {#if event.threads.added.length + event.threads.closed.length + event.threads.moved.length > 0}
-            <h3 class="font-semibold">{text.threads}</h3>
-            {#each event.threads.added as thread}
-                <p>
-                    {text.threadAdded}: {thread.title}{thread.who.length > 0 ? ` (${thread.who.join(", ")})` : ""}
-                </p>
-            {/each}
-            {#each event.threads.closed as thread}
-                <p>{text.threadClosed}: {thread}</p>
-            {/each}
-            {#each event.threads.moved as move}
-                <p>{move.threadId} → {move.to}</p>
-            {/each}
-        {/if}
+        <MemoryEventFacts {event} />
     {:else}
         <p class="text-textcolor2">{text.noExtraction}</p>
     {/if}

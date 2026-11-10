@@ -44,6 +44,8 @@ Read each module's header or component contract, then read the named export's co
 - `src/lib/Others/StructuredMemory/TimelineTab.svelte`: event view and repairs; `reconciled`, `sendRepair`, `rerecord`.
 - `src/lib/Others/StructuredMemory/ThreadsTab.svelte`: thread view and state editor; `read`, `setState`.
 - `src/lib/Others/StructuredMemory/LogTab.svelte`: run viewer; `readRound`, `exportLog`.
+- `src/lib/Others/StructuredMemory/MemoryEventFacts.svelte`: an event's state changes, knowledge, relationship shifts,
+  and thread changes, shared by Log and Timeline; `Props`.
 - `src/lib/Others/StructuredMemory/SettingsTab.svelte`: chat override editor; `setLanguage`, `setHighlightMode`.
 - `src/lib/Others/StructuredMemory/MemoryLinkButton.svelte`: record and message link; `Props`.
 - `src/lib/Others/StructuredMemory/MemoryManifest.svelte`: shared report view; `Props`, `writerReasonText`.
@@ -145,6 +147,11 @@ badges. `manage` is the checking view, with every control, provenance, and the h
 mounted; Evidence missing, a page in the trash, and a jump to a history entry show `manage`. Links name live pages by
 title and select them; an id with no live page is a disabled button. A title filter narrows the tree before
 `memoryPageTree` groups it, so an emptied type loses its header; the trash list is not filtered.
+
+An opened Timeline event shows what it changed under its key lines: state changes, knowledge, relationship shifts, and
+thread changes, through `MemoryEventFacts`, the component the Log renders a run's extraction with. Timeline passes the
+`memoryEventView` it already made, unconverted, with page and thread titles from the contents read it does once per
+`refresh`; an id with no title shows as the id, and the Log, which passes no titles, shows ids.
 
 ### The Evidence missing tab
 
