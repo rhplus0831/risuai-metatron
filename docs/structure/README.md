@@ -91,8 +91,11 @@ A change adds its facts to the owning guide and does not trim a guide it would n
 stop it: a change that leaves a new `near` line still records its facts, names the line in its report, and adds a
 [found issues](../backlog/found-issues.md) entry for the split or trim unless one already names that guide. Splits and
 trims are passes of their own, aimed first at `near` lines and at large guides that `pnpm docs:reads` shows are rarely
-read. Only a limit stops a change, and then the split lands first, as its own commit. See the
-[documentation checker](build-test-platforms.md#documentation-check) for exact rule coverage and its report mode.
+read. Only a limit stops a change, and then the split lands first, as its own commit. Trims that run in parallel each
+list the facts they leave to another guide, and the lists are checked on the combined tree before the last trim lands:
+two trims can each drop a fact that the other guide still held at their base. Run `pnpm check:docs` again after merging
+another branch into the working branch. See the [documentation checker](build-test-platforms.md#documentation-check) for
+exact rule coverage and its report mode.
 
 ## Known hazards and the issue inbox
 
@@ -110,3 +113,7 @@ bullet.
 Use [found issues](../backlog/found-issues.md) for out-of-scope findings that still need verification or an owner. When
 a finding is checked and placed, describe it under its owning guide's section of known issues (or in the guide itself as
 a Limitation or Gotcha) and retire the inbox entry. For a confirmed limitation, include the owner's decision.
+
+Triage a security finding on the server as if the server were reachable from the internet: the owner's is not, and other
+deployments may be. Offer the cheapest change that closes the worst path, and record a larger redesign (authentication
+on more routes, say) as its own entry. Decision: owner, 2026-11-10 (known-issues review).

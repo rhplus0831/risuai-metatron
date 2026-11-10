@@ -28,7 +28,7 @@ server. Start with the task or source path you have.
   requires emitted JavaScript (enums, namespaces, parameter properties).
 - T3. Use runes in `*.svelte` and `*.svelte.ts`. Preserve existing boundaries between runes and legacy stores.
 - T4. Format changed files with `pnpm format:changed --write` or `pnpm exec prettier --write <files>`.
-  `pnpm format:check` checks the repository. All honor `.prettierignore`.
+  `pnpm format:check` checks the repository: run it before every commit. All honor `.prettierignore`.
 - T5. Comments, test titles, identifiers, and file names describe current behavior and its reason. Keep plan, phase,
   slice, stop, and audit labels in commits or the [plan archive](docs/archived-plan/README.md).
 

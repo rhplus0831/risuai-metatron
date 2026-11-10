@@ -14,4 +14,14 @@ The nineteenth batch and the eight entries of the 2026-11-10 full guide audit (t
 
 ## Contents
 
-None.
+- [Build and dependencies](#build-and-dependencies): 1
+
+## Build and dependencies
+
+### The pdf.js character maps are pinned to an older version than the package
+
+`src/ts/process/dynamicutils/pdf.ts:23` and `:60` set `cMapUrl` to `https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/cmaps/`, while `package.json` asks for `pdfjs-dist` `^4.10.38` and the lockfile resolves 4.10.38. Seen on 2026-11-11 while moving the dependency upgrade notes into the guides; not run.
+
+**Why it matters:** the pin did not move with the package, so a PDF that needs a character map reads one from another release. The maps rarely change, so this may have no visible effect.
+
+**Suggested handling:** point both URLs at the installed version (or read the version from the package), and import a PDF with CJK text to confirm.

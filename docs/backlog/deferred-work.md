@@ -174,3 +174,19 @@ Work that finished plans named and left: features put off, a plan's Later list, 
 ## Found Issues Decisions
 
 - A crafted restore whose keys are unicode-escaped can slip past D2's SQL prefilter and keep its bytes; retries are unaffected.
+
+## Structured Memory Section Growth
+
+- Relationship projection, put off by the owner on 2026-11-05 as scope B of the section growth work (scope A landed in `72e509ce3` and `596ab8cb2`): `retrieve.ts` projects `event.relationshipShifts` into the newest record per directed (from, to) pair over the covering events, for the pages on stage, named, or linked in the send (as `pageKnowledge` does); `card.ts` renders the relation clause on the page line; `relationships` either leaves `RELATED_SLOTS` or stays as the fallback for a pair with no shift. About 350 to 450 lines in two slices, with tests, `read.md` and `records.md`.
+- Not justified by the [2026-11-08 replays](../reports/measurements/relationship-shifts-2026-11-08.md): the projection would have repeated the `relationships` sections line for line. The case that would justify it is a long chat (30 or more windows) whose side characters relate to each other and whose `relationships` sections reach the slot budget; replay such a chat the same way first. A shift's `direction` is free text, so a projected clause needs a clamp or a fixed vocabulary before anything else.
+
+## Dependency Upgrades
+
+Not a plan: the upgrade rounds of 2026-10-30 left these behind on purpose. Versions were read from `package.json` on 2026-11-11.
+
+- `ipaddr.js` 2 (now `^1.9.1`): it classes `64:ff9b:1::/48` (local-use NAT64) as `rfc6052`, so `isBlockedAddress` in `server/src/lua/egress.ts` follows the embedded IPv4 address instead of blocking the prefix; `luaRuntime.test.ts` fails on the bump. It needs a match on that prefix before the embedded-IPv4 branch, which is a change to a security filter.
+- `pdfjs-dist` 6 (now `^4.10.38`): `RenderParameters` requires `canvas`, and the worker computes every document's fingerprint with `Uint8Array.prototype.toHex`, which `core-js/actual` covers on the main thread only, so PDF import would need Chrome 140, Firefox 133, or Safari 18.2. A Node smoke test of 6 imports `pdfjs-dist/legacy/build/pdf.mjs`.
+- `three` (now `^0.154.0`): r172 removed `examples/jsm/loaders/MMDLoader` and `MMDAnimationHelper`, which `src/lib/UI/3DLoader.svelte` and `src/ts/3d/threeload.ts` use, so 0.171 is the last version a plain bump reaches.
+- `typescript` 7 (now `^5.9.3`): `svelte-check` 4.7 refused it and asked for `typescript@~6` plus `@typescript/native@npm:typescript@7` and `--tsgo`; the server's `tsc` alone passed on 7.
+- `@types/node` stays on the major that `engines`, the Dockerfile, and CI run.
+- Not looked at: `@smithy/*` 3 to 5; `deepmerge` (through `vite-plugin-svelte`), which had no fixed release; `@types/libsodium-wrappers-sumo`, a deprecated stub nothing imports.

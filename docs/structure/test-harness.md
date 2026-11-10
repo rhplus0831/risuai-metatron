@@ -103,6 +103,10 @@ None is in the gate; all are in `util/playwright/`.
   `await` resumption). Time an uninstrumented run.
 - Peak memory: `VmHWM` in `/proc/<pid>/status`, reset by writing `5` to `clear_refs`; pids from browser CDP
   `SystemInfo.getProcessInfo`.
+- Run dev-stack checks one at a time and not beside the Vitest suite: the stacks share `node_modules/.vite`, and a
+  dependency re-optimization reloads every open page. What sessions learned writing drivers (seeding, selectors,
+  measuring, downloads, heap snapshots) is collected in the
+  [observations](../reports/measurements/browser-check-observations-2026-11-11.md).
 
 ### Fixtures
 
@@ -303,7 +307,9 @@ Playwright's server `fetch` tripwire is `util/playwright/stack.mjs` `egressGuard
 - The policy allows `data:` and `blob:` URLs and the exact loopback origins a test registered. Everything else is
   refused, relative URLs included: the call throws or rejects as a failed request would (an XHR fires `error`), and the
   setup's `afterEach` fails the test even when its code caught the error.
-- `vi.stubGlobal("fetch", ...)` replaces the guard and `vi.unstubAllGlobals()` restores it.
+- `vi.stubGlobal("fetch", ...)` replaces the guard and `vi.unstubAllGlobals()` restores it. That call also drops the
+  `safeStructuredClone` stub of `vitest.setup.ts` for the rest of the file, so a later test that reaches it fails with a
+  `ReferenceError`; in such a file restore only the global the test replaced.
 - A test that needs the network stubs `fetch` (or the module that fetches) or starts a loopback server and registers it:
   `allowTestLoopbackOrigin(origin)` returns the unregister function.
 - Server tests call `server/src/tests/testSupport.ts` `allowListenerOrigin(server)` once the server listens (a
@@ -397,3 +403,18 @@ test, follow [Recipes](#recipes); `readSlowTable` in `util/testInventory.mjs` ha
 - A Vitest file that reaches the settings views or the records needs the client environment (happy-dom): the records use
   Svelte's client `$state`, so `@vitest-environment node` fits only pure schema tests. Install a flat fixture with
   `src/ts/storage/tests/installFlatDatabase.ts`.
+- `vi.waitFor` and `expect.poll` keep their own real 1 s deadline whatever `testTimeout` is, under fake timers too.
+  Await a deferred, or pass an explicit timeout in a slow test.
+- A timed-out test's body keeps running and can break later cases of the file through module-level mocks, so the
+  failures after a timeout in one file are not independent findings.
+- happy-dom ignores `<fieldset disabled>`: a handler behind one guards itself, and a test cannot rely on the fieldset to
+  block input.
+- Svelte runs `onDestroy` with the `$state` values from before a pending batch. A component test that writes a store and
+  unmounts without `flushSync()` in between sees the old values there, and the cleanup under test does nothing.
+- A `src/` test must not import `server/src/tests/testSupport.ts`: the root `tsconfig.json` is not strict, and compiling
+  the server app under it breaks union narrowing in the server routes, so `pnpm check` fails while the tests pass.
+- Large fixtures: `isMember` in `chatStore.svelte.ts` scans a character's chat list, so spread many chats over
+  characters; V8 refuses a spread of about 125,000 arguments, so split such a case into a gated size and a `slow` one.
+- A probe under `docs/reports/audits/*/probes/` asserts the defect: a passing probe means the bug is present.
+- Stop a background run by its PID. `pkill -f` on the command text also matches the calling shell and the runs of other
+  worktrees.

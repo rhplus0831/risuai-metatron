@@ -268,6 +268,16 @@ even without a save acknowledgement; see [Module import](characters-modules.md#m
   - An SVG asset opened as a page runs no script under the CSP sandbox; an asset `<img>` in a frame with the plugin
     sandbox (no `allow-same-origin`) fails.
   - A screenshot and copy-to-HTML inline the images without a 401.
+- Upgrade a dependency: move the CDN pins that name its version in the same change. They are the KaTeX stylesheet and
+  its `sha384` in `index.html`, the `source-map` `lib/mappings.wasm` URL in `src/ts/sourcemap.ts`, and the pdf.js
+  `cMapUrl` in `src/ts/process/dynamicutils/pdf.ts`.
+  - `pnpm.overrides` in `package.json` holds `dompurify` (monaco-editor pins an exact older version), `source-map-js`,
+    and `@tailwindcss/typography>postcss-selector-parser` (typography pins an unpatched 6.0); drop one when its reason
+    is gone.
+  - `sharp` is in `neverBuiltDependencies`: after a bump, import it in the Docker image to prove the prebuilt libvips
+    loads.
+  - For a test-environment bump (happy-dom, Vitest), compare the wrapper's held-stderr line count before and after. What
+    earlier rounds left behind is in [deferred work](../backlog/deferred-work.md#dependency-upgrades).
 - Release: nothing to bump; the build id comes from the commit. After an upstream intake, set `version.json` and
   `appVer` to the triaged upstream release.
 

@@ -92,6 +92,9 @@ the worker's signing: [build/test](build-test-platforms.md#direct-assets); the a
 - Bulk asset writes use `saveAssets`, or `AssetSaveQueue` for arriving items, never a `saveAsset` loop: each fresh
   canonical asset makes a missing check and a write in the storage rate bucket (`server/src/app.ts`), which
   `AssetSaveQueue` bounds but still makes per item. Keep loads lazy and producers under queue admission.
+- An import or export path over a whole file or many assets reuses `serveFileImport` (`server/src/http/fileImport.ts`),
+  `loadAssetsInBatches`, and `saveAssetBatch`, never a loop of its own: the local loops they replaced copied whole files
+  in memory and sent one request per asset.
 
 ## Recipes
 
