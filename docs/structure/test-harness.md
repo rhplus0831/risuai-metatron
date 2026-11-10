@@ -150,6 +150,8 @@ the change reaches, not the whole set.
   `globalSetup` starts the stack.
 - It still shares Vite's `node_modules/.vite` with any other dev stack of the checkout (`pnpm dev:human`, a
   `util/playwright/` check), so do not run it beside one.
+- Do not edit or `touch` a file of the checkout during a run, Markdown included: the dev stack reloads every open page,
+  runs slow to several times their length, and a test can fail with `Target page, context or browser has been closed`.
 
 ### Overload runner
 

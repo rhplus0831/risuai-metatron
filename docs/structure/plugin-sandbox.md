@@ -187,7 +187,9 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - A guest proxy releases its host instance when it is finalized: the guest posts the ref ids finalized in one turn as
   one `RELEASE_INSTANCE` (`ids`), and a method taken from a proxy keeps the proxy alive. Ref ids count up per host, so a
   release never names a later instance; a released ref passed back as an argument fails the call before the host API
-  runs. A callback the plugin registered still holds what it captures until reload.
+  runs.
+- The host caches callback wrappers weakly and releases the guest's copy once one is finalized (`RELEASE_CALLBACK`,
+  `factory.ts` header). Host code that calls a callback later holds the wrapper, not its id.
 - A host call's abort controllers (one the host creates per call, plus one per guest-supplied signal) live until every
   response stream finishes (done, error, guest cancel, unread expiry, rollback, or termination). Calls and callbacks
   that throw or return no streams release their controllers at once. Termination aborts the live ones and closes both
@@ -354,7 +356,8 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   updates (`addPreparedCharacters`). New setters use these functions, never assign `chats` or `chatPage`.
 - The chat and character getters retain the read as a baseline (16 chats per instance, least recently read evicted,
   cleared on unload) and the setters consume it once, so a change another writer made after the read survives; a write
-  without a retained read diffs against the chat at the call.
+  without a retained read diffs against the chat at the call. A setter captures the baseline at entry, before the
+  `dbWrite` prompt, so a read made during the prompt cannot replace it.
 - When a whole-chat diff would change or remove a message being generated (`assertUnlocked`), that chat's update is
   skipped with a warning; a reorder of unchanged messages while it generates drops only the order change.
 - Generating-character and duplicate-id refusals: `applyPluginCharacter`/`applyPluginCharacters`; `removeChar` also

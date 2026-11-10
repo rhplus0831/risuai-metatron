@@ -88,7 +88,8 @@ The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credent
 - A Web Push completion crosses three records: the server's `push` event per subscription in the journal, the service
   worker's records in IndexedDB, and the page's `dismissedByPage` or `chatRefresh`; only a combined report puts them
   side by side.
-- Share for support on any request of a job copies every request in that job; a request without a job is copied alone.
+- Share for support on any request of a job copies every request in that job; a request without a job is copied alone. A
+  job is a generation, a translation run, or a detached memory task (`SHARE_JOB_ID` in `shared/requestHistory.ts`).
   Update refreshes the snapshot; Withdraw removes it. Support deployment must restrict the sftp operator to the
   diagnostics folder.
 

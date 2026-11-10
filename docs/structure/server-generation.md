@@ -347,5 +347,3 @@ Other subsystems' runtime limits live with their owners: [chat-pipeline](chat-pi
 - The job receipt writes are synchronous `node:sqlite` calls on the serving thread, at each admission and each job's
   end. A slow volume delays every request while a receipt write runs; a throttled local disk is unmeasured
   ([measurements](../audit/server-measurements-2026-11-01.md)).
-- `server/src/lua/runtime.ts` uses wasmoon 1.16's private engine extension table and C API, which must be rechecked on a
-  wasmoon upgrade ([scripts and triggers](scripts-triggers.md)).

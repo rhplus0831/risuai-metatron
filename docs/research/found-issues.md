@@ -12,23 +12,7 @@ The eighteenth batch was cleared the same day by a Sol implementer with session 
 
 ## Contents
 
-- [Plugin sandbox](#plugin-sandbox): 1
-- [Structure audit 2026-11-10](#structure-audit-2026-11-10): 3
-
-## Plugin sandbox
-
-### The full-screen alert e2e test failed once with a closed page
-
-`e2e/pluginSandbox.spec.ts:229` ("plugin permission alerts paint above the full-screen plugin container", added by
-Upstream Intake 2 slice 11) failed once in four runs on `dev` at the end of that run: `frame.evaluate: Target page,
-context or browser has been closed` at its first line (`requestMainDomInFullscreen`). The other three runs, each with
-`--force`, passed all four tests of the spec. During the failing run the session was editing Markdown files in the
-checkout; no other test or dev stack was running.
-
-**Why it matters:** a new e2e test with an intermittent failure; the stability measurement of 2026-11-08 had none.
-
-**Suggested handling:** repeat the spec (`--force`, several runs) to measure the rate; if it recurs, check the trace
-for a page reload or an iframe re-attach when the container moves to the body.
+- [Structure audit 2026-11-10](#structure-audit-2026-11-10): 2
 
 ## Structure audit 2026-11-10
 
@@ -65,16 +49,3 @@ it is rare.
 
 **Suggested handling:** reproduce with a two-client e2e check; then carry a row identity (the prompt item's or script's
 id) in `popupEditorContext`. Once reproduced, move the guide's bullet to known issues.
-
-### The lifecycle guide's checkpoint benchmark has no audit report to point to
-
-`docs/structure/structured-memory/lifecycle.md` (Limitations) states "2,000 old runs went from 79 MB and a 751 ms save
-to 237 KB and 20 ms". Doc Maintenance puts a run's measurements in `docs/audit/`, but
-`docs/audit/structured-memory-2026-11-03.md#checkpoint-save` holds other timings and no figure after the prune, and the
-archive (`docs/archived-plan/README.md`) records 751.54 ms to 19.55 ms and 79 MB to 236 KB, one kilobyte off the guide.
-The audit left the bullet as it is because the figures had no destination.
-
-**Why it matters:** a measurement in a guide with no report behind it cannot be re-run or checked.
-
-**Suggested handling:** add the before and after figures to the audit report's checkpoint section from the archive
-entry, then shorten the guide bullet to the consequence and the link.

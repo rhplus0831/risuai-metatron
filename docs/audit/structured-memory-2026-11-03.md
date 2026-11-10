@@ -105,6 +105,11 @@ encode to 105 MB. These holds are synchronous, and a save runs at each automatic
 policy, every 5 turns in the dialog's default) and at each load's safety checkpoint. The ko-1000 hold is larger than the
 English one at similar size because reading and measuring non-ASCII text costs more.
 
+After the prune (added 2026-11-10 from the [archive](../archived-plan/README.md) entry of the Found Issues Decisions
+run, slice D2, `03f729fd4`, 2026-11-09; measured by that slice, not re-run for this note): once a settling commit prunes
+the prompts of every run but the replay target, the 2,000-run shape's checkpoint save went from 751.54 ms to 19.55 ms
+and its run data from 79 MB to 236 KB.
+
 Replayed attribution of the second save. It repeats the save's steps on a scratch page table, so it shows where the time
 goes and is no instrumented split of the real save. Its parts plus a residual make its own total.
 

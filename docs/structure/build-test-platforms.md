@@ -31,8 +31,8 @@
 
 - `util/changedChecks.mjs` (`format`, `types`, `--base <ref>`, `isInert`, `ownersLine`): the local checks narrowed to
   the paths git says changed against the merge base with `origin/dev`. Its header defines the changed set and when
-  `types` skips a program; `types` never narrows a program to the changed files, and its first line names the guides
-  owning the changed paths and the unowned source paths.
+  `types` skips one of its three programs (client, server, e2e); `types` never narrows a program to the changed files,
+  and its first line names the guides owning the changed paths and the unowned source paths.
 
 ### Documentation check
 
