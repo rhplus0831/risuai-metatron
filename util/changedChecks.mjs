@@ -5,10 +5,12 @@
 //   - `format [--write]`: Prettier on the changed files that still exist, `--check` unless `--write`, with
 //     the same cache as `pnpm format:check`. `.prettierignore` still applies, and files Prettier cannot
 //     parse are skipped.
-//   - `types`: the whole client program (`svelte-check`) and the whole server program (`tsc`), in
+//   - `types`: the whole client (`svelte-check`), server (`tsc`), and e2e (`tsc --noEmit`) programs, in
 //     parallel. A type error can surface in a file nobody touched, so a program is never narrowed to the
-//     changed files: it is only skipped when every changed path is one it cannot read (`isInert`). An
-//     unknown path runs both programs. The server `tsc` keeps an incremental cache, as `pnpm check` does.
+//     changed files: it is only skipped when every changed path is one it cannot read. The e2e program
+//     reads `e2e/`, `src/`, `shared/`, and `util/` imports, plus the root tsconfig and dependencies; it
+//     does not read the Playwright runner config. An unknown path runs all three programs. The server
+//     `tsc` keeps an incremental cache, as `pnpm check` does.
 //     Its first line names the guides that own the changed paths (`ownersLine`, from the manifest
 //     `util/docsOwner.mjs` reads), the guides sharing a file included, then the changed paths under the owned
 //     roots (`src/`, `server/`, `shared/`, `util/`, `e2e/`, `public/`) that no rule owns. A changed path
@@ -21,16 +23,25 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { OWNED_ROOTS, ownerOf, readOwnership } from "./docsOwner.mjs";
 
-/** Paths outside both type-checked programs: docs, tooling the programs never import, and assets. */
+/** Paths outside all three type-checked programs: docs and assets. */
 const INERT = [
     /\.md$/i,
-    /^(docs|util|e2e|handover|\.claude|\.github|\.vscode|\.idea)\//,
+    /^(docs|handover|\.claude|\.github|\.vscode|\.idea)\//,
     /\.(png|jpe?g|gif|webp|avif|ico)$/i,
     /^(\.prettierignore|\.prettierrc\.json|\.ignore|\.gitignore|\.gitattributes|\.git-blame-ignore-revs)$/,
     /^(\.dockerignore|Dockerfile|LICENSE|playwright\.config\.ts)$/,
 ];
 
-/** Paths only the client program reads: the server and shared code never import them. */
+/** Tooling and e2e sources are outside the client and server programs. */
+const E2E_ONLY = /^(util|e2e)\//;
+
+/** The e2e program imports client/shared code and tools, but no server, public assets, or build config. */
+const E2E_UNREAD = [
+    /^(server|public)\//,
+    /^(index\.html|tsconfig\.node\.json|vite\.config\.ts|svelte\.config\.[cm]?[jt]s)$/,
+];
+
+/** Paths the client program reads but the server program does not. */
 const CLIENT_ONLY = [
     /^(src|public)\//,
     /^(index\.html|tsconfig\.json|tsconfig\.node\.json|vite\.config\.ts|svelte\.config\.[cm]?[jt]s)$/,
@@ -46,12 +57,16 @@ const SERVER_TSC_ARGS = [
 
 const isInert = (file) => INERT.some((pattern) => pattern.test(file));
 
-/** Which programs a changed set reaches: `client` (`svelte-check`) and `server` (`tsc`). */
+/** Which whole programs a changed set reaches: `client` (`svelte-check`), `server` and `e2e` (`tsc`). */
 export function typeCheckTargets(files) {
     const reaching = files.filter((file) => !isInert(file));
+    const app = reaching.filter((file) => !E2E_ONLY.test(file));
     return {
-        client: reaching.length > 0,
-        server: reaching.some((file) => !CLIENT_ONLY.some((pattern) => pattern.test(file))),
+        client: app.length > 0,
+        server: app.some((file) => !CLIENT_ONLY.some((pattern) => pattern.test(file))),
+        e2e:
+            files.some((file) => file.startsWith("e2e/")) ||
+            reaching.some((file) => !E2E_UNREAD.some((pattern) => pattern.test(file))),
     };
 }
 
@@ -152,6 +167,8 @@ async function types(root, files) {
     } else console.log("[changed] svelte-check: skipped, no changed path reaches the client program");
     if (targets.server) runs.push(run(root, "tsc server", "typescript", "tsc", SERVER_TSC_ARGS));
     else console.log("[changed] tsc server: skipped, no changed path reaches the server program");
+    if (targets.e2e) runs.push(run(root, "tsc e2e", "typescript", "tsc", ["-p", "e2e/tsconfig.json", "--noEmit"]));
+    else console.log("[changed] tsc e2e: skipped, no changed path reaches the e2e program");
     const codes = await Promise.all(runs);
     return codes.find((code) => code !== 0) ?? 0;
 }

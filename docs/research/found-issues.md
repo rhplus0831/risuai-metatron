@@ -13,7 +13,7 @@ The eighteenth batch was cleared the same day by a Sol implementer with session 
 ## Contents
 
 - [Plugin sandbox](#plugin-sandbox): 1
-- [Structure audit 2026-11-10](#structure-audit-2026-11-10): 6
+- [Structure audit 2026-11-10](#structure-audit-2026-11-10): 5
 
 ## Plugin sandbox
 
@@ -65,19 +65,6 @@ it is rare.
 
 **Suggested handling:** reproduce with a two-client e2e check; then carry a row identity (the prompt item's or script's
 id) in `popupEditorContext`. Once reproduced, move the guide's bullet to known issues.
-
-### `pnpm check:changed` passes an e2e type error without running a compiler
-
-`util/changedChecks.mjs:27` lists `e2e/` in `INERT`, so `typeCheckTargets(['e2e/fixtures.ts'])` returns
-`{ client: false, server: false }` (`:50`), no program is queued (`:145`), and the command exits 0 (`:171`).
-`pnpm check` runs `tsc -p e2e/tsconfig.json --noEmit` (`package.json`), and index rule V1 offers `pnpm check:changed` as
-its equivalent.
-
-**Why it matters:** a change that touches only `e2e/` passes the type gate unchecked, and Playwright does not type-check
-either.
-
-**Suggested handling:** give `changedChecks.mjs` an e2e target that runs the e2e program when a path under `e2e/`
-changed, with a case in its test.
 
 ### `util/playwright/captureBootFixtures.mjs` imports exports the app no longer has
 

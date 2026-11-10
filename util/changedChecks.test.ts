@@ -36,28 +36,37 @@ describe("ownersLine", () => {
 });
 
 describe("typeCheckTargets", () => {
-    it("skips both programs when nothing changed", () => {
-        expect(typeCheckTargets([])).toEqual({ client: false, server: false });
+    it("skips all programs when nothing changed", () => {
+        expect(typeCheckTargets([])).toEqual({ client: false, server: false, e2e: false });
     });
 
-    it("skips both programs for docs, tooling outside the programs, and assets", () => {
-        const files = ["STRUCTURE.md", "docs/structure/app-shell.md", "util/docsBudget.mjs", "e2e/a.spec.ts", "a.png"];
-        expect(typeCheckTargets(files)).toEqual({ client: false, server: false });
+    it("skips all programs for docs, static assets and Playwright runner configuration", () => {
+        for (const file of ["STRUCTURE.md", "docs/structure/app-shell.md", "a.png", "playwright.config.ts"]) {
+            expect(typeCheckTargets([file])).toEqual({ client: false, server: false, e2e: false });
+        }
     });
 
-    it("runs only the client program for client-only paths", () => {
-        expect(typeCheckTargets(["src/App.svelte"])).toEqual({ client: true, server: false });
-        expect(typeCheckTargets(["tsconfig.json"])).toEqual({ client: true, server: false });
+    it.each(["e2e/fixtures.ts", "util/playwright/stack.mjs"])("selects only e2e for %s", (file) => {
+        expect(typeCheckTargets([file])).toEqual({ client: false, server: false, e2e: true });
     });
 
-    it("runs both programs for server and shared code, since the client imports both", () => {
-        expect(typeCheckTargets(["server/src/main.ts"])).toEqual({ client: true, server: true });
-        expect(typeCheckTargets(["shared/realmImport.ts"])).toEqual({ client: true, server: true });
+    it("selects client and e2e for client sources and the inherited tsconfig", () => {
+        expect(typeCheckTargets(["src/App.svelte"])).toEqual({ client: true, server: false, e2e: true });
+        expect(typeCheckTargets(["tsconfig.json"])).toEqual({ client: true, server: false, e2e: true });
     });
 
-    it("runs both programs for dependency changes and unknown paths", () => {
-        expect(typeCheckTargets(["pnpm-lock.yaml"])).toEqual({ client: true, server: true });
-        expect(typeCheckTargets(["vitest.testNetwork.ts"])).toEqual({ client: true, server: true });
-        expect(typeCheckTargets(["somewhere/new.ts"])).toEqual({ client: true, server: true });
+    it("selects the app programs for server code and also e2e for shared code", () => {
+        expect(typeCheckTargets(["server/src/main.ts"])).toEqual({ client: true, server: true, e2e: false });
+        expect(typeCheckTargets(["shared/realmImport.ts"])).toEqual({ client: true, server: true, e2e: true });
+    });
+
+    it("selects only the client for public assets", () => {
+        expect(typeCheckTargets(["public/style.css"])).toEqual({ client: true, server: false, e2e: false });
+    });
+
+    it("selects all programs for dependency changes and unknown paths", () => {
+        expect(typeCheckTargets(["pnpm-lock.yaml"])).toEqual({ client: true, server: true, e2e: true });
+        expect(typeCheckTargets(["vitest.testNetwork.ts"])).toEqual({ client: true, server: true, e2e: true });
+        expect(typeCheckTargets(["somewhere/new.ts"])).toEqual({ client: true, server: true, e2e: true });
     });
 });
