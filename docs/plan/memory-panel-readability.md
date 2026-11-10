@@ -4,7 +4,7 @@ Status: drafted 2026-11-11 at `09ce72896` from the owner's request; the owner ac
 day (Decisions); audited the same day by a read-only GPT-6-Astra session in `full` mode, at the owner's request in
 place of plan-runner's own audit ([report](../reports/audits/plan-runner/memory-panel-readability-2026-11-11.md): no
 P1, and every P2 and P3 is fixed in this text). The report and this line share the plan's last commit, so a plan-runner
-run skips its Plan audit unless the plan changes again. Landed: 1 (`3e44dd10f`), 2 (`1ce6f125e`), 3 (`306268128`), 4 (`8d2919983`), 5 (`7a9d25eb6`).
+run skips its Plan audit unless the plan changes again. Landed: 1 (`3e44dd10f`), 2 (`1ce6f125e`), 3 (`306268128`), 4 (`8d2919983`), 5 (`7a9d25eb6`), 6 (`76611aadd`).
 
 Sources: the owner's question (2026-11-11: BardWiki is a wiki, so a person reads it as long-term memory too; where is
 Structured Memory unclear to its user?); the panel's components under `src/lib/Others/StructuredMemory/` and its
