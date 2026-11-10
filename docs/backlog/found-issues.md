@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, seven more plan-leftover collections from memory the same day, the seventeenth (the Found Issues Decisions run) on 2026-11-09, and the nineteenth (the Upstream Intake 2 run) on 2026-11-10; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, seven more plan-leftover collections from memory the same day, the seventeenth (the Found Issues Decisions run) on 2026-11-09, the nineteenth (the Upstream Intake 2 run) on 2026-11-10, and the twentieth (the Memory Panel Readability run) on 2026-11-11; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. An entry is a `###` heading under its area section, a paragraph saying what and where (`file:line`), then a **Why it matters:** line and a **Suggested handling:** line; the Contents list at the top counts each area's entries. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's section of [known issues](known-issues.md) (or to the guide's Known Hazards `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -15,6 +15,7 @@ The nineteenth batch and the eight entries of the 2026-11-10 full guide audit (t
 ## Contents
 
 - [Build and dependencies](#build-and-dependencies): 1
+- [Structured memory](#structured-memory): 3
 
 ## Build and dependencies
 
@@ -25,3 +26,47 @@ The nineteenth batch and the eight entries of the 2026-11-10 full guide audit (t
 **Why it matters:** the pin did not move with the package, so a PDF that needs a character map reads one from another release. The maps rarely change, so this may have no visible effect.
 
 **Suggested handling:** point both URLs at the installed version (or read the version from the package), and import a PDF with CJK text to confirm.
+
+## Structured memory
+
+### The upstream export report's Korean line still says 이벤트
+
+`src/lang/ko.ts:1920`, `upstreamExport.converted["memory-projected"]`, reads "구조화 기억 이벤트를 하이파 V3 요약 형식으로
+변환한 채팅". It names Structured Memory events (`shared/upstreamExportReport.ts:27`) but sat outside the Memory Panel
+Readability plan's slice 1 scope, so it kept 이벤트 while every other structured-memory string now says 사건. Seen on
+2026-11-11 by that slice.
+
+**Why it matters:** the plan's goal is one Korean term per record kind; this is the one structured-memory-only string
+left with the old term.
+
+**Suggested handling:** change it to "구조화 기억 사건을 하이파 V3 요약 형식으로 변환한 채팅"; a one-string change.
+
+### A history jump can open its diff without scrolling to it
+
+`src/lib/Others/StructuredMemory/PagesTab.svelte:404`, `openAskedEntry`, clears `askedEntry` once its page is the copy,
+opens the diff, awaits `tick()`, then scrolls the row found under `historyList`. `readContents` and `readRecord` run
+independently, and the detail renders only once `contents` is held. If the record and the diff answer before the
+contents read, `historyList` is not bound yet, the scroll silently skips, and nothing retries when contents arrive.
+Found on 2026-11-11 by the challenger of the Memory Panel Readability plan's slice 2; pre-existing and not run in a
+mounted panel.
+
+**Why it matters:** a receipt's "open this history entry" jump is meant to show the entry; on a long page with a slow
+contents read the person sees the top of the history instead.
+
+**Suggested handling:** keep the scroll request until the detail is renderable; reproduce first with a deferred
+contents read in `StructuredMemoryPanel.test.ts`.
+
+### A memory read round can answer more than the bytes it charged
+
+`roundOf` (`server/src/routes/structuredMemory.ts:209`) charges each row its stored `bytes` (`octet_length(data)`), and
+`/package`, `/coverage`, `/story`, and `/find` answer through `compressedJson`, which re-serializes the parsed record. A
+database snapshot or checkpoint load keeps a row's raw JSON text (`server/src/data/memoryStore.ts` `checkMemoryRow`), so a
+crafted row with numbers such as `1e20` charged 794 stored bytes while its four-field `/story` projection serialized to
+2,285 bytes. `checkMemoryRow` also admits an event without `storyTime` or `participants` that the chat-file restore
+(`restore.ts`) would refuse; the tab's `parseStoryRound` normalizes these, and other readers may not. Found on
+2026-11-11 by the challenger of the Memory Panel Readability plan's slice 4.
+
+**Why it matters:** the guides describe the round budget as the read bound; a crafted snapshot (a restored backup) can
+push an answer past it. Low severity: the soft first-record rule already lets one oversized record through.
+
+**Suggested handling:** charge the serialized size, or canonicalize rows when a snapshot loads.
