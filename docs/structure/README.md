@@ -66,7 +66,7 @@ prefix. Indexes and READMEs have a free outline.
 ## Size limits
 
 The index, every guide, and every README share the file, heading, item, and parenthesis limits. A trim or split should
-reach the target. If adding a topic would cross a target, move it to its owner or split the guide.
+reach the target.
 
 | Unit                                                               |       Target |          Limit |
 | ------------------------------------------------------------------ | -----------: | -------------: |
@@ -79,10 +79,14 @@ reach the target. If adding a topic would cross a target, move it to its owner o
 `pnpm check:docs` reports `near` over a target and fails over a limit. Its verdict line also prints the bytes of the
 guides and the index together, a trend figure with no limit: a reader takes one section at a time, so the leaf and item
 limits bound a read, not the tree. The index is the exception: every add/change task reads its invariants whole, so that
-section has a limit over its subsections. A change adds its facts to the owning guide and does not trim a guide it would
-not otherwise touch. Trims are passes of their own, aimed first at large guides that `pnpm docs:reads` shows are rarely
-read. See the [documentation checker](build-test-platforms.md#documentation-check) for exact rule coverage and its
-report mode.
+section has a limit over its subsections.
+
+A change adds its facts to the owning guide and does not trim a guide it would not otherwise touch. A target does not
+stop it: a change that leaves a new `near` line still records its facts, names the line in its report, and adds a
+[found issues](../research/found-issues.md) entry for the split or trim unless one already names that guide. Splits and
+trims are passes of their own, aimed first at `near` lines and at large guides that `pnpm docs:reads` shows are rarely
+read. Only a limit stops a change, and then the split lands first, as its own commit. See the
+[documentation checker](build-test-platforms.md#documentation-check) for exact rule coverage and its report mode.
 
 ## Known hazards and the issue inbox
 
