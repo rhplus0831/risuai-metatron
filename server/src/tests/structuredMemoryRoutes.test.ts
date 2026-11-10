@@ -3434,6 +3434,155 @@ it("imports readable files with individual refusals and leaves every occupied or
     }
 });
 
+it("stores a new note and added section without evidence, keeps them supported after retraction and refuses additions in trash", async () => {
+    const s = await server();
+    const witnessed = page("witnessed");
+    witnessed.sections[0].provenance = ["e"];
+    const revision = s.write({ pages: [witnessed], events: [event("e")] });
+    const tool = { kind: "create", title: "  Travel notes  ", heading: "  Route  ", body: "Bring a map." };
+    const created = await answer(await s.json(`${base}/page-tools`, { revision, tool }));
+    expect(created.revision).not.toBe(revision);
+    const firstSection = {
+        heading: "Route",
+        body: "Bring a map.",
+        provenance: [],
+        sources: [],
+        locked: false,
+        userCorrected: true,
+        updatedAt: Date.now(),
+    };
+    expect(created.data).toEqual({
+        id: expect.any(String),
+        type: "note",
+        title: "Travel notes",
+        aliases: [],
+        contextMode: "auto",
+        namedByUser: true,
+        sections: [firstSection],
+        links: [],
+        retrieval: { keywords: [] },
+        history: [
+            { id: expect.any(String), heading: null, before: null, kind: "create", highlighted: false, at: Date.now() },
+        ],
+    });
+    const pageId = created.data.id;
+    const readNote = async () => answer(await s.request(`${base}/records/pages/${pageId}`));
+    expect(await readNote()).toMatchObject({ revision: created.revision, data: created.data });
+    await answer(await s.json(`${base}/page-tools`, { revision: created.revision, tool }), 400);
+    expect((await readNote()).revision).toBe(created.revision);
+
+    const added = await answer(
+        await s.json(`${base}/edits`, {
+            revision: created.revision,
+            edit: { kind: "sectionAdd", pageId, heading: "  Supplies  ", body: "Pack water." },
+        }),
+    );
+    expect(added.kind).toBe("pages");
+    expect(added.revision).not.toBe(created.revision);
+    expect(added.data).toEqual({
+        ...created.data,
+        sections: [firstSection, { ...firstSection, heading: "Supplies", body: "Pack water." }],
+        history: [
+            ...created.data.history,
+            {
+                id: expect.any(String),
+                heading: "Supplies",
+                before: null,
+                kind: "edit",
+                highlighted: false,
+                at: Date.now(),
+            },
+        ],
+    });
+    expect(await readNote()).toMatchObject({ revision: added.revision, data: added.data });
+    const retracted = await answer(
+        await s.json(`${base}/edits`, {
+            revision: added.revision,
+            edit: { kind: "event", eventId: "e", repair: "retract" },
+        }),
+    );
+    expect(retracted.data.status).toBe("retracted");
+    expect((await readNote()).data.sections).toEqual([
+        firstSection,
+        { ...firstSection, heading: "Supplies", body: "Pack water." },
+    ]);
+    // This section has evidence to lose, proving the retraction did run the unsupported check.
+    expect((await answer(await s.request(`${base}/records/pages/witnessed`))).data.sections[0].unsupported).toBe(true);
+    expect((await answer(await s.request(base))).unsupportedPages).toEqual(["witnessed"]);
+
+    const trashed = await answer(
+        await s.json(`${base}/page-tools`, {
+            revision: retracted.revision,
+            tool: { kind: "trash", pageId },
+        }),
+    );
+    await answer(
+        await s.json(`${base}/edits`, {
+            revision: trashed.revision,
+            edit: { kind: "sectionAdd", pageId, heading: "Weather", body: "Expect rain." },
+        }),
+        400,
+    );
+    expect(await readNote()).toMatchObject({ revision: trashed.revision, data: trashed.data });
+});
+
+it("requires the current revision and an open fence for note creation and section addition", async () => {
+    const s = await server();
+    const staleRevision = s.store.memory.readContents(characterId, chatId)!.revision;
+    let revision = s.write({ pages: [page("p")] });
+    const writes = [
+        {
+            route: "page-tools",
+            value: { tool: { kind: "create", title: "Travel notes", heading: "Route", body: "Bring a map." } },
+        },
+        {
+            route: "edits",
+            value: { edit: { kind: "sectionAdd", pageId: "p", heading: "Route", body: "Bring a map." } },
+        },
+    ];
+    const before = memorySnapshot(s, chatId);
+    for (const { route, value } of writes) {
+        expect(
+            await answer(await s.json(`${base}/${route}`, { revision: staleRevision, ...value }), 409),
+        ).toMatchObject({ revision });
+    }
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+    stageRun(s);
+    for (const { route, value } of writes) {
+        expect(await answer(await s.json(`${base}/${route}`, { revision, ...value }), 409)).toMatchObject({
+            reason: "fenced",
+        });
+    }
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+    s.store.memory.rebuild.abandon(characterId, chatId, s.epoch);
+    for (const { route, value } of writes) {
+        const accepted = await answer(await s.json(`${base}/${route}`, { revision, ...value }));
+        expect(accepted.revision).not.toBe(revision);
+        revision = accepted.revision;
+    }
+});
+
+it("refuses note creation while HypaV3 summaries await a choice and leaves them available to adopt", async () => {
+    const s = await server();
+    storeAdoptionChat(s, {
+        summaries: [{ text: "The travelers reached the harbor.", chatMemos: ["m0", "m1"], isImportant: false }],
+    });
+    const before = memorySnapshot(s, chatId);
+    const stored = s.store.readChatSource(characterId, chatId);
+    expect((await answer(await s.request(base))).adoption.adoptable).toBe(1);
+    await answer(
+        await s.json(`${base}/page-tools`, {
+            revision: before.contents.revision,
+            tool: { kind: "create", title: "Travel notes", heading: "Route", body: "Bring a map." },
+        }),
+        400,
+    );
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+    expect(s.store.readChatSource(characterId, chatId)).toEqual(stored);
+    expect((await answer(await s.request(base))).adoption.adoptable).toBe(1);
+    expect(await answer(await s.request(`${base}/adopt`, { method: "POST" }))).toMatchObject({ adopted: 1, stale: 0 });
+});
+
 it("checks epochs, fences, revisions and body limits before page tools or imports can write", async () => {
     for (const kind of ["trash", "rename", "aliases", "import"] as const) {
         const route = kind === "import" ? "import" : "page-tools";

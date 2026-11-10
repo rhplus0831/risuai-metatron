@@ -139,6 +139,12 @@ again.
 A `sectionRelease` removes `userCorrected`, whether a body edit or a preserving keep set it, and nothing else: no body,
 lock, timestamp, or history changes. The writer may then rewrite and compact the text, and a full rebuild drops it.
 
+A `sectionAdd` appends a person's section: the heading is trimmed, non-blank, and at most `labelChars`, the body as for
+`section`. It has empty `provenance` and `sources`, `userCorrected`, no lock, and one `edit` entry with `before: null`
+and no `eventId`, so nothing can revert it. A `scene` or `character` page refuses it `invalid` (the scene is code's and
+a character page's headings are fixed slots), and so do a heading the page has and a page at `sectionsPerPage`; the
+trash refusal applies as for every page edit.
+
 ### The revert route
 
 The tab's `revertStructuredMemoryChange` reads the page's current revision, then calls `POST .../revert`. The route uses

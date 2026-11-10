@@ -9,6 +9,7 @@ import {
 } from "../../../../../shared/structuredMemory.ts";
 import { messageSourceHash } from "../../../data/memoryStore.ts";
 import { memoryRecords } from "../../../tests/memoryFixtures.ts";
+import { applyPageTool } from "./pages.ts";
 import { memoryWorkCost, rebuildChanges, rebuildPlan, rebuildSeed, rebuildWindow } from "./rebuild.ts";
 
 const messages: Message[] = ["u1", "a1", "u2", "a2", "u3", "a3", "u4"].map((id) => ({
@@ -240,6 +241,47 @@ it("seeds nothing for a fresh rebuild and its swap removes every live record and
     expect(rebuildChanges("fresh", adopted, staged)?.events).toEqual([
         { ...memoryRecords(["new"]).events[0], sources: staged.events[0].sources, adoptedSummaries: true },
     ]);
+});
+
+it("keeps a created note and its section through a rebuild swap and removes them on a fresh rebuild", () => {
+    let id = 0;
+    const created = applyPageTool(
+        { page: () => undefined, pages: () => [], events: () => [], threads: () => [] },
+        { kind: "create", title: "Travel notes", heading: "Route", body: "Bring a map." },
+        { now: 200, newId: () => `note-${++id}` },
+    ).shown!;
+    const live = { pages: [created], threads: [], events: [] };
+    const seed = rebuildSeed("rebuild", live);
+    // A completed window is required for a swap even when the writer never mentions the note.
+    const events = [event("new", ["u1", "a1"])];
+    const changes = rebuildChanges("rebuild", live, { pages: seed.pages!, threads: seed.threads!, events });
+    expect(changes).not.toBeNull();
+    expect(changes?.pages).toEqual([
+        expect.objectContaining({
+            id: "note-1",
+            type: "note",
+            title: "Travel notes",
+            contextMode: "auto",
+            namedByUser: true,
+            sections: [
+                {
+                    heading: "Route",
+                    body: "Bring a map.",
+                    provenance: [],
+                    sources: [],
+                    locked: false,
+                    userCorrected: true,
+                    updatedAt: 200,
+                },
+            ],
+        }),
+    ]);
+    expect(changes?.remove?.pages).toEqual([]);
+    const fresh = rebuildSeed("fresh", live);
+    const reset = rebuildChanges("fresh", live, { pages: fresh.pages!, threads: fresh.threads!, events });
+    expect(reset).not.toBeNull();
+    expect(reset?.pages).toEqual([]);
+    expect(reset?.remove?.pages).toEqual(["note-1"]);
 });
 
 it("keeps a page marked only by personal naming through a rebuild seed and swap but drops it on a fresh rebuild", () => {

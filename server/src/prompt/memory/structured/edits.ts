@@ -26,6 +26,8 @@ import { isPlainObject } from "../../../../../shared/valueKinds.ts";
  * - A section's edit changes its body and nothing that says where it came from: `provenance` and
  *   `sources` stay, and so does `unsupported`, which states a fact about them. `disputed` goes, because a
  *   person's edit is the review a dispute waits for, and `userCorrected` says who wrote the text.
+ * - Adding a section marks it user-corrected with empty evidence and an `edit` entry with no prior text
+ *   or event. Scene and character pages have fixed headings; other pages need a new heading and room.
  * - Keeping an unsupported section clears its flag and drops retracted provenance, retaining all text,
  *   sources, and other marks. It optionally sets `userCorrected` for a full rebuild and takes no history.
  * - Releasing a section removes `userCorrected` and nothing else: the text is the writer's to change,
@@ -43,7 +45,7 @@ import { isPlainObject } from "../../../../../shared/valueKinds.ts";
  *   Confirmed tail deletes may rewind writer-only history before flagging; a person's repair does not.
  */
 
-/** An edit addressed to a page, excluding thread edits, event repairs, and event text controls. */
+/** An edit addressed to a page, including section additions, excluding thread and event controls. */
 type PageEdit = Exclude<StructuredMemoryEdit, { kind: "thread" | "event" | "eventText" | "eventRelease" }>;
 
 type ThreadEdit = Extract<StructuredMemoryEdit, { kind: "thread" }>;
@@ -79,7 +81,8 @@ function validGrade(value: unknown): value is number | null {
 
 /**
  * The edit a request's `value` holds, or null for one that is malformed: unknown fields are dropped, and
- * a section's body must have text and fit `sectionBodyChars`, because nothing is cut to fit. Event
+ * a section's body must have text and fit `sectionBodyChars`, because nothing is cut to fit. A new
+ * section heading is trimmed, non-blank, and fits `labelChars`. Event
  * titles are trimmed and summaries keep their whitespace; both must have text and fit their limits.
  * A `keep` must name a state, the one repair that has any.
  */
@@ -123,10 +126,13 @@ export function parseMemoryEdit(value: unknown): StructuredMemoryEdit | null {
     if (typeof pageId !== "string") {
         return null;
     }
-    if (kind === "section" && typeof heading === "string") {
+    if ((kind === "section" || kind === "sectionAdd") && typeof heading === "string") {
+        if (kind === "sectionAdd" && (heading.trim() === "" || heading.trim().length > LIMITS.labelChars)) {
+            return null;
+        }
         const { body } = value;
         return typeof body === "string" && body.trim() !== "" && body.length <= LIMITS.sectionBodyChars
-            ? { kind, pageId, heading, body }
+            ? { kind, pageId, heading: kind === "sectionAdd" ? heading.trim() : heading, body }
             : null;
     }
     if (kind === "sectionLock" && typeof heading === "string") {
@@ -182,6 +188,40 @@ function editBody(page: MemoryPage, heading: string, body: string, stamp: EditSt
     return {
         ...page,
         sections: withSection(page, section, written),
+        history: [...page.history, entry].slice(-LIMITS.pageHistoryEntries),
+    };
+}
+
+function addSection(page: MemoryPage, heading: string, body: string, stamp: EditStamp): MemoryPage {
+    if (page.type === "scene" || page.type === "character") {
+        throw new MemoryEditRefusal("invalid", "Scene and character pages cannot add sections");
+    }
+    if (page.sections.some((section) => section.heading === heading)) {
+        throw new MemoryEditRefusal("invalid", "The page already has a section with that heading");
+    }
+    if (page.sections.length >= LIMITS.sectionsPerPage) {
+        throw new MemoryEditRefusal("invalid", "The page has no room for another section");
+    }
+    const section: MemorySection = {
+        heading,
+        body,
+        provenance: [],
+        sources: [],
+        locked: false,
+        userCorrected: true,
+        updatedAt: stamp.now,
+    };
+    const entry: MemoryPageHistoryEntry = {
+        id: stamp.newId(),
+        heading,
+        before: null,
+        kind: "edit",
+        highlighted: false,
+        at: stamp.now,
+    };
+    return {
+        ...page,
+        sections: [...page.sections, section],
         history: [...page.history, entry].slice(-LIMITS.pageHistoryEntries),
     };
 }
@@ -251,6 +291,7 @@ function editFields(page: MemoryPage, { contextMode, grade }: Extract<PageEdit, 
  * `edit` over `page`, the page as stored: the page to store, or null for no change. A `MemoryEditRefusal`
  * says why it does not fit. A section body's change is kept in the page's history as one `edit` entry,
  * bounded by `pageHistoryEntries`, with no `eventId`: it is a person's change, not a writer's.
+ * An added section takes the same kind of entry with `before: null` and no evidence.
  * A section keep reads the events' stored statuses and writes no history, and neither does a release. A
  * page's grade edit sets `gradeByUser`; a null grade clears both fields. The route refuses pages in the
  * trash before applying.
@@ -264,6 +305,8 @@ export function applyPageEdit(
     switch (edit.kind) {
         case "section":
             return editBody(page, edit.heading, edit.body, stamp);
+        case "sectionAdd":
+            return addSection(page, edit.heading, edit.body, stamp);
         case "sectionLock":
             return editLock(page, edit.heading, edit.locked);
         case "sectionKeep":

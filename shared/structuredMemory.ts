@@ -913,6 +913,8 @@ export type StructuredMemoryFindRound = {
  * What a person can change of a chat's memory, one change per request. The tab never sends a record:
  * this closed union is all an edit can say, so history, provenance, a page's type, and ids cannot be
  * forged. A `page` edit names at least one of its fields, and a null `grade` clears the grade. A
+ * `sectionAdd` appends a user-corrected section to a non-scene, non-character page with an `edit`
+ * history entry and no event or evidence. Its heading must be new and the page must have room.
  * `sectionKeep` clears unsupported evidence and drops retracted provenance without changing text or
  * history; `preserve` marks it user-corrected for a rebuild. A `sectionRelease` takes that mark off again,
  * whichever edit set it, and hands the text back to the writer. An `event` edit is a repair of a stale
@@ -921,6 +923,7 @@ export type StructuredMemoryFindRound = {
  */
 export type StructuredMemoryEdit =
     | { kind: "section"; pageId: string; heading: string; body: string }
+    | { kind: "sectionAdd"; pageId: string; heading: string; body: string }
     | { kind: "sectionLock"; pageId: string; heading: string; locked: boolean }
     | { kind: "sectionKeep"; pageId: string; heading: string; preserve: boolean }
     | { kind: "sectionRelease"; pageId: string; heading: string }
@@ -958,8 +961,11 @@ export type StructuredMemoryRevertAnswer = {
  * subset of the page's, and `aliases`, a subset of its own, to a new page of its type titled `title`.
  * `rename` changes the title and keeps the old one as an alias; `aliases` replaces the alias list.
  * Both preserve the person's naming through a rebuild. The scene page takes none of them.
+ * `create` names no existing page: it makes a note with user naming and one user-corrected section,
+ * preserving both through a rebuild, and a `create` history entry with no event or evidence.
  */
 export type StructuredMemoryPageTool =
+    | { kind: "create"; title: string; heading: string; body: string }
     | { kind: "trash"; pageId: string }
     | { kind: "untrash"; pageId: string }
     | { kind: "purge"; pageId: string }
@@ -970,7 +976,7 @@ export type StructuredMemoryPageTool =
 
 /**
  * The page tools route's answer: the revision the next edit names, and the page the tab shows now: the
- * trashed, restored, or merged-into page, a split's new page, or null after a purge.
+ * created, trashed, restored, or merged-into page, a split's new page, or null after a purge.
  */
 export type StructuredMemoryPageToolAnswer = { revision: string; data: MemoryPage | null };
 

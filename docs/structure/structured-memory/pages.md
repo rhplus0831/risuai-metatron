@@ -2,8 +2,8 @@
 
 ## Scope
 
-- Owns what a person does to a `structuredMemory` page as a whole: the trash, merge, split, rename, the alias list, the
-  lorebook export, and importing a Markdown package.
+- Owns what a person does to a `structuredMemory` page as a whole: the trash, merge, split, rename, the alias list, a
+  person's own note, the lorebook export, and importing a Markdown package.
 - Paths: `applyPageTool` and `parseMemoryPageTool` in `server/src/prompt/memory/structured/pages.ts`,
   `server/src/prompt/memory/structured/importPackage.ts`, the `page-tools` and `import` routes in
   `server/src/routes/structuredMemory.ts`, the tool controls of `src/lib/Others/StructuredMemory/PagesTab.svelte`, and
@@ -41,6 +41,20 @@ Read the named contract with its code; the shared modules also serve other struc
 route calls `applyPageTool`, checks the flagged pages with `flagUnsupportedSections`, and writes one change set at the
 tab's revision. The tab selects the answered page and rereads contents. Checks and order follow
 [the edit route](records.md#the-edit-route), so a running or stopped rebuild refuses it 409 `fenced`.
+
+### A person's note
+
+`create` names no page: it makes a `note` titled `title` with `contextMode: "auto"`, `namedByUser`, one section
+(`heading`, `body`, empty `provenance` and `sources`, `userCorrected`, unlocked), and one `create` entry with no
+heading, `before`, or event. The title is trimmed and at most `labelChars`, the heading too, and the body non-blank
+within `sectionBodyChars`; no live `note` may already go by the title (`pageNames`), while other types do not count. A
+chat that waits for a choice on its HypaV3 summaries (`chatAdoptionHold`) refuses it 400, since any page would end that
+wait with nothing adopted. The tab's "new note" form has no held page, so it sends at the contents' revision, which
+every accepted edit advances, and shows the answered page in `manage`. The form sits over the tree and in an empty chat,
+not under `only="unsupported"` or while the chat waits for adoption. A person adds sections to a page with `sectionAdd`
+([the edit route](records.md#the-edit-route)). The writer may patch the note's unlocked sections like any
+`userCorrected` section, empty `provenance` is never flagged, and [a rebuild](rebuild.md#what-a-rebuild-keeps) seeds the
+page through `namedByUser` and its marked sections.
 
 ### Rename and aliases
 
@@ -114,8 +128,9 @@ inactive decorator. This chat write is outside the memory revision and fence.
   column ([Limitations](#limitations)).
 - A reader of pages starts from `contents.pages`. A new reader by id must refuse or show a trashed page on purpose.
 - The scene page takes no tool but export. `recordRow` refuses a trashed scene, a snapshot's included.
-- A tool's `merge` and `split` entries never carry an `eventId`. A rename and an alias edit write no history entry,
-  since an older build checks the closed list of kinds.
+- A tool's `merge`, `split`, and `create` entries never carry an `eventId`. A rename and an alias edit write no history
+  entry, and a person's note and added section reuse the `create` and `edit` kinds, since an older build checks the
+  closed list of kinds.
 - A rename or an alias edit never gives a page a new name another live page of its type goes by, and cuts no alias.
 - A merge writes reference changes in events, threads, and live pages in one change set, so no partial remapping is
   visible.
@@ -156,6 +171,8 @@ Decisions: Structured Memory slice 7d, archive, unless an entry names another.
   types, hides the row. A write there sets the column to the true type and keeps `trashedAt`; after rolling forward that
   page reads as live until a tool writes it, and its detail shows Restore.
 - A receipt keeps the title of its time, so after a rename an older receipt names the old title.
+- A person can add a section and cannot delete one; only the writer's patches and a merge or split move sections.
+- A note's whole-page `create` entry has no heading, so a rebuild, which keeps the history of marked headings, drops it.
 - An older build's rebuild does not read `namedByUser`, so a renamed page with nothing else of a person's on it is
   written anew there; the field itself survives the older build's restore, which keeps unknown fields.
 - An older build refuses a chat file holding a `merge` or `split` history entry whole, since its `restore.ts` checks the

@@ -71,6 +71,8 @@
      * with `changed`, so an old draft cannot replace new writer text. Read-only keeps the draft and disables
      * Save; the read when it falls checks the same base. Title and alias drafts also close when their
      * stored base changes, so they cannot overwrite a newer name. Types and links have no editor.
+     * New notes use the contents revision without a selected page; new sections use the held page's
+     * edit route. Accepted edits refresh contents and advance its revision immediately for a new note.
      * Section headings use `pages.headings`, with unknown keys shown literally. All record text stays plain.
      *
      * History's after-state comes from `memoryPageHistoryView` in src/ts/process/structuredMemory.svelte.ts;
@@ -130,6 +132,14 @@
     /** The open section editor, with the body it opened on. */
     let editor = $state.raw<{ heading: string; base: string } | null>(null);
     let draft = $state("");
+
+    let newNoteOpen = $state(false);
+    let newNoteTitle = $state("");
+    let newNoteHeading = $state("");
+    let newNoteBody = $state("");
+    let sectionAddOpen = $state(false);
+    let sectionAddHeading = $state("");
+    let sectionAddBody = $state("");
 
     /** Naming drafts keep the stored value they opened on, independent of edits to the local text. */
     let renameBase = $state<string | null>(null);
@@ -228,6 +238,16 @@
         return rows;
     });
     const controlsOff = $derived(readOnly || sending);
+    const canCreateNote = $derived(only !== "unsupported" && contents !== null && contents.adoption.adoptable === 0);
+    const sectionTextFits = (heading: string, body: string) =>
+        heading.trim() !== "" &&
+        heading.trim().length <= labelChars &&
+        body.trim() !== "" &&
+        body.length <= sectionBodyChars;
+    const newNoteFits = $derived(
+        newNoteTitle.trim() !== "" && newNoteTitle.length <= labelChars && sectionTextFits(newNoteHeading, newNoteBody),
+    );
+    const sectionAddFits = $derived(sectionTextFits(sectionAddHeading, sectionAddBody));
     const draftFits = $derived(draft.trim() !== "" && draft.length <= sectionBodyChars);
     const renameFits = $derived(
         renameTitle.trim() !== "" && renameTitle.length <= labelChars && renameTitle.trim() !== copy?.data.title,
@@ -443,6 +463,8 @@
         chatRef.chatId;
         untrack(() => {
             importReport = null;
+            newNoteOpen = false;
+            sectionAddOpen = false;
             clearSearch();
         });
     });
@@ -486,6 +508,9 @@
 
     /** Forgets what the tools held of the page shown before. */
     function resetTools() {
+        sectionAddOpen = false;
+        sectionAddHeading = "";
+        sectionAddBody = "";
         renameBase = null;
         renameTitle = "";
         aliasesBase = null;
@@ -621,9 +646,14 @@
                 if (edit.kind === "section") {
                     editor = null;
                 }
-                if (edit.kind === "sectionKeep") {
-                    void readContents();
+                if (edit.kind === "sectionAdd") {
+                    sectionAddOpen = false;
                 }
+                // A new note may be saved before the contents reread finishes.
+                if (contents) {
+                    contents = { ...contents, revision: answer.revision };
+                }
+                void readContents();
                 return true;
             },
         );
@@ -732,6 +762,94 @@
                 return true;
             },
             toolText.refused,
+        );
+    }
+
+    function startNewNote() {
+        newNoteTitle = "";
+        newNoteHeading = "";
+        newNoteBody = "";
+        newNoteOpen = true;
+    }
+
+    /** A new note needs no held page; its write names the contents revision. */
+    async function createNote() {
+        if (controlsOff || !canCreateNote || !contents || !newNoteFits) {
+            return;
+        }
+        const ref = chatRef;
+        sending = true;
+        recordNumber += 1;
+        contentsNumber += 1;
+        const result = await structuredMemoryPageTool(ref, contents.revision, {
+            kind: "create",
+            title: newNoteTitle,
+            heading: newNoteHeading,
+            body: newNoteBody,
+        });
+        sending = false;
+        if (!sameChat(ref)) {
+            return;
+        }
+        if (result.outcome === "ok" && result.value.data) {
+            const { revision, data } = result.value;
+            editor = null;
+            openEntry = null;
+            askedEntry = null;
+            recordFailure = null;
+            resetTools();
+            selectedId = data.id;
+            view = "manage";
+            keepRecord({ revision, data }, true);
+            newNoteOpen = false;
+            contents = { ...contents, revision };
+            void readContents();
+        } else {
+            if (result.outcome === "failed") {
+                alertError(toolText.refused(result.error));
+            } else if (result.outcome === "refused" && result.reason !== "epoch") {
+                alertError(memoryReadFailureText(result));
+            }
+            read();
+        }
+    }
+
+    function startSectionAdd() {
+        sectionAddHeading = "";
+        sectionAddBody = "";
+        sectionAddOpen = true;
+    }
+
+    function addSection() {
+        if (
+            !copy ||
+            controlsOff ||
+            !sectionAddFits ||
+            inTrash ||
+            copy.data.type === "scene" ||
+            copy.data.type === "character"
+        ) {
+            return;
+        }
+        const heading = sectionAddHeading.trim();
+        const body = sectionAddBody;
+        void send(
+            { kind: "sectionAdd", pageId: copy.data.id, heading, body },
+            {
+                ...copy.data,
+                sections: [
+                    ...copy.data.sections,
+                    {
+                        heading,
+                        body,
+                        provenance: [],
+                        sources: [],
+                        locked: false,
+                        userCorrected: true,
+                        updatedAt: Date.now(),
+                    },
+                ],
+            },
         );
     }
 
@@ -1167,6 +1285,102 @@
     </li>
 {/snippet}
 
+{#snippet newNoteControl()}
+    {#if canCreateNote}
+        {#if newNoteOpen}
+            <fieldset
+                class="flex flex-col min-w-0 gap-2 p-2 border rounded-md border-darkborderc"
+                disabled={controlsOff}
+                data-memory-new-note-form
+            >
+                <legend>{toolText.newNote}</legend>
+                <label class="flex flex-col min-w-0 gap-1" data-memory-new-note-title>
+                    <span class="text-textcolor2">{toolText.renameTitle}</span>
+                    <TextInput size="sm" bind:value={newNoteTitle} disabled={controlsOff} fullwidth />
+                </label>
+                <label class="flex flex-col min-w-0 gap-1" data-memory-new-note-heading>
+                    <span class="text-textcolor2">{toolText.sectionHeading}</span>
+                    <TextInput size="sm" bind:value={newNoteHeading} disabled={controlsOff} fullwidth />
+                </label>
+                <div data-memory-new-note-body>
+                    <TextAreaInput
+                        bind:value={newNoteBody}
+                        height="36"
+                        optimaizedInput={false}
+                        popupEditor={false}
+                        ariaLabel={text.sectionText}
+                    />
+                </div>
+                <span
+                    class={newNoteBody.length > sectionBodyChars ? "text-draculared" : "text-textcolor2"}
+                    data-memory-new-note-count
+                >
+                    {text.characters(newNoteBody.length, sectionBodyChars)}
+                </span>
+                <div class="flex flex-wrap justify-end gap-2">
+                    <Button size="sm" styled="outlined" disabled={controlsOff} onclick={() => (newNoteOpen = false)}>
+                        <span data-memory-new-note-cancel>{text.cancel}</span>
+                    </Button>
+                    <Button size="sm" disabled={controlsOff || !newNoteFits} onclick={createNote}>
+                        <span data-memory-new-note-save>{text.save}</span>
+                    </Button>
+                </div>
+            </fieldset>
+        {:else}
+            <div>
+                <Button size="sm" styled="outlined" disabled={controlsOff} onclick={startNewNote}>
+                    <span data-memory-new-note>{toolText.newNote}</span>
+                </Button>
+            </div>
+        {/if}
+    {/if}
+{/snippet}
+
+{#snippet sectionAddControl()}
+    {#if sectionAddOpen}
+        <fieldset
+            class="flex flex-col min-w-0 gap-2 p-2 border rounded-md border-darkborderc"
+            disabled={controlsOff}
+            data-memory-section-add-form
+        >
+            <legend>{toolText.addSection}</legend>
+            <label class="flex flex-col min-w-0 gap-1" data-memory-section-add-heading>
+                <span class="text-textcolor2">{toolText.sectionHeading}</span>
+                <TextInput size="sm" bind:value={sectionAddHeading} disabled={controlsOff} fullwidth />
+            </label>
+            <div data-memory-section-add-body>
+                <TextAreaInput
+                    bind:value={sectionAddBody}
+                    height="36"
+                    optimaizedInput={false}
+                    popupEditor={false}
+                    ariaLabel={text.sectionText}
+                />
+            </div>
+            <span
+                class={sectionAddBody.length > sectionBodyChars ? "text-draculared" : "text-textcolor2"}
+                data-memory-section-add-count
+            >
+                {text.characters(sectionAddBody.length, sectionBodyChars)}
+            </span>
+            <div class="flex flex-wrap justify-end gap-2">
+                <Button size="sm" styled="outlined" disabled={controlsOff} onclick={() => (sectionAddOpen = false)}>
+                    <span data-memory-section-add-cancel>{text.cancel}</span>
+                </Button>
+                <Button size="sm" disabled={controlsOff || !sectionAddFits} onclick={addSection}>
+                    <span data-memory-section-add-save>{text.save}</span>
+                </Button>
+            </div>
+        </fieldset>
+    {:else}
+        <div>
+            <Button size="sm" styled="outlined" disabled={controlsOff} onclick={startSectionAdd}>
+                <span data-memory-section-add>{toolText.addSection}</span>
+            </Button>
+        </div>
+    {/if}
+{/snippet}
+
 {#snippet renameControl(page: MemoryPage)}
     {#if renameBase !== null}
         <div class="flex flex-col min-w-0 gap-2" data-memory-rename-form>
@@ -1505,6 +1719,9 @@
         {/if}
         {@const sections =
             only === "unsupported" ? page.sections.filter(({ unsupported }) => unsupported) : page.sections}
+        {#if page.type !== "scene" && page.type !== "character" && !inTrash}
+            {@render sectionAddControl()}
+        {/if}
         {#if sections.length === 0}
             <p class="text-textcolor2">{text.noSections}</p>
         {:else}
@@ -1633,6 +1850,7 @@
     {:else if only === "unsupported" && listedPages.length === 0}
         <p class="text-textcolor2" data-memory-unsupported-resolved>{unsupportedText.resolved}</p>
     {:else if contents.pages.length === 0 && contents.trash.length === 0}
+        {@render newNoteControl()}
         {@render searchControls()}
         {#if showingSearch}
             {@render searchHits()}
@@ -1643,6 +1861,7 @@
     {:else}
         <div class="flex flex-col min-w-0 gap-3 sm:flex-row">
             <div class="flex flex-col min-w-0 gap-2 sm:w-52 sm:shrink-0">
+                {@render newNoteControl()}
                 {@render searchControls()}
                 {#if showingSearch}
                     {@render searchHits()}

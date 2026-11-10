@@ -489,6 +489,8 @@ type RoundRead = {
  *   A `sectionKeep` clears the unsupported flag and retracted provenance using contents' event statuses,
  *   optionally marks it user-corrected for a rebuild, and changes no body, timestamp, or history.
  *   A `sectionRelease` takes that mark off and changes nothing else.
+ *   A `sectionAdd` appends a user-corrected section with empty evidence and an `edit` history entry
+ *   with no prior text or event; scene and character pages, existing headings, and full pages refuse it.
  *   An `eventText` changes only title, summary, and `userCorrected`, refusing retracted events; an
  *   `eventRelease` removes only the mark, including on retracted events. Neither reads the chat or
  *   reconciles evidence.
@@ -512,14 +514,18 @@ type RoundRead = {
  * - `POST /api/memory/structured/:characterId/:chatId/page-tools` `{ revision, tool }`: one person's tool over a page
  *   as a whole (`StructuredMemoryPageTool`, `applyPageTool` in `server/src/prompt/memory/structured/pages.ts`): to the
  *   trash and back, deleted for good, merged into another page of its type, split into two, renamed, or given a
- *   replacement alias list, answered `StructuredMemoryPageToolAnswer` with the page the tab shows next, null after a
- *   purge. A merge moves references in events, threads, and live pages in the same write, which reads the chat's events
+ *   replacement alias list, or a new note created with one user-corrected section and user naming preserved through
+ *   a rebuild. A create has no evidence and a whole-page `create` history entry with no event. The tool is answered
+ *   `StructuredMemoryPageToolAnswer` with the page the tab shows next, null after a purge.
+ *   A merge moves references in events, threads, and live pages in the same write, which reads the chat's events
  *   and threads; a restored page is flagged against the events as they stand (`flagUnsupportedSections`). A tool that
  *   changes nothing, a trash of a trashed page or a restore of a live one, still names a revision. 400 for a malformed
  *   tool or one the pages refuse (the scene page, a trashed page in a merge, split, rename, or alias edit, two types, a
- *   joined section or a page past its limit, a title or alias another live page of the type goes by), 404 `chatGone` or
- *   `recordGone`, 409 `{ error, reason: "fenced" }` while `fenced` holds, and 409 `{ error, revision }` when `revision`
- *   is not the current token. The body is read after authentication and capped at 64 KiB.
+ *   joined section or a page past its limit, a title or alias another live page of the type goes by). A create also
+ *   refuses 400 while `chatAdoptionHold` waits for a choice on HypaV3 summaries, so creating a page cannot silently
+ *   clear that choice. This check and the write share the synchronous step after the epoch and fence checks.
+ *   404 `chatGone` or `recordGone`, 409 `{ error, reason: "fenced" }` while `fenced` holds, and 409 `{ error, revision }` when
+ *   `revision` is not the current token. The body is read after authentication and capped at 64 KiB.
  * - `POST /api/memory/structured/:characterId/:chatId/import` `{ revision, files: { path, text }[] }`: gives a chat the
  *   records of a Markdown package the tab unzipped, answered `StructuredMemoryImportAnswer`. The files are read back by
  *   the package's grammar (`server/src/prompt/memory/structured/importPackage.ts`), each record's shape by
@@ -1341,6 +1347,12 @@ export function registerStructuredMemoryRoutes(
                 const contents = store.memory.readContents(characterId, chatId);
                 if (!contents) {
                     return gone();
+                }
+                if (tool.kind === "create" && chatAdoptionHold(store, characterId, chatId, contents) > 0) {
+                    return c.json(
+                        { error: "Choose whether to adopt the HypaV3 summaries before creating a note page" },
+                        400,
+                    );
                 }
                 const { changes, shown, flag } = applyPageTool(
                     {

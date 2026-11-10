@@ -233,6 +233,82 @@ it("parses page tools and their ids, trims rename titles and refuses blank or ov
     }
 });
 
+it("creates a personally named note with an unlocked correction and eventless create history", () => {
+    const tool = parseMemoryPageTool({
+        kind: "create",
+        title: "  Travel notes \n",
+        heading: "  Route \t",
+        body: "Bring a map.",
+    });
+    expect(tool).toEqual({ kind: "create", title: "Travel notes", heading: "Route", body: "Bring a map." });
+    if (!tool) throw new Error("A valid note was refused");
+    expect(pageToolIds(tool)).toEqual([]);
+    let id = 0;
+    const created: MemoryPage = {
+        id: "note-1",
+        type: "note",
+        title: "Travel notes",
+        aliases: [],
+        contextMode: "auto",
+        namedByUser: true,
+        sections: [
+            {
+                heading: "Route",
+                body: "Bring a map.",
+                provenance: [],
+                sources: [],
+                locked: false,
+                userCorrected: true,
+                updatedAt: 200,
+            },
+        ],
+        links: [],
+        retrieval: { keywords: [] },
+        history: [{ id: "note-2", kind: "create", heading: null, before: null, highlighted: false, at: 200 }],
+    };
+    expect(applyPageTool(toolRecords([]), tool, { now: 200, newId: () => `note-${++id}` })).toStrictEqual({
+        changes: { pages: [created] },
+        shown: created,
+        flag: [],
+    });
+});
+
+it("accepts note text at its limits and refuses blank or oversized titles, headings and bodies", () => {
+    const tool = {
+        kind: "create",
+        title: "t".repeat(LIMITS.labelChars),
+        heading: "h".repeat(LIMITS.labelChars),
+        body: "b".repeat(LIMITS.sectionBodyChars),
+    };
+    expect(parseMemoryPageTool(tool)).toEqual(tool);
+    for (const field of ["title", "heading", "body"] as const) {
+        for (const value of [" \n\t", `${tool[field]}x`]) {
+            expect(parseMemoryPageTool({ ...tool, [field]: value }), field).toBeNull();
+        }
+    }
+});
+
+it("refuses a note title owned by a live note title or alias but allows character names and trash", () => {
+    const tool = { kind: "create", title: "Harbor", heading: "Route", body: "Bring a map." } as const;
+    const stamp = { now: 200, newId: () => "new-note" };
+    for (const names of [{ title: "Harbor" }, { title: "Travel notes", aliases: ["Harbor"] }]) {
+        const existing = page("existing", { ...names, type: "note" });
+        expect(() => applyPageTool(toolRecords([existing]), tool, stamp)).toThrow(
+            expect.objectContaining({ reason: "invalid", constructor: MemoryPageToolRefusal }),
+        );
+        for (const allowed of [
+            { ...existing, trashedAt: 100 },
+            { ...existing, type: "character" as const },
+        ]) {
+            expect(applyPageTool(toolRecords([allowed]), tool, stamp).shown).toMatchObject({
+                id: "new-note",
+                type: "note",
+                title: "Harbor",
+            });
+        }
+    }
+});
+
 it("renames a page without history, preserving the old name once and promoting its own alias", () => {
     for (const { title, aliases, expected } of [
         { title: "Harbor", aliases: ["Quay"], expected: ["Quay", "Old Port"] },

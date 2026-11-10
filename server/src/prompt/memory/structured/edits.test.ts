@@ -110,6 +110,66 @@ it("releases only the event correction mark and keeps the corrected text and oth
     expect(marked.userCorrected).toBe(true);
 });
 
+it("parses trimmed section additions at the text limits and refuses blank or oversized text", () => {
+    const edit = {
+        kind: "sectionAdd",
+        pageId: "p",
+        heading: "h".repeat(STRUCTURED_MEMORY_LIMITS.labelChars),
+        body: "b".repeat(STRUCTURED_MEMORY_LIMITS.sectionBodyChars),
+    };
+    expect(parseMemoryEdit({ ...edit, heading: ` ${edit.heading} ` })).toEqual(edit);
+    for (const field of ["heading", "body"] as const) {
+        for (const value of [" \n\t", `${edit[field]}x`]) {
+            expect(parseMemoryEdit({ ...edit, [field]: value }), field).toBeNull();
+        }
+    }
+});
+
+it("appends a personally corrected section with empty evidence and eventless edit history", () => {
+    const edit = parseMemoryEdit({ kind: "sectionAdd", pageId: "p", heading: "  Route  ", body: "Bring a map." });
+    if (!edit || edit.kind !== "sectionAdd") throw new Error("A valid section addition was refused");
+    expect(applyPageEdit(page, edit, stamp)).toStrictEqual({
+        ...page,
+        sections: [
+            ...page.sections,
+            {
+                heading: "Route",
+                body: "Bring a map.",
+                provenance: [],
+                sources: [],
+                locked: false,
+                userCorrected: true,
+                updatedAt: 20,
+            },
+        ],
+        history: [
+            ...page.history,
+            { id: "edit-id", heading: "Route", before: null, kind: "edit", highlighted: false, at: 20 },
+        ],
+    });
+});
+
+it("refuses added sections on character and scene pages, duplicate headings and full pages", () => {
+    const edit = { kind: "sectionAdd", pageId: "p", heading: "Route", body: "Bring a map." } as const;
+    const full = {
+        ...page,
+        sections: Array.from({ length: STRUCTURED_MEMORY_LIMITS.sectionsPerPage }, (_, i) => ({
+            ...page.sections[0],
+            heading: `Section ${i}`,
+        })),
+    };
+    for (const refused of [
+        { ...page, type: "character" as const },
+        { ...page, type: "scene" as const },
+        { ...page, sections: [{ ...page.sections[0], heading: "Route" }] },
+        full,
+    ]) {
+        expect(() => applyPageEdit(refused, edit, stamp)).toThrow(
+            expect.objectContaining({ reason: "invalid", constructor: MemoryEditRefusal }),
+        );
+    }
+});
+
 it("changes locks without history, marks and clears user grades, and keeps the scene context mode", () => {
     const locked = applyPageEdit(page, { kind: "sectionLock", pageId: "p", heading: "Facts", locked: true }, stamp)!;
     expect(locked).toEqual({ ...page, sections: [{ ...page.sections[0], locked: true }] });

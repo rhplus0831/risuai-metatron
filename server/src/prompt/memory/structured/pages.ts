@@ -54,6 +54,9 @@ import type { EditStamp } from "./edits.ts";
  *   and a branch does not rewind. A merge remaps references to the source onto the target in events,
  *   threads, and live pages in the same change set; pages already in the trash keep their links to the
  *   source. A split leaves events on the old page, since nothing says which half they meant.
+ * - A person's create makes a note with user naming and one user-corrected section, both kept through
+ *   a rebuild. It has no evidence, and its whole-page `create` entry has no event and is not highlighted.
+ *   Its title cannot be a name another live note goes by; other page types do not compete for it.
  */
 
 /** A writer warning as retained by the receipt. */
@@ -843,12 +846,28 @@ const isTextList = (value: unknown): value is string[] =>
  * merge names two different pages, and a split names at least one heading and a title that has text and
  * fits `labelChars`. A rename takes the same trimmed title; aliases takes a string list unchanged so
  * `applyPageTool` can explain which entry or name conflicts with the pages as they stand.
+ * A create names no page id and takes that title, a trimmed heading fitting `labelChars`, and non-blank
+ * body text fitting `sectionBodyChars`, whose whitespace is kept.
  */
 export function parseMemoryPageTool(value: unknown): StructuredMemoryPageTool | null {
     if (!isPlainObject(value)) {
         return null;
     }
     const { kind, pageId } = value;
+    if (kind === "create") {
+        const { title, heading, body } = value;
+        return typeof title === "string" &&
+            title.trim() !== "" &&
+            title.length <= LIMITS.labelChars &&
+            typeof heading === "string" &&
+            heading.trim() !== "" &&
+            heading.trim().length <= LIMITS.labelChars &&
+            typeof body === "string" &&
+            body.trim() !== "" &&
+            body.length <= LIMITS.sectionBodyChars
+            ? { kind, title: title.trim(), heading: heading.trim(), body }
+            : null;
+    }
     if (kind === "merge") {
         const { sourceId, targetId } = value;
         return typeof sourceId === "string" && typeof targetId === "string" && sourceId !== targetId
@@ -886,6 +905,9 @@ export function parseMemoryPageTool(value: unknown): StructuredMemoryPageTool | 
 
 /** The page ids a tool names, for the route's id check. */
 export function pageToolIds(tool: StructuredMemoryPageTool): string[] {
+    if (tool.kind === "create") {
+        return [];
+    }
     return tool.kind === "merge" ? [tool.sourceId, tool.targetId] : [tool.pageId];
 }
 
@@ -976,7 +998,7 @@ function toolEntry(
     stamp: EditStamp,
     heading: string | null,
     before: MemoryHistorySnapshot | null,
-    kind: "merge" | "split",
+    kind: "create" | "merge" | "split",
 ): MemoryPageHistoryEntry {
     return { id: stamp.newId(), heading, before, kind, highlighted: false, at: stamp.now };
 }
@@ -1271,6 +1293,31 @@ export function applyPageTool(
     stamp: EditStamp,
 ): PageToolResult {
     switch (tool.kind) {
+        case "create": {
+            const key = nameKey(tool.title);
+            if (
+                records.pages().some((page) => page.type === "note" && !trashed(page) && pageNames(page).includes(key))
+            ) {
+                throw new MemoryPageToolRefusal("invalid", "A live note page already goes by that title");
+            }
+            const created: MemoryPage = {
+                ...newPage(stamp.newId(), "note", tool.title, []),
+                namedByUser: true,
+                sections: [
+                    {
+                        heading: tool.heading,
+                        body: tool.body,
+                        provenance: [],
+                        sources: [],
+                        locked: false,
+                        userCorrected: true,
+                        updatedAt: stamp.now,
+                    },
+                ],
+                history: [toolEntry(stamp, null, null, "create")],
+            };
+            return { changes: { pages: [created] }, shown: created, flag: [] };
+        }
         case "merge":
             return mergedPages(records, tool.sourceId, tool.targetId, stamp);
         case "split":

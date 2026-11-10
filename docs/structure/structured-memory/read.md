@@ -199,6 +199,13 @@ through `setChatMeta` in `src/ts/storage/chatStore.svelte.ts`.
 Outside the trash a section's `userCorrected` badge is a button: after `alertConfirm` it sends `sectionRelease`, the one
 control that takes the mark off.
 
+Pages has two forms of a person's own text, both off under `controlsOff`. "New note" sits over the tree, and in an empty
+chat, but not under `only="unsupported"` or while the chat waits for adoption; it sends
+[`create`](pages.md#a-persons-note) at the contents' revision and selects the answered page in `manage`. Every accepted
+page edit advances that revision at once and rereads contents, so a note made right after an edit is not refused as
+stale. In `manage`, a page that is not the scene, a character, or in the trash has "add section" (heading, body with its
+count), which sends `sectionAdd` through the held copy like a section's edit.
+
 Timeline's opened, non-retracted event has a title and summary editor with limit counts, Save, and Cancel. Blank or
 over-limit text cannot be saved. The draft remembers its stored title and summary; a reread that changes either closes
 it with the `changed` notice. Opening another event or closing the current one discards the draft. Read-only or an

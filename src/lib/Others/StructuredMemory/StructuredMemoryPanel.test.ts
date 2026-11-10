@@ -2643,6 +2643,179 @@ function servePageTools() {
     return state;
 }
 
+function typePageField(selector: string, value: string) {
+    const input = target.querySelector<HTMLInputElement | HTMLTextAreaElement>(selector)!;
+    expect(input).not.toBeNull();
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+}
+
+const personalNote = (): MemoryPage => ({
+    id: "note",
+    type: "note",
+    title: "Travel notes",
+    aliases: [],
+    contextMode: "auto",
+    namedByUser: true,
+    sections: [
+        {
+            heading: "Route",
+            body: "Bring a map.",
+            provenance: [],
+            sources: [],
+            locked: false,
+            userCorrected: true,
+            updatedAt: 1,
+        },
+    ],
+    links: [],
+    retrieval: { keywords: [] },
+    history: [{ id: "created", kind: "create", heading: null, before: null, highlighted: false, at: 1 }],
+});
+
+function fillNewNote() {
+    press("[data-memory-new-note]");
+    typePageField("[data-memory-new-note-title] input", "Travel notes");
+    typePageField("[data-memory-new-note-heading] input", "Route");
+    typePageField("[data-memory-new-note-body] textarea", "Bring a map.");
+}
+
+it("creates a note at the contents revision, selects it in manage and submits an added section", async () => {
+    const state = servePageTools();
+    state.pages = [];
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.endsWith("/page-tools")) {
+            state.pages = [personalNote()];
+            state.revision = "after-create";
+            return Response.json({ revision: state.revision, data: state.pages[0] });
+        }
+        if (url.endsWith("/edits")) {
+            state.pages[0] = {
+                ...state.pages[0],
+                sections: [
+                    ...state.pages[0].sections,
+                    { ...state.pages[0].sections[0], heading: "Supplies", body: "Pack water." },
+                ],
+            };
+            state.revision = "after-add";
+            return Response.json({ revision: state.revision, kind: "pages", data: state.pages[0] });
+        }
+        return fetch(url, init, options);
+    });
+    await open();
+    fillNewNote();
+    press("[data-memory-new-note-save]");
+    await settle();
+    expect(reads("page-tools")).toHaveLength(1);
+    const [url, init] = reads("page-tools")[0];
+    expect(url).toBe("/api/memory/structured/c/k/page-tools");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(init!.body as string)).toEqual({
+        revision: "before-tool",
+        tool: { kind: "create", title: "Travel notes", heading: "Route", body: "Bring a map." },
+    });
+    expect(query("[data-memory-new-note-form]")).toBeNull();
+    expect(query('[data-memory-page="note"]')?.getAttribute("aria-current")).toBe("true");
+    expect(query("[data-memory-page-detail] h2")?.textContent).toBe("Travel notes");
+    expect(pageViewButton("manage")?.getAttribute("aria-pressed")).toBe("true");
+    expect(query("[data-memory-section-body]")?.textContent).toBe("Bring a map.");
+
+    press("[data-memory-section-add]");
+    typePageField("[data-memory-section-add-heading] input", "Supplies");
+    typePageField("[data-memory-section-add-body] textarea", "Pack water.");
+    press("[data-memory-section-add-save]");
+    await settle();
+    expect(sentEdits()).toEqual([
+        {
+            revision: "after-create",
+            edit: { kind: "sectionAdd", pageId: "note", heading: "Supplies", body: "Pack water." },
+        },
+    ]);
+    expect(query("[data-memory-section-add-form]")).toBeNull();
+    expect([...target.querySelectorAll("[data-memory-section-body]")].map((node) => node.textContent)).toEqual([
+        "Bring a map.",
+        "Pack water.",
+    ]);
+    expect(alertError).not.toHaveBeenCalled();
+});
+
+it("offers section addition on ordinary pages but hides it on character pages, the scene and trash", async () => {
+    const state = servePageTools();
+    state.pages.push({ ...editablePage(), id: "character", type: "character" });
+    state.trash = [{ ...editablePage(), id: "trashed", trashedAt: 1 }];
+    await open();
+    click('[data-memory-page="p"]');
+    await settle();
+    await choosePageView("manage");
+    expect(query("[data-memory-section-add]")).not.toBeNull();
+    for (const selector of [
+        '[data-memory-page="character"]',
+        '[data-memory-page="scene"]',
+        '[data-memory-trash-page="trashed"]',
+    ]) {
+        click(selector);
+        await settle();
+        expect(query("[data-memory-section-add]"), selector).toBeNull();
+        expect(query("[data-memory-section-add-form]"), selector).toBeNull();
+    }
+});
+
+it("creates a note using the accepted section edit revision while the contents refresh is pending", async () => {
+    const state = servePageTools();
+    const fetch = io.authFetch.getMockImplementation()!;
+    const pending = deferred<Response>();
+    let holdContents = false;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url === "/api/memory/structured/c/k" && holdContents) return (await pending.promise).clone();
+        if (url.endsWith("/edits")) {
+            state.pages[0] = {
+                ...state.pages[0],
+                sections: [{ ...state.pages[0].sections[0], body: "Corrected memory", userCorrected: true }],
+            };
+            state.revision = "after-edit";
+            holdContents = true;
+            return Response.json({ revision: state.revision, kind: "pages", data: state.pages[0] });
+        }
+        if (url.endsWith("/page-tools")) {
+            if (JSON.parse(init!.body as string).revision !== "after-edit") {
+                return Response.json({ error: "RevisionConflict", revision: "after-edit" }, { status: 409 });
+            }
+            state.pages.push(personalNote());
+            state.revision = "after-create";
+            return Response.json({ revision: state.revision, data: state.pages.at(-1) });
+        }
+        return fetch(url, init, options);
+    });
+    await open();
+    click('[data-memory-page="p"]');
+    await settle();
+    await choosePageView("manage");
+    press("[data-memory-section-edit]");
+    typeSection("Corrected memory");
+    press("[data-memory-section-save]");
+    try {
+        await settle();
+        expect(query("[data-memory-section-body]")?.textContent).toBe("Corrected memory");
+        fillNewNote();
+        press("[data-memory-new-note-save]");
+        await settle();
+        expect(reads("page-tools")).toHaveLength(1);
+        expect(JSON.parse(reads("page-tools")[0][1]!.body as string)).toEqual({
+            revision: "after-edit",
+            tool: { kind: "create", title: "Travel notes", heading: "Route", body: "Bring a map." },
+        });
+        expect(query("[data-memory-page-detail] h2")?.textContent).toBe("Travel notes");
+        expect(pageViewButton("manage")?.getAttribute("aria-pressed")).toBe("true");
+        expect(alertError).not.toHaveBeenCalled();
+    } finally {
+        holdContents = false;
+        pending.resolve(await fetch("/api/memory/structured/c/k"));
+        await settle();
+    }
+});
+
 it("selects the page named by a merge answer and rereads contents, then restores a refused tool's copy", async () => {
     const state = servePageTools();
     vi.mocked(alertConfirm).mockResolvedValue(true);
