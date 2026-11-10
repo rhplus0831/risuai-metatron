@@ -336,6 +336,9 @@ describe("chat status sources", () => {
         view(a);
         watch();
         await settleForeignRead();
+        // Showing a chat asks once whether another client's job runs in it; a later mark does not ask again.
+        expect(read).toHaveBeenCalledExactlyOnceWith(a);
+        read.mockClear();
         status.noteForeignJob(a, "command");
         await settleForeignRead();
         expect(read).not.toHaveBeenCalled();
@@ -489,8 +492,209 @@ describe("chat status sources", () => {
         await settleForeignRead();
         view(b);
         await settleForeignRead();
-        expect(read).toHaveBeenCalledExactlyOnceWith(b);
+        // Each show reads its chat once: the now unlocked chat first, then the one whose follow ended.
+        expect(read.mock.calls).toEqual([[a], [b]]);
         expect(get(status.foreignJobs)).toEqual(new Map());
+    });
+
+    it("discovers an unmarked lockless job on show, page return, and online recovery without blocking sends", async () => {
+        vi.useFakeTimers();
+        const read = vi.mocked(generationJobs.readChatGeneration);
+        const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+        const showPage = (visible: boolean) => {
+            visibility.mockReturnValue(visible ? "visible" : "hidden");
+            document.dispatchEvent(new Event("visibilitychange"));
+        };
+        showPage(true);
+        read.mockResolvedValue({ jobId: "before-reply", kind: "send", owned: false });
+        view(a);
+        watch();
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "before-reply"]]));
+        expect(status.foreignJobChatKeys()).toEqual(new Set([keyA]));
+        expect(chat.lockedChatKeys()).toEqual(new Set());
+        expect(status.isChatBusy(a)).toBe(false);
+
+        status.clearForeignJob(a);
+        showPage(false);
+        await settleForeignRead();
+        read.mockClear();
+        window.dispatchEvent(new Event("online"));
+        await settleForeignRead();
+        expect(read).not.toHaveBeenCalled();
+        read.mockResolvedValue({ jobId: "while-away", kind: "send", owned: false });
+        showPage(true);
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "while-away"]]));
+
+        status.clearForeignJob(a);
+        read.mockClear();
+        read.mockResolvedValue({ jobId: "while-offline", kind: "send", owned: false });
+        window.dispatchEvent(new Event("online"));
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "while-offline"]]));
+        expect(status.foreignJobChatKeys()).toEqual(new Set([keyA]));
+        expect(status.isChatBusy(a)).toBe(false);
+    });
+
+    it("discovers jobs from feed frames naming the visible chat with empty locks, after applying the frame's locks", async () => {
+        vi.useFakeTimers();
+        const read = vi.mocked(generationJobs.readChatGeneration);
+        view(a);
+        watch();
+        await settleForeignRead();
+        read.mockClear();
+        read.mockResolvedValue({ jobId: "first-write", kind: "send", owned: false });
+        chat.noteRemoteStreaming([{ characterId: other.chaId, id: other.chatId, streaming: [] }]);
+        await settleForeignRead();
+        expect(read).not.toHaveBeenCalled();
+
+        chat.noteRemoteStreaming([{ characterId: a.chaId, id: a.chatId, streaming: [] }]);
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "first-write"]]));
+        expect(status.foreignJobChatKeys()).toEqual(new Set([keyA]));
+
+        read.mockClear();
+        chat.noteRemoteStreaming([
+            { characterId: a.chaId, id: a.chatId, streaming: [{ messageId: "m1", generationId: "g", seq: 0 }] },
+        ]);
+        await settleForeignRead();
+        expect(chat.lockedChatKeys()).toEqual(new Set([keyA]));
+        expect(read).not.toHaveBeenCalled();
+
+        read.mockResolvedValue({ jobId: "next-lockless-job", kind: "send", owned: false });
+        chat.noteRemoteStreaming([{ characterId: a.chaId, id: a.chatId, streaming: [] }]);
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "next-lockless-job"]]));
+
+        commands.followedJobs.set(new Map([["followed", keyA]]));
+        await settleForeignRead();
+        read.mockClear();
+        chat.noteRemoteStreaming([{ characterId: a.chaId, id: a.chatId, streaming: [] }]);
+        await settleForeignRead();
+        expect(read).not.toHaveBeenCalled();
+    });
+
+    it("rechecks a visible lockless mark every interval, preserves it on failure, and stops when the job ends", async () => {
+        vi.useFakeTimers();
+        const read = vi.mocked(generationJobs.readChatGeneration);
+        read.mockResolvedValue({ jobId: "slow-request", kind: "send", owned: false });
+        view(a);
+        watch();
+        await settleForeignRead();
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "slow-request"]]));
+
+        read.mockClear();
+        await vi.advanceTimersByTimeAsync(status.FOREIGN_JOB_RECHECK_MS - 1);
+        expect(read).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "slow-request"]]));
+
+        read.mockClear();
+        read.mockRejectedValueOnce(new Error("offline"));
+        await vi.advanceTimersByTimeAsync(status.FOREIGN_JOB_RECHECK_MS);
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "slow-request"]]));
+
+        read.mockClear();
+        read.mockResolvedValue(null);
+        await vi.advanceTimersByTimeAsync(status.FOREIGN_JOB_RECHECK_MS);
+        await settleForeignRead();
+        expect(read).toHaveBeenCalledWith(a);
+        expect(get(status.foreignJobs)).toEqual(new Map());
+        expect(status.foreignJobChatKeys()).toEqual(new Set());
+        read.mockClear();
+        await vi.advanceTimersByTimeAsync(2 * status.FOREIGN_JOB_RECHECK_MS);
+        expect(read).not.toHaveBeenCalled();
+    });
+
+    it("skips sending chats and stops rechecking on a lock, follow, send, hidden chat, or disposal", async () => {
+        vi.useFakeTimers();
+        const { beginLocalSend } = await import("./localSends");
+        const read = vi.mocked(generationJobs.readChatGeneration);
+        const sending = beginLocalSend(a)!;
+        disposers.push(sending);
+        view(a);
+        const dispose = watch();
+        await settleForeignRead();
+        window.dispatchEvent(new Event("online"));
+        chat.noteRemoteStreaming([{ characterId: a.chaId, id: a.chatId, streaming: [] }]);
+        await settleForeignRead();
+        expect(read).not.toHaveBeenCalled();
+        sending();
+
+        const stops: Record<string, () => () => void> = {
+            locked: () => {
+                chat.noteRemoteStreaming([
+                    { characterId: a.chaId, id: a.chatId, streaming: [{ messageId: "m1", generationId: "g", seq: 0 }] },
+                ]);
+                return () => chat.releaseFeedLocks();
+            },
+            followed: () => {
+                commands.followedJobs.set(new Map([["followed", keyA]]));
+                return () => commands.followedJobs.set(new Map());
+            },
+            sending: () => beginLocalSend(a)!,
+            hidden: () => {
+                selection.setChatOpen(false);
+                return () => view(a);
+            },
+            disposed: () => {
+                dispose();
+                return () => {};
+            },
+        };
+        for (const [reason, stop] of Object.entries(stops)) {
+            read.mockResolvedValue({ jobId: "lockless-job", kind: "send", owned: false });
+            window.dispatchEvent(new Event("online"));
+            await settleForeignRead();
+            expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "lockless-job"]]));
+            const resume = stop();
+            disposers.push(resume);
+            await settleForeignRead();
+            read.mockClear();
+            await vi.advanceTimersByTimeAsync(2 * status.FOREIGN_JOB_RECHECK_MS);
+            expect(read, `while ${reason}`).not.toHaveBeenCalled();
+            resume();
+            await settleForeignRead();
+            status.clearForeignJob(a);
+            await settleForeignRead();
+        }
+    });
+
+    it("skips overlapping discovery reads and preserves a mark added while an unmarked read was in flight", async () => {
+        vi.useFakeTimers();
+        const read = vi.mocked(generationJobs.readChatGeneration);
+        watch();
+        const answers: (GenerationCurrent | null)[] = [null, { jobId: "stale-answer", kind: "send", owned: false }];
+        for (const answer of answers) {
+            selection.setChatOpen(false);
+            status.clearForeignJob(a);
+            await settleForeignRead();
+            let resolve!: (current: GenerationCurrent | null) => void;
+            read.mockImplementationOnce(() => new Promise((settle) => (resolve = settle)));
+            view(a);
+            await settleForeignRead();
+            expect(read).toHaveBeenCalledWith(a);
+            read.mockClear();
+            window.dispatchEvent(new Event("online"));
+            chat.noteRemoteStreaming([{ characterId: a.chaId, id: a.chatId, streaming: [] }]);
+            await settleForeignRead();
+            expect(read).not.toHaveBeenCalled();
+
+            status.noteForeignJob(a, "new-observation");
+            resolve(answer);
+            await settleForeignRead();
+            expect(get(status.foreignJobs)).toEqual(new Map([[keyA, "new-observation"]]));
+        }
     });
 
     it("only a done reply outside the chat visible at completion becomes unseen", async () => {

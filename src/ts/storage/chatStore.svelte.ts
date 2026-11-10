@@ -2218,6 +2218,14 @@ export function markChatStale(ref: ChatRef): boolean {
     return true;
 }
 
+const remoteStreamingListeners = new Set<(streaming: readonly ChatStreaming[]) => void>();
+
+/** Observes chats named by a job's feed write or end after their locks are replaced, even when empty. */
+export function onRemoteStreaming(listener: (streaming: readonly ChatStreaming[]) => void): () => void {
+    remoteStreamingListeners.add(listener);
+    return () => remoteStreamingListeners.delete(listener);
+}
+
 /**
  * The generation locks a change-feed frame announces (`ChatStreaming`: every job's locks of a chat
  * after a job's write or end, `[]` when none is left), so a tab that does not follow the job (an
@@ -2229,7 +2237,8 @@ export function markChatStale(ref: ChatRef): boolean {
  * yet is locked when it arrives. `changes`: the frame's refs, whose revision
  * of the chat is the lock's for reads without snapshots (`dropFeedLocksOf`); none: null. Each named
  * chat advances its feed order even for an empty list, fencing snapshots of already-issued reads.
- * Call after the frame's refs went to the save loop. Nothing is queued, read, or discarded.
+ * Call after the frame's refs went to the save loop. Nothing is queued, read, or discarded here;
+ * `onRemoteStreaming` listeners then receive the named chats, including those without locks.
  */
 export function noteRemoteStreaming(streaming: readonly ChatStreaming[], changes?: ChangeSet) {
     let moved = false;
@@ -2243,6 +2252,9 @@ export function noteRemoteStreaming(streaming: readonly ChatStreaming[], changes
     }
     if (moved) {
         lockState.version += 1;
+    }
+    for (const listener of remoteStreamingListeners) {
+        listener(streaming);
     }
 }
 

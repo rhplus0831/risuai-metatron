@@ -30,9 +30,9 @@ Module headers and export comments hold the contracts; these lists give lookup i
   `refusedChatItems`, `retryRefusedChat`, `discardRefusedChat`, `finishIdleChatRefresh`, `noteIdleChatRead`,
   `idleChatRefreshes`, `idleSummaryRefreshes`, `settleSummaryRefresh`.
 - Live updates and jobs: `noteRemoteChat`, `applyRemoteSummary`, `applyRemoteCollection`, `canApplyRemoteCollection`,
-  `noteRemoteStreaming`, `replaceFeedLocks`, `markChatStale`, `applyServerGeneration`, `applyServerGenerationChunk`,
-  `heldStreamText`, `endServerJob`, `detachServerJob`, `hydrateChat`, `hydrateChatPatch`, `chatHydrationHold`,
-  `prepareChatHydrationRefresh`, `deferredReloads`, `finishDeferredReload`.
+  `noteRemoteStreaming`, `onRemoteStreaming`, `replaceFeedLocks`, `markChatStale`, `applyServerGeneration`,
+  `applyServerGenerationChunk`, `heldStreamText`, `endServerJob`, `detachServerJob`, `hydrateChat`, `hydrateChatPatch`,
+  `chatHydrationHold`, `prepareChatHydrationRefresh`, `deferredReloads`, `finishDeferredReload`.
 - `src/ts/storage/chatEdits.ts`: `editChat` (may await), `editChatSync`, `editCurrentChat`, `setCurrentChatMeta`, over a
   whole chat copy; `readChatsDetached` serves `src/ts/storage/exportAsDataset.ts` and `src/ts/characters.ts`;
   `readChatRefsDetached` serves plugin `getDatabase` and `getChats` via `withDetachedDatabaseChats` in

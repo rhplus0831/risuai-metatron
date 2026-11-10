@@ -70,6 +70,8 @@ Identifiers the flows below name are not repeated here.
 - A `change` frame's lock lists reach `noteRemoteStreaming` after its refs (`eventFeed.ts` header). Each listed chat's
   list replaces its `feedLocks`. Deletion/forget paths (`removeRemoteChat`, `dropChatRevision`, `forgetCharacter`) clear
   locks without retiring the generation; its next job write can lock again.
+- `onRemoteStreaming` listeners receive a frame's named chats after their locks are replaced, empty lists included:
+  `chatStatus.svelte.ts` looks there for another client's job that holds no lock yet ([State](chat-pipeline.md#state)).
 - Whole reads carry `ChatReadRecord.streaming`, sampled with the read, never on summaries. The adapter stamps issue with
   `issueChatReadStamp`; an adopted read replaces the chat's locks regardless of revision only when issued after its
   newest feed list, the newest `hello` and its last honored read. `dropFeedLocksOf` defines suppression and the revision

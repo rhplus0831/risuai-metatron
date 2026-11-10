@@ -191,6 +191,11 @@ in [network jobs](network-jobs.md#job-recovery).
 - `jobRetries` counts the provider requests a followed job re-sent since its stage last changed: the screen shows
   `serverJob.retried` beside Stop for the selected chat's newest job with a count. The server's `retry` event sets and
   clears it; a follow's socket opening drops it before the snapshot restores a count, and the follow's end removes it.
+- A foreign mark (`foreignJobs`) is a job in the chat that this tab neither started nor follows: the screen shows the
+  spinner with its extra Stop, and a send is never refused for it. `watchChatVisibility` asks the chat slot
+  (`readChatGeneration`) for the visible chat when it is shown, on page recovery, and when a feed lock list names it,
+  skipping a chat that is locked, followed, or in a local send. A job holds no message lock until its first `begin`, so
+  a visible mark without a lock is asked again every `FOREIGN_JOB_RECHECK_MS` until the job is gone or locks a message.
 - `chatStore.svelte.ts` owns loaded chats and every write ([chat store](chat-store.md)); autosave does not.
 - Chats load on demand. Async operations pin and load their captured targets; unavailable chats are gone to synchronous
   readers, never an excuse to use another selection ([pins and eviction](chat-store.md#pins-and-eviction)).

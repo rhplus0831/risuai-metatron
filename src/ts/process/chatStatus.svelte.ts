@@ -20,6 +20,7 @@ import {
     currentChatRef,
     findChat,
     lockedChatKeys,
+    onRemoteStreaming,
     type ChatRef,
 } from "src/ts/storage/chatStore.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
@@ -39,13 +40,17 @@ import { isPageVisible, pageRecoveryVersion } from "src/ts/pageVisibility.svelte
  * `src/ts/process/serverCommands.ts`, and chat-store locks; foreign-job marks are advisory.
  * Store subscriptions are acquired lazily to avoid reading followed jobs during the import cycle.
  * `watchChatVisibility` owns effects and subscriptions: visibility clears badges and schedules
- * recovery reads; health facts remain observations rather than a send-admission condition.
+ * recovery reads. Visible chats discover foreign jobs on show, page recovery, and feed writes;
+ * lockless marks are rechecked while shown. These marks and health facts never gate a send.
  */
 
 const MAX_UNSEEN_CHATS = 256;
 
 /** How long after a read of every chat's health a page return waits before it reads them again. */
 const HEALTH_REREAD_MS = 60_000;
+
+/** How often a visible foreign job without a message lock is checked for completion. */
+export const FOREIGN_JOB_RECHECK_MS = 15_000;
 
 // Lazy views avoid reading followedJobs during the serverCommands → chatStatus import cycle.
 // fromStore subscribes only for reactive readers; their effects own subscription cleanup.
@@ -316,9 +321,10 @@ export function memoryHealthStates(): ReadonlyMap<string, MemoryHealthState> {
 
 /**
  * Starts the tab's visibility and new-follow cleanup, and the health reads; the caller owns the returned disposer.
- * A lockless foreign mark is reconciled once when its chat becomes visible or the page comes back
- * online while that chat is visible, unless this tab follows the chat. Mark changes do not trigger
- * reads, overlapping reads of a chat are skipped, and failed reads keep the mark without retrying.
+ * A visible chat discovers foreign jobs on show, page recovery, and a feed write or end naming it.
+ * Reads skip locked chats and chats this tab follows or sends in. Visible lockless marks are checked
+ * every `FOREIGN_JOB_RECHECK_MS`; hiding the chat or disposing stops the timer. Reads leave effects
+ * first, skip overlaps, and preserve newer marks. A failed read waits for the next trigger.
  */
 export function watchChatVisibility(): () => void {
     return $effect.root(() => {
@@ -346,31 +352,81 @@ export function watchChatVisibility(): () => void {
 
         const visibleKey = $derived(visibleChatKey());
         const readingForeignJobs = new Set<string>();
+        let disposed = false;
+        async function readForeignJob(key: string): Promise<void> {
+            const ref = keyRef(key);
+            if (
+                disposed ||
+                key !== visibleChatKey() ||
+                readingForeignJobs.has(key) ||
+                lockedChatKeys().has(key) ||
+                [...get(followedJobs).values()].includes(key) ||
+                isLocalSend(ref)
+            ) {
+                return;
+            }
+            const expectedJobId = get(foreignJobs).get(key);
+            readingForeignJobs.add(key);
+            try {
+                const current = await readChatGeneration(ref);
+                // An initially absent mark also needs this guard: undefined passed to clearForeignJob
+                // would otherwise remove a mark discovered while this read was in flight.
+                if (disposed || get(foreignJobs).get(key) !== expectedJobId) return;
+                const followed = get(followedJobs);
+                if (
+                    !current ||
+                    current.owned ||
+                    followed.has(current.jobId) ||
+                    [...followed.values()].includes(key) ||
+                    isLocalSend(ref)
+                ) {
+                    clearForeignJob(ref, expectedJobId);
+                } else {
+                    noteForeignJob(ref, current.jobId);
+                }
+            } catch {
+                // Keep the observation until the next show, page recovery, feed signal, or timer tick.
+            } finally {
+                readingForeignJobs.delete(key);
+            }
+        }
         $effect(() => {
             const key = visibleKey;
             pageRecoveryVersion();
-            if (key === null || readingForeignJobs.has(key)) return;
-            const expectedJobId = untrack(() => {
-                if (lockedChatKeys().has(key) || [...get(followedJobs).values()].includes(key)) return;
-                return get(foreignJobs).get(key);
-            });
-            if (expectedJobId === undefined) return;
-            readingForeignJobs.add(key);
-            queueMicrotask(async () => {
-                const ref = keyRef(key);
-                try {
-                    const current = await readChatGeneration(ref);
-                    if (!current || current.owned || get(followedJobs).has(current.jobId)) {
-                        clearForeignJob(ref, expectedJobId);
-                    } else if (current.jobId !== expectedJobId && get(foreignJobs).get(key) === expectedJobId) {
-                        noteForeignJob(ref, current.jobId);
-                    }
-                } catch {
-                    // A failed observation leaves the mark until the next visibility or online event.
-                } finally {
-                    readingForeignJobs.delete(key);
+            if (key !== null) queueMicrotask(() => void readForeignJob(key));
+        });
+        const stopStreaming = onRemoteStreaming((streaming) => {
+            // The lock-release effect clears the old mark before the observation captures its id.
+            queueMicrotask(() => {
+                if (disposed) return;
+                const key = visibleChatKey();
+                if (
+                    key !== null &&
+                    streaming.some((chat) => chatStatusKey({ chaId: chat.characterId, chatId: chat.id }) === key)
+                ) {
+                    void readForeignJob(key);
                 }
             });
+        });
+        const sendsView = fromStore(localSends);
+        const foreignRecheckKey = $derived.by(() => {
+            const key = visibleKey;
+            if (
+                key === null ||
+                !(foreignView ??= fromStore(foreignJobs)).current.has(key) ||
+                lockedChatKeys().has(key) ||
+                [...(followedView ??= fromStore(followedJobs)).current.values()].includes(key) ||
+                isLocalSend(keyRef(key), sendsView.current)
+            ) {
+                return null;
+            }
+            return key;
+        });
+        $effect(() => {
+            const key = foreignRecheckKey;
+            if (key === null) return;
+            const timer = setInterval(() => void readForeignJob(key), FOREIGN_JOB_RECHECK_MS);
+            return () => clearInterval(timer);
         });
 
         let previousLocks = lockedChatKeys();
@@ -470,6 +526,8 @@ export function watchChatVisibility(): () => void {
             previousSends = sends;
         });
         return () => {
+            disposed = true;
+            stopStreaming();
             stopFollows();
             stopSends();
         };

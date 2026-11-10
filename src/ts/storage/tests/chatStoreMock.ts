@@ -82,6 +82,7 @@ export function createChatStoreMock(overrides: ModuleMockOverrides<ChatStoreModu
         endServerJob: vi.fn(),
         detachServerJob: vi.fn(),
         markChatStale: vi.fn(() => false),
+        onRemoteStreaming: vi.fn(() => () => {}),
         noteRemoteStreaming: vi.fn(),
         replaceFeedLocks: vi.fn(),
         releaseFeedLocks: vi.fn(),
