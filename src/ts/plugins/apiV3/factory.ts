@@ -653,13 +653,14 @@ export class SandboxHost {
         return transferables;
     }
 
-    private serialize(val: any): any {
+    private serialize(val: any, allocatedRefs?: string[]): any {
         if (val && (typeof val === "object" || typeof val === "function") && val.__classType === "REMOTE_REQUIRED") {
             if (val === null) return null;
             if (Array.isArray(val)) return val;
 
             const id = "ref_" + ++this.refIdCounter;
             this.instanceRegistry.set(id, val);
+            allocatedRefs?.push(id);
             return { __type: "REMOTE_REF", id } as RemoteRef;
         }
 
@@ -689,6 +690,7 @@ export class SandboxHost {
     /**
      * Callback wrappers must remove pending entries if preparation or posting fails, including a
      * missing guest window: no reply can arrive to release them or make the sandbox idle.
+     * Refs allocated for an undelivered callback are rolled back; earlier refs remain registered.
      */
     private deserializeArgs(args: any[], usedAbortIds?: string[]) {
         return args.map((arg) => {
@@ -710,6 +712,7 @@ export class SandboxHost {
                         }
                         const reqId = "cb_req_" + Math.random().toString(36).substring(2);
                         this.pendingCallbacks.set(reqId, { resolve, reject });
+                        const allocatedRefs: string[] = [];
 
                         try {
                             const receiver = this.iframe?.contentWindow;
@@ -748,7 +751,7 @@ export class SandboxHost {
                                     }
                                     return ref;
                                 }
-                                return this.serialize(arg);
+                                return this.serialize(arg, allocatedRefs);
                             });
 
                             const message = {
@@ -760,6 +763,7 @@ export class SandboxHost {
                             const transferables = this.collectTransferables(message);
                             receiver.postMessage(message, "*", transferables);
                         } catch (error) {
+                            for (const id of allocatedRefs) this.instanceRegistry.delete(id);
                             // Never delivered: no answer will come, so it is not pending.
                             this.pendingCallbacks.delete(reqId);
                             this.activityChanged();

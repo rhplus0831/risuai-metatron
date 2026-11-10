@@ -290,6 +290,55 @@ describe("SandboxHost activity", () => {
         expect(changed).toHaveBeenCalled();
     });
 
+    it("rolls back refs from an uncloneable callback delivery while keeping an earlier registration callable", async () => {
+        settledScript();
+        const wrapper = await callbackFromGuest();
+        const remote = () =>
+            new (class {
+                __classType = "REMOTE_REQUIRED";
+                getValue() {
+                    return "retained";
+                }
+            })();
+        const existing = remote();
+        api.existing = () => existing;
+        const registered = await callHost({ type: "CALL_ROOT", reqId: "existing", method: "existing" });
+        expect(registered.result).toEqual({ __type: "REMOTE_REF", id: expect.any(String) });
+
+        let attempted!: { type: string; args: { __type: string; id: string }[] };
+        const postMessage = guestWindow!.postMessage;
+        guestWindow!.postMessage = (data, origin, ports) => {
+            if (data.type === "INVOKE_CALLBACK") {
+                attempted = data;
+                structuredClone(data);
+            }
+            postMessage(data, origin, ports);
+        };
+
+        await expect(wrapper(existing, remote(), () => {})).rejects.toMatchObject({ name: "DataCloneError" });
+        expect(host.isIdle()).toBe(true);
+        expect(attempted.args.slice(0, 2)).toEqual([
+            { __type: "REMOTE_REF", id: expect.any(String) },
+            { __type: "REMOTE_REF", id: expect.any(String) },
+        ]);
+        expect(posted.some(({ data }) => data.type === "INVOKE_CALLBACK")).toBe(false);
+        for (const ref of attempted.args.slice(0, 2)) {
+            expect(await callHost({ type: "CALL_INSTANCE", reqId: ref.id, id: ref.id, method: "getValue" })).toEqual({
+                type: "RESPONSE",
+                reqId: ref.id,
+                error: "Instance not found or released",
+            });
+        }
+        expect(
+            await callHost({
+                type: "CALL_INSTANCE",
+                reqId: "retained",
+                id: registered.result.id,
+                method: "getValue",
+            }),
+        ).toEqual({ type: "RESPONSE", reqId: "retained", result: "retained" });
+    });
+
     it("is busy while a host stream bridged to the guest is open", async () => {
         settledScript();
         api.body = async () => new Response(new ReadableStream({ start: (c) => c.enqueue(new Uint8Array([1])) }));

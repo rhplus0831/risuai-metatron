@@ -12,22 +12,10 @@ The eighteenth batch was cleared the same day by a Sol implementer with session 
 
 ## Contents
 
-- [Plugin sandbox](#plugin-sandbox): 3
+- [Plugin sandbox](#plugin-sandbox): 2
 - [Structure audit 2026-11-10](#structure-audit-2026-11-10): 8
 
 ## Plugin sandbox
-
-### A host callback whose post fails leaves the refs it serialized in `instanceRegistry`
-
-`SandboxHost.deserializeArgs`'s callback wrapper (`src/ts/plugins/apiV3/factory.ts:690–733`) serializes the callback's
-arguments, allocating `instanceRegistry` refs for remote-required values, before the `INVOKE_CALLBACK` post. When
-`postMessage` throws (an uncloneable argument after a remote-required one), the catch at `:729` removes only the
-pending callback; no guest proxy exists, so nothing releases those refs until `terminate()`. The slice 2 challenger's
-probe reproduced it: one remote argument plus a function argument left one registry entry and no pending callback.
-
-**Why it matters:** a small leak per failed callback delivery.
-
-**Suggested handling:** record the refs `serialize` allocates for that post and delete them in the catch.
 
 ### A plugin setter's chat baseline is taken after the `dbWrite` prompt, so a read during the prompt can replace it
 
