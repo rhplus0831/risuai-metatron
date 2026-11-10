@@ -36,8 +36,10 @@ Read each module's header or component contract, then read the named export's co
 - `src/lib/ChatScreens/DefaultChatScreen.svelte` and `src/lib/SideBars/CharConfig.svelte`: panel openers.
 - `src/lib/Others/StructuredMemory/CoverageTab.svelte`: message coverage view; `reconciled`, `coverage`, `countedChats`.
 - `src/lib/Others/StructuredMemory/PreviewTab.svelte`: preview view; `run`.
-- `src/lib/Others/StructuredMemory/PagesTab.svelte`: page view and section editor; `readRecord`, `sendChange`,
-  `keepRecord`, `openAskedEntry`.
+- `src/lib/Others/StructuredMemory/PagesTab.svelte`: page view and section editor, also the filtered view of flagged
+  sections; `readRecord`, `sendChange`, `keepRecord`, `openAskedEntry`, `only`, `sectionReverts`, `keepAll`.
+- `src/lib/Others/StructuredMemory/UnsupportedTab.svelte`: the Evidence missing tab, `PagesTab` under
+  `only="unsupported"`.
 - `src/lib/Others/StructuredMemory/TimelineTab.svelte`: event view and repairs; `reconciled`, `sendRepair`, `rerecord`.
 - `src/lib/Others/StructuredMemory/ThreadsTab.svelte`: thread view and state editor; `read`, `setState`.
 - `src/lib/Others/StructuredMemory/LogTab.svelte`: run viewer; `readRound`, `exportLog`.
@@ -115,12 +117,12 @@ contract owns display and revert behavior.
 in place of older memory flags. The component contract owns tab mounting and refresh. Preview runs only on its button
 since its local send moves `refresh`.
 
-Contents from `server/src/routes/structuredMemory.ts` supplies `adoption`, `rebuild`, `recordedLanguage`, and `health`;
-the tab's HypaV3 mirror decides none. A [held chat](lifecycle.md#the-adoption-choice) offers adoption of HypaV3
-summaries or decline above the writer line; an adopted chat can offer reset below. Every choice is rechecked by its
-route. [Rebuild controls](rebuild.md#a-run) coordinate contents reads with read-only state: a run holds the fence beyond
-its task's end, which must reread contents to release it. Read-only falling also catches record-now work inside a
-generation job.
+Contents from `server/src/routes/structuredMemory.ts` supplies `adoption`, `rebuild`, `recordedLanguage`, `health`, and
+`unsupportedPages`; the tab's HypaV3 mirror decides none. A [held chat](lifecycle.md#the-adoption-choice) offers
+adoption of HypaV3 summaries or decline above the writer line; an adopted chat can offer reset below. Every choice is
+rechecked by its route. [Rebuild controls](rebuild.md#a-run) coordinate contents reads with read-only state: a run holds
+the fence beyond its task's end, which must reread contents to release it. Read-only falling also catches record-now
+work inside a generation job.
 
 The coverage route returns stored event facts; Coverage and Timeline apply the send's reconciliation rule to held
 messages through `reconcileMemoryCoverage`, without a request or stored write. The join comment owns row priority,
@@ -135,6 +137,20 @@ Timeline reads coverage's `messageIds` at one revision, keeping `readContents` f
 rounds; `memory_events.seq` is storage order. `memoryTimelineRows` owns message order and aging. Pages hosts
 [page tools](pages.md); each tab's contract holds its view rules. `open(target)` becomes the chosen tab's `focus`;
 `jump(messageId)` opens the chat with `setChatOpen`, calls `requestMessageJump`, then closes the panel.
+
+### The Evidence missing tab
+
+The panel lists this tab only while contents' health counts flagged sections or while it is selected, so resolving the
+last one leaves the notice in place until another tab is chosen. It is `PagesTab` under a filter: the tree holds
+contents' `unsupportedPages`, the page shows its flagged sections alone, and the next flagged page is selected when the
+shown one has none left. Pages hands each contents read to the panel through `onContents`, which keeps the count current
+without a second request.
+
+A flagged section there takes one of two answers. Keep sends `sectionKeep` with the tab's `preserve` checkbox, which is
+tab state and starts checked; Keep all sends a page's keeps in turn, each at the revision the last answer named. Revert
+shows when `sectionReverts` finds the heading's newest standing entry to be a revertable writer's change of a retracted
+event, and calls [the revert route](records.md#the-revert-route). The
+[lifecycle guide](lifecycle.md#retraction-and-edits) owns when a section is flagged.
 
 ### Panel edits
 
@@ -235,7 +251,8 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
   `MemorySettings.structuredMemory.test.ts` compares the page's editable controls with.
 - A new writer slot: add it to `ANALYSIS_SLOT_NAMES` or `PATCH_SLOT_NAMES`, and to `promptGuide`, which names the
   optional ones.
-- A new panel tab: add one component to `TABS` taking `MemoryPanelTabProps`.
+- A new panel tab: add one component to `TABS` taking `MemoryPanelTabProps`. A tab shown on a condition is filtered in
+  the panel's `tabs`, which keeps a selected tab listed.
 - A new stored code the panel or the receipt line shows: give it text in `memoryText.ts`, and keep reading the stored
   value as data of any shape (`memoryRunView`, `memoryReceiptView`).
 
@@ -303,6 +320,8 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
 - A custom prompt may leave out `{{slot::rules}}`: `takenBack` still shows in the cast, without the rule that says to
   respect it. The test run lists the slot. `memoryWorkCost` does not know a custom prompt's size.
 - A seeded prompt is a copy: a later change of a default frame does not reach it, though a change of a slot's text does.
+- A chat too large for a health read (`unavailable`) lists no flagged page, so it shows no Evidence missing tab and its
+  flagged sections have no keep or one-press revert; the page history's revert still works. Decision: owner, 2026-11-10.
 - The badge is a last observation: memory writes publish nothing, so a writer run or another tab's repair shows at the
   next read. Decision: Structured Memory slice 7e, archive.
 - A chat not loaded knows no gap and only stored `stale` plus marks, because both need its messages. Only pinned chats

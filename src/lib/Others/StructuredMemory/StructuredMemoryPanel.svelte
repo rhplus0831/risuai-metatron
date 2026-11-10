@@ -45,6 +45,7 @@
         normalizeStructuredMemorySettings,
         structuredMemoryWriterLanguage,
         writerPaused,
+        type StructuredMemoryContentsAnswer,
         type StructuredMemoryRebuild,
         type StructuredMemoryRebuildMode,
     } from "../../../../shared/structuredMemory.ts";
@@ -58,6 +59,7 @@
     import SettingsTab from "./SettingsTab.svelte";
     import ThreadsTab from "./ThreadsTab.svelte";
     import TimelineTab from "./TimelineTab.svelte";
+    import UnsupportedTab from "./UnsupportedTab.svelte";
 
     /**
      * The memory panel mounted by src/App.svelte under the shared `hypaV3ModalOpen` store. Each `TABS`
@@ -75,6 +77,8 @@
      * before the server's write fence decides. Settings writes chat fields through
      * src/ts/storage/chatStore.svelte.ts's `setChatMeta`, with read-only disabling its controls locally.
      * The writer line uses current contents and settings, since receipts are copies.
+     * Evidence missing shares Pages under a filter. It stays visible at zero only while selected, and
+     * Pages shares its accepted contents reads through `onContents` to keep that tab's count current.
      * Adoption, reset, rebuild, and recorded language come from server/src/routes/structuredMemory.ts's
      * contents answer, never the tab's HypaV3 mirror. Adoption and decline precede the writer line; reset
      * follows it, and decline and reset ask first. The server rechecks every choice.
@@ -94,6 +98,7 @@
         { value: "coverage", label: text.coverage, component: CoverageTab },
         { value: "preview", label: text.preview, component: PreviewTab },
         { value: "pages", label: text.pages, component: PagesTab },
+        { value: "unsupported", label: text.unsupported, component: UnsupportedTab },
         { value: "timeline", label: text.timeline, component: TimelineTab },
         { value: "threads", label: text.threads, component: ThreadsTab },
         { value: "log", label: text.log, component: LogTab },
@@ -103,7 +108,15 @@
     let tab = $state<string | number>(TABS[0].value);
     let refresh = $state(0);
 
-    const activeTab = $derived(TABS.find(({ value }) => value === tab) ?? TABS[0]);
+    const tabs = $derived(
+        TABS.filter(({ value }) => value !== "unsupported" || unsupportedSections > 0 || tab === "unsupported").map(
+            (entry) =>
+                entry.value === "unsupported"
+                    ? { ...entry, label: `${text.unsupported} (${unsupportedSections})` }
+                    : entry,
+        ),
+    );
+    const activeTab = $derived(tabs.find(({ value }) => value === tab) ?? tabs[0]);
     const chatRef = $derived(currentChatRef());
     const chatKey = $derived(chatRef ? chatStatusKey(chatRef) : null);
     const installVersion = $derived(chatRef ? chatInstallVersion(chatRef) : 0);
@@ -129,6 +142,7 @@
         chatKey: string | null;
         paused: boolean;
         pendingRepairs: number;
+        unsupportedSections: number;
         adoptable: number;
         resettable: boolean;
         rebuild: StructuredMemoryRebuild | null;
@@ -137,6 +151,7 @@
     } | null>(null);
     let contentsRead = 0;
     const heldFacts = $derived(contentsFacts?.chatKey === chatKey ? contentsFacts : null);
+    const unsupportedSections = $derived(heldFacts?.unsupportedSections ?? 0);
     /** The chat's rebuild as the server last said: a run holds the chat whether or not its task is live. */
     const rebuild = $derived(heldFacts?.rebuild ?? null);
 
@@ -173,29 +188,36 @@
         seen = now;
     });
 
+    /** The panel and Pages share accepted contents facts; older in-flight panel reads cannot replace them. */
+    function keepContents(value: StructuredMemoryContentsAnswer, ref: ChatRef) {
+        const key = chatStatusKey(ref);
+        if (key !== chatKey) {
+            return;
+        }
+        contentsRead += 1;
+        contentsFacts = {
+            chatKey: key,
+            paused: value.health === "unavailable" ? writerPaused(value.runs) : value.health.paused,
+            pendingRepairs: value.health === "unavailable" ? 0 : value.health.pendingRepairs,
+            unsupportedSections: value.health === "unavailable" ? 0 : value.health.unsupportedSections,
+            adoptable: value.adoption.adoptable,
+            resettable: value.adoption.resettable,
+            rebuild: value.rebuild,
+            recordedLanguage: value.recordedLanguage,
+            writerBlockingReason: value.writerBlockingReason,
+        };
+    }
+
     async function readContents() {
         const ref = chatRef;
-        const key = chatKey;
         const number = ++contentsRead;
         const result = ref ? await readStructuredMemoryContents(ref) : null;
         if (number === contentsRead) {
-            contentsFacts =
-                result?.outcome === "ok"
-                    ? {
-                          chatKey: key,
-                          paused:
-                              result.value.health === "unavailable"
-                                  ? writerPaused(result.value.runs)
-                                  : result.value.health.paused,
-                          pendingRepairs:
-                              result.value.health === "unavailable" ? 0 : result.value.health.pendingRepairs,
-                          adoptable: result.value.adoption.adoptable,
-                          resettable: result.value.adoption.resettable,
-                          rebuild: result.value.rebuild,
-                          recordedLanguage: result.value.recordedLanguage,
-                          writerBlockingReason: result.value.writerBlockingReason,
-                      }
-                    : null;
+            if (result?.outcome === "ok") {
+                keepContents(result.value, ref!);
+            } else {
+                contentsFacts = null;
+            }
         }
     }
 
@@ -504,7 +526,7 @@
             <div class="max-w-full overflow-x-auto shrink-0">
                 <SegmentedControl
                     bind:value={() => tab, chooseTab}
-                    options={TABS}
+                    options={tabs}
                     size="sm"
                     margin={false}
                     label={text.sections}
@@ -674,7 +696,15 @@
             <div class="flex flex-col flex-1 min-h-0 overflow-y-auto" tabindex="-1">
                 {#if chatRef}
                     {#key chatKey}
-                        <activeTab.component {chatRef} {readOnly} {refresh} {focus} {open} {jump} />
+                        <activeTab.component
+                            {chatRef}
+                            {readOnly}
+                            {refresh}
+                            {focus}
+                            {open}
+                            {jump}
+                            onContents={keepContents}
+                        />
                     {/key}
                 {/if}
             </div>

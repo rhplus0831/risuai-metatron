@@ -27,8 +27,8 @@
   `retireRerecorded`, `withRetractedEvidence`, `automaticRerecords`, `reconcileMessageChanges`.
 - `server/src/prompt/memory/structured/edits.ts`: event repairs and section flags; `applyEventRepair`,
   `flagUnsupportedSections`. Other edits: [records](records.md#files).
-- `server/src/prompt/memory/structured/inherit.ts`: copy and branch record builder; `inheritedRecords`,
-  `MemoryInheritance`.
+- `server/src/prompt/memory/structured/inherit.ts`: copy and branch record builder, and the heading restore a confirmed
+  delete shares; `inheritedRecords`, `MemoryInheritance`, `rewindPageHeadings`.
 - `server/src/prompt/memory/structured/restore.ts`: chat-file record admission; `parseRestoredRecords`,
   `RestoredRecords`.
 - `server/src/prompt/memory/structured/adopt.ts`: HypaV3 summary conversion; `adoptedEvents`, `HypaV3Adoption`.
@@ -84,8 +84,11 @@ separate write: a crash between the chat commit and its notice leaves the event 
 later repair.
 
 For a user-confirmed delete, `removeAfterAsking` checks coverage and asks before carrying `retract` through the save;
-the chat store guide owns its save and lock checks. `/cut`, `/del`, `runMultisend`, rerolls, scripts, server triggers
-and recovered drafts can remove messages without that mark, leaving `missing` for panel repair.
+the chat store guide owns its save and lock checks. That delete also undoes what its newest recorded turn wrote: before
+the thread replay and the flagging, the reaction rewinds the headings its tail events changed with `rewindPageHeadings`
+and trashes the pages they created. The `reconcile.ts` header owns which events are the tail and which headings rewind;
+the panel's `retract` and a re-record's retire only flag. `/cut`, `/del`, `runMultisend`, rerolls, scripts, server
+triggers and recovered drafts can remove messages without that mark, leaving `missing` for panel repair.
 
 ### A checkpoint
 
@@ -207,8 +210,9 @@ takes over.
   the tab's repair or a rewritten message sets. Both are part of the record, so a checkpoint keeps them with its exact
   row text, and a copy or a chat file's restore keeps `keptState` and leaves `rerecord` behind.
 - A retraction leaves the event stored with `status: "retracted"`, and sets `unsupported` on the sections it leaves
-  without support. The flag is derived from `provenance` over the change set, not kept in its own table
-  ([Retraction and edits](#retraction-and-edits)).
+  without support, after a confirmed delete has rewound what it can. The flag is derived from `provenance` over the
+  change set, not kept in its own table ([Retraction and edits](#retraction-and-edits)). A person clears it with
+  [a keep or a revert](read.md#the-evidence-missing-tab).
 - A checkpoint holds a manifest of each kind's chunks beside its messages, and a chunk is the rows' `data` verbatim
   ([A checkpoint](#a-checkpoint)).
 
@@ -281,6 +285,14 @@ takes over.
   meanwhile refuses it; otherwise the reply can be built on the deleted message and the event retracted during the job.
   The read has no deadline of its own, so a hung read holds the delete with no question shown. Decision: Structured
   Memory slice 5b, archive.
+- Only a confirmed delete rewinds, and only its tail: the events it newly retracts with no standing event after them in
+  contents order. A delete in the middle of the chat, the panel's `retract`, and a re-record's retire only flag, because
+  the page may still be right and a person may trim old messages to keep the memory. An event a backfill or a historical
+  re-record wrote later stands after the newest turn's, so that turn's delete only flags too. Decision: owner,
+  2026-11-10.
+- A rewind leaves a heading flagged when a person's edit or revert follows the cut, when the page was merged or split,
+  or when the bounded history lost the change: it never drops a person's text. A page the tail created goes to the trash
+  whole, a person's work on it included, and the scene's attendance clears. Decision: owner, 2026-11-10.
 - A mark outlives an edit that was put back: the event reads active, spends no call, and shows as waiting until a press
   or retract; a keep of an already-active event is a no-op. A chat under a save refusal sends a whole `replace`, which
   loses `retract` and any `rewritten`, so the event reads `missing` or `changed` for the panel. Decision: Structured

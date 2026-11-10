@@ -398,7 +398,7 @@ export interface MemoryEvent extends Omit<MemoryEventDraft, "knowledge">, Memory
     adoptedSummaries?: boolean;
 }
 
-/** What a revert restores together, so a body never returns with its replacement's evidence. */
+/** What a revert or rewind restores together, so a body never returns with its replacement's evidence. */
 export interface MemorySectionContent {
     body: string;
     /** The ids of the events the body comes from. */
@@ -417,7 +417,7 @@ export interface MemorySection extends MemoryTrustFlags, MemorySectionContent {
     /**
      * The evidence does not answer for the body: each event in `provenance` was retracted or stayed out of
      * this copied chat, or the body holds a change from after a branch point that the page's history could
-     * not rewind. Flagged for review, never reverted automatically.
+     * not rewind. Flagged for review; a person can keep the section or revert an eligible writer change.
      */
     unsupported?: boolean;
     /** The body holds two conflicting values because a contradiction fell below the confidence threshold. */
@@ -742,13 +742,16 @@ export function memoryHealthState(holds: Readonly<Record<MemoryHealthState, bool
 /**
  * The contents route's answer: a chat's records without their bodies, what the panel offers for its
  * summaries, its rebuild, the language of its newest recorded run, null with none or from before runs
- * kept one, its health entry, and the current tab-bound writer reason when its binding resolves.
+ * kept one, its health entry, live pages with unsupported sections in contents order, and the current
+ * tab-bound writer reason when its binding resolves.
  */
 export type StructuredMemoryContentsAnswer = StructuredMemoryContents & {
     adoption: StructuredMemoryAdoption;
     rebuild: StructuredMemoryRebuild | null;
     recordedLanguage: string | null;
     health: StructuredMemoryHealthEntry;
+    /** Empty when health is unavailable; computed in SQLite without parsing page records. */
+    unsupportedPages: string[];
     writerBlockingReason?: "pluginModel" | "requestTrigger" | null;
 };
 
@@ -877,12 +880,15 @@ export type StructuredMemoryCoverageRound = {
 /**
  * What a person can change of a chat's memory, one change per request. The tab never sends a record:
  * this closed union is all an edit can say, so history, provenance, a page's type, and ids cannot be
- * forged. A `page` edit names at least one of its fields, and a null `grade` clears the grade. An
- * `event` edit is a repair of a stale event, and `keep` names the `memoryAnchorState` the person saw.
+ * forged. A `page` edit names at least one of its fields, and a null `grade` clears the grade. A
+ * `sectionKeep` clears unsupported evidence and drops retracted provenance without changing text or
+ * history; `preserve` marks it user-corrected for a rebuild. An `event` edit is a repair of a stale
+ * event, and `keep` names the `memoryAnchorState` the person saw.
  */
 export type StructuredMemoryEdit =
     | { kind: "section"; pageId: string; heading: string; body: string }
     | { kind: "sectionLock"; pageId: string; heading: string; locked: boolean }
+    | { kind: "sectionKeep"; pageId: string; heading: string; preserve: boolean }
     | { kind: "page"; pageId: string; contextMode?: MemoryContextMode; grade?: number | null }
     | { kind: "thread"; threadId: string; state: MemoryThreadState }
     | { kind: "event"; eventId: string; repair: "rerecord" | "retract" }

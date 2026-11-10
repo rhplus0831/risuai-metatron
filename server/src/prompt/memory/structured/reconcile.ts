@@ -2,6 +2,8 @@ import type { Message } from "../../../../../shared/database.ts";
 import type { MemoryChatRef } from "../../../../../shared/jobs.ts";
 import {
     type MemoryEvent,
+    type MemoryPage,
+    type MemoryPageHistoryEntry,
     type MemoryThread,
     type MemoryThreadState,
     type MemoryTrustFlags,
@@ -12,6 +14,7 @@ import {
 import { type MemoryChanges, type MemoryEventWrite, messageSourceHash } from "../../../data/memoryStore.ts";
 import type { MessagesChanged, ResourceStore } from "../../../data/resourceStore.ts";
 import { applyEventRepair, flagUnsupportedSections } from "./edits.ts";
+import { rewindPageHeadings } from "./inherit.ts";
 import type { WriterCadence, WriterWindow } from "./window.ts";
 import type { WriterMemory } from "./writer.ts";
 
@@ -24,9 +27,12 @@ import type { WriterMemory } from "./writer.ts";
  * - A re-record replaces its event only as the new one commits: until then the old event stays as it is,
  *   and a failed run leaves it and its mark in place for the next run.
  * - The new event takes on what a person set on the old one: the marks are theirs, not the writer's.
- * - The old event is retracted, not removed, so what it cited stays recorded and its history stays.
+ * - A re-record's old event is retracted, not removed, so what it cited stays recorded and its history stays.
  * - Every retraction, a person's repair, a confirmed delete, or a re-record's retire, also flags the
  *   sections it leaves with nothing but retracted events behind them (`withUnsupportedSections`).
+ * - A confirmed delete first rewinds headings changed only by newly retracted tail events, without a
+ *   person's revert mark. Later standing events or a person's later heading history prevent a rewind.
+ *   Pages those tail events created go to the trash intact, except the scene, whose attendance clears.
  * - A repair or confirmed delete also replays affected threads from surviving events, retiring an
  *   unsupported opening and preserving states the full history cannot explain (`withReconciledThreads`).
  * - A chat write reaches the records through `reconcileMessageChanges`: a delete a person confirmed
@@ -64,7 +70,7 @@ export function automaticRerecords(
 }
 
 /**
- * `changes` with the sections it leaves unsupported flagged (`flagUnsupportedSections`), the flagged
+ * `changes` with the live sections it leaves unsupported flagged (`flagUnsupportedSections`), the flagged
  * pages replacing any the change set already holds. It reads the events and pages as they will stand:
  * the stored statuses, which the contents list so no event body is parsed, under `changes.events`, and
  * the stored pages under `changes.pages` and `changes.remove.pages`.
@@ -98,7 +104,10 @@ export function withUnsupportedSections(
     const stored = contents.pages.flatMap(({ id }) =>
         written.has(id) || removed.has(id) ? [] : (store.memory.readRecord(chaId, chatId, "pages", id)?.data ?? []),
     );
-    const flagged = flagUnsupportedSections([...stored, ...written.values()], events);
+    const flagged = flagUnsupportedSections(
+        [...stored, ...written.values()].filter(({ trashedAt }) => trashedAt === undefined),
+        events,
+    );
     if (flagged.length === 0) {
         return changes;
     }
@@ -371,9 +380,82 @@ function rewritesEvidence(event: MemoryEvent, rewritten: ReadonlySet<string>, me
 }
 
 /**
+ * A confirmed delete's page changes, before thread replay and flagging. The whole contents order, not
+ * the citation-filtered list, decides which newly retracted events have no standing event after them.
+ * Only an uninterrupted suffix of writer entries from those tail events may rewind a heading. A
+ * reshaped page stays as it is; a tail-created page is trashed intact, except for the scene. Attendance
+ * has no history and clears whenever there is a tail event. Works on live and staged record sets alike.
+ */
+function withDeletedTailRewound(
+    memory: WriterMemory,
+    { chaId, chatId }: MemoryChatRef,
+    events: readonly MemoryEvent[],
+): MemoryChanges {
+    const changes = { events: [...events] };
+    const retracted = new Set(events.filter(({ status }) => status === "retracted").map(({ id }) => id));
+    const contents = retracted.size > 0 ? memory.readContents(chaId, chatId) : null;
+    if (!contents) {
+        return changes;
+    }
+    const tail = new Set<string>();
+    for (const { id, status } of [...contents.events].reverse()) {
+        if (!retracted.has(id) && status !== "retracted") {
+            break;
+        }
+        if (retracted.has(id) && status !== "retracted") {
+            tail.add(id);
+        }
+    }
+    if (tail.size === 0) {
+        return changes;
+    }
+    const now = Date.now();
+    const writerTail = ({ eventId, kind }: MemoryPageHistoryEntry) =>
+        eventId !== undefined && tail.has(eventId) && kind !== "edit" && kind !== "revert";
+    const pages = contents.pages.flatMap(({ id }): MemoryPage[] => {
+        const page = memory.readRecord(chaId, chatId, "pages", id)?.data;
+        if (!page || page.trashedAt !== undefined) {
+            return [];
+        }
+        if (!page.reshaped) {
+            if (
+                page.type !== "scene" &&
+                page.history.some((entry) => entry.heading === null && entry.kind === "create" && writerTail(entry))
+            ) {
+                return [{ ...page, trashedAt: now }];
+            }
+            const cuts = new Map<string, MemoryPageHistoryEntry>();
+            const blocked = new Set<string>();
+            for (const entry of page.history) {
+                const { heading } = entry;
+                if (heading === null) {
+                    continue;
+                }
+                if (entry.eventId !== undefined && tail.has(entry.eventId) && !cuts.has(heading)) {
+                    cuts.set(heading, entry);
+                }
+                if (cuts.has(heading) && !writerTail(entry)) {
+                    blocked.add(heading);
+                }
+            }
+            for (const heading of blocked) {
+                cuts.delete(heading);
+            }
+            if (cuts.size > 0) {
+                const rewound = rewindPageHeadings(page, cuts);
+                return [{ ...rewound, ...(page.type === "scene" ? { participants: [] } : {}) }];
+            }
+        }
+        return page.type === "scene" ? [{ ...page, participants: [] }] : [];
+    });
+    return { ...changes, pages };
+}
+
+/**
  * What a chat write leaves of the records `memory` holds, in one synchronous step: see
  * `reconcileMessageChanges`. An empty notice reads nothing; otherwise the citation relation selects
- * the event bodies to check. Without citing events it stops here. Retractions then reconcile their evidence.
+ * the event bodies to check. Without citing events it stops here. Confirmed retractions first rewind
+ * eligible tail changes, then reconcile their evidence.
  */
 function reactToMessageChanges(
     { memory }: { memory: WriterMemory },
@@ -405,18 +487,23 @@ function reactToMessageChanges(
         }
     }
     if (events.length > 0) {
-        const changes = withRetractedEvidence({ memory }, { chaId, chatId }, { events });
+        const changes = withRetractedEvidence(
+            { memory },
+            { chaId, chatId },
+            withDeletedTailRewound(memory, { chaId, chatId }, events),
+        );
         memory.write(chaId, chatId, { epoch, baseRevision: contents.revision }, changes);
     }
 }
 
 /**
  * What a chat write leaves of the records, from `notice` (`onMessagesChanged`): an event that cites a
- * `retracted` id is retracted, the same write as the panel's, and an event that cites a `rewritten` id
+ * `retracted` id is retracted, and an event that cites a `rewritten` id
  * whose evidence changed under its stored hash version (`rewritesEvidence`), is not retracted here, and
  * has no mark yet is marked `rerecord` and nothing else, so it stays until a re-record commits. The
  * notice reports any raw change; a version 3 source ignores display markup, so a markup-only write marks
- * none of its events. A retraction reconciles the affected threads and flags unsupported sections.
+ * none of its events. A confirmed retraction rewinds eligible tail page changes before reconciling the
+ * affected threads and flagging unsupported sections; a panel repair or re-record retirement never rewinds.
  * Nothing affected writes nothing. A chat's rebuild takes the same reaction on its staged records,
  * after the live ones.
  *

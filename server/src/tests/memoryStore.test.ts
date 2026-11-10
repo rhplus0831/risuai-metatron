@@ -1508,3 +1508,24 @@ it("retains trash through checkpoint capture, snapshot restoration and a rebuild
     expect(store.memory.readRecord("c", "k", "pages", "trash")?.data).toEqual(trash);
     expect(contents(store)).toMatchObject({ pages: [], trash: [{ id: "trash" }] });
 });
+
+it("reads only live flagged page ids in contents order, once per page and within the requested chat", () => {
+    const { store } = fileStore();
+    seed(store);
+    store.applyChanges({ chats: [group(null, [{ op: "create", chat }], "c", "other")] });
+    const pages = records(["z", "clear", "a", "false", "trash"]).pages;
+    pages[0].sections = [
+        { ...pages[0].sections[0], unsupported: true },
+        { ...pages[0].sections[0], heading: "Second", unsupported: true },
+    ];
+    pages[2].sections[0].unsupported = true;
+    pages[3].sections[0].unsupported = false;
+    pages[4] = { ...pages[4], sections: [{ ...pages[4].sections[0], unsupported: true }], trashedAt: 1 };
+    write(store, contents(store).revision, { pages });
+    write(store, contents(store, "c", "other").revision, { pages: [{ ...pages[0], id: "foreign" }] }, "c", "other");
+    expect(store.memory.readUnsupportedPages("c", "k")).toEqual(["z", "a"]);
+    expect(store.memory.readUnsupportedPages("c", "other")).toEqual(["foreign"]);
+    expect(store.memory.readUnsupportedPages("c", "missing")).toEqual([]);
+    write(store, contents(store).revision, { pages: [{ ...pages[0], sections: [] }] });
+    expect(store.memory.readUnsupportedPages("c", "k")).toEqual(["a"]);
+});

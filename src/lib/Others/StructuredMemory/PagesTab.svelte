@@ -37,6 +37,7 @@
         type MemorySection,
         type StructuredMemoryContentsAnswer,
         type StructuredMemoryEdit,
+        type StructuredMemoryEditAnswer,
         type StructuredMemoryImportAnswer,
         type StructuredMemoryPageTool,
         type StructuredMemoryRecordAnswer,
@@ -58,6 +59,9 @@
      * History's after-state comes from `memoryPageHistoryView` in src/ts/process/structuredMemory.svelte.ts;
      * no after-state is stored. One diff opens at a time and renders as spans. A target with `historyId`
      * opens that diff only after its page is held, then scrolls after render.
+     * With `only: "unsupported"`, this same view lists flagged pages and sections, selects the next
+     * flagged page after resolution, and offers evidence keeps and the latest retracted writer revert.
+     * Keeps can mark text user-corrected for rebuilds; that choice lasts only while the tab is mounted.
      */
 
     // A tool over a page as a whole (`StructuredMemoryPageTool`) goes that way too: the server answers
@@ -67,7 +71,16 @@
     // lorebook is a chat write, not a memory write: it needs the chat loaded and nothing else.
     //
 
-    let { chatRef, readOnly, refresh, focus, open, jump }: MemoryPanelTabProps = $props();
+    let {
+        chatRef,
+        readOnly,
+        refresh,
+        focus,
+        open,
+        jump,
+        onContents,
+        only,
+    }: MemoryPanelTabProps & { only?: "unsupported" } = $props();
 
     /** The rows a list renders at once; a long chat stays cheap behind "show more". */
     const ROWS_AT_ONCE = 200;
@@ -81,6 +94,8 @@
     const toolText = text.tools;
     const panelText = language.structuredMemory.panel;
     const revertText = language.structuredMemory.revert;
+    const unsupportedText = text.unsupported;
+    let preserve = $state(true);
 
     let contents = $state.raw<StructuredMemoryContentsAnswer | null>(null);
     let failure = $state<string | null>(null);
@@ -121,13 +136,48 @@
     const usedPages = $derived(memoryItemsUsed(messages, "page"));
     const messageIndexes = $derived(memoryMessageIndexes(messages));
     const eventTitles = $derived(new Map<string, string>(contents?.events.map(({ id, title }) => [id, title])));
+    const unsupportedIds = $derived(new Set(contents?.unsupportedPages));
+    const listedPages = $derived(
+        only === "unsupported"
+            ? (contents?.pages ?? []).filter(({ id }) => unsupportedIds.has(id))
+            : (contents?.pages ?? []),
+    );
     /** The tree in order, a group's first row carrying its type, so "show more" counts rows. */
     const treeRows = $derived(
-        memoryPageTree(contents?.pages ?? []).flatMap(({ type, rows }) =>
+        memoryPageTree(listedPages).flatMap(({ type, rows }) =>
             rows.map((row, index) => ({ row, group: index === 0 ? type : null })),
         ),
     );
     const history = $derived(copy ? memoryPageHistoryView(copy.data) : []);
+    /** Newest standing entries only, matching revertChange's treatment of reverted and revert entries. */
+    const sectionReverts = $derived.by(() => {
+        const entries = copy?.data.history ?? [];
+        const retracted = new Set(contents?.events.filter(({ status }) => status === "retracted").map(({ id }) => id));
+        const newest = new Set<string>();
+        const rows = new Map<string, MemoryPageHistoryRow>();
+        for (let index = entries.length - 1; index >= 0; index--) {
+            const entry = entries[index];
+            const { heading, eventId, kind, revertedBy } = entry;
+            if (heading === null || revertedBy || kind === "revert" || newest.has(heading)) {
+                continue;
+            }
+            newest.add(heading);
+            if (eventId === undefined || !retracted.has(eventId) || kind === "edit") {
+                continue;
+            }
+            if (kind === "compact") {
+                const patch = entries.slice(0, index).findLast((earlier) => earlier.heading === heading);
+                if (!patch || patch.kind === "compact" || patch.eventId !== eventId) {
+                    continue;
+                }
+            }
+            const row = history.find(({ id }) => id === entry.id);
+            if (row?.revertable) {
+                rows.set(heading, row);
+            }
+        }
+        return rows;
+    });
     const controlsOff = $derived(readOnly || sending);
     const draftFits = $derived(draft.trim() !== "" && draft.length <= sectionBodyChars);
     /** The copy is a page in the trash: read-only, with Restore and Delete forever alone. */
@@ -164,6 +214,7 @@
         }
         if (result.outcome === "ok") {
             contents = result.value;
+            onContents?.(result.value, ref);
             failure = null;
         } else {
             failure = memoryReadFailureText(result);
@@ -279,10 +330,35 @@
         void readRecord(id);
     }
 
+    // The filtered tab opens the first flagged page, then moves forward through contents order.
+    $effect(() => {
+        if (only !== "unsupported" || !contents || sending) {
+            return;
+        }
+        const pages = contents.pages;
+        const flagged = listedPages;
+        const selected = selectedId;
+        if (flagged.some(({ id }) => id === selected)) {
+            return;
+        }
+        const position = pages.findIndex(({ id }) => id === selected);
+        const next = pages.slice(position + 1).find(({ id }) => unsupportedIds.has(id)) ?? flagged[0];
+        untrack(() => {
+            if (next) {
+                select(next.id);
+            } else {
+                selectedId = null;
+                copy = null;
+                editor = null;
+                openEntry = null;
+            }
+        });
+    });
+
     // The page a jump from another tab asked for.
     $effect(() => {
         const target = focus;
-        if (target) {
+        if (target && only !== "unsupported") {
             untrack(() => {
                 const { id, historyId } = target;
                 askedEntry = historyId === undefined ? null : { pageId: id, historyId };
@@ -352,6 +428,9 @@
                 if (edit.kind === "section") {
                     editor = null;
                 }
+                if (edit.kind === "sectionKeep") {
+                    void readContents();
+                }
                 return true;
             },
         );
@@ -369,6 +448,65 @@
             ({ revision, data: page, reverted, laterEvents }) => {
                 keepRecord({ revision, data: page });
                 alertToast(reverted ? revertText.done(laterEvents) : revertText.nothing);
+                void readContents();
+                return true;
+            },
+        );
+    }
+
+    function keepSection(heading: string) {
+        if (copy) {
+            void send({ kind: "sectionKeep", pageId: copy.data.id, heading, preserve }, copy.data);
+        }
+    }
+
+    /** One in-flight change for the whole sequence; each keep names the previous answer's revision. */
+    async function keepAll() {
+        if (!copy || controlsOff) {
+            return;
+        }
+        const ref = chatRef;
+        const pageId = copy.data.id;
+        if (
+            !(await alertConfirm(unsupportedText.keepAllConfirm(copy.data.title))) ||
+            !sameChat(ref) ||
+            copy?.data.id !== pageId
+        ) {
+            return;
+        }
+        const headings = copy.data.sections.filter(({ unsupported }) => unsupported).map(({ heading }) => heading);
+        const keepThroughRebuild = preserve;
+        if (headings.length === 0) {
+            return;
+        }
+        void sendChange(
+            async (ref, revision) => {
+                let answer: StructuredMemoryResult<StructuredMemoryEditAnswer>;
+                for (const heading of headings) {
+                    const result = await editStructuredMemory(ref, revision, {
+                        kind: "sectionKeep",
+                        pageId,
+                        heading,
+                        preserve: keepThroughRebuild,
+                    });
+                    if (result.outcome !== "ok") {
+                        return result;
+                    }
+                    if (result.value.kind !== "pages") {
+                        return { outcome: "failed", error: "Unexpected answer" } as const;
+                    }
+                    revision = result.value.revision;
+                    answer = result;
+                }
+                return answer!;
+            },
+            copy.data,
+            (answer) => {
+                if (answer.kind !== "pages") {
+                    return false;
+                }
+                keepRecord({ revision: answer.revision, data: answer.data });
+                void readContents();
                 return true;
             },
         );
@@ -641,6 +779,22 @@
                 >
                     <span data-memory-section-edit>{text.edit}</span>
                 </Button>
+                {#if only === "unsupported" && section.unsupported}
+                    {@const entry = sectionReverts.get(section.heading)}
+                    {#if entry}
+                        <Button size="sm" styled="outlined" disabled={controlsOff} onclick={() => revert(entry)}>
+                            <span data-memory-section-revert>{revertText.button}</span>
+                        </Button>
+                    {/if}
+                    <Button
+                        size="sm"
+                        styled="outlined"
+                        disabled={controlsOff}
+                        onclick={() => keepSection(section.heading)}
+                    >
+                        <span data-memory-section-keep>{unsupportedText.keep}</span>
+                    </Button>
+                {/if}
             {/if}
         </div>
         {#if editor?.heading === section.heading}
@@ -902,10 +1056,16 @@
         </div>
         {@render pageTools(page)}
     {/if}
-    {#if page.sections.length === 0}
+    {#if only === "unsupported"}
+        <Button size="sm" styled="outlined" disabled={controlsOff} onclick={keepAll}>
+            <span data-memory-keep-all>{unsupportedText.keepAll}</span>
+        </Button>
+    {/if}
+    {@const sections = only === "unsupported" ? page.sections.filter(({ unsupported }) => unsupported) : page.sections}
+    {#if sections.length === 0}
         <p class="text-textcolor2">{text.noSections}</p>
     {:else}
-        {#each page.sections as section}
+        {#each sections as section}
             {@render sectionBlock(section)}
         {/each}
     {/if}
@@ -925,7 +1085,7 @@
 {/snippet}
 
 {#snippet importControls()}
-    {#if canImport}
+    {#if canImport && only !== "unsupported"}
         <Button size="sm" styled="outlined" disabled={controlsOff} onclick={importPackage}>
             <span data-memory-import>{toolText.import}</span>
         </Button>
@@ -933,6 +1093,16 @@
 {/snippet}
 
 <div class="flex flex-col min-w-0 gap-2 text-sm" data-memory-pages data-read-only={readOnly}>
+    {#if only === "unsupported"}
+        <CheckInput
+            check={preserve}
+            disabled={sending}
+            margin={false}
+            name={unsupportedText.preserve}
+            onChange={(value) => (preserve = value)}
+        />
+        <p class="text-textcolor2">{unsupportedText.preserveDescription}</p>
+    {/if}
     {#if importReport}
         <div class="flex flex-col min-w-0 gap-1 break-words" data-memory-import-report>
             <p>{importReport.imported ? toolText.importDone(importReport.imported) : toolText.importNothing}</p>
@@ -954,6 +1124,8 @@
         <p role="alert" class="text-draculared" data-memory-panel-failure>{failure}</p>
     {:else if !contents}
         <p class="text-textcolor2">{panelText.loading}</p>
+    {:else if only === "unsupported" && listedPages.length === 0}
+        <p class="text-textcolor2" data-memory-unsupported-resolved>{unsupportedText.resolved}</p>
     {:else if contents.pages.length === 0 && contents.trash.length === 0}
         <p class="text-textcolor2">{text.empty}</p>
         {@render importControls()}
@@ -996,7 +1168,7 @@
                         </button>
                     </li>
                 {/if}
-                {#if contents.trash.length > 0}
+                {#if only !== "unsupported" && contents.trash.length > 0}
                     <li class="mt-2 text-textcolor2" data-memory-trash-group>{toolText.trash}</li>
                     {#each contents.trash as row (row.id)}
                         <li class="min-w-0">

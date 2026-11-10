@@ -124,3 +124,68 @@ it("keeps only the seen source state, marks rerecord without replacing evidence,
         );
     expect(event).not.toHaveProperty("rerecord");
 });
+
+it("parses a closed section keep and preserves text, evidence sources and marks while dropping only retracted provenance", () => {
+    const edit = { kind: "sectionKeep" as const, pageId: "p", heading: "Facts", preserve: true };
+    expect(parseMemoryEdit({ ...edit, body: "forged", unsupported: true, provenance: ["forged"] })).toEqual(edit);
+    for (const invalid of [
+        { ...edit, preserve: undefined },
+        { ...edit, preserve: "true" },
+        { ...edit, heading: null },
+    ])
+        expect(parseMemoryEdit(invalid)).toBeNull();
+    const flagged: MemoryPage = {
+        ...page,
+        sections: [
+            {
+                ...page.sections[0],
+                unsupported: true,
+                disputed: true,
+                locked: true,
+                pinned: true,
+                suppressed: true,
+                provenance: ["dead", "active", "stale", "unknown", "dead"],
+                sources: [{ messageId: "removed", index: 1, hash: "recorded" }],
+            },
+        ],
+    };
+    const events = [
+        { id: "dead", status: "retracted" as const },
+        { id: "active", status: "active" as const },
+        { id: "stale", status: "stale" as const },
+    ];
+    const { unsupported, ...section } = flagged.sections[0];
+    for (const preserve of [true, false]) {
+        expect(applyPageEdit(flagged, { ...edit, preserve }, stamp, events)).toEqual({
+            ...flagged,
+            sections: [
+                {
+                    ...section,
+                    provenance: ["active", "stale", "unknown"],
+                    ...(preserve ? { userCorrected: true } : {}),
+                },
+            ],
+        });
+    }
+    expect(flagged.sections[0].unsupported).toBe(true);
+});
+
+it("keeps only flagged sections, never clears a prior correction, refuses a missing heading, and leaves body edits flagged", () => {
+    const keep = { kind: "sectionKeep" as const, pageId: "p", heading: "Facts", preserve: false };
+    for (const preserve of [false, true]) expect(applyPageEdit(page, { ...keep, preserve }, stamp)).toBeNull();
+    const flagged: MemoryPage = {
+        ...page,
+        sections: [{ ...page.sections[0], unsupported: true, userCorrected: true }],
+    };
+    const { unsupported, ...section } = flagged.sections[0];
+    expect(applyPageEdit(flagged, keep, stamp)).toEqual({ ...flagged, sections: [section] });
+    expect(() => applyPageEdit(flagged, { ...keep, heading: "Gone" }, stamp)).toThrow(
+        expect.objectContaining({ reason: "sectionGone" }),
+    );
+    const edited = applyPageEdit(
+        flagged,
+        { kind: "section", pageId: "p", heading: "Facts", body: "Person's wording" },
+        stamp,
+    )!;
+    expect(edited.sections[0]).toEqual({ ...flagged.sections[0], body: "Person's wording", updatedAt: 20 });
+});

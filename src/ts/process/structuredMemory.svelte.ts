@@ -594,11 +594,12 @@ function isHealthFacts(value: unknown): value is StructuredMemoryHealthFacts {
 /**
  * A reader of the lists does not fail over absent panel facts, including `writerBlockingReason`, which
  * only the panel reads; a malformed one is refused. Contents without a `trash` list, from before pages
- * could be trashed, hold none.
+ * could be trashed, hold none; contents from before the evidence filter have no `unsupportedPages`.
  */
 function parseContents(body: AnswerBody): StructuredMemoryContentsAnswer | null {
     const { revision, pages, events, threads, runs, trash = [], adoption = NO_ADOPTION } = body;
     const { rebuild = null, recordedLanguage = null, health = NO_HEALTH } = body;
+    const { unsupportedPages = [] } = body;
     const { writerBlockingReason } = body;
     return typeof revision === "string" &&
         [pages, trash, events, threads, runs].every((list) => Array.isArray(list)) &&
@@ -609,8 +610,18 @@ function parseContents(body: AnswerBody): StructuredMemoryContentsAnswer | null 
             writerBlockingReason === null ||
             writerBlockingReason === "pluginModel" ||
             writerBlockingReason === "requestTrigger") &&
-        (health === "unavailable" || isHealthFacts(health))
-        ? ({ ...body, trash, adoption, rebuild, recordedLanguage, health } as StructuredMemoryContentsAnswer)
+        (health === "unavailable" || isHealthFacts(health)) &&
+        Array.isArray(unsupportedPages) &&
+        unsupportedPages.every((id) => typeof id === "string")
+        ? ({
+              ...body,
+              trash,
+              adoption,
+              rebuild,
+              recordedLanguage,
+              health,
+              unsupportedPages,
+          } as StructuredMemoryContentsAnswer)
         : null;
 }
 
@@ -831,7 +842,7 @@ export function readStructuredMemoryRecord<K extends StructuredMemoryRecordKind>
 
 /**
  * Sends one person's edit, made on the copy read at `revision`. The answer's revision is what the next
- * edit names. The caller shows the notice for a refusal.
+ * edit names, including sequential section keeps. The caller shows the notice for a refusal.
  */
 export function editStructuredMemory(
     ref: ChatRef,
@@ -1552,6 +1563,8 @@ export type MemoryPanelTabProps = {
     chatRef: ChatRef;
     readOnly: boolean;
     refresh: number;
+    /** Shares a tab's accepted contents read with the panel, without another request. */
+    onContents?: (contents: StructuredMemoryContentsAnswer, ref: ChatRef) => void;
     /** What to show after a jump from another tab or a receipt, or null. */
     focus: MemoryPanelTarget | null;
     open: (target: MemoryPanelTarget) => void;

@@ -2,7 +2,13 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import type { Message } from "../../../../../shared/database.ts";
-import { coveredMessages, type MemoryEvent, type MemoryThread } from "../../../../../shared/structuredMemory.ts";
+import {
+    coveredMessages,
+    type MemoryEvent,
+    type MemoryPage,
+    type MemoryPageHistoryEntry,
+    type MemoryThread,
+} from "../../../../../shared/structuredMemory.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../../../data/kinds.ts";
 import { messageSourceHash } from "../../../data/memoryStore.ts";
 import { createResourceStore } from "../../../data/resourceStore.ts";
@@ -365,6 +371,184 @@ it("marks a rewritten source only when the message no longer hashes as its store
             ...cited,
             createdRevision: 1,
             ...(marks ? { rerecord: true } : {}),
+        });
+    }
+});
+
+function tailFixture() {
+    const store = messageStore([]);
+    const events = memoryRecords(["standing", "tail-one", "tail-two", "already-retracted"]).events.map(
+        (event, index) => ({
+            ...event,
+            sources: [{ messageId: event.id, index, hash: "recorded-hash" }],
+        }),
+    );
+    events[3].status = "retracted";
+    const page = memoryRecords(["place"]).pages[0];
+    page.sections[0] = { ...page.sections[0], provenance: ["tail-two"], sources: events[2].sources };
+    return { store, events, page };
+}
+const writerEntry = (
+    id: string,
+    heading: string | null,
+    eventId = "tail-one",
+    before: MemoryPageHistoryEntry["before"] = null,
+    kind: MemoryPageHistoryEntry["kind"] = "change",
+): MemoryPageHistoryEntry => ({ id, heading, eventId, before, kind, highlighted: false, at: 10 });
+function deleteRecorded(store: ReturnType<typeof messageStore>, retracted = ["tail-one", "tail-two"]) {
+    reconcileMessageChanges(store, { epoch: store.epoch(), characterId: "c", id: "k", rewritten: [], retracted });
+}
+
+it("rewinds only uninterrupted tail writer history, restoring evidence and live trust on live and staged pages", () => {
+    const { store, events, page } = tailFixture();
+    const before = { body: "Before the turn", provenance: ["standing"], sources: events[0].sources };
+    const live = {
+        ...page.sections[0],
+        locked: true,
+        pinned: true,
+        suppressed: true,
+        userCorrected: true,
+        disputed: true,
+        unsupported: true,
+    };
+    page.sections = [
+        live,
+        { ...live, heading: "New" },
+        { ...live, heading: "Person edit" },
+        { ...live, heading: "Person revert" },
+        { ...live, heading: "Other writer" },
+    ];
+    const retained = writerEntry("prior", "Gate", "standing");
+    const unrelated = writerEntry("unrelated", "Unrelated", "standing");
+    const blocked = [
+        writerEntry("edit-cut", "Person edit", "tail-one", before),
+        { ...writerEntry("person-edit", "Person edit", "tail-two"), kind: "edit" as const },
+        writerEntry("revert-cut", "Person revert", "tail-one", before),
+        { ...writerEntry("person-revert", "Person revert", "tail-two"), kind: "revert" as const },
+        writerEntry("other-cut", "Other writer", "tail-one", before),
+        writerEntry("other-writer", "Other writer", "standing"),
+    ];
+    page.history = [
+        retained,
+        writerEntry("cut", "Gate", "tail-one", before),
+        unrelated,
+        writerEntry("later", "Gate", "tail-two", before),
+        writerEntry("compacted", "Gate", "tail-two", before, "compact"),
+        writerEntry("added", "New"),
+        writerEntry("deleted", "Deleted", "tail-one", before, "delete"),
+        ...blocked,
+    ];
+    writeMemory(store, "c", "k", { events, pages: [page] });
+    store.memory.rebuild.begin(
+        "c",
+        "k",
+        { epoch: store.epoch(), mode: "rebuild", plan: [["tail-one", "tail-two"]] },
+        {},
+    );
+    const staged = store.memory.rebuild.staged;
+    staged.write(
+        "c",
+        "k",
+        { epoch: store.epoch(), baseRevision: staged.readContents("c", "k")!.revision },
+        { events, pages: [page] },
+    );
+    deleteRecorded(store);
+    const { disputed, unsupported, ...trust } = live;
+    const expected: MemoryPage = {
+        ...page,
+        sections: [
+            { ...trust, ...before, updatedAt: 10 },
+            ...page.sections.slice(2),
+            { heading: "Deleted", ...before, locked: false, updatedAt: 10 },
+        ],
+        history: [retained, unrelated, ...blocked],
+    };
+    for (const memory of [store.memory, staged]) {
+        expect(memory.readRecord("c", "k", "pages", page.id)!.data).toEqual(expected);
+        expect(memory.readContents("c", "k")!.events.map(({ status }) => status)).toEqual([
+            "active",
+            "retracted",
+            "retracted",
+            "retracted",
+        ]);
+    }
+});
+
+it("uses full contents order to flag middle deletions and rewinds only newly retracted tail events", () => {
+    const { store, events, page } = tailFixture();
+    // Source indices disagree with contents order; even an uncited stale event is a standing barrier.
+    events[0].status = "stale";
+    events[0].sources[0].index = 99;
+    events[2].sources[0].index = 0;
+    const ordered = [events[1], events[0], events[2], events[3]];
+    page.sections = ["Middle", "Tail", "Previously retracted"].map((heading, index) => ({
+        ...page.sections[0],
+        heading,
+        provenance: [events[index + 1].id],
+        sources: events[index + 1].sources,
+    }));
+    page.history = [
+        writerEntry("middle", "Middle"),
+        writerEntry("tail", "Tail", "tail-two"),
+        writerEntry("old", "Previously retracted", "already-retracted"),
+    ];
+    writeMemory(store, "c", "k", { events: ordered, pages: [page] });
+    deleteRecorded(store, ["tail-one", "tail-two", "already-retracted"]);
+    expect(store.memory.readRecord("c", "k", "pages", page.id)!.data).toEqual({
+        ...page,
+        sections: [
+            { ...page.sections[0], unsupported: true },
+            { ...page.sections[2], unsupported: true },
+        ],
+        history: [page.history[0], page.history[2]],
+    });
+});
+
+it("trashes tail-created pages intact, rewinds the scene and clears attendance, but leaves reshaped and trashed text", () => {
+    const { store, events, page } = tailFixture();
+    page.history = [writerEntry("created", null, "tail-one", null, "create"), writerEntry("added", "Gate")];
+    const created = {
+        ...page,
+        sections: [{ ...page.sections[0], userCorrected: true }],
+        history: [...page.history, { ...writerEntry("person", "Gate"), kind: "edit" as const }],
+    };
+    const scene: MemoryPage = { ...page, id: "scene", type: "scene", contextMode: "always", participants: ["place"] };
+    const reshaped: MemoryPage = { ...page, id: "reshaped", reshaped: true };
+    const trash = { ...page, id: "trash", trashedAt: 5 };
+    writeMemory(store, "c", "k", { events, pages: [created, scene, reshaped, trash] });
+    deleteRecorded(store);
+    const read = (id: string) => store.memory.readRecord("c", "k", "pages", id)!.data;
+    expect(read("place")).toEqual({ ...created, trashedAt: Date.now() });
+    expect(read("scene")).toEqual({ ...scene, sections: [], history: [scene.history[0]], participants: [] });
+    expect(read("reshaped")).toEqual({ ...reshaped, sections: [{ ...reshaped.sections[0], unsupported: true }] });
+    expect(read("trash")).toEqual(trash);
+    expect(store.memory.readContents("c", "k")!.trash.map(({ id }) => id)).toEqual(["place", "trash"]);
+});
+
+it("keeps page text and history when a tail event is retracted by a repair or retired by a re-record", () => {
+    for (const action of ["repair", "retire"] as const) {
+        const { store, events, page } = tailFixture();
+        page.history = [writerEntry("writer", "Gate", "tail-two")];
+        events[2].rerecord = action === "retire";
+        writeMemory(store, "c", "k", { events, pages: [page] });
+        const tail = store.memory.readRecord("c", "k", "events", "tail-two")!.data;
+        const changes =
+            action === "repair"
+                ? withRetractedEvidence(
+                      store,
+                      { chaId: "c", chatId: "k" },
+                      { events: [{ ...tail, status: "retracted" }] },
+                  )
+                : retireRerecorded(
+                      store,
+                      { chaId: "c", chatId: "k" },
+                      { rerecords: "tail-two" },
+                      { events: memoryRecords(["replacement"]).events },
+                  )!;
+        writeMemory(store, "c", "k", changes);
+        expect(store.memory.readRecord("c", "k", "pages", page.id)!.data, action).toEqual({
+            ...page,
+            sections: [{ ...page.sections[0], unsupported: true }],
         });
     }
 });

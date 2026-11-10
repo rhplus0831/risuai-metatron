@@ -101,6 +101,11 @@ the changes to stored records.
 [Event repairs](lifecycle.md#reconciliation-and-repairs) call `applyEventRepair`, reading the stored chat in the same
 step except for retract. Retraction also passes through `withRetractedEvidence` before the write.
 
+A `sectionKeep` is the one page edit that reads the events: the route hands `applyPageEdit` the contents' statuses, so
+the keep drops the retracted ids from the section's `provenance` with its `unsupported` flag. With the ids gone,
+`flagUnsupportedSections` leaves the section alone at the next retraction; evidence that is retracted later flags it
+again.
+
 ### The revert route
 
 The tab's `revertStructuredMemoryChange` reads the page's current revision, then calls `POST .../revert`. The route uses
@@ -291,6 +296,10 @@ group: no walk reads them.
 - The package holds no runs and no page history. Decision: Structured Memory slice 1d, archive.
 - A round is bounded but the tab holds the whole package, and `zipSync` runs on the main thread. The table of contents
   has no budget of its own: it grows with the record count and the titles. Decision: Server Byte Budgets D2, archive.
+- A `sectionKeep` without `preserve` leaves text that no message supports and no mark protects, so a full rebuild drops
+  it. With `preserve` the section is `userCorrected`, which no control removes: it then survives rebuilds and is never
+  compacted until the writer replaces the text. A person's body edit still keeps `unsupported`. Decision: owner,
+  2026-11-10.
 - A page's creation cannot be reverted: that would delete the page and everything citing it. Decision: Structured Memory
   slice 7b, archive.
 - Two reverts newest first and then a branch cut between them keep the older entry's `revertedBy`, though the cut

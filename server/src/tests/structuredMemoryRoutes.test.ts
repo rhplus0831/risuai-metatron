@@ -518,6 +518,7 @@ it("lists only this chat's metadata and reads every record kind exactly as store
         rebuild: null,
         recordedLanguage: null,
         health: { paused: false, storedStale: 0, pendingRepairs: 0, unsupportedSections: 0, overBudgetSections: 0 },
+        unsupportedPages: [],
     });
     for (const [kind, record] of [
         ["pages", p],
@@ -3491,5 +3492,88 @@ it("answers the bound writer rule without reading any chat messages", async () =
         expect(queries.filter((sql) => /\bmessages\b/i.test(sql))).toEqual([]);
     } finally {
         spies.forEach((spy) => spy.mockRestore());
+    }
+});
+
+it("keeps flagged sections through the edit route without reviving discarded evidence on an unrelated retraction", async () => {
+    const s = await server();
+    const p = page("review");
+    p.sections = ["All dead", "Remaining evidence"].map((heading, index) => ({
+        ...p.sections[0],
+        heading,
+        unsupported: true,
+        locked: true,
+        provenance: index === 0 ? ["dead"] : ["dead", "standing"],
+        sources: [{ messageId: "gone", index: 0, hash: "recorded" }],
+    }));
+    const trash = { ...p, id: "trash", trashedAt: 1 };
+    let revision = s.write({
+        pages: [p, trash],
+        events: [{ ...event("dead"), status: "retracted" }, event("standing"), event("unrelated")],
+    });
+    const initial = revision;
+    const keep = (heading: string, preserve: boolean, pageId = "review", baseRevision = revision) =>
+        s.json(`${base}/edits`, { revision: baseRevision, edit: { kind: "sectionKeep", pageId, heading, preserve } });
+    const expected = structuredClone(p);
+    for (const [index, preserve] of [true, false].entries()) {
+        const kept = await answer(await keep(p.sections[index].heading, preserve));
+        delete expected.sections[index].unsupported;
+        expected.sections[index].provenance = index === 0 ? [] : ["standing"];
+        if (preserve) expected.sections[index].userCorrected = true;
+        expect(kept).toEqual({ revision: kept.revision, kind: "pages", data: expected });
+        expect(kept.revision).not.toBe(revision);
+        revision = kept.revision;
+        expect((await answer(await s.request(`${base}/records/pages/review`))).data).toEqual(expected);
+    }
+    await answer(await keep("All dead", true, "review", initial), 409);
+    expect((await answer(await keep("All dead", false))).revision).toBe(revision);
+    await answer(await keep("Missing", true), 404);
+    await answer(await keep("All dead", true, "trash"), 400);
+    expect((await answer(await s.request(`${base}/records/pages/trash`))).data).toEqual(trash);
+    const retract = async (eventId: string) => {
+        const result = await answer(
+            await s.json(`${base}/edits`, {
+                revision,
+                edit: { kind: "event", eventId, repair: "retract" },
+            }),
+        );
+        revision = result.revision;
+    };
+    await retract("unrelated");
+    expect((await answer(await s.request(`${base}/records/pages/review`))).data).toEqual(expected);
+    expect((await answer(await s.request(base))).unsupportedPages).toEqual([]);
+    await retract("standing");
+    expected.sections[1].unsupported = true;
+    expect((await answer(await s.request(`${base}/records/pages/review`))).data).toEqual(expected);
+    expect((await answer(await s.request(base))).unsupportedPages).toEqual(["review"]);
+});
+
+it("lists live unsupported pages in contents order and answers none when health is unavailable", async () => {
+    const s = await server();
+    const flagged = (id: string): MemoryPage => ({
+        ...page(id),
+        sections: [{ ...page(id).sections[0], unsupported: true }],
+    });
+    s.write({ pages: [flagged("z"), page("clear"), flagged("a"), { ...flagged("trash"), trashedAt: 1 }] });
+    let listed = await answer(await s.request(base));
+    expect(listed.pages.map(({ id }: { id: string }) => id)).toEqual(["z", "clear", "a"]);
+    expect(listed.unsupportedPages).toEqual(["z", "a"]);
+    expect(listed.health.unsupportedSections).toBe(2);
+    // Make only the SQLite byte-count boundary report an oversized chat, without a large body fixture.
+    const get = StatementSync.prototype.get;
+    const spy = vi.spyOn(StatementSync.prototype, "get").mockImplementation(function (
+        this: StatementSync,
+        ...args: unknown[]
+    ) {
+        if (/memory_pages.*memory_events.*memory_runs.*AS bytes/s.test(this.sourceSQL))
+            return { bytes: 17 * 1024 * 1024 };
+        return Reflect.apply(get, this, args);
+    });
+    try {
+        listed = await answer(await s.request(base));
+        expect(listed.health).toBe("unavailable");
+        expect(listed.unsupportedPages).toEqual([]);
+    } finally {
+        spy.mockRestore();
     }
 });

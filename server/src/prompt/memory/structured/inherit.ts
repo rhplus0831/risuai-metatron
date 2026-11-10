@@ -139,32 +139,20 @@ function restoredSection(
 }
 
 /**
- * `page` as it stood before the first change of each heading that a behind event made, or null for a page
- * such an event created. That change and every later one of its heading go, a person's edits included:
- * they edited text from after the branch point. A section whose first such change replaced nothing goes
- * with them, and one that change deleted comes back. A page a person merged or split (`reshaped`) is
- * neither rewound nor dropped: its history no longer leads from one text to the next on every heading,
- * so a cut could restore text beside what moved; a section of it that names a behind event is flagged
- * instead (`inheritedSection`).
+ * Restores each heading at its cut's `before` and removes that cut and the heading's later history.
+ * Shared by a branch and a confirmed tail delete; neither records a person's revert.
  */
-function rewoundPage(page: MemoryPage, behind: ReadonlySet<string>): MemoryPage | null {
-    if (page.reshaped) {
-        return page;
-    }
-    const cuts = new Map<string, MemoryPageHistoryEntry>();
-    const history: MemoryPageHistoryEntry[] = [];
-    for (const entry of page.history) {
-        const { heading, eventId } = entry;
-        const isBehind = eventId !== undefined && behind.has(eventId);
-        if (heading === null && isBehind) {
-            return null;
+export function rewindPageHeadings(page: MemoryPage, cuts: ReadonlyMap<string, MemoryPageHistoryEntry>): MemoryPage {
+    const cutHeadings = new Set<string>();
+    const history = page.history.filter((entry) => {
+        if (entry.heading === null) {
+            return true;
         }
-        if (heading !== null && isBehind && !cuts.has(heading)) {
-            cuts.set(heading, entry);
-        } else if (heading === null || !cuts.has(heading)) {
-            history.push(entry);
+        if (cuts.get(entry.heading) === entry) {
+            cutHeadings.add(entry.heading);
         }
-    }
+        return !cutHeadings.has(entry.heading);
+    });
     const sections = page.sections.flatMap((section) => {
         const cut = cuts.get(section.heading);
         if (!cut) {
@@ -178,6 +166,33 @@ function rewoundPage(page: MemoryPage, behind: ReadonlySet<string>): MemoryPage 
         }
     }
     return { ...page, sections, history };
+}
+
+/**
+ * `page` as it stood before the first change of each heading that a behind event made, or null for a page
+ * such an event created. That change and every later one of its heading go, a person's edits included:
+ * they edited text from after the branch point. A section whose first such change replaced nothing goes
+ * with them, and one that change deleted comes back. A page a person merged or split (`reshaped`) is
+ * neither rewound nor dropped: its history no longer leads from one text to the next on every heading,
+ * so a cut could restore text beside what moved; a section of it that names a behind event is flagged
+ * instead (`inheritedSection`).
+ */
+function rewoundPage(page: MemoryPage, behind: ReadonlySet<string>): MemoryPage | null {
+    if (page.reshaped) {
+        return page;
+    }
+    const cuts = new Map<string, MemoryPageHistoryEntry>();
+    for (const entry of page.history) {
+        const { heading, eventId } = entry;
+        const isBehind = eventId !== undefined && behind.has(eventId);
+        if (heading === null && isBehind) {
+            return null;
+        }
+        if (heading !== null && isBehind && !cuts.has(heading)) {
+            cuts.set(heading, entry);
+        }
+    }
+    return rewindPageHeadings(page, cuts);
 }
 
 /**

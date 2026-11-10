@@ -732,6 +732,12 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
             `FROM ${MEMORY_TABLES.pages.table} p, json_each(p.data, '$.sections') s ` +
             `WHERE p.chatSeq = ? AND p.type != '${TRASHED_PAGE_COLUMN}'`,
     );
+    const selectUnsupportedPages = db.prepare(
+        `SELECT p.id FROM ${MEMORY_TABLES.pages.table} p ` +
+            `WHERE p.chatSeq = ? AND p.type != '${TRASHED_PAGE_COLUMN}' ` +
+            "AND EXISTS (SELECT 1 FROM json_each(p.data, '$.sections') s WHERE s.value ->> '$.unsupported' = 1) " +
+            "ORDER BY p.seq",
+    );
     const sumChatHealthBytes = db.prepare(
         `SELECT (SELECT COALESCE(SUM(octet_length(data)), 0) FROM ${MEMORY_TABLES.pages.table} ` +
             `WHERE chatSeq = ? AND type != '${TRASHED_PAGE_COLUMN}') + ` +
@@ -1023,6 +1029,12 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
                 });
             }
             return facts;
+        },
+
+        /** Live pages with flagged sections, in contents order; no record is parsed in JavaScript. */
+        readUnsupportedPages(characterId: string, chatId: string): string[] {
+            const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
+            return chat ? (selectUnsupportedPages.all(chat.seq) as { id: string }[]).map(({ id }) => id) : [];
         },
 
         /** The stored bytes of a chat's events, 0 without any. */

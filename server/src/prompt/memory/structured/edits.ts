@@ -26,6 +26,8 @@ import { isPlainObject } from "../../../../../shared/valueKinds.ts";
  * - A section's edit changes its body and nothing that says where it came from: `provenance` and
  *   `sources` stay, and so does `unsupported`, which states a fact about them. `disputed` goes, because a
  *   person's edit is the review a dispute waits for, and `userCorrected` says who wrote the text.
+ * - Keeping an unsupported section clears its flag and drops retracted provenance, retaining all text,
+ *   sources, and other marks. It optionally sets `userCorrected` for a full rebuild and takes no history.
  * - The scene page stays `always`: it is the stage every send reads.
  * - A thread that moves from an ended state to a non-ended state loses `closedBy`; moving between
  *   ended states keeps it.
@@ -33,9 +35,8 @@ import { isPlainObject } from "../../../../../shared/valueKinds.ts";
  *   brings it back. Keep accepts what the person saw (`keptState`), and only that: a chat that moved on
  *   since then is refused, and a later change shows again. Re-record only marks the event, because the
  *   old one stays until the new one commits, so it changes neither its `sources` nor its `status`.
- * - A section left with only retracted events behind it is flagged for review, never reverted, because
- *   the page may still be right. The flag says nothing of the body, so like a lock it takes no history
- *   entry and no `updatedAt`.
+ * - Flagging a section left with only retracted events behind it changes no body, history, or `updatedAt`.
+ *   Confirmed tail deletes may rewind writer-only history before flagging; a person's repair does not.
  */
 
 /** A page edit, which every kind but `thread` and `event` is. */
@@ -110,6 +111,10 @@ export function parseMemoryEdit(value: unknown): StructuredMemoryEdit | null {
         const { locked } = value;
         return typeof locked === "boolean" ? { kind, pageId, heading, locked } : null;
     }
+    if (kind === "sectionKeep" && typeof heading === "string") {
+        const { preserve } = value;
+        return typeof preserve === "boolean" ? { kind, pageId, heading, preserve } : null;
+    }
     if (kind === "page") {
         const { grade } = value;
         const contextMode = MEMORY_CONTEXT_MODES.find((entry) => entry === value.contextMode);
@@ -162,6 +167,29 @@ function editLock(page: MemoryPage, heading: string, locked: boolean): MemoryPag
     return section.locked === locked ? null : { ...page, sections: withSection(page, section, { ...section, locked }) };
 }
 
+/** A person's evidence review, with no body change, timestamp, or history entry. */
+function keepSection(
+    page: MemoryPage,
+    heading: string,
+    preserve: boolean,
+    events: readonly Pick<MemoryEvent, "id" | "status">[],
+): MemoryPage | null {
+    const section = sectionOf(page, heading);
+    if (!section.unsupported) {
+        return null;
+    }
+    const retracted = new Set(events.filter(({ status }) => status === "retracted").map(({ id }) => id));
+    const { unsupported, ...kept } = section;
+    return {
+        ...page,
+        sections: withSection(page, section, {
+            ...kept,
+            provenance: section.provenance.filter((id) => !retracted.has(id)),
+            ...(preserve ? { userCorrected: true } : {}),
+        }),
+    };
+}
+
 function editFields(page: MemoryPage, { contextMode, grade }: Extract<PageEdit, { kind: "page" }>): MemoryPage | null {
     const edited: MemoryPage = { ...page };
     if (contextMode !== undefined && contextMode !== page.contextMode) {
@@ -188,14 +216,22 @@ function editFields(page: MemoryPage, { contextMode, grade }: Extract<PageEdit, 
  * `edit` over `page`, the page as stored: the page to store, or null for no change. A `MemoryEditRefusal`
  * says why it does not fit. A section body's change is kept in the page's history as one `edit` entry,
  * bounded by `pageHistoryEntries`, with no `eventId`: it is a person's change, not a writer's.
- * A page's grade edit sets `gradeByUser`; a null grade clears both fields.
+ * A section keep reads the events' stored statuses and writes no history. A page's grade edit sets
+ * `gradeByUser`; a null grade clears both fields. The route refuses pages in the trash before applying.
  */
-export function applyPageEdit(page: MemoryPage, edit: PageEdit, stamp: EditStamp): MemoryPage | null {
+export function applyPageEdit(
+    page: MemoryPage,
+    edit: PageEdit,
+    stamp: EditStamp,
+    events: readonly Pick<MemoryEvent, "id" | "status">[] = [],
+): MemoryPage | null {
     switch (edit.kind) {
         case "section":
             return editBody(page, edit.heading, edit.body, stamp);
         case "sectionLock":
             return editLock(page, edit.heading, edit.locked);
+        case "sectionKeep":
+            return keepSection(page, edit.heading, edit.preserve, events);
         case "page":
             return editFields(page, edit);
     }

@@ -263,7 +263,8 @@ type RoundRead = {
  *   health route answers it: facts, or `"unavailable"` when its live pages, events, and runs exceed
  *   `MEMORY_HEALTH_ROUND_BYTES` in stored bytes; 404 `chatGone`. Pages in the trash are listed apart
  *   (`trash`), so every round and route that starts from `pages` leaves them out; the record route still
- *   reads one by id.
+ *   reads one by id. `unsupportedPages` lists live flagged pages in contents order, computed in SQLite
+ *   without parsing records, or an empty list when health is unavailable.
  * - `GET /api/memory/structured/:characterId/:chatId/records/:kind/:id`: one record as stored, answered
  *   `StructuredMemoryRecordAnswer`; 400 for an unknown kind, 404 `chatGone` or `recordGone`.
  * - `GET /api/memory/structured/:characterId/:chatId/package?cursor=N&revision=R`: one round of the
@@ -320,6 +321,8 @@ type RoundRead = {
  *   including blank or over-long section text) before the epoch and fence; only then is the record read,
  *   edited, and written. An edit that changes nothing still names a revision, so a stale one is refused
  *   like any other. An event's repair reads the chat as stored, a `retract` excepted, which reads none.
+ *   A `sectionKeep` clears the unsupported flag and retracted provenance using contents' event statuses,
+ *   optionally marks it user-corrected for a rebuild, and changes no body, timestamp, or history.
  *   400 for a malformed edit or one the record refuses, a page in the trash included, 404 `chatGone` or
  *   `recordGone` (a heading the page lacks too), 409 `{ error, reason: "fenced" }` while `fenced` holds,
  *   409 `{ error, reason: "changed" }` when a `keep` names a state the chat has left, and
@@ -486,6 +489,7 @@ export function registerStructuredMemoryRoutes(
             }
             const { adoptionDeclined, ...listed } = contents;
             const recorded = contents.runs.findLast(({ result }) => result === "recorded");
+            const health = store.memory.readHealth([{ characterId, chatId }], MEMORY_HEALTH_ROUND_BYTES)[0]!;
             return compressedJson(c, {
                 ...listed,
                 adoption: {
@@ -495,7 +499,9 @@ export function registerStructuredMemoryRoutes(
                 },
                 rebuild: store.memory.rebuild.status(characterId, chatId),
                 recordedLanguage: (recorded && listedRecord(characterId, chatId, "runs", recorded.id).language) ?? null,
-                health: store.memory.readHealth([{ characterId, chatId }], MEMORY_HEALTH_ROUND_BYTES)[0]!,
+                health,
+                unsupportedPages:
+                    health === "unavailable" ? [] : store.memory.readUnsupportedPages(characterId, chatId),
                 writerBlockingReason: writerBlockingReason(store, kinds, characterId, chatId),
             } satisfies StructuredMemoryContentsAnswer);
         } catch (error) {
@@ -843,7 +849,8 @@ export function registerStructuredMemoryRoutes(
             if (stored.data.trashedAt !== undefined) {
                 return c.json({ error: REFUSAL_TEXT.trashed }, 400);
             }
-            const edited = applyPageEdit(stored.data, edit, { now: Date.now(), newId: randomUUID });
+            const events = edit.kind === "sectionKeep" ? store.memory.readContents(characterId, chatId)!.events : [];
+            const edited = applyPageEdit(stored.data, edit, { now: Date.now(), newId: randomUUID }, events);
             const written = store.memory.write(characterId, chatId, options, edited ? { pages: [edited] } : {});
             return compressedJson(c, {
                 revision: written,

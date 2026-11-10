@@ -2439,7 +2439,7 @@ export const languageKorean = {
         requiredOverCap: (tokens: number, limit: number, pages: string) =>
             `오류: 필수 메모리 페이지가 ${tokens} 토큰을 차지해 한도(${limit} 토큰)를 초과했습니다: ${pages}. 페이지 내용을 줄이거나 전송 시점을 '관련 있을 때'로 변경해 주세요.`,
         removeRetracts: (events: number) =>
-            `메모리 이벤트 ${events}개가 이 항목을 인용하고 있습니다. 삭제하면 해당 이벤트도 함께 철회되며 되돌릴 수 없습니다. 그래도 삭제할까요?`,
+            `메모리 이벤트 ${events}개가 이 항목을 인용하고 있습니다. 삭제하면 해당 이벤트도 함께 철회되며 되돌릴 수 없습니다. 삭제하는 메시지가 가장 최근에 기록된 턴이면 그 턴이 메모리 페이지에 쓴 변경도 함께 되돌립니다. 그래도 삭제할까요?`,
         projectionWriteRefused:
             "플러그인이 이 채팅의 메모리를 수정하려고 시도했습니다. 구조화 기억은 자체 기록을 별도로 관리하므로 플러그인에서 직접 덮어쓸 수 없어 해당 변경은 무시되었습니다.",
         meter: {
@@ -2596,6 +2596,7 @@ export const languageKorean = {
             log: "로그",
             preview: "미리보기",
             pages: "페이지",
+            unsupported: "근거 누락",
             timeline: "타임라인",
             threads: "스레드",
             settings: "설정",
@@ -2734,6 +2735,15 @@ export const languageKorean = {
             locked: "잠김",
             flags: { disputed: "내용 충돌", unsupported: "근거 누락", userCorrected: "직접 수정됨" },
             edit: "편집",
+            unsupported: {
+                keep: "내용 유지",
+                keepAll: "이 페이지 모두 유지",
+                keepAllConfirm: (title: string) => `“${title}” 페이지에서 근거가 누락된 섹션을 모두 유지할까요?`,
+                preserve: "전체 재생성에서도 보존",
+                preserveDescription:
+                    '유지한 섹션은 "직접 수정됨"으로 표시되며 전체 재생성에서도 보존되고 압축되지 않습니다.',
+                resolved: "근거가 누락된 섹션이 모두 해소되었습니다.",
+            },
             save: "저장",
             cancel: "취소",
             sectionText: "섹션 내용",

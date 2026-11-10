@@ -1435,6 +1435,7 @@ function serveAdoptionContents() {
         rebuild: null,
         recordedLanguage: null,
         health: { paused: false, storedStale: 0, pendingRepairs: 0, unsupportedSections: 0, overBudgetSections: 0 },
+        unsupportedPages: [],
     };
     const fetch = io.authFetch.getMockImplementation()!;
     io.authFetch.mockImplementation((url, init, options) =>
@@ -1697,6 +1698,7 @@ function serveRebuildContents() {
         rebuild: null,
         recordedLanguage: "English",
         health: { paused: false, storedStale: 0, pendingRepairs: 0, unsupportedSections: 0, overBudgetSections: 0 },
+        unsupportedPages: [],
     };
     const fetch = io.authFetch.getMockImplementation()!;
     io.authFetch.mockImplementation(async (url, init, options) => {
@@ -2259,4 +2261,250 @@ it("shows a new chat's request-trigger writer warning from contents before its f
     expect(query("[data-memory-writer-line]")?.textContent ?? "").not.toContain(
         language.structuredMemory.notAutomaticReasons.requestTrigger,
     );
+});
+
+function serveUnsupported() {
+    const state = servePageTools();
+    const p = editablePage();
+    p.sections = [
+        { ...p.sections[0], unsupported: true },
+        { ...p.sections[0], heading: "Rumor", body: "Unconfirmed rumor", unsupported: true },
+        { ...p.sections[0], heading: "Safe", body: "Supported text" },
+    ];
+    state.pages = [
+        p,
+        { ...editablePage(), id: "clear" },
+        { ...editablePage(), id: "q", sections: [{ ...p.sections[0] }] },
+    ];
+    state.trash = [{ ...p, id: "trash", trashedAt: 1 }];
+    const events: StructuredMemoryContentsAnswer["events"] = [
+        { id: "event", title: "Retracted turn", status: "retracted", bytes: 100 },
+        { id: "standing", title: "Standing turn", status: "active", bytes: 100 },
+    ];
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url !== "/api/memory/structured/c/k") return fetch(url, init, options);
+        const contents: StructuredMemoryContentsAnswer = {
+            revision: state.revision,
+            pages: state.pages.map(({ id, title, type }) => ({ id, title, type, bytes: 100 })),
+            trash: state.trash.map(({ id, title }) => ({ id, title, bytes: 100 })),
+            events,
+            threads: [],
+            runs: [],
+            adoption: { adoptable: 0, declined: false, resettable: false },
+            rebuild: null,
+            recordedLanguage: null,
+            health: {
+                paused: false,
+                storedStale: 0,
+                pendingRepairs: 0,
+                unsupportedSections: state.pages
+                    .flatMap(({ sections }) => sections)
+                    .filter(({ unsupported }) => unsupported).length,
+                overBudgetSections: 0,
+            },
+            unsupportedPages: state.pages
+                .filter(({ sections }) => sections.some(({ unsupported }) => unsupported))
+                .map(({ id }) => id),
+        };
+        return Response.json(contents);
+    });
+    return state;
+}
+const unsupportedButton = () =>
+    [...target.querySelectorAll<HTMLButtonElement>("[data-segment-btn]")].find((button) =>
+        button.textContent?.startsWith(language.structuredMemory.panel.unsupported),
+    );
+async function chooseUnsupported() {
+    expect(unsupportedButton()).toBeDefined();
+    unsupportedButton()!.click();
+    await settle();
+    expect(query('[data-memory-panel="unsupported"]')).not.toBeNull();
+}
+const preserveCheckbox = () =>
+    target.querySelector<HTMLInputElement>(`input[alt="${language.structuredMemory.pages.unsupported.preserve}"]`)!;
+
+it("filters missing evidence, keeps with the tab preference, advances pages and retains the resolved tab until leaving it", async () => {
+    const state = serveUnsupported();
+    const fetch = io.authFetch.getMockImplementation()!;
+    let saved = 0;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/edits")) return fetch(url, init, options);
+        const { edit } = JSON.parse(init!.body as string);
+        const p = state.pages.find(({ id }) => id === edit.pageId)!;
+        const section = p.sections.find(({ heading }) => heading === edit.heading)!;
+        delete section.unsupported;
+        section.provenance = [];
+        if (edit.preserve) section.userCorrected = true;
+        state.revision = `kept-${++saved}`;
+        return Response.json({ revision: state.revision, kind: "pages", data: p });
+    });
+    await open();
+    const labels = [...target.querySelectorAll("[data-segment-btn]")].map((button) => button.textContent?.trim());
+    expect(
+        labels.slice(
+            labels.indexOf(language.structuredMemory.panel.pages),
+            labels.indexOf(language.structuredMemory.panel.pages) + 2,
+        ),
+    ).toEqual([language.structuredMemory.panel.pages, `${language.structuredMemory.panel.unsupported} (3)`]);
+    await chooseUnsupported();
+    expect(
+        [...target.querySelectorAll<HTMLElement>("[data-memory-page]")].map(({ dataset }) => dataset.memoryPage),
+    ).toEqual(["p", "q"]);
+    expect(query('[data-memory-page="p"]')?.getAttribute("aria-current")).toBe("true");
+    expect(
+        [...target.querySelectorAll<HTMLElement>("[data-memory-section]")].map(({ dataset }) => dataset.memorySection),
+    ).toEqual(["Facts", "Rumor"]);
+    expect(query("[data-memory-trash-group]")).toBeNull();
+    expect(query("[data-memory-import]")).toBeNull();
+    expect(
+        target.querySelectorAll(`input[alt="${language.structuredMemory.pages.unsupported.preserve}"]`),
+    ).toHaveLength(1);
+    expect(preserveCheckbox().checked).toBe(true);
+    press('[data-memory-section="Facts"] [data-memory-section-keep]');
+    await settle();
+    expect(unsupportedButton()?.textContent).toContain("(2)");
+    preserveCheckbox().click();
+    flushSync();
+    press('[data-memory-section="Rumor"] [data-memory-section-keep]');
+    await settle();
+    expect(query('[data-memory-page="q"]')?.getAttribute("aria-current")).toBe("true");
+    expect(preserveCheckbox().checked).toBe(false);
+    press("[data-memory-section-keep]");
+    await settle();
+    expect(sentEdits()).toEqual([
+        { revision: "before-tool", edit: { kind: "sectionKeep", pageId: "p", heading: "Facts", preserve: true } },
+        { revision: "kept-1", edit: { kind: "sectionKeep", pageId: "p", heading: "Rumor", preserve: false } },
+        { revision: "kept-2", edit: { kind: "sectionKeep", pageId: "q", heading: "Facts", preserve: false } },
+    ]);
+    expect(unsupportedButton()).toBeDefined();
+    expect(unsupportedButton()?.textContent).toContain("(0)");
+    expect(query("[data-memory-unsupported-resolved]")?.textContent).toBe(
+        language.structuredMemory.pages.unsupported.resolved,
+    );
+    expect(query("[data-memory-import]")).toBeNull();
+    await chooseTab("pages");
+    expect(unsupportedButton()).toBeUndefined();
+    expect(
+        [...target.querySelectorAll<HTMLElement>("[data-memory-page]")].map(({ dataset }) => dataset.memoryPage),
+    ).toEqual(["p", "clear", "q"]);
+    expect(query('[data-memory-trash-page="trash"]')).not.toBeNull();
+    click('[data-memory-page="p"]');
+    await settle();
+    expect(target.querySelectorAll("[data-memory-section]")).toHaveLength(3);
+    expect(query("[data-memory-section-keep]")).toBeNull();
+    expect(query("[data-memory-section-revert]")).toBeNull();
+    expect(query("[data-memory-keep-all]")).toBeNull();
+    expect(preserveCheckbox()).toBeNull();
+});
+
+it("offers a section revert only for its newest standing revertable writer change from a retracted event", async () => {
+    const state = serveUnsupported();
+    const p = state.pages[0];
+    const headings = ["Writer", "Person", "Active", "Reverted", "Compacted", "Orphan compact"];
+    p.sections = headings.map((heading) => ({ ...p.sections[0], heading }));
+    const entry = (id: string, heading: string, eventId = "event"): MemoryPage["history"][number] => ({
+        id,
+        heading,
+        eventId,
+        kind: "change",
+        highlighted: false,
+        at: 1,
+        before: { body: "Before the turn", provenance: ["standing"], sources: [] },
+    });
+    p.history = [
+        entry("writer", "Writer"),
+        { ...entry("undone-later", "Writer", "standing"), revertedBy: "user" },
+        { ...entry("person-revert", "Writer"), kind: "revert" },
+        entry("old-writer", "Person"),
+        { ...entry("person", "Person"), kind: "edit", eventId: undefined },
+        entry("old-active", "Active"),
+        entry("active", "Active", "standing"),
+        { ...entry("reverted", "Reverted"), revertedBy: "user" },
+        entry("compact-patch", "Compacted"),
+        { ...entry("compact", "Compacted"), kind: "compact" },
+        { ...entry("orphan", "Orphan compact"), kind: "compact" },
+    ];
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/revert")) return fetch(url, init, options);
+        state.revision = "reverted";
+        p.sections[0] = { ...p.sections[0], body: "Before the turn", provenance: ["standing"], unsupported: false };
+        return Response.json({ revision: state.revision, data: p, reverted: true, laterEvents: 0 });
+    });
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="p"]');
+    await settle();
+    expect(query("[data-memory-section-revert]")).toBeNull();
+    expect(query("[data-memory-section-keep]")).toBeNull();
+    await chooseUnsupported();
+    expect(
+        [...target.querySelectorAll<HTMLElement>("[data-memory-section-revert]")].map(
+            (button) => button.closest<HTMLElement>("[data-memory-section]")!.dataset.memorySection,
+        ),
+    ).toEqual(["Writer", "Compacted"]);
+    expect(target.querySelectorAll("[data-memory-section-keep]")).toHaveLength(6);
+    press('[data-memory-section="Writer"] [data-memory-section-revert]');
+    await settle();
+    expect(reads("revert").map(([, init]) => JSON.parse(init!.body as string))).toEqual([
+        { revision: "before-tool", pageId: "p", historyId: "writer" },
+    ]);
+    expect(query('[data-memory-section="Writer"]')).toBeNull();
+});
+
+it("confirms Keep all, sends keeps sequentially with returned revisions and stops on a refusal", async () => {
+    const state = serveUnsupported();
+    state.pages[0].sections = ["First", "Second", "Third"].map((heading) => ({
+        ...state.pages[0].sections[0],
+        heading,
+    }));
+    const confirm = deferred<boolean>();
+    vi.mocked(alertConfirm).mockReset().mockReturnValueOnce(confirm.promise).mockResolvedValue(true);
+    const first = deferred<Response>();
+    const fetch = io.authFetch.getMockImplementation()!;
+    let attempts = 0;
+    const kept = (heading: string) => {
+        delete state.pages[0].sections.find((section) => section.heading === heading)!.unsupported;
+        state.revision = `batch-${attempts}`;
+        return Response.json({ revision: state.revision, kind: "pages", data: state.pages[0] });
+    };
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/edits")) return fetch(url, init, options);
+        attempts++;
+        if (attempts === 1) return first.promise;
+        if (attempts === 2)
+            return Response.json({ error: "Memory changed", reason: "revisionConflict" }, { status: 409 });
+        return kept(JSON.parse(init!.body as string).edit.heading);
+    });
+    await open();
+    await chooseUnsupported();
+    preserveCheckbox().click();
+    flushSync();
+    press("[data-memory-keep-all]");
+    await settle();
+    expect(alertConfirm).toHaveBeenLastCalledWith(
+        language.structuredMemory.pages.unsupported.keepAllConfirm(state.pages[0].title),
+    );
+    expect(sentEdits()).toEqual([]);
+    confirm.resolve(true);
+    await settle();
+    expect(sentEdits()).toEqual([
+        { revision: "before-tool", edit: { kind: "sectionKeep", pageId: "p", heading: "First", preserve: false } },
+    ]);
+    first.resolve(kept("First"));
+    await settle();
+    expect(sentEdits()).toEqual([
+        { revision: "before-tool", edit: { kind: "sectionKeep", pageId: "p", heading: "First", preserve: false } },
+        { revision: "batch-1", edit: { kind: "sectionKeep", pageId: "p", heading: "Second", preserve: false } },
+    ]);
+    expect(alertError).toHaveBeenCalled();
+    // Retry the two unresolved headings; the successful batch must use its own answers too.
+    press("[data-memory-keep-all]");
+    await settle();
+    expect(sentEdits().slice(2)).toEqual([
+        { revision: "batch-1", edit: { kind: "sectionKeep", pageId: "p", heading: "Second", preserve: false } },
+        { revision: "batch-3", edit: { kind: "sectionKeep", pageId: "p", heading: "Third", preserve: false } },
+    ]);
+    expect(query('[data-memory-page="q"]')?.getAttribute("aria-current")).toBe("true");
 });

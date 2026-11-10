@@ -2540,8 +2540,8 @@ export const languageEnglish = {
             `Error: The required memory pages need ${tokens} tokens, over the limit of ${limit}: ${pages}. Shorten a page, or set it to auto.`,
         removeRetracts: (events: number) =>
             events === 1
-                ? "1 memory event cites this. Removing it also retracts that event, and nothing can bring it back. Remove anyway?"
-                : `${events} memory events cite this. Removing it also retracts them, and nothing can bring them back. Remove anyway?`,
+                ? "1 memory event cites this. Removing it also retracts that event, and nothing can bring it back. If these messages are the newest recorded turn, its memory page changes are undone too. Remove anyway?"
+                : `${events} memory events cite this. Removing it also retracts them, and nothing can bring them back. If these messages are the newest recorded turn, its memory page changes are undone too. Remove anyway?`,
         projectionWriteRefused:
             "A plugin tried to change this chat's memory. Structured memory keeps its own records, so what plugins read of them cannot be written, and that change was dropped.",
         meter: {
@@ -2705,6 +2705,7 @@ export const languageEnglish = {
             log: "Log",
             preview: "Preview",
             pages: "Pages",
+            unsupported: "Evidence missing",
             timeline: "Timeline",
             threads: "Threads",
             settings: "Settings",
@@ -2847,6 +2848,15 @@ export const languageEnglish = {
             locked: "Locked",
             flags: { disputed: "Disputed", unsupported: "Unsupported", userCorrected: "Corrected by you" },
             edit: "Edit",
+            unsupported: {
+                keep: "Keep",
+                keepAll: "Keep all on this page",
+                keepAllConfirm: (title: string) => `Keep all sections with missing evidence on “${title}”?`,
+                preserve: "Keep through a full rebuild",
+                preserveDescription:
+                    "Kept sections are marked “Corrected by you”, survive a full rebuild, and are not compacted.",
+                resolved: "All sections with missing evidence have been resolved.",
+            },
             save: "Save",
             cancel: "Cancel",
             sectionText: "Section text",

@@ -2215,6 +2215,10 @@ export function createResourceStore(options: {
                 assertOpen();
                 return memoryTables.readContents(...args);
             },
+            readUnsupportedPages(...args: Parameters<typeof memoryTables.readUnsupportedPages>) {
+                assertOpen();
+                return memoryTables.readUnsupportedPages(...args);
+            },
             readRevision(...args: Parameters<typeof memoryTables.readRevision>) {
                 assertOpen();
                 return memoryTables.readRevision(...args);
