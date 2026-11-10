@@ -247,6 +247,24 @@ export function isRecordWrapper(value: unknown): boolean {
     return isObject(value) && nodeOf.has(value);
 }
 
+const valueIdentities = new WeakMap<object, symbol>();
+
+/**
+ * A transient identity for the object a wrapper currently resolves to, tracked across raw replacements.
+ * Unlike the wrapper, it changes when a remote update replaces a row at the same path. Plain objects
+ * use their own identity. The token exposes no mutable record data and is never persisted.
+ */
+export function recordValueIdentity(value: object): symbol {
+    const node = nodeOf.get(value);
+    const target = node ? resolve(node) : value;
+    let identity = valueIdentities.get(target);
+    if (identity === undefined) {
+        identity = Symbol();
+        valueIdentities.set(target, identity);
+    }
+    return identity;
+}
+
 // ---------------------------------------------------------------------------------------------
 // The store.
 

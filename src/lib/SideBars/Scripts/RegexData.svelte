@@ -4,6 +4,7 @@
     import { ReloadGUIPointer } from "src/ts/stores.svelte";
     import { alertConfirm } from "src/ts/alert";
     import type { customscript } from "src/ts/storage/database.svelte";
+    import { recordValueIdentity } from "src/ts/storage/records.svelte";
     import Check from "../../UI/GUI/CheckInput.svelte";
     import TextInput from "../../UI/GUI/TextInput.svelte";
     import TextAreaInput from "../../UI/GUI/TextAreaInput.svelte";
@@ -37,6 +38,22 @@
         idx,
         popupEditorContext = undefined,
     }: Props = $props();
+
+    // The owner alone cannot distinguish same-text scripts after a remote reorder.
+    let cachedPopupEditorContext: { owner: unknown; row: symbol } | undefined;
+    const rowPopupEditorContext = $derived.by(() => {
+        const owner = popupEditorContext;
+        const row = recordValueIdentity(value);
+        // Keep popup write-back callbacks when a parent rebuild retains this backing row.
+        if (
+            !cachedPopupEditorContext ||
+            !Object.is(cachedPopupEditorContext.owner, owner) ||
+            cachedPopupEditorContext.row !== row
+        ) {
+            cachedPopupEditorContext = { owner, row };
+        }
+        return cachedPopupEditorContext;
+    });
 
     const checkFlagContain = (flag: string, matchFlag: string) => {
         if (flag.length === 1) {
@@ -154,7 +171,7 @@
                 autocomplete="off"
                 size="sm"
                 bind:value={value.out}
-                {popupEditorContext}
+                popupEditorContext={rowPopupEditorContext}
                 onInput={(e) => {
                     $ReloadGUIPointer += 1;
                 }}

@@ -11,26 +11,3 @@ The inbox was emptied on 2026-11-09 by the Found Issues Clearance plan (retired;
 The eighteenth batch was cleared the same day by a Sol implementer with session verification (seven entries fixed with regression tests; the rendered-translation quote entry was closed as not reproduced: a scratch replay of the rendered path with identity Google and LLM translators kept quoted font names, `url("…")` and `content:"…"` intact in every one of twelve cases).
 
 ## Contents
-
-- [Structure audit 2026-11-10](#structure-audit-2026-11-10): 1
-
-## Structure audit 2026-11-10
-
-Found by the Sol auditors of the [full guide audit](../audit/structure-audit-2026-11-10.md) while reading each guide
-against the source at `e44b4786b`. Each of the first five was traced through the code by its auditor and, separately, by
-a Luna checker; none was run. They are code defects, so the audit recorded them here and changed no source.
-
-### A popup editor's draft can land on another row that holds the same text
-
-`src/lib/UI/GUI/TextAreaInput.svelte:110` accepts a popup's write-back when the original string, the owner context, the
-context revision, and the session match; nothing identifies the row. `src/lib/Setting/Pages/PromptSettings.svelte:199`
-and `src/lib/SideBars/Scripts/RegexList.svelte:85` render unkeyed lists bound by index and pass only the preset or
-character id as the context. With two prompt rows A and B of equal text, a popup opened on A, and another client
-replacing the template with `[B, A]`, closing the popup writes the draft into B. The UI guide already lists this as an
-`Unconfirmed:` issue ([Known Hazards](../structure/ui-theming.md#known-hazards)).
-
-**Why it matters:** an edit silently changes the wrong prompt or regex row; it needs a second writer and equal text, so
-it is rare.
-
-**Suggested handling:** reproduce with a two-client e2e check; then carry a row identity (the prompt item's or script's
-id) in `popupEditorContext`. Once reproduced, move the guide's bullet to known issues.

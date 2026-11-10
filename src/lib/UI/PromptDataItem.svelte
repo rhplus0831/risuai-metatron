@@ -1,5 +1,6 @@
 <script lang="ts">
     import { activePreset } from "src/ts/storage/settingsViews.svelte";
+    import { recordValueIdentity } from "src/ts/storage/records.svelte";
     import type { PromptItem, PromptItemChat, PromptRole } from "src/ts/process/prompt";
     import OptionInput from "./GUI/OptionInput.svelte";
     import TextAreaInput from "./GUI/TextAreaInput.svelte";
@@ -47,6 +48,22 @@
         displayIndex = -1,
         popupEditorContext = undefined,
     }: Props = $props();
+
+    // A record wrapper can follow another row after a remote array replacement.
+    let cachedPopupEditorContext: { owner: unknown; row: symbol } | undefined;
+    const rowPopupEditorContext = $derived.by(() => {
+        const owner = popupEditorContext;
+        const row = recordValueIdentity(promptItem);
+        // Rebuilding a containing array can rerun this derived with the same backing row.
+        if (
+            !cachedPopupEditorContext ||
+            !Object.is(cachedPopupEditorContext.owner, owner) ||
+            cachedPopupEditorContext.row !== row
+        ) {
+            cachedPopupEditorContext = { owner, row };
+        }
+        return cachedPopupEditorContext;
+    });
 
     const chatPromptChange = () => {
         const currentprompt = promptItem as PromptItemChat;
@@ -311,7 +328,7 @@
                 <OptionInput value="globalNote">{language.globalNote}</OptionInput>
             </SelectInput>
             <span>{language.prompt}</span>
-            <TextAreaInput highlight bind:value={promptItem.text} {popupEditorContext} />
+            <TextAreaInput highlight bind:value={promptItem.text} popupEditorContext={rowPopupEditorContext} />
             <span>{language.role}</span>
             <SelectInput bind:value={promptItem.role}>
                 <OptionInput value="user">{language.user}</OptionInput>
@@ -321,7 +338,7 @@
         {/if}
         {#if promptItem.type === "chatML"}
             <span>{language.prompt}</span>
-            <TextAreaInput highlight bind:value={promptItem.text} {popupEditorContext} />
+            <TextAreaInput highlight bind:value={promptItem.text} popupEditorContext={rowPopupEditorContext} />
         {/if}
         {#if promptItem.type === "cache"}
             <span>{language.depth}</span>
@@ -396,7 +413,11 @@
                 />
             {:else}
                 <span>{language.innerFormat}</span>
-                <TextAreaInput highlight bind:value={promptItem.innerFormat} {popupEditorContext} />
+                <TextAreaInput
+                    highlight
+                    bind:value={promptItem.innerFormat}
+                    popupEditorContext={rowPopupEditorContext}
+                />
                 <CheckInput
                     name={language.customInnerFormat}
                     check={true}

@@ -12,6 +12,7 @@ import {
     moveRecordListItem,
     pluginStorageRevision,
     recordData,
+    recordValueIdentity,
     replaceRecord,
     replaceRecordList,
     resetRecords,
@@ -725,5 +726,44 @@ describe("frozen module asset lists", () => {
         expect(retained.length).toBe(3);
         expect(retained[2]).toEqual(tuple("z"));
         expect(Object.isFrozen(modules[0].assets)).toBe(true);
+    });
+});
+
+describe("recordValueIdentity", () => {
+    it("keeps the token of the same backing object across reads and field writes", () => {
+        initializeRecords({ presets: [{ id: "p", promptTemplate: [{ text: "same" }, { text: "same" }] }] });
+        const rows = trackedRecord<{ promptTemplate: { text: string }[] }[]>("presets")![0].promptTemplate;
+        const token = recordValueIdentity(rows[0]);
+        expect(recordValueIdentity(rows[0])).toBe(token);
+        expect(recordValueIdentity(rows[1])).not.toBe(token);
+        rows[0].text = "edited";
+        expect(recordValueIdentity(rows[0])).toBe(token);
+        const plain = { text: "same" };
+        expect(recordValueIdentity(plain)).toBe(recordValueIdentity(plain));
+        expect(recordValueIdentity({ text: "same" })).not.toBe(recordValueIdentity(plain));
+    });
+
+    it("changes the token after an equal-JSON raw replacement at the same path", () => {
+        initializeRecords({ presets: [{ id: "p", promptTemplate: [{ text: "same" }] }] });
+        const row = trackedRecord<{ promptTemplate: { text: string }[] }[]>("presets")![0].promptTemplate[0];
+        const token = recordValueIdentity(row);
+        const before = text("presets");
+        applyRaw("presets", JSON.parse(before));
+        const replacement = trackedRecord<{ promptTemplate: { text: string }[] }[]>("presets")![0].promptTemplate[0];
+        expect(replacement).toBe(row);
+        expect(text("presets")).toBe(before);
+        expect(recordValueIdentity(replacement)).not.toBe(token);
+        expect(recordValueIdentity(replacement)).toBe(recordValueIdentity(replacement));
+    });
+
+    it("reads a token without changing serialized record data or notifying a write", () => {
+        initializeRecords({ presets: [{ id: "p", promptTemplate: [{ text: "same" }] }] });
+        const preset = trackedRecord<{ promptTemplate: { text: string }[] }[]>("presets")![0];
+        const before = text("presets");
+        const wrapperBefore = JSON.stringify(preset);
+        recordValueIdentity(preset.promptTemplate[0]);
+        expect(text("presets")).toBe(before);
+        expect(JSON.stringify(preset)).toBe(wrapperBefore);
+        expect(notified).toEqual([]);
     });
 });

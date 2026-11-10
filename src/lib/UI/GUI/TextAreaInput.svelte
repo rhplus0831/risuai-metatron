@@ -29,7 +29,7 @@
      * refreshes the highlighting. A change of the value, of `popupEditorContext`, of the open run, or of the session,
      * or the field's unmount, drops the write-back; a value or context change while the popup is open also closes it.
      * A field tied to a selected record passes the record's id as `popupEditorContext`: equal text alone cannot tell
-     * which record the popup was opened for.
+     * which record the popup was opened for. Repeated rows also include a transient row identity in that context.
      */
 
     interface Props {
