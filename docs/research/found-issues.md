@@ -13,7 +13,7 @@ The eighteenth batch was cleared the same day by a Sol implementer with session 
 ## Contents
 
 - [Plugin sandbox](#plugin-sandbox): 1
-- [Structure audit 2026-11-10](#structure-audit-2026-11-10): 5
+- [Structure audit 2026-11-10](#structure-audit-2026-11-10): 4
 
 ## Plugin sandbox
 
@@ -65,17 +65,6 @@ it is rare.
 
 **Suggested handling:** reproduce with a two-client e2e check; then carry a row identity (the prompt item's or script's
 id) in `popupEditorContext`. Once reproduced, move the guide's bullet to known issues.
-
-### `util/playwright/captureBootFixtures.mjs` imports exports the app no longer has
-
-The driver imports `getDatabase` from `src/ts/storage/database.svelte.ts` (`:27`), preset exports (`:34`), and `DBState`
-(`:42`); that module is now a compatibility entry point whose exports (`:26`–`:38`) hold none of them, so the first
-snapshot fails before any fixture is written. `src/ts/storage/tests/fixtures/boot/README.md` already says the fixtures
-are maintained by hand. The test-harness guide now says the driver cannot capture; the script is still in the tree.
-
-**Why it matters:** a tool that looks runnable and is not; V4 asks that scripts reading source follow renamed exports.
-
-**Suggested handling:** delete the driver, or rewrite it against the record API if recapturing is wanted.
 
 ### The lifecycle guide's checkpoint benchmark has no audit report to point to
 

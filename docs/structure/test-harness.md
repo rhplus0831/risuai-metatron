@@ -106,9 +106,8 @@ None is in the gate; all are in `util/playwright/`.
 
 ### Fixtures
 
-- `util/playwright/captureBootFixtures.mjs`: capture driver for the flat `Database` API; its imports do not match the
-  app's exports, so it cannot capture the boot fixtures. Follow `src/ts/storage/tests/fixtures/boot/README.md` for
-  fixture provenance and deliberate default updates.
+- Boot fixtures (`src/ts/storage/tests/fixtures/boot/`) are maintained by hand; no capture driver exists. Follow its
+  `README.md` for fixture provenance and deliberate default updates.
 - Frozen browser references: the per-family token ids in `server/src/tests/fixtures/tokens/browser-ids.json` and the
   browser-path fixtures in `server/src/tests/fixtures/baseline/` (preview prompts, `ParseMarkdown` HTML, `encode`
   routing, lore regex, the `igp` send). No capture harness exists: the tab exports no `encode`, and
