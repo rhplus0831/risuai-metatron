@@ -67,7 +67,7 @@ Guide: [Self-Host Server (Hono on Node), Docker](../structure/self-host-server.m
 
 - `/api/asset/*` verification is in memory and stat-based; it starts empty after restart and cannot detect an outside
   same-size edit that restores the full stat.
-- JWT validation does not check issuer, audience, `typ`, or `iat`, and a token without `exp` does not expire.
+- JWT validation does not check issuer, audience, `typ`, or `iat`.
 - `/hub-proxy` is unauthenticated (its forwarded request headers are an allowlist since 2026-11-10).
 
 ## server-resources

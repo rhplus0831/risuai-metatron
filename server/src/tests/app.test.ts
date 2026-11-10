@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, webcrypto } from "node:crypto";
 import {
     existsSync,
     mkdirSync,
@@ -808,6 +808,69 @@ describe("auth routes", () => {
                 await context?.dispose();
             }
         }
+    });
+
+    describe("JWT expiry", () => {
+        beforeEach(() => {
+            vi.useFakeTimers({ toFake: ["Date"] });
+            vi.setSystemTime(new Date("2026-11-10T12:00:00Z"));
+        });
+        afterEach(() => vi.useRealTimers());
+
+        it("rejects registered-key tokens with missing, non-numeric, or non-finite exp, including on assets", async () => {
+            const { app } = freshServer({ password: "pw" });
+            const keys = await webcrypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
+                "sign",
+                "verify",
+            ]);
+            const publicKey = await webcrypto.subtle.exportKey("jwk", keys.publicKey);
+            const login = await app.request("/api/login", json({ password: "pw", publicKey }));
+            expect(login.status).toBe(200);
+            const now = Math.floor(Date.now() / 1000);
+            const header = Buffer.from(JSON.stringify({ alg: "ES256", typ: "JWT" })).toString("base64url");
+
+            // Raw JSON preserves an omitted claim and a numeric overflow; JSON.stringify(Infinity) yields null.
+            for (const [name, expiry] of [
+                ["missing", ""],
+                ["non-numeric", `,"exp":"${now + 300}"`],
+                ["non-finite", ',"exp":1e309'],
+            ]) {
+                const payload = Buffer.from(`{"pub":${JSON.stringify(publicKey)},"iat":${now}${expiry}}`).toString(
+                    "base64url",
+                );
+                const signed = `${header}.${payload}`;
+                const signature = Buffer.from(
+                    await webcrypto.subtle.sign(
+                        { name: "ECDSA", hash: "SHA-256" },
+                        keys.privateKey,
+                        Buffer.from(signed),
+                    ),
+                ).toString("base64url");
+                for (const [url, status] of [
+                    ["/api/list", 400],
+                    [`/api/asset/${hex("assets/expiry.txt")}`, 401],
+                ] as const) {
+                    const response = await app.request(url, { headers: { "risu-auth": `${signed}.${signature}` } });
+                    expect.soft(response.status, `${name}: ${url}`).toBe(status);
+                }
+            }
+        });
+
+        it("rejects registered-key tokens expiring more than 24 hours ahead, including on assets", async () => {
+            const { app } = freshServer({ password: "pw" });
+            const signer = await createSigner();
+            const login = await app.request("/api/login", json({ password: "pw", publicKey: signer.publicJwk }));
+            expect(login.status).toBe(200);
+            const now = Math.floor(Date.now() / 1000);
+            const token = await signer.jwt({ exp: now + 24 * 60 * 60 + 1 });
+            for (const [url, status] of [
+                ["/api/list", 400],
+                [`/api/asset/${hex("assets/expiry.txt")}`, 401],
+            ] as const) {
+                const response = await app.request(url, { headers: { "risu-auth": token } });
+                expect.soft(response.status, url).toBe(status);
+            }
+        });
     });
 
     it("keeps the exact JWT failure bodies of the former server", async () => {

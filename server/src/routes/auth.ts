@@ -19,7 +19,9 @@ import { limitedBody } from "./limitedBody.ts";
  * or success.
  *
  * JWT failures normally answer 400; server/src/routes/storage.ts maps asset failures to 401.
- * checkAuth (including proxy routes) and isAuthorizedToken require a registered ES256 JWT.
+ * checkAuth (including proxy routes) and isAuthorizedToken require a registered ES256 JWT with a
+ * finite numeric exp, unexpired and at most 24 hours ahead of the server clock. No issuer, audience,
+ * typ, or iat claims are checked.
  * The optional bypass accepts every token; server/src/listenConfig.ts restricts process startup
  * with bypass to numeric loopback. Files live under save/server, outside the storage namespace.
  * Missing keys start empty, malformed key JSON is renamed aside, and other read failures propagate.
@@ -38,12 +40,16 @@ export const MAX_AUTH_BODY_BYTES = 16 * 1024;
 
 const KNOWN_KEYS_KEY = "auth:keys";
 const PASSWORD_KEY = "auth:password";
+// exp is stamped by the browser's clock, so tolerate a clock running ahead. This generous bound
+// only limits how long a token minted by a registered key can remain valid on this server.
+const MAX_JWT_FUTURE_SECONDS = 24 * 60 * 60;
 
 type JwtFailure = "no_header" | "expired" | "unknown_key" | "unsupported_alg" | "invalid_signature";
 
 /**
- * Every failed JWT check is a 400 with one of these errors; a malformed token and any parse or crypto
- * exception in `verifyJwt` are `invalid_signature`. The asset route turns each into a 401
+ * Every failed JWT check is a 400 with one of these errors; a malformed token (including a missing,
+ * non-finite/non-numeric, or excessively future exp) and any parse or crypto exception in `verifyJwt`
+ * are `invalid_signature`. The asset route turns each into a 401
  * (`server/src/routes/storage.ts`).
  */
 const failureBodies: Record<JwtFailure, { status: 400; error: string; log: string }> = {
@@ -156,6 +162,9 @@ export function createAuthStore(
             const signature = Buffer.from(signatureB64, "base64url");
 
             const now = Math.floor(Date.now() / 1000);
+            if (!Number.isFinite(jsonPayload.exp) || jsonPayload.exp > now + MAX_JWT_FUTURE_SECONDS) {
+                return "invalid_signature";
+            }
             if (jsonPayload.exp < now) {
                 return "expired";
             }
