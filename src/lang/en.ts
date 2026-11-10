@@ -2579,7 +2579,7 @@ export const languageEnglish = {
             leftOut: "Left out",
             leftOutMore: (count: number) => `and ${count} more`,
             exclusions: {
-                stale: "stale",
+                stale: "sources changed",
                 never: "never sent",
                 budget: "over the budget",
                 "not-relevant": "not relevant",
@@ -2748,7 +2748,7 @@ export const languageEnglish = {
                 failed: "Failed",
                 skipped: "Skipped",
                 excluded: "Excluded",
-                stale: "Stale",
+                stale: "Sources changed",
             } as Record<string, string>,
             reasons: {
                 disabled: "the message is left out of what a send reads",
@@ -2938,7 +2938,7 @@ export const languageEnglish = {
         timeline: {
             empty: "This chat has no recorded events yet.",
             turnsAgo: (turns: number) => (turns === 1 ? "1 turn ago" : `${turns} turns ago`),
-            stale: (reason: string) => (reason ? `Stale: ${reason}` : "Stale"),
+            stale: (reason: string) => (reason ? `Sources changed: ${reason}` : "Sources changed"),
             suppressed: "Suppressed",
             sources: "Messages",
             repairs: {
