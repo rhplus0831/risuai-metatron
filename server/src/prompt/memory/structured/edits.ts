@@ -33,6 +33,8 @@ import { isPlainObject } from "../../../../../shared/valueKinds.ts";
  * - The scene page stays `always`: it is the stage every send reads.
  * - A thread that moves from an ended state to a non-ended state loses `closedBy`; moving between
  *   ended states keeps it.
+ * - An event text edit changes only its title, summary, and `userCorrected` mark. Retracted events
+ *   refuse text edits. Releasing the mark keeps every other field, even on a retracted event.
  * - A repair settles what reconciliation found. Retract takes an event out for good, and no control
  *   brings it back. Keep accepts what the person saw (`keptState`), and only that: a chat that moved on
  *   since then is refused, and a later change shows again. Re-record only marks the event, because the
@@ -41,8 +43,8 @@ import { isPlainObject } from "../../../../../shared/valueKinds.ts";
  *   Confirmed tail deletes may rewind writer-only history before flagging; a person's repair does not.
  */
 
-/** A page edit, which every kind but `thread` and `event` is. */
-type PageEdit = Exclude<StructuredMemoryEdit, { kind: "thread" | "event" }>;
+/** An edit addressed to a page, excluding thread edits, event repairs, and event text controls. */
+type PageEdit = Exclude<StructuredMemoryEdit, { kind: "thread" | "event" | "eventText" | "eventRelease" }>;
 
 type ThreadEdit = Extract<StructuredMemoryEdit, { kind: "thread" }>;
 
@@ -77,8 +79,9 @@ function validGrade(value: unknown): value is number | null {
 
 /**
  * The edit a request's `value` holds, or null for one that is malformed: unknown fields are dropped, and
- * a section's body must have text and fit `sectionBodyChars`, because nothing is cut to fit. A `keep`
- * must name a state, the one repair that has any.
+ * a section's body must have text and fit `sectionBodyChars`, because nothing is cut to fit. Event
+ * titles are trimmed and summaries keep their whitespace; both must have text and fit their limits.
+ * A `keep` must name a state, the one repair that has any.
  */
 export function parseMemoryEdit(value: unknown): StructuredMemoryEdit | null {
     if (!isPlainObject(value)) {
@@ -99,6 +102,23 @@ export function parseMemoryEdit(value: unknown): StructuredMemoryEdit | null {
             return typeof state === "string" ? { kind, eventId, repair, state } : null;
         }
         return repair === "rerecord" || repair === "retract" ? { kind, eventId, repair } : null;
+    }
+    if (kind === "eventText" || kind === "eventRelease") {
+        const { eventId, title, summary } = value;
+        if (typeof eventId !== "string") {
+            return null;
+        }
+        if (kind === "eventRelease") {
+            return { kind, eventId };
+        }
+        return typeof title === "string" &&
+            title.trim() !== "" &&
+            title.trim().length <= LIMITS.eventTitleChars &&
+            typeof summary === "string" &&
+            summary.trim() !== "" &&
+            summary.length <= LIMITS.eventSummaryChars
+            ? { kind, eventId, title: title.trim(), summary }
+            : null;
     }
     if (typeof pageId !== "string") {
         return null;
@@ -305,6 +325,28 @@ export function applyEventRepair<M extends Pick<Message, "chatId" | "role" | "sa
         throw new MemoryEditRefusal("invalid", "This event has no reply left to record from");
     }
     return rerecord ? null : { ...event, rerecord: true };
+}
+
+/** Changes only the text and its mark; equal text is a no-op, and retracted events refuse the edit. */
+export function applyEventText(
+    event: MemoryEvent,
+    { title, summary }: Extract<StructuredMemoryEdit, { kind: "eventText" }>,
+): MemoryEvent | null {
+    if (event.status === "retracted") {
+        throw new MemoryEditRefusal("invalid", "A retracted event cannot be edited");
+    }
+    return event.title === title && event.summary === summary
+        ? null
+        : { ...event, title, summary, userCorrected: true };
+}
+
+/** Removes only `userCorrected`, even from a retracted event; an unmarked event needs no write. */
+export function applyEventRelease(event: MemoryEvent): MemoryEvent | null {
+    if (!event.userCorrected) {
+        return null;
+    }
+    const { userCorrected, ...released } = event;
+    return released;
 }
 
 /**

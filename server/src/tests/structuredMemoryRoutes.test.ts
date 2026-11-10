@@ -1257,6 +1257,86 @@ it("applies only a closed edit to stored evidence and records the replaced locke
     }
 });
 
+it("persists event corrections and releases without reading poisoned chat data and refuses retracted text edits", async () => {
+    const s = await server();
+    const original: MemoryEvent = {
+        ...event("e"),
+        sources: [{ messageId: "gone", index: 2, hash: "recorded" }],
+        status: "stale",
+        keptState: "accepted sources",
+        rerecord: true,
+        grade: 3,
+    };
+    const retracted: MemoryEvent = { ...event("retired"), status: "retracted" };
+    let revision = s.write({ events: [original, retracted] });
+    const db = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"));
+    try {
+        // A chat-source read must fail, but event text writes need only the stored event.
+        db.prepare("UPDATE chats SET meta = ? WHERE characterId = ? AND id = ?").run(
+            "invalid JSON",
+            characterId,
+            chatId,
+        );
+        expect(() => s.store.readChatSource(characterId, chatId)).toThrow(SyntaxError);
+        const edit = { kind: "eventText", eventId: "e", title: "  Gate closed  ", summary: "\nIt stayed shut.\n" };
+        const corrected = { ...original, title: "Gate closed", summary: "\nIt stayed shut.\n", userCorrected: true };
+        const saved = await answer(await s.json(`${base}/edits`, { revision, edit }));
+        expect(saved).toEqual({ revision: expect.any(String), kind: "events", data: corrected });
+        expect(saved.revision).not.toBe(revision);
+        revision = saved.revision;
+        expect(await answer(await s.request(`${base}/records/events/e`))).toEqual({ revision, data: corrected });
+        expect(await answer(await s.json(`${base}/edits`, { revision, edit }))).toEqual(saved);
+
+        const release = { kind: "eventRelease", eventId: "e" };
+        const released = { ...original, title: "Gate closed", summary: "\nIt stayed shut.\n" };
+        const unmarked = await answer(await s.json(`${base}/edits`, { revision, edit: release }));
+        expect(unmarked).toEqual({ revision: expect.any(String), kind: "events", data: released });
+        expect(unmarked.revision).not.toBe(revision);
+        revision = unmarked.revision;
+        expect(await answer(await s.request(`${base}/records/events/e`))).toEqual({ revision, data: released });
+        expect(await answer(await s.json(`${base}/edits`, { revision, edit: release }))).toEqual(unmarked);
+        await answer(await s.json(`${base}/edits`, { revision, edit: { ...edit, eventId: "retired" } }), 400);
+        expect(await answer(await s.request(`${base}/records/events/retired`))).toEqual({ revision, data: retracted });
+    } finally {
+        db.close();
+    }
+});
+
+it("refuses stale event text and release edits including no-ops without moving the revision", async () => {
+    const s = await server();
+    const marked = { ...event("marked"), userCorrected: true as const };
+    const unmarked = event("unmarked");
+    const stale = s.write({ events: [marked, unmarked] });
+    const revision = s.write({ pages: [page("new")] });
+    for (const edit of [
+        { kind: "eventText", eventId: "marked", title: "Changed title", summary: "Changed summary" },
+        { kind: "eventText", eventId: "marked", title: marked.title, summary: marked.summary },
+        { kind: "eventRelease", eventId: "marked" },
+        { kind: "eventRelease", eventId: "unmarked" },
+    ]) {
+        expect(await answer(await s.json(`${base}/edits`, { revision: stale, edit }), 409)).toMatchObject({ revision });
+        for (const data of [marked, unmarked]) {
+            expect(await answer(await s.request(`${base}/records/events/${data.id}`))).toEqual({ revision, data });
+        }
+    }
+});
+
+it("fences event corrections and releases during a rebuild without changing the event", async () => {
+    const s = await server();
+    const marked = { ...event("e"), userCorrected: true as const };
+    const revision = s.write({ events: [marked] });
+    stageRun(s);
+    for (const edit of [
+        { kind: "eventText", eventId: "e", title: "Changed title", summary: "Changed summary" },
+        { kind: "eventRelease", eventId: "e" },
+    ]) {
+        expect(await answer(await s.json(`${base}/edits`, { revision, edit }), 409)).toMatchObject({
+            reason: "fenced",
+        });
+        expect(s.store.memory.readRecord(characterId, chatId, "events", "e")).toEqual({ revision, data: marked });
+    }
+});
+
 it("refuses stale edits including no-ops without writing any record or revision", async () => {
     const s = await server();
     const p = page("p");

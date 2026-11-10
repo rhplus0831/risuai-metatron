@@ -66,6 +66,8 @@ import { jobMemoryBlockingReason } from "../prompt/runner.ts";
 import { adoptedEvents } from "../prompt/memory/structured/adopt.ts";
 import {
     applyEventRepair,
+    applyEventRelease,
+    applyEventText,
     applyPageEdit,
     applyThreadEdit,
     flagUnsupportedSections,
@@ -381,6 +383,8 @@ function editedRecordId(edit: StructuredMemoryEdit): string {
         case "thread":
             return edit.threadId;
         case "event":
+        case "eventText":
+        case "eventRelease":
             return edit.eventId;
         default:
             return edit.pageId;
@@ -479,12 +483,15 @@ type RoundRead = {
  * - `POST /api/memory/structured/:characterId/:chatId/edits` `{ revision, edit }`: one person's edit
  *   (`StructuredMemoryEdit`, `server/src/prompt/memory/structured/edits.ts`), answered
  *   `StructuredMemoryEditAnswer`. Admission checks ids, the body, then the edit shape (`parseMemoryEdit`,
- *   including blank or over-long section text) before the epoch and fence; only then is the record read,
+ *   including blank or over-long section and event text) before the epoch and fence; only then is the record read,
  *   edited, and written. An edit that changes nothing still names a revision, so a stale one is refused
  *   like any other. An event's repair reads the chat as stored, a `retract` excepted, which reads none.
  *   A `sectionKeep` clears the unsupported flag and retracted provenance using contents' event statuses,
  *   optionally marks it user-corrected for a rebuild, and changes no body, timestamp, or history.
  *   A `sectionRelease` takes that mark off and changes nothing else.
+ *   An `eventText` changes only title, summary, and `userCorrected`, refusing retracted events; an
+ *   `eventRelease` removes only the mark, including on retracted events. Neither reads the chat or
+ *   reconciles evidence.
  *   400 for a malformed edit or one the record refuses, a page in the trash included, 404 `chatGone` or
  *   `recordGone` (a heading the page lacks too), 409 `{ error, reason: "fenced" }` while `fenced` holds,
  *   409 `{ error, reason: "changed" }` when a `keep` names a state the chat has left, and
@@ -1062,6 +1069,20 @@ export function registerStructuredMemoryRoutes(
                     options,
                     edited ? withRetractedEvidence(store, { chaId: characterId, chatId }, { events: [edited] }) : {},
                 );
+                return compressedJson(c, {
+                    revision: written,
+                    kind: "events",
+                    data: edited ?? stored.data,
+                } satisfies StructuredMemoryEditAnswer);
+            }
+            if (edit.kind === "eventText" || edit.kind === "eventRelease") {
+                const stored = store.memory.readRecord(characterId, chatId, "events", edit.eventId);
+                if (!stored) {
+                    return gone();
+                }
+                const edited =
+                    edit.kind === "eventText" ? applyEventText(stored.data, edit) : applyEventRelease(stored.data);
+                const written = store.memory.write(characterId, chatId, options, edited ? { events: [edited] } : {});
                 return compressedJson(c, {
                     revision: written,
                     kind: "events",

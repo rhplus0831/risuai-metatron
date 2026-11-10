@@ -42,6 +42,42 @@ function messageStore(messages: Message[]) {
     return store;
 }
 
+it("commits corrected event text with the new recording's key lines and other recording fields", () => {
+    const store = messageStore([]);
+    const [old, replacement] = memoryRecords(["old", "replacement"]).events;
+    Object.assign(old, {
+        title: "The gate stayed closed",
+        summary: "Mira could not enter.",
+        userCorrected: true,
+        rerecord: true,
+        keyLines: [{ speaker: "Mira", text: "Old quote" }],
+        sources: [{ messageId: "a", index: 1, hash: "old hash" }],
+    });
+    Object.assign(replacement, {
+        title: "Writer's new title",
+        summary: "Writer's new summary",
+        keyLines: [{ speaker: "Mira", text: "The lock would not turn." }],
+        sources: [{ messageId: "a", index: 1, hash: "new hash" }],
+        grade: 4,
+    });
+    writeMemory(store, "c", "k", { events: [old] });
+    const changes = retireRerecorded(
+        store,
+        { chaId: "c", chatId: "k" },
+        { rerecords: "old" },
+        { events: [replacement] },
+    );
+    expect(changes).not.toBeNull();
+    writeMemory(store, "c", "k", changes!);
+    expect(store.memory.readRecord("c", "k", "events", "replacement")!.data).toEqual({
+        ...replacement,
+        createdRevision: 2,
+        title: "The gate stayed closed",
+        summary: "Mira could not enter.",
+        userCorrected: true,
+    });
+});
+
 it("transfers re-recorded thread ownership and ended moves so retracting the replacement reconciles them", () => {
     const store = messageStore([]);
     const [opening, old, replacement] = memoryRecords(["opening", "old", "replacement"]).events;

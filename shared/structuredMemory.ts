@@ -916,7 +916,8 @@ export type StructuredMemoryFindRound = {
  * `sectionKeep` clears unsupported evidence and drops retracted provenance without changing text or
  * history; `preserve` marks it user-corrected for a rebuild. A `sectionRelease` takes that mark off again,
  * whichever edit set it, and hands the text back to the writer. An `event` edit is a repair of a stale
- * event, and `keep` names the `memoryAnchorState` the person saw.
+ * event, and `keep` names the `memoryAnchorState` the person saw. `eventText` changes only a standing
+ * event's title and summary and marks them `userCorrected`; `eventRelease` removes only that mark.
  */
 export type StructuredMemoryEdit =
     | { kind: "section"; pageId: string; heading: string; body: string }
@@ -925,6 +926,8 @@ export type StructuredMemoryEdit =
     | { kind: "sectionRelease"; pageId: string; heading: string }
     | { kind: "page"; pageId: string; contextMode?: MemoryContextMode; grade?: number | null }
     | { kind: "thread"; threadId: string; state: MemoryThreadState }
+    | { kind: "eventText"; eventId: string; title: string; summary: string }
+    | { kind: "eventRelease"; eventId: string }
     | { kind: "event"; eventId: string; repair: "rerecord" | "retract" }
     | { kind: "event"; eventId: string; repair: "keep"; state: string };
 

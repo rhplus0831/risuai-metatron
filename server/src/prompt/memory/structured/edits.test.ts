@@ -4,13 +4,23 @@ import type { Message } from "../../../../../shared/database.ts";
 import {
     coveredMessages,
     memoryAnchorState,
+    STRUCTURED_MEMORY_LIMITS,
+    type MemoryEvent,
     type MemoryPage,
     type MemoryThread,
     type MemoryThreadState,
 } from "../../../../../shared/structuredMemory.ts";
 import { messageSourceHash } from "../../../data/memoryStore.ts";
 import { memoryRecords } from "../../../tests/memoryFixtures.ts";
-import { applyEventRepair, applyPageEdit, applyThreadEdit, MemoryEditRefusal, parseMemoryEdit } from "./edits.ts";
+import {
+    applyEventRelease,
+    applyEventRepair,
+    applyEventText,
+    applyPageEdit,
+    applyThreadEdit,
+    MemoryEditRefusal,
+    parseMemoryEdit,
+} from "./edits.ts";
 import { reconcileEvents } from "./reconcile.ts";
 
 const page: MemoryPage = {
@@ -25,6 +35,80 @@ const page: MemoryPage = {
     history: [{ id: "h", heading: "Facts", before: null, kind: "edit", highlighted: false, at: 7 }],
 };
 const stamp = { now: 20, newId: () => "edit-id" };
+
+it("accepts trimmed event titles and intact summaries at their limits and refuses blank or oversized text", () => {
+    const title = "t".repeat(STRUCTURED_MEMORY_LIMITS.eventTitleChars);
+    const summary = `\n${"s".repeat(STRUCTURED_MEMORY_LIMITS.eventSummaryChars - 2)}\n`;
+    const edit = { kind: "eventText", eventId: "e", title, summary };
+    expect(parseMemoryEdit({ ...edit, title: ` ${title} ` })).toEqual(edit);
+    for (const invalid of [
+        { title: " \n\t" },
+        { summary: " \n\t" },
+        { title: `${title}x` },
+        { summary: `${summary}x` },
+    ]) {
+        expect(parseMemoryEdit({ ...edit, ...invalid }), JSON.stringify(invalid)).toBeNull();
+    }
+});
+
+it("corrects only an event's title, summary and user mark while preserving evidence and repair state", () => {
+    const event: MemoryEvent = {
+        ...memoryRecords(["e"]).events[0],
+        createdRevision: 7,
+        status: "stale",
+        staleReason: "changed",
+        sources: [{ messageId: "m", index: 2, hash: "recorded" }],
+        keptState: "accepted sources",
+        rerecord: true,
+        grade: 3,
+        pinned: true,
+        suppressed: true,
+    };
+    const before = structuredClone(event);
+    expect(
+        applyEventText(event, { kind: "eventText", eventId: "e", title: "Gate closed", summary: "It stayed shut." }),
+    ).toEqual({ ...before, title: "Gate closed", summary: "It stayed shut.", userCorrected: true });
+    expect(event).toEqual(before);
+});
+
+it("refuses corrections to retracted events as invalid even when the text is unchanged", () => {
+    const event: MemoryEvent = {
+        ...memoryRecords(["e"]).events[0],
+        createdRevision: 1,
+        status: "retracted",
+    };
+    for (const title of ["Correction", event.title]) {
+        expect(() => applyEventText(event, { kind: "eventText", eventId: "e", title, summary: event.summary })).toThrow(
+            expect.objectContaining({ reason: "invalid" }),
+        );
+    }
+});
+
+it("leaves equal event text and releases of unmarked events unchanged", () => {
+    const event = { ...memoryRecords(["e"]).events[0], createdRevision: 1 };
+    const edit = { kind: "eventText" as const, eventId: "e", title: event.title, summary: event.summary };
+    expect(applyEventText(event, edit)).toBeNull();
+    expect(applyEventText({ ...event, userCorrected: true }, edit)).toBeNull();
+    expect(applyEventRelease(event)).toBeNull();
+});
+
+it("releases only the event correction mark and keeps the corrected text and other fields", () => {
+    const event: MemoryEvent = {
+        ...memoryRecords(["e"]).events[0],
+        createdRevision: 7,
+        title: "Corrected title",
+        summary: "Corrected summary",
+        sources: [{ messageId: "m", index: 2, hash: "recorded" }],
+        keptState: "accepted sources",
+        rerecord: true,
+        grade: 3,
+        pinned: true,
+    };
+    expect(parseMemoryEdit({ kind: "eventRelease", eventId: "e" })).toEqual({ kind: "eventRelease", eventId: "e" });
+    const marked = { ...event, userCorrected: true as const };
+    expect(applyEventRelease(marked)).toEqual(event);
+    expect(marked.userCorrected).toBe(true);
+});
 
 it("changes locks without history, marks and clears user grades, and keeps the scene context mode", () => {
     const locked = applyPageEdit(page, { kind: "sectionLock", pageId: "p", heading: "Facts", locked: true }, stamp)!;

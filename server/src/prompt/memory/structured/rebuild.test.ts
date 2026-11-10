@@ -155,6 +155,56 @@ it("rebuilds retired replacements but excludes personal retractions and backfill
     ]);
 });
 
+it("carries corrected text into a staged event citing the same message set in a different order", () => {
+    const corrected = event("old", ["u1", "a1"], {
+        title: "Corrected title",
+        summary: "Corrected summary",
+        userCorrected: true,
+    });
+    const staged = event("new", ["a1", "u1"], { title: "Writer title", summary: "Writer summary" });
+    const { createdRevision, ...written } = staged;
+    const changes = rebuildChanges(
+        "rebuild",
+        { pages: [], threads: [], events: [corrected] },
+        { pages: [], threads: [], events: [staged] },
+    );
+    expect(changes?.events).toEqual([
+        { ...written, title: "Corrected title", summary: "Corrected summary", userCorrected: true },
+    ]);
+});
+
+it("carries only the correction mark when a staged event covers a superset of the corrected messages", () => {
+    const corrected = event("old", ["u1", "a1"], {
+        title: "Corrected title",
+        summary: "Corrected summary",
+        userCorrected: true,
+    });
+    const staged = event("new", ["u1", "a1", "u2", "a2"], { title: "Writer title", summary: "Writer summary" });
+    const { createdRevision, ...written } = staged;
+    const changes = rebuildChanges(
+        "rebuild",
+        { pages: [], threads: [], events: [corrected] },
+        { pages: [], threads: [], events: [staged] },
+    );
+    expect(changes?.events).toEqual([{ ...written, userCorrected: true }]);
+});
+
+it("keeps the writer's text without a correction mark in a fresh rebuild over corrected messages", () => {
+    const corrected = event("old", ["u1", "a1"], {
+        title: "Corrected title",
+        summary: "Corrected summary",
+        userCorrected: true,
+    });
+    const staged = event("new", ["u1", "a1"], { title: "Writer title", summary: "Writer summary" });
+    const { createdRevision, ...written } = staged;
+    const changes = rebuildChanges(
+        "fresh",
+        { pages: [], threads: [], events: [corrected] },
+        { pages: [], threads: [], events: [staged] },
+    );
+    expect(changes?.events).toEqual([written]);
+});
+
 it("seeds nothing for a fresh rebuild and its swap removes every live record and the trash, keeping only the adoption lineage", () => {
     const base = memoryRecords(["place"]).pages[0];
     const personal = {

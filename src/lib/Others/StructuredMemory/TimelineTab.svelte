@@ -25,10 +25,13 @@
     import { findChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import SegmentedControl from "src/lib/UI/GUI/SegmentedControl.svelte";
+    import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
+    import TextInput from "src/lib/UI/GUI/TextInput.svelte";
     import {
         ADOPTED_WRITER_RUN,
         memoryAnchorState,
         memoryRerecordTarget,
+        STRUCTURED_MEMORY_LIMITS,
         type StructuredMemoryCoverageEvent,
         type StructuredMemoryEdit,
         type StructuredMemoryStoryEvent,
@@ -55,12 +58,17 @@
      * local edit can therefore be refused `changed`. Retract asks first because no control reverses it.
      * Re-record marks before pressing through `memoryRerecordTarget`; an existing mark goes straight to
      * the press, so a failed press remains retryable.
+     * Text edits and mark releases also reread the open record and the chosen story view; a hidden
+     * story is invalidated for the next switch. The mark is held beside the display view. A draft keeps
+     * its base title and summary: a read that changes either closes it with `changed`, and selecting
+     * another event or closing the event discards it. All writes share the repair's send guard.
      */
 
     let { chatRef, readOnly, refresh, focus, open, jump }: MemoryPanelTabProps = $props();
 
     /** The rows a list renders at once; a long chat stays cheap behind "show more". */
     const ROWS_AT_ONCE = 200;
+    const { eventTitleChars, eventSummaryChars } = STRUCTURED_MEMORY_LIMITS;
 
     const text = language.structuredMemory.timeline;
     const logText = language.structuredMemory.log;
@@ -68,7 +76,7 @@
     const panelText = language.structuredMemory.panel;
     const repairText = text.repairs;
 
-    /** The route's answer, whose `revision` the next repair names. */
+    /** The route's answer, whose `revision` the next edit or repair names. */
     let facts = $state.raw<StructuredMemoryCoverage | null>(null);
     let failure = $state<string | null>(null);
     let readNumber = 0;
@@ -78,15 +86,21 @@
     /** The `refresh` the story was last read at, including a failed read. */
     let storyRead: number | null = null;
     let storyNumber = 0;
-    /** One repair at a time: while one is out the buttons are off. */
+    /** One edit or repair at a time: while one is out the buttons are off. */
     let sending = $state(false);
 
     let shown = $state(ROWS_AT_ONCE);
     /** The expanded event, one at a time, and its record once read. */
     let openId = $state<string | null>(null);
     let openEvent = $state.raw<MemoryRunEventView | null>(null);
+    let openCorrected = $state(false);
+    let openRetracted = $state(false);
     let openFailure = $state<string | null>(null);
     let openNumber = 0;
+    /** The stored text the draft opened on, kept apart from its editable values. */
+    let editor = $state.raw<{ id: string; title: string; summary: string } | null>(null);
+    let draftTitle = $state("");
+    let draftSummary = $state("");
     /** Page and thread titles by id; null until read, and a failed read leaves the ids. */
     let pageTitles = $state.raw<ReadonlyMap<string, string> | null>(null);
     let threadTitles = $state.raw<ReadonlyMap<string, string> | null>(null);
@@ -104,6 +118,14 @@
     const visibleRows = $derived(view === "story" ? rows.filter(({ event }) => event.status !== "retracted") : rows);
     const usedEvents = $derived(memoryItemsUsed(messages, "event"));
     const messageIndexes = $derived(memoryMessageIndexes(messages));
+    const controlsOff = $derived(readOnly || sending);
+    const titleLength = $derived(draftTitle.trim().length);
+    const draftFits = $derived(
+        titleLength > 0 &&
+            titleLength <= eventTitleChars &&
+            draftSummary.trim() !== "" &&
+            draftSummary.length <= eventSummaryChars,
+    );
 
     const sameChat = (ref: ChatRef) => ref.chaId === chatRef.chaId && ref.chatId === chatRef.chatId;
 
@@ -150,7 +172,7 @@
         }
     }
 
-    async function readOpen(id: string) {
+    async function readOpen(id: string, noticed = false) {
         if (titlesRead !== refresh) {
             titlesRead = refresh;
             void readTitles();
@@ -158,14 +180,25 @@
         const ref = chatRef;
         const number = ++openNumber;
         const result = await readStructuredMemoryRecord(ref, "events", id);
-        if (number !== openNumber || !sameChat(ref)) {
+        if (number !== openNumber || !sameChat(ref) || openId !== id) {
             return;
         }
         if (result.outcome === "ok") {
-            openEvent = memoryEventView(result.value.data);
+            const event = result.value.data;
+            openEvent = memoryEventView(event);
+            openCorrected = event.userCorrected === true;
+            openRetracted = event.status === "retracted";
             openFailure = null;
+            if (editor && (editor.title !== event.title || editor.summary !== event.summary || openRetracted)) {
+                editor = null;
+                if (!noticed) {
+                    alertError(memoryReadFailureText({ outcome: "refused", reason: "changed" }));
+                }
+            }
         } else {
             openEvent = null;
+            openCorrected = false;
+            openRetracted = false;
             openFailure = memoryReadFailureText(result);
         }
     }
@@ -198,14 +231,18 @@
     }
 
     function openRow(id: string) {
+        editor = null;
         openId = id;
         openEvent = null;
+        openCorrected = false;
+        openRetracted = false;
         openFailure = null;
         void readOpen(id);
     }
 
     function toggle(id: string) {
         if (openId === id) {
+            editor = null;
             openNumber += 1;
             openId = null;
         } else {
@@ -213,7 +250,7 @@
         }
     }
 
-    /** Runs one repair's steps, none while the panel is read-only or another is out. */
+    /** Runs one edit's or repair's steps, none while the panel is read-only or another is out. */
     async function repairing(steps: () => Promise<void>) {
         if (sending || readOnly) {
             return;
@@ -244,6 +281,72 @@
             await read();
         }
         return result.outcome === "ok";
+    }
+
+    /** Refreshes every text-bearing read after either outcome; only the currently open id is reread. */
+    async function sendTextEdit(edit: Extract<StructuredMemoryEdit, { kind: "eventText" | "eventRelease" }>) {
+        if (!facts) {
+            return;
+        }
+        const ref = chatRef;
+        // A record read already in flight may have been answered before this edit.
+        openNumber += 1;
+        const result = await editStructuredMemory(ref, facts.revision, edit);
+        if (result.outcome === "failed" || (result.outcome === "refused" && result.reason !== "epoch")) {
+            alertError(memoryReadFailureText(result));
+        }
+        if (!sameChat(ref)) {
+            return;
+        }
+        if (result.outcome === "ok" && edit.kind === "eventText" && editor?.id === edit.eventId) {
+            editor = null;
+        }
+        const reads = [read()];
+        if (openId !== null) {
+            reads.push(readOpen(openId, result.outcome === "refused" && result.reason === "changed"));
+        }
+        if (view === "story") {
+            storyRead = refresh;
+            reads.push(readStory());
+        } else {
+            storyRead = null;
+            storyNumber += 1;
+            stories = new Map();
+            storyFailure = null;
+        }
+        await Promise.all(reads);
+    }
+
+    function startEdit() {
+        if (!openEvent || openId === null || openRetracted || controlsOff || editor) {
+            return;
+        }
+        const { title, summary } = openEvent;
+        editor = { id: openId, title, summary };
+        draftTitle = title;
+        draftSummary = summary;
+    }
+
+    function saveText() {
+        if (!editor || !draftFits || openRetracted) {
+            return;
+        }
+        const edit = { kind: "eventText", eventId: editor.id, title: draftTitle, summary: draftSummary } as const;
+        return repairing(() => sendTextEdit(edit));
+    }
+
+    function releaseText() {
+        if (openId === null || !openEvent || !openCorrected) {
+            return;
+        }
+        const ref = chatRef;
+        const id = openId;
+        const title = openEvent.title;
+        return repairing(async () => {
+            if ((await alertConfirm(text.releaseConfirm(title))) && sameChat(ref) && openId === id && !readOnly) {
+                await sendTextEdit({ kind: "eventRelease", eventId: id });
+            }
+        });
     }
 
     /** The old event stays until the new one commits, so a press that failed can simply be pressed again. */
@@ -311,7 +414,65 @@
         {:else if !openEvent}
             <p class="text-textcolor2">{panelText.loading}</p>
         {:else}
-            <p class="whitespace-pre-wrap">{openEvent.summary}</p>
+            <div class="flex flex-wrap items-center gap-2">
+                {#if openCorrected}
+                    <button
+                        type="button"
+                        class="px-1.5 rounded-sm bg-darkbutton text-textcolor2 enabled:hover:text-textcolor enabled:cursor-pointer"
+                        disabled={controlsOff}
+                        title={text.release}
+                        data-memory-event-corrected
+                        onclick={releaseText}
+                    >
+                        {text.userCorrected}
+                    </button>
+                {/if}
+                {#if event.status !== "retracted" && !openRetracted}
+                    <Button size="sm" styled="outlined" disabled={controlsOff || editor !== null} onclick={startEdit}>
+                        <span data-memory-event-edit>{text.edit}</span>
+                    </Button>
+                {/if}
+            </div>
+            {#if editor?.id === event.id}
+                <fieldset class="flex flex-col min-w-0 gap-2" disabled={controlsOff} data-memory-event-editor>
+                    <label class="flex flex-col min-w-0 gap-1" data-memory-event-title>
+                        <span class="text-textcolor2">{text.title}</span>
+                        <TextInput size="sm" bind:value={draftTitle} disabled={controlsOff} fullwidth />
+                    </label>
+                    <span
+                        class={titleLength > eventTitleChars ? "text-draculared" : "text-textcolor2"}
+                        data-memory-event-title-count
+                    >
+                        {text.characters(titleLength, eventTitleChars)}
+                    </span>
+                    <label class="flex flex-col min-w-0 gap-1" data-memory-event-summary-input>
+                        <span class="text-textcolor2">{text.summary}</span>
+                        <TextAreaInput
+                            bind:value={draftSummary}
+                            height="36"
+                            optimaizedInput={false}
+                            popupEditor={false}
+                            ariaLabel={text.summary}
+                        />
+                    </label>
+                    <span
+                        class={draftSummary.length > eventSummaryChars ? "text-draculared" : "text-textcolor2"}
+                        data-memory-event-summary-count
+                    >
+                        {text.characters(draftSummary.length, eventSummaryChars)}
+                    </span>
+                    <div class="flex flex-wrap justify-end gap-2">
+                        <Button size="sm" styled="outlined" disabled={controlsOff} onclick={() => (editor = null)}>
+                            <span data-memory-event-cancel>{text.cancel}</span>
+                        </Button>
+                        <Button size="sm" disabled={controlsOff || !draftFits} onclick={saveText}>
+                            <span data-memory-event-save>{text.save}</span>
+                        </Button>
+                    </div>
+                </fieldset>
+            {:else}
+                <p class="whitespace-pre-wrap">{openEvent.summary}</p>
+            {/if}
             {#if openEvent.writerRun === ADOPTED_WRITER_RUN}
                 <p class="text-textcolor2" data-memory-event-adopted>{language.structuredMemory.adopt.adoptedEvent}</p>
             {/if}

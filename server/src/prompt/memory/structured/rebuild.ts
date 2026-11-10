@@ -262,7 +262,9 @@ const adoptedLineage = ({ writerRun, adoptedSummaries }: Pick<MemoryEvent, "writ
 /**
  * A staged event as it goes live, with no revision, which the store stamps. `pinned`, `suppressed` and
  * `userCorrected` are the union from standing overlapping live events, carried ones included, so a
- * partially rebuilt suppressed event cannot expose its surviving text. Adoption lineage is separate:
+ * partially rebuilt suppressed event cannot expose its surviving text. The title and summary cross
+ * only from exactly one corrected standing event, counted by id, with the same set of source message
+ * ids as the staged event; other overlaps carry only the mark. Adoption lineage is separate:
  * `ADOPTED_WRITER_RUN` or `adoptedSummaries` on any overlapping event, retracted ones included, keeps
  * the stored summaries resettable through later rebuilds.
  */
@@ -270,12 +272,25 @@ function swappedEvent(
     { createdRevision, ...event }: MemoryEvent,
     overlapping: readonly MemoryEvent[],
 ): MemoryEventWrite {
-    const standing = overlapping.filter(({ status }) => status !== "retracted");
+    const standing = [
+        ...new Map(
+            overlapping.filter(({ status }) => status !== "retracted").map((entry) => [entry.id, entry]),
+        ).values(),
+    ];
+    const stagedIds = new Set(sourceIds(event));
+    const corrected = standing.filter((entry) => {
+        if (!entry.userCorrected) {
+            return false;
+        }
+        const ids = new Set(sourceIds(entry));
+        return ids.size === stagedIds.size && [...ids].every((id) => stagedIds.has(id));
+    });
     return {
         ...event,
         ...(standing.some(({ pinned }) => pinned) ? { pinned: true } : {}),
         ...(standing.some(({ suppressed }) => suppressed) ? { suppressed: true } : {}),
         ...(standing.some(({ userCorrected }) => userCorrected) ? { userCorrected: true } : {}),
+        ...(corrected.length === 1 ? { title: corrected[0].title, summary: corrected[0].summary } : {}),
         ...(overlapping.some(adoptedLineage) ? { adoptedSummaries: true } : {}),
     };
 }
@@ -290,7 +305,9 @@ function swappedEvent(
  * gone or disabled, past the plan, or none. Each staged event takes the marks of every standing live event
  * it shares a message with, carried ones included, so rebuilding what survives of a suppressed event does
  * not expose it, and the adoption's lineage from any such event, so a chat rebuilt any number of times
- * keeps the reset of its stored summaries. Pages and threads not in the staged set go: an event carried
+ * keeps the reset of its stored summaries. Text crosses only from exactly one corrected standing event
+ * with the same source-message set; otherwise the staged title and summary stay, with the union of marks.
+ * Carried events keep their own text. Pages and threads not in the staged set go: an event carried
  * may then name a page that is gone and a page's `provenance` an event that is, and dangling ids are legal.
  * A section a person marked goes back whole from the live page, a corrected one too although a patch may
  * replace it in an ordinary run, with its heading's history, so the history never sits under a body it

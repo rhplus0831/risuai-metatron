@@ -199,6 +199,18 @@ through `setChatMeta` in `src/ts/storage/chatStore.svelte.ts`.
 Outside the trash a section's `userCorrected` badge is a button: after `alertConfirm` it sends `sectionRelease`, the one
 control that takes the mark off.
 
+Timeline's opened, non-retracted event has a title and summary editor with limit counts, Save, and Cancel. Blank or
+over-limit text cannot be saved. The draft remembers its stored title and summary; a reread that changes either closes
+it with the `changed` notice. Opening another event or closing the current one discards the draft. Read-only or an
+outstanding send disables the controls, and every edit uses the coverage revision through `editStructuredMemory`. The
+corrected badge is held from the record beside `memoryEventView`, and is a button that confirms `eventRelease`,
+including on retracted events. Text stays plain.
+
+After either an accepted or refused `eventText` or `eventRelease`, Timeline rereads coverage and the currently opened
+event's record. It also rereads the story when chosen, or invalidates its cached read so the next switch fetches it.
+Chat, selection, and read-number guards discard older answers. Refusals use the repair notices; an accepted text edit
+closes its draft before the reread, while a refused draft survives only if its stored base still matches.
+
 ### The writer line
 
 `memoryWriterNotice` combines contents, current settings, and the newest receipt; its comment owns priority. Contents'

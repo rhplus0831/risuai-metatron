@@ -49,8 +49,8 @@
 - `server/src/routes/structuredMemory.ts`: HTTP contracts and admission; `registerStructuredMemoryRoutes`, `roundOf`.
 - `server/src/app.ts`: route registration and fence wiring; `registerStructuredMemoryRoutes`, `chatHeld`, `fenced`.
 - `server/src/prompt/memory/structured/edits.ts`: pure edit admission and application; `parseMemoryEdit`,
-  `applyPageEdit`, `applyThreadEdit`, `MemoryEditRefusal`. Repairs (`applyEventRepair`, `flagUnsupportedSections`):
-  [lifecycle](lifecycle.md#files).
+  `applyPageEdit`, `applyThreadEdit`, `applyEventText`, `applyEventRelease`, `MemoryEditRefusal`. Repairs
+  (`applyEventRepair`, `flagUnsupportedSections`): [lifecycle](lifecycle.md#files).
 - `server/src/prompt/memory/structured/pages.ts`: revert rules; `revertChange`, `revertGroup`, `revertedSection`,
   `laterEventCount`. Owner: [page tools](pages.md).
 - `server/src/prompt/memory/structured/writer.ts`: pause-rule re-export shared with the panel's writer line;
@@ -108,8 +108,8 @@ comparison ties rounds together.
 ### The edit route
 
 The panel calls `editStructuredMemory` with the revision of its read and one `StructuredMemoryEdit`. The route header
-defines the request, body cap and refusals; `parseMemoryEdit`, `applyPageEdit` and `applyThreadEdit` own admission and
-the changes to stored records.
+defines the request, body cap and refusals; `parseMemoryEdit`, `applyPageEdit`, `applyThreadEdit`, `applyEventText`, and
+`applyEventRelease` own admission and the changes to stored records.
 
 1. The route checks ids, body and edit shape, then the epoch, then the fence. From the epoch check through
    `store.memory.write` there is no await. `server/src/app.ts` supplies the fence: a queued/running task, a job or
@@ -123,6 +123,13 @@ the changes to stored records.
 
 [Event repairs](lifecycle.md#reconciliation-and-repairs) call `applyEventRepair`, reading the stored chat in the same
 step except for retract. Retraction also passes through `withRetractedEvidence` before the write.
+
+An `eventText` changes only a standing event's `title`, `summary`, and `userCorrected: true`. The title is trimmed,
+non-blank, and at most `eventTitleChars`; the summary must be non-blank and at most `eventSummaryChars`, with its
+whitespace preserved. Nothing is cut. A retracted event refuses `invalid`; equal text is a no-op. An `eventRelease`
+removes only `userCorrected`, including on a retracted event, and is a no-op when the mark is not set. Both address
+`eventId`, read only the stored event, and write without reading the chat or calling `withRetractedEvidence`. Their
+no-ops still pass the revision check. Text and every other field stay after a release.
 
 A `sectionKeep` is the one page edit that reads the events: the route hands `applyPageEdit` the contents' statuses, so
 the keep drops the retracted ids from the section's `provenance` with its `unsupported` flag. With the ids gone,

@@ -68,6 +68,12 @@ The panel sends repairs through [the edit route](records.md#the-edit-route). A `
 run: the old event remains until [the writer commit](writer.md#the-writer-task) replaces it, and a replacement older
 than later evidence uses the [historical path](writer.md#a-writer-run).
 
+A person's event title and summary correction sets `userCorrected` without changing evidence, status, grades, or repair
+marks. `retireRerecorded` carries that corrected title and summary into the replacement, alongside the trust flags and
+thread effects it already carries; the other fields come from the new recording. Releasing the mark keeps the text but
+lets a later recording replace it. A [rebuild](rebuild.md#what-a-rebuild-keeps) carries the text only when exactly one
+corrected standing event cites the same set of messages as the staged event.
+
 Loading a checkpoint starts no work. Its restored `rerecord` marks persist; a later automatic hand-off can process a
 mark that still reads `changed` under a non-`manual` cadence (`automaticRerecords` in
 `server/src/prompt/memory/structured/reconcile.ts`). Other marks wait for a press. See [State](#state) for the two
@@ -278,6 +284,11 @@ takes over.
 
 ### Limitations
 
+- A rebuild can regroup messages. If a staged event has no corrected standing event over exactly its message set, or has
+  more than one, it keeps the writer's title and summary and takes only the correction mark from overlapping standing
+  events. A replaced event's corrected text is then lost; a carried event keeps its text. Other corrected overlaps with
+  different message sets do not prevent a unique exact match from supplying its text. A fresh rebuild discards both text
+  and marks; backfill replaces no event.
 - `moved` and `inserted` are structural readings, not move detection. A single source or a whole block moved reads as
   whole, and a repeat appended after an earlier deletion can read as `inserted`, which a keep answers. The stored
   `index` holds no capture boundary. Decision: Structured Memory D4, archive.

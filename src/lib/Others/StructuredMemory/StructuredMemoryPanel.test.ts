@@ -1694,6 +1694,95 @@ function serveAnchoredEvent() {
     return state;
 }
 
+it("sends an opened event's edited title and summary at the coverage revision and displays the new text", async () => {
+    const state = serveAnchoredEvent();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/edits")) return fetch(url, init, options);
+        state.event = {
+            ...state.event,
+            title: "Gate stayed closed",
+            summary: "Mira could not enter.",
+            userCorrected: true,
+        };
+        state.revision = "corrected-revision";
+        return Response.json({ revision: state.revision, kind: "events", data: state.event });
+    });
+    await open();
+    await chooseTab("timeline");
+    click('[data-memory-event="e"] > button');
+    await settle();
+    press("[data-memory-event-edit]");
+    const title = target.querySelector<HTMLInputElement>("[data-memory-event-editor] input")!;
+    const summary = target.querySelector<HTMLTextAreaElement>("[data-memory-event-editor] textarea")!;
+    expect(title.value).toBe("Gate opened");
+    expect(summary.value).toBe("The gate opened");
+    title.value = "Gate stayed closed";
+    title.dispatchEvent(new Event("input", { bubbles: true }));
+    summary.value = "Mira could not enter.";
+    summary.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    press("[data-memory-event-save]");
+    await settle();
+    expect(sentEdits()).toEqual([
+        {
+            revision: "seen-revision",
+            edit: { kind: "eventText", eventId: "e", title: "Gate stayed closed", summary: "Mira could not enter." },
+        },
+    ]);
+    expect(query('[data-memory-event="e"] > button')?.textContent).toContain("Gate stayed closed");
+    expect(query('[data-memory-event="e"]')?.textContent).toContain("Mira could not enter.");
+    expect(query("[data-memory-event-editor]")).toBeNull();
+    expect(query("[data-memory-event-corrected]")).not.toBeNull();
+});
+
+it("releases an event's correction badge only after confirmation and keeps its text", async () => {
+    const state = serveAnchoredEvent();
+    state.event.userCorrected = true;
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/edits")) return fetch(url, init, options);
+        const { userCorrected, ...released } = state.event;
+        state.event = released;
+        state.revision = "released-revision";
+        return Response.json({ revision: state.revision, kind: "events", data: state.event });
+    });
+    await open();
+    await chooseTab("timeline");
+    click('[data-memory-event="e"] > button');
+    await settle();
+    const badge = "[data-memory-event-corrected]";
+    expect(query(badge)?.textContent?.trim()).toBe(language.structuredMemory.timeline.userCorrected);
+    vi.mocked(alertConfirm).mockResolvedValueOnce(false);
+    press(badge);
+    await settle();
+    expect(sentEdits()).toEqual([]);
+    expect(query(badge)).not.toBeNull();
+    const confirmation = deferred<boolean>();
+    vi.mocked(alertConfirm).mockReturnValueOnce(confirmation.promise);
+    press(badge);
+    await settle();
+    expect(alertConfirm).toHaveBeenLastCalledWith(language.structuredMemory.timeline.releaseConfirm("Gate opened"));
+    expect(sentEdits()).toEqual([]);
+    confirmation.resolve(true);
+    await settle();
+    expect(sentEdits()).toEqual([{ revision: "seen-revision", edit: { kind: "eventRelease", eventId: "e" } }]);
+    expect(query(badge)).toBeNull();
+    expect(query('[data-memory-event="e"] > button')?.textContent).toContain("Gate opened");
+    expect(query('[data-memory-event="e"]')?.textContent).toContain("The gate opened");
+});
+
+it("shows a retracted event's details without an Edit control", async () => {
+    const state = serveAnchoredEvent();
+    state.event.status = "retracted";
+    await open();
+    await chooseTab("timeline");
+    click('[data-memory-event="e"] > button');
+    await settle();
+    expect(query('[data-memory-event="e"]')?.textContent).toContain("The gate opened");
+    expect(query("[data-memory-event-edit]")).toBeNull();
+});
+
 it("reads story once per refresh, showing unretracted summaries in message order and keeping titles on failure", async () => {
     serveMemory();
     const messages = findChat(ref)!.message;

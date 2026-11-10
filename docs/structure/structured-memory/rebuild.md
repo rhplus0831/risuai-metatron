@@ -100,6 +100,13 @@ is decided against live records at the swap, so a retraction during the run coun
 aliases (`namedByUser`) seeds like one with a person's grade or context mode: its id, title, and aliases, and only its
 marked sections, so a language change does not retitle it. A fresh rebuild forgets it, like every mark.
 
+Each staged event takes the trust marks of standing live events that share a source message with it. It takes a
+corrected title and summary only when exactly one of those events holds `userCorrected` and cites the same set of source
+message ids as the staged event. Overlaps are counted by event id, since several shared messages repeat the same event.
+Other corrected overlaps with different message sets do not affect that count. With zero or several exact matches, only
+the marks cross and the staged text stays. An event the swap carries keeps its own text; a fresh rebuild carries neither
+corrected text nor marks, and backfill replaces nothing.
+
 No chat or `hypaV3Data` is written. An adopted chat's stored summaries stay until [reset](projection.md#the-reset), and
 the projection stands aside while they remain. The live store's write also preserves an adoption decline.
 

@@ -2839,6 +2839,16 @@ export const languageKorean = {
         },
         timeline: {
             view: "사건 보기",
+            edit: "편집",
+            title: "사건 제목",
+            summary: "사건 요약",
+            save: "저장",
+            cancel: "취소",
+            characters: (count: number, limit: number) => `${count} / ${limit}`,
+            userCorrected: "직접 수정됨",
+            release: "이 표시 해제",
+            releaseConfirm: (title: string) =>
+                `“${title}” 사건의 “직접 수정됨” 표시를 해제할까요? 제목과 요약은 그대로 남지만, 다시 기록하거나 기억을 전체 재생성할 때 바뀔 수 있습니다.`,
             views: { titles: "제목", story: "줄거리" },
             empty: "이 채팅에는 아직 기록된 사건이 없습니다.",
             turnsAgo: (turns: number) => `${turns}턴 전`,

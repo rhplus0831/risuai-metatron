@@ -263,7 +263,8 @@ export function withRetractedEvidence(
  * What `changes` commits for `window`, or null when `window` re-records an event that no longer wants
  * it. A window that re-records an event, in the writer's final commit, the one with an event in it,
  * retires the event it replaces in the same write: the new event carries the old one's `pinned`,
- * `suppressed`, and `userCorrected` when set, the old one is written `retracted`, without its mark or
+ * `suppressed`, and `userCorrected` when set, and its title and summary when `userCorrected` is set.
+ * All other recording fields stay new. The old one is written `retracted`, without its re-record mark or
  * `staleReason`, and the sections that leaves unsupported are flagged. Threads keep their state, with
  * `openedBy` and `closedBy` naming the replacement wherever they named the old event, including threads
  * already written by `changes`. The replacement also carries the old event's `close` and ended `transitions`
@@ -329,7 +330,16 @@ export function retireRerecorded(
     }));
     return withUnsupportedSections(store, chatRef, {
         ...changes,
-        events: [{ ...recorded, ...marks, openThreads }, ...others, { ...retired, status: "retracted" }],
+        events: [
+            {
+                ...recorded,
+                ...marks,
+                ...(old.userCorrected ? { title: old.title, summary: old.summary } : {}),
+                openThreads,
+            },
+            ...others,
+            { ...retired, status: "retracted" },
+        ],
         ...(threads.length > 0 ? { threads } : {}),
     });
 }

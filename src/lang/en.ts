@@ -2954,6 +2954,16 @@ export const languageEnglish = {
         },
         timeline: {
             view: "Timeline view",
+            edit: "Edit",
+            title: "Event title",
+            summary: "Event summary",
+            save: "Save",
+            cancel: "Cancel",
+            characters: (count: number, limit: number) => `${count} / ${limit}`,
+            userCorrected: "Corrected by you",
+            release: "Remove this mark",
+            releaseConfirm: (title: string) =>
+                `Remove the “Corrected by you” mark from “${title}”? The title and summary stay, but a re-record or rebuild may replace them.`,
             views: { titles: "Titles", story: "Story" },
             empty: "This chat has no recorded events yet.",
             turnsAgo: (turns: number) => (turns === 1 ? "1 turn ago" : `${turns} turns ago`),
