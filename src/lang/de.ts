@@ -861,8 +861,7 @@ export const languageGerman = {
     importPersona: "Profil importieren",
     export: "Exportieren",
     import: "Importieren",
-    supporterThanks: "Dankessagung",
-    supporterThanksDesc: "Danke für Ihre Unterstützung!",
+    supporterThanks: "RisuAI-Unterstützer",
     donatorPatreonDesc:
         "Standardmäßig wird es nicht in der Liste angezeigt, um die Privatsphäre zu wahren. Wenn Sie Ihren Spitznamen anzeigen möchten, gehen Sie auf die Risuai Patreon-Seite und klicken Sie auf den 'Link' Button",
     useNamePrefix: "Einen Präfix vor dem Namen verwenden",

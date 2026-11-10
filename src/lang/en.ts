@@ -1377,8 +1377,12 @@ export const languageEnglish = {
     importPersona: "Import Persona",
     export: "Export",
     import: "Import",
-    supporterThanks: "Supporter Thanks",
-    supporterThanksDesc: "Thank you for your support!",
+    supporterThanks: "RisuAI Supporters",
+    // The supporter page lists the original RisuAI project's Patreon supporters, not this app's: the notice and the
+    // button label say so.
+    supporterUpstreamNotice:
+        "These are the people who support the original RisuAI project on Patreon. This app is not run by RisuAI, and the buttons below lead to RisuAI's Patreon page and its name registration.",
+    supporterLinkName: "Add your name on RisuAI's Patreon",
     supporterListLoadFailed: "The supporter list could not be loaded. Check your connection and open this page again.",
     donatorPatreonDesc:
         "For default, it will not be shown in the list for privacy. If you want to show your nickname, go to Risuai's patreon page and press the link button.",

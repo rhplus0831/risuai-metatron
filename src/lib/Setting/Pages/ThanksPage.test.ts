@@ -49,6 +49,19 @@ describe("ThanksPage", () => {
         expect(page.textContent).toContain(language.supporterListLoadFailed);
     });
 
+    // The list and the buttons belong to the original RisuAI project; the page says so whether or not the list loads.
+    it("names RisuAI as the project the supporters back, even when the list fails to load", async () => {
+        vi.stubGlobal(
+            "fetch",
+            vi.fn(async () => Promise.reject(new TypeError("Failed to fetch"))),
+        );
+        const page = await render();
+        expect(page.querySelector("h2")?.textContent).toBe(language.supporterThanks);
+        expect(language.supporterThanks).toContain("RisuAI");
+        expect(page.querySelector('[role="note"]')?.textContent?.trim()).toBe(language.supporterUpstreamNotice);
+        expect(page.textContent).toContain(language.supporterLinkName);
+    });
+
     it("lists the supporters by tier when the list loads", async () => {
         vi.stubGlobal(
             "fetch",

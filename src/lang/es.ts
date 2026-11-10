@@ -852,8 +852,7 @@ export const languageSpanish = {
     importPersona: "Importar Persona",
     export: "Exportar",
     import: "Importar",
-    supporterThanks: "Agradecimiento a los Soportes",
-    supporterThanksDesc: "¡Gracias por tu apoyo!",
+    supporterThanks: "Patrocinadores de RisuAI",
     donatorPatreonDesc:
         "Por defecto, no se mostrará en la lista por privacidad. Si deseas mostrar tu apodo, ve a la página de patreon de Risuai y presiona el botón de enlace.",
     useNamePrefix: "Usar Prefijo de Nombre",

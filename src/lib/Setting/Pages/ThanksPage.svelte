@@ -33,7 +33,10 @@
 </script>
 
 <h2 class="text-2xl font-bold mt-2">{language.supporterThanks}</h2>
-<span class="mb-2 text-textcolor2">{language.supporterThanksDesc}</span>
+<!-- The list and both buttons belong to the original RisuAI project, not to this app. -->
+<p class="my-3 p-3 border border-darkborderc rounded-md text-sm text-textcolor" role="note">
+    {language.supporterUpstreamNotice}
+</p>
 
 <!-- Patreon Button -->
 <div class="flex items-center justify-center rounded-md flex-wrap gap-2">
@@ -50,12 +53,12 @@
         />
     </button>
     <button
-        class="h-12 w-44 bg-slate-700 font-bold text-sm"
+        class="h-12 w-44 px-2 bg-slate-700 font-bold text-sm leading-tight"
         onclick={() => {
             openURL("https://sv.risuai.xyz/patreon");
         }}
     >
-        ADD YOUR NAME
+        {language.supporterLinkName}
     </button>
 </div>
 
@@ -69,7 +72,7 @@
         {#each supporter.V as support}
             <div class="flex flex-col items-center justify-center border-selected border rounded-sm">
                 <div class="flex justify-center items-center py-4 px-8">
-                    <span class="font-black prism-font prism-font-gold text-3xl">{support}</span>
+                    <span class="font-black prism-font prism-animated prism-font-gold text-3xl">{support}</span>
                 </div>
             </div>
         {/each}
@@ -79,7 +82,7 @@
         {#each supporter.IV as support}
             <div class="flex flex-col items-center justify-center border-selected border rounded-sm">
                 <div class="flex justify-center items-center py-4 px-8">
-                    <span class="font-black prism-font prism-font-silver text-2xl">{support}</span>
+                    <span class="font-black prism-font prism-animated prism-font-silver text-2xl">{support}</span>
                 </div>
             </div>
         {/each}
@@ -135,14 +138,24 @@
     .prism-font {
         text-align: center;
         color: transparent;
-        background-size: 150px 100%;
+        background-size: 100% 100%;
         background-clip: text;
-        animation-name: shimmer;
-        animation-duration: 2s;
-        animation-iteration-count: infinite;
         background-repeat: no-repeat;
         background-position: 0 0;
         background-color: #222;
+    }
+    /*
+     * Only the two top tiers shimmer. A `background-position` animation under `background-clip: text` cannot run on the
+     * compositor, so every animated name costs a style recalculation and a repaint on each frame, and the list holds
+     * well over a thousand names. The lower tiers keep the same gradient, stretched over the name and still.
+     */
+    @media (prefers-reduced-motion: no-preference) {
+        .prism-animated {
+            background-size: 150px 100%;
+            animation-name: shimmer;
+            animation-duration: 2s;
+            animation-iteration-count: infinite;
+        }
     }
     @keyframes shimmer {
         0% {
@@ -151,7 +164,7 @@
         50% {
             background-position: top right;
         }
-        0% {
+        100% {
             background-position: top left;
         }
     }

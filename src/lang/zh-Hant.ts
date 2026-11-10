@@ -894,8 +894,7 @@ export const languageChineseTraditional = {
     importPersona: "匯入使用者人設",
     export: "匯出",
     import: "匯入",
-    supporterThanks: "感謝贊助者",
-    supporterThanksDesc: "感謝您的支持！",
+    supporterThanks: "RisuAI 贊助者",
     supporterListLoadFailed: "無法載入贊助者列表。請檢查網路連線後重新開啟此頁面。",
     donatorPatreonDesc:
         "基於隱私考量，預設不會顯示於清單中。若希望顯示您的暱稱，請前往 Risuai 的 Patreon 頁面並按下連結按鈕",

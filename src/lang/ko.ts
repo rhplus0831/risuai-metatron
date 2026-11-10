@@ -1656,8 +1656,10 @@ export const languageKorean = {
     importPersona: "페르소나 가져오기",
     export: "내보내기",
     import: "가져오기",
-    supporterThanks: "후원자",
-    supporterThanksDesc: "후원해 주신 분들께 진심으로 감사드립니다!",
+    supporterThanks: "RisuAI 후원자",
+    supporterUpstreamNotice:
+        "이 목록은 원본 RisuAI 프로젝트를 Patreon으로 후원하신 분들입니다. 이 앱은 RisuAI가 운영하지 않으며, 아래 버튼은 RisuAI의 Patreon과 이름 등록 페이지로 연결됩니다.",
+    supporterLinkName: "RisuAI Patreon 이름 연동",
     supporterListLoadFailed: "후원자 목록을 불러오지 못했습니다. 연결 상태를 확인한 뒤 페이지를 다시 열어 주세요.",
     donatorPatreonDesc:
         "개인정보 보호를 위해 기본적으로 목록에 닉네임이 표시되지 않습니다. 닉네임을 등재하려면 Risuai Patreon 페이지에서 연동(Link) 버튼을 눌러 주세요.",

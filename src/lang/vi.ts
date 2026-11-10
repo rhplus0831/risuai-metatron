@@ -845,8 +845,7 @@ export const languageVietnamese = {
     importPersona: "Nhập khẩu nhân vật",
     export: "Xuất khẩu",
     import: "Nhập khẩu",
-    supporterThanks: "Người ủng hộ Cảm ơn",
-    supporterThanksDesc: "Cảm ơn sự hỗ trợ của bạn!",
+    supporterThanks: "Người ủng hộ RisuAI",
     donatorPatreonDesc:
         "Theo mặc định, nó sẽ không được hiển thị trong danh sách bảo mật. nếu bạn muốn hiển thị biệt danh của mình, hãy truy cập trang patreon của Risuai và nhấn nút liên kết.",
     useNamePrefix: "Sử dụng tiền tố tên",
