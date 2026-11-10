@@ -296,6 +296,64 @@ describe("/cut and /del", () => {
 });
 
 describe("messages and variables", () => {
+    it("/sendas appends the whole status-window reply as one character message", async () => {
+        const ref = freshChat();
+        const reply =
+            '<STATUS>[ DATE: 2024.05.01 | TIME: 09:08 | LOC: ROOM 6 | TIME LIMIT: 35:59:00 ]\n"Wait," she said. "Go."';
+
+        expect(await processMultiCommand(`/sendas ${reply}`, ref)).not.toBe(false);
+        expect(
+            chat
+                .findChat(ref)!
+                .message.slice(4)
+                .map(({ role, data }) => ({ role, data })),
+        ).toEqual([{ role: "char", data: reply }]);
+    });
+
+    it("/send and /comment preserve literal text and trim only its edges", async () => {
+        const ref = freshChat();
+        const literal = '"Wait,"  she said. hp=10 | ready\n  "Go."';
+
+        expect(await processMultiCommand(`/send\n  ${literal} \n`, ref)).not.toBe(false);
+        expect(await processMultiCommand(`/comment \n  ${literal} \n`, ref)).not.toBe(false);
+        expect(
+            chat
+                .findChat(ref)!
+                .message.slice(4)
+                .map(({ role, data }) => ({ role, data })),
+        ).toEqual([{ role: "user", data: `${literal}<Comment>\n${literal}\n</Comment>` }]);
+    });
+
+    it("text commands after a pipe take the remaining text and substitute the piped value", async () => {
+        const ref = freshChat();
+
+        expect(await processMultiCommand("/pass piped words | /sendas", ref)).not.toBe(false);
+        expect(await processMultiCommand("/pass x | /sendas a | b", ref)).not.toBe(false);
+        expect(
+            await processMultiCommand("/pass piped words | /sendas\n{{pipe}} / {{pipe}} / {{slot}} / {{slot}}", ref),
+        ).not.toBe(false);
+        expect(await processMultiCommand("/sendasSuffix ignored", ref)).toBe(false);
+        expect(
+            chat
+                .findChat(ref)!
+                .message.slice(4)
+                .map(({ role, data }) => ({ role, data })),
+        ).toEqual([
+            { role: "char", data: "piped words" },
+            { role: "char", data: "a | b" },
+            { role: "char", data: "piped words / {{pipe}} / piped words / {{slot}}" },
+        ]);
+    });
+
+    it("other commands still split pipes outside quotes, unquote arguments, and read named arguments", async () => {
+        const ref = freshChat();
+
+        expect(await processMultiCommand('/pass "a | b" | /setvar key=note {{pipe}} | /getvar key=note', ref)).toBe(
+            "a | b",
+        );
+        expect(chat.findChat(ref)!.scriptstate).toEqual({ $note: "a | b" });
+    });
+
     it("preserves inner and unmatched quotes in arguments and surrounding quotes in piped values", async () => {
         const ref = freshChat();
         expect(await processMultiCommand('/pass say "hi" now', ref)).toBe('say "hi" now');

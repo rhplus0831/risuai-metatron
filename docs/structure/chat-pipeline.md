@@ -102,6 +102,8 @@
   argument, so `/multisend "a|||b"` sends `a` and `b` (server twin: `server/src/prompt/commands.ts`). Manual-trigger
   internals: [scripts and triggers](scripts-triggers.md). A command job runs its queued `/multisend` parts on the server
   under one job id and chat slot ([generation](server-generation.md)).
+  - In the input only, `/send`, `/sendas` and `/comment` take the rest of the input as their text (`|`, `=`, spacing and
+    quotes kept), so they end a line; the server twin keeps the pipe rule for stored trigger commands.
 - `src/ts/process/files/multisend.ts`: file attachments (`postChatFile`).
 - `src/ts/process/group.ts`: group membership (`addGroupChar`, `rmCharFromGroup`).
 - `src/ts/process/infunctions.ts`: the tab's CBS calculator adapter (`calcString`).

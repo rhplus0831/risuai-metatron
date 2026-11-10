@@ -63,9 +63,10 @@ export async function runMultisend(ref: ChatRef, clearMode: boolean, parts: read
  * server trigger's `v2Command` runs on the server too). The chat is pinned (kept loaded) for the
  * whole line, and loaded first.
  *
- * Commands are piped with `|` (outside double quotes). One pair of surrounding double quotes is removed
- * from each argument before substitution: each command's result fills the first `{{pipe}}` and the first
- * `{{slot}}` of the next one's argument, and is that argument when it has none. `false` means the line
+ * `|` outside double quotes pipes commands until `/send`, `/sendas`, or `/comment` takes the rest of the
+ * input as text, trimming only its edges. Other commands remove one surrounding double quote pair from
+ * their argument. Each command's result fills the first `{{pipe}}` and the first `{{slot}}` of the next
+ * one's argument, and is that argument when it has none. `false` means the line
  * contains an unknown command, even when an earlier part of it ran: the screen then sends the line as
  * ordinary text. `/send` only appends a user message; it does not generate.
  */
@@ -87,6 +88,9 @@ async function processPinnedCommands(command: string, ref: ChatRef | null) {
     let lastIndex = 0;
     let quoteDepth = false;
     for (let i = 0; i < command.length; i++) {
+        if (i === lastIndex && matchTextCommand(command.slice(lastIndex))) {
+            break;
+        }
         const char = command[i];
         if (char === '"') {
             quoteDepth = !quoteDepth;
@@ -307,12 +311,15 @@ async function processCommand(command: string, pipe: string, ref: ChatRef | null
             - Example: /speak Hello World
             # /send [text]
             - Send text to chat
+            - Rest of the line is text; | does not pipe commands
             - Example: /send Hello World
             # /sendas [text]
             - Send text to chat as character
+            - Rest of the line is text; | does not pipe commands
             - Example: /sendas Hello World
             # /comment [text]
             - Add comment to chat
+            - Rest of the line is text; | does not pipe commands
             - Example: /comment Hello World
             # /cut [index]
             - Cut chat message
@@ -351,7 +358,20 @@ async function processCommand(command: string, pipe: string, ref: ChatRef | null
     return false;
 }
 
+function matchTextCommand(command: string) {
+    return /^\s*\/?(send|sendas|comment)(?=\s|$)/.exec(command);
+}
+
 function commandParser(command: string, pipe: string) {
+    const textCommand = matchTextCommand(command);
+    if (textCommand) {
+        const arg = command
+            .slice(textCommand[0].length)
+            .trim()
+            .replace("{{pipe}}", pipe) //STScript compatibility
+            .replace("{{slot}}", pipe); //Risu default
+        return { commandName: textCommand[1], arg, namedArg: {} };
+    }
     if (command.startsWith("/")) {
         command = command.slice(1);
     }
