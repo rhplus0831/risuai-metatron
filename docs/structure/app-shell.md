@@ -331,6 +331,8 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
 - `src/ts/keepAliveAudio.test.ts` runs the controller over stubbed `Audio`, `URL.createObjectURL`, and
   `navigator.mediaSession`.
 - Not tested: screen precedence, platform detection, the other hotkey actions, and `Mutex` (no focused unit tests).
+  `src/App.svelte`'s `ondrop` event wiring is also untested; `characterCardsCharxImport.test.ts` calls
+  `importDroppedFile` directly.
 - Not tested: Chrome's skipping of entries pushed without a user activation, and real Navigation API behavior (checked
   by hand).
 - Not tested: whether Chrome shows the tab as playing audio (checked by hand).

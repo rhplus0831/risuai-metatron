@@ -367,6 +367,10 @@ lookahead starts at stored coverage and does not defer summaries.
 
 ### Gotchas
 
+- `src/ts/process/transformers.ts` `registerOnnxModel` reads members lazily, but `zipFile.ts` `readZipEntry` calls
+  `inflateSync` on the tab's main thread; a large deflated ONNX member can block settings interaction during inflation.
+- In `server/src/prompt/memory/memoryTasks.ts`, `endRunning` can publish a pending task's `queued` status after an abort
+  callback already publishes it; status consumers must tolerate duplicate `queued` events for one task id.
 - The vector cache's 256 MiB default bounds vector bytes, not the SQLite file, its index, or WAL. Eviction runs
   synchronously on the server thread, at most 256 rows per `set` (`trimRowsPerSet`) in the insert's transaction,
   continuing toward 90% on later inserts; a vector that still cannot fit is skipped. Startup trims an over-bound cache

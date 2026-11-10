@@ -205,6 +205,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   copy.
 - A locked message (`isMessageLocked`: generating, or its final write not yet acknowledged) has its edit, delete, and
   regenerate controls disabled; reroll and chat deletion alert `chatGenerating` while the chat holds a lock.
+- `Chat.svelte` `isInteractiveBodyTarget` excludes an entire `form[risu-form]` from click-to-edit, but plain form text
+  still opens message editing when `clickToEdit` is enabled; preserve that distinction when changing the selector.
 - HTML boundaries:
   - `ChatBody` sanitizes body HTML through `shownBody` and renders the fixed `LOADING_HTML` literal while translation
     loads; `BackgroundDom` and suggestions render sanitized parser output. Plugin panels render HTML sanitized with
@@ -263,9 +265,12 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - Browser scripts: `util/playwright/measureChats.mjs` checks production row counts, memory, and streaming cost;
   `util/playwright/checkSidebarChatStatus.mjs` covers the status badges.
 - Not tested: the search-to-transcript claim and scroll wiring, sidebar composition, mobile interactions, and a failed
-  screenshot's restore need a browser check.
+  screenshot's restore need a browser check. The mounted `DefaultChatScreen.svelte` bookmark path through
+  `scrollToMessageId` is also untested; `messageJump.test.ts` drives only the pure helper.
 - Not tested automatically: lost-follow recovery. Switch away from a running chat, stop the server until reattach
   attempts fail, confirm its recovery badges, then restart the server and reopen the chat.
+- Not tested: retaining `Chat.svelte`'s inline `draft` across a server row refresh while editing; `Chat.draft.test.ts`
+  covers local typing and saving, without a remote message replacement.
 
 ## Known Hazards
 
@@ -298,6 +303,11 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 
 ### Gotchas
 
+- The avatar variant of `ChatStatusBadge.svelte` uses `pointer-events-none`, so a badge-level `title` cannot supply
+  hover text; `Sidebar.svelte` adds status to the avatar name and `PinnedChatsRail.svelte` puts it in the row's `title`.
+- `ContextMeter.svelte`'s `estimate` counts displaced old history; for an ordinary next send with nonempty user and
+  reply messages, the next report's kept message count is the previous kept count + 2 minus that displacement, because
+  `DefaultChatScreen.svelte` sends a new user message and the previous reply joins history.
 - `src/lib/ChatScreens/Message.svelte` is an unused TODO rewrite; `src/lib/UI/GUI/SyntaxHighlightedTextarea.svelte` is
   empty. Confirm intent before extending either.
 - `LazyPortal` has no active callers found.

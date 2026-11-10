@@ -195,6 +195,8 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
   an explicit opt-in; see the [slow-test table](test-harness.md#slow-test-table). Run an affected file with
   `pnpm --silent test:agent --all <file>` to include its ordinary and slow cases.
 - Gaps: other v2 editor behavior and `Chat.svelte`'s trigger-id owner token are not directly tested.
+- Not tested: `src/ts/process/serverCommands.ts` `runPinnedServerJob` following the job after `onStart` throws;
+  `serverCommands.test.ts` exercises the normal callback only.
 
 ## Known Hazards
 
@@ -216,6 +218,12 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
 
 ### Gotchas
 
+- In `server/src/tests/scriptWorker.test.ts`, the gated `summed across them` and `right after a resumption` cases can
+  exhaust their Lua budget under load before exercising their intended distinction; a passing gate alone does not prove
+  those distinctions. `luaRuntimeCharge.test.ts` checks summation with a controlled clock.
+- `src/ts/process/serverCommands.ts` `followJobToEnd` accepts the terminal result even when a resumed reply is already
+  present and streaming; successful completion need not increase the message count, so recovery must not use that count
+  as its success check.
 - `src/lib/Playground/PlaygroundRegex.svelte` is empty; it is not an implemented regex playground.
 - Job `scriptstate` and `note` setters batch until a microtask or explicit flush; yielding or awaiting can split writes.
   Other chat writes flush first, so their refusal preserves earlier setters.

@@ -258,16 +258,29 @@ and keeps what spans files.
 - Settings-report redaction: `pnpm --silent test:agent src/ts/storage/tests/snapshots.test.ts` (`buildSettingsReport`).
 - Not tested: terms-dialog rendering, `RealmMain` leaving on decline, `LocalWriter`/streamSaver integration, and a
   backup restored in upstream's own app. There is no dedicated e2e spec for this area; the compatibility script does not
-  run upstream's `LoadLocalBackup` UI.
+  run upstream's `LoadLocalBackup` UI. `upstreamBackupClient.ts` `tabExportRequest` including the open chat as
+  `selectedChat` is also untested; `backuplocal.test.ts` exports from home.
+- Not tested: `importDatabase.ts` `convertPresets` rethrowing an unexpected error rather than treating it as a
+  `ResourceValidationError`; `upstreamImportSettings.test.ts` exercises validation refusals.
 
 ## Known Hazards
 
 ### Limitations
 
 - Kept tab-side or unbounded in the Realm import (2026-11-09, Found Issues Clearance B5): a legacy JSON card's hub
-  resources are fetched by the tab (`getHubResources`); a CharX card's embedded `module.risum` is read in the tab
-  (`readModule`), which stores its assets; `planPngFile` (`server/src/routes/importPng.ts`) reads one key prefix per
-  tEXt chunk.
+  resources are fetched by the tab (`characterCards.ts` `getHubResources`) without retry, so a transient fetch failure
+  ends the import; a CharX card's embedded `module.risum` is read in the tab (`readModule`), which stores its assets;
+  `planPngFile` (`server/src/routes/importPng.ts`) reads one key prefix per tEXt chunk. Decision: Large Asset Import and
+  Export, kept limits, [archive](../archived-plan/README.md).
+- Without keys, `exportDatabase.ts` `clearAuxiliaryKeys` writes `authRefreshes: []` even when the field is absent;
+  absence is not preserved in the upstream export. Decision: Upstream .bin Compatibility S6,
+  [archive](../archived-plan/README.md).
+- In `exportDatabase.ts` `placeNamedKeys`, a chosen slot whose named credential no longer exists leaves its upstream
+  field unreserved, so a later slot can fill it with a different key. Decision: Upstream .bin Compatibility S6,
+  [archive](../archived-plan/README.md).
+- `importDatabase.ts` `convertPresets` reports a repaired model-profile reference as `modelPresets[<generated id>]`, so
+  an invalid-setting example can contain an opaque id rather than a preset name. Decision: Upstream .bin Compatibility
+  S3, [archive](../archived-plan/README.md).
 - The RisuRealm terms gate is client-side only: `GET /hub-proxy/*` (unauthenticated) and `POST /api/import/realm` do not
   check `ui.realmTermsAccepted`. Decision: owner, 2026-11-10 (known-issues review): the gate is a notice to the server's
   owner, not a security boundary.

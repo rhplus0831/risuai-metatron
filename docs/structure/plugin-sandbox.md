@@ -343,6 +343,8 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 
 ### Gotchas
 
+- `PluginSettings.svelte` uses one `alertConfirmWithCheckbox` for removal; "Also delete its stored data" controls
+  `deleteOwnedPluginStorage`, which runs after `loadPlugins`, so removing a plugin alone retains its stored data.
 - Full character reads use `withChatsCopy`; records hold no chats. Outside hooks, `getDatabase` and `getChats` use
   `withDetachedDatabaseChats`: flush, then shared unloaded reads or `src/ts/plugins/apiV3/detachedChatCache.ts`, never
   installed; held chats stay pinned until the synchronous copy. A fully held current page skips the flush. Unsafe copies

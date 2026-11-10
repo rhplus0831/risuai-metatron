@@ -396,11 +396,17 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
   `pnpm --silent test:agent server/src/tests/resources server/src/tests/{resourceCompression,messageSearch}.test.ts`.
 - Snapshots, archives, and imports:
   `pnpm --silent test:agent server/src/tests/{snapshots,backups,importModule,importCharx,importRealm}.test.ts server/src/tests/upstream`.
+- Not tested: `upstream/importRunner.ts` `runUpstreamImportWorker` rejecting a clean worker exit without a result.
+  `routes/backupsUpstream.ts` `registerUpstreamImportRoutes` committing while a generation job runs and observing that
+  job end through maintenance is also untested; the route tests observe a maintenance listener only.
 
 ## Known Hazards
 
 ### Limitations
 
+- `server/src/routes/resourceBoot.ts` `bootItems` recomputes every item's hash in a stale item-kind record on each boot
+  read; the client's cache saves transfer bytes, but there is no server hash cache to save this work. Decision: Boot
+  Resource Cache S4, [archive](../archived-plan/README.md).
 - Every listed snapshot is an [asset mark](self-host-server.md#asset-mark) root, so its assets stay until it rotates
   away or is deleted. Decision: Asset Lifecycle D3, archive.
 - The SQLite resource store assumes one server process and a local filesystem
@@ -453,6 +459,9 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
 
 ### Gotchas
 
+- `server/src/data/chatStore.ts` `chatFeedChange` captures changed metadata field names at write time for its row
+  manifest; `readRows` has only current metadata and cannot reconstruct that diff from stored history, so preserve those
+  names when changing the feed format.
 - Large backup, module, CharX, and upstream backup uploads share Node's four-hour whole-request timeout.
 - Resource depth validation runs on parsed JSON after serialization; the HTTP body cap bounds uploads, but in-process
   callers can spend more work before rejection.

@@ -327,7 +327,8 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
   `docs/reports/audits/deep-audit/server-client-stabilization.md`.
 - A quarantined resource stays in the mirror until a changed projection or Retry saves or Discard applies. It survives a
   reload, as a recovery draft at boot, only when the journal runs and its content is eligible and within budget. Other
-  edits do not retry it. Decision: Static Audit Fixes SA3, archive.
+  edits do not retry it. `resourceSync.svelte.ts` `retryRefused` and edits keep the saved base; a stale attempt can
+  therefore discard the mirror draft with the normal 409 reload notice. Decision: Static Audit Fixes SA3, archive.
 - A refused chat create is out of collection-removal reconciliation until an edit, Retry, recreation, or Discard; its
   parent's server-side deletion still clears it. Decision: as above.
 - [Isolated](#refusals-and-quarantine) requests are atomic only per request. Decision: `resourceSync.svelte.ts`

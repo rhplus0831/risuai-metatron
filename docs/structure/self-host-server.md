@@ -409,6 +409,10 @@ belong to [test-harness](test-harness.md); `slow` and `e2e` memberships are in i
   copy stays under the [accepted exposure](#invariants). Decision: Direct Asset URLs closeout, archive.
 - Swept bytes stay in a browser's immutable cache until evicted; browser-only keys are no root. Decision: Asset
   Lifecycle D11, archive.
+- In `server/src/data/assetLifecycle.ts`, `sweep` calls `remark` when `store.writeCount()` changes; the default is a
+  full live-reference re-mark, so even an unrelated committed write can trigger that work. The re-mark runs
+  synchronously on the serving thread, so every request waits until it finishes. Decision: Asset Lifecycle D6 and D13,
+  [archive](../archived-plan/README.md).
 - `/api/set_password` and `/api/crypto` are unauthenticated by design and rate limited. A server has one password and
   registered browser keys, not separate users. Decision: Static Audit Fixes Q6 and Server-Owned Data non-goals, archive.
 - A chunked body over the cap to the snapshot restore is not refused: the operation runs and the adapter discards the

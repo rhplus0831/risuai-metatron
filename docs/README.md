@@ -14,15 +14,14 @@ The split is by lifetime. A backlog file is expected to shrink; a report is a sn
 
 ## Backlog
 
-| File                                                     | Holds                                                                                     | An entry leaves when                        |
-| -------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------- |
-| [found-issues.md](backlog/found-issues.md)               | The inbox: bugs, stale docs, and test gaps a session noticed outside its task, unverified | It is checked and fixed, placed, or closed  |
-| [known-issues.md](backlog/known-issues.md)               | Confirmed defects, one section per owning guide                                           | The defect is fixed, or the owner keeps it  |
-| [manual-checks.md](backlog/manual-checks.md)             | Checks that need a person, a device, a real provider, or a script nobody ran              | The check passes                            |
-| [deferred-work.md](backlog/deferred-work.md)             | Work finished plans put off                                                               | It is done, planned, or dropped             |
-| [decisions-to-verify.md](backlog/decisions-to-verify.md) | Decisions made while plans ran, not yet confirmed in a guide                              | Its home in a guide is confirmed or written |
-| [open-decisions.md](backlog/open-decisions.md)           | Product questions the surveys left to the owner                                           | The owner decides                           |
-| [upstream-ledger.md](backlog/upstream-ledger.md)         | Every upstream RisuAI commit with its disposition, and how to run the next intake         | Never: it grows with each intake            |
+| File                                             | Holds                                                                                     | An entry leaves when                       |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------- | ------------------------------------------ |
+| [found-issues.md](backlog/found-issues.md)       | The inbox: bugs, stale docs, and test gaps a session noticed outside its task, unverified | It is checked and fixed, placed, or closed |
+| [known-issues.md](backlog/known-issues.md)       | Confirmed defects, one section per owning guide                                           | The defect is fixed, or the owner keeps it |
+| [manual-checks.md](backlog/manual-checks.md)     | Checks that need a person, a device, a real provider, or a script nobody ran              | The check passes                           |
+| [deferred-work.md](backlog/deferred-work.md)     | Work finished plans put off                                                               | It is done, planned, or dropped            |
+| [open-decisions.md](backlog/open-decisions.md)   | Product questions the surveys left to the owner                                           | The owner decides                          |
+| [upstream-ledger.md](backlog/upstream-ledger.md) | Every upstream RisuAI commit with its disposition, and how to run the next intake         | Never: it grows with each intake           |
 
 [Doc Maintenance](structure/README.md#known-hazards-and-the-issue-inbox) defines how a finding moves from the inbox to known issues or a guide.
 

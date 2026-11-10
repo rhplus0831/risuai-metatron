@@ -283,6 +283,8 @@ section.
   English, since `TriggerV2List` fills them from the effect's fields by name.
 - `src/ts/storage/tests/settingWrappers.test.ts` covers manual Spanish selection and retaining Spanish on mount;
   `src/lib/Setting/Pages/presetPages.test.ts` covers initializing text when a persona prompt item switches to `chatML`.
+- Not tested: `MemorySettings.svelte` `estimateMaxMemoryRatio` recomputing after the effective max context changes while
+  mounted; `MemorySettings.maxMemoryEstimate.test.ts` checks initial estimates only.
 
 ## Known Hazards
 
@@ -291,6 +293,12 @@ section.
 - Unconfirmed: some settings controls may materialize missing values when first mounted (`bindPath` creates missing
   containers). `e2e/settingsPages.spec.ts` checks that a second traversal writes nothing, but does not identify any
   first-visit writes. Collapsible sections mount only when opened.
+
+### Limitations
+
+- `PromptSettings.svelte` updates its token-count fields from template items and `tokenScopeKey` only;
+  `tokenCountField.ts` `createTokenCountField` runs counts untracked, so changing a CBS value alone does not refresh
+  prompt-template totals. Decision: Combine Audit Fixes, slice 2, [archive](../archived-plan/README.md).
 
 ### Gotchas
 

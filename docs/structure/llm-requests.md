@@ -340,6 +340,8 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
 - Not tested: `globalFetch` routing beyond `fetchNative`'s transport-branch checks (see
   [network jobs](network-jobs.md#tests)). `checkCredentialTraffic.mjs` omits non-OpenAI provider sends, several
   discovery/account calls, previews, and Whisper through its component.
+- Not tested: aborting the last caller while `server/src/prompt/tokens.ts` `scheduleGoogleCount` waits for a limiter
+  slot; `tokens.test.ts` covers active-call cancellation and queue draining, but not cancellation while queued.
 
 ## Known Hazards
 

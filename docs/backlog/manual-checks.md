@@ -4,7 +4,7 @@ Checks that a finished plan left to a person, a device, a real provider, or a sc
 
 - The bold name is the plan; its text is `git show <commit>:<path>` from the archive's table. A slice id follows in parentheses where the plan named one.
 - An item that names several environments appears once, under the first section that fits; the other environments are in the item.
-- Nothing here was re-read against the current code when it moved. A later plan may have covered an item: check before spending device time on it.
+- Every item was read against the code and the tests on 2026-11-11. A check of something that is gone, a check that an automated test now covers, and a script a later run executed were removed. No check was performed: an item that is left still needs its device, browser, provider, or server.
 - Delete an item when it passes. When it fails, move it to [found issues](found-issues.md) with what was seen.
 
 ## Phones: Android Chrome and the installed PWA
@@ -46,59 +46,51 @@ Checks that a finished plan left to a person, a device, a real provider, or a sc
 - [ ] **Found Issues Clearance**: the chat list on Firefox and Safari (far-row containment, pixel anchoring, the newest-first reveal).
 - [ ] **Render Work Budget**: the screenshot export's page size at Safari's canvas limit, in Firefox and Safari; far-row containment.
 - [ ] **Context Usage Meter**: the plan's manual check in Firefox and Safari.
-- [ ] **Upstream `.bin` Compatibility (S1)**: Firefox, Safari, and Vite's bundling of msgpackr 2.0.6 beyond `pnpm build`.
+- [ ] **Upstream `.bin` Compatibility (S1)**: Firefox, Safari, and Vite's bundling of msgpackr 2.1.3 beyond `pnpm build`.
 
 ## A real desktop browser, by hand
 
 One tab:
 
 - [ ] **Translation**: the bilingual display.
-- [ ] **Request History and Diagnostics**: the full viewer and error-alert workflow across request sources; content-off rows while earlier content stays; a restore leaving history unchanged.
-- [ ] **Large Asset Import and Export**: a 4,000-asset PNG import's request count and heap (3c); the paged emotion table and the lazy icons in the sidebar rail, folder drag, catalog, and persona list (4a, 4b); the asset client's 429/503 retry (1a); Chrome's answer to a pre-body refusal (409/413/503) on `/api/import/module` and `/api/import/charx` (status or network error, and whether a reset keep-alive socket resends the POST).
-- [ ] **Open Bug Fixes**: P1 (a browser unsubscribe failure, the banner's failure alert, a notification click from an uncontrolled window); M1 (Stop during VITS playback); C8 (a preset switch, a tab return, the credential link's focus, the Thanks page offline); C5 (the `.risum` drop).
+- [ ] **Request History and Diagnostics**: the full viewer and error-alert workflow across request sources; a restore leaving history unchanged.
+- [ ] **Large Asset Import and Export**: a 4,000-asset PNG import's request count and heap (3c); the lazy icons during folder drag (4b); Chrome's answer to a pre-body refusal (409/413/503) on `/api/import/module` and `/api/import/charx` (status or network error, and whether a reset keep-alive socket resends the POST).
+- [ ] **Open Bug Fixes**: P1 (the banner's failure alert, a notification click from an uncontrolled window); M1 (Stop during VITS playback); C8 (a tab return); C5 (the `.risum` drop).
 - [ ] **Search (1)**: the native `<select>` popup in a real desktop browser (headless Chrome does not draw it): Settings › Display on the `light` scheme with a dark OS and on `dark` with a light OS.
-- [ ] **Search (2b)**: drag is off while filtered, folders show open, and drag returns after clearing.
 - [ ] **RisuNest Small Wins (P1)**: the "Unsupported API" badge and the real-iframe expiry.
 - [ ] **RisuNest Small Wins (S1)**: GUI HTML gating under `SafeModeStore` (no unit test either).
 - [ ] **Audit Findings and Performance Leftovers (4d)**: the plugin fixes in a real iframe.
-- [ ] **HypaV3 Background Memory**: the progress overlay and "Stop here and continue"; the sidebar `memory` badge; the modal fence (including after a reconnect); "Summarize now" and "Cancel".
+- [ ] **HypaV3 Background Memory**: the progress overlay and "Stop here and continue"; the sidebar `memory` badge; the modal fence (including after a reconnect).
 - [ ] **Per-Chat Send**: auto mode ending on Go Back; a resumed job's Stop overlapping another chat's send; a slow v3 plugin hook stopped in one chat while another chat runs; Web Push per-chat tags and their dismissal.
 - [ ] **Static Audit Fixes (SA13)**: first-run setup and the damaged-password state.
 - [ ] **Chat Checkpoints (CC5)**: the Checkpoints dialog's auto-policy row against the real policy routes (it was checked with an adapter stand-in before CC4 landed).
-- [ ] **Small Fixes**: static-file cache behavior (SF4); the light-theme prose color and dragging a chat into a new folder (SF6); a chat switch during a lorebook delete and a drag after switching characters with details open (SF7); the HypaV3 bulk resummarize button (SF9, mount tests only); streaming with auto-translation in Off, Balanced, and Strong modes (SF10); the 57 added Korean strings on screen (SF11).
+- [ ] **Small Fixes**: the light-theme prose color (SF6); a drag after switching characters with details open (SF7); the HypaV3 bulk resummarize button (SF9, mount tests only); streaming with auto-translation in Off, Balanced, and Strong modes (SF10); the 57 added Korean strings on screen (SF11).
 - [ ] **Server Thumbnails (ST4)**: the bookmark-list avatars.
-- [ ] **Server Tokenizer (TK4)**: typing in `CharConfig` shows a count after the pause (TK4 skipped it because TK3 landed later).
-- [ ] **Upstream Integration**: submitting a `risu-form` card (UP16); exporting a portrait-less character as PNG to see `reencodeImage` turn WebP into PNG (UP18); module create, cancel, and edit, where opening the Trigger tab counts as content and asset bytes uploaded before a cancel stay stored (UP19); the alert details view (UP21).
-- [ ] **Combine Audit Fixes**: every Manual Check of the archived plan: a Lua form with click-to-edit; a model switch with a lore entry open; a screenshot with a full-size `{{source::char}}` image; a few hundred portraits after the upgrade.
+- [ ] **Upstream Integration**: exporting a portrait-less character as PNG to see `reencodeImage` turn WebP into PNG (UP18); module create, cancel, and edit, where opening the Trigger tab counts as content and asset bytes uploaded before a cancel stay stored (UP19).
+- [ ] **Combine Audit Fixes**: a screenshot with a full-size `{{source::char}}` image; a few hundred portraits after the upgrade.
 - [ ] **Chat Lore Overrides**: the plan's manual check by hand (slice 4 ran it in headless Chrome against a mock provider, reading the request body instead of the DevTool preview).
-- [ ] **Chat Lore Override States**: in the narrowest sidebar a long entry name stays readable beside the control in English and Korean; turn a folder off, add an entry to it in the character tab, send, and confirm the new entry is absent from the prompt; turn the folder back on and confirm an edited member's override applies again while an off member stays off.
-- [ ] **Context Usage Meter**: the plan's manual check for group chats, memory mode, a continue, the unknown estimate, the settings link, and the warning level.
+- [ ] **Chat Lore Override States**: in the narrowest sidebar a long entry name stays readable beside the control in English and Korean.
 - [ ] **HypaV3 Token Budget**: after a real send, convert a ratio preset and confirm the summarize timing is unchanged; lower the max context and confirm the chip shows "memory reduced" with the applied values.
-- [ ] **Deep Audit Fixes**: the memory limit line on screen.
 - [ ] **Render Work Budget**: a multi-page export in an image viewer; a failed export's error alert and scroll restore.
 - [ ] **Asset Lifecycle**: a clicked-through check of the Storage panel beyond the driver.
-- [ ] **Plugin Storage and Data API**: the plugin data page (namespaces, owners, assign, deletes); Reset permissions and a reinstall asking again; the remove dialog's checkbox (default, Enter/Space, unchecked keeps data); the reuse cache after a hidden tab; a summaries call making no chat read; a `getChats` page's order; the developer hint printing once.
+- [ ] **Plugin Storage and Data API**: the plugin data page (namespaces, owners, assign, deletes); Reset permissions and a reinstall asking again; the remove dialog's checkbox (default, Enter/Space, unchecked keeps data); the reuse cache after a hidden tab.
 - [ ] **Found Issues Sweep (C4)**: in the lorebook filter, press + on a host and inside a filter-expanded folder, then open an entry there and change the query: the entries stay visible and open.
 - [ ] **Implementation Audit Fixes (R6)**: export a chat whose theme uses an `@import` webfont and confirm the font is fetched once and the image uses it (the 150-row driver fixture has no `@import` webfont).
 - [ ] **Chat Store and Structured Memory Sweep**: in the cardboard theme an expanded receipt's details overlap the bottom-right icon box by about 3px (B3); the gray `unavailable` health badge with its help icon (B8); a follow lost to a dropped connection, then a same-page retake of that job, shows the live stream (A2, covered only by `generationJobs.test.ts`).
-- [ ] **Found Issues Clearance**: the chatPatch transport; a `/sw/img` URL after a lost controller (F1); the request-log copy-failure display (D3); Web Push in Chrome and Firefox (the enable button right after a reconcile, a service-worker upgrade during a subscribe, a `/`-route click).
+- [ ] **Found Issues Clearance**: Web Push in Chrome and Firefox (the enable button right after a reconcile, a service-worker upgrade during a subscribe, a `/`-route click).
 - [ ] **Structured Memory**: the 69 device, browser, and real-model checks the run's final report listed per slice, among them Firefox and Safari, the Android PWA, a real V3 plugin, and real provider costs. The list is not in the repository.
 
 Two tabs, two browsers, or a dropped connection:
 
-- [ ] **Data-Loss Under Concurrency**: the reload notice panel; two-tab delete and edit races; a network drop and reconnect; concurrent order edits.
-- [ ] **Per-Chat Toggles and Toggle Presets**: isolation across two chats of one character; New Chat under both inherit and empty policies; prompt info showing the chat's values.
-- [ ] **Static Audit Fixes (SA1)**: the toggle preset merge across two tabs.
+- [ ] **Per-Chat Toggles and Toggle Presets**: prompt info showing the chat's values.
 - [ ] **RisuNest Small Wins (P2)**: the deferred plugin reload with two tabs or devices, and a reload deferred during a generation.
 - [ ] **Deep Audit Fixes**: the two-tab LoRA alternation.
-- [ ] **Plugin Storage and Data API**: the reuse cache after another tab's chat edit.
 - [ ] **Chat Store and Structured Memory Sweep (B1)**: with two tabs on one chat, Record now inside a job shows the same memory task in both.
-- [ ] **Found Issues Decisions (B2)**: a reset plugin asks for its permission again in the second tab.
 
 ## Real providers and external services
 
 - [ ] **Upstream `.bin` Compatibility**: a restore of an export in upstream RisuAI's own app (the owner's step: upstream's `LoadLocalBackup` reader and asset writes, `makeColdData`, `cleanChunks`, plugin loading and UI are not run by the check script); a completed send on imported data (S8 checked dispatch only; the real backup's selected model is a plugin model whose plugin is not in the backup).
-- [ ] **Upstream Integration**: importing a `.bin` made by the real upstream app (UP1); real v3 plugins, including `getRootDocument()` scroll and key listeners (UP4–UP6); real Gemini and Vertex requests for the tool round trip and the 3.6/3.5 Flash entries, and the flags when an alias moves (UP9, UP12); a real NovelAI request, and whether the plan's `square` meant a specific side (UP15); whether the live Realm always sends `creator` (UP20).
+- [ ] **Upstream Integration**: importing a `.bin` made by the real upstream app (UP1); real v3 plugins, including `getRootDocument()` scroll and key listeners (UP4–UP6); real Gemini and Vertex requests for the tool round trip and the 3.6/3.5 Flash entries, and the flags when an alias moves (UP9, UP12); a real NovelAI request (UP15); whether the live Realm always sends `creator` (UP20).
 - [ ] **Combine Audit Fixes**: an upstream backup from a library with checkpoints, restored in upstream RisuAI; abandoned Google token counts.
 - [ ] **Static Audit Fixes (SA7, SA8)**: Stop and cancel against real providers (ComfyUI, Wavespeed, a live provider request).
 - [ ] **Small Fixes (SF5)**: a real Transformers.js inference for the WebLLM model fix (harness stub only).
@@ -117,13 +109,12 @@ Two tabs, two browsers, or a dropped connection:
 - [ ] **Reroll Candidates (D8)**: a server process death or an abort past the grace mid-reroll: the previous reply stays selected, with no partial text. Only a manual kill shows it.
 - [ ] **Open Bug Fixes (S2)**: a real `@hono/node-server` socket abort mid-download.
 - [ ] **Boot Resource Cache**: the reporting user comparing DevTools Timing on their own server before and after.
-- [ ] **RisuNest Small Wins (K2)**: the pipeline on the real GitLab Runner (`$CI_PROJECT_DIR` expansion and the cache upload are unverified). The Runner's Docker executor needs a tmpfs `/tmp` (`server/src/tests/resourcePatchParts.test.ts` runs past 5 s on a disk-backed `/tmp`) and must accept untagged jobs; "Auto-cancel redundant pipelines" must be on for `interruptible`.
 
 ## Scripts, specs, and measurements nobody ran
 
 An agent can run these without a device.
 
-- [ ] **Per-Chat Send**: `util/playwright/checkServerSend.mjs`, `checkServerJobMatrix.mjs`, `checkMcpFixes.mjs`, and `checkStreamingModes.mjs` were not run after the plan.
+- [ ] **Per-Chat Send**: `util/playwright/checkServerJobMatrix.mjs`, `checkMcpFixes.mjs`, and `checkStreamingModes.mjs` were not run after the plan.
 - [ ] **Boot Bytes**: `checkServerJobMatrix.mjs` was not re-run after the server stopped stamping characters on a send; "Last chatted" ordering on the home screen and the mobile character list is derived from the chats now and has not been checked in a browser.
 - [ ] **Per-Chat Toggles and Toggle Presets**: record the dedicated `e2e/0-idleReload.spec.ts` result.
 - [ ] **Settings UI Reorganization**: `e2e/settingsPages.spec.ts` was updated in each slice but never run by the plan. Later plans list the spec among their passed e2e runs.

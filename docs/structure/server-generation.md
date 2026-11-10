@@ -277,6 +277,8 @@ mode); like the request history, in no snapshot or archive.
   synchronous store transaction as the write.
 - Credentials for server provider requests are resolved server-side; the record stays
   [write-only](server-resources.md#invariants).
+- In `server/src/routes/tokens.ts`, `registerTokenRoutes` answers an aborted count with HTTP 400 and
+  `The request was aborted`; shutdown takes precedence and raises `MaintenanceError` instead.
 
 ## Recipes
 
@@ -311,6 +313,9 @@ Other subsystems' runtime limits live with their owners: [chat-pipeline](chat-pi
 
 ### Limitations
 
+- For plugin-handler requests, `server/src/prompt/transform.ts` `createTransformService` checks the shared scope against
+  the 8 MiB snapshot limit before preparing each cache miss; an oversized scope fails every uncached target, while
+  cached hits still answer. Decision: Display Evaluation S3, [archive](../archived-plan/README.md).
 - An older socket without `liveness=1` never expires for silence; a frozen tab can hold a callback and chat slot until
   its 30-minute deadline. Decision: Job Protocol D6, archive.
 - Without `hydration=patch`, each callback sends the whole job chat. Older tabs can reapply it only after local work
@@ -324,7 +329,8 @@ Other subsystems' runtime limits live with their owners: [chat-pipeline](chat-pi
   deduplication also ends at the memory caps. WAL `synchronous=NORMAL` may lose recent writes on power loss, and the tab
   shows `serverJob.endedAway` when no outcome receipt remains. Decision: Job Protocol D1, archive.
 - A callback delivered to an owner whose device then sleeps is not handed over; `handoff: "prefer"` only opens an offer.
-  Decision: Job Handoff Q4, archive.
+  `server/src/jobs/generationJobs.ts` `create` starts the job without waiting for a worker to claim that offer, so the
+  first callback can run on the creator. Decision: Job Handoff Q4 and D3, [archive](../archived-plan/README.md).
 - A callback cancelled before a switch may still run its hook, writes included, on the old tab beside the worker's next
   one; `holdDraining` keeps only the old lane busy. Decision: Found Issues Sweep Q5.
 - An `absent` offer leaves a worker 50 s before the job's first undelivered callback expires, but a queued root that

@@ -279,8 +279,9 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
   exercises real import routes with lowered limits. `importFixtures.ts` supplies PNG, CharX, and V2/V3 cards;
   `importRealm.test.ts` uses a local Realm stand-in. Tests run the real RPack codec.
 - Lore editor tests use real records/chat drafts; `LoreBookList` uses a fake SortableJS instance.
-- Not tested: the `charxJpeg` export variant, the performance cost of lorebook drag sorting, and its recovery after the
-  lorebook filter clears (`onEnd`).
+- Not tested: the `charxJpeg` export variant, real ZIP64 or CharX imports larger than 4 GiB through
+  `server/src/routes/importCharx.ts` `planCharxFile`, the performance cost of lorebook drag sorting, and its recovery
+  after the lorebook filter clears (`onEnd`).
 
 ## Known Hazards
 
@@ -292,6 +293,9 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
 
 ### Limitations
 
+- `CharConfig.svelte`'s additional-asset picker and `characters.ts` `addCharEmotion` call `savePickedFiles` without
+  `onProgress`, so picked-file saves show no upload progress. Decision: Large Asset Import and Export, kept limits,
+  [archive](../archived-plan/README.md).
 - The in-tab `CharXImporter` (tests only) runs fflate's streaming `Unzip`, which finds the end of a data-descriptor
   entry (every `CharXWriter` entry) by scanning its bytes for the signatures `0x04034b50`, `0x08074b50`, and
   `0x02014b50`: a stored entry whose bytes hold one is cut short and the parser goes on inside it (`unexpected EOF`, an
@@ -307,6 +311,14 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
 
 ### Gotchas
 
+- `LoreEntryFields.svelte` calls `tokenCountInput` inside its content effect, so CBS expansion runs synchronously on
+  each content edit before `createTokenCountField` debounces the server count; expensive CBS still occupies the tab
+  while typing.
+- `LoreOverrideList.svelte` keys orphan rows by override object, so legacy duplicate ids remain separate rows and
+  `resolveOrphan` removes only the selected object. `server/src/data/chats.ts` `normalizeChatMeta` collapses their
+  stored ids with `firstOverridePerId` on a metadata write; a normalized reread can therefore collapse the rows.
+- In `src/ts/exportBatches.test.ts`, `afterEach` resets timers and mocks but does not cancel a timed-out async body;
+  that body can resume against the next case's fakes, so later failures can be secondary.
 - There is no dedicated "duplicate character" API. Copies come from module→character conversion or re-import.
 - The lorebook filter query resets on an owner change, not a same-owner module replacement (`LoreBookList.filterOwner`).
 - The drag sort of the keyed lore rows stores a copy of the moved entry (that row gets a new key), and its `recreateStb`

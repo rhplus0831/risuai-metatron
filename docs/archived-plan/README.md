@@ -8,9 +8,8 @@ these archived designs, not to live files in the working tree.
 This file is an index: which plans finished, where each plan's last text is, and which
 guides own the result. A plan's slice commits, decisions, and measurements are in its own
 file (the `Status` line and the slice notes) and in the commit messages. What a plan left
-open is in the backlog: [manual checks](../backlog/manual-checks.md),
-[deferred work](../backlog/deferred-work.md), and
-[decisions to verify](../backlog/decisions-to-verify.md). Archiving an implemented design
+open is in the backlog: [manual checks](../backlog/manual-checks.md) and
+[deferred work](../backlog/deferred-work.md). Archiving an implemented design
 does not certify its pending manual checks. [Active work](../plan/README.md) remains
 separate.
 

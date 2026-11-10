@@ -287,5 +287,6 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
 
 - The write-back's Markdown pass (`applyMarkdownToNode` in `src/ts/parser/parser.svelte.ts`, markdown-it with
   `html: true`) turns escaped markup in a translated paragraph back into tags on the single- and multi-sentence paths;
-  `ChatBody` sanitizes the result. Escaping before the pass would break code spans, angle-bracket links, and KaTeX.
-  Decision: owner, 2026-11-09 (Found Issues Clearance D1).
+  `ChatBody` sanitizes the result. `translator.ts` `translateHTML` collects provider input from decoded `textContent`,
+  so escaped markup reaches the provider as literal text. Escaping before the pass would break code spans, angle-bracket
+  links, and KaTeX. Decision: owner, 2026-11-09 (Found Issues Clearance D1).

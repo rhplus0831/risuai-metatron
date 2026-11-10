@@ -267,11 +267,16 @@ matched-entry identities.
   `selection.chatOpen` becomes false; IME behavior on real devices (Android Korean, desktop Japanese); Stop on a resumed
   job beside another chat's send.
 - Not tested: the DevTool preview and autopilot beyond `src/lib/SideBars/DevTool.test.ts`; check by hand.
+- Not tested: killing the page after job creation but before `composerDrafts.svelte.ts` `beginSend`'s `putComposerSend`
+  commits; `DefaultChatScreen.drafts.test.ts` checks recovery only after the handoff is persisted.
 
 ## Known Hazards
 
 ### Limitations
 
+- `src/ts/process/chatStatus.svelte.ts` keeps `unseenChatKeys` and `recoveryChatKeys` only in this tab's memory, so
+  reloading clears both marks; they are not durable unread or recovery records. Decision: Sidebar Chat Status 4,
+  [archive](../archived-plan/README.md).
 - Sequence events are live-only: parts completed without an attached socket do not count statistics in that tab. Server
   chat writes and receipt counts are authoritative. Decision: [generation](server-generation.md) command sequences.
 - Accepted limits of sends in different chats at once (each chat has one local send and one server job; different chats

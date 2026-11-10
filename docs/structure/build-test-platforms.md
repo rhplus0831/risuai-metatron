@@ -299,8 +299,19 @@ Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
   in a command (`a.md`) counts as a read; a title-heading read counts the title alone (`countEvent`).
 - Not tested: the dev runner's process handling (process groups, the lock, the readiness wait); verify it manually when
   changing that code.
+- Not tested: `util/heap/snapshot.mjs` `loadSnapshot`/`parseSnapshot` and `dominators` in isolation; heap measurements
+  consume their results, but no unit suite checks the loader or retained-size analysis.
 
 ## Known Hazards
+
+### Limitations
+
+- `vite.config.ts`'s `server.proxy` forwards uploads, but Vite's HTTP listener keeps Node's 300 s `requestTimeout`; the
+  backend's four-hour upload allowance does not extend the dev listener's deadline. Decision: Large Asset Import and
+  Export, kept limits, [archive](../archived-plan/README.md).
+- In `public/sw.js`, `registerCache` labels fallback `/sw/img/` entries `image/png`, and `getSource` returns cached
+  responses whole without processing `Range`; fallback media therefore keep the legacy MIME and range behavior.
+  Decision: Audit Findings and Performance Leftovers 5, [archive](../archived-plan/README.md).
 
 ### Gotchas
 
