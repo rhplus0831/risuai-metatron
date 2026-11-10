@@ -1680,12 +1680,25 @@ function rememberCharacterReads<T extends { chaId: string; chats: Chat[] }>(owne
     return copy;
 }
 
-function takeChatRead(owner: object, ref: ChatRef): ChatBaseline | undefined {
+function peekChatRead(owner: object, ref: ChatRef): ChatBaseline | undefined {
+    return pluginChatBaselines.get(owner)?.get(`${ref.chaId}\u0000${ref.chatId}`);
+}
+
+/** Consumes only the captured read; a refused consent or a newer read keeps its retained baseline. */
+function takeChatRead(owner: object, ref: ChatRef, baseline: ChatBaseline | undefined): ChatBaseline | undefined {
     const baselines = pluginChatBaselines.get(owner);
     const key = `${ref.chaId}\u0000${ref.chatId}`;
-    const baseline = baselines?.get(key);
-    baselines?.delete(key);
+    if (baseline !== undefined && baselines?.get(key) === baseline) baselines.delete(key);
     return baseline;
+}
+
+/** Snapshots this character's retained reads before consent without consuming them. */
+function captureCharacterChatReads(owner: object, chaId: string | undefined) {
+    const reads = new Map<string, ChatBaseline>();
+    for (const [key, baseline] of pluginChatBaselines.get(owner) ?? []) {
+        if (baseline.ref.chaId === chaId) reads.set(key, baseline);
+    }
+    return (ref: ChatRef) => takeChatRead(owner, ref, reads.get(`${ref.chaId}\u0000${ref.chatId}`));
 }
 
 /**
@@ -1720,7 +1733,7 @@ const getChar = async (context: PluginCallContext | undefined, owner: object) =>
 const setChar = async (
     context: PluginCallContext | undefined,
     char: any,
-    owner: object,
+    takeBaseline: (ref: ChatRef) => ChatBaseline | undefined,
     chaId: string | undefined,
     owners: ReadonlyMap<string, string>,
     reportedHookChatPage: boolean,
@@ -1738,11 +1751,11 @@ const setChar = async (
                     chaId === undefined ? -1 : characterList().findIndex((entry) => entry?.chaId === chaId),
                     char,
                     undefined,
-                    owner,
+                    takeBaseline,
                 );
                 return;
             }
-            applyPluginCharacter(contextTarget(context).characterIndex, char, undefined, owner);
+            applyPluginCharacter(contextTarget(context).characterIndex, char, undefined, takeBaseline);
         },
         undefined,
         owners,
@@ -1767,8 +1780,8 @@ function warnRefused(what: string, write: () => void) {
 /**
  * Applies a whole character a plugin hands back. The same `chaId` as the
  * character at `index`: its own fields replace the character's (`replaceCharacterFields`), and its
- * chats are reconciled by id through the chat module (diffed against the instance's last retained
- * read when supplied, else the current chat; new ones created,
+ * chats are reconciled by id through the chat module (diffed against the retained read captured at
+ * setter entry when supplied, else the current chat; new ones created,
  * missing ones deleted, the order and a given `chatPage` followed). Database setters can mark
  * chats unchanged after checking the whole list or when chats are omitted: only a numeric
  * `chatPage` is then applied. Read-only `chatSummaries` never enter a character record.
@@ -1780,7 +1793,7 @@ function applyPluginCharacter(
     index: number,
     char: any,
     unchangedChats: ReadonlySet<string> = new Set(),
-    baselineOwner?: object,
+    takeBaseline?: (ref: ChatRef) => ChatBaseline | undefined,
 ) {
     warnRefused("a character", () => {
         const current = characterList()[index];
@@ -1824,7 +1837,7 @@ function applyPluginCharacter(
                 current.chaId,
                 chats,
                 typeof chatPage === "number" ? chatPage : undefined,
-                baselineOwner ? (ref) => takeChatRead(baselineOwner, ref) : undefined,
+                takeBaseline,
             );
         } else if (typeof chatPage === "number") {
             selectChat(current.chaId, chatPage, index);
@@ -2310,6 +2323,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
         const context = currentContext(contextOwner);
         const chaId = context ? context.chatRef.chaId : selectedCharacter()?.chaId;
         const owners = new Map(chaId === undefined ? [] : [[chaId, chatOwnerToken(chaId)]]);
+        const takeBaseline = captureCharacterChatReads(contextOwner, chaId);
         // Membership lookup cannot throw for a gone hook target; validation follows consent.
         const hookChatIndex = context
             ? chatList(context.chatRef.chaId).findIndex((entry) => entry.id === context.chatRef.chatId)
@@ -2317,7 +2331,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
         const reportedHookChatPage =
             hookChatIndex >= 0 && char && typeof char === "object" && char.chatPage === hookChatIndex;
         if (await refuseDbWrite(api)) return;
-        return setChar(context, char, contextOwner, chaId, owners, !!reportedHookChatPage);
+        return setChar(context, char, takeBaseline, chaId, owners, !!reportedHookChatPage);
     };
     const withContext = <F extends Function>(hook: F): F => {
         const cached = hookWrappers.get(hook);
@@ -2802,6 +2816,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             if (refuseTransformWrite("setCharacterToIndex")) return;
             const chaId = characterList()[index]?.chaId;
             const owners = new Map(chaId === undefined ? [] : [[chaId, chatOwnerToken(chaId)]]);
+            const takeBaseline = captureCharacterChatReads(contextOwner, chaId);
             if (await refuseDbWrite("setCharacterToIndex")) return;
             if (chaId === undefined) {
                 return;
@@ -2811,7 +2826,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
                 () => {
                     const at = characterList().findIndex((entry) => entry?.chaId === chaId);
                     if (at !== -1) {
-                        applyPluginCharacter(at, char, undefined, contextOwner);
+                        applyPluginCharacter(at, char, undefined, takeBaseline);
                     }
                 },
                 undefined,
@@ -2946,6 +2961,8 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
                     ? chatMemberPage(chaId, chatIndex, chatIndex + 1)[0]?.id
                     : undefined;
             const owner = chaId === undefined ? undefined : chatOwnerToken(chaId);
+            const baseline =
+                chaId !== undefined && chatId !== undefined ? peekChatRead(contextOwner, { chaId, chatId }) : undefined;
             if (await refuseDbWrite("setChatToIndex")) return;
             if (chaId === undefined || chatId === undefined || !chat || typeof chat !== "object") {
                 return;
@@ -2955,9 +2972,12 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             if (!(await ensureChatLoaded(ref)) || chatOwnerToken(chaId) !== owner) {
                 return;
             }
-            // Consume the last retained read once; writes without one diff against the current chat.
+            // Consume the entry read once; writes without one diff against the current chat.
             try {
-                applyChatResult(takeChatRead(contextOwner, ref) ?? captureChatBaseline(ref), { ...chat, id: chatId });
+                applyChatResult(takeChatRead(contextOwner, ref, baseline) ?? captureChatBaseline(ref), {
+                    ...chat,
+                    id: chatId,
+                });
             } catch (error) {
                 console.warn("[Plugin] Skipped a chat change (a message being generated, or a refused field)", error);
             }

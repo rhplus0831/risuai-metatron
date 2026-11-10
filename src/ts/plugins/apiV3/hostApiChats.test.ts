@@ -82,7 +82,7 @@ import { selectCharacter, selectModelPreset, selectPreset } from "src/ts/storage
 import { reconcileSelection, settings } from "src/ts/storage/settingsViews.svelte";
 import * as chatStore from "src/ts/storage/chatStore.svelte";
 import { characterList, removeCharacter } from "src/ts/storage/characterStore.svelte";
-import { executePluginV3 } from "./v3.svelte";
+import { executePluginV3, resetPluginPermissions } from "./v3.svelte";
 import { alertConfirm } from "src/ts/alert";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import * as permissionStore from "./permissionStore";
@@ -149,10 +149,10 @@ function installDatabase(fields: Record<string, unknown>, unloaded: readonly str
     chatStore.assembleChats(characters, chats, orders);
 }
 
-async function makeApi(): Promise<CapturedApi> {
+async function makeApi(name = `hostApiChats-test-${Math.random().toString(36).slice(2)}`): Promise<CapturedApi> {
     captured.api = null;
     await executePluginV3({
-        name: `hostApiChats-test-${Math.random().toString(36).slice(2)}`,
+        name,
         script: "",
         version: "3.0",
     } as any);
@@ -798,17 +798,93 @@ describe("setter targets across dbWrite consent", () => {
         vi.spyOn(permissionStore, "hasPermissionGrant").mockReturnValue(false);
         vi.spyOn(permissionStore, "getLastGrantTime").mockReturnValue(undefined);
         vi.spyOn(permissionStore, "recordPermissionGrants").mockResolvedValue(undefined);
+        vi.spyOn(permissionStore, "revokePermissionGrants").mockResolvedValue(undefined);
     });
 
     function holdConsent() {
         let answer!: (granted: boolean) => void;
         vi.mocked(alertConfirm).mockClear();
-        vi.mocked(alertConfirm).mockReturnValueOnce(new Promise<boolean>((resolve) => (answer = resolve)));
+        const shown = new Promise<void>((resolve) => {
+            vi.mocked(alertConfirm).mockImplementationOnce(() => {
+                resolve();
+                return new Promise<boolean>((respond) => (answer = respond));
+            });
+        });
         return {
-            shown: () => vi.waitFor(() => expect(alertConfirm).toHaveBeenCalledTimes(1)),
+            shown: () => shown,
             grant: () => answer(true),
+            refuse: () => answer(false),
         };
     }
+
+    const retainedReadSetters = [
+        { getter: "getChatFromIndex", setter: "setChatToIndex", indexes: [0, 0] },
+        { getter: "getCharacterFromIndex", setter: "setCharacterToIndex", indexes: [0] },
+        { getter: "getChar", setter: "setChar", indexes: [] },
+        { getter: "getCharacter", setter: "setCharacter", indexes: [] },
+    ];
+    const refJ = { chaId: "c", chatId: "j" };
+
+    it.each(retainedReadSetters)(
+        "$setter uses its entry read across consent and retains a consent-time read for the next write",
+        async ({ getter, setter, indexes }) => {
+            const api = await makeApi();
+            const indexedChat = setter === "setChatToIndex";
+            const first = await api[getter](...indexes);
+            const firstChat: Chat = indexedChat ? first : first.chats[0];
+            firstChat.message[0].data = "plugin A1";
+            const consent = holdConsent();
+            const pending = api[setter](...indexes, first);
+            await consent.shown();
+            chatStore.setMessageText(refK, "b", "remote B1");
+            if (!indexedChat) chatStore.setChatMeta(refJ, { note: "remote J1" });
+            const newer = await api[getter](...indexes);
+            consent.grant();
+            await pending;
+            expect(chatStore.findChat(refK)!.message.map(({ data }) => data)).toEqual(["plugin A1", "remote B1"]);
+            if (!indexedChat) expect(chatStore.findChat(refJ)?.note).toBe("remote J1");
+
+            chatStore.setMessageText(refK, "b", "remote B2");
+            if (!indexedChat) chatStore.setChatMeta(refJ, { note: "remote J2" });
+            const newerChat: Chat = indexedChat ? newer : newer.chats[0];
+            newerChat.message[0].data = "plugin A2";
+            await api[setter](...indexes, newer);
+            expect(chatStore.findChat(refK)!.message.map(({ data }) => data)).toEqual(["plugin A2", "remote B2"]);
+            if (!indexedChat) expect(chatStore.findChat(refJ)?.note).toBe("remote J2");
+            expect(warnings()).toEqual([]);
+        },
+    );
+
+    it.each(retainedReadSetters)(
+        "$setter keeps its retained read after refused consent for a granted retry",
+        async ({ getter, setter, indexes }) => {
+            const name = `refused-chat-read-${setter}`;
+            const api = await makeApi(name);
+            const indexedChat = setter === "setChatToIndex";
+            const first = await api[getter](...indexes);
+            const firstChat: Chat = indexedChat ? first : first.chats[0];
+            firstChat.message[0].data = "plugin A";
+            const consent = holdConsent();
+            const pending = api[setter](...indexes, first);
+            await consent.shown();
+            chatStore.setMessageText(refK, "b", "remote B");
+            if (!indexedChat) chatStore.setChatMeta(refJ, { note: "remote J" });
+            consent.refuse();
+            await pending;
+            expect(chatStore.findChat(refK)!.message.map(({ data }) => data)).toEqual(["A", "remote B"]);
+
+            // Clear the refusal without unloading the instance or reading the chat again.
+            await resetPluginPermissions(name, "");
+            const retryConsent = holdConsent();
+            const retry = api[setter](...indexes, first);
+            await retryConsent.shown();
+            retryConsent.grant();
+            await retry;
+            expect(chatStore.findChat(refK)!.message.map(({ data }) => data)).toEqual(["plugin A", "remote B"]);
+            if (!indexedChat) expect(chatStore.findChat(refJ)?.note).toBe("remote J");
+            expect(warnings()).toEqual([expect.stringMatching(/dbWrite permission was not granted/)]);
+        },
+    );
 
     it.each(["setChar", "setCharacter", "setCharacterToIndex"])(
         "%s keeps its entry target across a consent-time selection or index change",

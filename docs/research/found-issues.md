@@ -12,25 +12,10 @@ The eighteenth batch was cleared the same day by a Sol implementer with session 
 
 ## Contents
 
-- [Plugin sandbox](#plugin-sandbox): 2
+- [Plugin sandbox](#plugin-sandbox): 1
 - [Structure audit 2026-11-10](#structure-audit-2026-11-10): 8
 
 ## Plugin sandbox
-
-### A plugin setter's chat baseline is taken after the `dbWrite` prompt, so a read during the prompt can replace it
-
-`setChatToIndex` in `src/ts/plugins/apiV3/v3.svelte.ts` captures its target before the consent prompt (`:2949`) but
-takes the instance's retained read baseline only afterwards (`takeChatRead`, `:2960`); the character setters reconcile
-against `rememberChatRead`/`pluginChatBaselines` after consent too. If the same plugin instance reads the chat again
-while the first `dbWrite` prompt is open and another tab or client changed the chat meanwhile (the modal blocks local
-edits), the setter diffs against the newer baseline, and `applyChatResult` (`src/ts/storage/chatStore.svelte.ts`) can
-treat the plugin's stale message as a change and overwrite the other edit. Raised by the slice 4 challenger and left
-as an edge case for that slice (the prompt shows once per page load or three days); unverified.
-
-**Why it matters:** a remote edit can be lost in a narrow window around the first `dbWrite` grant.
-
-**Suggested handling:** verify with a test first; for `setChatToIndex`, peek (not take) the baseline before consent;
-the character setters need a reservation policy.
 
 ### The full-screen alert e2e test failed once with a closed page
 
