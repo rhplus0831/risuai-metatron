@@ -647,6 +647,36 @@ const pausedChat = (id: string): Chat => ({
         },
     })),
 });
+function pausedRerollChat(id: string): Chat {
+    const chat = pausedChat(id);
+    chat.message[0].selected = 0;
+    chat.message[0].candidates = [
+        {
+            id: "selected",
+            data: "Message 0",
+            generationInfo: { ...chat.message[0].generationInfo!, inputTokens: 12 },
+        },
+        {
+            id: "paused",
+            data: "Another reply",
+            generationInfo: {
+                model: "reroll-model",
+                generationId: "reroll-generation",
+                outputTokens: 34,
+                memory: {
+                    state: "skipped",
+                    reason: "writerPaused",
+                    pages: [],
+                    refused: [],
+                    unverified: [],
+                    warnings: [],
+                },
+            },
+            scriptstateAfter: { $mood: "calm" },
+        },
+    ];
+    return chat;
+}
 function memoryRead(records: StructuredMemoryFileRecords, route: string, runs: unknown[] = []) {
     return Response.json(
         route === "package"
@@ -800,6 +830,43 @@ it.each(["structuredMemory", "hypaMemoryV3"])(
     },
 );
 
+it("exports a chat without message or reroll memory receipts while keeping their other metadata", async () => {
+    const b = await boot();
+    b.settings.ui.memoryAlgorithmType = "structuredMemory";
+    const input = pausedRerollChat("rerolls");
+    b.chat.createChat(b.alpha, input);
+    await b.sync.flushResources();
+    serveMemory(b, (chatId, route) => memoryRead(fileRecords(chatId), route));
+
+    alerts.select.mockResolvedValueOnce("0");
+    await b.characters.exportChat(input.id!);
+
+    expect(b.downloads).toHaveLength(1);
+    const exported = JSON.parse(b.downloads[0].data).data as Chat;
+    expect(exported.message[0]).toEqual({
+        chatId: "rerolls-m0",
+        role: "char",
+        data: "Message 0",
+        selected: 0,
+        generationInfo: { model: "story-model", generationId: "generation-0" },
+        candidates: [
+            {
+                id: "selected",
+                data: "Message 0",
+                generationInfo: { model: "story-model", generationId: "generation-0", inputTokens: 12 },
+            },
+            {
+                id: "paused",
+                data: "Another reply",
+                generationInfo: { model: "reroll-model", generationId: "reroll-generation", outputTokens: 34 },
+                scriptstateAfter: { $mood: "calm" },
+            },
+        ],
+    });
+    expect(plain(b.chat.findChat({ chaId: b.alpha, chatId: input.id! }))).toMatchObject(input);
+    expect(b.fake.chat(b.alpha, input.id!)!.data).toMatchObject(input);
+});
+
 it("exports all chats with an entry for pages, events or threads, stripping receipts even from run-only chats", async () => {
     const b = await boot();
     b.settings.ui.memoryAlgorithmType = "structuredMemory";
@@ -848,7 +915,7 @@ it("exports all chats with an entry for pages, events or threads, stripping rece
 it("downloads chats after a partial memory read fails and replaces the success notice while other chats still export", async () => {
     const b = await boot();
     b.settings.ui.memoryAlgorithmType = "structuredMemory";
-    const input = pausedChat("failed");
+    const input = pausedRerollChat("failed");
     b.chat.createChat(b.alpha, input);
     await b.sync.flushResources();
     serveMemory(b, (chatId, route) =>

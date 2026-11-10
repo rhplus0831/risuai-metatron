@@ -1262,9 +1262,9 @@ export async function readStructuredMemoryFile(
  * A sealed `hypaV3Data` goes whatever the read answered: a tab's read can carry a projection, also after
  * another algorithm was selected, and the seal, not the algorithm, tells it from real summaries. Those stay,
  * beside records too, because a chat can hold both. On a successful read with a row of any kind the
- * receipts go too (`generationInfo.memory`, the rest stays): a receipt is a display copy of a run, runs
- * stay out of the file, and it would offer Resume on an empty Log or say `recorded` of a restore that
- * failed. Hashes do not read it.
+ * message and candidate receipts go too (`generationInfo.memory`, the rest stays): a receipt is a display
+ * copy of a run, runs stay out of the file, and it would offer Resume on an empty Log or say `recorded`
+ * of a restore that failed. Hashes do not read it.
  */
 export function exportChatMemory(
     chat: Chat,
@@ -1279,8 +1279,11 @@ export function exportChatMemory(
     const { rows, pages, events, threads } = read.value;
     const records = pages.length + events.length + threads.length > 0;
     if (rows) {
-        for (const { generationInfo } of chat.message) {
+        for (const { generationInfo, candidates } of chat.message) {
             delete generationInfo?.memory;
+            for (const candidate of candidates ?? []) {
+                delete candidate.generationInfo?.memory;
+            }
         }
     }
     return { entry: records ? { chatId: chat.id, pages, events, threads } : null, failed: false };

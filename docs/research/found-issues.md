@@ -13,7 +13,7 @@ The eighteenth batch was cleared the same day by a Sol implementer with session 
 ## Contents
 
 - [Plugin sandbox](#plugin-sandbox): 1
-- [Structure audit 2026-11-10](#structure-audit-2026-11-10): 8
+- [Structure audit 2026-11-10](#structure-audit-2026-11-10): 7
 
 ## Plugin sandbox
 
@@ -65,21 +65,6 @@ it is rare.
 
 **Suggested handling:** reproduce with a two-client e2e check; then carry a row identity (the prompt item's or script's
 id) in `popupEditorContext`. Once reproduced, move the guide's bullet to known issues.
-
-### A chat file keeps the memory receipts of unselected reroll candidates
-
-`exportChatMemory` (`src/ts/process/structuredMemory.svelte.ts:1281`) deletes each message's top-level
-`generationInfo.memory` and leaves `message.candidates[*].generationInfo.memory`. An exported chat whose unselected
-candidate holds `{ state: "skipped", reason: "writerPaused" }` imports with that receipt
-(`shared/rerollCandidates.ts:74` keeps valid candidate metadata), and selecting the candidate copies it onto the message
-(`:178`), where `memoryReceiptView` shows a paused receipt with Resume over a Log that has no runs. Copy and branch
-already strip both levels (`src/ts/process/chatMemoryInherit.svelte.ts:96`).
-
-**Why it matters:** the export contract on `exportChatMemory` says receipts are removed so that no receipt offers Resume
-on an empty Log.
-
-**Suggested handling:** strip candidate receipts in `exportChatMemory` the way `chatMemoryInherit` does, with a test on
-an exported chat that has two candidates.
 
 ### A background memory request cannot be shared for support and loses its job id in a report
 
