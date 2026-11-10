@@ -1291,6 +1291,7 @@
 
                 <span class="text-textcolor">API Key (overrides global)</span>
                 <TextInput
+                    secret
                     className="mb-4 mt-2"
                     hideText={settings.ui.hideApiKey}
                     bind:value={currentCharacter.oaiTTSConfig.apiKey}

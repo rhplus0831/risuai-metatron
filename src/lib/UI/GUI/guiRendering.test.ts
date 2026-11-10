@@ -69,6 +69,22 @@ afterEach(async () => {
 });
 
 describe("GUI rendering without a browser session", () => {
+    it("marks TextInput as plugin-secret only when requested, with visible or hidden text", async () => {
+        const inputs = [false, true].flatMap((hideText) =>
+            [undefined, true].map((secret) => renderGui(TextInput, { value: "credential", hideText, secret })),
+        );
+        await tick();
+        expect(
+            inputs.map((view) => view.getBySelector<HTMLInputElement>("input").hasAttribute("data-plugin-secret")),
+        ).toEqual([false, true, false, true]);
+        expect(inputs.map((view) => view.getBySelector<HTMLInputElement>("input").type)).toEqual([
+            "text",
+            "text",
+            "password",
+            "password",
+        ]);
+    });
+
     it("inverts multilingual prose in dark mode and removes the inversion in light mode", async () => {
         const originalScheme = get(ColorSchemeTypeStore);
         try {

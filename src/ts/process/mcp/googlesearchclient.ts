@@ -72,7 +72,9 @@ export class GoogleSearchClient extends MCPClientLike {
             return;
         }
 
-        const apiKey = await alertInput("Please enter your Google Custom Search API Key:");
+        const apiKey = await alertInput("Please enter your Google Custom Search API Key:", undefined, undefined, {
+            secret: true,
+        });
         if (!apiKey || apiKey.trim() === "") {
             throw new Error("Google Custom Search API Key is required");
         }

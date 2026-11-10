@@ -839,6 +839,7 @@ interface SafeElement {
      *
      * Allowed events (with random delay for anti-fingerprinting):
      * - Keyboard: keydown, keyup, keypress
+     * Keyboard events originating in password or credential fields are never delivered.
      *
      * listener function receives trimmed event object with common properties only.
      * Listeners receive events that reach the element through normal DOM propagation

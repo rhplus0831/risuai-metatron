@@ -1074,14 +1074,20 @@
     <span class="text-textcolor">URL</span>
     <TextInput size="sm" marginBottom bind:value={settings.secrets.hypaCustomSettings.url} />
     <span class="text-textcolor">Key/Password</span>
-    <TextInput size="sm" marginBottom bind:value={settings.secrets.hypaCustomSettings.key} />
+    <TextInput secret size="sm" marginBottom bind:value={settings.secrets.hypaCustomSettings.key} />
     <span class="text-textcolor">Request Model</span>
     <TextInput size="sm" marginBottom bind:value={settings.secrets.hypaCustomSettings.model} />
 {/if}
 
 {#if embeddingUsesVoyage}
     <span class="text-textcolor">Voyage API Key</span>
-    <TextInput size="sm" marginBottom hideText={settings.ui.hideApiKey} bind:value={settings.secrets.voyageApiKey} />
+    <TextInput
+        secret
+        size="sm"
+        marginBottom
+        hideText={settings.ui.hideApiKey}
+        bind:value={settings.secrets.voyageApiKey}
+    />
 {/if}
 
 <SettingsSections sections={memorySettingsSections} />

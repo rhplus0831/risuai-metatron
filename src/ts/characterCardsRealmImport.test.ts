@@ -570,7 +570,10 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
         );
         const before = b.ids();
         await b.cards.downloadRisuHub("locked-id");
-        expect(alerts.input).toHaveBeenCalledExactlyOnceWith(language.inputCardPassword);
+        // A secret input: the password's keys never reach plugin key listeners.
+        expect(alerts.input).toHaveBeenCalledExactlyOnceWith(language.inputCardPassword, undefined, undefined, {
+            secret: true,
+        });
         // The decrypted card's lowLevelAccess is asked too, after the password.
         expect(alerts.confirm).toHaveBeenCalledExactlyOnceWith(language.lowLevelAccessConfirm);
         expect(alerts.error).not.toHaveBeenCalled();

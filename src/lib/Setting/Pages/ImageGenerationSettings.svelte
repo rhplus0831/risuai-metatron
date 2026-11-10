@@ -274,7 +274,7 @@
 {#if revealNovelAIKey && settings.memoryTranslateMedia.sdProvider !== "novelai"}
     <div class="flex flex-col" data-credential="NAIApiKey">
         <span class="text-textcolor">Novel AI API Key</span>
-        <TextInput size="sm" marginBottom placeholder="pst-..." bind:value={settings.secrets.NAIApiKey} />
+        <TextInput secret size="sm" marginBottom placeholder="pst-..." bind:value={settings.secrets.NAIApiKey} />
     </div>
 {/if}
 
@@ -334,7 +334,7 @@
     />
     <div class="flex flex-col" data-credential="NAIApiKey">
         <span class="text-textcolor">API Key</span>
-        <TextInput size="sm" marginBottom placeholder="pst-..." bind:value={settings.secrets.NAIApiKey} />
+        <TextInput secret size="sm" marginBottom placeholder="pst-..." bind:value={settings.secrets.NAIApiKey} />
     </div>
 
     <span class="text-textcolor">Model</span>
@@ -751,7 +751,7 @@
 
 {#if settings.memoryTranslateMedia.sdProvider === "stability"}
     <span class="text-textcolor">Stability API Key</span>
-    <TextInput size="sm" marginBottom placeholder="..." bind:value={settings.secrets.stabilityKey} />
+    <TextInput secret size="sm" marginBottom placeholder="..." bind:value={settings.secrets.stabilityKey} />
 
     <span class="text-textcolor">Stability Model</span>
     <SelectInput className="mt-2 mb-4" bind:value={settings.memoryTranslateMedia.stabilityModel}>
@@ -866,7 +866,7 @@
 
 {#if settings.memoryTranslateMedia.sdProvider === "fal"}
     <span class="text-textcolor">Fal.ai API Key</span>
-    <TextInput size="sm" marginBottom placeholder="..." bind:value={settings.secrets.falToken} />
+    <TextInput secret size="sm" marginBottom placeholder="..." bind:value={settings.secrets.falToken} />
 
     <span class="text-textcolor mt-4">Width</span>
     <NumberInput size="sm" marginBottom min={0} max={2048} bind:value={settings.memoryTranslateMedia.sdConfig.width} />
@@ -939,6 +939,7 @@
 
     <span class="text-textcolor">API Key</span>
     <TextInput
+        secret
         size="sm"
         marginBottom
         placeholder="sk-..."
@@ -970,6 +971,7 @@
 {#if settings.memoryTranslateMedia.sdProvider === "wavespeed"}
     <span class="text-textcolor">API Key</span>
     <TextInput
+        secret
         size="sm"
         marginBottom
         placeholder="sk-..."

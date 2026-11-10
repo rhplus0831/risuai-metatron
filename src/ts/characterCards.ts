@@ -541,7 +541,7 @@ async function readPngCard(readedChara: string): Promise<PngCard | null> {
             const metaData: RccCardMetaData = JSON.parse(Buffer.from(parts[4], "base64").toString("utf-8"));
             let charaData: CharacterCardV2Risu;
             if (metaData.usePassword) {
-                const password = await alertInput(language.inputCardPassword);
+                const password = await alertInput(language.inputCardPassword, undefined, undefined, { secret: true });
                 if (!password) {
                     return null;
                 }

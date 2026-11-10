@@ -74,7 +74,7 @@
     <span class="text-textcolor text-lg">URL</span>
     <TextInput size="sm" marginBottom bind:value={settings.secrets.hypaCustomSettings.url} />
     <span class="text-textcolor text-lg">Key/Password</span>
-    <TextInput size="sm" marginBottom bind:value={settings.secrets.hypaCustomSettings.key} />
+    <TextInput secret size="sm" marginBottom bind:value={settings.secrets.hypaCustomSettings.key} />
     <span class="text-textcolor text-lg">Request Model</span>
     <TextInput size="sm" marginBottom bind:value={settings.secrets.hypaCustomSettings.model} />
 {/if}

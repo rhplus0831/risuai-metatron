@@ -934,7 +934,7 @@ export class MCPClient {
 
         this.assertOpen();
         openURL(authUrl.toString());
-        const code = await alertInput("Input Authorization Code");
+        const code = await alertInput("Input Authorization Code", undefined, undefined, { secret: true });
         this.assertOpen();
 
         const authHelperResponse = await fetchNative("https://account.sionyw.com/oauthhelper/api", {

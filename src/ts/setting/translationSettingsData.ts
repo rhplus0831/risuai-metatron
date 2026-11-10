@@ -80,6 +80,7 @@ export const translationSettingsItems: SettingItem[] = [
         type: "text",
         labelKey: "deeplKey",
         bindPath: "deeplOptions.key",
+        options: { secret: true },
         classes: "mt-4",
         condition: (ctx) =>
             !!ctx.settings.memoryTranslateMedia.translator &&
@@ -113,6 +114,7 @@ export const translationSettingsItems: SettingItem[] = [
         type: "text",
         labelKey: "deeplXToken",
         bindPath: "deeplXOptions.token",
+        options: { secret: true },
         classes: "mt-4",
         condition: (ctx) =>
             !!ctx.settings.memoryTranslateMedia.translator &&

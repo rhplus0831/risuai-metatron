@@ -21,6 +21,8 @@
         className?: string;
         disabled?: boolean;
         hideText?: boolean;
+        /** A credential field, including when its text is visible: withhold plugin key events. */
+        secret?: boolean;
         list?: string;
     }
 
@@ -40,6 +42,7 @@
         className = "",
         disabled = false,
         hideText = false,
+        secret = false,
         list = undefined,
     }: Props = $props();
 </script>
@@ -70,6 +73,7 @@
         {placeholder}
         {id}
         type="password"
+        data-plugin-secret={secret ? "" : undefined}
         bind:value
         {disabled}
         {oninput}
@@ -100,6 +104,7 @@
         {placeholder}
         {id}
         type="text"
+        data-plugin-secret={secret ? "" : undefined}
         bind:value
         {disabled}
         {oninput}

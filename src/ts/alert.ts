@@ -66,6 +66,8 @@ export interface alertData {
     stackTrace?: string;
     /** `input`: the field's initial value. */
     defaultValue?: string;
+    /** `input`: a password or credential, whose keys must not reach plugins even when visible. */
+    secret?: boolean;
     /** `ask`: optional checkbox; changed through the queue, never through store set/update. */
     confirmCheckbox?: { label: string; checked: boolean };
     /** `error`: a server job's failure (`alertJobError`): "Copy debug info" and "Open in request history". */
@@ -452,12 +454,18 @@ export async function alertCardExport() {
 }
 
 /** Resolves with the input's value, or "" on Escape. */
-export async function alertInput(msg: string, datalist?: [string, string][], defaultValue?: string) {
+export async function alertInput(
+    msg: string,
+    datalist?: [string, string][],
+    defaultValue?: string,
+    options?: { secret?: boolean },
+) {
     return await openDialog({
         type: "input",
         msg: msg,
         datalist: datalist ?? [],
         defaultValue: defaultValue ?? "",
+        ...(options?.secret ? { secret: true } : {}),
     });
 }
 

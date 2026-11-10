@@ -126,7 +126,9 @@ async function runAuthCheck() {
         }
 
         if (status === "unset") {
-            const input = await digestPassword(await alertInput(language.setNodePassword));
+            const input = await digestPassword(
+                await alertInput(language.setNodePassword, undefined, undefined, { secret: true }),
+            );
             const setup = await fetch("/api/set_password", {
                 method: "POST",
                 body: JSON.stringify({
@@ -150,7 +152,9 @@ async function runAuthCheck() {
             authChecked = true;
             return await createAuth();
         } else if (status === "incorrect") {
-            const input = await digestPassword(await alertInput(language.inputNodePassword));
+            const input = await digestPassword(
+                await alertInput(language.inputNodePassword, undefined, undefined, { secret: true }),
+            );
             await login(input);
             authChecked = true;
             return await createAuth();

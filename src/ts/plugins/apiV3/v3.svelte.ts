@@ -205,6 +205,19 @@ const pluginEventListeners: TrackedEventListener[] = [];
 // Re-querying the same target must retain the IDs returned by earlier wrappers.
 const pluginEventIds = new WeakMap<EventTarget, Map<string, TrackedEventListener>>();
 
+/**
+ * `data-plugin-secret` marks fields where a password or credential can be typed as visible text.
+ * Check the real event target and its closest marked container before scheduling key delivery;
+ * password inputs are secret according to their type at the time of the event.
+ */
+function isSecretKeyEvent(event: Event): boolean {
+    const target = event.target;
+    return (
+        target instanceof Element &&
+        (target.matches('input[type="password"]') || target.closest("[data-plugin-secret]") !== null)
+    );
+}
+
 class SafeElement {
     #element: HTMLElement;
     #eventTarget: EventTarget;
@@ -471,7 +484,7 @@ class SafeElement {
             modifiedListener = (event: any) => {
                 // No key typed while the terminal notice is up reaches a plugin: the notice stops
                 // only bubbling, and capture listeners on the document or the notice's ancestors run first.
-                if (terminalNoticeShown()) {
+                if (terminalNoticeShown() || isSecretKeyEvent(event)) {
                     return;
                 }
                 let delay = 0;

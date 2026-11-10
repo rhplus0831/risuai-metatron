@@ -22,4 +22,5 @@
     bind:value={() => getSettingValue(item, ctx), (v) => updateSettingValue(item, v, ctx)}
     placeholder={item.options?.placeholder}
     hideText={item.options?.hideText}
+    secret={item.options?.secret}
 />

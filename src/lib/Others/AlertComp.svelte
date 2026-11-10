@@ -525,6 +525,7 @@
                 <TextInput
                     value={$alertStore.defaultValue}
                     id="alert-input"
+                    secret={$alertStore.secret}
                     autocomplete="off"
                     marginTop
                     list="alert-input-list"

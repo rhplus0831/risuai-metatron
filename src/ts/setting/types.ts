@@ -97,6 +97,7 @@ export interface SettingOptions {
     // text, textarea
     placeholder?: string;
     hideText?: boolean; // For password-like inputs
+    secret?: boolean; // Withhold plugin key events even when the credential is visible
     inputClassName?: string;
     marginBottom?: boolean;
 

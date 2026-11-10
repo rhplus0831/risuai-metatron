@@ -132,6 +132,15 @@ async function checkedState(): Promise<boolean> {
 }
 
 describe("first run", () => {
+    it("requests a secret input for the server password setup prompt", async () => {
+        prompts.answers = ["pw"];
+        await auth$.ensureAuth();
+        const { alertInput } = await import("../../alert");
+        expect(alertInput).toHaveBeenCalledExactlyOnceWith(lang$.language.setNodePassword, undefined, undefined, {
+            secret: true,
+        });
+    });
+
     it("sets the password once and logs this browser in with the same digest, so the next request is authorized", async () => {
         prompts.answers = ["hunter2"];
         await auth$.ensureAuth();

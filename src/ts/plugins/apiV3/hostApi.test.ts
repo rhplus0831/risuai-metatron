@@ -721,6 +721,92 @@ describe("v3 DOM listener targets and cleanup", () => {
         }
     });
 
+    async function listenToInput(input: HTMLInputElement) {
+        input.id = "plugin-key-input";
+        element.append(input);
+        const root = await (await makeApi()).getRootDocument();
+        const field = root.querySelector("#plugin-key-input");
+        const deliveries: any[][] = [];
+        // Exercise the document, an ancestor, and the field itself in both phases.
+        for (const target of [root, root.querySelector("#plugin-event-target"), field]) {
+            for (const capture of [true, false]) {
+                const events: any[] = [];
+                deliveries.push(events);
+                for (const type of ["keydown", "keyup", "keypress"]) {
+                    await target.addEventListener(type, (event: any) => events.push(event), capture);
+                }
+            }
+        }
+        const dispatchKeys = () => {
+            for (const type of ["keydown", "keyup", "keypress"]) {
+                input.dispatchEvent(
+                    new KeyboardEvent(type, { key: "a", code: "KeyA", ctrlKey: true, repeat: true, bubbles: true }),
+                );
+            }
+        };
+        return { deliveries, dispatchKeys, field };
+    }
+
+    it("withholds password keys from document and element listeners in both phases using the event-time type", async () => {
+        const input = document.createElement("input");
+        const { deliveries, dispatchKeys } = await listenToInput(input);
+        input.type = "password";
+        dispatchKeys();
+        input.type = "text";
+        await vi.advanceTimersByTimeAsync(100);
+        for (const events of deliveries) expect(events).toEqual([]);
+    });
+
+    it("withholds visible keys from marked fields and marked containers in both phases", async () => {
+        const input = document.createElement("input");
+        const { deliveries, dispatchKeys } = await listenToInput(input);
+        input.setAttribute("data-plugin-secret", "");
+        dispatchKeys();
+        input.removeAttribute("data-plugin-secret");
+        element.setAttribute("data-plugin-secret", "");
+        dispatchKeys();
+        element.removeAttribute("data-plugin-secret");
+        await vi.advanceTimersByTimeAsync(100);
+        for (const events of deliveries) expect(events).toEqual([]);
+    });
+
+    it("forwards ordinary key payloads and keeps mouse, pointer, and scroll events on secret fields", async () => {
+        const input = document.createElement("input");
+        const { deliveries, dispatchKeys, field } = await listenToInput(input);
+        dispatchKeys();
+        await vi.advanceTimersByTimeAsync(100);
+        for (const events of deliveries) {
+            expect(events.sort((a, b) => a.type.localeCompare(b.type))).toEqual(
+                ["keydown", "keypress", "keyup"].map((type) => ({
+                    type,
+                    key: "a",
+                    code: "KeyA",
+                    repeat: true,
+                    altKey: false,
+                    ctrlKey: true,
+                    shiftKey: false,
+                    metaKey: false,
+                })),
+            );
+        }
+
+        input.type = "password";
+        input.setAttribute("data-plugin-secret", "");
+        const nonKeys = vi.fn();
+        for (const type of ["click", "pointerdown", "scroll"]) await field.addEventListener(type, nonKeys);
+        input.dispatchEvent(new MouseEvent("click", { clientX: 12, clientY: 34 }));
+        input.dispatchEvent(new PointerEvent("pointerdown", { clientX: 56, clientY: 78 }));
+        input.dispatchEvent(new Event("scroll"));
+        expect(nonKeys.mock.calls.map(([event]) => event)).toEqual([
+            expect.objectContaining({ type: "click", clientX: 12, clientY: 34 }),
+            expect.objectContaining({ type: "pointerdown", clientX: 56, clientY: 78 }),
+            { type: "scroll" },
+        ]);
+        dispatchKeys();
+        await vi.advanceTimersByTimeAsync(100);
+        for (const events of deliveries) expect(events).toHaveLength(3);
+    });
+
     it("reports added and removed elements through each mutation record's node lists", async () => {
         const api = await makeApi();
         const root = await api.getRootDocument();

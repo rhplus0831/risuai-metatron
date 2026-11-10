@@ -2,7 +2,7 @@
 
 import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { showHypaV2Alert, type alertData } from "src/ts/alert";
+import { alertInput, showHypaV2Alert, type alertData } from "src/ts/alert";
 import { NEXT_DIALOG_GAP_MS, type AlertDialog } from "src/ts/alertQueue";
 import { initHotkey } from "src/ts/hotkey";
 import { alertStore, settingsOpen } from "src/ts/stores.svelte";
@@ -235,6 +235,24 @@ describe("dialogs keep their requested character and chat", () => {
 });
 
 describe("alert dialog focus and keyboard answers", () => {
+    it("renders alertInput's secret option as a marker on its visible field and leaves ordinary prompts unmarked", async () => {
+        for (const secret of [true, false]) {
+            const answer = alertInput("Value", undefined, "Initial value", secret ? { secret: true } : undefined);
+            await showAlert();
+            const input = target.querySelector<HTMLInputElement>("#alert-input")!;
+            expect(input.type).toBe("text");
+            expect(input.hasAttribute("data-plugin-secret")).toBe(secret);
+            expect(input.value).toBe("Initial value");
+            input.value = "Typed value";
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            await tick();
+            stroke("Enter");
+            await expect(answer).resolves.toBe("Typed value");
+            await hideAlert();
+            await vi.advanceTimersByTimeAsync(NEXT_DIALOG_GAP_MS);
+        }
+    });
+
     it.each([
         ["Enter", "yes"],
         ["Escape", ""],

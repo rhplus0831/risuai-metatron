@@ -45,10 +45,9 @@ Guide: [Persistence: Database, Records, Mutation Stores](../structure/persistenc
 
 Guide: [Plugins: v3 Sandbox, Host API, Hooks, Storage, Permissions](../structure/plugin-sandbox.md#known-hazards).
 
-- Consented capabilities reach further than their names suggest (never reviewed): `mainDom` lets a plugin listen on
-  `document` through `getRootDocument` and forwards keys (except from the terminal notice's opening until reload), so a
-  plugin could observe typing in the password or credential prompts; `mainDom` also allows document-wide queries and
-  mutation; `nativeFetch` lets a plugin choose its headers.
+- Consented capabilities reach further than their names suggest: `mainDom` allows document-wide queries and mutation
+  through `getRootDocument` and forwards the keys typed into every field that is not a password input or marked
+  `data-plugin-secret`; `nativeFetch` lets a plugin choose its headers.
 - A plugin event listener lives until the wrapper that registered it removes it by id or plugins reload: removing
   its element from the page keeps it (and the element).
 
