@@ -23,6 +23,7 @@ import { NovelAIBadWordIds, stringlizeNAIChat } from "./nai.ts";
 import { requestClaude } from "./anthropic.ts";
 import { requestGoogleCloudVertex } from "./google.ts";
 import { requestOpenAI, requestOpenAILegacyInstruct, requestOpenAIResponseAPI } from "./openAI/requests.ts";
+import { providerFetch } from "./providerFetch.ts";
 import { applyAdditionalParameters, applyParameters, getAdditionalParameters } from "./shared.ts";
 import type { RequestDb } from "./settings.ts";
 import { getStopStrings, stringlizeAINChat, unstringlizeAIN, unstringlizeChat } from "./stringlize.ts";
@@ -1396,7 +1397,7 @@ async function requestOllama(arg: RequestDataArgumentExtended): Promise<requestD
         fetch: isCloud
             ? ollamaCloudFetch(arg.ctx.transport)
             : (input: string | URL | Request, init: RequestInit = {}) =>
-                  fetch(input, {
+                  providerFetch(input, {
                       ...init,
                       signal: init.signal ? AbortSignal.any([init.signal, arg.ctx.signal]) : arg.ctx.signal,
                   }).then((response) => {

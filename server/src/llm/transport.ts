@@ -20,6 +20,8 @@
  * `pipeTo`, a `fetch`, a signature save) must catch.
  */
 
+import { providerFetch } from "./providerFetch.ts";
+
 export type FetchLogEntry = {
     body: string;
     header: string;
@@ -318,7 +320,7 @@ function utf8Bytes(value: unknown): number {
 }
 
 export function createTransport(options: TransportOptions): Transport {
-    const fetchImpl = options.fetchImpl ?? fetch;
+    const fetchImpl = options.fetchImpl ?? providerFetch;
     const redact = options.redact ?? ((text: string) => text);
     const logError = (error: unknown) =>
         console.error("[LLM]", redact(error instanceof Error ? error.message : String(error)));

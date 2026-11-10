@@ -102,6 +102,9 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
   `resolveJobRequestModel`, and the per-format functions; the other adapters are `server/src/llm/anthropic.ts`,
   `server/src/llm/google.ts`, and `server/src/llm/openAI/` (helpers `server/src/llm/nai.ts`,
   `server/src/llm/openrouter.ts`). `server/src/llm/outer.ts` `requestChatDataOuter` is a job's outer loop.
+- `server/src/llm/providerFetch.ts` `providerFetch`, `PROVIDER_RESPONSE_TIMEOUT_MS`: the fetch of provider requests (the
+  transport's default and the local Ollama client). Its undici `Agent` waits 30 minutes for the headers and between body
+  chunks; Node's own 300 s bound failed, and re-sent, a long non-streaming generation.
 - `server/src/llm/openAI/shared.ts`: `getOpenAIRequestKey` and `getLocalNetworkRequestOptions`.
 - `server/src/llm/shared.ts` `applyParameters`, `applyAdditionalParameters`: server parameter application and the
   trusted custom-parameter syntax, mirrored in `src/ts/process/request/shared.ts`.
