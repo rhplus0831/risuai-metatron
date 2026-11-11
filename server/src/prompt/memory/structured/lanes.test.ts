@@ -278,6 +278,22 @@ describe("structured memory lanes", () => {
         }
     });
 
+    it("sets auto targets from the preset's own shares, and manual targets ignore them", () => {
+        const laneShares = { flow: 60, pages: 0, events: 33, evidence: 100, threads: 7 };
+        const laneTargets = { flow: 9, pages: 8, events: 17, evidence: 11, threads: 3 };
+        const preset = (laneSplit: "auto" | "manual") =>
+            createHypaV3Preset(
+                "Own shares",
+                { budgetMode: "tokens", memoryBudgetTokens: 901, structured: { laneSplit, laneShares, laneTargets } },
+                "own-shares",
+            ).settings;
+        expect(readBudget(preset("auto"), 4000, 200)).toMatchObject({
+            maximum: 901,
+            targets: { flow: 540, pages: 0, events: 297, evidence: 901, threads: 63 },
+        });
+        expect(readBudget(preset("manual"), 4000, 200).targets).toEqual(laneTargets);
+    });
+
     it("gives lanes their core before lending by score, keeping items whole and disabled lanes empty", () => {
         const item = (lane: LaneItem["lane"], id: string, tokens: number, score: number): LaneItem => ({
             lane,

@@ -121,7 +121,10 @@ export type StructuredMemoryCadence = (typeof STRUCTURED_MEMORY_CADENCES)[number
 export const STRUCTURED_MEMORY_LANE_SPLITS = ["auto", "manual"] as const;
 export type StructuredMemoryLaneSplit = (typeof STRUCTURED_MEMORY_LANE_SPLITS)[number];
 
-/** Each optional lane's core target as a share of the applied memory maximum under `auto`. */
+/**
+ * Each optional lane's default core target as a share of the applied memory maximum under `auto`; a preset's
+ * `laneShares` stores its own as whole percents.
+ */
 export const STRUCTURED_MEMORY_LANE_SHARES = {
     flow: 0.25,
     pages: 0.45,
@@ -629,6 +632,11 @@ export interface StructuredMemorySettings {
     laneSplit: StructuredMemoryLaneSplit;
     /** Each lane's stored token target under `manual`; integers >= 0, preserved under `auto`. */
     laneTargets: { flow: number; pages: number; events: number; evidence: number; threads: number };
+    /**
+     * Each lane's share of the applied memory maximum under `auto`, in whole percents from 0 to 100; preserved
+     * under `manual`. The sum is not bounded: the core round spends in lane order against the maximum.
+     */
+    laneShares: { flow: number; pages: number; events: number; evidence: number; threads: number };
     /** The tokens the required lane may take before the send fails; an integer >= 1. */
     requiredCap: number;
     /** Reply screening: the texts that mark a message `excluded`, as a refusal or as a format failure. */
@@ -1682,6 +1690,9 @@ function textList(value: unknown): string[] {
 export function normalizeStructuredMemorySettings(input: unknown): StructuredMemorySettings {
     const source = isPlainObject(input) ? input : {};
     const laneTargets = isPlainObject(source.laneTargets) ? source.laneTargets : {};
+    const laneShares = isPlainObject(source.laneShares) ? source.laneShares : {};
+    const share = (lane: keyof StructuredMemorySettings["laneShares"]) =>
+        integerIn(laneShares[lane], Math.round(STRUCTURED_MEMORY_LANE_SHARES[lane] * 100), 0, 100);
     const screening = isPlainObject(source.screening) ? source.screening : {};
     const ratio = source.cadenceRatio;
     return {
@@ -1700,6 +1711,13 @@ export function normalizeStructuredMemorySettings(input: unknown): StructuredMem
             events: integerIn(laneTargets.events, 1500, 0),
             evidence: integerIn(laneTargets.evidence, 700, 0),
             threads: integerIn(laneTargets.threads, 300, 0),
+        },
+        laneShares: {
+            flow: share("flow"),
+            pages: share("pages"),
+            events: share("events"),
+            evidence: share("evidence"),
+            threads: share("threads"),
         },
         requiredCap: integerIn(source.requiredCap, 1500, 1),
         screening: { refusal: textList(screening.refusal), format: textList(screening.format) },
@@ -1724,28 +1742,33 @@ export function normalizeStructuredMemorySettings(input: unknown): StructuredMem
 
 /** The send's lane targets, without changing the stored counts; a small maximum can floor a share to 0. */
 export function resolveLaneTargets(
-    settings: Pick<StructuredMemorySettings, "laneSplit" | "laneTargets">,
+    settings: Pick<StructuredMemorySettings, "laneSplit" | "laneTargets" | "laneShares">,
     maximum: number,
 ): StructuredMemorySettings["laneTargets"] {
     if (settings.laneSplit === "manual") return { ...settings.laneTargets };
+    const { laneShares } = settings;
+    const target = (percent: number) => Math.floor((maximum * percent) / 100);
     return {
-        flow: Math.floor(maximum * STRUCTURED_MEMORY_LANE_SHARES.flow),
-        pages: Math.floor(maximum * STRUCTURED_MEMORY_LANE_SHARES.pages),
-        events: Math.floor(maximum * STRUCTURED_MEMORY_LANE_SHARES.events),
-        evidence: Math.floor(maximum * STRUCTURED_MEMORY_LANE_SHARES.evidence),
-        threads: Math.floor(maximum * STRUCTURED_MEMORY_LANE_SHARES.threads),
+        flow: target(laneShares.flow),
+        pages: target(laneShares.pages),
+        events: target(laneShares.events),
+        evidence: target(laneShares.evidence),
+        threads: target(laneShares.threads),
     };
 }
 
-/** Background warming has no send maximum: both embedding lanes warm under `auto`. */
-export function structuredMemoryEmbeddingLanes(settings: Pick<StructuredMemorySettings, "laneSplit" | "laneTargets">): {
+/**
+ * Background warming has no send maximum: an embedding lane warms when its stored count (`manual`) or share
+ * (`auto`) is above 0, even where a small maximum would floor its target to 0.
+ */
+export function structuredMemoryEmbeddingLanes(
+    settings: Pick<StructuredMemorySettings, "laneSplit" | "laneTargets" | "laneShares">,
+): {
     events: boolean;
     pages: boolean;
 } {
-    return {
-        events: settings.laneSplit !== "manual" || settings.laneTargets.events > 0,
-        pages: settings.laneSplit !== "manual" || settings.laneTargets.pages > 0,
-    };
+    const stored = settings.laneSplit === "manual" ? settings.laneTargets : settings.laneShares;
+    return { events: stored.events > 0, pages: stored.pages > 0 };
 }
 
 /** A chat's or its owner's writer language (`structuredMemoryLanguage`): a stored non-empty string, else none. */

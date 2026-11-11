@@ -42,7 +42,6 @@
         STRUCTURED_MEMORY_CADENCES,
         STRUCTURED_MEMORY_HIGHLIGHT_KINDS,
         STRUCTURED_MEMORY_HIGHLIGHT_MODES,
-        STRUCTURED_MEMORY_LANE_SHARES,
         STRUCTURED_MEMORY_LANE_SPLITS,
         STRUCTURED_MEMORY_LIMITS,
         type StructuredMemoryCadence,
@@ -208,13 +207,8 @@
     // Structured Memory selects by `memoryAlgorithmType`, ahead of the flags, as the server does. It
     // shares the selected HypaV3 preset for its budget and keeps its own settings in `structured`.
     const structuredMemorySelected = $derived(settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM);
-    const laneSharePercents = {
-        flow: Math.round(STRUCTURED_MEMORY_LANE_SHARES.flow * 100),
-        pages: Math.round(STRUCTURED_MEMORY_LANE_SHARES.pages * 100),
-        events: Math.round(STRUCTURED_MEMORY_LANE_SHARES.events * 100),
-        evidence: Math.round(STRUCTURED_MEMORY_LANE_SHARES.evidence * 100),
-        threads: Math.round(STRUCTURED_MEMORY_LANE_SHARES.threads * 100),
-    };
+    const laneShareTotal = (shares: StructuredMemorySettings["laneShares"]) =>
+        shares.flow + shares.pages + shares.events + shares.evidence + shares.threads;
 
     /**
      * Changes the preset's `structured`. A stored value can be partial or damaged, which every reader
@@ -721,8 +715,48 @@
                 (next, count) => (next.laneTargets.threads = count),
             )}
         {:else}
+            {@render structuredCount(
+                preset,
+                text.flowShare,
+                0,
+                (read) => read.laneShares.flow,
+                (next, percent) => (next.laneShares.flow = percent),
+                100,
+            )}
+            {@render structuredCount(
+                preset,
+                text.pagesShare,
+                0,
+                (read) => read.laneShares.pages,
+                (next, percent) => (next.laneShares.pages = percent),
+                100,
+            )}
+            {@render structuredCount(
+                preset,
+                text.eventsShare,
+                0,
+                (read) => read.laneShares.events,
+                (next, percent) => (next.laneShares.events = percent),
+                100,
+            )}
+            {@render structuredCount(
+                preset,
+                text.evidenceShare,
+                0,
+                (read) => read.laneShares.evidence,
+                (next, percent) => (next.laneShares.evidence = percent),
+                100,
+            )}
+            {@render structuredCount(
+                preset,
+                text.threadsShare,
+                0,
+                (read) => read.laneShares.threads,
+                (next, percent) => (next.laneShares.threads = percent),
+                100,
+            )}
             <span class="mb-4 text-xs text-textcolor2" data-structured-memory-lane-shares
-                >{text.laneShares(laneSharePercents)}</span
+                >{text.laneSharesHelp(laneShareTotal(structured.laneShares))}</span
             >
         {/if}
         <span class="text-textcolor">{text.instructions}</span>

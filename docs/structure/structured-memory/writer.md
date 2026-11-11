@@ -192,11 +192,11 @@ Compaction changes no event, and a warning does not fail the run.
 - `cadenceTokens` is the `tokens` cadence's threshold under a `tokens` budget mode, and `cadenceRatio` its share of the
   max context under a `ratio` one; each mode keeps the other's field.
 - The read path's settings sit beside the writer's: `laneSplit` (`auto` by default, also for a preset stored without it)
-  makes the lane targets shares of the memory maximum, and under `manual` the stored `laneTargets` apply, where
-  `laneTargets.flow` (default 1500, 0 for the title-only lane) is the recent timeline's token target.
-  `flowKeyLineEvents` (default 3) is the timeline events that carry key lines, and `flowEvents` the titles listed after
-  the timeline ([the read path](read.md#the-read-path)). The settings page hides the five lane token inputs under `auto`
-  and states the shares instead.
+  makes the lane targets the preset's `laneShares` (whole percents) of the memory maximum, and under `manual` the stored
+  `laneTargets` apply, where `laneTargets.flow` (default 1500, 0 for the title-only lane) is the recent timeline's token
+  target. `flowKeyLineEvents` (default 3) is the timeline events that carry key lines, and `flowEvents` the titles
+  listed after the timeline ([the read path](read.md#the-read-path)). The settings page shows only the split's own
+  inputs.
 
 ## Coupling
 
@@ -295,10 +295,10 @@ Compaction changes no event, and a warning does not fail the run.
   setting, because `setStructured` stores what the tab's normalizer keeps; the field reads as its default from then on.
   This holds for every setting here, needs an edit in the stale tab, a reload avoids it, and no record is touched.
   Decision: Structured Memory Recent Timeline D13 (owner, 2026-11-11).
-- The lane shares (`STRUCTURED_MEMORY_LANE_SHARES`) are starting values in code, not a setting, and are not measured
-  yet: a share set badly wastes nothing, since lending and the timeline's extension spend what a lane leaves, but it can
-  starve a lane's core round. A person who wants other targets chooses `manual`. Decision: Structured Memory Recent
-  Timeline D8 (owner, 2026-11-11).
+- The default lane shares (`STRUCTURED_MEMORY_LANE_SHARES`) are measured only on the fixture chats: a share set badly
+  wastes nothing, since lending and the timeline's extension spend what a lane leaves, but it can starve a lane's core
+  round. A preset sets its own in `laneShares` under `auto`, or token counts under `manual`. Decision: Structured Memory
+  Recent Timeline D8 (owner, 2026-11-11); shares became a preset setting at the owner's request on 2026-11-12.
 - A repair never carries an edit into later state; a rebuild from that point does. A later event with every cited
   message deleted no longer counts. Decision: Implementation Audit Fixes Q3.
 

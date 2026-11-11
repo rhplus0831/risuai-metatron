@@ -138,7 +138,13 @@ it("edits only consumed Structured Memory settings and shares the selected prese
                       control(text.evidenceTarget),
                       control(text.threadsTarget),
                   ]
-                : []),
+                : [
+                      control(text.flowShare),
+                      control(text.pagesShare),
+                      control(text.eventsShare),
+                      control(text.evidenceShare),
+                      control(text.threadsShare),
+                  ]),
             control(text.instructions),
             kindBox(text.keyLineGuidance),
             control(text.screeningRefusal),
@@ -334,7 +340,7 @@ it("edits both screening lists by line while preserving a typed newline", () => 
     expect(screening().format).toHaveLength(3);
 });
 
-it("shows shares in auto and preserves all five edited lane counts when switching back to manual", () => {
+it("edits shares in auto and counts in manual, preserving both across switches", () => {
     settings.ui.memoryAlgorithmType = "structuredMemory";
     open();
     const read = () => settings.hypaV3Presets.items.find(({ id }) => id === "first")!.settings.structured;
@@ -346,18 +352,46 @@ it("shows shares in auto and preserves all five edited lane counts when switchin
         [text.evidenceTarget, 222],
         [text.threadsTarget, 333],
     ] as const;
-    const shares = text.laneShares({ flow: 25, pages: 45, events: 15, evidence: 10, threads: 5 });
-    const assertAuto = () => {
+    const shareInputs = [
+        [text.flowShare, 25, 30],
+        [text.pagesShare, 45, 100],
+        [text.eventsShare, 15, 0],
+        [text.evidenceShare, 10, 20],
+        [text.threadsShare, 5, 7],
+    ] as const;
+    const visible = (label: string) =>
+        [...target.querySelectorAll("span")].some((s) => s.textContent?.trim() === label);
+    const assertAuto = (column: 1 | 2, total: number) => {
         expect(split.value).toBe("auto");
-        for (const [label] of laneInputs) expect(target.textContent).not.toContain(label);
-        expect(target.textContent).toContain(shares);
+        for (const [label] of laneInputs) expect(visible(label)).toBe(false);
+        for (const row of shareInputs) {
+            const input = control(row[0]) as HTMLInputElement;
+            expect(split.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+            expect([input.type, input.min, input.max, input.value]).toEqual([
+                "number",
+                "0",
+                "100",
+                String(row[column]),
+            ]);
+        }
+        expect(target.textContent).toContain(text.laneSharesHelp(total));
         for (const label of [text.flowEvents, text.flowKeyLineEvents, text.requiredCap]) {
             expect(control(label).isConnected).toBe(true);
         }
     };
-    assertAuto();
+    assertAuto(1, 100);
+    for (const [label, , value] of shareInputs) change(control(label) as HTMLInputElement, String(value));
+    // Out of range or fractional percents leave the stored share as it was.
+    const laneShares = { flow: 30, pages: 100, events: 0, evidence: 20, threads: 7 };
+    for (const value of ["101", "-1", "2.5"]) {
+        change(control(text.threadsShare) as HTMLInputElement, value);
+        expect(read()).toMatchObject({ laneSplit: "auto", laneShares });
+    }
+    change(control(text.threadsShare) as HTMLInputElement, "7");
+    assertAuto(2, 157);
     change(split, "manual");
-    expect(target.textContent).not.toContain(shares);
+    for (const [label] of shareInputs) expect(visible(label)).toBe(false);
+    expect(target.querySelector("[data-structured-memory-lane-shares]")).toBeNull();
     for (const [label, value] of laneInputs) {
         const input = control(label) as HTMLInputElement;
         expect(split.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -371,17 +405,17 @@ it("shows shares in auto and preserves all five edited lane counts when switchin
         change(control(label) as HTMLInputElement, String(value));
     const expected = {
         laneTargets: { flow: 2401, pages: 0, events: 111, evidence: 222, threads: 333 },
+        laneShares,
         flowEvents: 6,
         flowKeyLineEvents: 2,
         requiredCap: 731,
     };
     expect(read()).toMatchObject({ laneSplit: "manual", ...expected });
     change(split, "auto");
-    assertAuto();
+    assertAuto(2, 157);
     expect(read()).toMatchObject({ laneSplit: "auto", ...expected });
     change(split, "manual");
     expect(read()).toMatchObject({ laneSplit: "manual", ...expected });
-    expect(target.textContent).not.toContain(shares);
     for (const [label, value] of laneInputs) expect((control(label) as HTMLInputElement).value).toBe(String(value));
 });
 

@@ -555,6 +555,7 @@ const structuredDefaults = {
     flowKeyLineEvents: 3,
     laneSplit: "auto",
     laneTargets: { flow: 1500, pages: 2000, events: 1500, evidence: 700, threads: 300 },
+    laneShares: { flow: 25, pages: 45, events: 15, evidence: 10, threads: 5 },
     requiredCap: 1500,
     screening: { refusal: [], format: [] },
     language: "",
@@ -579,6 +580,7 @@ const structuredCustom = {
     flowKeyLineEvents: 0,
     laneSplit: "manual",
     laneTargets: { flow: 54, pages: 0, events: 21, evidence: 32, threads: 43 },
+    laneShares: { flow: 100, pages: 0, events: 40, evidence: 33, threads: 1 },
     requiredCap: 1,
     screening: { refusal: ["Cannot comply"], format: ["Bad format"] },
     language: "ko",
@@ -693,17 +695,24 @@ describe("Structured Memory settings", () => {
         ).toStrictEqual({ ...structuredCustom, cadenceRatio: 0.99, highlightChangeGrade: 0 });
     });
 
-    it("defaults existing presets to auto and keeps stored lane counts through mode switches", () => {
+    it("defaults existing presets to auto and keeps stored lane counts and shares through mode switches", () => {
         const laneTargets = { flow: 54, pages: 0, events: 21, evidence: 32, threads: 43 };
+        const laneShares = { flow: 30, pages: 30, events: 0, evidence: 20, threads: 20 };
         const preset = normalizeHypaV3Presets({
-            items: [{ id: "stored", name: "Stored", settings: { structured: { laneTargets, requiredCap: 731 } } }],
+            items: [
+                {
+                    id: "stored",
+                    name: "Stored",
+                    settings: { structured: { laneTargets, laneShares, requiredCap: 731 } },
+                },
+            ],
             selectedId: "stored",
         }).items[0];
         let structured = preset.settings.structured;
-        expect(structured).toMatchObject({ laneSplit: "auto", laneTargets, requiredCap: 731 });
+        expect(structured).toMatchObject({ laneSplit: "auto", laneTargets, laneShares, requiredCap: 731 });
         for (const laneSplit of ["manual", "auto", "manual"] as const) {
             structured = normalizeStructuredMemorySettings({ ...structured, laneSplit });
-            expect(structured).toMatchObject({ laneSplit, laneTargets, requiredCap: 731 });
+            expect(structured).toMatchObject({ laneSplit, laneTargets, laneShares, requiredCap: 731 });
         }
     });
 
@@ -726,10 +735,34 @@ describe("Structured Memory settings", () => {
                 });
             }
         }
+        const shares = structuredCustom.laneShares;
+        for (const key of ["flow", "pages", "events", "evidence", "threads"] as const) {
+            for (const value of [0, 100]) {
+                expect(
+                    normalizeStructuredMemorySettings({
+                        ...structuredCustom,
+                        laneShares: { ...shares, [key]: value, unknown: 1 },
+                    }),
+                ).toStrictEqual({ ...structuredCustom, laneShares: { ...shares, [key]: value } });
+            }
+            for (const value of [undefined, null, -1, 101, 0.5, "5", NaN, Infinity]) {
+                expect(
+                    normalizeStructuredMemorySettings({ ...structuredCustom, laneShares: { ...shares, [key]: value } }),
+                    `${key} share = ${value}`,
+                ).toStrictEqual({
+                    ...structuredCustom,
+                    laneShares: { ...shares, [key]: structuredDefaults.laneShares[key] },
+                });
+            }
+        }
         for (const value of [undefined, null, [], "invalid"]) {
             expect(normalizeStructuredMemorySettings({ ...structuredCustom, laneTargets: value })).toStrictEqual({
                 ...structuredCustom,
                 laneTargets: structuredDefaults.laneTargets,
+            });
+            expect(normalizeStructuredMemorySettings({ ...structuredCustom, laneShares: value })).toStrictEqual({
+                ...structuredCustom,
+                laneShares: structuredDefaults.laneShares,
             });
             expect(normalizeStructuredMemorySettings({ ...structuredCustom, screening: value })).toStrictEqual({
                 ...structuredCustom,

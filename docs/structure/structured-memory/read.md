@@ -102,12 +102,14 @@ in full once, in the run or in the events lane, and selection takes the run's ev
 exclusions. A target of 0 keeps the title-only lane. `spendLanes`' doc owns the order.
 
 Lane targets follow `laneSplit`. Under `auto`, the default and what an absent value reads as, `readBudget` gives each
-lane `floor(maximum × share)` of the applied maximum (`STRUCTURED_MEMORY_LANE_SHARES`: flow 25%, pages 45%, events 15%,
-evidence 10%, threads 5%); under `manual` it gives the stored `laneTargets`. Selection hands those targets to retrieval
-as its input, and the evidence reselection reads them too. The shares decide only the core round: lending and the run's
+lane `floor(maximum × percent / 100)` of the applied maximum from the preset's `laneShares` (whole percents 0 to 100,
+defaulting to `STRUCTURED_MEMORY_LANE_SHARES`: flow 25%, pages 45%, events 15%, evidence 10%, threads 5%); under
+`manual` it gives the stored `laneTargets`. Each mode keeps the other's values. The shares' sum is not bounded: over
+100%, the core round fills lanes in order until the maximum runs out. Selection hands those targets to retrieval as its
+input, and the evidence reselection reads them too. The shares decide only the core round: lending and the run's
 extension spend what the lanes leave. `requiredCap` is no share. Warming has no maximum
-(`structuredMemoryEmbeddingLanes`): under `auto` it embeds for the events and pages lanes, under `manual` only for a
-lane whose stored count is above 0.
+(`structuredMemoryEmbeddingLanes`): it embeds for the events or pages lane when that lane's share (`auto`) or stored
+count (`manual`) is above 0.
 
 The meter reads tokens and `memoryStatusWord`; its popover and Preview share `MemoryManifest`.
 
@@ -294,9 +296,9 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
 ## State
 
 - The read path stores nothing of its own: its records are [structured memory's](records.md#state).
-- `laneSplit` never rewrites the stored `laneTargets`: `auto` ignores them, so switching to `manual` shows the counts a
-  person entered before. The targets a send used are on its report's `lanes`. What a send leaves is on the reply's
-  `generationInfo`: the report in `context` and the receipt in `memory` ([Receipts](#receipts)).
+- `laneSplit` never rewrites the stored `laneTargets` or `laneShares`: each mode ignores the other's, so switching back
+  shows the values a person entered before. The targets a send used are on its report's `lanes`. What a send leaves is
+  on the reply's `generationInfo`: the report in `context` and the receipt in `memory` ([Receipts](#receipts)).
 - The panel's rows are derived in the tab from the held chat and the routes' answers. Pages and Threads hold a copy of
   what they show, which an edit's answer or a read replaces.
 

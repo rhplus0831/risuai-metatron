@@ -514,6 +514,13 @@
             "evidence": 700,
             "threads": 300
           },
+          "laneShares": {
+            "flow": 25,
+            "pages": 45,
+            "events": 15,
+            "evidence": 10,
+            "threads": 5
+          },
           "requiredCap": 1500,
           "screening": {
             "refusal": [],

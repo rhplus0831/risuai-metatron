@@ -186,7 +186,7 @@ Work that finished plans named and left: features put off, a plan's Later list, 
 
 ## Structured Memory Recent Timeline
 
-- Not planned (the plan's Not In This Plan list): a raw window measured in tokens, or one that keeps history until the context is full; chapter or arc summaries of what is older than the timeline; opening the events lane more often, or any change to its thresholds; shares as a setting, or a share per chat; a change to `eventSummaryChars`, `keyLinesPerEvent`, or anything the writer stores; card text that stays byte-stable for a provider's prompt cache.
+- Not planned (the plan's Not In This Plan list): a raw window measured in tokens, or one that keeps history until the context is full; chapter or arc summaries of what is older than the timeline; opening the events lane more often, or any change to its thresholds; a share per chat (shares as a preset setting landed on 2026-11-12); a change to `eventSummaryChars`, `keyLinesPerEvent`, or anything the writer stores; card text that stays byte-stable for a provider's prompt cache.
 
 ## Dependency Upgrades
 

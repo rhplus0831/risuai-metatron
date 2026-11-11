@@ -4964,6 +4964,23 @@ describe("structured memory tasks", () => {
         }
     });
 
+    it("does not warm deferred page texts under auto when the pages share is 0", async () => {
+        const t = structuredHarness({
+            hypaSettings: {
+                structured: { laneSplit: "auto", laneShares: { pages: 0 }, laneTargets: { events: 0, pages: 900 } },
+            },
+        });
+        const source = t.chat("k1")!.message[0];
+        writeMemory(t.store, "c", "k1", {
+            events: [event("promise", [{ messageId: source.chatId!, index: 0, hash: messageSourceHash(source) }])],
+            pages: memoryRecords(["harbor"], "Harbor").pages,
+        });
+        t.service.warmVectors(writerInput(t));
+        await turns(1);
+        await t.service.drain();
+        expect(t.embeddings.bodies.flatMap(({ input }) => input)).toEqual(["Recorded promise"]);
+    });
+
     it("warms deferred event and page texts under auto despite stored zero counts", async () => {
         const t = structuredHarness({
             hypaSettings: { structured: { laneSplit: "auto", laneTargets: { events: 0, pages: 0 } } },

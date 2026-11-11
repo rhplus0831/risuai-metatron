@@ -697,7 +697,7 @@ function admitRecording(
 
 /**
  * Embeds what a commit wrote into the vector cache: the event's texts and `sectionTexts`, unless the
- * preset disables their lane with a manual target of 0. Answers the text of a
+ * preset turns their lane off with a manual target or an auto share of 0. Answers the text of a
  * failure, which keeps the records; an ended task or a host failure is thrown.
  */
 async function warmRecords(host: MemoryHost, event: MemoryEventWrite, sectionTexts: readonly string[]) {

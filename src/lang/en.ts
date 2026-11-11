@@ -3106,8 +3106,13 @@ export const languageEnglish = {
             requiredCap: "Most tokens for required pages",
             laneSplit: "How lane tokens are set",
             laneSplits: { auto: "Shares of the memory maximum", manual: "Token counts entered here" },
-            laneShares: (shares: { flow: number; pages: number; events: number; evidence: number; threads: number }) =>
-                `Of the memory maximum: recent timeline ${shares.flow}%, related pages ${shares.pages}%, earlier events ${shares.events}%, original messages ${shares.evidence}%, open threads ${shares.threads}%. What a lane leaves goes to the others, and the recent timeline takes what is left last.`,
+            flowShare: "Recent timeline share (%)",
+            pagesShare: "Related pages share (%)",
+            eventsShare: "Earlier events share (%)",
+            evidenceShare: "Original messages share (%)",
+            threadsShare: "Open threads share (%)",
+            laneSharesHelp: (total: number) =>
+                `Shares of the memory maximum, ${total}% in all. A lane at 0% is off, except that the recent timeline at 0% lists titles only. What a lane leaves goes to the others, and the recent timeline takes what is left last. Over 100%, the lanes fill in the order above and the later ones get less.`,
             pagesTarget: "Tokens for related pages",
             eventsTarget: "Tokens for earlier events",
             evidenceTarget: "Tokens for original messages",
