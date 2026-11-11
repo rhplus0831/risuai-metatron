@@ -29,8 +29,11 @@ the export and the rubric below, graded by a person.
   through the real rebuild run (one-turn windows, the chain of tasks, the swap); `summarize` is the
   HypaV3 side through the real hand-off until the lookahead plan settles; `send` is
   `readMemoryRecords` plus `selectMemory` over the stored chat and one in-memory user message (under
-  HypaV3, `prepareHypaV3` plus `selectHypaV3`, select only). `applySetup` retracts an event through the
-  event repair, edits a message through `applyChanges`, or hides a page. `createStubTokenizers`
+  HypaV3, `prepareHypaV3` plus `selectHypaV3`, select only). A send may take its own `maxContext` and a
+  patch over the preset's settings (`structured` merged one level deep) for that selection alone, so one
+  rebuild serves several budgets; with `diagnostics` it also lists the events lane's candidates.
+  `applySetup` retracts an event through the event repair, edits a message through `applyChanges`, or
+  hides a page. `createStubTokenizers`
   gives a deterministic count for a gate; the tool injects the real tokenizers.
 - `evaluate.ts`: pure scoring and the ledger. `resolveLabel` maps `event:<turn>` (by the reply's
   message id in an event's sources), `page:<title>`, and `thread:<title>` to records and throws on an
@@ -85,12 +88,20 @@ non-zero on a window that did not record, a label that resolves to no record, or
 the story did not expect. Temp databases go under `--dir` (default the OS temp dir) and are removed.
 
 - `eval`: the probe table and the rates per kind, with whether the events lane opened and why, and
-  the best lexical cosine between the query and the records it mirrors.
+  the best lexical cosine between the query and the records it mirrors. The lanes column splits flow
+  items by reason (`timeline` for a full line, `recent` for a title); capture counts either.
 - `ledger`: writer input and output tokens by call kind (analysis, patch, compaction) and, on the same
   chat in a second store, HypaV3's summary calls; per send, the card's tokens and the raw history
   kept, under each tokenizer family. Same `maxContext`, same memory budget, no random lane. A
   token-shape ledger: HypaV3's summaries are a fixed share of their window, so it compares nothing
-  about capture.
+  about capture. Then the recent timeline rows: every probe sent again at 16,384 and 32,768 tokens of
+  context (memory a fifth) and at a memory maximum of 50,000 (tokens mode, 131,072 of context), each
+  under the default `auto` split and under "before" (`manual`, flow target 0, pages 2,000, events
+  1,500, evidence 700, threads 300: the title-only card). Per lane target and spend, the events the
+  flow run holds in full (`timeline` items) and the titles after it (`recent`), the card's tokens, and
+  `selectMemory`'s time and `tokenizeChat` calls, as medians; then, summed over the probes, the events
+  lane's candidates the run already held and the pages "before" selected that the timeline did not,
+  with those on stage counted apart.
 - `send`: `readMemoryRecords` and `selectMemory` timed apart, with the nested `addText` shown as "of
   which" (the prototype method is timed while it runs as it is), `cache.get` calls, the selection's
   own `tokenizeChat` calls and busy time (the tokenizer the send gets is wrapped to count, overlapping

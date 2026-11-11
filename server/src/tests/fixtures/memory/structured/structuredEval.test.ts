@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import type { HypaV3Settings } from "../../../../../../shared/memory.ts";
 import type { MemoryEvent, MemoryManifestItem } from "../../../../../../shared/structuredMemory.ts";
 import { analysisOverhead, resolveLabel, scoreProbe, sendLedger, summarizeScores, writerLedger } from "./evaluate.ts";
 import { createFixture, createStubTokenizers, PINNED_PRESET, type FixtureOptions } from "./harness.ts";
@@ -135,14 +136,28 @@ describe("structured memory evaluation", () => {
         expect(() => generateStory({ language: "en", turns: MIN_STORY_TURNS - 1 })).toThrow(/at least/);
     });
 
-    it("scores manifest capture, exclusion and complete comparisons over distinct records", () => {
+    it("scores manifest capture with lane and reason, exclusion and complete comparisons over distinct records", () => {
         const records = plainRecords();
-        const selected = { items: [item("a"), item("c")], cardText: "" };
+        const selected = {
+            items: [
+                { ...item("a", "flow"), reason: "recent" },
+                { ...item("c", "flow"), reason: "timeline" },
+            ],
+            cardText: "",
+        };
         const absent = { items: [], cardText: "a b c appear only in prose" };
         const first = scoreProbe(probe({ needed: ["event:1", "event:2", "event:3"] }), selected, records);
-        expect(first.needed.map(({ found }) => found)).toEqual([true, false, false]);
+        expect(first.needed).toEqual([
+            { label: "event:1", id: "a", found: true, lane: "flow", reason: "recent" },
+            { label: "event:2", id: "b", found: false },
+            { label: "event:3", id: "b", found: false },
+        ]);
         expect(first.pass).toBe(false);
         const second = scoreProbe(probe({ needed: ["event:1", "event:4"] }), selected, records);
+        expect(second.needed).toEqual([
+            { label: "event:1", id: "a", found: true, lane: "flow", reason: "recent" },
+            { label: "event:4", id: "c", found: true, lane: "flow", reason: "timeline" },
+        ]);
         expect(second.pass).toBe(true);
         const forbidden = probe({ kind: "mustNotLeak", forbidden: ["event:1", "event:2"] });
         const leaked = scoreProbe(forbidden, selected, records);
@@ -151,7 +166,7 @@ describe("structured memory evaluation", () => {
         expect(excluded.pass).toBe(true);
         const comparison = probe({ kind: "comparison", needed: ["event:1", "event:4"] });
         const complete = scoreProbe(comparison, selected, records);
-        const incomplete = scoreProbe(comparison, { items: [item("a")], cardText: "c" }, records);
+        const incomplete = scoreProbe(comparison, { items: [selected.items[0]], cardText: "c" }, records);
         expect(complete).toMatchObject({ allPartsPresent: true, pass: true });
         expect(incomplete).toMatchObject({ allPartsPresent: false, pass: false });
         expect(summarizeScores([first, second, leaked, excluded, complete, incomplete])).toMatchObject([
@@ -368,6 +383,109 @@ describe("structured memory evaluation", () => {
             expect(f.events.at(-1)?.status.state).toBe("failed");
             expect(f.records().events).toEqual([]);
         }
+    });
+
+    it("applies context and merged settings to one send without changing the stored preset or later sends", async () => {
+        const story = generateStory({ language: "en", turns: 20, seed: 17 });
+        const f = fixture({ story, algorithm: "structuredMemory", maxContext: 16384 });
+        await f.rebuild();
+        const presetKind = f.kinds.get("hypaV3Presets")!;
+        const preset = f.store.get(presetKind, "main")!;
+        const data = preset.data as { items: { settings: HypaV3Settings }[] };
+        f.store.put(
+            presetKind,
+            "main",
+            {
+                ...data,
+                items: [
+                    {
+                        ...data.items[0],
+                        settings: {
+                            ...data.items[0].settings,
+                            structured: {
+                                ...data.items[0].settings.structured,
+                                laneSplit: "manual",
+                                laneTargets: { flow: 0, pages: 311, events: 0, evidence: 0, threads: 0 },
+                                flowEvents: 2,
+                                windowTurns: 20,
+                            },
+                        },
+                    },
+                ],
+            },
+            preset.revision,
+        );
+        const storedPreset = structuredClone(f.store.get(presetKind, "main"));
+        const records = f.records();
+        const newestId = resolveLabel(eventLabel(20), records).id;
+        const query = story.probes.find(({ id }) => id === "needed-event")!.query;
+        const baseline = await f.send(query);
+        expect(baseline.maximum).toBe(3276); // floor(16384 * 0.2), the stored ratio.
+        expect(baseline.items.filter(({ lane }) => lane === "flow")).toHaveLength(2);
+
+        const overridden = await f.send(query, {
+            maxContext: 32768,
+            settings: { memoryTokensRatio: 0.125, structured: { flowEvents: 1 } },
+        });
+        expect(overridden.maximum).toBe(4096); // 32768 * 0.125.
+        expect(overridden.items.filter(({ lane }) => lane === "flow")).toEqual([
+            expect.objectContaining({ id: newestId, reason: "recent" }),
+        ]);
+        expect(
+            overridden.lanes
+                .filter(({ lane }) => ["pages", "events", "evidence", "threads"].includes(lane))
+                .map(({ lane, target }) => ({ lane, target })),
+        ).toEqual([
+            { lane: "pages", target: 311 },
+            { lane: "events", target: 0 },
+            { lane: "evidence", target: 0 },
+            { lane: "threads", target: 0 },
+        ]);
+        expect(overridden.rawTexts).toEqual(baseline.rawTexts);
+        expect(f.store.get(presetKind, "main")).toEqual(storedPreset);
+
+        const contextOnly = await f.send(query, { maxContext: 32768 });
+        expect(contextOnly.maximum).toBe(6553); // floor(32768 * 0.2).
+        expect(contextOnly.items).toEqual(baseline.items);
+        const later = await f.send(query);
+        expect(later).toMatchObject({
+            maximum: 3276,
+            items: baseline.items,
+            lanes: baseline.lanes,
+            cardText: baseline.cardText,
+            rawTexts: baseline.rawTexts,
+        });
+        expect(f.store.get(presetKind, "main")).toEqual(storedPreset);
+    });
+
+    it("reports event candidates under the send's context and settings overrides", async () => {
+        const story = generateStory({ language: "en", turns: 20, seed: 17 });
+        const f = fixture({ story, algorithm: "structuredMemory", maxContext: 16384 });
+        await f.rebuild();
+        const records = f.records();
+        const gift = story.probes.find(({ id }) => id === "needed-event")!;
+        const giftId = resolveLabel(gift.needed[0], records).id;
+        // This ratio closes the events target at the fixture's context; the override opens it
+        // with enough memory for the real card, so using the old context in diagnostics is visible.
+        const options = {
+            maxContext: 4_194_304,
+            settings: { memoryTokensRatio: 1 / 4096 },
+            diagnostics: true,
+        };
+        const send = await f.send(gift.query, options);
+        expect(send.maximum).toBe(1024); // 4194304 / 4096.
+        expect(send.eventCandidates).toContain(giftId);
+        expect(
+            send.eventCandidates?.some((id) => !send.items.some((item) => item.id === id && item.lane === "events")),
+        ).toBe(true);
+
+        const allRaw = await f.send(gift.query, {
+            ...options,
+            settings: { ...options.settings, structured: { windowTurns: 20 } },
+        });
+        expect(allRaw.maximum).toBe(1024);
+        expect(allRaw.eventCandidates).toEqual([]);
+        expect(allRaw.items.filter(({ lane }) => lane === "events")).toEqual([]);
     });
 
     it("accounts for every writer call kind, send text and analysis overhead", async () => {

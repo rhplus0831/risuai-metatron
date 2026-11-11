@@ -30,6 +30,7 @@ import type {
     StructuredMemoryTaskInput,
 } from "../../../../../../shared/jobs.ts";
 import { LLMFormat } from "../../../../../../shared/llm.ts";
+import type { HypaV3Settings } from "../../../../../../shared/memory.ts";
 import type { OpenAIChat } from "../../../../../../shared/openai.ts";
 import {
     coveredMessages,
@@ -151,6 +152,15 @@ export type FixtureOptions = {
     maxResponse?: number;
 };
 
+export type SendOptions = {
+    diagnostics?: boolean;
+    /** Overrides apply only to this structured-memory selection, without changing the stored preset. */
+    maxContext?: number;
+    settings?: Partial<Omit<HypaV3Settings, "structured">> & {
+        structured?: Partial<HypaV3Settings["structured"]>;
+    };
+};
+
 /** Characters per token by family, near English prose; the main profile counts with `claude`. */
 const STUB_CHARS_PER_TOKEN: Record<string, number> = { claude: 4, cl100k_base: 4, o200k_base: 4 };
 
@@ -178,6 +188,8 @@ export type SendResult = {
     items: MemoryManifestItem[];
     excluded: ExcludedItem[];
     lanes: LaneSpend[];
+    /** The applied memory maximum (structured memory only). */
+    maximum?: number;
     /** The memory card's text: the stable and volatile parts under structured memory, the summary card under HypaV3. */
     cardText: string;
     /** The history the prompt keeps raw, after the card. */
@@ -187,6 +199,8 @@ export type SendResult = {
     /** Whether the events lane opened, and why its items were selected (structured memory only, with diagnostics). */
     eventsOpen?: boolean;
     eventReasons?: string[];
+    /** Event ids offered by the events lane (structured memory only, with diagnostics). */
+    eventCandidates?: string[];
     /**
      * `tokenizeChat` calls are the selection's own, and `tokenizeMs` the time at least one of them was in
      * flight (the card counts its lines concurrently, so overlapping calls count once); the HypaV3 side
@@ -682,9 +696,10 @@ export function createFixture(options: FixtureOptions) {
 
         /**
          * A send over the stored chat plus `query` as a new user message. `diagnostics` runs retrieval a
-         * second time to log whether the events lane opened and why; off for a timing.
+         * second time to log whether the events lane opened, its candidates and their reasons; off for
+         * a timing. Settings overrides merge `structured` one level deep and apply only to this send.
          */
-        async send(query: string, sendOptions: { diagnostics?: boolean } = {}): Promise<SendResult> {
+        async send(query: string, sendOptions: SendOptions = {}): Promise<SendResult> {
             const scope = jobScope();
             const { host, tokenizer } = hostOf(scope);
             const stored = scopeChat(scope)!;
@@ -695,7 +710,6 @@ export function createFixture(options: FixtureOptions) {
                 (await storedHistoryTokens(tokenizer, chats.slice(0, -1))) +
                 (await tokenizer.tokenizeChat(chats.at(-1)!)) +
                 maxResponse;
-            const { settings } = getCurrentHypaV3Preset(host);
             const getsBefore = cacheGets;
             if (algorithm === "hypaV3") {
                 const started = performance.now();
@@ -735,6 +749,15 @@ export function createFixture(options: FixtureOptions) {
                     cacheGets: cacheGets - getsBefore,
                 };
             }
+            const { settings: storedSettings } = getCurrentHypaV3Preset(host);
+            const settings = sendOptions.settings
+                ? {
+                      ...storedSettings,
+                      ...sendOptions.settings,
+                      structured: { ...storedSettings.structured, ...sendOptions.settings.structured },
+                  }
+                : storedSettings;
+            const sendMaxContext = sendOptions.maxContext ?? maxContext;
             const entries = readEntries(chats, ms);
             // The job's tokenizer as it is, with each call counted and the time any call is in flight added
             // up once, since the card counts its lines concurrently.
@@ -771,7 +794,7 @@ export function createFixture(options: FixtureOptions) {
                     entries,
                     messages,
                     currentTokens,
-                    maxContextTokens: maxContext,
+                    maxContextTokens: sendMaxContext,
                     continueMessageId: undefined,
                     tooMuchToken: "too much",
                 },
@@ -787,6 +810,7 @@ export function createFixture(options: FixtureOptions) {
                 items: selected.items,
                 excluded: selected.excluded,
                 lanes: selected.lanes,
+                maximum: selected.budget.maximum,
                 cardText: [
                     ...selected.chats.filter(({ memo }) => memo === "supaMemory"),
                     ...(selected.volatile ? [selected.volatile] : []),
@@ -813,14 +837,12 @@ export function createFixture(options: FixtureOptions) {
                     }),
                     stage: records.stage,
                     settings: structured,
-                    targets: readBudget(settings, maxContext, host.db.maxResponse).targets,
+                    targets: readBudget(settings, sendMaxContext, host.db.maxResponse).targets,
                 });
                 result.eventsOpen = retrieved.eventsOpen;
-                result.eventReasons = [
-                    ...new Set(
-                        retrieved.lanes.find(({ lane }) => lane === "events")?.items.map(({ reason }) => reason) ?? [],
-                    ),
-                ];
+                const candidates = retrieved.lanes.find(({ lane }) => lane === "events")?.items ?? [];
+                result.eventReasons = [...new Set(candidates.map(({ reason }) => reason))];
+                result.eventCandidates = candidates.map(({ id }) => id);
             }
             return result;
         },

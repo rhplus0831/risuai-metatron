@@ -19,9 +19,15 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
-import { MEMORY_CALL_OVERHEAD_TOKENS, MEMORY_HEALTH_ROUND_BYTES } from "../shared/structuredMemory.ts";
+import {
+    MEMORY_CALL_OVERHEAD_TOKENS,
+    MEMORY_HEALTH_ROUND_BYTES,
+    MEMORY_MANIFEST_LANES,
+    STRUCTURED_MEMORY_LANE_SHARES,
+} from "../shared/structuredMemory.ts";
 import { createTokenizers, TOKENIZER_FAMILIES } from "../server/src/prompt/tokenizers/index.ts";
 import { memoryWorkCost } from "../server/src/prompt/memory/structured/rebuild.ts";
+import { RETRIEVAL_LIMITS } from "../server/src/prompt/memory/structured/retrieve.ts";
 import { generateStory, MIN_STORY_TURNS, storySizes } from "../server/src/tests/fixtures/memory/structured/story.ts";
 import { SUMMARY_SHARE } from "../server/src/tests/fixtures/memory/structured/scriptedWriter.ts";
 import {
@@ -146,6 +152,7 @@ const printConditions = (extra = {}) => {
         `Conditions: Node ${all.node}, SQLite ${all.sqlite}, tokenizers ${all.tokenizers.join("/")}, ` +
             `temp dir on ${all.fileSystem}, ${all.repeats} repeats, seed ${all.seed}` +
             Object.entries(extra)
+                .filter(([key]) => key !== "repeats")
                 .map(([key, value]) => `, ${key} ${value}`)
                 .join(""),
     );
@@ -329,6 +336,14 @@ function runEval(fixture, story, sends, entry) {
     const records = fixture.records();
     const scores = sends.map(({ probe, send }) => scoreProbe(probe, send, records));
     const summary = summarizeScores(scores);
+    const selectedLanes = sends.map(({ send }) => {
+        const counts = new Map();
+        for (const { lane, reason } of send.items) {
+            const label = lane === "flow" ? `${lane} ${reason}` : lane;
+            counts.set(label, (counts.get(label) ?? 0) + 1);
+        }
+        return [...counts].map(([label, count]) => `${label} ${count}`).join(", ");
+    });
     entry.eval = { scores, summary };
     print(`### eval: capture and exclusion over the manifest`);
     print();
@@ -345,7 +360,7 @@ function runEval(fixture, story, sends, entry) {
             "best lexical cosine",
             "lanes selected",
         ],
-        scores.map((score) => [
+        scores.map((score, index) => [
             score.id,
             score.kind,
             score.pass === undefined ? "n/a" : score.pass ? "yes" : "no",
@@ -356,9 +371,7 @@ function runEval(fixture, story, sends, entry) {
                 ? ""
                 : `${score.eventsOpen ? "open" : "closed"} ${(score.eventReasons ?? []).join("/")}`,
             score.bestSimilarity === undefined ? "" : score.bestSimilarity.toFixed(2),
-            Object.entries(score.selectedByLane)
-                .map(([lane, count]) => `${lane} ${count}`)
-                .join(", "),
+            selectedLanes[index],
         ]),
     );
     const boundary = scores.find((score) => score.boundary);
@@ -481,6 +494,177 @@ async function runLedger(fixture, story, sends, entry) {
     print(
         `HypaV3 side: ${hypaSide.handOffs} hand-offs, stopped ${hypaSide.stopReason}, ${hypaSide.summaries} summaries ` +
             `in ${seconds(hypaSide.ms)}; summaries are a fixed ${SUMMARY_SHARE} share of their window's text. A token-shape ledger, not a capture comparison.`,
+    );
+    print();
+    await runBudgetLedger(fixture, sends, entry);
+}
+
+async function runBudgetLedger(fixture, sends, entry) {
+    const cases = [
+        { budget: "16384 context × 0.2", maxContext: 16384, settings: { budgetMode: "ratio", memoryTokensRatio: 0.2 } },
+        { budget: "32768 context × 0.2", maxContext: 32768, settings: { budgetMode: "ratio", memoryTokensRatio: 0.2 } },
+        {
+            budget: "50000 tokens",
+            maxContext: 131072,
+            settings: {
+                budgetMode: "tokens",
+                memoryBudgetTokens: 50000,
+                lookaheadHeadroomTokens: 0,
+                extraSummarizationTokens: 0,
+            },
+        },
+    ];
+    const settingsByName = {
+        timeline: { laneSplit: "auto" },
+        before: {
+            laneSplit: "manual",
+            laneTargets: { flow: 0, pages: 2000, events: 1500, evidence: 700, threads: 300 },
+        },
+    };
+    const budgets = (entry.ledger.budgets = []);
+    for (const budget of cases) {
+        const variants = [];
+        for (const [setting, structured] of Object.entries(settingsByName)) {
+            const settings = { ...budget.settings, structured };
+            const measurements = [];
+            for (const { probe } of sends) {
+                const send = await fixture.send(probe.query, {
+                    diagnostics: true,
+                    maxContext: budget.maxContext,
+                    settings,
+                });
+                const cardTokens = {};
+                for (const family of ["claude", "o200k_base"]) {
+                    cardTokens[family] = send.cardText === "" ? 0 : await counter(family)(send.cardText);
+                }
+                measurements.push({
+                    probe: probe.id,
+                    maximum: send.maximum,
+                    lanes: send.lanes,
+                    items: send.items,
+                    eventCandidates: send.eventCandidates,
+                    runEvents: send.items.filter(({ lane, reason }) => lane === "flow" && reason === "timeline").length,
+                    titles: send.items.filter(({ lane, reason }) => lane === "flow" && reason === "recent").length,
+                    cardTokens,
+                    selectMemoryMs: send.timings.selectMs,
+                    tokenizeChatCalls: send.timings.tokenizeCalls,
+                });
+            }
+            const med = (read) => median(measurements.map(read));
+            variants.push({
+                setting,
+                settings,
+                sends: measurements,
+                median: {
+                    maximum: med(({ maximum }) => maximum),
+                    lanes: MEMORY_MANIFEST_LANES.map((lane) => ({
+                        lane,
+                        target: med(({ lanes }) => lanes.find((row) => row.lane === lane).target),
+                        spent: med(({ lanes }) => lanes.find((row) => row.lane === lane).spent),
+                    })),
+                    runEvents: med(({ runEvents }) => runEvents),
+                    titles: med(({ titles }) => titles),
+                    cardTokens: {
+                        claude: med(({ cardTokens }) => cardTokens.claude),
+                        o200k_base: med(({ cardTokens }) => cardTokens.o200k_base),
+                    },
+                    selectMemoryMs: med(({ selectMemoryMs }) => selectMemoryMs),
+                    tokenizeChatCalls: med(({ tokenizeChatCalls }) => tokenizeChatCalls),
+                },
+            });
+        }
+        const timeline = variants.find(({ setting }) => setting === "timeline");
+        const before = variants.find(({ setting }) => setting === "before");
+        const comparisons = timeline.sends.map((send, index) => {
+            const run = new Set(
+                send.items.filter(({ lane, reason }) => lane === "flow" && reason === "timeline").map(({ id }) => id),
+            );
+            const selected = new Set(send.items.map(({ id }) => id));
+            const pagesLost = before.sends[index].items.filter(
+                ({ lane, id }) => (lane === "pages" || lane === "required") && !selected.has(id),
+            );
+            return {
+                probe: send.probe,
+                eventCandidates: send.eventCandidates,
+                heldByRun: send.eventCandidates.filter((id) => run.has(id)),
+                pagesLost,
+            };
+        });
+        const sum = (read) => comparisons.reduce((total, send) => total + read(send), 0);
+        budgets.push({
+            ...budget,
+            variants,
+            comparisons,
+            totals: {
+                eventCandidates: sum(({ eventCandidates }) => eventCandidates.length),
+                heldByRun: sum(({ heldByRun }) => heldByRun.length),
+                pagesLost: sum(({ pagesLost }) => pagesLost.length),
+                onStageLost: sum(({ pagesLost }) => pagesLost.filter(({ reason }) => reason === "onStage").length),
+            },
+        });
+    }
+
+    print(`Recent timeline budgets (median over ${sends.length} probe sends per setting):`);
+    print();
+    printConditions({
+        repeats: 1,
+        rebuilds: 1,
+        contexts: cases.map(({ maxContext }) => maxContext).join("/"),
+        maxResponse: fixture.maxResponse,
+        selectionTokenizer: "claude",
+        flowCandidates: RETRIEVAL_LIMITS.flowCandidates,
+    });
+    print(
+        `Timeline: auto split, shares ${Object.entries(STRUCTURED_MEMORY_LANE_SHARES)
+            .map(([lane, share]) => `${lane} ${share}`)
+            .join(" / ")}; lane cells are target/spent.`,
+    );
+    print();
+    table(
+        [
+            "budget",
+            "setting",
+            "maximum",
+            ...MEMORY_MANIFEST_LANES,
+            "run events",
+            "titles",
+            "card claude",
+            "card o200k_base",
+            "selectMemory ms",
+            "tokenizeChat calls",
+        ],
+        budgets.flatMap(({ budget, variants }) =>
+            variants.map(({ setting, median: row }) => [
+                budget,
+                setting,
+                row.maximum,
+                ...row.lanes.map(
+                    ({ target, spent }) =>
+                        `${target === Number.MAX_SAFE_INTEGER ? "titles only" : fmt(target)}/${fmt(spent)}`,
+                ),
+                row.runEvents,
+                row.titles,
+                row.cardTokens.claude,
+                row.cardTokens.o200k_base,
+                row.selectMemoryMs,
+                row.tokenizeChatCalls,
+            ]),
+        ),
+    );
+    print(`Events-lane overlap (D11) and pages lost, summed over ${sends.length} probe sends per budget:`);
+    print();
+    table(
+        ["budget", "events-lane candidates (timeline)", "held by run (D11)", "pages lost", "of which onStage"],
+        budgets.map(({ budget, totals }) => [
+            budget,
+            totals.eventCandidates,
+            totals.heldByRun,
+            totals.pagesLost,
+            totals.onStageLost,
+        ]),
+    );
+    print(
+        '"before" uses manual targets flow 0 / pages 2000 / events 1500 / evidence 700 / threads 300, reproducing the old title-only card; pages lost are pages selected there (pages or required) but absent under timeline for the same query and budget.',
     );
     print();
 }

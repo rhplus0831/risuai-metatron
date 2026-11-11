@@ -250,21 +250,21 @@ describe("structured memory lanes", () => {
                 context: 1003,
                 response: 203,
                 maximum: 250,
-                targets: { flow: 100, pages: 75, events: 37, evidence: 25, threads: 12 },
+                targets: { flow: 62, pages: 112, events: 37, evidence: 25, threads: 12 },
             },
             {
                 mode: "tokens",
                 context: 4000,
                 response: 200,
                 maximum: 903,
-                targets: { flow: 361, pages: 270, events: 135, evidence: 90, threads: 45 },
+                targets: { flow: 225, pages: 406, events: 135, evidence: 90, threads: 45 },
             },
             {
                 mode: "tokens",
                 context: 1005,
                 response: 203,
                 maximum: 401,
-                targets: { flow: 160, pages: 120, events: 60, evidence: 40, threads: 20 },
+                targets: { flow: 100, pages: 180, events: 60, evidence: 40, threads: 20 },
             },
         ] as const) {
             const budget = readBudget({ ...settings, budgetMode: row.mode }, row.context, row.response);

@@ -58,7 +58,7 @@ export type ProbeScore = {
     id: string;
     kind: ProbeKind;
     query: string;
-    needed: { label: string; id: string; found: boolean; lane?: string }[];
+    needed: { label: string; id: string; found: boolean; lane?: string; reason?: string }[];
     forbidden: { label: string; id: string; leaked: boolean }[];
     distractors: { label: string; id: string; selected: boolean }[];
     boundary?: { label: string; id: string; lineFound: boolean; inUnaware: boolean; elsewhere: boolean; pass: boolean };
@@ -122,7 +122,7 @@ export function scoreProbe(
     const needed = probe.needed.map((label) => {
         const { id } = resolveLabel(label, records);
         const item = byId.get(id);
-        return { label, id, found: item !== undefined, ...(item ? { lane: item.lane } : {}) };
+        return { label, id, found: item !== undefined, ...(item ? { lane: item.lane, reason: item.reason } : {}) };
     });
     const forbidden = probe.forbidden.map((label) => {
         const { id } = resolveLabel(label, records);

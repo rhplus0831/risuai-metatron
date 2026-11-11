@@ -102,7 +102,7 @@ in full once, in the run or in the events lane, and selection takes the run's ev
 exclusions. A target of 0 keeps the title-only lane. `spendLanes`' doc owns the order.
 
 Lane targets follow `laneSplit`. Under `auto`, the default and what an absent value reads as, `readBudget` gives each
-lane `floor(maximum × share)` of the applied maximum (`STRUCTURED_MEMORY_LANE_SHARES`: flow 40%, pages 30%, events 15%,
+lane `floor(maximum × share)` of the applied maximum (`STRUCTURED_MEMORY_LANE_SHARES`: flow 25%, pages 45%, events 15%,
 evidence 10%, threads 5%); under `manual` it gives the stored `laneTargets`. Selection hands those targets to retrieval
 as its input, and the evidence reselection reads them too. The shares decide only the core round: lending and the run's
 extension spend what the lanes leave. `requiredCap` is no share. Warming has no maximum
@@ -418,11 +418,18 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
   text once per selection did not help (9 of about 2,190 counts were repeats; tried and reverted); the gain needs it to
   reuse the counts `assemble.ts` already took for `currentTokens`. Decision: Found Issues Decisions (owner, 2026-11-08),
   [audit](../../reports/measurements/structured-memory-2026-11-03.md).
+- The recent timeline counts every offered full line, up to `flowCandidates` (200), before it spends, whatever the
+  budget: about 400 more counts on a 1,000-turn send, and `selectMemory` at 557–657 ms against 513–569 ms for the
+  title-only card. A lower bound would cut the run where a 50,000 maximum reaches it. Decision: Recent Timeline D14
+  (owner, 2026-11-11), [measured](../../reports/measurements/structured-memory-timeline-2026-11-11.md#selection-time).
 - Small contexts starve the last lanes: at 16,384 tokens of context the `threads` lane gets nothing once event lines
-  carry three quotes (found at 32,768), and a query naming two events loses one of them in a long chat at 32,768 too.
-  Under `auto` at 16,384 (a maximum of 3,276) the flow lane's run takes up to 1,310 tokens before the pages lane's 982,
-  and what the pages lane loses to the flow's share is not measured yet. Decision: Found Issues Decisions (owner,
-  2026-11-08), [audit](../../reports/measurements/structured-memory-2026-11-03.md).
+  carry three quotes (found at 32,768; the timeline leaves the English 1,000-turn fixture so), and a query naming two
+  events loses one of them in a long chat at 32,768 too. Decision: Found Issues Decisions (owner, 2026-11-08),
+  [audit](../../reports/measurements/structured-memory-2026-11-03.md).
+- Under `auto` at 16,384 (a maximum of 3,276) the pages lane's 45% loses one long page on stage on every send of a
+  1,000-turn fixture chat (pages of about 500 tokens in English, 900 in Korean), which the title-only card's 2,000 kept.
+  Decision: Recent Timeline D14 (owner, 2026-11-11),
+  [measured](../../reports/measurements/structured-memory-timeline-2026-11-11.md#the-pages-lane-and-the-shares).
 
 ### Gotchas
 

@@ -346,7 +346,7 @@ it("shows shares in auto and preserves all five edited lane counts when switchin
         [text.evidenceTarget, 222],
         [text.threadsTarget, 333],
     ] as const;
-    const shares = text.laneShares({ flow: 40, pages: 30, events: 15, evidence: 10, threads: 5 });
+    const shares = text.laneShares({ flow: 25, pages: 45, events: 15, evidence: 10, threads: 5 });
     const assertAuto = () => {
         expect(split.value).toBe("auto");
         for (const [label] of laneInputs) expect(target.textContent).not.toContain(label);

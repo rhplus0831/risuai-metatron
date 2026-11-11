@@ -123,8 +123,8 @@ export type StructuredMemoryLaneSplit = (typeof STRUCTURED_MEMORY_LANE_SPLITS)[n
 
 /** Each optional lane's core target as a share of the applied memory maximum under `auto`. */
 export const STRUCTURED_MEMORY_LANE_SHARES = {
-    flow: 0.4,
-    pages: 0.3,
+    flow: 0.25,
+    pages: 0.45,
     events: 0.15,
     evidence: 0.1,
     threads: 0.05,
