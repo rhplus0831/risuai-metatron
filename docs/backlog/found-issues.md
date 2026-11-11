@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, seven more plan-leftover collections from memory the same day, the seventeenth (the Found Issues Decisions run) on 2026-11-09, the nineteenth (the Upstream Intake 2 run) on 2026-11-10, and the twentieth (the Memory Panel Readability run) on 2026-11-11; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, seven more plan-leftover collections from memory the same day, the seventeenth (the Found Issues Decisions run) on 2026-11-09, the nineteenth (the Upstream Intake 2 run) on 2026-11-10, the twentieth (the Memory Panel Readability run) on 2026-11-11, and the twenty-first (the Structured Memory Recent Timeline run) the same day; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. An entry is a `###` heading under its area section, a paragraph saying what and where (`file:line`), then a **Why it matters:** line and a **Suggested handling:** line; the Contents list at the top counts each area's entries. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's section of [known issues](known-issues.md) (or to the guide's Known Hazards `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -15,7 +15,7 @@ The nineteenth batch and the eight entries of the 2026-11-10 full guide audit (t
 ## Contents
 
 - [Build and dependencies](#build-and-dependencies): 1
-- [Structured memory](#structured-memory): 3
+- [Structured memory](#structured-memory): 6
 
 ## Build and dependencies
 
@@ -70,3 +70,44 @@ crafted row with numbers such as `1e20` charged 794 stored bytes while its four-
 push an answer past it. Low severity: the soft first-record rule already lets one oversized record through.
 
 **Suggested handling:** charge the serialized size, or canonicalize rows when a snapshot loads.
+
+### A memory eval capture counts a flow title as found
+
+`scoreProbe` in `server/src/tests/fixtures/memory/structured/evaluate.ts:125` marks a needed event `found` when any
+manifest item carries its id, whatever the lane or `reason`, and `capture` (`:199`) adds those up. Since the flow lane
+has two forms, `recent` (a title) and `timeline` (the summary and key lines), a probe "finds" an event the model saw by
+title alone. The Recent Timeline plan's slice 4 put `lane` and `reason` on each needed row and split the tool's flow
+rows by reason, but left what counts as capture unchanged. Seen on 2026-11-11 by that plan's slice 1.
+
+**Why it matters:** a recall comparison between a title-only card and a timeline card scores both the same, so it
+cannot show whether a summary reached the model.
+
+**Suggested handling:** count a `recent` flow item as weaker capture (or report capture with and without titles), and
+re-run `node util/memoryEval.mjs` to see what the before and after rows of the timeline report become.
+
+### The memory card counts every timeline line before it spends
+
+`buildMemoryCard` in `server/src/prompt/memory/structured/card.ts:247` counts every line of a lane's `flow.full`, up to
+`RETRIEVAL_LIMITS.flowCandidates` (200), before `spendLanes` runs, whatever the budget. At 1,000 turns `selectMemory`
+went from 513–569 ms to 557–657 ms (about 400 more `tokenizeChat` calls). The owner kept 200 (Recent Timeline D14),
+since a 50,000-token maximum reaches it, and `read.md` Limitations records the time. Measured on 2026-11-11 by that
+plan's slice 4 ([report](../reports/measurements/structured-memory-timeline-2026-11-11.md#selection-time)).
+
+**Why it matters:** a send with a small budget pays to count lines it will never admit.
+
+**Suggested handling:** count flow lines on demand in `spendLanes` and `buildMemoryCard`, newest first, stopping where
+the run and its extension end, without changing which lines are admitted; compare the cards byte for byte.
+
+### The timeline heading can call a window event's title the last before the messages
+
+`card.ts:86` heads the flow block `Recent events (oldest first; the last is just before the messages below):`, the
+wording the Recent Timeline plan prescribed. Lines are ordered by place, and an event whose sources are all inside the
+raw window keeps its title line (D12), so the block's last line can be an event among the messages below rather than
+just before them. Raised on 2026-11-11 by the challenger of that plan's slice 1; not changed, since the wording is
+the plan's.
+
+**Why it matters:** the heading tells the model something the card's order does not always hold; whether a model reads
+it that way is unmeasured.
+
+**Suggested handling:** the owner decides the wording (for example, "the last ones may already be in the messages
+below"); a one-line change in `card.ts` and its tests.
