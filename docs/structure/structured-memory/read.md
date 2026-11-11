@@ -162,9 +162,10 @@ rounds; `memory_events.seq` is storage order. `memoryTimelineRows` owns message 
 
 A page opens in `read`: its title, type and aliases, its links, and each section with a body as plain text, the marks as
 badges. `manage` is the checking view, with every control, provenance, and the history. The choice lasts while Pages is
-mounted; Evidence missing, a page in the trash, and a jump to a history entry show `manage`. Links name live pages by
-title and select them; an id with no live page is a disabled button. A title filter narrows the tree before
-`memoryPageTree` groups it, so an emptied type loses its header; the trash list is not filtered.
+mounted; Evidence missing, a page in the trash, and a jump to a history entry show `manage`. The jump scrolls its row
+once, when both the diff and the history list have rendered; another entry, page, target, or chat drops it. Links name
+live pages by title and select them; an id with no live page is a disabled button. A title filter narrows the tree
+before `memoryPageTree` groups it, so an emptied type loses its header; the trash list is not filtered.
 
 The title filter's Search text button or form submit reads `/find?q=...` through `findStructuredMemory`, including in
 chats with events but no pages. The action is disabled for blank or over-100-character trimmed input and while reading.
@@ -425,6 +426,9 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
   budget: about 400 more counts on a 1,000-turn send, and `selectMemory` at 557–657 ms against 513–569 ms for the
   title-only card. A lower bound would cut the run where a 50,000 maximum reaches it. Decision: Recent Timeline D14
   (owner, 2026-11-11), [measured](../../reports/measurements/structured-memory-timeline-2026-11-11.md#selection-time).
+- Counting those lines on demand did not pay (tried and reverted, `b29a883a5`): the card stayed byte for byte, but it
+  saved 91–164 of about 2,600 counts at 3,276 and 6,553 tokens and none at 50,000, and it counts one line at a time,
+  which a network tokenizer cannot batch.
 - Small contexts starve the last lanes: at 16,384 tokens of context the `threads` lane gets nothing once event lines
   carry three quotes (found at 32,768; the timeline leaves the English 1,000-turn fixture so), and a query naming two
   events loses one of them in a long chat at 32,768 too. Decision: Found Issues Decisions (owner, 2026-11-08),

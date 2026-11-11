@@ -28,7 +28,7 @@ Module headers and export comments hold the contracts; these lists give lookup i
   `requeueChatWork`, `recoverChatConflicts` (`reanchorGoneAppends`, `dropLockedEdits`), `acceptRemoteChat`,
   `acceptRemoteCollection`, `quarantineChat`, `unloadPendingChatWork`, `hasUnsavedChatWork`, `hasRefusedChatWork`,
   `refusedChatItems`, `retryRefusedChat`, `discardRefusedChat`, `finishIdleChatRefresh`, `noteIdleChatRead`,
-  `idleChatRefreshes`, `idleSummaryRefreshes`, `settleSummaryRefresh`.
+  `idleChatRefreshes`, `idleSummaryRefreshes`, `hasIdleRefresh`, `settleSummaryRefresh`.
 - Live updates and jobs: `noteRemoteChat`, `applyRemoteSummary`, `applyRemoteCollection`, `canApplyRemoteCollection`,
   `noteRemoteStreaming`, `onRemoteStreaming`, `replaceFeedLocks`, `markChatStale`, `applyServerGeneration`,
   `applyServerGenerationChunk`, `heldStreamText`, `endServerJob`, `detachServerJob`, `hydrateChat`, `hydrateChatPatch`,
@@ -238,6 +238,8 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 
 - Chats are their own records: two tabs editing different chats, or different messages of one chat, save independently.
   A chat change never rewrites its character.
+- Every write to a character's `ids`, and every creation or removal of its holding, calls `bumpChatMembership` in the
+  same step: `isMember` answers from a set that call drops, and reactive readers of membership re-run on it.
 - Only `chatStore.svelte.ts` writes the chats; writing, defining, or deleting `chats`/`chatPage` on a character wrapper
   throws. A changed copy goes through `applyChatResult` or `chatEdits.ts`, a chat field through `setChatMeta`, a map
   entry through `mergeChatMeta`, and some fields of a message through `patchMessage`.

@@ -12,91 +12,13 @@ The eighteenth batch was cleared the same day by a Sol implementer with session 
 
 The nineteenth batch and the eight entries of the 2026-11-10 full guide audit (twelve in all) were cleared on 2026-11-10 by Sol implementers and test writers in three worktrees with session verification: eight fixed with regression tests (three in the plugin sandbox, style scoping, the popup editor's row, the chat export's candidate receipts, memory task job ids in shares and reports, the e2e program in `pnpm check:changed`), the dead boot fixture capture driver deleted, the wasmoon upgrade note moved to its module, the checkpoint benchmark given its place in the audit report, and the full-screen alert e2e failure closed as the dev stack's reload on file edits (8 of 8 quiet runs passed; a run under Markdown touches failed the same way).
 
+The twentieth and twenty-first batches, a build entry, and one finding still in memory (eight in all) were worked on 2026-11-12 by Sol implementers and test writers in three worktrees with session verification: five fixed (the pdf.js character map URL, the Korean export line, the history jump's scroll and the refresh scan with regression tests, the eval's capture beyond titles); the on-demand timeline count tried and reverted as not worth its cost (`b29a883a5`, `bb2ede7d6`; the read guide's Limitation has the numbers); the read round's byte charge reproduced and moved to [known issues](known-issues.md#structured-memory); and the timeline heading left below for the owner's wording.
+
 ## Contents
 
-- [Build and dependencies](#build-and-dependencies): 1
-- [Structured memory](#structured-memory): 6
-
-## Build and dependencies
-
-### The pdf.js character maps are pinned to an older version than the package
-
-`src/ts/process/dynamicutils/pdf.ts:23` and `:60` set `cMapUrl` to `https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/cmaps/`, while `package.json` asks for `pdfjs-dist` `^4.10.38` and the lockfile resolves 4.10.38. Seen on 2026-11-11 while moving the dependency upgrade notes into the guides; not run.
-
-**Why it matters:** the pin did not move with the package, so a PDF that needs a character map reads one from another release. The maps rarely change, so this may have no visible effect.
-
-**Suggested handling:** point both URLs at the installed version (or read the version from the package), and import a PDF with CJK text to confirm.
+- [Structured memory](#structured-memory): 1
 
 ## Structured memory
-
-### The upstream export report's Korean line still says 이벤트
-
-`src/lang/ko.ts:1920`, `upstreamExport.converted["memory-projected"]`, reads "구조화 기억 이벤트를 하이파 V3 요약 형식으로
-변환한 채팅". It names Structured Memory events (`shared/upstreamExportReport.ts:27`) but sat outside the Memory Panel
-Readability plan's slice 1 scope, so it kept 이벤트 while every other structured-memory string now says 사건. Seen on
-2026-11-11 by that slice.
-
-**Why it matters:** the plan's goal is one Korean term per record kind; this is the one structured-memory-only string
-left with the old term.
-
-**Suggested handling:** change it to "구조화 기억 사건을 하이파 V3 요약 형식으로 변환한 채팅"; a one-string change.
-
-### A history jump can open its diff without scrolling to it
-
-`src/lib/Others/StructuredMemory/PagesTab.svelte:404`, `openAskedEntry`, clears `askedEntry` once its page is the copy,
-opens the diff, awaits `tick()`, then scrolls the row found under `historyList`. `readContents` and `readRecord` run
-independently, and the detail renders only once `contents` is held. If the record and the diff answer before the
-contents read, `historyList` is not bound yet, the scroll silently skips, and nothing retries when contents arrive.
-Found on 2026-11-11 by the challenger of the Memory Panel Readability plan's slice 2; pre-existing and not run in a
-mounted panel.
-
-**Why it matters:** a receipt's "open this history entry" jump is meant to show the entry; on a long page with a slow
-contents read the person sees the top of the history instead.
-
-**Suggested handling:** keep the scroll request until the detail is renderable; reproduce first with a deferred
-contents read in `StructuredMemoryPanel.test.ts`.
-
-### A memory read round can answer more than the bytes it charged
-
-`roundOf` (`server/src/routes/structuredMemory.ts:209`) charges each row its stored `bytes` (`octet_length(data)`), and
-`/package`, `/coverage`, `/story`, and `/find` answer through `compressedJson`, which re-serializes the parsed record. A
-database snapshot or checkpoint load keeps a row's raw JSON text (`server/src/data/memoryStore.ts` `checkMemoryRow`), so a
-crafted row with numbers such as `1e20` charged 794 stored bytes while its four-field `/story` projection serialized to
-2,285 bytes. `checkMemoryRow` also admits an event without `storyTime` or `participants` that the chat-file restore
-(`restore.ts`) would refuse; the tab's `parseStoryRound` normalizes these, and other readers may not. Found on
-2026-11-11 by the challenger of the Memory Panel Readability plan's slice 4.
-
-**Why it matters:** the guides describe the round budget as the read bound; a crafted snapshot (a restored backup) can
-push an answer past it. Low severity: the soft first-record rule already lets one oversized record through.
-
-**Suggested handling:** charge the serialized size, or canonicalize rows when a snapshot loads.
-
-### A memory eval capture counts a flow title as found
-
-`scoreProbe` in `server/src/tests/fixtures/memory/structured/evaluate.ts:125` marks a needed event `found` when any
-manifest item carries its id, whatever the lane or `reason`, and `capture` (`:199`) adds those up. Since the flow lane
-has two forms, `recent` (a title) and `timeline` (the summary and key lines), a probe "finds" an event the model saw by
-title alone. The Recent Timeline plan's slice 4 put `lane` and `reason` on each needed row and split the tool's flow
-rows by reason, but left what counts as capture unchanged. Seen on 2026-11-11 by that plan's slice 1.
-
-**Why it matters:** a recall comparison between a title-only card and a timeline card scores both the same, so it
-cannot show whether a summary reached the model.
-
-**Suggested handling:** count a `recent` flow item as weaker capture (or report capture with and without titles), and
-re-run `node util/memoryEval.mjs` to see what the before and after rows of the timeline report become.
-
-### The memory card counts every timeline line before it spends
-
-`buildMemoryCard` in `server/src/prompt/memory/structured/card.ts:247` counts every line of a lane's `flow.full`, up to
-`RETRIEVAL_LIMITS.flowCandidates` (200), before `spendLanes` runs, whatever the budget. At 1,000 turns `selectMemory`
-went from 513–569 ms to 557–657 ms (about 400 more `tokenizeChat` calls). The owner kept 200 (Recent Timeline D14),
-since a 50,000-token maximum reaches it, and `read.md` Limitations records the time. Measured on 2026-11-11 by that
-plan's slice 4 ([report](../reports/measurements/structured-memory-timeline-2026-11-11.md#selection-time)).
-
-**Why it matters:** a send with a small budget pays to count lines it will never admit.
-
-**Suggested handling:** count flow lines on demand in `spendLanes` and `buildMemoryCard`, newest first, stopping where
-the run and its extension end, without changing which lines are admitted; compare the cards byte for byte.
 
 ### The timeline heading can call a window event's title the last before the messages
 

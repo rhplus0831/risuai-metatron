@@ -89,7 +89,8 @@ the story did not expect. Temp databases go under `--dir` (default the OS temp d
 
 - `eval`: the probe table and the rates per kind, with whether the events lane opened and why, and
   the best lexical cosine between the query and the records it mirrors. The lanes column splits flow
-  items by reason (`timeline` for a full line, `recent` for a title); capture counts either.
+  items by reason (`timeline` for a full line, `recent` for a title); capture counts either, and
+  capture beyond titles leaves out a record selected by its title alone.
 - `ledger`: writer input and output tokens by call kind (analysis, patch, compaction) and, on the same
   chat in a second store, HypaV3's summary calls; per send, the card's tokens and the raw history
   kept, under each tokenizer family. Same `maxContext`, same memory budget, no random lane. A

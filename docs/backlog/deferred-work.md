@@ -85,7 +85,6 @@ Work that finished plans named and left: features put off, a plan's Later list, 
 - Gated explicit 60 s timeouts now repeat the default and could go.
 - Test copies of production constants: `SAVE_DEBOUNCE_MS` in `mutationStoresHarness.ts` copies the unexported production `DEBOUNCE_MS`.
 - Coverage gaps: `mcpSse`'s scan bound has no slack; other partial `vi.mock(importOriginal)` mocks were not audited for Vitest 4 keeping the first registry across `resetModules`.
-- Production: `chatStore.svelte.ts` `isMember` scans a character's chat list through a proxy, so per-character work grows quadratically with the chat count.
 
 ## Generation Stage Spinner
 

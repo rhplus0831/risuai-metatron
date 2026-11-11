@@ -10,6 +10,7 @@ owner's decision, except the persistence entry below.
 ## Contents
 
 - [persistence](#persistence) (1)
+- [structured-memory](#structured-memory) (1)
 
 ## persistence
 
@@ -20,3 +21,24 @@ Guide: [Persistence: Database, Records, Mutation Stores](../structure/persistenc
   deletion arrives the stale id renders nothing (the sidebar and pins skip absent and trashed characters) and stays
   through selection and idle refresh; the next local add, remove, restore, or reorder (`checkCharOrder`) or the next
   boot repair removes it. Not fixed: hidden order metadata only; the owner has not yet decided to keep it.
+
+## structured-memory
+
+Guide: [Structured Memory Records](../structure/structured-memory/records.md#known-hazards).
+
+- A memory row loaded from a database snapshot, a checkpoint chunk, or a memory restore is held to less than a row the
+  server wrote, and two things follow. Both were reproduced on 2026-11-12 through `tx.restoreMemory`, which checks rows
+  with `checkMemoryRow` as a snapshot load does.
+  - The read rounds (`/package`, `/coverage`, `/story`, `/find`, `/runs`, `/threads`) charge a row's stored bytes and
+    answer the re-serialized record. Three event rows of 782 stored bytes each (arrays of `1e20`) serialized to 2,482
+    bytes, and with a 1,564-byte budget `/story` answered two of them in 4,619 bytes. The overrun stays near the
+    expansion of a number (about three to five times), needs a restored crafted backup, and a round's first record is
+    served whatever its size. Measuring each record's serialized size inside the round cost 1.6 to 1.8 ms on a 10 to
+    12 ms `/package` round of 500 ordinary events (about 18%), so it was not added.
+  - `checkMemoryRow` checks a row's columns, not its record's shape, so an event without `storyTime`, `keyLines`, or
+    `participants` loads, where the chat-file restore (`restore.ts`) refuses it. `eventBody` in `card.ts` then throws
+    while a send builds its card (`storyTime.text`, `keyLines.map`), and `remappedEvent` in `pages.ts` throws on a
+    page merge (`participants`). The tab's readers supply these fields. The server has never written such an event.
+
+  Not fixed: the owner has not yet chosen between holding loaded rows to the restore's record shapes (one malformed
+  row then refuses the whole load), tolerating absent fields in the server's readers, or keeping both as Limitations.
