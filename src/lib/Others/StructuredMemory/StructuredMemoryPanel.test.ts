@@ -32,7 +32,11 @@ import { followedJobs } from "src/ts/process/serverCommands";
 import { noteMemoryTaskFrame, resetMemoryTasks } from "src/ts/process/memoryTasks.svelte";
 import { alertConfirm, alertError, alertToast } from "src/ts/alert";
 import { pendingMessageJump } from "src/ts/messageSearch.svelte";
-import { requestMemoryPanelTarget, memoryMessageHash } from "src/ts/process/structuredMemory.svelte";
+import {
+    requestMemoryPanelTarget,
+    memoryMessageHash,
+    type MemoryPanelTarget,
+} from "src/ts/process/structuredMemory.svelte";
 import {
     ADOPTED_WRITER_RUN,
     sealHypaV3Data,
@@ -46,6 +50,7 @@ import {
 } from "../../../../shared/structuredMemory.ts";
 import StructuredMemoryPanel from "./StructuredMemoryPanel.svelte";
 import PreviewTab from "./PreviewTab.svelte";
+import PagesTab from "./PagesTab.svelte";
 
 const io = vi.hoisted(() => ({
     selectSingleFileHandle: vi.fn<typeof import("src/ts/util").selectSingleFileHandle>(),
@@ -2572,6 +2577,97 @@ it("opens a requested page history diff, scrolls only that jump, and reverts fro
     expect(query(`${row} [data-memory-history-revert]`)).toBeNull();
     expect(query('[data-memory-history-id="undo"] [data-memory-history-revert]')).toBeNull();
     expect(alertToast).toHaveBeenLastCalledWith(language.structuredMemory.revert.done(1));
+});
+
+it("scrolls the requested history row exactly once after delayed contents render", async () => {
+    const state = serveMemory();
+    state.page.history = [
+        {
+            id: "writer-change",
+            heading: "Facts",
+            kind: "change",
+            highlighted: true,
+            before: { body: "Earlier memory", provenance: [], sources: [] },
+            at: 1,
+        },
+    ];
+    const contents = deferred<void>();
+    releases.push(() => contents.resolve());
+    const fetch = io.authFetch.getMockImplementation()!;
+    let recordAnswered = false;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url === "/api/memory/structured/c/k") await contents.promise;
+        const answer = await fetch(url, init, options);
+        if (url.endsWith("/records/pages/p")) recordAnswered = true;
+        return answer;
+    });
+    const scroll = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(() => {});
+    releases.push(() => scroll.mockRestore());
+    requestMemoryPanelTarget(ref, { tab: "pages", id: "p", historyId: "writer-change" });
+    await open();
+    expect(recordAnswered).toBe(true);
+    expect(query("[data-memory-page-detail]")).toBeNull();
+    expect(scroll).not.toHaveBeenCalled();
+
+    contents.resolve();
+    await settle();
+    const row = query('[data-memory-history-id="writer-change"]');
+    expect(row).not.toBeNull();
+    expect(row!.querySelector("button[aria-expanded]")?.getAttribute("aria-expanded")).toBe("true");
+    expect(row!.querySelector("[data-memory-history-diff]")?.textContent).toContain("Earlier");
+    expect(row!.querySelector("[data-memory-history-diff]")?.textContent).toContain("Original");
+    expect(scroll).toHaveBeenCalledExactlyOnceWith({ block: "nearest" });
+    expect(scroll.mock.contexts).toEqual([row]);
+    await settle();
+    expect(scroll).toHaveBeenCalledTimes(1);
+});
+
+it("cancels a pending history scroll when a new target omits the history entry", async () => {
+    const state = serveMemory();
+    state.page.history = [
+        {
+            id: "writer-change",
+            heading: "Facts",
+            kind: "change",
+            highlighted: true,
+            before: { body: "Earlier memory", provenance: [], sources: [] },
+            at: 1,
+        },
+    ];
+    const contents = deferred<void>();
+    releases.push(() => contents.resolve());
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url === "/api/memory/structured/c/k") await contents.promise;
+        return fetch(url, init, options);
+    });
+    const scroll = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(() => {});
+    releases.push(() => scroll.mockRestore());
+    const focus = fromStore(writable<MemoryPanelTarget>({ tab: "pages", id: "p", historyId: "writer-change" }));
+    instance = mount(PagesTab, {
+        target,
+        props: {
+            chatRef: ref,
+            readOnly: false,
+            refresh: 0,
+            get focus() {
+                return focus.current;
+            },
+            open: vi.fn(),
+            jump: vi.fn(),
+        },
+    });
+    await settle();
+    expect(query("[data-memory-page-detail]")).toBeNull();
+    expect(scroll).not.toHaveBeenCalled();
+    focus.current = { tab: "pages", id: "p" };
+    await settle();
+
+    contents.resolve();
+    await settle();
+    expect(query('[data-memory-page="p"]')?.getAttribute("aria-current")).toBe("true");
+    expect(query('[data-memory-history-id="writer-change"] [data-memory-history-diff]')).not.toBeNull();
+    expect(scroll).not.toHaveBeenCalled();
 });
 
 it("writes and clears the chat highlight override from Settings without changing another chat", async () => {

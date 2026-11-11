@@ -1,6 +1,6 @@
 <script lang="ts">
     import { ChevronDownIcon, ChevronRightIcon } from "@lucide/svelte";
-    import { tick, untrack } from "svelte";
+    import { untrack } from "svelte";
     import { language } from "src/lang";
     import { alertConfirm, alertError, alertToast } from "src/ts/alert";
     import {
@@ -77,7 +77,8 @@
      *
      * History's after-state comes from `memoryPageHistoryView` in src/ts/process/structuredMemory.svelte.ts;
      * no after-state is stored. One diff opens at a time and renders as spans. A target with `historyId`
-     * selects Manage and opens that diff only after its page is held, then scrolls after render.
+     * selects Manage and opens that diff only after its page is held, keeping its scroll request until
+     * both the diff and history list render. A new selection or a person's history click cancels the scroll.
      * With `only: "unsupported"`, this same view lists flagged pages and sections, selects the next
      * flagged page after resolution, and offers evidence keeps and the latest retracted writer revert.
      * Keeps can mark text user-corrected for rebuilds; that choice lasts only while the tab is mounted.
@@ -179,6 +180,8 @@
     let diffNumber = 0;
     /** The history entry a jump asked for, until its page is the copy. */
     let askedEntry: { pageId: string; historyId: string } | null = null;
+    /** A jump's scroll waits for both the diff and the contents-gated history list to render. */
+    let entryScroll = $state.raw<{ ref: ChatRef; pageId: string; historyId: string } | null>(null);
     let historyList = $state<HTMLElement>();
 
     const messages = $derived(findChat(chatRef)?.message ?? []);
@@ -401,7 +404,7 @@
      * into view when its diff has rendered, or failed to, unless a person moved on meanwhile. A lost entry
      * opens nothing. A person's own click on a row never scrolls.
      */
-    async function openAskedEntry() {
+    function openAskedEntry() {
         const asked = askedEntry;
         if (!asked || asked.pageId !== copy?.data.id) {
             return;
@@ -412,15 +415,38 @@
             return;
         }
         openEntry = null;
-        await toggleEntry(entry);
-        await tick();
-        if (openEntry === entry.id && diff !== null) {
-            const row = [...(historyList?.querySelectorAll<HTMLElement>("[data-memory-history-id]") ?? [])].find(
-                ({ dataset }) => dataset.memoryHistoryId === entry.id,
-            );
-            row?.scrollIntoView?.({ block: "nearest" });
-        }
+        void toggleEntry(entry);
+        entryScroll = { ...asked, ref: chatRef };
     }
+
+    // Effects run after render, including when a late contents read finally mounts the history list.
+    $effect(() => {
+        const request = entryScroll;
+        if (!request) {
+            return;
+        }
+        if (
+            !sameChat(request.ref) ||
+            selectedId !== request.pageId ||
+            copy?.data.id !== request.pageId ||
+            openEntry !== request.historyId ||
+            effectiveView !== "manage" ||
+            !history.some(({ id, heading }) => id === request.historyId && heading !== null)
+        ) {
+            entryScroll = null;
+            return;
+        }
+        if (diff === null || !historyList) {
+            return;
+        }
+        const row = [...historyList.querySelectorAll<HTMLElement>("[data-memory-history-id]")].find(
+            ({ dataset }) => dataset.memoryHistoryId === request.historyId,
+        );
+        if (row) {
+            entryScroll = null;
+            row.scrollIntoView?.({ block: "nearest" });
+        }
+    });
 
     /** Reads page `id` into the copy. `noticed`: a refused edit has just said the memory changed. */
     async function readRecord(id: string, noticed = false) {
@@ -441,7 +467,7 @@
         }
         keepRecord(result.value, noticed);
         recordFailure = null;
-        void openAskedEntry();
+        openAskedEntry();
     }
 
     /** Reads what the tab shows. While an edit is out the copy waits for its answer, which is newer. */
@@ -527,6 +553,7 @@
         if (id === selectedId) {
             return;
         }
+        entryScroll = null;
         if (askedEntry?.pageId !== id) {
             askedEntry = null;
         }
@@ -570,12 +597,13 @@
         if (target && only !== "unsupported") {
             untrack(() => {
                 const { id, historyId } = target;
+                entryScroll = null;
                 if (historyId !== undefined) {
                     view = "manage";
                 }
                 askedEntry = historyId === undefined ? null : { pageId: id, historyId };
                 select(id);
-                void openAskedEntry();
+                openAskedEntry();
             });
         }
     });
@@ -1069,6 +1097,7 @@
     }
 
     async function toggleEntry({ id, before, after }: MemoryPageHistoryRow) {
+        entryScroll = null;
         const number = ++diffNumber;
         diff = null;
         openEntry = openEntry === id ? null : id;
