@@ -223,8 +223,7 @@ export async function preflightMemoryCard(
  * The card of `lanes` under `maximum`, or the required lane's refusal. That lane is reserved first: over
  * its target, or rendered alone over `maximum`, it refuses, because nothing may cut it.
  *
- * Every other line and its optional plain form is counted up to a full flow prefix that cannot fit
- * even without the frame or other lanes. The frame (the rule header, the required
+ * Every other line and its optional plain form is counted, the frame (the rule header, the required
  * lines, the headings of the other lanes with items, and each part's own message) comes off `maximum`,
  * and `spendLanes` shares the rest.
  * Lines counted apart need not add up to the text they make, so the rendered parts are counted too, each
@@ -235,8 +234,7 @@ export async function preflightMemoryCard(
  * before extension. Evidence goes before the full line it requires, and extension admissions before core
  * ones. This trim only removes items. With no item left, both parts are empty and the card costs nothing.
  *
- * Ordinary lines are counted together, using a network tokenizer's own queue. Full flow lines are
- * counted newest first until even their mandatory prefix cannot fit the whole budget.
+ * A lane's lines are counted together, so a tokenizer that goes over the network uses its own queue.
  */
 export async function buildMemoryCard(
     tokenizer: MemoryTokenizer,
@@ -256,29 +254,9 @@ export async function buildMemoryCard(
                 ...(plain ? { plain: { line: plain.line, tokens: await count(plain.line) } } : {}),
             })),
         );
-    const eventCandidates = new Set(
-        lanes.flatMap(({ items }) => items.filter(({ lane }) => lane === "events").map(({ id }) => id)),
-    );
-    const countFlow = async (items: readonly LaneCandidate[]) => {
-        const full: LaneItem[] = [];
-        let minimum = 0;
-        for (const candidate of items) {
-            const [item] = await countItems([candidate]);
-            full.push(item);
-            // Extension may skip any event-lane candidate. Every other preceding full line must
-            // remain admitted, at least in its cheaper form. Titles can refund only their own cost;
-            // lending, restored key lines and the frame cannot reduce this mandatory full-line sum.
-            if (!eventCandidates.has(item.id)) {
-                minimum += Math.min(item.tokens, item.plain?.tokens ?? item.tokens);
-            }
-            // Keep the first impossible candidate so both spending passes stop at the same place.
-            if (minimum > maximum) break;
-        }
-        return full;
-    };
     for (const lane of lanes) {
         // `Promise.all` answers in input order, however the counts finish, so `items` keep their rank.
-        const [items, full] = await Promise.all([countItems(lane.items), countFlow(lane.flow?.full ?? [])]);
+        const [items, full] = await Promise.all([countItems(lane.items), countItems(lane.flow?.full ?? [])]);
         counted.push({ ...lane, items, flow: lane.flow ? { ...lane.flow, full } : undefined });
     }
 
