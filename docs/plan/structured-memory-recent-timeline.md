@@ -252,6 +252,8 @@ change, `retrieve.ts` if `flowCandidates` changes, and `read.md`.
   starves there (`read.md` Limitations). If the pages lane loses a page that was on stage, the slice lowers the flow
   share and says so (D8). If counting 200 lines moves `selectMemory` past the times `read.md` records, it lowers
   `flowCandidates`.
+- The owner settled both corrections after the first run (D14): the shares move to flow 0.25 and pages 0.45, and
+  `flowCandidates` stays 200; the report and `read.md` Limitations record what each leaves.
 - `read.md`: Limitations cites the report for the small-context row and the selection time.
 - The real-model question, whether replies recall recent events better, is not answered here: it joins the open A/B
   in [manual checks](../backlog/manual-checks.md).
@@ -259,7 +261,7 @@ change, `retrieve.ts` if `flowCandidates` changes, and `read.md`.
 ## Decisions
 
 The owner decided D1 to D5 on 2026-11-11, and accepted the default of D7 and D8 and the limitation of D13 the same
-day.
+day; D14 is the owner's answer to slice 4's first run.
 
 - D1. The flow lane becomes the recent timeline: summaries under a token target, events past it by title, their count
   set by `flowEvents`.
@@ -284,6 +286,12 @@ day.
   and the field reads as its default from then on. That is how every writer setting added so far behaves, it needs an
   edit in the stale tab, a reload avoids it, and no record is touched. The owner accepted it on 2026-11-11 (audit
   AUD-2) over a merge in the resource store's write paths, which would also end "omitted means reset".
+- D14. Slice 4's first run showed that its two corrections cannot both hold with the Goal: at 16,384 tokens of context
+  a 1,000-turn Korean chat loses an on-stage page at every share that leaves a timeline of more than two events, and at
+  a maximum of 50,000 the run reaches `flowCandidates`, so a lower bound leaves that budget unspent. The owner chose
+  shares of flow 0.25 and pages 0.45 (events, evidence, and threads unchanged), with the page loss that remains recorded
+  in `read.md` Limitations, and kept `flowCandidates` at 200, with the selection time its counting adds recorded there
+  too, on 2026-11-11.
 
 ## Not In This Plan
 
