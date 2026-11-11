@@ -38,6 +38,7 @@
     } from "../../../../shared/memory.ts";
     import {
         normalizeStructuredMemorySettings,
+        resolveLaneTargets,
         STRUCTURED_MEMORY_ALGORITHM,
         STRUCTURED_MEMORY_CADENCES,
         STRUCTURED_MEMORY_HIGHLIGHT_KINDS,
@@ -207,8 +208,54 @@
     // Structured Memory selects by `memoryAlgorithmType`, ahead of the flags, as the server does. It
     // shares the selected HypaV3 preset for its budget and keeps its own settings in `structured`.
     const structuredMemorySelected = $derived(settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM);
-    const laneShareTotal = (shares: StructuredMemorySettings["laneShares"]) =>
-        shares.flow + shares.pages + shares.events + shares.evidence + shares.threads;
+
+    /** The optional lanes in spending order, which is the order of their rows and of the bar's parts. */
+    const STRUCTURED_LANES = ["flow", "pages", "events", "evidence", "threads"] as const;
+    type StructuredLane = (typeof STRUCTURED_LANES)[number];
+    const LANE_COLORS = {
+        flow: "bg-primary-500",
+        pages: "bg-secondary-500",
+        events: "bg-success-500",
+        evidence: "bg-neutral-400",
+        threads: "bg-primary-300",
+    } satisfies Record<StructuredLane, string>;
+    const laneTotal = (lanes: Record<StructuredLane, number>) =>
+        STRUCTURED_LANES.reduce((sum, lane) => sum + lanes[lane], 0);
+
+    /**
+     * What the lanes divide: the memory maximum a send applies at the current max context, as the
+     * server's `readBudget` resolves it in either budget mode. None while the max context is unusable.
+     */
+    const laneMaximum = $derived(
+        currentHypaV3 && hypaMaxContextUsable
+            ? resolveHypaV3Budget(currentHypaV3.settings, hypaMaxContext, activePreset.maxResponse).memoryTokens
+            : undefined,
+    );
+
+    /**
+     * A lane's resolved target in the unit its input does not show: tokens beside a share, a percent of
+     * the maximum beside a count. Nothing without a maximum to resolve against.
+     */
+    function laneAmount(structured: StructuredMemorySettings, tokens: number): string {
+        const text = language.structuredMemory.settings;
+        if (laneMaximum === undefined) return "";
+        if (structured.laneSplit !== "manual") return text.laneTokens(tokens.toLocaleString());
+        return laneMaximum > 0 ? text.laneOfMaximum(Math.round((tokens / laneMaximum) * 100)) : "";
+    }
+
+    /**
+     * How far the recent timeline's full lines reach: its resolved token target, where 0 leaves titles
+     * only. Without a maximum a share cannot resolve, so it is shown as the stored percent.
+     */
+    function flowReach(structured: StructuredMemorySettings): { on: boolean; amount: string } {
+        const text = language.structuredMemory.settings;
+        if (structured.laneSplit !== "manual" && laneMaximum === undefined) {
+            const percent = structured.laneShares.flow;
+            return { on: percent > 0, amount: `${percent}%` };
+        }
+        const tokens = resolveLaneTargets(structured, laneMaximum ?? 0).flow;
+        return { on: tokens > 0, amount: text.laneTokens(tokens.toLocaleString()) };
+    }
 
     /**
      * Changes the preset's `structured`. A stored value can be partial or damaged, which every reader
@@ -496,10 +543,11 @@
     read: (structured: StructuredMemorySettings) => number,
     write: (structured: StructuredMemorySettings, count: number) => void,
     max?: number,
+    help?: string,
 )}
     <span class="text-textcolor">{label}</span>
     <NumberInput
-        marginBottom
+        marginBottom={help === undefined}
         size="sm"
         {min}
         {max}
@@ -508,6 +556,103 @@
             (value) => setStructuredCount(preset, value, min, write, max)
         }
     />
+    {#if help !== undefined}
+        <span class="mt-1 mb-4 text-xs text-textcolor2">{help}</span>
+    {/if}
+{/snippet}
+
+{#snippet sectionTitle(id: string, title: string, first = false)}
+    <h3
+        class={["mb-3 text-lg font-semibold text-textcolor", !first && "mt-2 border-t border-darkborderc pt-4"]}
+        data-structured-memory-section={id}
+    >
+        {title}
+    </h3>
+{/snippet}
+
+{#snippet laneBudget(preset: HypaV3Settings, structured: StructuredMemorySettings)}
+    {@const text = language.structuredMemory.settings}
+    {@const manual = structured.laneSplit === "manual"}
+    {@const targets = resolveLaneTargets(structured, laneMaximum ?? 0)}
+    {@const scale = Math.max(laneMaximum ?? 0, laneTotal(targets))}
+    {#if laneMaximum !== undefined && scale > 0}
+        <div
+            class="mb-3 flex h-3 w-full shrink-0 gap-px overflow-hidden rounded-sm bg-darkbutton"
+            aria-hidden="true"
+            data-structured-memory-lane-bar
+        >
+            {#each STRUCTURED_LANES as lane (lane)}
+                <div
+                    class="shrink-0 {LANE_COLORS[lane]}"
+                    data-structured-memory-lane-part={lane}
+                    style:width="{(targets[lane] / scale) * 100}%"
+                ></div>
+            {/each}
+        </div>
+    {/if}
+    <!-- Keyed by the split, so an entry the other unit refused does not stay in the box. -->
+    {#key manual}
+        {#each STRUCTURED_LANES as lane (lane)}
+            <div
+                class="mb-3 grid grid-cols-[auto_minmax(0,1fr)_4rem_auto] items-center gap-x-2 gap-y-1"
+                data-structured-memory-lane={lane}
+            >
+                <span class="h-2.5 w-2.5 rounded-xs {LANE_COLORS[lane]}" aria-hidden="true"></span>
+                <span class="text-textcolor">{manual ? text[`${lane}Target`] : text[`${lane}Share`]}</span>
+                <NumberInput
+                    size="sm"
+                    className="w-16"
+                    min={0}
+                    max={manual ? undefined : 100}
+                    bind:value={
+                        () => (manual ? structured.laneTargets[lane] : structured.laneShares[lane]),
+                        (value) =>
+                            setStructuredCount(
+                                preset,
+                                value,
+                                0,
+                                (next, count) =>
+                                    manual ? (next.laneTargets[lane] = count) : (next.laneShares[lane] = count),
+                                manual ? undefined : 100,
+                            )
+                    }
+                />
+                <span
+                    class="min-w-14 text-right text-xs text-textcolor2 tabular-nums"
+                    data-structured-memory-lane-amount>{laneAmount(structured, targets[lane])}</span
+                >
+                <span class="col-span-3 col-start-2 text-xs text-textcolor2">{text.laneHelp[lane]}</span>
+            </div>
+        {/each}
+    {/key}
+{/snippet}
+
+{#snippet recentTimeline(structured: StructuredMemorySettings)}
+    {@const text = language.structuredMemory.settings.timeline}
+    {@const flow = flowReach(structured)}
+    <div class="mb-1 grid grid-cols-3 gap-2" data-structured-memory-timeline>
+        <div
+            class="rounded-md border border-dashed border-darkborderc px-3 py-2"
+            data-structured-memory-timeline-part="window"
+        >
+            <div class="text-sm text-textcolor">{text.window}</div>
+            <div class="text-xs text-textcolor2">{text.windowValue(structured.windowTurns)}</div>
+        </div>
+        <div class="rounded-md border border-darkborderc px-3 py-2" data-structured-memory-timeline-part="full">
+            <div class="text-sm text-textcolor">{text.full}</div>
+            <div class="text-xs text-textcolor2">{flow.on ? text.fullValue(flow.amount) : text.fullOff}</div>
+            {#if flow.on && structured.flowKeyLineEvents > 0}
+                <div class="text-xs text-textcolor2">{text.keyLines(structured.flowKeyLineEvents)}</div>
+            {/if}
+        </div>
+        <div class="rounded-md border border-darkborderc px-3 py-2" data-structured-memory-timeline-part="titles">
+            <div class="text-sm text-textcolor">{text.titles}</div>
+            <div class="text-xs text-textcolor2">
+                {structured.flowEvents > 0 ? text.titlesValue(structured.flowEvents) : text.off}
+            </div>
+        </div>
+    </div>
+    <span class="mb-4 text-xs text-textcolor2">{text.caption}</span>
 {/snippet}
 
 <h2 class="mb-2 text-2xl font-bold mt-2">{language.memorySettings}</h2>
@@ -588,9 +733,7 @@
         {@const preset = currentHypaV3.settings}
         {@const structured = normalizeStructuredMemorySettings(preset.structured)}
 
-        {@render budgetModeControl(preset)}
-        {@render memoryMaximumControl(preset)}
-        {@render budgetReducedNotes(budgetReduced.filter(({ field }) => field === "memory"))}
+        {@render sectionTitle("recording", text.sections.recording, true)}
         <span class="text-textcolor">{text.language}</span>
         <TextInput
             marginBottom
@@ -639,37 +782,13 @@
                 }
             />
         {/if}
-        {@render structuredCount(
-            preset,
-            text.windowTurns,
-            1,
-            (read) => read.windowTurns,
-            (next, count) => (next.windowTurns = count),
-        )}
-        {@render structuredCount(
-            preset,
-            text.flowEvents,
-            0,
-            (read) => read.flowEvents,
-            (next, count) => (next.flowEvents = count),
-        )}
-        {@render structuredCount(
-            preset,
-            text.flowKeyLineEvents,
-            0,
-            (read) => read.flowKeyLineEvents,
-            (next, count) => (next.flowKeyLineEvents = count),
-        )}
-        {@render structuredCount(
-            preset,
-            text.requiredCap,
-            1,
-            (read) => read.requiredCap,
-            (next, count) => (next.requiredCap = count),
-        )}
+        {@render sectionTitle("budget", text.sections.budget)}
+        {@render budgetModeControl(preset)}
+        {@render memoryMaximumControl(preset)}
+        {@render budgetReducedNotes(budgetReduced.filter(({ field }) => field === "memory"))}
         <span class="text-textcolor">{text.laneSplit}</span>
         <SelectInput
-            className="mb-4"
+            className="mb-2"
             value={structured.laneSplit}
             onchange={({ currentTarget }) =>
                 setStructured(preset, (next) => (next.laneSplit = currentTarget.value as StructuredMemoryLaneSplit))}
@@ -678,87 +797,56 @@
                 <OptionInput value={split}>{text.laneSplits[split]}</OptionInput>
             {/each}
         </SelectInput>
-        {#if structured.laneSplit === "manual"}
-            {@render structuredCount(
-                preset,
-                text.flowTarget,
-                0,
-                (read) => read.laneTargets.flow,
-                (next, count) => (next.laneTargets.flow = count),
-            )}
-            {@render structuredCount(
-                preset,
-                text.pagesTarget,
-                0,
-                (read) => read.laneTargets.pages,
-                (next, count) => (next.laneTargets.pages = count),
-            )}
-            {@render structuredCount(
-                preset,
-                text.eventsTarget,
-                0,
-                (read) => read.laneTargets.events,
-                (next, count) => (next.laneTargets.events = count),
-            )}
-            {@render structuredCount(
-                preset,
-                text.evidenceTarget,
-                0,
-                (read) => read.laneTargets.evidence,
-                (next, count) => (next.laneTargets.evidence = count),
-            )}
-            {@render structuredCount(
-                preset,
-                text.threadsTarget,
-                0,
-                (read) => read.laneTargets.threads,
-                (next, count) => (next.laneTargets.threads = count),
-            )}
-        {:else}
-            {@render structuredCount(
-                preset,
-                text.flowShare,
-                0,
-                (read) => read.laneShares.flow,
-                (next, percent) => (next.laneShares.flow = percent),
-                100,
-            )}
-            {@render structuredCount(
-                preset,
-                text.pagesShare,
-                0,
-                (read) => read.laneShares.pages,
-                (next, percent) => (next.laneShares.pages = percent),
-                100,
-            )}
-            {@render structuredCount(
-                preset,
-                text.eventsShare,
-                0,
-                (read) => read.laneShares.events,
-                (next, percent) => (next.laneShares.events = percent),
-                100,
-            )}
-            {@render structuredCount(
-                preset,
-                text.evidenceShare,
-                0,
-                (read) => read.laneShares.evidence,
-                (next, percent) => (next.laneShares.evidence = percent),
-                100,
-            )}
-            {@render structuredCount(
-                preset,
-                text.threadsShare,
-                0,
-                (read) => read.laneShares.threads,
-                (next, percent) => (next.laneShares.threads = percent),
-                100,
-            )}
-            <span class="mb-4 text-xs text-textcolor2" data-structured-memory-lane-shares
-                >{text.laneSharesHelp(laneShareTotal(structured.laneShares))}</span
+        {#if laneMaximum !== undefined}
+            <span class="mb-3 text-xs text-textcolor2" data-structured-memory-lane-maximum
+                >{text.laneMaximum(laneMaximum.toLocaleString())}</span
             >
         {/if}
+        {@render laneBudget(preset, structured)}
+        {#if structured.laneSplit !== "manual"}
+            <span class="mb-4 text-xs text-textcolor2" data-structured-memory-lane-shares
+                >{text.laneSharesHelp(laneTotal(structured.laneShares))}</span
+            >
+        {/if}
+        {@render structuredCount(
+            preset,
+            text.requiredCap,
+            1,
+            (read) => read.requiredCap,
+            (next, count) => (next.requiredCap = count),
+            undefined,
+            text.requiredCapHelp,
+        )}
+        {@render sectionTitle("recent", text.sections.recent)}
+        {@render recentTimeline(structured)}
+        {@render structuredCount(
+            preset,
+            text.windowTurns,
+            1,
+            (read) => read.windowTurns,
+            (next, count) => (next.windowTurns = count),
+            undefined,
+            text.windowTurnsHelp,
+        )}
+        {@render structuredCount(
+            preset,
+            text.flowKeyLineEvents,
+            0,
+            (read) => read.flowKeyLineEvents,
+            (next, count) => (next.flowKeyLineEvents = count),
+            undefined,
+            text.flowKeyLineEventsHelp,
+        )}
+        {@render structuredCount(
+            preset,
+            text.flowEvents,
+            0,
+            (read) => read.flowEvents,
+            (next, count) => (next.flowEvents = count),
+            undefined,
+            text.flowEventsHelp,
+        )}
+        {@render sectionTitle("prompts", text.sections.prompts)}
         <span class="text-textcolor">{text.instructions}</span>
         <div class="mb-2">
             <TextAreaInput
@@ -814,6 +902,7 @@
             presetId={currentHypaV3?.id}
             setStructured={(change) => setStructured(preset, change)}
         />
+        {@render sectionTitle("display", text.sections.display)}
         <div class="mb-2 flex items-center">
             <Check
                 name={text.volatileBeforeLastUser}

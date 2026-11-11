@@ -197,6 +197,9 @@ Compaction changes no event, and a warning does not fail the run.
   target. `flowKeyLineEvents` (default 3) is the timeline events that carry key lines, and `flowEvents` the titles
   listed after the timeline ([the read path](read.md#the-read-path)). The settings page shows only the split's own
   inputs.
+- Beside those inputs the page resolves the send's targets itself, with `resolveHypaV3Budget` and `resolveLaneTargets`
+  at the current max context, for the lane bar, each lane's amount, and the recent timeline strip: a change to how
+  `readBudget` resolves a target has to reach that page.
 
 ## Coupling
 

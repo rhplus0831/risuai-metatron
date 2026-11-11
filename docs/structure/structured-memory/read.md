@@ -349,7 +349,7 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
   through a full line, `assemble.test.ts` for the report's items and exclusions.
 - The lane split: `structured/lanes.test.ts` for `readBudget`'s targets, `structured/retrieve.test.ts` for targets read
   from the input, `memoryTasks.test.ts` for both warming sites, `normalizeCollections.test.ts` and
-  `MemorySettings.structuredMemory.test.ts` for the setting.
+  `MemorySettings.structuredMemory.test.ts` for the setting, the page's lane amounts, and its timeline strip.
 - Receipts: `memoryTasks.test.ts` for the patches; `memoryJobs.test.ts` for the reply's notice on a real stack;
   `structuredMemory.test.ts` for `memoryReceiptView`; `MemoryReceiptLine.svelte.test.ts` and
   `Chat.interactions.svelte.test.ts` for the line and its gate.

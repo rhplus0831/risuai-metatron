@@ -439,3 +439,63 @@ it("writes the flow token target and key-line event count through their count in
     change(keyLines, "0");
     expect(read()).toMatchObject({ laneTargets: { flow: 0 }, flowKeyLineEvents: 0 });
 });
+
+it("shows each lane's target against the maximum a send applies, following the shares, the split and a reduced budget", () => {
+    settings.ui.memoryAlgorithmType = "structuredMemory";
+    open();
+    const fmt = (value: number) => value.toLocaleString();
+    const amount = (lane: string) =>
+        target.querySelector(`[data-structured-memory-lane="${lane}"] [data-structured-memory-lane-amount]`)!
+            .textContent;
+    const width = (lane: string) =>
+        parseFloat(target.querySelector<HTMLElement>(`[data-structured-memory-lane-part="${lane}"]`)!.style.width);
+    const maximum = () => target.querySelector("[data-structured-memory-lane-maximum]")!.textContent;
+    // The preset's 6000 tokens fit half of the prompt budget (20000 - 1000), so they apply whole.
+    expect(maximum()).toBe(text.laneMaximum(fmt(6000)));
+    expect(["flow", "pages", "events", "evidence", "threads"].map(amount)).toEqual(
+        [1500, 2700, 900, 600, 300].map((tokens) => text.laneTokens(fmt(tokens))),
+    );
+    expect(["flow", "pages", "events", "evidence", "threads"].map(width)).toEqual([25, 45, 15, 10, 5]);
+    // Over 100% the bar holds the sum, so every part stays in proportion.
+    change(control(text.flowShare) as HTMLInputElement, "50");
+    expect(amount("flow")).toBe(text.laneTokens(fmt(3000)));
+    expect(width("flow")).toBeCloseTo(40);
+    expect(width("pages")).toBeCloseTo(36);
+    // A budget over half of the prompt budget is reduced, and the lanes divide what is applied.
+    change(control(hypa.memoryBudgetTokensLabel) as HTMLInputElement, "50000");
+    expect(maximum()).toBe(text.laneMaximum(fmt(9500)));
+    expect(amount("flow")).toBe(text.laneTokens(fmt(4750)));
+    change(control(text.laneSplit) as HTMLSelectElement, "manual");
+    expect(amount("flow")).toBe(text.laneOfMaximum(16));
+    change(control(text.flowTarget) as HTMLInputElement, "4750");
+    expect(amount("flow")).toBe(text.laneOfMaximum(50));
+    // Counts under the maximum are drawn against it, leaving the rest of the bar empty.
+    expect(width("flow")).toBeCloseTo(50);
+});
+
+it("draws the recent timeline from the window, the flow target and both event counts, and marks an empty part off", () => {
+    settings.ui.memoryAlgorithmType = "structuredMemory";
+    open();
+    const part = (name: string) =>
+        [...target.querySelector(`[data-structured-memory-timeline-part="${name}"]`)!.children].map((line) =>
+            line.textContent!.trim(),
+        );
+    const strip = text.timeline;
+    const tokens = (value: number) => text.laneTokens(value.toLocaleString());
+    expect(part("window")).toEqual([strip.window, strip.windowValue(3)]);
+    expect(part("full")).toEqual([strip.full, strip.fullValue(tokens(1500)), strip.keyLines(3)]);
+    expect(part("titles")).toEqual([strip.titles, strip.titlesValue(8)]);
+    change(control(text.windowTurns) as HTMLInputElement, "5");
+    change(control(text.flowKeyLineEvents) as HTMLInputElement, "0");
+    change(control(text.flowEvents) as HTMLInputElement, "0");
+    change(control(text.flowShare) as HTMLInputElement, "40");
+    expect(part("window")).toEqual([strip.window, strip.windowValue(5)]);
+    expect(part("full")).toEqual([strip.full, strip.fullValue(tokens(2400))]);
+    expect(part("titles")).toEqual([strip.titles, strip.off]);
+    // A share of 0 leaves the title-only lane, whatever the key-line count says.
+    change(control(text.flowKeyLineEvents) as HTMLInputElement, "4");
+    change(control(text.flowShare) as HTMLInputElement, "0");
+    expect(part("full")).toEqual([strip.full, strip.fullOff]);
+    change(control(text.laneSplit) as HTMLSelectElement, "manual");
+    expect(part("full")).toEqual([strip.full, strip.fullValue(tokens(1500)), strip.keyLines(4)]);
+});
