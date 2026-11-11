@@ -4,7 +4,7 @@ Status: drafted 2026-11-11 at `27dac4d50` from the owner's request; the owner de
 (Decisions). D6 to D13 are this plan's own, found against the code; the owner accepted the default of D7 and D8 the
 same day. Audited against `e280c3904` on 2026-11-11
 ([report](../reports/audits/plan-runner/structured-memory-recent-timeline-2026-11-11.md)): six findings fixed here,
-and one the owner accepted as a limitation (D13). Landed: 1 (`2760d9a59`), 2 (`17daaa59b`).
+and one the owner accepted as a limitation (D13). Landed: 1 (`2760d9a59`), 2 (`17daaa59b`), 3 (`3634343f7`).
 
 Sources: the owner's report (2026-11-11: a send forgets what happened a few turns ago, because an event that left the
 raw window reaches the main model as its title alone; the owner's preset gives memory 50,000 tokens and each lane
