@@ -128,8 +128,9 @@ Files: `shared/structuredMemory.ts`, `server/src/prompt/memory/structured/lanes.
   oldest first and ends where the messages begin. Lines stay ordered by place.
 - **Settings page.** Two count inputs after `flowEvents`: the flow target with the other lane targets, and
   `flowKeyLineEvents`. `flowEvents` is relabelled for what it now bounds ("Recent events listed by title", "제목만
-  나열할 최근 사건 수"). `MemoryManifest.svelte` shows the flow lane's spend against its target like the other lanes,
-  and drops the `Number.MAX_SAFE_INTEGER` case.
+  나열할 최근 사건 수"). `MemoryManifest.svelte` shows the flow lane's spend against its target like the other lanes.
+  It keeps the `Number.MAX_SAFE_INTEGER` case: a report is stored with its generation (`generationInfo.context`), so a
+  message sent before this slice still holds that target.
 - `read.md`: The read path, Limitations (the small-context row), Tests; the headers of `lanes.ts`, `card.ts`, and
   `retrieve.ts`. `writer.md`: the settings its State and Limitations name.
 - Test:
