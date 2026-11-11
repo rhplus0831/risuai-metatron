@@ -520,6 +520,7 @@
             "format": []
           },
           "instructions": "",
+          "keyLineGuidance": false,
           "fineTuning": false,
           "analysisPrompt": "",
           "patchPrompt": "",

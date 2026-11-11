@@ -147,6 +147,9 @@ The module comments own each call's rules: `assembleAnalysisPrompt` and `parseCu
 for cast and page identities. Across them, planning and admission precede target selection, and `commitPages` gathers
 page, scene and link changes by id for one store write.
 
+With `keyLineGuidance` on, the analysis call's `rules` slot gains the key-line selection rule, including custom frames
+through `{{slot::rules}}`; the default-prompts answer and patch and compaction calls never carry it.
+
 `changeSection` starts evidence afresh for a replaced body, retains it when a disputed join or identical text remains,
 and keeps `disputed` while the body still holds the join. Highlights follow the chat-or-preset rule, with rebuilds using
 `none`; `addLinks` moves each shift destination to the newest end and keeps the newest `pageRefsPerItem` links.
@@ -181,6 +184,8 @@ Compaction changes no event, and a warning does not fail the run.
 - The writer's settings are the selected memory preset's `settings.structured`, so they copy, export, and import with
   the preset. A chat's `structuredMemoryLanguage` wins over its owner's, and the owner's over the preset's `language`,
   where `""` follows `db.language`. A chat's `structuredMemoryHighlight` wins over the preset's `highlightMode`.
+- `keyLineGuidance` defaults to false and applies to events recorded from then on; stored events keep their key lines
+  until re-recorded or rebuilt.
 - `MemorySettings.svelte` exposes only the fields something reads, and shares with HypaV3 only the preset picker, the
   budget mode, and the memory maximum. `screening`: [its rules](read.md#reply-screening). So a preset's
   `summarizationModel` and `alwaysToggleOn` still apply with no control here.

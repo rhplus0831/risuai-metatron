@@ -3116,6 +3116,9 @@ export const languageEnglish = {
             instructionsPlaceholder: "Added to the default recording prompt",
             instructionsHelp:
                 "Added to the default prompts of every writer call. While prompt fine-tuning is on, it reaches only the compaction call.",
+            keyLineGuidance: "Ask the writer to pick key lines that matter",
+            keyLineGuidanceHelp:
+                "When on, the writer keeps lines that carry a decision, a promise, a revealed fact, or a feeling, and leaves out greetings and filler. It applies to events recorded from now on. Stored events keep their key lines until re-recorded or rebuilt.",
             fineTuning: "Fine-tune the recording prompts",
             fineTuningConfirm:
                 "Replace the writer's default prompts with your own? A prompt that loses a required field or slot breaks recording: every run fails until the prompt is fixed or this box is unticked. Blank prompts start as copies of the defaults.",

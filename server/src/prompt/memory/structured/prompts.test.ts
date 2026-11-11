@@ -20,8 +20,74 @@ import {
     assembleAnalysisPrompt,
     assembleCompactPrompt,
     compactSlots,
+    type AnalysisInput,
     type AnalysisSlots,
 } from "./prompts.ts";
+
+const analysisInput: AnalysisInput = {
+    language: "English",
+    cast: [],
+    scene: null,
+    threads: [],
+    previousTitle: undefined,
+    messages: [],
+    window: { messages: [], sources: [] },
+    speaker: () => "Cara",
+};
+
+it("adds one key-line guidance rule to the default analysis prompt only when enabled", () => {
+    const { risuChatParser } = createNodeCbsEvaluator({ characters: [], username: "Uma" } as unknown as Database, {
+        selectedCharID: -1,
+    });
+    const host = { parseChatML: (text: string) => parseChatML(text, risuChatParser) };
+    const rules = defaultPrompts().analysis.rules;
+    const absent = analysisSlots(analysisInput);
+    const off = analysisSlots({ ...analysisInput, keyLineGuidance: false });
+    const on = analysisSlots({ ...analysisInput, keyLineGuidance: true });
+    expect(absent.rules).toBe(rules);
+    expect(off).toEqual(absent);
+    expect(on.rules).toContain("greetings and filler");
+    const lines = on.rules.split("\n");
+    expect(lines.filter((line) => line.includes("greetings and filler"))).toHaveLength(1);
+    expect(lines.filter((line) => !line.includes("greetings and filler")).join("\n")).toBe(rules);
+    expect(on).toEqual({ ...absent, rules: on.rules });
+
+    const prompt = assembleAnalysisPrompt(host, "", absent);
+    expect(assembleAnalysisPrompt(host, "", off)).toEqual(prompt);
+    expect(prompt[0].content).toContain(rules);
+    expect(prompt.map(({ content }) => content).join("\n")).not.toContain("greetings and filler");
+    const enabled = assembleAnalysisPrompt(host, "", on);
+    expect(enabled[0].content).toContain(on.rules);
+    expect(enabled[0].content).toContain("greetings and filler");
+});
+
+it("carries opt-in key-line guidance through a custom analysis frame's rules slot", () => {
+    const { risuChatParser } = createNodeCbsEvaluator({ characters: [], username: "Uma" } as unknown as Database, {
+        selectedCharID: -1,
+    });
+    const frame = parseCustomFrame(
+        { parseChatML: (text) => parseChatML(text, risuChatParser) },
+        "<|im_start|>system<|im_sep|>For {{user}}:\n{{slot::rules}}<|im_end|>\n" +
+            "<|im_start|>user<|im_sep|>{{slot::scene}}\n{{slot::messages}}<|im_end|>",
+        "analysis",
+    );
+    if (!frame.ok) throw new Error(frame.error);
+    for (const setting of [{}, { keyLineGuidance: false }, { keyLineGuidance: true }]) {
+        const slots = analysisSlots({ ...analysisInput, ...setting });
+        const messages = fillSlots(frame.messages, slots);
+        expect(messages[0].content).toBe(`For Uma:\n${slots.rules}`);
+        expect(messages[0].content.includes("greetings and filler")).toBe(setting.keyLineGuidance === true);
+        if (setting.keyLineGuidance !== true) {
+            expect(slots.rules).toBe(defaultPrompts().analysis.rules);
+        }
+    }
+});
+
+it("keeps key-line guidance out of patch rules and default-prompts answers", () => {
+    const patch = patchSlots({ language: "English", rows: [], event: memoryRecords(["full"]).events[0] });
+    expect(patch.rules).not.toContain("greetings and filler");
+    expect(defaultPrompts().analysis.rules).not.toContain("greetings and filler");
+});
 
 it("expands named slots once after ChatML and CBS parse the frame and instructions", () => {
     const db = { characters: [], username: "Uma" } as unknown as Database;

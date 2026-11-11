@@ -140,6 +140,7 @@ it("edits only consumed Structured Memory settings and shares the selected prese
                   ]
                 : []),
             control(text.instructions),
+            kindBox(text.keyLineGuidance),
             control(text.screeningRefusal),
             control(text.screeningFormat),
             kindBox(text.fineTuning),
@@ -236,6 +237,28 @@ it("edits only consumed Structured Memory settings and shares the selected prese
     change(selectWith("first"), "second");
     expect(settings.hypaV3Presets.selectedId).toBe("second");
     expect((control(hypa.memoryBudgetTokensLabel) as HTMLInputElement).value).toBe("4321");
+});
+
+it("enables key-line guidance in the selected preset when its checkbox is ticked", () => {
+    settings.ui.memoryAlgorithmType = "structuredMemory";
+    open();
+    change(selectWith("first"), "second");
+    expect(settings.hypaV3Presets.selectedId).toBe("second");
+    const wrapper = target.querySelector("[data-structured-memory-key-line-guidance]");
+    expect(wrapper?.textContent).toContain(text.keyLineGuidance);
+    expect(target.querySelector("[data-structured-memory-key-line-guidance-help]")?.textContent).toContain(
+        text.keyLineGuidanceHelp,
+    );
+    const checkbox = wrapper!.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    expect(checkbox.checked).toBe(false);
+    checkbox.click();
+    flushSync();
+    expect(settings.hypaV3Presets.items.find(({ id }) => id === "second")!.settings.structured.keyLineGuidance).toBe(
+        true,
+    );
+    expect(settings.hypaV3Presets.items.find(({ id }) => id === "first")!.settings.structured.keyLineGuidance).toBe(
+        false,
+    );
 });
 
 it("edits highlight modes, kinds and change grade and drops a stored retract kind on the first tick", () => {

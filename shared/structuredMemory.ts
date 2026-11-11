@@ -635,6 +635,8 @@ export interface StructuredMemorySettings {
     screening: { refusal: string[]; format: string[] };
     /** Free text added to the writer's default prompt. */
     instructions: string;
+    /** Adds guidance for choosing key lines when recording events; defaults to false. */
+    keyLineGuidance: boolean;
     /** `analysisPrompt` and `patchPrompt` replace the default prompts. */
     fineTuning: boolean;
     /** ChatML of the analysis call under `fineTuning`. */
@@ -1702,6 +1704,7 @@ export function normalizeStructuredMemorySettings(input: unknown): StructuredMem
         requiredCap: integerIn(source.requiredCap, 1500, 1),
         screening: { refusal: textList(screening.refusal), format: textList(screening.format) },
         instructions: typeof source.instructions === "string" ? source.instructions : "",
+        keyLineGuidance: typeof source.keyLineGuidance === "boolean" ? source.keyLineGuidance : false,
         fineTuning: typeof source.fineTuning === "boolean" ? source.fineTuning : false,
         analysisPrompt: typeof source.analysisPrompt === "string" ? source.analysisPrompt : "",
         patchPrompt: typeof source.patchPrompt === "string" ? source.patchPrompt : "",

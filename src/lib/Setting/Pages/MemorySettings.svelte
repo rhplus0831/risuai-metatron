@@ -740,6 +740,18 @@
         <span class="mb-4 text-xs text-textcolor2" data-structured-memory-instructions-help
             >{text.instructionsHelp}</span
         >
+        <div class="mb-2 flex items-center" data-structured-memory-key-line-guidance>
+            <Check
+                name={text.keyLineGuidance}
+                bind:check={
+                    () => structured.keyLineGuidance,
+                    (value) => setStructured(preset, (next) => (next.keyLineGuidance = value))
+                }
+            />
+        </div>
+        <span class="mb-4 text-xs text-textcolor2" data-structured-memory-key-line-guidance-help
+            >{text.keyLineGuidanceHelp}</span
+        >
         <span class="text-textcolor">{text.screeningRefusal}</span>
         <div class="mb-2" data-structured-memory-screening="refusal">
             <TextAreaInput

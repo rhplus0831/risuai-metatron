@@ -306,6 +306,7 @@ function buildPrompt(
     const { listed: threads, more: moreThreads } = promptThreads(open, new Set(scene?.participants ?? []));
     const slots = analysisSlots({
         language: writerLanguage(arg),
+        keyLineGuidance: settings.keyLineGuidance,
         cast: castSlice(pages, window.messages),
         scene,
         threads,

@@ -35,6 +35,8 @@ import type { WriterWindow } from "./window.ts";
  * cannot hide a slot: it must quote the call's required slots, because a call without its messages or
  * its pages has nothing to validate against. The compaction frame stays code's in both modes, and so does
  * what the slots hold, which is why the answer's validation is the same whatever the frame.
+ * The preset's `keyLineGuidance` adds one rule to the analysis `rules` slot, including in a custom frame
+ * that quotes it; default-prompts answers, patch calls, and compaction calls keep their rules.
  *
  * The analysis prompt's size is a cost on every recorded turn: its fixed parts stay short and everything
  * it lists is bounded. Only `messages` is not, because a quote must be found in the window's whole text.
@@ -76,6 +78,8 @@ export type CompactSlots = Record<"format" | "rules" | "language" | "page" | "se
 /** What the slots are written from. */
 export type AnalysisInput = {
     language: string;
+    /** Adds the key-line selection rule to the analysis rules slot. */
+    keyLineGuidance?: boolean;
     /** The pages to list (`castSlice`). */
     cast: readonly CastRow[];
     scene: MemoryPage | null;
@@ -146,6 +150,9 @@ const RULES = `Rules:
 - A scene field never repeats a text listed as taken back unless the messages establish it again.
 - When these messages newly establish a lasting fact about a listed character (age, family, occupation, real name, origin, nature, who now owns or is responsible for them, where they now live, or that a situational role such as customer, visitor or patient has ended) that the page's identity summary lacks or contradicts, report it in stateChanges with section "identity", the quote that establishes it, and name that page in pageCandidates.
 - Read each sentence of a listed page's identity against these messages: when a sentence describes a situation, condition or role that these messages show has ended or been resolved, report it in stateChanges with section "identity", a quote that establishes the end, and name that page in pageCandidates.`;
+
+const KEY_LINE_GUIDANCE_RULE =
+    "- Choose as key lines the ones that carry a decision, a promise, a revealed fact, or a feeling; leave out greetings and filler.";
 
 const PATCH_FORMAT = `Answer with one JSON object and nothing else:
 { "patches": [{ "pageId": "page id", "heading": "section heading", "op": "${MEMORY_PATCH_OPS.join(" or ")}", "body": "the section's whole new text, on an upsert", "conflict": "${MEMORY_PATCH_CONFLICTS.join(" or ")}, when it replaces a value", "was": "the value it replaces, without its \\"(was: ...)\\" line", "confidence": 0.9 }] }
@@ -332,11 +339,12 @@ export function promptThreads(
 /**
  * The slot values of one recording. Window text is `memorySourceText`, display markup removed, as quote
  * verification reads it, except that inlays show as `[Image]`; filling after ChatML and CBS parsing prevents that text becoming prompt syntax.
+ * When `input.keyLineGuidance` is true, `rules` gains the key-line selection rule; otherwise it stays unchanged.
  */
 export function analysisSlots(input: AnalysisInput): AnalysisSlots {
     return {
         format: FORMAT,
-        rules: RULES,
+        rules: input.keyLineGuidance ? [RULES, KEY_LINE_GUIDANCE_RULE].join("\n") : RULES,
         language: input.language,
         cast: input.cast.map((row) => JSON.stringify(row)).join("\n") || NONE,
         scene: sceneSlot(input.scene),

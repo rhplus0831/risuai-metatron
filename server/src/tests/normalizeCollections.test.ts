@@ -559,6 +559,7 @@ const structuredDefaults = {
     screening: { refusal: [], format: [] },
     language: "",
     instructions: "",
+    keyLineGuidance: false,
     analysisPrompt: "",
     patchPrompt: "",
     fineTuning: false,
@@ -582,6 +583,7 @@ const structuredCustom = {
     screening: { refusal: ["Cannot comply"], format: ["Bad format"] },
     language: "ko",
     instructions: "Keep names",
+    keyLineGuidance: true,
     analysisPrompt: "Analyze this",
     patchPrompt: "Patch this",
     fineTuning: true,
@@ -592,6 +594,13 @@ const structuredCustom = {
 };
 
 describe("Structured Memory settings", () => {
+    it("defaults absent or invalid key-line guidance to false and preserves stored booleans", () => {
+        for (const input of [undefined, {}, { keyLineGuidance: "true" }, { keyLineGuidance: false }]) {
+            expect(normalizeStructuredMemorySettings(input).keyLineGuidance).toBe(false);
+        }
+        expect(normalizeStructuredMemorySettings({ keyLineGuidance: true }).keyLineGuidance).toBe(true);
+    });
+
     it("defaults timeline settings and preserves only nonnegative integer targets and key-line counts", () => {
         for (const input of [undefined, {}, { laneTargets: { pages: 12 } }]) {
             expect(normalizeStructuredMemorySettings(input)).toMatchObject({
