@@ -1,8 +1,10 @@
 # Structured Memory Recent Timeline Plan
 
 Status: drafted 2026-11-11 at `27dac4d50` from the owner's request; the owner decided D1 to D5 the same day
-(Decisions). D6 to D12 are this plan's own, found against the code; the owner accepted the default of D7 and D8 the
-same day. Landed: none.
+(Decisions). D6 to D13 are this plan's own, found against the code; the owner accepted the default of D7 and D8 the
+same day. Audited against `e280c3904` on 2026-11-11
+([report](../reports/audits/plan-runner/structured-memory-recent-timeline-2026-11-11.md)): six findings fixed here,
+and one the owner accepted as a limitation (D13). Landed: none.
 
 Sources: the owner's report (2026-11-11: a send forgets what happened a few turns ago, because an event that left the
 raw window reaches the main model as its title alone; the owner's preset gives memory 50,000 tokens and each lane
@@ -53,10 +55,10 @@ the card's text for a provider's prompt cache (D9).
 - `MemorySettings.svelte` writes `normalizeStructuredMemorySettings(target.structured)` whole on every edit, so a
   preset edited once stores every default, and a stored value cannot be told from a default. The normalizer drops
   unknown keys.
-- The measured shape (2026-11-03, 16,384 tokens of context, memory a fifth): the card fills its 3,276 tokens (3,211 in
-  English) and seven raw entries follow it, where HypaV3 sends a card of the same size and about 12,000 tokens of raw
-  history. No measurement exists for a large maximum; that the owner's 50,000 stays mostly empty follows from the
-  rules above and has not been measured.
+- The measured shape (2026-11-03, 16,384 tokens of context, memory a fifth): the card nearly fills its 3,276 tokens
+  (3,211 in English by the report's recount, 3,253 in Korean by the selection's tokenizer) and seven raw entries follow
+  it, where HypaV3 sends a card of the same size and about 12,000 tokens of raw history. No measurement exists for a
+  large maximum; that the owner's 50,000 stays mostly empty follows from the rules above and has not been measured.
 - `RULES` in `prompts.ts` says a key line is copied verbatim and how long it may be. Nothing says which lines to
   choose.
 
@@ -74,6 +76,9 @@ for one marked _hard_; routine slices name no Codex challenger.
   exist stay. A new settings field is optional; what its absence means is stated in the slice that adds it.
 - **A new setting.** It follows `writer.md`'s recipe: `StructuredMemorySettings`,
   `normalizeStructuredMemorySettings`, the fresh-boot fixture, and `normalizeCollections.test.ts`.
+- **A tab loaded before a slice.** Its bundle does not know the slice's fields, and `setStructured` stores what its
+  normalizer keeps, so an edit of a structured memory setting in that tab returns the new fields to their defaults
+  (D13). Nothing here changes that. Slice 1 records it in `writer.md` Limitations, for every writer setting.
 - **Strings.** New user-visible text goes in `src/lang/en.ts` under `structuredMemory`, with its Korean in
   `src/lang/ko.ts` in the same slice, in the panel's terms (사건, 문서, 미결 사항, 기억).
 - **The card's words.** Headings and labels the card adds are English, as `card.ts`'s header says. Field values stay
@@ -87,15 +92,19 @@ for one marked _hard_; routine slices name no Codex challenger.
 
 ## Order
 
-Serial: 1 → 2 → 3 → 4. Slices 1 and 2 both edit `shared/structuredMemory.ts`, `lanes.ts`, `retrieve.ts`,
-`MemorySettings.svelte`, and the language files; slice 3 edits `shared/structuredMemory.ts` and the language files
-too. Slice 4 measures what the first two built and may change slice 2's constants.
+Serial: 1 → 2 → 3 → 4. Slices 1 to 3 all edit `shared/structuredMemory.ts`, `MemorySettings.svelte`, the language
+files, `boot-snapshot.json`, `normalizeCollections.test.ts`, `MemorySettings.structuredMemory.test.ts`, and
+`writer.md`. Slices 1 and 2 also share `lanes.ts`, `retrieve.ts`, `step.ts`, their tests, `assemble.test.ts`, and
+`read.md`; slices 2 and 3 share `writer.ts`; slices 2 and 4 share the evaluation fixture's `harness.ts`. Slice 4
+measures what the first two built and may change slice 2's constants in `shared/structuredMemory.ts` and
+`flowCandidates` in `retrieve.ts`.
 
 If the run stops early, slice 1 stands alone: the timeline works under a token target set by hand.
 
 ## Slice 1. The flow lane shows summaries (_hard_, `structured-memory/read.md`)
 
-Files: `shared/structuredMemory.ts`, `server/src/prompt/memory/structured/lanes.ts`, `card.ts`, `retrieve.ts`,
+Files: `shared/structuredMemory.ts`, `shared/contextReport.ts` (the comment that says the flow lane has no token
+target), `server/src/prompt/memory/structured/lanes.ts`, `card.ts`, `retrieve.ts`, `step.ts`,
 `src/lib/Setting/Pages/MemorySettings.svelte`, `src/lib/Others/StructuredMemory/MemoryManifest.svelte`,
 `src/lang/en.ts`, `src/lang/ko.ts`, `src/ts/storage/tests/fixtures/boot/boot-snapshot.json`, `lanes.test.ts`,
 `card.test.ts`, `retrieve.test.ts`, `server/src/tests/assemble.test.ts`,
@@ -115,35 +124,51 @@ Files: `shared/structuredMemory.ts`, `server/src/prompt/memory/structured/lanes.
   goes on with what is left of `maximum` (D2). `RETRIEVAL_LIMITS.flowCandidates` (200) bounds the full lines offered,
   since every candidate line is counted before spending.
 - **The titles.** The newest `flowEvents` candidates outside the run are listed by title, counted against `maximum`
-  alone and reserved in the core round before the pages lane spends, as today's titles are. When the run extends over
-  a title, that title's tokens come back and the next older candidate takes a title if it fits. With a target of 0, or
-  a `maximum` no full line fits, the lane is exactly today's.
-- **Never in full twice (D10).** The events lane does not admit an event the run holds, and that event is no
-  exclusion: the manifest lists it under `flow`. The run's extension passes over an event the events lane admitted and
-  goes on. A full flow line satisfies an evidence item's `requires` for its event, so a source excerpt can follow its
-  event in either lane.
-- **Over `maximum` after rendering.** `buildMemoryCard`'s last loop drops the oldest title first, then the run's
-  oldest line. Nothing is downgraded there.
-- **The card.** The flow block keeps the heading `Recent events:` and gains one line under it saying the list is
-  oldest first and ends where the messages begin. Lines stay ordered by place.
+  alone and reserved in the core round before the pages lane spends, as today's titles are. When the run extends over a
+  title, that title's tokens come back and the next older candidate takes a title if it fits. With a target of 0 the
+  lane's items, the tokens it spends, its trimming, its text, and the target it reports (`Number.MAX_SAFE_INTEGER`) are
+  exactly today's, and no full line is rendered or counted.
+- **Never in full twice (D10).** The events lane does not admit an event the run holds. The run's extension passes
+  over an event the events lane admitted and goes on. A full flow line satisfies an evidence item's `requires` for its
+  event, so a source excerpt can follow its event in either lane.
+- **No exclusion for a line shown in full.** `retrieveLanes` lists every placed event the events lane does not rank as
+  `not-relevant`, before any spending, and `spendLanes` lists a candidate it passes over as `budget`. `step.ts` takes
+  the events-lane exclusions of the events the card shows in full under `flow` out of `excluded`, on the card it
+  keeps, before `sendManifest` counts and bounds them. An event listed by title keeps today's per-lane exclusion.
+- **Over `maximum` after rendering.** `buildMemoryCard`'s last loop is unchanged: it drops the last admitted item. The
+  admission order is the core round (the flow's run newest first, then its titles, then the other lanes), the lending,
+  then the run's extension with the titles it moved; a title the extension turns into a full line takes its place in
+  that order as an extension line. So the extension's oldest line goes first, and an evidence item still goes before the
+  line it requires, in both cards a selection can build (`step.ts` builds a second one after an evidence reselection,
+  with fresh keys). An excerpt whose event enters only in the extension is not admitted, since the evidence lane has
+  spent by then. Core admissions outlast extension ones: an extension summary can go while a core title stays. Nothing
+  is downgraded there.
+- **The lane's switch.** `spendLanes` and `buildMemoryCard`'s frame read `target > 0` as a lane being on. The flow lane
+  is on when `flowEvents` or the flow target is above 0, so its switch is its own, in `preflightMemoryCard` too, and a
+  target of 0 keeps the titles. A title is never held to the lane's target, only to `maximum`.
+- **The card.** With a flow target above 0 the block's heading reads
+  `Recent events (oldest first; the last is just before the messages below):`. With a target of 0 it stays
+  `Recent events:`. Lines stay ordered by place.
 - **Settings page.** Two count inputs after `flowEvents`: the flow target with the other lane targets, and
   `flowKeyLineEvents`. `flowEvents` is relabelled for what it now bounds ("Recent events listed by title", "제목만
   나열할 최근 사건 수"). `MemoryManifest.svelte` shows the flow lane's spend against its target like the other lanes.
   It keeps the `Number.MAX_SAFE_INTEGER` case: a report is stored with its generation (`generationInfo.context`), so a
   message sent before this slice still holds that target.
 - `read.md`: The read path, Limitations (the small-context row), Tests; the headers of `lanes.ts`, `card.ts`, and
-  `retrieve.ts`. `writer.md`: the settings its State and Limitations name.
+  `retrieve.ts`. `writer.md`: the settings its State and Limitations name, and a Limitations entry for D13.
 - Test:
   - `lanes.test.ts`: the run stops at the first full line over the target and admits no later, smaller one; what the
     other lanes leave extends it; the titles follow the run and move when it extends; a target of 0 gives today's
     titles.
-  - `card.test.ts`: a full line with and without key lines; the block's order line; the last loop drops the oldest
-    title before a full line.
+  - `card.test.ts`: a full line with and without key lines; the heading under each target; a target of 0 gives
+    today's card text and trim; over `maximum`, an excerpt goes before the flow line it requires and an extension line
+    before a core one.
   - `retrieve.test.ts`: an event inside the window offers a title alone; key lines only on the newest
     `flowKeyLineEvents`; an event in the run is not in the events lane and not in `excluded`; its source excerpt is
     admitted through the flow line.
-  - `assemble.test.ts`: a send whose events left the window carries their summaries in the card, and the manifest
-    items read `timeline`.
+  - `assemble.test.ts`: a send whose events left the window carries their summaries in the card, the manifest items
+    read `timeline`, and with the events lane closed none of those events is in the report's exclusions or its
+    `excludedTotal`.
   - `normalizeCollections.test.ts`: the two fields' defaults and bounds. `MemorySettings.structuredMemory.test.ts`:
     the two inputs write their fields.
 - Manual checks: a real chat's Preview shows summaries for the events just outside the window and titles past them;
@@ -154,7 +179,8 @@ Files: `shared/structuredMemory.ts`, `server/src/prompt/memory/structured/lanes.
 Files: `shared/structuredMemory.ts`, `lanes.ts`, `retrieve.ts`, `step.ts`,
 `server/src/prompt/memory/structured/writer.ts`, `server/src/prompt/memory/memoryTasks.ts`, `MemorySettings.svelte`,
 `src/lang/en.ts`, `src/lang/ko.ts`, `boot-snapshot.json`, `lanes.test.ts`, `retrieve.test.ts`,
-`normalizeCollections.test.ts`, `MemorySettings.structuredMemory.test.ts`, the tests that set `laneTargets`
+`normalizeCollections.test.ts`, `MemorySettings.structuredMemory.test.ts`,
+`server/src/tests/fixtures/memory/structured/harness.ts`, the tests that set `laneTargets`
 (`memoryJobs.test.ts`, `memoryTaskHost.test.ts`, `memoryTasks.test.ts`, `structuredMemoryRoutes.test.ts`,
 `assemble.test.ts`), `read.md`, `writer.md`.
 
@@ -166,7 +192,9 @@ Files: `shared/structuredMemory.ts`, `lanes.ts`, `retrieve.ts`, `step.ts`,
   which a send refuses.
 - **One reader.** `readBudget` answers the resolved targets, and every reader of `laneTargets` listed under Current
   State takes them from the resolver: retrieval through its input, `step.ts`'s evidence reselection, and the two
-  warming sites, which have no send and so no maximum and ask only whether a lane is on. Under `auto` every lane is
+  warming sites, which have no send and so no maximum and ask only whether a lane is on. The evaluation fixture's
+  `harness.ts` calls `retrieveLanes` itself for its diagnostics and passes the targets resolved from the same maximum
+  as its selection. Under `auto` every lane is
   on; a person turns one off by choosing `manual` and entering 0.
 - **Lending is unchanged.** The other lanes lend by score first; the flow's run takes what is left last (slice 1).
   The shares decide only the core round, which is why a share set badly wastes nothing.
@@ -186,19 +214,22 @@ Files: `shared/structuredMemory.ts`, `lanes.ts`, `retrieve.ts`, `step.ts`,
 
 ## Slice 3. An optional rule for choosing key lines (_small_, `structured-memory/writer.md`)
 
-Files: `shared/structuredMemory.ts`, `server/src/prompt/memory/structured/prompts.ts`, `MemorySettings.svelte`,
+Files: `shared/structuredMemory.ts`, `server/src/prompt/memory/structured/prompts.ts`,
+`server/src/prompt/memory/structured/writer.ts`, `MemorySettings.svelte`,
 `src/lang/en.ts`, `src/lang/ko.ts`, `boot-snapshot.json`, `prompts.test.ts`, `normalizeCollections.test.ts`,
 `MemorySettings.structuredMemory.test.ts`, `writer.md`.
 
 - **The setting (D4).** `keyLineGuidance`, a boolean, default `false`. Off, the writer's prompt is today's.
 - **The rule.** On, the analysis call's `rules` slot gains one line: choose the lines that carry a decision, a
   promise, a revealed fact, or a feeling, and leave out greetings and filler. It is part of the slot's text, so a
-  custom frame that holds `{{slot::rules}}` gets it too. The patch and compaction calls return no key lines and are
-  unchanged.
+  custom frame that holds `{{slot::rules}}` gets it too. `analysisSlots` takes it as an optional input, and
+  `writer.ts`, which reads the settings and calls `analysisSlots` for the default and the custom frame alike, passes
+  `keyLineGuidance`; the test run goes through the same call. The default-prompts route answers the rule text without
+  the line. The patch and compaction calls return no key lines and are unchanged.
 - It changes what later runs record. Stored events keep their key lines; a re-record or a rebuild applies the rule.
 - **Settings page.** A checkbox by the instructions, with a help line saying it applies to events recorded from then
   on.
-- `writer.md`: the prompts section and State.
+- `writer.md`: Pages and calls, and State.
 - Test: `prompts.test.ts`: the analysis `rules` slot holds the line only when the setting is on, in the default frame
   and in a custom one; the patch frame never does. `normalizeCollections.test.ts`: the default.
   `MemorySettings.structuredMemory.test.ts`: the checkbox writes the field.
@@ -207,15 +238,16 @@ Files: `shared/structuredMemory.ts`, `server/src/prompt/memory/structured/prompt
 ## Slice 4. Measure the card (_small_, `structured-memory/read.md`)
 
 Files: `util/memoryEval.mjs`, `server/src/tests/fixtures/memory/structured/` (the measurement and its README), a new
-report `docs/reports/measurements/structured-memory-timeline-<date>.md`, `shared/structuredMemory.ts` only if the
-shares change, `read.md`.
+report `docs/reports/measurements/structured-memory-timeline-<date>.md`, `shared/structuredMemory.ts` if the shares
+change, `retrieve.ts` if `flowCandidates` changes, and `read.md`.
 
 - With `node util/memoryEval.mjs --lang ko,en --turns 100,1000`, the token ledger's send rows again at 16,384 and
   32,768 tokens of context, and at a memory maximum of 50,000: per lane, target and spend; the events the run holds
   and the titles after it; the card's tokens; `selectMemory`'s time with `flowCandidates` lines counted. The tool gains
   what it lacks to print those rows.
-- The same rows at `27dac4d50`'s behavior (`laneSplit: "manual"`, `laneTargets.flow` 0, the old targets), so the
-  report shows before and after from one run.
+- The same rows with `laneSplit: "manual"`, `laneTargets.flow` 0, and the old targets, which slice 1 pins as today's
+  card (items, spending, trimming, and text), so the report shows before and after from one run.
+- How many of the events lane's candidates the run already held (D11).
 - The report states what the pages lane lost to the flow's share at 16,384, and whether the `threads` lane still
   starves there (`read.md` Limitations). If the pages lane loses a page that was on stage, the slice lowers the flow
   share and says so (D8). If counting 200 lines moves `selectMemory` past the times `read.md` records, it lowers
@@ -226,7 +258,8 @@ shares change, `read.md`.
 
 ## Decisions
 
-The owner decided D1 to D5 on 2026-11-11, and accepted the default of D7 and D8 the same day.
+The owner decided D1 to D5 on 2026-11-11, and accepted the default of D7 and D8 and the limitation of D13 the same
+day.
 
 - D1. The flow lane becomes the recent timeline: summaries under a token target, events past it by title, their count
   set by `flowEvents`.
@@ -242,10 +275,15 @@ The owner decided D1 to D5 on 2026-11-11, and accepted the default of D7 and D8 
   default is what this plan is for, and a person's numbers are one select away.
 - D8. The shares are 40, 30, 15, 10, 5, fixed in code and not a setting; slice 4 may move them.
 - D9. Every flow line keeps `N turns ago`. The label changes on every turn, as today's titles do, and the scene line
-  before it changes too, so the card's stable part is not byte-stable now and this plan does not make it so.
+  before it can change too, so the card's stable part is not byte-stable now and this plan does not make it so.
 - D10. An event is shown in full once: in the run, or in the events lane.
-- D11. The events lane opens as today. With the run holding recent events, it is left to recall older ones.
+- D11. The events lane opens as today. With the run holding recent events, it is left to recall older ones. It ranks
+  its 48 candidates before the run is known, so run events can take candidate places; slice 4 counts them.
 - D12. An event whose sources are all inside the window stays a title: the prompt holds its text.
+- D13. A tab loaded before a settings field existed drops that field on its next edit of a structured memory setting,
+  and the field reads as its default from then on. That is how every writer setting added so far behaves, it needs an
+  edit in the stale tab, a reload avoids it, and no record is touched. The owner accepted it on 2026-11-11 (audit
+  AUD-2) over a merge in the resource store's write paths, which would also end "omitted means reset".
 
 ## Not In This Plan
 
