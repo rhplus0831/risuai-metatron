@@ -148,15 +148,15 @@ describe("structured memory evaluation", () => {
         const absent = { items: [], cardText: "a b c appear only in prose" };
         const first = scoreProbe(probe({ needed: ["event:1", "event:2", "event:3"] }), selected, records);
         expect(first.needed).toEqual([
-            { label: "event:1", id: "a", found: true, lane: "flow", reason: "recent" },
-            { label: "event:2", id: "b", found: false },
-            { label: "event:3", id: "b", found: false },
+            { label: "event:1", id: "a", found: true, contentFound: false, lane: "flow", reason: "recent" },
+            { label: "event:2", id: "b", found: false, contentFound: false },
+            { label: "event:3", id: "b", found: false, contentFound: false },
         ]);
         expect(first.pass).toBe(false);
         const second = scoreProbe(probe({ needed: ["event:1", "event:4"] }), selected, records);
         expect(second.needed).toEqual([
-            { label: "event:1", id: "a", found: true, lane: "flow", reason: "recent" },
-            { label: "event:4", id: "c", found: true, lane: "flow", reason: "timeline" },
+            { label: "event:1", id: "a", found: true, contentFound: false, lane: "flow", reason: "recent" },
+            { label: "event:4", id: "c", found: true, contentFound: true, lane: "flow", reason: "timeline" },
         ]);
         expect(second.pass).toBe(true);
         const forbidden = probe({ kind: "mustNotLeak", forbidden: ["event:1", "event:2"] });
@@ -170,9 +170,15 @@ describe("structured memory evaluation", () => {
         expect(complete).toMatchObject({ allPartsPresent: true, pass: true });
         expect(incomplete).toMatchObject({ allPartsPresent: false, pass: false });
         expect(summarizeScores([first, second, leaked, excluded, complete, incomplete])).toMatchObject([
-            { kind: "needed", capture: { found: 2, total: 3 } },
+            // `a` is selected as a flow title alone, so it is captured but not beyond titles.
+            { kind: "needed", capture: { found: 2, total: 3 }, contentCapture: { found: 1, total: 3 } },
             { kind: "mustNotLeak", exclusion: { absent: 2, total: 3 } },
-            { kind: "comparison", allParts: { present: 1, total: 2 } },
+            {
+                kind: "comparison",
+                capture: { found: 2, total: 2 },
+                contentCapture: { found: 1, total: 2 },
+                allParts: { present: 1, total: 2 },
+            },
         ]);
     });
 

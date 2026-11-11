@@ -354,6 +354,7 @@ function runEval(fixture, story, sends, entry) {
             "kind",
             "pass",
             "needed found",
+            "needed beyond titles",
             "forbidden leaked",
             "distractors selected",
             "events lane",
@@ -365,6 +366,7 @@ function runEval(fixture, story, sends, entry) {
             score.kind,
             score.pass === undefined ? "n/a" : score.pass ? "yes" : "no",
             `${score.needed.filter(({ found }) => found).length}/${score.needed.length}`,
+            `${score.needed.filter(({ contentFound }) => contentFound).length}/${score.needed.length}`,
             `${score.forbidden.filter(({ leaked }) => leaked).length}/${score.forbidden.length}`,
             `${score.distractors.filter(({ selected }) => selected).length}/${score.distractors.length}`,
             score.eventsOpen === undefined
@@ -384,11 +386,21 @@ function runEval(fixture, story, sends, entry) {
         print();
     }
     table(
-        ["kind", "probes", "capture", "exclusion", "all parts present", "boundary held", "distractors selected"],
+        [
+            "kind",
+            "probes",
+            "capture",
+            "capture beyond titles",
+            "exclusion",
+            "all parts present",
+            "boundary held",
+            "distractors selected",
+        ],
         summary.map((row) => [
             row.kind,
             row.probes,
             `${row.capture.found}/${row.capture.total}`,
+            `${row.contentCapture.found}/${row.contentCapture.total}`,
             `${row.exclusion.absent}/${row.exclusion.total}`,
             `${row.allParts.present}/${row.allParts.total}`,
             `${row.boundary.held}/${row.boundary.total}`,

@@ -58,7 +58,7 @@ export type ProbeScore = {
     id: string;
     kind: ProbeKind;
     query: string;
-    needed: { label: string; id: string; found: boolean; lane?: string; reason?: string }[];
+    needed: { label: string; id: string; found: boolean; contentFound: boolean; lane?: string; reason?: string }[];
     forbidden: { label: string; id: string; leaked: boolean }[];
     distractors: { label: string; id: string; selected: boolean }[];
     boundary?: { label: string; id: string; lineFound: boolean; inUnaware: boolean; elsewhere: boolean; pass: boolean };
@@ -116,13 +116,23 @@ export function scoreProbe(
     records: Records,
 ): ProbeScore {
     const byId = new Map<string, MemoryManifestItem>();
+    const contentIds = new Set<string>();
     for (const item of send.items) {
         byId.set(item.id, item);
+        if (item.lane !== "flow" || item.reason !== "recent") {
+            contentIds.add(item.id);
+        }
     }
     const needed = probe.needed.map((label) => {
         const { id } = resolveLabel(label, records);
         const item = byId.get(id);
-        return { label, id, found: item !== undefined, ...(item ? { lane: item.lane, reason: item.reason } : {}) };
+        return {
+            label,
+            id,
+            found: item !== undefined,
+            contentFound: contentIds.has(id),
+            ...(item ? { lane: item.lane, reason: item.reason } : {}),
+        };
     });
     const forbidden = probe.forbidden.map((label) => {
         const { id } = resolveLabel(label, records);
@@ -197,6 +207,8 @@ export type KindSummary = {
     probes: number;
     /** Needed records found, over distinct needed records. */
     capture: { found: number; total: number };
+    /** Needed records found beyond a flow title, over distinct needed records. */
+    contentCapture: { found: number; total: number };
     /** Forbidden records absent, over distinct forbidden records. */
     exclusion: { absent: number; total: number };
     /** Comparisons with every part present. */
@@ -216,11 +228,13 @@ export function summarizeScores(scores: readonly ProbeScore[]): KindSummary[] {
             return [];
         }
         const needed = new Map<string, boolean>();
+        const content = new Map<string, boolean>();
         const forbidden = new Map<string, boolean>();
         const distractors = new Map<string, boolean>();
         for (const score of of) {
-            for (const { id, found } of score.needed) {
+            for (const { id, found, contentFound } of score.needed) {
                 needed.set(id, (needed.get(id) ?? false) || found);
+                content.set(id, (content.get(id) ?? false) || contentFound);
             }
             for (const { id, leaked } of score.forbidden) {
                 forbidden.set(id, (forbidden.get(id) ?? false) || leaked);
@@ -238,6 +252,7 @@ export function summarizeScores(scores: readonly ProbeScore[]): KindSummary[] {
                 kind,
                 probes: of.length,
                 capture: { found: count(needed, true), total: needed.size },
+                contentCapture: { found: count(content, true), total: content.size },
                 exclusion: { absent: count(forbidden, false), total: forbidden.size },
                 allParts: { present: comparisons.filter((s) => s.allPartsPresent).length, total: comparisons.length },
                 boundary: { held: boundaries.filter((s) => s.boundary!.pass).length, total: boundaries.length },
