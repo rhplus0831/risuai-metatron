@@ -43,11 +43,13 @@ export type LaneItem = {
     order: number;
     line: string;
     tokens: number;
+    /** A full flow line without its optional key lines. */
+    plain?: { line: string; tokens: number };
     requires?: string;
 };
 
 /** What a lane offers before its lines are counted. */
-export type LaneCandidate = Omit<LaneItem, "tokens">;
+export type LaneCandidate = Omit<LaneItem, "tokens" | "plain"> & { plain?: { line: string } };
 
 /**
  * A lane in rank order: `target` bounds its core round (full lines only for timeline flow), `limit`
@@ -93,14 +95,18 @@ export function itemKey({ lane, id }: Pick<LaneItem, "lane" | "id">): string {
 /**
  * Shares `maximum`, which is what the frame left, among `lanes`, each item admitted whole or not at all.
  *
- * - Core round: lanes in `MEMORY_MANIFEST_LANES` order. Timeline flow stops its full run at the first
- *   line over its target or `maximum`, then offers the newest titles outside the run against `maximum`
- *   alone. Ordinary lanes skip an item that does not fit their target, `limit`, or `maximum`.
+ * - Core round: lanes in `MEMORY_MANIFEST_LANES` order. Timeline flow tries a refused key-line form plain,
+ *   stopping only when neither passes its target and admission checks, then offers the newest titles outside
+ *   the run against `maximum` alone. Ordinary lanes skip an item that does not fit their target, `limit`,
+ *   or `maximum`.
  * - Lending: the items left outside timeline flow, by `score`, ties in lane order and then by rank, holding
  *   `limit` and `maximum` but no target. Nothing skipped here comes back: an item that requires another
  *   scores no higher than it and sits in a later lane, so this order reaches the required one first.
+ * - After lending, restore key lines on plain run items newest first where the difference fits the
+ *   remaining maximum, in place. A refused restoration does not stop later ones or the extension.
  * - Extension: flow resumes its run against the remaining maximum, passing over events already shown
- *   by the events lane. A title turns full only if the difference fits, then the title window advances.
+ *   by the events lane and trying refused key-line forms plain. A title turns full only if the difference
+ *   fits, then the title window advances.
  * - A lane with target 0 is off: it admits nothing. Title-only flow uses a positive sentinel target.
  * - An item with `requires` needs that key or its event's full flow line; skipped, it stays for lending.
  *
@@ -146,13 +152,24 @@ export function spendLanes({ maximum, lanes }: { maximum: number; lanes: readonl
         fullFlow.add(item.id);
         satisfied.add(itemKey({ lane: "events", id: item.id }));
     };
+    const fullForm = (item: LaneItem, fits: (form: LaneItem) => boolean): LaneItem | undefined => {
+        if (fits(item)) return item;
+        if (item.plain) {
+            const plain = { ...item, ...item.plain };
+            if (fits(plain)) return plain;
+        }
+        return undefined;
+    };
 
     for (const row of rows) {
         if (timeline(row)) {
             const full = row.lane.flow!.full;
             for (; row.next < full.length; row.next++) {
-                const item = full[row.next];
-                if (row.spent + item.tokens > row.lane.target || !admissible(row, item)) break;
+                const item = fullForm(
+                    full[row.next],
+                    (form) => row.spent + form.tokens <= row.lane.target && admissible(row, form),
+                );
+                if (!item) break;
                 admitFull(row, item);
             }
             for (const item of titleWindow(row)) {
@@ -180,13 +197,25 @@ export function spendLanes({ maximum, lanes }: { maximum: number; lanes: readonl
 
     for (const row of rows.filter(timeline)) {
         const full = row.lane.flow!.full;
+        for (const item of full.slice(0, row.next)) {
+            if (!item.plain) continue;
+            const index = included.findIndex((admitted) => itemKey(admitted) === itemKey(item));
+            const admitted = included[index];
+            if (!admitted || admitted.line === item.line) continue;
+            const difference = item.tokens - admitted.tokens;
+            if (total + difference > maximum) continue;
+            included[index] = { ...admitted, line: item.line, tokens: item.tokens };
+            total += difference;
+            row.spent += difference;
+        }
         for (; row.next < full.length; row.next++) {
-            const item = full[row.next];
-            if (keys.has(itemKey({ lane: "events", id: item.id }))) continue;
-            const titleIndex = included.findIndex((title) => itemKey(title) === itemKey(item));
+            const candidate = full[row.next];
+            if (keys.has(itemKey({ lane: "events", id: candidate.id }))) continue;
+            const titleIndex = included.findIndex((title) => itemKey(title) === itemKey(candidate));
             const title = titleIndex < 0 ? undefined : included[titleIndex];
             // Check the net cost before touching the title: a failed upgrade leaves it in place.
-            if (!admissible(row, item, title)) break;
+            const item = fullForm(candidate, (form) => admissible(row, form, title));
+            if (!item) break;
             const previousTitles = new Set(titleWindow(row).map(({ id }) => id));
             if (title) {
                 included.splice(titleIndex, 1);

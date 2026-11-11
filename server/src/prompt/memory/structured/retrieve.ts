@@ -50,8 +50,9 @@ import { pageNamedInTexts, sectionVectorText } from "./pages.ts";
  *   naming another page in the send's cast or no visible page; a single-line body stays whole.
  * - Flow is the story's recent order, not retrieval: by place, never by storage order, since a backfill
  *   stores out of order. Eligible events offer full timeline lines, with key lines on the newest
- *   `flowKeyLineEvents` candidates. Full lines have a core token target; `flowEvents` bounds the titles
- *   outside the run, including events inside the window. A zero target offers title lines alone.
+ *   `flowKeyLineEvents` candidates and plain forms when those key lines do not fit. After lending, key
+ *   lines return where they fit before the run extends. Full lines have a core token target; `flowEvents`
+ *   bounds the titles outside the run, including events inside the window. A zero target offers titles alone.
  * - Retrieval leaves out an event whose every source is inside the window with text, since the prompt
  *   holds that text already. An older source keeps the event in: uncovered history can be trimmed.
  * - The events lane opens when the user's messages read as past, causal, or chronological, or when an
@@ -387,7 +388,8 @@ function sendEmbeddings(host: RetrievalHost, queries: string[], enabled: boolean
 
 /**
  * The flow lane's title and full forms, newest first so the oldest is cut. Full candidates are bounded
- * separately from titles, with enough older titles to follow the longest possible run. `turnsAgo`
+ * separately from titles, with enough older titles to follow the longest possible run. Only candidates
+ * carrying key lines also offer a plain full form, so key lines alone never stop the run. `turnsAgo`
  * counts replies with text since the event's place, at least 1: a blank reply is no turn, as in `rawWindow`.
  */
 function flowItems(
@@ -420,13 +422,14 @@ function flowItems(
             line: flowLine(event, Math.max(1, turnsAgo)),
         };
         if (fullSet.has(placed)) {
+            const keyLines = full.length < flowKeyLineEvents ? event.keyLines : [];
             full.push({
                 ...title,
                 reason: "timeline",
-                line: flowEventLine(
-                    { ...event, keyLines: full.length < flowKeyLineEvents ? event.keyLines : [] },
-                    Math.max(1, turnsAgo),
-                ),
+                line: flowEventLine({ ...event, keyLines }, Math.max(1, turnsAgo)),
+                ...(keyLines.length > 0
+                    ? { plain: { line: flowEventLine({ ...event, keyLines: [] }, Math.max(1, turnsAgo)) } }
+                    : {}),
             });
         }
         return title;

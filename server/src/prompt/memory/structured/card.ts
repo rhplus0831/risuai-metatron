@@ -223,14 +223,16 @@ export async function preflightMemoryCard(
  * The card of `lanes` under `maximum`, or the required lane's refusal. That lane is reserved first: over
  * its target, or rendered alone over `maximum`, it refuses, because nothing may cut it.
  *
- * Every other line is counted, the frame (the rule header, the required lines, the headings of the other
- * lanes with items, and each part's own message) comes off `maximum`, and `spendLanes` shares the rest.
+ * Every other line and its optional plain form is counted, the frame (the rule header, the required
+ * lines, the headings of the other lanes with items, and each part's own message) comes off `maximum`,
+ * and `spendLanes` shares the rest.
  * Lines counted apart need not add up to the text they make, so the rendered parts are counted too, each
  * as one system chat, and while their sum is over `maximum` the last admitted item goes as `budget`.
  * Required items are admitted first and fit alone, so none of them goes. Then come the flow core run
  * newest first, its titles, other lanes' core items, lending, and the flow extension with the titles
- * it moved. Evidence goes before the full line it requires, and extension admissions before core
- * ones. Nothing is downgraded. With no item left, both parts are empty and the card costs nothing.
+ * it moved. Flow tries refused key-line forms plain; after lending, fitting key lines return in place
+ * before extension. Evidence goes before the full line it requires, and extension admissions before core
+ * ones. This trim only removes items. With no item left, both parts are empty and the card costs nothing.
  *
  * A lane's lines are counted together, so a tokenizer that goes over the network uses its own queue.
  */
@@ -245,7 +247,13 @@ export async function buildMemoryCard(
     const counted: Lane[] = [];
     const timeline = lanes.some(({ lane, flow }) => lane === "flow" && flow?.timeline);
     const countItems = (items: readonly LaneCandidate[]) =>
-        Promise.all(items.map(async (item) => ({ ...item, tokens: await count(item.line) })));
+        Promise.all(
+            items.map(async ({ plain, ...item }) => ({
+                ...item,
+                tokens: await count(item.line),
+                ...(plain ? { plain: { line: plain.line, tokens: await count(plain.line) } } : {}),
+            })),
+        );
     for (const lane of lanes) {
         // `Promise.all` answers in input order, however the counts finish, so `items` keep their rank.
         const [items, full] = await Promise.all([countItems(lane.items), countItems(lane.flow?.full ?? [])]);

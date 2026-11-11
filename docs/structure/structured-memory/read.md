@@ -97,9 +97,10 @@ hand-off request, not a queued task.
 
 The flow lane is a recent timeline. Under the flow target, a contiguous run of the newest events that left the window
 shows each in full (story time, title, summary, and key lines on the newest `flowKeyLineEvents`), and `flowEvents`
-titles follow it. After the other lanes and the lending, the run goes on with what is left of the maximum. An event is
-in full once, in the run or in the events lane, and selection takes the run's events out of the events lane's
-exclusions. A target of 0 keeps the title-only lane. `spendLanes`' doc owns the order.
+titles follow it. A key-line line that does not fit enters without its key lines, so key lines alone never stop the run.
+After the other lanes and the lending, key lines return where they fit, newest first, and then the run goes on with what
+is left of the maximum. An event is in full once, in the run or in the events lane, and selection takes the run's events
+out of the events lane's exclusions. A target of 0 keeps the title-only lane. `spendLanes`' doc owns the order.
 
 Lane targets follow `laneSplit`. Under `auto`, the default and what an absent value reads as, `readBudget` gives each
 lane `floor(maximum × percent / 100)` of the applied maximum from the preset's `laneShares` (whole percents 0 to 100,

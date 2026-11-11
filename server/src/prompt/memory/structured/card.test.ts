@@ -76,6 +76,78 @@ describe("structured memory card", () => {
         ]);
     });
 
+    it("counts optional plain forms once and keeps fitting key lines on the card", async () => {
+        const newestTitle = "[m:flow:newest] 2 turns ago: Promise";
+        const olderTitle = "[m:flow:older] 3 turns ago: Arrival";
+        const newestPlain = "[m:flow:newest] 2 turns ago: (Noon) Promise: Return tomorrow.";
+        const newestKeyed = `${newestPlain} "I will return." (Ben)`;
+        const older = "[m:flow:older] 3 turns ago: (Dawn) Arrival: Reached the gate.";
+        const costs = new Map([
+            [newestTitle, 1],
+            [olderTitle, 1],
+            [newestPlain, 3],
+            [newestKeyed, 9],
+            [older, 2],
+        ]);
+        for (const { maximum, newestLine, newestTokens } of [
+            { maximum: 5, newestLine: newestPlain, newestTokens: 3 },
+            { maximum: 11, newestLine: newestKeyed, newestTokens: 9 },
+        ]) {
+            const countedLines: string[] = [];
+            const card = await spentCard(
+                {
+                    tokenizeChat: async ({ content }) => {
+                        if (content.startsWith("[m:")) countedLines.push(content);
+                        // Headers cost zero; rendered parts cost the sum of their whole lines.
+                        return content.split("\n").reduce((sum, line) => sum + (costs.get(line) ?? 0), 0);
+                    },
+                },
+                {
+                    maximum,
+                    lanes: [
+                        {
+                            lane: "flow",
+                            target: maximum,
+                            items: [
+                                candidate("flow", "newest", newestTitle, 2),
+                                candidate("flow", "older", olderTitle, 1),
+                            ],
+                            flow: {
+                                timeline: true,
+                                titles: 0,
+                                full: [
+                                    {
+                                        ...candidate("flow", "newest", newestKeyed, 2),
+                                        reason: "timeline",
+                                        plain: { line: newestPlain },
+                                    },
+                                    { ...candidate("flow", "older", older, 1), reason: "timeline" },
+                                ],
+                            },
+                        },
+                    ],
+                },
+            );
+            expect(card.stable).toBe(
+                [
+                    "These records are authoritative for the past, and the scene for the present; recent messages win over both.",
+                    "",
+                    "Recent events (oldest first; the last is just before the messages below):",
+                    older,
+                    newestLine,
+                ].join("\n"),
+            );
+            expect(card.volatile).toBe("");
+            expect(card.items.map(({ id, reason, tokens }) => [id, reason, tokens])).toEqual([
+                ["newest", "timeline", newestTokens],
+                ["older", "timeline", 2],
+            ]);
+            expect(card.tokens).toBe(maximum);
+            expect(card.excluded).toEqual([]);
+            expect(countedLines.toSorted()).toEqual([...costs.keys()].toSorted());
+        }
+    });
+
     it("keeps the title-only heading, exact legacy text and last-admitted trimming when the flow target is zero", async () => {
         const titles = [
             { ...candidate("flow", "newest", "[m:flow:newest] 2 turns ago: Promise", 2), reason: "recent" },

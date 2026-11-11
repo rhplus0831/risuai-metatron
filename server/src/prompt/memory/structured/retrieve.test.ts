@@ -672,6 +672,84 @@ describe("structured memory retrieval", () => {
         });
     });
 
+    it("keeps the newest event in the timeline without key lines when earlier events spend the remaining budget", async () => {
+        const h = harness();
+        const result = await retrieveLanes(
+            h.host,
+            input({
+                entries: [
+                    entry("older"),
+                    entry("newest"),
+                    entry("query", "What happened before?", "user"),
+                    entry("reply"),
+                ],
+                window: { start: 2, dropped: new Set([0, 1]) },
+                events: [
+                    event("older", ["older"], {
+                        title: "Arrival",
+                        summary: "Reached the gate.",
+                        storyTime: { text: "Dawn" },
+                        keyLines: [{ speaker: "Ada", text: "The gate is open." }],
+                    }),
+                    event("newest", ["newest"], {
+                        title: "Promise",
+                        summary: "Return tomorrow.",
+                        storyTime: { text: "Noon" },
+                        keyLines: [{ speaker: "Ben", text: "I will return." }],
+                    }),
+                ],
+                settings: settings({
+                    flowEvents: 1,
+                    flowKeyLineEvents: 1,
+                    laneTargets: { flow: 3, pages: 0, events: 5, evidence: 0, threads: 0 },
+                }),
+            }),
+        );
+        const newestPlain = "[m:flow:newest] 2 turns ago: (Noon) Promise: Return tomorrow.";
+        const newestKeyed = `${newestPlain} "I will return." (Ben)`;
+        const olderFull = "[m:flow:older] 3 turns ago: (Dawn) Arrival: Reached the gate.";
+        const olderEvent = '[m:older] (Dawn) Arrival: Reached the gate. "The gate is open." (Ada)';
+        const costs = new Map([
+            ["[m:flow:newest] 2 turns ago: Promise", 1],
+            ["[m:flow:older] 3 turns ago: Arrival", 1],
+            [newestPlain, 3],
+            [newestKeyed, 9],
+            [olderFull, 4],
+            ['[m:newest] (Noon) Promise: Return tomorrow. "I will return." (Ben)', 9],
+            [olderEvent, 5],
+        ]);
+        const countedLines: string[] = [];
+        const card = await buildMemoryCard(
+            {
+                tokenizeChat: async ({ content }) => {
+                    if (content.startsWith("[m:")) countedLines.push(content);
+                    return content.split("\n").reduce((sum, line) => sum + (costs.get(line) ?? 0), 0);
+                },
+            },
+            { maximum: 9, lanes: result.lanes },
+        );
+        if (card.type !== "card") throw new Error("The required lane refused");
+        // Newest plain (3) fills flow's target; older's title (1) and recalled event (5)
+        // consume the rest. Its full timeline line has no key lines and needs only one count.
+        expect(card.stable).toBe(
+            [
+                "These records are authoritative for the past, and the scene for the present; recent messages win over both.",
+                "",
+                "Recent events (oldest first; the last is just before the messages below):",
+                "[m:flow:older] 3 turns ago: Arrival",
+                newestPlain,
+            ].join("\n"),
+        );
+        expect(card.volatile).toBe(`Earlier events:\n${olderEvent}`);
+        expect(card.items.map(({ lane, id, reason, tokens }) => [lane, id, reason, tokens])).toEqual([
+            ["flow", "newest", "timeline", 3],
+            ["flow", "older", "recent", 1],
+            ["events", "older", "similarity", 5],
+        ]);
+        expect(card.tokens).toBe(9);
+        expect(countedLines.toSorted()).toEqual([...costs.keys()].toSorted());
+    });
+
     it("keeps scene attendance and every required section stable while filtering character sections in related pages", async () => {
         const h = harness((text) => (text.includes(": ") ? [0, 1] : [1, 0]));
         const result = await retrieveLanes(

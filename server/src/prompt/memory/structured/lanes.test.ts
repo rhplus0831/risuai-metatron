@@ -60,6 +60,134 @@ describe("structured memory lanes", () => {
         ]);
     });
 
+    it("keeps the core run going with a plain full line when its key lines exceed the target", () => {
+        const newest = flowCandidate("newest", 3, true);
+        const blocked = flowCandidate("blocked", 5, true);
+        const result = spendLanes({
+            maximum: 12,
+            lanes: [
+                {
+                    lane: "flow",
+                    target: 7,
+                    items: ["newest", "next", "blocked", "small"].map((id) => flowCandidate(id, 1)),
+                    flow: {
+                        timeline: true,
+                        titles: 1,
+                        full: [
+                            { ...newest, line: 'newest: summary "key line"', tokens: 10, plain: newest },
+                            flowCandidate("next", 4, true),
+                            { ...blocked, line: 'blocked: summary "key line"', tokens: 12, plain: blocked },
+                            flowCandidate("small", 1, true),
+                        ],
+                    },
+                },
+                { lane: "pages", target: 4, items: [{ ...flowCandidate("page", 4), lane: "pages", kind: "page" }] },
+            ],
+        });
+        // Plain newest (3) and next (4) fill the target. Neither blocked form fits it.
+        // Its title (1) and the page (4) leave no room to restore key lines or extend.
+        expect(result.included.map(({ id, line, reason, tokens }) => [id, line, reason, tokens])).toEqual([
+            ["newest", "newest: summary", "timeline", 3],
+            ["next", "next: summary", "timeline", 4],
+            ["blocked", "blocked", "recent", 1],
+            ["page", "page", "recent", 4],
+        ]);
+        expect(result.spend).toEqual([
+            { lane: "flow", target: 7, spent: 8 },
+            { lane: "pages", target: 4, spent: 4 },
+        ]);
+    });
+
+    it("restores key lines after lending in place, skipping unfit restorations before extending", () => {
+        const plain = ["newest", "middle", "older"].map((id) => flowCandidate(id, 2, true));
+        const result = spendLanes({
+            maximum: 16,
+            lanes: [
+                {
+                    lane: "flow",
+                    target: 6,
+                    items: ["newest", "middle", "older", "extension", "last"].map((id) => flowCandidate(id, 1)),
+                    flow: {
+                        timeline: true,
+                        titles: 1,
+                        full: [
+                            ...plain.map((item, index) => ({
+                                ...item,
+                                line: `${item.id}: summary "key line"`,
+                                tokens: [20, 5, 4][index],
+                                plain: item,
+                            })),
+                            flowCandidate("extension", 2, true),
+                            flowCandidate("last", 2, true),
+                        ],
+                    },
+                },
+                {
+                    lane: "pages",
+                    target: 2,
+                    items: [
+                        { ...flowCandidate("page-core", 2), lane: "pages", kind: "page" },
+                        { ...flowCandidate("page-loan", 3), lane: "pages", kind: "page" },
+                    ],
+                },
+            ],
+        });
+        // Core: three plain lines (6), one title (1), page (2). Lending takes 3 more.
+        // Of the remaining 4, newest's +18 is skipped, middle's +3 returns in place,
+        // older's +2 is skipped, and extension replaces its title for +1.
+        expect(result.included.map(({ id, line, reason, tokens }) => [id, line, reason, tokens])).toEqual([
+            ["newest", "newest: summary", "timeline", 2],
+            ["middle", 'middle: summary "key line"', "timeline", 5],
+            ["older", "older: summary", "timeline", 2],
+            ["page-core", "page-core", "recent", 2],
+            ["page-loan", "page-loan", "recent", 3],
+            ["extension", "extension: summary", "timeline", 2],
+        ]);
+        expect(result.spend).toEqual([
+            { lane: "flow", target: 6, spent: 11 },
+            { lane: "pages", target: 2, spent: 5 },
+        ]);
+        expect(result.excluded).toEqual([{ lane: "flow", id: "last", kind: "event", reason: "budget" }]);
+    });
+
+    it("extends with a plain full line when only that form fits the remaining maximum", () => {
+        const extension = flowCandidate("extension", 4, true);
+        const blocked = flowCandidate("blocked", 5, true);
+        const result = spendLanes({
+            maximum: 12,
+            lanes: [
+                {
+                    lane: "flow",
+                    target: 4,
+                    items: ["newest", "extension", "blocked", "small"].map((id) => flowCandidate(id, 1)),
+                    flow: {
+                        timeline: true,
+                        titles: 1,
+                        full: [
+                            flowCandidate("newest", 4, true),
+                            { ...extension, line: 'extension: summary "key line"', tokens: 12, plain: extension },
+                            { ...blocked, line: 'blocked: summary "key line"', tokens: 8, plain: blocked },
+                            flowCandidate("small", 1, true),
+                        ],
+                    },
+                },
+                { lane: "pages", target: 3, items: [{ ...flowCandidate("page", 3), lane: "pages", kind: "page" }] },
+            ],
+        });
+        // Core and the page spend 4 + 1 + 3. Replacing the title with plain costs
+        // 4 - 1, then blocked's title takes the last token; neither full form fits.
+        expect(result.included.map(({ id, line, reason, tokens }) => [id, line, reason, tokens])).toEqual([
+            ["newest", "newest: summary", "timeline", 4],
+            ["page", "page", "recent", 3],
+            ["extension", "extension: summary", "timeline", 4],
+            ["blocked", "blocked", "recent", 1],
+        ]);
+        expect(result.spend).toEqual([
+            { lane: "flow", target: 4, spent: 9 },
+            { lane: "pages", target: 3, spent: 3 },
+        ]);
+    });
+
     it("extends after other lanes lend, refunds promoted titles and moves their window past the run", () => {
         const flow: Lane = {
             lane: "flow",
