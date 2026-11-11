@@ -158,6 +158,7 @@ export function createChatStoreMock(overrides: ModuleMockOverrides<ChatStoreModu
             blocked: false,
         })),
         acceptRemoteChat: vi.fn(),
+        hasIdleRefresh: vi.fn(() => false),
         idleChatRefreshes: vi.fn(() => []),
         idleChatRows: vi.fn(() => undefined),
         idleSummaryRefreshes: vi.fn(() => []),

@@ -187,6 +187,55 @@ afterEach(() => {
     vi.restoreAllMocks();
 });
 
+describe("idle refresh work", () => {
+    it("reports work exactly when a loaded or summary refresh is eligible", async () => {
+        for (const state of ["unmarked", "loaded", "summary", "inflight"] as const) {
+            const { chat, server, ref, take } = await boot();
+            try {
+                if (state === "summary") {
+                    const read = server.store.readKinds([server.kind("characters")], { chatSummaries: true });
+                    chat.assembleChats([{ chaId: "c" }], read.chatSummaries!, read.chatOrders!);
+                }
+                if (state === "inflight") {
+                    chat.setChatMeta(ref, { note: "saving" });
+                    expect(take().groups).toHaveLength(1);
+                }
+                if (state !== "unmarked") expect(chat.markChatStale(ref)).toBe(true);
+
+                // Probe first: the full-list readers must not settle anything on its behalf.
+                const hasWork = chat.hasIdleRefresh();
+                const chats = chat.idleChatRefreshes();
+                const summaries = chat.idleSummaryRefreshes();
+                expect(chats, state).toEqual(state === "loaded" ? [ref] : []);
+                expect(summaries, state).toEqual(state === "summary" ? ["c"] : []);
+                expect(hasWork, state).toBe(chats.length > 0 || summaries.length > 0);
+            } finally {
+                server.close();
+            }
+        }
+    });
+
+    it("drops answered notices even when another stale chat makes the probe return early", async () => {
+        const { chat, server, ref, take, apply, ack, commit } = await boot();
+        const other = { chaId: "c", chatId: "j" };
+        chat.createChat("c", { id: "j", name: "J", message: [] } as any);
+        commit();
+        chat.markChatStale(other);
+        chat.setChatMeta(ref, { note: "saved" });
+        const work = take();
+        const answer = apply(work);
+        chat.noteRemoteChat(ref, answer.chats[0].revision);
+        ack(work, answer);
+        expect(chat.chatNoticeSeq(ref)).toBeGreaterThan(0);
+
+        expect(chat.hasIdleRefresh()).toBe(true);
+
+        expect(chat.chatNoticeSeq(ref)).toBe(0);
+        expect(chat.idleChatRefreshes()).toEqual([other]);
+        server.close();
+    });
+});
+
 describe("display install state", () => {
     afterEach(() => vi.clearAllMocks());
 

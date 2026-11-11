@@ -4989,8 +4989,7 @@ export function hasChatWork(canSaveCharacter: (id: string) => boolean = () => tr
                 orderMembershipReady(id),
         ) ||
         deferredReloads().length > 0 ||
-        idleChatRefreshes().length > 0 ||
-        idleSummaryRefreshes().length > 0
+        hasIdleRefresh()
     );
 }
 
@@ -6719,13 +6718,42 @@ function isUnloadedMember(ref: ChatRef): boolean {
     return isMember(ref) && !isLoaded(ref);
 }
 
+function isIdleChatRefresh(ref: ChatRef): boolean {
+    return canRefreshChat(ref) && !isUnloadedMember(ref);
+}
+
+function isIdleSummaryRefresh(ref: ChatRef): boolean {
+    return !!(
+        isUnloadedMember(ref) &&
+        canRefreshChat(ref) &&
+        findCharacter(ref.chaId) &&
+        canApplyRemoteCollection(ref.chaId)
+    );
+}
+
+/** Whether either idle refresh list has work, without building the lists or their union of marks. */
+export function hasIdleRefresh(): boolean {
+    // Like refreshMarks, settle all answered notices even when the first mark is eligible.
+    dropAnsweredNotices();
+    for (const marks of [staleChats, noticedChats.keys()]) {
+        for (const key of marks) {
+            const [chaId, chatId] = key.split("\u0000");
+            const ref = { chaId, chatId };
+            if (isIdleChatRefresh(ref) || isIdleSummaryRefresh(ref)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 /**
  * Stale and noticed chats eligible for an idle read inside the save cycle, never alongside a
  * batch: loaded ones (and ones no longer listed). A member that is not loaded is refreshed through
  * its character's summary list instead (`idleSummaryRefreshes`).
  */
 export function idleChatRefreshes(): ChatRef[] {
-    return refreshMarks().filter((ref) => canRefreshChat(ref) && !isUnloadedMember(ref));
+    return refreshMarks().filter(isIdleChatRefresh);
 }
 
 /**
@@ -6736,12 +6764,7 @@ export function idleChatRefreshes(): ChatRef[] {
 export function idleSummaryRefreshes(): string[] {
     const ids = new Set<string>();
     for (const ref of refreshMarks()) {
-        if (
-            isUnloadedMember(ref) &&
-            canRefreshChat(ref) &&
-            findCharacter(ref.chaId) &&
-            canApplyRemoteCollection(ref.chaId)
-        ) {
+        if (isIdleSummaryRefresh(ref)) {
             ids.add(ref.chaId);
         }
     }

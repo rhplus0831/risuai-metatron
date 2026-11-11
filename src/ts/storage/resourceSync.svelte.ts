@@ -150,6 +150,7 @@ import {
     deferredReloads,
     finishDeferredReload,
     idleChatRefreshes,
+    hasIdleRefresh,
     idleChatRows,
     finishIdleChatRows,
     idleSummaryRefreshes,
@@ -1562,8 +1563,7 @@ function hasRefreshWork(): boolean {
         [...parkedListRefresh].some((id) => findMirrorCharacter(id)) ||
         hasRemoteWork() ||
         deferredReloads().length > 0 ||
-        idleChatRefreshes().length > 0 ||
-        idleSummaryRefreshes().length > 0
+        hasIdleRefresh()
     );
 }
 
@@ -1600,11 +1600,15 @@ function queueCharacterRefresh(id: string, purpose: "hydrate" | "listRefresh") {
 }
 
 function scheduleRefresh(delay = DEBOUNCE_MS) {
-    if (!started || halted || !hasRefreshWork()) {
+    if (!started || halted) {
         return;
     }
     const deadline = Math.max(Date.now() + delay, refreshBackoffUntil);
     if (refreshTimer && refreshDeadline <= deadline) {
+        return;
+    }
+    // With no work, keep any existing timer even when this call wants an earlier deadline.
+    if (!hasRefreshWork()) {
         return;
     }
     if (refreshTimer) {
