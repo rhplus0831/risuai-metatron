@@ -28,6 +28,7 @@ Checks that a finished plan left to a person, a device, a real provider, or a sc
 - [ ] **PocketRisu fix crosscheck (row 16)**: `share_target` on Samsung Internet, the one row of [the crosscheck](../reports/surveys/pocketrisu-fix-crosscheck.md) still waiting for a device.
 - [ ] **Upstream Integration (UP22)**: Android's media notification and Chrome's tab audio indicator for the keep-alive audio.
 - [ ] **Memory Panel Readability (2–8)**: at phone width (about 360px): the page read view (2), an expanded event's changes (3), the `story` view (4), the alias editor and the rename input (6), the event title and summary editor with a Korean IME (7), and the new-note and add-section forms (8); Enter on a phone keyboard starts a search (5).
+- [ ] **Structured Memory Recent Timeline (1–3)**: at phone width (about 360px), the memory settings page's timeline target and key-line event inputs (1), the lane split select and its share line (2), and the key-line checkbox with its help line (3).
 
 ## iOS Safari and the Home Screen app
 
@@ -81,6 +82,7 @@ One tab:
 - [ ] **Found Issues Clearance**: Web Push in Chrome and Firefox (the enable button right after a reconcile, a service-worker upgrade during a subscribe, a `/`-route click).
 - [ ] **Structured Memory**: the 69 device, browser, and real-model checks the run's final report listed per slice, among them Firefox and Safari, the Android PWA, a real V3 plugin, and real provider costs. The list is not in the repository.
 - [ ] **Memory Panel Readability (1–5, 8)**: the Korean memory panel, receipt line, and chat status line read naturally (1); the page read view and an expanded event's changes in each theme, and a long page scrolls inside the panel (2, 3); a chat with several hundred events switches to `story` without a visible stall (4); a Korean query finds Korean text (5); a send after creating a note names it in the manifest when the chat mentions its title (8).
+- [ ] **Structured Memory Recent Timeline (1, 2, 4)**: a real chat's Preview shows summaries for the events just outside the raw window and titles past them (1); the owner's 50,000-token preset under `auto` shows lane targets of 12,500, 22,500, 7,500, 5,000, and 2,500 in Preview's lane spend (2); on a 16,384-token model, how often the pages lane drops a page on stage in a long chat ([measured](../reports/measurements/structured-memory-timeline-2026-11-11.md#the-pages-lane-and-the-shares) on the fixture only) (4).
 
 Two tabs, two browsers, or a dropped connection:
 
@@ -98,6 +100,7 @@ Two tabs, two browsers, or a dropped connection:
 - [ ] **Small Fixes (SF5)**: a real Transformers.js inference for the WebLLM model fix (harness stub only).
 - [ ] **Generation Stage Spinner (GS4)**: the stage colors with a real provider (`.loadmove` has a 0.5 s color transition, so a stage as short as a mock's blends).
 - [ ] **Structured Memory (Q2)**: the real-model A/B from the recipe in [the evaluation](../reports/measurements/structured-memory-2026-11-03.md), which decides whether Structured Memory replaces HypaV3 by default.
+- [ ] **Structured Memory Recent Timeline (3, 4)**: with a real `memory` model, the key lines of new events before and after turning on `keyLineGuidance` (3); whether replies recall recent events better with the timeline, to run with the Structured Memory A/B above (4).
 - [ ] **Found Issues Clearance**: a live Realm import with a tab closed after prepare and a 503 during commit (B5); a Gemini thinking model accepting the replayed signature (C4).
 - [ ] **Upstream Intake 2 (AUD-11)**: the real userscript transport cancelling a `fetchNative` body (slice 13 tested a stub).
 

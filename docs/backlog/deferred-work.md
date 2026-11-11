@@ -184,6 +184,10 @@ Work that finished plans named and left: features put off, a plan's Later list, 
 
 - Not planned (the plan's Not In This Plan list): deleting a section by hand, changing a page's type, and editing `links`; editing an event's key lines, state changes, knowledge, or participants; help text for 기록기, 억제, and 채택; a Korean rename of the shared memory surfaces (the settings page, the preset, the toggle, the meter); Markdown rendering of record text and a natural-language command terminal; an `e2e` spec for the panel.
 
+## Structured Memory Recent Timeline
+
+- Not planned (the plan's Not In This Plan list): a raw window measured in tokens, or one that keeps history until the context is full; chapter or arc summaries of what is older than the timeline; opening the events lane more often, or any change to its thresholds; shares as a setting, or a share per chat; a change to `eventSummaryChars`, `keyLinesPerEvent`, or anything the writer stores; card text that stays byte-stable for a provider's prompt cache.
+
 ## Dependency Upgrades
 
 Not a plan: the upgrade rounds of 2026-10-30 left these behind on purpose. Versions were read from `package.json` on 2026-11-11.

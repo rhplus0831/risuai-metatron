@@ -3,7 +3,7 @@
 What the recent timeline puts in the card and what it costs, on the deterministic fixture chats of the
 [2026-11-03 evaluation](structured-memory-2026-11-03.md), before and after, from one run. Measured over `6a13a0b79`
 with the shares this report settled (flow 0.25, pages 0.45, events 0.15, evidence 0.10, threads 0.05; decision D14 of
-the [Recent Timeline plan](../../plan/structured-memory-recent-timeline.md)) and `RETRIEVAL_LIMITS.flowCandidates` 200.
+the Recent Timeline plan, archived: `git show fc83f9da0:docs/plan/structured-memory-recent-timeline.md`) and `RETRIEVAL_LIMITS.flowCandidates` 200.
 
 **No figure in this file is a model's recall.** The writer is scripted and the embedding is lexical, as in the
 2026-11-03 report. Whether replies recall recent events better is the real-model A/B in
