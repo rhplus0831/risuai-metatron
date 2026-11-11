@@ -609,10 +609,12 @@ export interface StructuredMemorySettings {
     cadenceRatio: number;
     /** The assistant turns a send keeps raw; an integer >= 1. */
     windowTurns: number;
-    /** The latest events a send lists in the flow lane; an integer >= 0. */
+    /** The newest events outside the full timeline listed by title in the flow lane; an integer >= 0. */
     flowEvents: number;
+    /** The newest full timeline candidates that carry key lines; an integer >= 0. */
+    flowKeyLineEvents: number;
     /** Each lane's token target; integers >= 0. */
-    laneTargets: { pages: number; events: number; evidence: number; threads: number };
+    laneTargets: { flow: number; pages: number; events: number; evidence: number; threads: number };
     /** The tokens the required lane may take before the send fails; an integer >= 1. */
     requiredCap: number;
     /** Reply screening: the texts that mark a message `excluded`, as a refusal or as a format failure. */
@@ -1674,7 +1676,9 @@ export function normalizeStructuredMemorySettings(input: unknown): StructuredMem
         cadenceRatio: typeof ratio === "number" && ratio > 0 && ratio < 1 ? ratio : 0.1,
         windowTurns: integerIn(source.windowTurns, 3, 1),
         flowEvents: integerIn(source.flowEvents, 8, 0),
+        flowKeyLineEvents: integerIn(source.flowKeyLineEvents, 3, 0),
         laneTargets: {
+            flow: integerIn(laneTargets.flow, 1500, 0),
             pages: integerIn(laneTargets.pages, 2000, 0),
             events: integerIn(laneTargets.events, 1500, 0),
             evidence: integerIn(laneTargets.evidence, 700, 0),

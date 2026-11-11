@@ -26,8 +26,10 @@ import {
  * part (pages, events, evidence, threads) stands alone, and is empty when no lane of it has an item.
  *
  * - One line per item, led by a tag a send finds its final entries by, then takes out before the request.
- *   A flow title has a tag of its own, so it never verifies the event's full text. A page has one item,
- *   so what it knows and does not know is part of its line.
+ *   Both flow forms share a tag distinct from the events lane's tag; their reasons distinguish a title
+ *   from a full timeline line. A page has one item, including what it knows and does not know.
+ * - Flow is rendered by place under a timeline heading when enabled, including summaries and the
+ *   newest candidates' key lines. A zero flow target keeps the title-only form and heading.
  * - The card's own words are English, for the model. Field values stay in whatever language the record
  *   was written.
  * - `maximum` bounds both parts counted as one system chat each, wherever the volatile part goes.
@@ -81,6 +83,7 @@ const CARD_LANES: Record<MemoryManifestLane, { part: keyof CardParts; heading: s
     evidence: { part: "volatile", heading: "Original messages:" },
     threads: { part: "volatile", heading: "Open threads:" },
 };
+const TIMELINE_HEADING = "Recent events (oldest first; the last is just before the messages below):";
 
 /** Normalize record text before comparison and rendering; whitespace differences do not make a distinct fact. */
 export const flattened = (text: string) => text.replace(/\s+/g, " ").trim();
@@ -93,20 +96,35 @@ export function flowLine({ id, title }: Pick<MemoryEvent, "id" | "title">, turns
     return taggedLine({ lane: "flow", id }, `${turnsAgo} ${turnsAgo === 1 ? "turn" : "turns"} ago: ${title}`);
 }
 
-/** An event whole: its story time when it has one, its title and summary, then its key lines. */
-export function eventLine({
-    id,
+/** The shared body of a full event, with its story time when present and its supplied key lines. */
+function eventBody({
     storyTime,
     title,
     summary,
     keyLines,
-}: Pick<MemoryEvent, "id" | "storyTime" | "title" | "summary" | "keyLines">): string {
+}: Pick<MemoryEvent, "storyTime" | "title" | "summary" | "keyLines">): string {
     const time = flattened(storyTime.text);
     const lines = keyLines.map(({ text, speaker }) => {
         const said = flattened(speaker);
         return ` "${flattened(text)}"${said && ` (${said})`}`;
     });
-    return taggedLine({ lane: "events", id }, `${time && `(${time}) `}${title}: ${summary}${lines.join("")}`);
+    return `${time && `(${time}) `}${title}: ${summary}${lines.join("")}`;
+}
+
+/** An event whole: its story time when it has one, its title and summary, then its key lines. */
+export function eventLine(event: Pick<MemoryEvent, "id" | "storyTime" | "title" | "summary" | "keyLines">): string {
+    return taggedLine({ lane: "events", id: event.id }, eventBody(event));
+}
+
+/** A full timeline line with the flow tag and how far back the event is. */
+export function flowEventLine(
+    event: Pick<MemoryEvent, "id" | "storyTime" | "title" | "summary" | "keyLines">,
+    turnsAgo: number,
+): string {
+    return taggedLine(
+        { lane: "flow", id: event.id },
+        `${turnsAgo} ${turnsAgo === 1 ? "turn" : "turns"} ago: ${eventBody(event)}`,
+    );
 }
 
 /** An excerpt of the message `id`. */
@@ -142,10 +160,10 @@ export function pageLine(
 }
 
 /** The card's text around `lines`, the lanes with an entry there under their headings. */
-function renderParts(lines: ReadonlyMap<MemoryManifestLane, readonly string[]>): CardParts {
+function renderParts(lines: ReadonlyMap<MemoryManifestLane, readonly string[]>, timeline = false): CardParts {
     const blocks = (part: keyof CardParts) =>
         MEMORY_MANIFEST_LANES.filter((lane) => CARD_LANES[lane].part === part && lines.has(lane)).map((lane) =>
-            [CARD_LANES[lane].heading, ...lines.get(lane)!].join("\n"),
+            [lane === "flow" && timeline ? TIMELINE_HEADING : CARD_LANES[lane].heading, ...lines.get(lane)!].join("\n"),
         );
     return { stable: [RULE_HEADER, ...blocks("stable")].join("\n\n"), volatile: blocks("volatile").join("\n\n") };
 }
@@ -169,10 +187,11 @@ async function frameTokens(
     tokenizer: MemoryTokenizer,
     reserved: readonly LaneCandidate[],
     headings: readonly MemoryManifestLane[],
+    timeline = false,
 ): Promise<number> {
     const lines = linesOf(reserved);
     for (const lane of headings) lines.set(lane, []);
-    const { stable, volatile } = renderParts(lines);
+    const { stable, volatile } = renderParts(lines, timeline);
     const count = (content: string) => tokenizer.tokenizeChat({ role: "system", content });
     return (await count(stable)) + (volatile === "" ? 0 : await count(volatile));
 }
@@ -191,8 +210,11 @@ export async function preflightMemoryCard(
     if (card.type === "requiredOverLimit") return card;
     const frames = await Promise.all(
         lanes
-            .filter(({ lane, target }) => lane !== "required" && target > 0)
-            .map(({ lane }) => frameTokens(tokenizer, required[0]?.items ?? [], [lane])),
+            .filter(
+                ({ lane, target, flow }) =>
+                    lane !== "required" && (lane === "flow" && flow ? flow.timeline || flow.titles > 0 : target > 0),
+            )
+            .map(({ lane, flow }) => frameTokens(tokenizer, required[0]?.items ?? [], [lane], flow?.timeline)),
     );
     return { type: "ready", embeddings: maximum > Math.min(...frames) };
 }
@@ -205,9 +227,10 @@ export async function preflightMemoryCard(
  * lanes with items, and each part's own message) comes off `maximum`, and `spendLanes` shares the rest.
  * Lines counted apart need not add up to the text they make, so the rendered parts are counted too, each
  * as one system chat, and while their sum is over `maximum` the last admitted item goes as `budget`.
- * Required items are admitted first and fit alone, so none of them goes. Admission order means the
- * newest flow title is the last of the flow to go, and evidence goes before the event it requires. With
- * no item left, both parts are empty and the card costs nothing.
+ * Required items are admitted first and fit alone, so none of them goes. Then come the flow core run
+ * newest first, its titles, other lanes' core items, lending, and the flow extension with the titles
+ * it moved. Evidence goes before the full line it requires, and extension admissions before core
+ * ones. Nothing is downgraded. With no item left, both parts are empty and the card costs nothing.
  *
  * A lane's lines are counted together, so a tokenizer that goes over the network uses its own queue.
  */
@@ -220,10 +243,13 @@ export async function buildMemoryCard(
         (await count(stable)) + (volatile === "" ? 0 : await count(volatile));
 
     const counted: Lane[] = [];
+    const timeline = lanes.some(({ lane, flow }) => lane === "flow" && flow?.timeline);
+    const countItems = (items: readonly LaneCandidate[]) =>
+        Promise.all(items.map(async (item) => ({ ...item, tokens: await count(item.line) })));
     for (const lane of lanes) {
         // `Promise.all` answers in input order, however the counts finish, so `items` keep their rank.
-        const items = await Promise.all(lane.items.map(async (item) => ({ ...item, tokens: await count(item.line) })));
-        counted.push({ ...lane, items });
+        const [items, full] = await Promise.all([countItems(lane.items), countItems(lane.flow?.full ?? [])]);
+        counted.push({ ...lane, items, flow: lane.flow ? { ...lane.flow, full } : undefined });
     }
 
     const required = counted.find(({ lane }) => lane === "required");
@@ -251,6 +277,7 @@ export async function buildMemoryCard(
         tokenizer,
         reserved,
         spending.filter(({ target, items }) => target > 0 && items.length > 0).map(({ lane }) => lane),
+        timeline,
     );
 
     const { included: admitted, excluded, spend } = spendLanes({ maximum: maximum - frame, lanes: spending });
@@ -259,7 +286,7 @@ export async function buildMemoryCard(
         spend.unshift({ lane: "required", target: required.target, spent: reservedTokens });
     }
     while (included.length > 0) {
-        const parts = renderParts(linesOf(included));
+        const parts = renderParts(linesOf(included), timeline);
         const whole = await partTokens(parts);
         if (whole <= maximum) {
             const items = included.map(({ id, kind, lane, reason, tokens }) => {

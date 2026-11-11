@@ -92,7 +92,7 @@ export function reportedMemoryExclusions(excluded: readonly ContextMemoryExclude
     return excluded.toSorted((a, b) => rank(a) - rank(b)).slice(0, CONTEXT_MEMORY_EXCLUDED);
 }
 
-/** What a lane may spend and what it spent; flow has no token target, so its own is the largest safe integer. */
+/** What a lane may spend and what it spent; title-only flow reports the largest safe integer as its target. */
 export type ContextMemoryLane = { lane: MemoryManifestLane; target: number; spent: number };
 
 /** The writer as a send saw it. */

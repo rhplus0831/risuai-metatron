@@ -127,7 +127,9 @@ it("edits only consumed Structured Memory settings and shares the selected prese
             control(preset().budgetMode === "tokens" ? hypa.memoryBudgetTokensLabel : hypa.memoryTokensRatioLabel),
             control(text.windowTurns),
             control(text.flowEvents),
+            control(text.flowKeyLineEvents),
             control(text.requiredCap),
+            control(text.flowTarget),
             control(text.pagesTarget),
             control(text.eventsTarget),
             control(text.evidenceTarget),
@@ -300,4 +302,24 @@ it("edits both screening lists by line while preserving a typed newline", () => 
     flushSync();
     expect(screening().refusal).toEqual([]);
     expect(screening().format).toHaveLength(3);
+});
+
+it("writes the flow token target and key-line event count through their count inputs", () => {
+    settings.ui.memoryAlgorithmType = "structuredMemory";
+    open();
+    const read = () => settings.hypaV3Presets.items.find(({ id }) => id === "first")!.settings.structured;
+    const flow = control(text.flowTarget) as HTMLInputElement;
+    const keyLines = control(text.flowKeyLineEvents) as HTMLInputElement;
+    expect(flow.value).toBe("1500");
+    expect(keyLines.value).toBe("3");
+    for (const input of [flow, keyLines]) {
+        expect(input.type).toBe("number");
+        expect(input.min).toBe("0");
+    }
+    change(flow, "2400");
+    change(keyLines, "5");
+    expect(read()).toMatchObject({ laneTargets: { flow: 2400 }, flowKeyLineEvents: 5 });
+    change(flow, "0");
+    change(keyLines, "0");
+    expect(read()).toMatchObject({ laneTargets: { flow: 0 }, flowKeyLineEvents: 0 });
 });

@@ -95,6 +95,12 @@ else coverage is unknown; a preview's `memoryBlock` indexes the holders. `report
 while `excludedTotal` counts all rows. `sendManifest` and `writerState` supply item and stage summaries; `due` is a
 hand-off request, not a queued task.
 
+The flow lane is a recent timeline. Under `laneTargets.flow`, a contiguous run of the newest events that left the window
+shows each in full (story time, title, summary, and key lines on the newest `flowKeyLineEvents`), and `flowEvents`
+titles follow it. After the other lanes and the lending, the run goes on with what is left of the maximum. An event is
+in full once, in the run or in the events lane, and selection takes the run's events out of the events lane's
+exclusions. A target of 0 keeps the title-only lane. `spendLanes`' doc owns the order.
+
 The meter reads tokens and `memoryStatusWord`; its popover and Preview share `MemoryManifest`.
 
 ### Receipts
@@ -325,6 +331,9 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
 - The page lanes: `structured/retrieve.test.ts` for channels, knowledge, and `never`, `card.test.ts` for the
   reservation, `assemble.test.ts` and `memoryJobs.test.ts` for the manifest and the refused send, `lore.test.ts` for
   `searchMatch`.
+- The flow timeline: `structured/lanes.test.ts` for the run, its titles, and the extension, `card.test.ts` for the full
+  line, the heading, and the trim order, `structured/retrieve.test.ts` for the window rule, key lines, and evidence
+  through a full line, `assemble.test.ts` for the report's items and exclusions.
 - Receipts: `memoryTasks.test.ts` for the patches; `memoryJobs.test.ts` for the reply's notice on a real stack;
   `structuredMemory.test.ts` for `memoryReceiptView`; `MemoryReceiptLine.svelte.test.ts` and
   `Chat.interactions.svelte.test.ts` for the line and its gate.
@@ -398,8 +407,9 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
   [audit](../../reports/measurements/structured-memory-2026-11-03.md).
 - Small contexts starve the last lanes: at 16,384 tokens of context the `threads` lane gets nothing once event lines
   carry three quotes (found at 32,768), and a query naming two events loses one of them in a long chat at 32,768 too.
-  Decision: Found Issues Decisions (owner, 2026-11-08),
-  [audit](../../reports/measurements/structured-memory-2026-11-03.md).
+  The flow lane's run spends up to its target (1,500 by default) before the pages lane does, so at 16,384 (a maximum of
+  3,276) the other lanes share what is left of under 1,800 tokens; that share is not measured yet. Decision: Found
+  Issues Decisions (owner, 2026-11-08), [audit](../../reports/measurements/structured-memory-2026-11-03.md).
 
 ### Gotchas
 

@@ -14,6 +14,149 @@ import {
 } from "./lanes.ts";
 
 describe("structured memory lanes", () => {
+    const flowCandidate = (id: string, tokens: number, full = false): LaneItem => ({
+        id,
+        kind: "event",
+        lane: "flow",
+        reason: full ? "timeline" : "recent",
+        score: 0,
+        order: 0,
+        line: full ? `${id}: summary` : id,
+        tokens,
+    });
+
+    it("stops the core timeline at the first oversized full line without skipping to a smaller older event", () => {
+        const titles = ["newest", "blocked", "small"].map((id) => flowCandidate(id, 1));
+        const result = spendLanes({
+            maximum: 10,
+            lanes: [
+                {
+                    lane: "flow",
+                    target: 6,
+                    items: titles,
+                    flow: {
+                        timeline: true,
+                        titles: 1,
+                        full: [
+                            flowCandidate("newest", 4, true),
+                            flowCandidate("blocked", 5, true),
+                            flowCandidate("small", 1, true),
+                        ],
+                    },
+                },
+                { lane: "pages", target: 5, items: [{ ...flowCandidate("page", 5), lane: "pages", kind: "page" }] },
+            ],
+        });
+        // Four full-line tokens leave two of the target; the next five-token line ends the run.
+        // The title reserves one token before the page takes the remaining five, leaving no extension.
+        expect(result.included.map(({ id, reason }) => [id, reason])).toEqual([
+            ["newest", "timeline"],
+            ["blocked", "recent"],
+            ["page", "recent"],
+        ]);
+        expect(result.spend).toEqual([
+            { lane: "flow", target: 6, spent: 5 },
+            { lane: "pages", target: 5, spent: 5 },
+        ]);
+    });
+
+    it("extends after other lanes lend, refunds promoted titles and moves their window past the run", () => {
+        const flow: Lane = {
+            lane: "flow",
+            target: 4,
+            items: ["newest", "recalled", "next", "blocked", "small"].map((id) => flowCandidate(id, 1)),
+            flow: {
+                timeline: true,
+                titles: 2,
+                full: [
+                    flowCandidate("newest", 4, true),
+                    flowCandidate("recalled", 4, true),
+                    flowCandidate("next", 4, true),
+                    flowCandidate("blocked", 20, true),
+                    flowCandidate("small", 1, true),
+                ],
+            },
+        };
+        const lanes: Lane[] = [
+            flow,
+            {
+                lane: "pages",
+                target: 2,
+                items: ["page-core", "page-loan"].map((id) => ({
+                    ...flowCandidate(id, 2),
+                    lane: "pages",
+                    kind: "page",
+                })),
+            },
+            {
+                lane: "events",
+                target: 4,
+                items: ["newest", "recalled"].map((id) => ({
+                    ...flowCandidate(id, 4, true),
+                    lane: "events",
+                    reason: "match",
+                })),
+            },
+        ];
+        const core = spendLanes({ maximum: 14, lanes });
+        expect(core.included.map(({ lane, id, reason }) => [lane, id, reason])).toEqual([
+            ["flow", "newest", "timeline"],
+            ["flow", "recalled", "recent"],
+            ["flow", "next", "recent"],
+            ["pages", "page-core", "recent"],
+            ["events", "recalled", "match"],
+            ["pages", "page-loan", "recent"],
+        ]);
+        for (const maximum of [18, 19]) {
+            const extended = spendLanes({ maximum, lanes });
+            // The events lane owns recalled; extension passes it. Upgrading next costs 4 - 1,
+            // leaving room for blocked's title. Even with one spare token, small cannot jump blocked.
+            expect(extended.included.map(({ lane, id, reason }) => [lane, id, reason])).toEqual([
+                ["flow", "newest", "timeline"],
+                ["flow", "recalled", "recent"],
+                ["pages", "page-core", "recent"],
+                ["events", "recalled", "match"],
+                ["pages", "page-loan", "recent"],
+                ["flow", "next", "timeline"],
+                ["flow", "blocked", "recent"],
+            ]);
+            expect(extended.spend).toEqual([
+                { lane: "flow", target: 4, spent: 10 },
+                { lane: "pages", target: 2, spent: 4 },
+                { lane: "events", target: 4, spent: 4 },
+            ]);
+        }
+    });
+
+    it("keeps title-only flow spending and admission identical to the legacy lane", () => {
+        // Retrieval represents a configured zero target with this sentinel and only the newest titles.
+        const legacy: Lane = {
+            lane: "flow",
+            target: Number.MAX_SAFE_INTEGER,
+            items: [flowCandidate("newest", 2), flowCandidate("older", 2)],
+        };
+        for (const [maximum, ids, spent] of [
+            [7, ["newest", "older", "page"], 4],
+            [3, ["newest"], 2],
+        ] as const) {
+            const page: Lane = {
+                lane: "pages",
+                target: 3,
+                items: [{ ...flowCandidate("page", 3), lane: "pages", kind: "page" }],
+            };
+            const result = spendLanes({
+                maximum,
+                lanes: [{ ...legacy, flow: { timeline: false, titles: 2, full: [] } }, page],
+            });
+            expect(result).toEqual(spendLanes({ maximum, lanes: [legacy, page] }));
+            expect(result.included.map(({ id }) => id)).toEqual(ids);
+            expect(result.included.filter(({ lane }) => lane === "flow").map(({ reason }) => reason)).toEqual(
+                ids.filter((id) => id !== "page").map(() => "recent"),
+            );
+            expect(result.spend[0]).toEqual({ lane: "flow", target: Number.MAX_SAFE_INTEGER, spent });
+        }
+    });
+
     it("keeps stored assistant turns and their leading users raw, dropping only active covered history", () => {
         const entries: ReadEntry[] = [
             { messageId: undefined, role: undefined, text: "Greeting" },
@@ -58,7 +201,7 @@ describe("structured memory lanes", () => {
     });
 
     it("uses the HypaV3 maximum in ratio and response-limited token modes", () => {
-        const targets = { pages: 0, events: 17, evidence: 11, threads: 3 };
+        const targets = { flow: 9, pages: 0, events: 17, evidence: 11, threads: 3 };
         const settings = createHypaV3Preset(
             "Read budget",
             {

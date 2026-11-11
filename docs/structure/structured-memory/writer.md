@@ -186,6 +186,9 @@ Compaction changes no event, and a warning does not fail the run.
   `summarizationModel` and `alwaysToggleOn` still apply with no control here.
 - `cadenceTokens` is the `tokens` cadence's threshold under a `tokens` budget mode, and `cadenceRatio` its share of the
   max context under a `ratio` one; each mode keeps the other's field.
+- The read path's settings sit beside the writer's: `laneTargets.flow` (default 1500, 0 for the title-only lane) is the
+  recent timeline's token target, `flowKeyLineEvents` (default 3) the timeline events that carry key lines, and
+  `flowEvents` the titles listed after the timeline ([the read path](read.md#the-read-path)).
 
 ## Coupling
 
@@ -280,6 +283,10 @@ Compaction changes no event, and a warning does not fail the run.
 - An abort or unexpected non-`MemoryHostFailure` throw before the closing write can leave a job's run `pending` with no
   failed receipt; the next start closes it `interrupted`. A `MemoryHostFailure` attempts a failed-row write. Without a
   service the job publishes no task status. Decision: Structured Memory slice 2d, archive.
+- A tab loaded before a structured memory setting existed drops that field on its next edit of any structured memory
+  setting, because `setStructured` stores what the tab's normalizer keeps; the field reads as its default from then on.
+  This holds for every setting here, needs an edit in the stale tab, a reload avoids it, and no record is touched.
+  Decision: Structured Memory Recent Timeline D13 (owner, 2026-11-11).
 - A repair never carries an edit into later state; a rebuild from that point does. A later event with every cited
   message deleted no longer counts. Decision: Implementation Audit Fixes Q3.
 

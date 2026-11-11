@@ -1008,6 +1008,57 @@ describe("the context report", () => {
         const rawIds = (formated: OpenAIChat[]) =>
             formated.flatMap(({ memo }) => (memo && memo !== "supaMemory" ? [memo] : []));
 
+        it("sends summaries for events outside the raw window and reports them as included timeline items with events closed", async () => {
+            const messages: Entry[] = [
+                { chatId: "a1", role: "char", data: "The gate opens for Ada." },
+                { chatId: "a2", role: "char", data: "Ben promises to return." },
+                { chatId: "u3", role: "user", data: "Continue." },
+                { chatId: "a3", role: "char", data: "They wait together." },
+                { chatId: "u4", role: "user", data: "What happens next?" },
+            ];
+            const records = anchored(
+                stored([
+                    event("gate", ["a1"], {
+                        title: "Gate opened",
+                        summary: "Ada entered the courtyard.",
+                        storyTime: { text: "Dawn" },
+                    }),
+                    event("promise", ["a2"], {
+                        title: "Promise",
+                        summary: "Ben agreed to return by sunset.",
+                        storyTime: { text: "Noon" },
+                    }),
+                    event("waiting", ["a3"], { title: "Waiting", summary: "This stays in raw history." }),
+                ]),
+                messages,
+            );
+            const result = await structuredAssembly({
+                records,
+                messages,
+                greeting: "",
+                maxContext: 6000,
+                settings: { flowEvents: 1, laneTargets: { flow: 1500, pages: 0, events: 0, evidence: 0, threads: 0 } },
+            }).run();
+            expect(rawIds(result.formated)).toEqual(["u3", "a3", "u4"]);
+            const card = result.formated.find(({ memo }) => memo === "supaMemory")!.content;
+            expect(card).toContain(
+                "Recent events (oldest first; the last is just before the messages below):\n3 turns ago: (Dawn) Gate opened: Ada entered the courtyard.\n2 turns ago: (Noon) Promise: Ben agreed to return by sunset.\n1 turn ago: Waiting",
+            );
+            expect(card).not.toContain("This stays in raw history.");
+            expect(
+                result.report.memory?.items?.map(({ id, lane, reason, verified }) => ({ id, lane, reason, verified })),
+            ).toEqual([
+                { id: "promise", lane: "flow", reason: "timeline", verified: true },
+                { id: "gate", lane: "flow", reason: "timeline", verified: true },
+                { id: "waiting", lane: "flow", reason: "recent", verified: true },
+            ]);
+            // A raw-window title retains its per-lane exclusion; neither full line counts as excluded.
+            expect(result.report.memory?.excluded).toEqual([
+                { id: "waiting", kind: "event", lane: "events", reason: "not-relevant" },
+            ]);
+            expect(result.report.memory?.excludedTotal).toBe(1);
+        });
+
         it("keeps stale sources raw in sends and reports their reasons without quoting or changing stored events", async () => {
             const dir = mkdtempSync(path.join(os.tmpdir(), "stale-memory-"));
             const cache = createVectorCache({ file: path.join(dir, "vectors.sqlite"), now: () => 1000 });
@@ -1248,7 +1299,7 @@ describe("the context report", () => {
                     "u7",
                 ]);
                 expect(result.formated[0]).toMatchObject({ role: "system", memo: "supaMemory" });
-                expect(result.formated[0].content).toContain("turns ago: active");
+                expect(result.formated[0].content).toContain("turns ago: (Morning) active: active");
                 expect(result.formated[0].content).not.toContain("[m:");
                 expect(result.report.memory).toMatchObject({ kind: "structuredMemory", coverage: "covered" });
                 expect(assembly.confirmGap).not.toHaveBeenCalled();
@@ -1272,7 +1323,10 @@ describe("the context report", () => {
                     greeting: "",
                     messages,
                     records: anchored(stored([event("past", ["old"])]), messages),
-                    settings: { flowEvents: 0, laneTargets: { pages: 0, events: 0, evidence: 0, threads: 0 } },
+                    settings: {
+                        flowEvents: 0,
+                        laneTargets: { flow: 0, pages: 0, events: 0, evidence: 0, threads: 0 },
+                    },
                     maxContext: 6000,
                     gapConfirmTokens: 0,
                     readInlay: async () => ({ type: "image", data: "data:image/png;base64,AA==", width: 1, height: 1 }),
@@ -1554,7 +1608,7 @@ describe("the context report", () => {
                 const result = await assembly.run();
                 expect(result.texts.at(-1)).toBe(fiveMessages[4].data);
                 expect(result.formated[0].memo).toBe("supaMemory");
-                expect(result.texts[0]).toContain("\n2 turns ago: past");
+                expect(result.texts[0]).toContain("\n2 turns ago: (Morning) past: past");
                 expect(result.formated).toHaveLength(apart ? 3 : 2);
                 expect(result.texts[apart ? 1 : 0]).toContain("\nFind the key (open)");
                 if (apart) {
@@ -1631,8 +1685,8 @@ describe("the context report", () => {
                         { lane: "required", target: 1500, spent: 0 },
                         {
                             lane: "flow",
-                            target: Number.MAX_SAFE_INTEGER,
-                            spent: "[m:flow:past] 2 turns ago: past".length + 3,
+                            target: 1500,
+                            spent: "[m:flow:past] 2 turns ago: (Morning) past: past".length + 3,
                         },
                         { lane: "pages", target: 0, spent: 0 },
                         { lane: "events", target: 0, spent: 0 },

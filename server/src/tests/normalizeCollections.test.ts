@@ -552,7 +552,8 @@ const structuredDefaults = {
     cadenceRatio: 0.1,
     windowTurns: 3,
     flowEvents: 8,
-    laneTargets: { pages: 2000, events: 1500, evidence: 700, threads: 300 },
+    flowKeyLineEvents: 3,
+    laneTargets: { flow: 1500, pages: 2000, events: 1500, evidence: 700, threads: 300 },
     requiredCap: 1500,
     screening: { refusal: [], format: [] },
     language: "",
@@ -573,7 +574,8 @@ const structuredCustom = {
     cadenceRatio: 0.25,
     windowTurns: 1,
     flowEvents: 0,
-    laneTargets: { pages: 0, events: 21, evidence: 32, threads: 43 },
+    flowKeyLineEvents: 0,
+    laneTargets: { flow: 54, pages: 0, events: 21, evidence: 32, threads: 43 },
     requiredCap: 1,
     screening: { refusal: ["Cannot comply"], format: ["Bad format"] },
     language: "ko",
@@ -588,6 +590,25 @@ const structuredCustom = {
 };
 
 describe("Structured Memory settings", () => {
+    it("defaults timeline settings and preserves only nonnegative integer targets and key-line counts", () => {
+        for (const input of [undefined, {}, { laneTargets: { pages: 12 } }]) {
+            expect(normalizeStructuredMemorySettings(input)).toMatchObject({
+                laneTargets: { flow: 1500 },
+                flowKeyLineEvents: 3,
+            });
+        }
+        for (const value of [0, 1, 2700]) {
+            expect(
+                normalizeStructuredMemorySettings({ laneTargets: { flow: value }, flowKeyLineEvents: value }),
+            ).toMatchObject({ laneTargets: { flow: value }, flowKeyLineEvents: value });
+        }
+        for (const value of [-1, 0.5, "3", null, NaN, Infinity]) {
+            expect(
+                normalizeStructuredMemorySettings({ laneTargets: { flow: value }, flowKeyLineEvents: value }),
+            ).toMatchObject({ laneTargets: { flow: 1500 }, flowKeyLineEvents: 3 });
+        }
+    });
+
     it("keeps volatile placement opt-in and normalizes it independently of other settings", () => {
         for (const [value, expected] of [
             [true, true],
@@ -622,6 +643,7 @@ describe("Structured Memory settings", () => {
             cadenceRatio: [0, 1, -0.1, 1.1, "0.5", null, NaN, Infinity],
             windowTurns: [0, -1, 1.5, "3", null, NaN, Infinity],
             flowEvents: [-1, 0.5, "8", null, NaN, Infinity],
+            flowKeyLineEvents: [-1, 0.5, "3", null, NaN, Infinity],
             requiredCap: [0, -1, 1.5, "1500", null, NaN, Infinity],
             language: [null, 1, [], {}],
             instructions: [null, 1, [], {}],
@@ -661,7 +683,7 @@ describe("Structured Memory settings", () => {
 
     it("validates each lane and screening list without resetting its siblings", () => {
         const lanes = structuredCustom.laneTargets;
-        for (const key of ["pages", "events", "evidence", "threads"] as const) {
+        for (const key of ["flow", "pages", "events", "evidence", "threads"] as const) {
             expect(
                 normalizeStructuredMemorySettings({
                     ...structuredCustom,
@@ -811,7 +833,7 @@ describe.each([
         const structured = {
             ...structuredCustom,
             cadenceTurns: 0,
-            laneTargets: { pages: -1, events: 2, evidence: 0, threads: 4, unknown: 1 },
+            laneTargets: { flow: 7, pages: -1, events: 2, evidence: 0, threads: 4, unknown: 1 },
             screening: { refusal: ["Refusal", "", false], format: "invalid" },
             highlightKinds: ["change", "create", "change", "unknown"],
             unknown: true,
@@ -822,7 +844,7 @@ describe.each([
             structured: {
                 ...structuredCustom,
                 cadenceTurns: 5,
-                laneTargets: { pages: 2000, events: 2, evidence: 0, threads: 4 },
+                laneTargets: { flow: 7, pages: 2000, events: 2, evidence: 0, threads: 4 },
                 screening: { refusal: ["Refusal"], format: [] },
             },
         };

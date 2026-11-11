@@ -505,7 +505,9 @@
           "cadenceRatio": 0.1,
           "windowTurns": 3,
           "flowEvents": 8,
+          "flowKeyLineEvents": 3,
           "laneTargets": {
+            "flow": 1500,
             "pages": 2000,
             "events": 1500,
             "evidence": 700,

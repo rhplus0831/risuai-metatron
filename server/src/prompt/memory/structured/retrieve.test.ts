@@ -62,12 +62,12 @@ const fact = (pageId: string, text: string, fields: Partial<MemoryKnowledge> = {
     quote: text,
     ...fields,
 });
-const pageSettings = () => settings({ laneTargets: { pages: 1000, events: 0, evidence: 0, threads: 0 } });
+const pageSettings = () => settings({ laneTargets: { flow: 0, pages: 1000, events: 0, evidence: 0, threads: 0 } });
 type Input = Parameters<typeof retrieveLanes>[1];
 const settings = (fields: Partial<Input["settings"]> = {}) =>
     normalizeStructuredMemorySettings({
         flowEvents: 0,
-        laneTargets: { pages: 0, events: 1000, evidence: 0, threads: 0 },
+        laneTargets: { flow: 0, pages: 0, events: 1000, evidence: 0, threads: 0 },
         ...fields,
     });
 function input(fields: Partial<Input> = {}): Input {
@@ -150,7 +150,7 @@ describe("bounded memory embeddings", () => {
                 memoryBudgetTokens: 10000,
                 structured: settings({
                     windowTurns: 1,
-                    laneTargets: { pages: 1000, events: 1000, evidence: 0, threads: 0 },
+                    laneTargets: { flow: 0, pages: 1000, events: 1000, evidence: 0, threads: 0 },
                 }),
             }).settings,
             tokenizer: { tokenizeChat: async ({ content }) => content.length },
@@ -164,6 +164,60 @@ describe("bounded memory embeddings", () => {
             tooMuchToken: "TOO_MUCH_TOKEN",
         };
     }
+
+    it("admits a source excerpt through its full flow event without duplicating or excluding the event", async () => {
+        const h = harness();
+        const messages: Message[] = [
+            { chatId: "source", role: "char", data: "The bronze key is on the desk." },
+            { chatId: "recent", role: "char", data: "Ada waits at the gate." },
+            { chatId: "query", role: "user", data: "Where is the bronze key?" },
+        ];
+        const request = selection(h.host, messages);
+        request.settings.structured = settings({
+            windowTurns: 1,
+            flowEvents: 0,
+            laneTargets: { flow: 1000, pages: 0, events: 1000, evidence: 1000, threads: 0 },
+        });
+        const records = {
+            events: [
+                event("key", [], {
+                    summary: "Ada put the bronze key on the desk.",
+                    sources: [{ messageId: "source", index: 0, hash: messageSourceHash(messages[0]) }],
+                }),
+            ],
+            pages: [],
+            threads: [],
+            stage: [],
+        };
+        const retrieved = await retrieveLanes(
+            h.host,
+            input({
+                ...records,
+                entries: request.entries,
+                window: { start: 1, dropped: new Set([0]) },
+                settings: request.settings.structured,
+            }),
+        );
+        expect(retrieved.eventsOpen).toBe(true);
+        expect(items(retrieved, "events").map(({ id }) => id)).toEqual(["key"]);
+        expect(items(retrieved, "evidence")).toEqual([
+            expect.objectContaining({ id: "source", reason: "eventSource", requires: "events:key" }),
+        ]);
+        const card = await spentCard(retrieved, 100);
+        expect(card.items.map(({ lane, id, reason }) => [lane, id, reason])).toEqual([
+            ["flow", "key", "timeline"],
+            ["evidence", "source", "eventSource"],
+        ]);
+        expect(card.volatile).toContain('[m:source] character: "The bronze key is on the desk."');
+        const selected = await selectMemory(request, records);
+        expect(selected.type).toBe("selected");
+        if (selected.type !== "selected") throw new Error(JSON.stringify(selected));
+        expect(selected.items.map(({ lane, id, reason }) => [lane, id, reason])).toEqual([
+            ["flow", "key", "timeline"],
+            ["evidence", "source", "eventSource"],
+        ]);
+        expect(selected.excluded).toEqual([]);
+    });
 
     it("shares one job's bounded record embeddings across repeated selections of a cold 1,000-event chat", async () => {
         const h = harness();
@@ -263,7 +317,7 @@ describe("bounded memory embeddings", () => {
                 pages,
                 entries: [...events.map((_, index) => entry(`old-${index}`)), entry("query", query, "user")],
                 window: { start: events.length, dropped: new Set() },
-                settings: settings({ laneTargets: { pages: 1000, events: 1000, evidence: 0, threads: 0 } }),
+                settings: settings({ laneTargets: { flow: 0, pages: 1000, events: 1000, evidence: 0, threads: 0 } }),
             }),
         );
         expect(result.similarity).toBe("used");
@@ -346,7 +400,7 @@ describe("selectMemory evidence from trimmed history", () => {
                 memoryBudgetTokens: 1000,
                 structured: settings({
                     windowTurns: 1,
-                    laneTargets: { pages: 0, events: 0, evidence: 1000, threads: 0 },
+                    laneTargets: { flow: 0, pages: 0, events: 0, evidence: 1000, threads: 0 },
                 }),
             }).settings,
             tokenizer: { tokenizeChat: async ({ content }) => content.length },
@@ -514,6 +568,80 @@ describe("selectMemory evidence from trimmed history", () => {
 });
 
 describe("structured memory retrieval", () => {
+    it("offers raw-window events only as titles and key lines only on the newest eligible full candidates", async () => {
+        const h = harness();
+        const entries = [
+            entry("old"),
+            entry("middle"),
+            entry("newest"),
+            entry("blank", " \n"),
+            entry("raw-user", "Continue.", "user"),
+            entry("raw-reply"),
+        ];
+        const events = ["middle", "raw", "old", "newest"].map((id) =>
+            event(id, id === "raw" ? ["raw-user", "raw-reply"] : [id], {
+                summary: `${id} summary`,
+                keyLines: [{ speaker: "Ada", text: `${id} quote` }],
+            }),
+        );
+        const common = { events, entries, window: { start: 4, dropped: new Set([0, 1, 2]) } };
+        for (const flowKeyLineEvents of [2, 0]) {
+            const result = await retrieveLanes(
+                h.host,
+                input({
+                    ...common,
+                    settings: settings({
+                        flowEvents: 1,
+                        flowKeyLineEvents,
+                        laneTargets: { flow: 1500, pages: 0, events: 0, evidence: 0, threads: 0 },
+                    }),
+                }),
+            );
+            const flow = result.lanes.find(({ lane }) => lane === "flow")!;
+            expect(flow.flow?.full.map(({ id, line, reason }) => ({ id, line, reason }))).toEqual([
+                {
+                    id: "newest",
+                    reason: "timeline",
+                    line:
+                        "[m:flow:newest] 2 turns ago: (Morning) newest: newest summary" +
+                        (flowKeyLineEvents ? ' "newest quote" (Ada)' : ""),
+                },
+                {
+                    id: "middle",
+                    reason: "timeline",
+                    line:
+                        "[m:flow:middle] 3 turns ago: (Morning) middle: middle summary" +
+                        (flowKeyLineEvents ? ' "middle quote" (Ada)' : ""),
+                },
+                { id: "old", reason: "timeline", line: "[m:flow:old] 4 turns ago: (Morning) old: old summary" },
+            ]);
+            expect(flow.items[0]).toMatchObject({ id: "raw", reason: "recent", line: "[m:flow:raw] 1 turn ago: raw" });
+            const card = await spentCard(result, 100);
+            expect(card.items.map(({ id, reason }) => [id, reason])).toEqual([
+                ["newest", "timeline"],
+                ["middle", "timeline"],
+                ["old", "timeline"],
+                ["raw", "recent"],
+            ]);
+            expect(card.stable).not.toMatch(/raw summary|raw quote/);
+        }
+        const disabled = await retrieveLanes(
+            h.host,
+            input({
+                ...common,
+                settings: settings({
+                    flowEvents: 1,
+                    laneTargets: { flow: 0, pages: 0, events: 0, evidence: 0, threads: 0 },
+                }),
+            }),
+        );
+        expect(disabled.lanes.find(({ lane }) => lane === "flow")).toMatchObject({
+            target: Number.MAX_SAFE_INTEGER,
+            flow: { timeline: false, titles: 1, full: [] },
+            items: [expect.objectContaining({ id: "raw", reason: "recent", line: "[m:flow:raw] 1 turn ago: raw" })],
+        });
+    });
+
     it("keeps scene attendance and every required section stable while filtering character sections in related pages", async () => {
         const h = harness((text) => (text.includes(": ") ? [0, 1] : [1, 0]));
         const result = await retrieveLanes(
@@ -637,7 +765,7 @@ describe("structured memory retrieval", () => {
                 events: [],
                 stage: ["Ada"],
                 pages: [page("scene", { type: "scene", participants: ["Ada"] }), page("Ada")],
-                settings: settings({ laneTargets: { pages: 0, events: 0, evidence: 0, threads: 0 } }),
+                settings: settings({ laneTargets: { flow: 0, pages: 0, events: 0, evidence: 0, threads: 0 } }),
             }),
         );
         expect(items(result, "pages")).toEqual([]);
@@ -868,7 +996,7 @@ describe("structured memory retrieval", () => {
         expect(oldCue.eventsOpen).toBe(false);
         const disabled = await retrieveLanes(
             h.host,
-            input({ settings: settings({ laneTargets: { pages: 0, events: 0, evidence: 0, threads: 0 } }) }),
+            input({ settings: settings({ laneTargets: { flow: 0, pages: 0, events: 0, evidence: 0, threads: 0 } }) }),
         );
         expect(disabled.eventsOpen).toBe(false);
         expect(disabled.similarity).toBe("off");
@@ -980,7 +1108,7 @@ describe("structured memory retrieval", () => {
                     entries,
                     window: { start: 12, dropped: new Set(Array.from({ length: 11 }, (_, i) => i)) },
                     settings: settings({
-                        laneTargets: { pages: 0, events: 1000, evidence: 1000, threads: 0 },
+                        laneTargets: { flow: 0, pages: 0, events: 1000, evidence: 1000, threads: 0 },
                     }),
                 }),
             );
@@ -1037,7 +1165,7 @@ describe("structured memory retrieval", () => {
                     events: [],
                     threads,
                     stage: ["alice"],
-                    settings: settings({ laneTargets: { pages: 0, events: 0, evidence: 0, threads: target } }),
+                    settings: settings({ laneTargets: { flow: 0, pages: 0, events: 0, evidence: 0, threads: target } }),
                 }),
             );
             expect(
@@ -1066,7 +1194,7 @@ describe("structured memory retrieval", () => {
                 threads,
                 entries: [...events.map((_, i) => entry(`source${i}`)), entry("query", "Continue.", "user")],
                 window: { start: events.length, dropped: new Set() },
-                settings: settings({ laneTargets: { pages: 0, events: 1000, evidence: 0, threads: 1000 } }),
+                settings: settings({ laneTargets: { flow: 0, pages: 0, events: 1000, evidence: 0, threads: 1000 } }),
             }),
         );
         expect(items(result, "events").map(({ id }) => id)).toEqual(
@@ -1159,7 +1287,7 @@ it.each(["required", "pages"] as const)(
                 events: [],
                 settings:
                     lane === "required"
-                        ? settings({ laneTargets: { pages: 0, events: 0, evidence: 0, threads: 0 } })
+                        ? settings({ laneTargets: { flow: 0, pages: 0, events: 0, evidence: 0, threads: 0 } })
                         : pageSettings(),
                 entries: [entry("query", "Cara is here", "user")],
                 stage: ["Ada", "Ben"],

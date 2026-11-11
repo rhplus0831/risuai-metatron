@@ -373,6 +373,9 @@ export async function selectMemory(
         return { type: "error", error: `${input.tooMuchToken}\n\nRequired Tokens: ${trimmed.currentTokens}` };
     }
     const unseen = card.items.length === 0 && [...window.dropped].some((index) => !blankEntry(history[index]));
+    const timeline = new Set(
+        card.items.filter(({ lane, reason }) => lane === "flow" && reason === "timeline").map(({ id }) => id),
+    );
     return {
         type: "selected",
         chats: placed.card ? [placed.card, ...trimmed.history] : trimmed.history,
@@ -384,7 +387,9 @@ export async function selectMemory(
         // The preset's headroom and extra are the summarizer's: this budget spends neither.
         budget: { maximum, reduced: reduced.filter(({ field }) => field === "memory") },
         items: card.items,
-        excluded: [...retrieved.excluded, ...card.excluded],
+        excluded: [...retrieved.excluded, ...card.excluded].filter(
+            ({ lane, id }) => lane !== "events" || !timeline.has(id),
+        ),
         lanes: card.spend,
         deferredRecordTexts: retrieved.deferredRecordTexts,
         lanesStage: similarity === "failed" ? "similarityFailed" : card.items.length > 0 ? "filled" : "empty",

@@ -9,8 +9,9 @@
      * The Preview tab and src/lib/ChatScreens/ContextMeter.svelte share this view of a
      * send's report: writer, included items, exclusions, and lane spend. The caller resolves titles by
      * `memoryItemKey` in src/ts/process/structuredMemory.svelte.ts; missing titles never hide rows.
-     * An event can occur in two lanes, so a list must not be keyed by id. Flow has no token target:
-     * `Number.MAX_SAFE_INTEGER` is shown as spend alone.
+     * An event can occur in two lanes, so a list must not be keyed by id. Flow shows spend against its
+     * timeline target; title-only flow and older stored reports use `Number.MAX_SAFE_INTEGER`, shown
+     * as spend alone.
      */
 
     interface Props {
@@ -122,7 +123,7 @@
                 {#each lanes as lane, index (index)}
                     <li class="flex justify-between gap-2" data-memory-manifest-lane={lane.lane}>
                         <span class="text-textcolor2">{text.lanes[lane.lane]}</span>
-                        <!-- The flow lane has no token target: its own is the largest safe integer. -->
+                        <!-- Title-only flow and older stored reports keep the largest-safe-integer target. -->
                         <span class="tabular-nums"
                             >{lane.target === Number.MAX_SAFE_INTEGER
                                 ? fmt(lane.spent)

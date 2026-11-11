@@ -19,7 +19,16 @@ import {
     type VectorArray,
 } from "../../embeddings.ts";
 import type { MemoryHost } from "../host.ts";
-import { eventLine, evidenceLine, flattened, flowLine, type PageKnowledge, pageLine, threadLine } from "./card.ts";
+import {
+    eventLine,
+    evidenceLine,
+    flattened,
+    flowEventLine,
+    flowLine,
+    type PageKnowledge,
+    pageLine,
+    threadLine,
+} from "./card.ts";
 import { type ExcludedItem, itemKey, type Lane, type LaneCandidate, type RawWindow, type ReadEntry } from "./lanes.ts";
 import { pageNamedInTexts, sectionVectorText } from "./pages.ts";
 
@@ -39,9 +48,10 @@ import { pageNamedInTexts, sectionVectorText } from "./pages.ts";
  *   others like any page but stays out of the lane, being required. Within a channel the newest section
  *   leads, then similarity. A character offers its whole `currentState` and the `relationships` lines
  *   naming another page in the send's cast or no visible page; a single-line body stays whole.
- * - Flow is the story's recent order, not retrieval: the last `flowEvents` events by place, never by
- *   storage order, since a backfill stores out of order, and whether or not they are inside the window.
- *   Flow has no token target; `Number.MAX_SAFE_INTEGER` is the sentinel passed to spending.
+ * - Flow is the story's recent order, not retrieval: by place, never by storage order, since a backfill
+ *   stores out of order. Eligible events offer full timeline lines, with key lines on the newest
+ *   `flowKeyLineEvents` candidates. Full lines have a core token target; `flowEvents` bounds the titles
+ *   outside the run, including events inside the window. A zero target offers title lines alone.
  * - Retrieval leaves out an event whose every source is inside the window with text, since the prompt
  *   holds that text already. An older source keeps the event in: uncovered history can be trimmed.
  * - The events lane opens when the user's messages read as past, causal, or chronological, or when an
@@ -66,7 +76,8 @@ import { pageNamedInTexts, sectionVectorText } from "./pages.ts";
  *   escapes through `host.fence()`.
  *
  * `excluded` holds every event, page, and open thread that is no candidate, however many: what reaches a
- * report is its reader's choice. Exclusions are per lane: flow can include an event that events excludes.
+ * report is its reader's choice. Exclusions are per lane: a flow title can coexist with an events
+ * exclusion. Selection removes events exclusions for full flow lines surviving on the final card.
  * One past `eventCandidates`, `pageCandidates`, or `threadCandidates` is `budget`, since it passed
  * relevance and lost on rank. A stale event says why it is stale. A retracted
  * event and an ended thread are not listed, and neither is an `always` page the required lane shows.
@@ -89,6 +100,8 @@ export const RETRIEVAL_LIMITS = {
      */
     eventCandidates: 48,
     threadCandidates: 40,
+    /** Full flow candidates counted before spending; title-only candidates do not consume this bound. */
+    flowCandidates: 200,
     /** The excerpts one event's sources give, and the evidence lane's items. */
     excerptsPerEvent: 2,
     evidenceItems: 6,
@@ -110,7 +123,7 @@ export const RETRIEVAL_LIMITS = {
     unawarePerCharacter: 6,
 } as const;
 
-/** Flow has no token target, `flowEvents` bounds it; a number, because a target reaches a report as JSON. */
+/** Title-only flow's reported target, even with no titles; a finite sentinel because reports are JSON. */
 const FLOW_TARGET = Number.MAX_SAFE_INTEGER;
 
 /** The share of its event's score a source excerpt keeps, so an event always outranks its own evidence. */
@@ -371,24 +384,52 @@ function sendEmbeddings(host: RetrievalHost, queries: string[], enabled: boolean
 }
 
 /**
- * The flow lane, newest first so the oldest is cut. `turnsAgo` counts the replies with text since the
- * event's place, at least 1: a reply left blank is no turn, as in `rawWindow`.
+ * The flow lane's title and full forms, newest first so the oldest is cut. Full candidates are bounded
+ * separately from titles, with enough older titles to follow the longest possible run. `turnsAgo`
+ * counts replies with text since the event's place, at least 1: a blank reply is no turn, as in `rawWindow`.
  */
-function flowItems(placed: readonly PlacedEvent[], entries: readonly ReadEntry[], flowEvents: number): LaneCandidate[] {
+function flowItems(
+    placed: readonly PlacedEvent[],
+    eligible: readonly PlacedEvent[],
+    entries: readonly ReadEntry[],
+    { flowEvents, flowKeyLineEvents, laneTargets }: StructuredMemorySettings,
+): Pick<Lane<LaneCandidate>, "items" | "flow"> {
     const newestFirst = placed.toReversed().sort((a, b) => b.place - a.place);
-    return newestFirst.slice(0, flowEvents).map(({ event, place }): LaneCandidate => {
+    const timeline = laneTargets.flow > 0;
+    const eligibleSet = new Set(eligible);
+    const fullCandidates = timeline
+        ? newestFirst.filter((candidate) => eligibleSet.has(candidate)).slice(0, RETRIEVAL_LIMITS.flowCandidates)
+        : [];
+    const fullSet = new Set(fullCandidates);
+    const lastFull = fullCandidates.at(-1);
+    const end = (lastFull ? newestFirst.indexOf(lastFull) + 1 : 0) + flowEvents;
+    const full: LaneCandidate[] = [];
+    const items = newestFirst.slice(0, end).map((placed): LaneCandidate => {
+        const { event, place } = placed;
         const turnsAgo = entries.slice(place).filter((entry) => entry.role === "char" && hasText(entry)).length;
-        return {
+        const title: LaneCandidate = {
             id: event.id,
             kind: "event",
             lane: "flow",
             reason: "recent",
-            // Rank orders the lane, and no flow item is ever lent: one the core round skips still does not fit.
+            // Flow follows recency, never a relevance score.
             score: 0,
             order: place,
             line: flowLine(event, Math.max(1, turnsAgo)),
         };
+        if (fullSet.has(placed)) {
+            full.push({
+                ...title,
+                reason: "timeline",
+                line: flowEventLine(
+                    { ...event, keyLines: full.length < flowKeyLineEvents ? event.keyLines : [] },
+                    Math.max(1, turnsAgo),
+                ),
+            });
+        }
+        return title;
     });
+    return { items, flow: { timeline, titles: flowEvents, full } };
 }
 
 /**
@@ -948,7 +989,12 @@ export async function prepareRetrieval(input: RetrievalInput) {
     const required = requiredPages(reading);
     const lanes: Lane<LaneCandidate>[] = [
         { lane: "required", target: settings.requiredCap, items: required.items },
-        { lane: "flow", target: settings.flowEvents > 0 ? FLOW_TARGET : 0, items: [] },
+        {
+            lane: "flow",
+            target: targets.flow > 0 ? targets.flow : settings.flowEvents > 0 ? FLOW_TARGET : 0,
+            items: [],
+            flow: { timeline: targets.flow > 0, titles: settings.flowEvents, full: [] },
+        },
         ...(["pages", "events", "evidence", "threads"] as const).map((lane) => ({
             lane,
             target: targets[lane],
@@ -1007,7 +1053,11 @@ export async function retrieveLanes(
     return {
         lanes: [
             { lane: "required", target: settings.requiredCap, items: required.items },
-            { lane: "flow", target: FLOW_TARGET, items: flowItems(placed, entries, settings.flowEvents) },
+            {
+                lane: "flow",
+                target: targets.flow > 0 ? targets.flow : FLOW_TARGET,
+                ...flowItems(placed, eligible, entries, settings),
+            },
             { lane: "pages", target: targets.pages, items: related.items },
             {
                 lane: "events",

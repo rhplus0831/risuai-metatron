@@ -651,10 +651,24 @@
         )}
         {@render structuredCount(
             preset,
+            text.flowKeyLineEvents,
+            0,
+            (read) => read.flowKeyLineEvents,
+            (next, count) => (next.flowKeyLineEvents = count),
+        )}
+        {@render structuredCount(
+            preset,
             text.requiredCap,
             1,
             (read) => read.requiredCap,
             (next, count) => (next.requiredCap = count),
+        )}
+        {@render structuredCount(
+            preset,
+            text.flowTarget,
+            0,
+            (read) => read.laneTargets.flow,
+            (next, count) => (next.laneTargets.flow = count),
         )}
         {@render structuredCount(
             preset,

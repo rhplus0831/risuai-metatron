@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { MemoryTokenizer } from "../host.ts";
-import { buildMemoryCard, eventLine, evidenceLine, flowLine, itemTag, threadLine } from "./card.ts";
+import { buildMemoryCard, eventLine, evidenceLine, flowEventLine, flowLine, itemTag, threadLine } from "./card.ts";
 import type { Lane, LaneCandidate } from "./lanes.ts";
 
 const candidate = (lane: LaneCandidate["lane"], id: string, line: string, order = 0): LaneCandidate => ({
@@ -21,6 +21,230 @@ async function spentCard(...args: Parameters<typeof buildMemoryCard>) {
 }
 
 describe("structured memory card", () => {
+    it("renders chronological full flow lines with story time, summaries and the supplied key lines", async () => {
+        const older = {
+            id: "gate",
+            title: "Gate opened",
+            summary: "Ada unlocked the gate.",
+            storyTime: { text: "Dawn" },
+            keyLines: [],
+        };
+        const newest = {
+            id: "promise",
+            title: "Promise",
+            summary: "Ben agreed to return.",
+            storyTime: { text: "Noon" },
+            keyLines: [
+                { speaker: "Ben", text: "I will return." },
+                { speaker: "", text: "Before sunset." },
+            ],
+        };
+        const full = [
+            { ...candidate("flow", "promise", flowEventLine(newest, 2), 2), reason: "timeline" },
+            { ...candidate("flow", "gate", flowEventLine(older, 3), 1), reason: "timeline" },
+        ];
+        const card = await spentCard(
+            { tokenizeChat: async ({ content }) => content.length },
+            {
+                maximum: 10000,
+                lanes: [
+                    {
+                        lane: "flow",
+                        target: 1500,
+                        items: [
+                            candidate("flow", "promise", flowLine(newest, 2), 2),
+                            candidate("flow", "gate", flowLine(older, 3), 1),
+                        ],
+                        flow: { timeline: true, titles: 0, full },
+                    },
+                ],
+            },
+        );
+        expect(card.stable).toBe(
+            [
+                "These records are authoritative for the past, and the scene for the present; recent messages win over both.",
+                "",
+                "Recent events (oldest first; the last is just before the messages below):",
+                "[m:flow:gate] 3 turns ago: (Dawn) Gate opened: Ada unlocked the gate.",
+                '[m:flow:promise] 2 turns ago: (Noon) Promise: Ben agreed to return. "I will return." (Ben) "Before sunset."',
+            ].join("\n"),
+        );
+        expect(card.volatile).toBe("");
+        expect(card.items.map(({ id, reason }) => [id, reason])).toEqual([
+            ["promise", "timeline"],
+            ["gate", "timeline"],
+        ]);
+    });
+
+    it("keeps the title-only heading, exact legacy text and last-admitted trimming when the flow target is zero", async () => {
+        const titles = [
+            { ...candidate("flow", "newest", "[m:flow:newest] 2 turns ago: Promise", 2), reason: "recent" },
+            { ...candidate("flow", "older", "[m:flow:older] 3 turns ago: Arrival", 1), reason: "recent" },
+        ];
+        const lane: Lane<LaneCandidate> = {
+            lane: "flow",
+            target: Number.MAX_SAFE_INTEGER,
+            items: titles,
+            flow: { timeline: false, titles: 2, full: [] },
+        };
+        // Two titles cost 70 when rendered, one costs 25; individually each costs one.
+        const tokenizer: MemoryTokenizer = {
+            tokenizeChat: async ({ content }) =>
+                content.startsWith("[m:") ? 1 : 10 + 15 * (content.match(/\[m:/g)?.length ?? 0) ** 2,
+        };
+        for (const maximum of [70, 40, 5]) {
+            const card = await spentCard(tokenizer, { maximum, lanes: [lane] });
+            expect(card).toEqual(
+                await spentCard(tokenizer, {
+                    maximum,
+                    lanes: [{ lane: "flow", target: Number.MAX_SAFE_INTEGER, items: titles }],
+                }),
+            );
+            const lines =
+                maximum === 70
+                    ? ["[m:flow:older] 3 turns ago: Arrival", "[m:flow:newest] 2 turns ago: Promise"]
+                    : maximum === 40
+                      ? ["[m:flow:newest] 2 turns ago: Promise"]
+                      : [];
+            expect(card.stable).toBe(
+                lines.length
+                    ? [
+                          "These records are authoritative for the past, and the scene for the present; recent messages win over both.",
+                          "",
+                          "Recent events:",
+                          ...lines,
+                      ].join("\n")
+                    : "",
+            );
+            expect(card.volatile).toBe("");
+            expect(card.tokens).toBe(maximum === 70 ? 70 : maximum === 40 ? 25 : 0);
+            expect(card.spend).toEqual([{ lane: "flow", target: Number.MAX_SAFE_INTEGER, spent: lines.length }]);
+            expect(card.items.map(({ id, reason }) => [id, reason])).toEqual(
+                maximum === 70
+                    ? [
+                          ["newest", "recent"],
+                          ["older", "recent"],
+                      ]
+                    : maximum === 40
+                      ? [["newest", "recent"]]
+                      : [],
+            );
+            expect(card.excluded).toEqual(
+                maximum === 70
+                    ? []
+                    : maximum === 40
+                      ? [{ id: "older", lane: "flow", kind: "event", reason: "budget" }]
+                      : ["newest", "older"].map((id) => ({ id, lane: "flow", kind: "event", reason: "budget" })),
+            );
+        }
+    });
+
+    it("trims an evidence excerpt before the full flow line that satisfies its event requirement", async () => {
+        const full = {
+            ...candidate("flow", "promise", "[m:flow:promise] 2 turns ago: (Noon) Promise: Return tomorrow"),
+            reason: "timeline",
+        };
+        const lanes: Lane<LaneCandidate>[] = [
+            {
+                lane: "flow",
+                target: 4,
+                items: [candidate("flow", "promise", "[m:flow:promise] 2 turns ago: Promise")],
+                flow: { timeline: true, titles: 0, full: [full] },
+            },
+            {
+                lane: "evidence",
+                target: 2,
+                items: [
+                    {
+                        ...candidate("evidence", "source", '[m:source] user: "Return tomorrow"'),
+                        reason: "eventSource",
+                        requires: "events:promise",
+                    },
+                ],
+            },
+        ];
+        // Admission costs 4 + 2, but rendering costs ten for each nonempty part.
+        const tokenizer: MemoryTokenizer = {
+            tokenizeChat: async ({ content }) =>
+                content.startsWith("[m:") ? (content.startsWith("[m:flow:") ? 4 : 2) : content.includes("[m:") ? 10 : 0,
+        };
+        const roomy = await spentCard(tokenizer, { maximum: 20, lanes });
+        expect(roomy.items.map(({ lane, id }) => [lane, id])).toEqual([
+            ["flow", "promise"],
+            ["evidence", "source"],
+        ]);
+        const tight = await spentCard(tokenizer, { maximum: 10, lanes });
+        expect(tight.items.map(({ lane, id, reason }) => [lane, id, reason])).toEqual([
+            ["flow", "promise", "timeline"],
+        ]);
+        expect(tight.stable).toContain(full.line);
+        expect(tight.volatile).toBe("");
+        expect(tight.excluded).toEqual([{ id: "source", kind: "evidence", lane: "evidence", reason: "budget" }]);
+        expect(tight.tokens).toBe(10);
+    });
+
+    it("trims a promoted extension line before core titles and evidence without admitting its late source", async () => {
+        const newest = {
+            ...candidate("flow", "newest", "[m:flow:newest] 2 turns ago: (Noon) Promise: Return tomorrow", 2),
+            reason: "timeline",
+        };
+        const extension = {
+            ...candidate("flow", "extension", "[m:flow:extension] 3 turns ago: (Dawn) Arrival: Reached the gate", 1),
+            reason: "timeline",
+        };
+        const lanes: Lane<LaneCandidate>[] = [
+            {
+                lane: "flow",
+                target: 4,
+                items: [
+                    { ...candidate("flow", "raw", "[m:flow:raw] 1 turn ago: Still here", 3), reason: "recent" },
+                    candidate("flow", "newest", "[m:flow:newest] 2 turns ago: Promise", 2),
+                    candidate("flow", "extension", "[m:flow:extension] 3 turns ago: Arrival", 1),
+                ],
+                flow: { timeline: true, titles: 2, full: [newest, extension] },
+            },
+            {
+                lane: "evidence",
+                target: 4,
+                items: ["newest", "extension"].map((id) => ({
+                    ...candidate("evidence", `source-${id}`, `[m:source-${id}] user: "Original ${id}"`),
+                    reason: "eventSource",
+                    requires: `events:${id}`,
+                })),
+            },
+        ];
+        const tokenizer: MemoryTokenizer = {
+            tokenizeChat: async ({ content }) =>
+                content.startsWith("[m:")
+                    ? content.includes("turns ago: (")
+                        ? 4
+                        : content.startsWith("[m:source-")
+                          ? 2
+                          : 1
+                    : 2 + 4 * (content.match(/\[m:/g)?.length ?? 0) ** 2,
+        };
+        const roomy = await spentCard(tokenizer, { maximum: 44, lanes });
+        expect(roomy.items.map(({ id }) => id)).toEqual(["newest", "raw", "source-newest", "extension"]);
+        expect(roomy.excluded).toEqual([
+            { id: "source-extension", kind: "evidence", lane: "evidence", reason: "budget" },
+        ]);
+        // Three stable lines cost 38 and evidence costs 6. Removing the last admission leaves 18 + 6.
+        const tight = await spentCard(tokenizer, { maximum: 35, lanes });
+        expect(tight.items.map(({ id, reason }) => [id, reason])).toEqual([
+            ["newest", "timeline"],
+            ["raw", "recent"],
+            ["source-newest", "eventSource"],
+        ]);
+        expect(tight.excluded).toEqual([
+            { id: "source-extension", kind: "evidence", lane: "evidence", reason: "budget" },
+            { id: "extension", kind: "event", lane: "flow", reason: "budget" },
+        ]);
+        expect(tight.stable).toContain(newest.line);
+        expect(tight.stable).not.toContain("Arrival");
+        expect(tight.volatile).toContain('[m:source-newest] user: "Original newest"');
+        expect(tight.tokens).toBe(24);
+    });
+
     const pageItem = (lane: "required" | "pages", id: string, body: string): LaneCandidate => ({
         ...candidate(lane, id, `[m:${id}] ${body}`),
         kind: "page",

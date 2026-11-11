@@ -17,10 +17,11 @@ import {
  * - History before the window leaves the prompt only where an active, unsuppressed event covers it.
  *   Everything else stays raw. Whether the writer already recorded a message says nothing here: that
  *   counts events of any status.
- * - The maximum is the only hard limit. Each lane first spends up to its target, then what is left is
- *   lent by score. Relevance is decided before spending, and spending adds no item that does not exist,
- *   so a quiet scene leaves room empty: the lanes are a cap, not a quota. The required lane takes no part
- *   in this: `buildMemoryCard` reserves it first.
+ * - The maximum is the only hard limit. Flow reserves a contiguous run of recent summaries up to its
+ *   target, then titles outside the run against the maximum alone. Other lanes spend up to their
+ *   targets and borrow by score; flow extends its run with what remains. Relevance is decided before
+ *   spending, which adds no candidate that does not exist. The required lane takes no part in this:
+ *   `buildMemoryCard` reserves it first.
  */
 
 export { coveredMessages, rawWindow } from "../../../../../shared/structuredMemory.ts";
@@ -46,12 +47,17 @@ export type LaneItem = {
 /** What a lane offers before its lines are counted. */
 export type LaneCandidate = Omit<LaneItem, "tokens">;
 
-/** A lane, its items in rank order: `target` is what its core round may spend, `limit` how many it may ever hold. */
+/**
+ * A lane in rank order: `target` bounds its core round (full lines only for timeline flow), `limit`
+ * bounds its item count. Flow titles spend against the maximum alone.
+ */
 export type Lane<Item extends LaneCandidate = LaneItem> = {
     lane: MemoryManifestLane;
     target: number;
     limit?: number;
     items: Item[];
+    /** Flow titles are `items`; full forms are newest first. Without this metadata, spending is ordinary. */
+    flow?: { timeline: boolean; titles: number; full: Item[] };
 };
 
 /** A candidate a send left out, and why. */
@@ -77,7 +83,7 @@ export function readBudget(settings: HypaV3Settings, maxContext: number, maxResp
     };
 }
 
-/** What `requires` names: the lane is part of it, so evidence needs its event's item there, never its flow title. */
+/** What `requires` names: an events key can also be satisfied by a full flow line, never by its title. */
 export function itemKey({ lane, id }: Pick<LaneItem, "lane" | "id">): string {
     return `${lane}:${id}`;
 }
@@ -85,16 +91,19 @@ export function itemKey({ lane, id }: Pick<LaneItem, "lane" | "id">): string {
 /**
  * Shares `maximum`, which is what the frame left, among `lanes`, each item admitted whole or not at all.
  *
- * - Core round: lanes in `MEMORY_MANIFEST_LANES` order, each lane's items in rank order, holding the
- *   lane's target, its `limit`, and `maximum`. An item that does not fit is skipped, since a later
- *   smaller one may.
- * - Lending: the items left in every lane, by `score`, ties in lane order and then by rank, holding
+ * - Core round: lanes in `MEMORY_MANIFEST_LANES` order. Timeline flow stops its full run at the first
+ *   line over its target or `maximum`, then offers the newest titles outside the run against `maximum`
+ *   alone. Ordinary lanes skip an item that does not fit their target, `limit`, or `maximum`.
+ * - Lending: the items left outside timeline flow, by `score`, ties in lane order and then by rank, holding
  *   `limit` and `maximum` but no target. Nothing skipped here comes back: an item that requires another
  *   scores no higher than it and sits in a later lane, so this order reaches the required one first.
- * - A lane with target 0 is off: it admits nothing in either round.
- * - An item with `requires` is admitted only once that key is included; skipped, it stays for lending.
+ * - Extension: flow resumes its run against the remaining maximum, passing over events already shown
+ *   by the events lane. A title turns full only if the difference fits, then the title window advances.
+ * - A lane with target 0 is off: it admits nothing. Title-only flow uses a positive sentinel target.
+ * - An item with `requires` needs that key or its event's full flow line; skipped, it stays for lending.
  *
- * `included` is in admission order. Everything else is `excluded`, as `budget`.
+ * `included` is in admission order. Unadmitted candidates are `budget`, restricted in timeline flow to
+ * its final title window. Full flow lines and events items never show the same event in full twice.
  */
 export function spendLanes({ maximum, lanes }: { maximum: number; lanes: readonly Lane[] }): {
     included: LaneItem[];
@@ -102,27 +111,53 @@ export function spendLanes({ maximum, lanes }: { maximum: number; lanes: readonl
     spend: LaneSpend[];
 } {
     const rows = MEMORY_MANIFEST_LANES.flatMap((name) =>
-        lanes.filter(({ lane }) => lane === name).map((lane) => ({ lane, spent: 0, admitted: 0 })),
+        lanes
+            .filter(({ lane }) => lane === name)
+            .map((lane) => ({ lane, spent: 0, admitted: 0, run: new Set<string>(), next: 0 })),
     );
     type Row = (typeof rows)[number];
 
     const included: LaneItem[] = [];
     const keys = new Set<string>();
+    const satisfied = new Set<string>();
+    const fullFlow = new Set<string>();
     let total = 0;
-    const admissible = ({ lane, admitted }: Row, item: LaneItem) =>
+    const timeline = ({ lane }: Row) => lane.lane === "flow" && lane.flow?.timeline === true;
+    const titleWindow = ({ lane, run }: Row) => lane.items.filter(({ id }) => !run.has(id)).slice(0, lane.flow!.titles);
+    const admissible = ({ lane, admitted }: Row, item: LaneItem, replaced?: LaneItem) =>
         lane.target > 0 &&
-        total + item.tokens <= maximum &&
-        (lane.limit === undefined || admitted < lane.limit) &&
-        (item.requires === undefined || keys.has(item.requires));
+        total + item.tokens - (replaced?.tokens ?? 0) <= maximum &&
+        (lane.limit === undefined || admitted - (replaced ? 1 : 0) < lane.limit) &&
+        !(item.lane === "events" && fullFlow.has(item.id)) &&
+        (item.requires === undefined || satisfied.has(item.requires));
     const admit = (row: Row, item: LaneItem) => {
         included.push(item);
         keys.add(itemKey(item));
+        satisfied.add(itemKey(item));
         total += item.tokens;
         row.spent += item.tokens;
         row.admitted++;
     };
+    const admitFull = (row: Row, item: LaneItem) => {
+        admit(row, item);
+        row.run.add(item.id);
+        fullFlow.add(item.id);
+        satisfied.add(itemKey({ lane: "events", id: item.id }));
+    };
 
     for (const row of rows) {
+        if (timeline(row)) {
+            const full = row.lane.flow!.full;
+            for (; row.next < full.length; row.next++) {
+                const item = full[row.next];
+                if (row.spent + item.tokens > row.lane.target || !admissible(row, item)) break;
+                admitFull(row, item);
+            }
+            for (const item of titleWindow(row)) {
+                if (admissible(row, item)) admit(row, item);
+            }
+            continue;
+        }
         for (const item of row.lane.items) {
             if (row.spent + item.tokens <= row.lane.target && admissible(row, item)) {
                 admit(row, item);
@@ -130,6 +165,7 @@ export function spendLanes({ maximum, lanes }: { maximum: number; lanes: readonl
         }
     }
     const left = rows
+        .filter((row) => !timeline(row))
         .flatMap((row) => row.lane.items.map((item) => ({ row, item })))
         .filter(({ item }) => !keys.has(itemKey(item)));
     // The sort is stable and `left` is in lane order and rank order, which settles the ties.
@@ -140,10 +176,35 @@ export function spendLanes({ maximum, lanes }: { maximum: number; lanes: readonl
         }
     }
 
+    for (const row of rows.filter(timeline)) {
+        const full = row.lane.flow!.full;
+        for (; row.next < full.length; row.next++) {
+            const item = full[row.next];
+            if (keys.has(itemKey({ lane: "events", id: item.id }))) continue;
+            const titleIndex = included.findIndex((title) => itemKey(title) === itemKey(item));
+            const title = titleIndex < 0 ? undefined : included[titleIndex];
+            // Check the net cost before touching the title: a failed upgrade leaves it in place.
+            if (!admissible(row, item, title)) break;
+            const previousTitles = new Set(titleWindow(row).map(({ id }) => id));
+            if (title) {
+                included.splice(titleIndex, 1);
+                keys.delete(itemKey(title));
+                satisfied.delete(itemKey(title));
+                total -= title.tokens;
+                row.spent -= title.tokens;
+                row.admitted--;
+            }
+            admitFull(row, item);
+            for (const nextTitle of titleWindow(row)) {
+                if (!previousTitles.has(nextTitle.id) && admissible(row, nextTitle)) admit(row, nextTitle);
+            }
+        }
+    }
+
     return {
         included,
         excluded: rows
-            .flatMap((row) => row.lane.items)
+            .flatMap((row) => (timeline(row) ? titleWindow(row) : row.lane.items))
             .filter((item) => !keys.has(itemKey(item)))
             .map(({ id, kind, lane }) => ({ id, kind, lane, reason: "budget" })),
         spend: rows.map(({ lane: { lane, target }, spent }) => ({ lane, target, spent })),
