@@ -563,8 +563,19 @@ const held: Record<string, HeldChats> = $state({});
 const membershipVersions = new Map<string, number>();
 let membershipVersionCounter = 0;
 
+type ChatMembershipIndex = {
+    ids: Set<string>;
+    track: () => void;
+    notify?: () => void;
+};
+// Every ids write and holding replacement calls bumpChatMembership before another membership read.
+const membershipIndexes = new Map<string, ChatMembershipIndex>();
+
 function bumpChatMembership(chaId: string) {
     membershipVersions.set(chaId, ++membershipVersionCounter);
+    const index = membershipIndexes.get(chaId);
+    membershipIndexes.delete(chaId);
+    index?.notify?.();
 }
 
 type MessagePositionIndex = {
@@ -1049,7 +1060,31 @@ function memberIds(chaId: string): string[] {
 
 /** Whether the chat is a member of its character's list. */
 function isMember(ref: ChatRef): boolean {
-    return holdingAt(ref.chaId)?.ids.includes(ref.chatId) ?? false;
+    const holding = holdingAt(ref.chaId);
+    if (!holding) {
+        return false;
+    }
+    let index = membershipIndexes.get(ref.chaId);
+    if (!index) {
+        index = buildMembershipIndex(holding);
+        membershipIndexes.set(ref.chaId, index);
+    }
+    index.track();
+    return index.ids.has(ref.chatId);
+}
+
+function buildMembershipIndex(holding: HeldChats): ChatMembershipIndex {
+    const index: ChatMembershipIndex = {
+        // Only the invalidation signal subscribes the caller, never every element of the ids array.
+        ids: untrack(() => new Set(holding.ids)),
+        track: createSubscriber((update) => {
+            index.notify = () => untrack(update);
+            return () => {
+                index.notify = undefined;
+            };
+        }),
+    };
+    return index;
 }
 
 /** A character's loaded member chats in order, writable here only (unloaded members are left out). */

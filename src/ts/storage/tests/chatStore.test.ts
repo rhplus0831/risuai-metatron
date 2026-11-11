@@ -236,6 +236,79 @@ describe("idle refresh work", () => {
     });
 });
 
+describe("chat membership", () => {
+    it("follows inserted, removed, replaced, reordered, and recreated chat lists", async () => {
+        const { chat, server, ref, character, commit } = await boot();
+        const at = (chatId: string) => ({ chaId: "c", chatId });
+        const input = (id: string) => ({ id, name: id, message: [] });
+        // Cache a miss before each insertion or replacement, so an old set cannot hide the write.
+        expect(await chat.ensureChatLoaded(at("j"))).toBeUndefined();
+        chat.createChat("c", input("j") as any);
+        expect((await chat.ensureChatLoaded(at("j")))?.id).toBe("j");
+        commit();
+
+        expect(await chat.ensureChatLoaded(at("s"))).toBeUndefined();
+        server.chatBatch([
+            { characterId: "c", chatId: "s", baseRevision: null, ops: [{ op: "create", chat: input("s") as any }] },
+        ]);
+        chat.acceptRemoteChat(server.chat("c", "s")!);
+        expect(chat.noteRemoteChat(at("s"), null)).toBe("collection");
+        chat.deleteChat(at("s"));
+        expect(chat.noteRemoteChat(at("s"), null)).toBe("ignored");
+        commit();
+
+        expect(chat.chatCount("c")).toBe(2);
+        expect(await chat.ensureChatLoaded(at("replacement"))).toBeUndefined();
+        chat.installCharacterChats("c", [input("j"), input("replacement")] as any, character());
+        expect(chat.chatCount("c")).toBe(2);
+        expect((await chat.ensureChatLoaded(at("replacement")))?.id).toBe("replacement");
+        expect(await chat.ensureChatLoaded(ref)).toBeUndefined();
+
+        chat.reorderChats("c", ["replacement", "j"]);
+        expect(chat.chatSummaryList("c").map((entry) => entry.id)).toEqual(["replacement", "j"]);
+        expect((await chat.ensureChatLoaded(at("j")))?.id).toBe("j");
+        expect((await chat.ensureChatLoaded(at("replacement")))?.id).toBe("replacement");
+
+        chat.forgetCharacterChats("c");
+        expect(await chat.ensureChatLoaded(at("replacement"))).toBeUndefined();
+        chat.installCharacterChats("c", [input("recreated")] as any, character());
+        expect((await chat.ensureChatLoaded(at("recreated")))?.id).toBe("recreated");
+        expect(await chat.ensureChatLoaded(at("replacement"))).toBeUndefined();
+        server.close();
+    });
+
+    it("updates reactive refresh readers after a same-length membership replacement", async () => {
+        const { chat, server, ref } = await boot();
+        const { createProbe } = await import("./reactiveProbe.svelte");
+        const { flushSync } = await import("svelte");
+        const revision = server.chat("c", "k")!.revision;
+        const summary = (id: string) => ({ characterId: "c", id, revision, name: id, fmIndex: -1 });
+        const order = (id: string) => ({ characterId: "c", revision, ids: [id] });
+        chat.seedChats([summary("k"), summary("j")], [order("j")]);
+        chat.assembleChats([{ chaId: "c" }], [summary("j")], [order("j")]);
+        chat.markChatStale(ref);
+        // k is absent: this read does not subscribe to any loaded-chat field or ids array.
+        const probe = createProbe(() => chat.idleChatRefreshes());
+        try {
+            expect(probe.seen).toEqual([[ref]]);
+            expect(probe.derived()).toEqual([ref]);
+
+            expect(chat.applyRemoteCollection({ characterId: "c", order: order("k"), chats: [summary("k")] })).toBe(
+                true,
+            );
+            chat.markChatStale(ref);
+            flushSync();
+
+            expect(probe.seen).toEqual([[ref], []]);
+            expect(probe.derived()).toEqual([]);
+            expect(chat.idleSummaryRefreshes()).toEqual(["c"]);
+        } finally {
+            probe.dispose();
+            server.close();
+        }
+    });
+});
+
 describe("display install state", () => {
     afterEach(() => vi.clearAllMocks());
 

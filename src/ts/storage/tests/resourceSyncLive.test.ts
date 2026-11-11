@@ -1227,42 +1227,29 @@ describe("work that waits", () => {
     });
 
     it("reads at most 1,000 announced chats per request and reaches every one", async () => {
-        // 1,001 chats cross the per-request cap. They are spread over many characters: a character's
-        // membership check scans its whole chat list, so a thousand chats of one character would cost
-        // seconds of CPU the cap does not need.
-        const owners = Array.from({ length: 25 }, (_, index) => `r${index}`);
         const ids = Array.from({ length: 1001 }, (_, index) => `n${index}`);
-        const ownerOf = (index: number) => owners[index % owners.length];
         const { fake, chat, live, flushFeed, chatIds, texts } = await boot({
             prepare: (fake) =>
                 fake.store.applyChanges({
-                    ops: owners.map((id) => ({
-                        kind: fake.kind("characters"),
-                        id,
-                        baseRevision: null,
-                        data: { chaId: id, name: id },
-                    })),
-                    chats: ids.map((id, index) => create(ownerOf(index), id, [m(`${id}-m`, "old")])),
+                    chats: ids.map((id) => create("d", id, [m(`${id}-m`, "old")])),
                 }),
         });
-        expect(owners.flatMap((owner) => chatIds(owner))).toHaveLength(1001);
+        expect(chatIds("d")).toHaveLength(1002);
         // The announced chats are read whole only while they are loaded (an unloaded one is refreshed
         // through its character's summary list): loaded here, and pinned so the trim keeps them, as a
         // reader of a thousand chats would hold them.
-        const releases = owners.map((owner) => chat.pinChats(owner));
-        for (const owner of owners) {
-            await chat.loadChats(owner);
-        }
+        const release = chat.pinChats("d");
+        await chat.loadChats("d");
         fake.requests.length = 0;
         live.paused = true;
         // Whole-chat writes (`replace`): a by-id write would apply as the feed's patch with no read.
         fake.store.applyChanges({
-            chats: ids.map((id, index) => {
-                const stored = fake.chat(ownerOf(index), id)!;
+            chats: ids.map((id) => {
+                const stored = fake.chat("d", id)!;
                 const replaced = JSON.parse(JSON.stringify(stored.data));
                 replaced.message[0].data = "new";
                 return {
-                    characterId: ownerOf(index),
+                    characterId: "d",
                     chatId: id,
                     baseRevision: stored.revision,
                     ops: [{ op: "replace" as const, chat: replaced }],
@@ -1278,11 +1265,9 @@ describe("work that waits", () => {
         expect(sizes.length).toBeGreaterThanOrEqual(2);
         expect(Math.max(...sizes)).toBeLessThanOrEqual(1000);
         expect(sizes.reduce((sum, size) => sum + size, 0)).toBe(1001);
-        expect(ids.every((id, index) => texts(ownerOf(index), id)[0] === "new")).toBe(true);
+        expect(ids.every((id) => texts("d", id)[0] === "new")).toBe(true);
         expect(fake.batchCount()).toBe(0);
-        for (const release of releases) {
-            release();
-        }
+        release();
     });
 });
 
