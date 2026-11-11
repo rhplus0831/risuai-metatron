@@ -3,6 +3,8 @@ import pdfjsWorker from "pdfjs-dist/build/pdf.worker?worker&url";
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
+const cMapUrl = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjs.version}/cmaps/`;
+
 /**
  * Renders one full data URL per PDF page, in page order, for the filesystem MCP tool in
  * `src/ts/process/mcp/filesystemclient.ts` (not bare base64). Loading or rendering failures reject
@@ -20,7 +22,7 @@ export async function convertPdfToImages(
 
     const loadingTask = pdfjs.getDocument({
         data: pdfBuffer,
-        cMapUrl: "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/cmaps/",
+        cMapUrl,
         cMapPacked: true,
     });
     const pdf = await loadingTask.promise;
@@ -57,7 +59,7 @@ export async function convertPdfToImages(
 export async function extractPdfText(pdfBuffer: ArrayBuffer): Promise<string[]> {
     const loadingTask = pdfjs.getDocument({
         data: pdfBuffer,
-        cMapUrl: "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.0.379/cmaps/",
+        cMapUrl,
         cMapPacked: true,
     });
     const pdf = await loadingTask.promise;
