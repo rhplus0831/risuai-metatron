@@ -5,7 +5,7 @@ shipped behavior; [the archive](../archived-plan/README.md) indexes completed pl
 their last commit and path, and the [backlog](../README.md) holds what they left open.
 
 - [Structured Memory Recent Timeline](structured-memory-recent-timeline.md): the flow lane shows recent events with
-  their summaries, and lane targets default to shares of the memory budget. Four serial slices; none landed.
+  their summaries, and lane targets default to shares of the memory budget. Four serial slices; slice 1 landed.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive, following the archive's procedure for the plan's open items. Use `None`
