@@ -1917,7 +1917,7 @@ export const languageKorean = {
             "translator-steps-flattened": "다단계 번역 프리셋을 첫 번째 활성 단계로 축소함",
             "trash-time-refreshed": "휴지통에 있는 캐릭터가 복원 직후 자동 삭제되지 않도록 보관 시점을 갱신함",
             "shape-repaired": "원본 RisuAI에서 불러올 때 오류가 날 수 있는 목록 구조를 보정함",
-            "memory-projected": "구조화 기억 이벤트를 하이파 V3 요약 형식으로 변환한 채팅",
+            "memory-projected": "구조화 기억 사건을 하이파 V3 요약 형식으로 변환한 채팅",
         },
         excluded: {
             "api-keys": "API 키 (사용자 선택에 따라 제외됨)",
