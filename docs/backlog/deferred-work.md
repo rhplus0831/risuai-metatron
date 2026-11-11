@@ -180,6 +180,10 @@ Work that finished plans named and left: features put off, a plan's Later list, 
 - Relationship projection, put off by the owner on 2026-11-05 as scope B of the section growth work (scope A landed in `72e509ce3` and `596ab8cb2`): `retrieve.ts` projects `event.relationshipShifts` into the newest record per directed (from, to) pair over the covering events, for the pages on stage, named, or linked in the send (as `pageKnowledge` does); `card.ts` renders the relation clause on the page line; `relationships` either leaves `RELATED_SLOTS` or stays as the fallback for a pair with no shift. About 350 to 450 lines in two slices, with tests, `read.md` and `records.md`.
 - Not justified by the [2026-11-08 replays](../reports/measurements/relationship-shifts-2026-11-08.md): the projection would have repeated the `relationships` sections line for line. The case that would justify it is a long chat (30 or more windows) whose side characters relate to each other and whose `relationships` sections reach the slot budget; replay such a chat the same way first. A shift's `direction` is free text, so a projected clause needs a clamp or a fixed vocabulary before anything else.
 
+## Memory Panel Readability
+
+- Not planned (the plan's Not In This Plan list): deleting a section by hand, changing a page's type, and editing `links`; editing an event's key lines, state changes, knowledge, or participants; help text for 기록기, 억제, and 채택; a Korean rename of the shared memory surfaces (the settings page, the preset, the toggle, the meter); Markdown rendering of record text and a natural-language command terminal; an `e2e` spec for the panel.
+
 ## Dependency Upgrades
 
 Not a plan: the upgrade rounds of 2026-10-30 left these behind on purpose. Versions were read from `package.json` on 2026-11-11.

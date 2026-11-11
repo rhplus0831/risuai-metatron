@@ -27,6 +27,7 @@ Checks that a finished plan left to a person, a device, a real provider, or a sc
 - [ ] **Static Audit Fixes (SA4)**: the refused-data banner's placement on mobile, Firefox, and Safari (checked in Chromium at 1280×800 and 390×844).
 - [ ] **PocketRisu fix crosscheck (row 16)**: `share_target` on Samsung Internet, the one row of [the crosscheck](../reports/surveys/pocketrisu-fix-crosscheck.md) still waiting for a device.
 - [ ] **Upstream Integration (UP22)**: Android's media notification and Chrome's tab audio indicator for the keep-alive audio.
+- [ ] **Memory Panel Readability (2–8)**: at phone width (about 360px): the page read view (2), an expanded event's changes (3), the `story` view (4), the alias editor and the rename input (6), the event title and summary editor with a Korean IME (7), and the new-note and add-section forms (8); Enter on a phone keyboard starts a search (5).
 
 ## iOS Safari and the Home Screen app
 
@@ -79,6 +80,7 @@ One tab:
 - [ ] **Chat Store and Structured Memory Sweep**: in the cardboard theme an expanded receipt's details overlap the bottom-right icon box by about 3px (B3); the gray `unavailable` health badge with its help icon (B8); a follow lost to a dropped connection, then a same-page retake of that job, shows the live stream (A2, covered only by `generationJobs.test.ts`).
 - [ ] **Found Issues Clearance**: Web Push in Chrome and Firefox (the enable button right after a reconcile, a service-worker upgrade during a subscribe, a `/`-route click).
 - [ ] **Structured Memory**: the 69 device, browser, and real-model checks the run's final report listed per slice, among them Firefox and Safari, the Android PWA, a real V3 plugin, and real provider costs. The list is not in the repository.
+- [ ] **Memory Panel Readability (1–5, 8)**: the Korean memory panel, receipt line, and chat status line read naturally (1); the page read view and an expanded event's changes in each theme, and a long page scrolls inside the panel (2, 3); a chat with several hundred events switches to `story` without a visible stall (4); a Korean query finds Korean text (5); a send after creating a note names it in the manifest when the chat mentions its title (8).
 
 Two tabs, two browsers, or a dropped connection:
 
