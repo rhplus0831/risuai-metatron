@@ -53,6 +53,7 @@ it("names the same pages in the writer cast and retrieval after removing spaces 
         stage: [],
         window: { start: 0, dropped: new Set() },
         settings: normalizeStructuredMemorySettings({}),
+        targets: normalizeStructuredMemorySettings({}).laneTargets,
     });
     expect(castIds).toEqual(["mary", "bird"]);
     expect([...retrieval.found]).toEqual([

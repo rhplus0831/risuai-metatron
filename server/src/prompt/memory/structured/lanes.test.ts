@@ -207,7 +207,7 @@ describe("structured memory lanes", () => {
             {
                 memoryTokensRatio: 0.25,
                 memoryBudgetTokens: 900,
-                structured: { laneTargets: targets },
+                structured: { laneSplit: "manual", laneTargets: targets },
             },
             "read-budget",
         ).settings;
@@ -227,6 +227,54 @@ describe("structured memory lanes", () => {
                 reduced: expect.arrayContaining(row.reduced),
                 targets,
             });
+        }
+    });
+
+    it("sets auto targets to floored shares of the applied maximum, ignoring stored counts including zero", () => {
+        const settings = createHypaV3Preset(
+            "Automatic lanes",
+            {
+                memoryTokensRatio: 0.25,
+                memoryBudgetTokens: 903,
+                structured: {
+                    laneSplit: "auto",
+                    laneTargets: { flow: 9, pages: 0, events: 17, evidence: 11, threads: 3 },
+                    requiredCap: 731,
+                },
+            },
+            "automatic-lanes",
+        ).settings;
+        for (const row of [
+            {
+                mode: "ratio",
+                context: 1003,
+                response: 203,
+                maximum: 250,
+                targets: { flow: 100, pages: 75, events: 37, evidence: 25, threads: 12 },
+            },
+            {
+                mode: "tokens",
+                context: 4000,
+                response: 200,
+                maximum: 903,
+                targets: { flow: 361, pages: 270, events: 135, evidence: 90, threads: 45 },
+            },
+            {
+                mode: "tokens",
+                context: 1005,
+                response: 203,
+                maximum: 401,
+                targets: { flow: 160, pages: 120, events: 60, evidence: 40, threads: 20 },
+            },
+        ] as const) {
+            const budget = readBudget({ ...settings, budgetMode: row.mode }, row.context, row.response);
+            expect(budget, `${row.mode}, context ${row.context}`).toMatchObject({
+                maximum: row.maximum,
+                targets: row.targets,
+            });
+            expect(budget.reduced.filter(({ field }) => field === "memory")).toEqual(
+                row.maximum === 401 ? [{ field: "memory", configured: 903, applied: 401 }] : [],
+            );
         }
     });
 

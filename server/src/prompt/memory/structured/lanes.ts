@@ -6,6 +6,7 @@ import {
     type MemoryManifestLane,
     type MemoryStaleReason,
     normalizeStructuredMemorySettings,
+    resolveLaneTargets,
 } from "../../../../../shared/structuredMemory.ts";
 
 /**
@@ -17,7 +18,8 @@ import {
  * - History before the window leaves the prompt only where an active, unsuppressed event covers it.
  *   Everything else stays raw. Whether the writer already recorded a message says nothing here: that
  *   counts events of any status.
- * - The maximum is the only hard limit. Flow reserves a contiguous run of recent summaries up to its
+ * - Lane targets follow `laneSplit`: shares of the applied maximum under `auto`, stored counts under
+ *   `manual`. The maximum is the only hard limit. Flow reserves a contiguous run of recent summaries up to its
  *   target, then titles outside the run against the maximum alone. Other lanes spend up to their
  *   targets and borrow by score; flow extends its run with what remains. Relevance is decided before
  *   spending, which adds no candidate that does not exist. The required lane takes no part in this:
@@ -72,14 +74,14 @@ export type LaneSpend = { lane: MemoryManifestLane; target: number; spent: numbe
 
 /**
  * What a send may spend on memory, in either budget mode, what fitting the context reduced of the
- * preset's amounts, and the lanes' targets.
+ * preset's amounts, and the lanes' targets from the split and the applied, possibly reduced maximum.
  */
 export function readBudget(settings: HypaV3Settings, maxContext: number, maxResponse: number) {
     const { memoryTokens, reduced } = resolveHypaV3Budget(settings, maxContext, maxResponse);
     return {
         maximum: memoryTokens,
         reduced,
-        targets: normalizeStructuredMemorySettings(settings.structured).laneTargets,
+        targets: resolveLaneTargets(normalizeStructuredMemorySettings(settings.structured), memoryTokens),
     };
 }
 

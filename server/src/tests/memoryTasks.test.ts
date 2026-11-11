@@ -4625,14 +4625,17 @@ describe("structured memory tasks", () => {
             signal: new AbortController().signal,
             fence: () => {},
         });
+        const settings = normalizeStructuredMemorySettings({
+            flowEvents: 0,
+            laneSplit: "manual",
+            laneTargets: { events: 0, pages: 0, evidence: 0, threads: 100 },
+        });
         const selected = await retrieveLanes(host, {
             ...records,
             entries: [],
             window: { start: 0, dropped: new Set() },
-            settings: normalizeStructuredMemorySettings({
-                flowEvents: 0,
-                laneTargets: { events: 0, pages: 0, evidence: 0, threads: 100 },
-            }),
+            settings,
+            targets: settings.laneTargets,
         });
         expect(selected.lanes.find(({ lane }) => lane === "threads")!.items).toEqual([
             expect.objectContaining({ id: records.threads[0].id, reason: "onStage" }),
@@ -4641,7 +4644,7 @@ describe("structured memory tasks", () => {
 
     it("does not warm changed page sections when the pages lane is disabled", async () => {
         const t = structuredHarness({
-            hypaSettings: { structured: { cadence: "everyTurn", laneTargets: { pages: 0 } } },
+            hypaSettings: { structured: { cadence: "everyTurn", laneSplit: "manual", laneTargets: { pages: 0 } } },
         });
         writeMemory(t.store, "c", "k1", { pages: memoryRecords(["harbor"], "Harbor").pages });
         const { request, terminal } = await beginAnalysis(t);
@@ -4658,6 +4661,32 @@ describe("structured memory tasks", () => {
         await finishRecording(t, terminal);
         expect(t.store.memory.readRecord("c", "k1", "pages", "harbor")!.data.sections[0].body).toBe("Open");
         expect(t.embeddings.bodies.flatMap(({ input }) => input)).toEqual(["Cara promises to return."]);
+    });
+
+    it("warms committed events and changed page sections under auto despite stored zero counts", async () => {
+        const t = structuredHarness({
+            hypaSettings: {
+                structured: { cadence: "everyTurn", laneSplit: "auto", laneTargets: { events: 0, pages: 0 } },
+            },
+        });
+        writeMemory(t.store, "c", "k1", { pages: memoryRecords(["harbor"], "Harbor").pages });
+        const { request, terminal } = await beginAnalysis(t);
+        request.answer(
+            JSON.stringify({
+                ...analysis(),
+                pageCandidates: [{ targetId: "harbor", reason: "Gate opens", confidence: 1 }],
+            }),
+        );
+        const patchRequest = await nextPatch(t, request.index + 1, terminal);
+        patchRequest.answer(
+            JSON.stringify({ patches: [{ pageId: "harbor", heading: "Gate", op: "upsert", body: "Open" }] }),
+        );
+        await finishRecording(t, terminal);
+        expect(t.store.memory.readRecord("c", "k1", "pages", "harbor")!.data.sections[0].body).toBe("Open");
+        expect(t.embeddings.bodies.flatMap(({ input }) => input).sort()).toEqual([
+            "Cara promises to return.",
+            "Harbor: Gate\nOpen",
+        ]);
     });
 
     it("patches recorded and failed receipts onto every assistant in a window without changing its evidence or other generation info", async () => {
@@ -4935,9 +4964,29 @@ describe("structured memory tasks", () => {
         }
     });
 
+    it("warms deferred event and page texts under auto despite stored zero counts", async () => {
+        const t = structuredHarness({
+            hypaSettings: { structured: { laneSplit: "auto", laneTargets: { events: 0, pages: 0 } } },
+        });
+        const source = t.chat("k1")!.message[0];
+        writeMemory(t.store, "c", "k1", {
+            events: [event("promise", [{ messageId: source.chatId!, index: 0, hash: messageSourceHash(source) }])],
+            pages: memoryRecords(["harbor"], "Harbor").pages,
+        });
+        t.service.warmVectors(writerInput(t));
+        await turns(1);
+        await t.service.drain();
+        expect(t.embeddings.bodies.flatMap(({ input }) => input).sort()).toEqual([
+            "Harbor: Gate\nHarbor",
+            "Recorded promise",
+        ]);
+    });
+
     it("warms deferred record texts in 50-text batches without publishing a writer status", async () => {
         const laneTargets = { pages: 1000, events: 1000, evidence: 0, threads: 0 };
-        const t = structuredHarness({ hypaSettings: { structured: { flowEvents: 0, laneTargets } } });
+        const t = structuredHarness({
+            hypaSettings: { structured: { flowEvents: 0, laneSplit: "manual", laneTargets } },
+        });
         const source = t.chat("k1")!.message[0];
         // 102 event texts and 101 page texts force both kinds to have misses after a 100-text send.
         const events = Array.from({ length: 51 }, (_, index) => ({
@@ -4970,7 +5019,8 @@ describe("structured memory tasks", () => {
                 { messageId: "query", role: "user" as const, text: "Continue." },
             ],
             window: { start: 1, dropped: new Set([0]) },
-            settings: normalizeStructuredMemorySettings({ flowEvents: 0, laneTargets }),
+            settings: normalizeStructuredMemorySettings({ flowEvents: 0, laneSplit: "manual", laneTargets }),
+            targets: normalizeStructuredMemorySettings({ laneSplit: "manual", laneTargets }).laneTargets,
         };
         const selected = await retrieveLanes(host, retrieval);
         const foreground = t.embeddings.bodies

@@ -129,11 +129,16 @@ it("edits only consumed Structured Memory settings and shares the selected prese
             control(text.flowEvents),
             control(text.flowKeyLineEvents),
             control(text.requiredCap),
-            control(text.flowTarget),
-            control(text.pagesTarget),
-            control(text.eventsTarget),
-            control(text.evidenceTarget),
-            control(text.threadsTarget),
+            control(text.laneSplit),
+            ...(preset().structured.laneSplit === "manual"
+                ? [
+                      control(text.flowTarget),
+                      control(text.pagesTarget),
+                      control(text.eventsTarget),
+                      control(text.evidenceTarget),
+                      control(text.threadsTarget),
+                  ]
+                : []),
             control(text.instructions),
             control(text.screeningRefusal),
             control(text.screeningFormat),
@@ -154,6 +159,8 @@ it("edits only consumed Structured Memory settings and shares the selected prese
         );
         expect(new Set(algorithmControls)).toEqual(new Set(allowed));
     };
+    assertControls(text.cadenceTurns);
+    change(control(text.laneSplit) as HTMLSelectElement, "manual");
     assertControls(text.cadenceTurns);
     change(control(text.language) as HTMLInputElement, "Korean");
     change(control(text.instructions) as HTMLTextAreaElement, "Remember promises.");
@@ -304,10 +311,62 @@ it("edits both screening lists by line while preserving a typed newline", () => 
     expect(screening().format).toHaveLength(3);
 });
 
+it("shows shares in auto and preserves all five edited lane counts when switching back to manual", () => {
+    settings.ui.memoryAlgorithmType = "structuredMemory";
+    open();
+    const read = () => settings.hypaV3Presets.items.find(({ id }) => id === "first")!.settings.structured;
+    const split = control(text.laneSplit) as HTMLSelectElement;
+    const laneInputs = [
+        [text.flowTarget, 2401],
+        [text.pagesTarget, 0],
+        [text.eventsTarget, 111],
+        [text.evidenceTarget, 222],
+        [text.threadsTarget, 333],
+    ] as const;
+    const shares = text.laneShares({ flow: 40, pages: 30, events: 15, evidence: 10, threads: 5 });
+    const assertAuto = () => {
+        expect(split.value).toBe("auto");
+        for (const [label] of laneInputs) expect(target.textContent).not.toContain(label);
+        expect(target.textContent).toContain(shares);
+        for (const label of [text.flowEvents, text.flowKeyLineEvents, text.requiredCap]) {
+            expect(control(label).isConnected).toBe(true);
+        }
+    };
+    assertAuto();
+    change(split, "manual");
+    expect(target.textContent).not.toContain(shares);
+    for (const [label, value] of laneInputs) {
+        const input = control(label) as HTMLInputElement;
+        expect(split.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        change(input, String(value));
+    }
+    for (const [label, value] of [
+        [text.flowEvents, 6],
+        [text.flowKeyLineEvents, 2],
+        [text.requiredCap, 731],
+    ] as const)
+        change(control(label) as HTMLInputElement, String(value));
+    const expected = {
+        laneTargets: { flow: 2401, pages: 0, events: 111, evidence: 222, threads: 333 },
+        flowEvents: 6,
+        flowKeyLineEvents: 2,
+        requiredCap: 731,
+    };
+    expect(read()).toMatchObject({ laneSplit: "manual", ...expected });
+    change(split, "auto");
+    assertAuto();
+    expect(read()).toMatchObject({ laneSplit: "auto", ...expected });
+    change(split, "manual");
+    expect(read()).toMatchObject({ laneSplit: "manual", ...expected });
+    expect(target.textContent).not.toContain(shares);
+    for (const [label, value] of laneInputs) expect((control(label) as HTMLInputElement).value).toBe(String(value));
+});
+
 it("writes the flow token target and key-line event count through their count inputs", () => {
     settings.ui.memoryAlgorithmType = "structuredMemory";
     open();
     const read = () => settings.hypaV3Presets.items.find(({ id }) => id === "first")!.settings.structured;
+    change(control(text.laneSplit) as HTMLSelectElement, "manual");
     const flow = control(text.flowTarget) as HTMLInputElement;
     const keyLines = control(text.flowKeyLineEvents) as HTMLInputElement;
     expect(flow.value).toBe("1500");

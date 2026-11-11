@@ -506,6 +506,7 @@
           "windowTurns": 3,
           "flowEvents": 8,
           "flowKeyLineEvents": 3,
+          "laneSplit": "auto",
           "laneTargets": {
             "flow": 1500,
             "pages": 2000,

@@ -919,6 +919,7 @@ describe("the context report", () => {
                     gapConfirmTokens: options.gapConfirmTokens ?? 0,
                     structured: {
                         windowTurns: 1,
+                        laneSplit: "manual",
                         laneTargets: { pages: 0, events: 0, evidence: 0, threads: 300 },
                         ...options.settings,
                     },

@@ -2987,6 +2987,10 @@ export const languageKorean = {
             flowKeyLineEvents: "주요 대사를 함께 보여줄 최근 사건 수",
             flowTarget: "최근 사건 요약 할당 토큰",
             requiredCap: "필수 문서 최대 토큰 한도",
+            laneSplit: "영역별 토큰 배분 방식",
+            laneSplits: { auto: "기억 최대 토큰의 비율로", manual: "직접 입력한 토큰 수로" },
+            laneShares: (shares: { flow: number; pages: number; events: number; evidence: number; threads: number }) =>
+                `기억 최대 토큰 중 최근 사건 요약 ${shares.flow}%, 관련 문서 ${shares.pages}%, 이전 사건 ${shares.events}%, 원문 근거 메시지 ${shares.evidence}%, 진행 중인 미결 사항 ${shares.threads}%. 한 영역이 남긴 토큰은 다른 영역이 쓰고, 최근 사건 요약이 마지막으로 남은 토큰을 씁니다.`,
             pagesTarget: "관련 문서 할당 토큰",
             eventsTarget: "이전 사건 할당 토큰",
             evidenceTarget: "원문 근거 메시지 할당 토큰",

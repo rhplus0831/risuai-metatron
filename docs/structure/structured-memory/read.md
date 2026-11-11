@@ -95,11 +95,19 @@ else coverage is unknown; a preview's `memoryBlock` indexes the holders. `report
 while `excludedTotal` counts all rows. `sendManifest` and `writerState` supply item and stage summaries; `due` is a
 hand-off request, not a queued task.
 
-The flow lane is a recent timeline. Under `laneTargets.flow`, a contiguous run of the newest events that left the window
+The flow lane is a recent timeline. Under the flow target, a contiguous run of the newest events that left the window
 shows each in full (story time, title, summary, and key lines on the newest `flowKeyLineEvents`), and `flowEvents`
 titles follow it. After the other lanes and the lending, the run goes on with what is left of the maximum. An event is
 in full once, in the run or in the events lane, and selection takes the run's events out of the events lane's
 exclusions. A target of 0 keeps the title-only lane. `spendLanes`' doc owns the order.
+
+Lane targets follow `laneSplit`. Under `auto`, the default and what an absent value reads as, `readBudget` gives each
+lane `floor(maximum × share)` of the applied maximum (`STRUCTURED_MEMORY_LANE_SHARES`: flow 40%, pages 30%, events 15%,
+evidence 10%, threads 5%); under `manual` it gives the stored `laneTargets`. Selection hands those targets to retrieval
+as its input, and the evidence reselection reads them too. The shares decide only the core round: lending and the run's
+extension spend what the lanes leave. `requiredCap` is no share. Warming has no maximum
+(`structuredMemoryEmbeddingLanes`): under `auto` it embeds for the events and pages lanes, under `manual` only for a
+lane whose stored count is above 0.
 
 The meter reads tokens and `memoryStatusWord`; its popover and Preview share `MemoryManifest`.
 
@@ -285,8 +293,10 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
 
 ## State
 
-- The read path stores nothing of its own: its records are [structured memory's](records.md#state). What a send leaves
-  is on the reply's `generationInfo`: the report in `context` and the receipt in `memory` ([Receipts](#receipts)).
+- The read path stores nothing of its own: its records are [structured memory's](records.md#state).
+- `laneSplit` never rewrites the stored `laneTargets`: `auto` ignores them, so switching to `manual` shows the counts a
+  person entered before. The targets a send used are on its report's `lanes`. What a send leaves is on the reply's
+  `generationInfo`: the report in `context` and the receipt in `memory` ([Receipts](#receipts)).
 - The panel's rows are derived in the tab from the held chat and the routes' answers. Pages and Threads hold a copy of
   what they show, which an edit's answer or a read replaces.
 
@@ -334,6 +344,9 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
 - The flow timeline: `structured/lanes.test.ts` for the run, its titles, and the extension, `card.test.ts` for the full
   line, the heading, and the trim order, `structured/retrieve.test.ts` for the window rule, key lines, and evidence
   through a full line, `assemble.test.ts` for the report's items and exclusions.
+- The lane split: `structured/lanes.test.ts` for `readBudget`'s targets, `structured/retrieve.test.ts` for targets read
+  from the input, `memoryTasks.test.ts` for both warming sites, `normalizeCollections.test.ts` and
+  `MemorySettings.structuredMemory.test.ts` for the setting.
 - Receipts: `memoryTasks.test.ts` for the patches; `memoryJobs.test.ts` for the reply's notice on a real stack;
   `structuredMemory.test.ts` for `memoryReceiptView`; `MemoryReceiptLine.svelte.test.ts` and
   `Chat.interactions.svelte.test.ts` for the line and its gate.
@@ -407,9 +420,9 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
   [audit](../../reports/measurements/structured-memory-2026-11-03.md).
 - Small contexts starve the last lanes: at 16,384 tokens of context the `threads` lane gets nothing once event lines
   carry three quotes (found at 32,768), and a query naming two events loses one of them in a long chat at 32,768 too.
-  The flow lane's run spends up to its target (1,500 by default) before the pages lane does, so at 16,384 (a maximum of
-  3,276) the other lanes share what is left of under 1,800 tokens; that share is not measured yet. Decision: Found
-  Issues Decisions (owner, 2026-11-08), [audit](../../reports/measurements/structured-memory-2026-11-03.md).
+  Under `auto` at 16,384 (a maximum of 3,276) the flow lane's run takes up to 1,310 tokens before the pages lane's 982,
+  and what the pages lane loses to the flow's share is not measured yet. Decision: Found Issues Decisions (owner,
+  2026-11-08), [audit](../../reports/measurements/structured-memory-2026-11-03.md).
 
 ### Gotchas
 

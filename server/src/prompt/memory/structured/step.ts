@@ -258,7 +258,7 @@ export async function selectMemory(
         covered: coveredMessages(events),
     });
 
-    const { maximum, reduced } = readBudget(settings, maxContextTokens, host.db.maxResponse);
+    const { maximum, reduced, targets } = readBudget(settings, maxContextTokens, host.db.maxResponse);
     const retrievalInput = {
         events,
         threads: records.threads,
@@ -267,6 +267,7 @@ export async function selectMemory(
         window,
         stage: records.stage,
         settings: structured,
+        targets,
     };
     const prepared = await prepareRetrieval(retrievalInput);
     const requiredAlert = (card: RequiredOverLimit): MemorySelection => {
@@ -315,7 +316,7 @@ export async function selectMemory(
     });
     let gapTokens = trimmed.gap.tokens;
     let similarity = retrieved.similarity;
-    if (structured.laneTargets.evidence > 0 && trimmed.history.length < raw.length) {
+    if (targets.evidence > 0 && trimmed.history.length < raw.length) {
         const kept = new Set(trimmed.history);
         const removed = new Set<number>();
         history.forEach((entry, index) => {

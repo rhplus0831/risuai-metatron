@@ -21,6 +21,7 @@ import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import {
     normalizeStructuredMemorySettings,
     STRUCTURED_MEMORY_ALGORITHM,
+    structuredMemoryEmbeddingLanes,
     type StructuredMemoryRebuildMode,
 } from "../../../../shared/structuredMemory.ts";
 import type { ResourceKindRegistry } from "../../data/kinds.ts";
@@ -1429,7 +1430,10 @@ export function createMemoryTasks(deps: {
             return;
         const { host } = createMemoryTaskHost({ scope, input, deps: hostDeps, signal: task.controller.signal, fence });
         const settings = normalizeStructuredMemorySettings(selectedHypaV3Preset(scope.db)?.settings?.structured);
-        const texts = recordVectorTexts(readMemoryRecords(store, chaId, chatId), settings.laneTargets);
+        const texts = recordVectorTexts(
+            readMemoryRecords(store, chaId, chatId),
+            structuredMemoryEmbeddingLanes(settings),
+        );
         try {
             host.fence();
             const processor = new HypaProcesser(host.embeddings, host.db.hypaModel);

@@ -3351,6 +3351,7 @@ describe("structured memory job hand-offs", () => {
                 structured: {
                     cadence: "everyTurn",
                     windowTurns: 1,
+                    laneSplit: "manual",
                     laneTargets: { pages: 0, events: 0, evidence: 0, threads: 0 },
                 },
             });
@@ -3400,6 +3401,7 @@ describe("structured memory job hand-offs", () => {
                 structured: {
                     cadence: "manual",
                     requiredCap: 1,
+                    laneSplit: "manual",
                     laneTargets: { pages: 500, events: 0, evidence: 0, threads: 0 },
                 },
             });
@@ -3464,6 +3466,7 @@ describe("structured memory job hand-offs", () => {
                         structured: {
                             requiredCap,
                             cadence: "manual",
+                            laneSplit: "manual",
                             laneTargets: { pages: 0, events: 0, evidence: 0, threads: 0 },
                         },
                     });
@@ -3557,6 +3560,7 @@ describe("structured memory job hand-offs", () => {
                 structured: {
                     cadence: "manual",
                     requiredCap: 1000,
+                    laneSplit: "manual",
                     laneTargets: { pages: 500, events: 0, evidence: 0, threads: 0 },
                 },
             });
@@ -4411,6 +4415,7 @@ describe("structured memory job hand-offs", () => {
                 structured: {
                     cadence: "manual",
                     windowTurns: 1,
+                    laneSplit: "manual",
                     laneTargets: { pages: 0, events: 0, evidence: 0, threads: 0 },
                 },
             });

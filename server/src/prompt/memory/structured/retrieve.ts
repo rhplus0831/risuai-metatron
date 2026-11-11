@@ -170,6 +170,8 @@ type RetrievalInput = {
     /** The on-stage page ids; empty when unknown. */
     stage: readonly string[];
     settings: StructuredMemorySettings;
+    /** Lane targets resolved from the send's applied memory maximum and split. */
+    targets: StructuredMemorySettings["laneTargets"];
 };
 
 type RetrievedLanes = {
@@ -392,10 +394,10 @@ function flowItems(
     placed: readonly PlacedEvent[],
     eligible: readonly PlacedEvent[],
     entries: readonly ReadEntry[],
-    { flowEvents, flowKeyLineEvents, laneTargets }: StructuredMemorySettings,
+    { settings: { flowEvents, flowKeyLineEvents }, targets }: Pick<RetrievalInput, "settings" | "targets">,
 ): Pick<Lane<LaneCandidate>, "items" | "flow"> {
     const newestFirst = placed.toReversed().sort((a, b) => b.place - a.place);
-    const timeline = laneTargets.flow > 0;
+    const timeline = targets.flow > 0;
     const eligibleSet = new Set(eligible);
     const fullCandidates = timeline
         ? newestFirst.filter((candidate) => eligibleSet.has(candidate)).slice(0, RETRIEVAL_LIMITS.flowCandidates)
@@ -436,7 +438,7 @@ function flowItems(
  * Whether the events lane opens over `eligible`, and its candidates in rank order: by score, ties by
  * newer place, then id. An event's similarity is its best over its texts and the queries, and its score
  * is 0.8 of that plus 0.2 of the share of its participants on stage. A target of 0 closes the lane with
- * nothing embedded, as the writer warms nothing then either.
+ * nothing embedded for that lane in this send.
  */
 async function rankEvents(
     eligible: readonly PlacedEvent[],
@@ -694,25 +696,24 @@ const shownSections = ({ sections }: Pick<MemoryPage, "sections">) =>
 
 /**
  * Record texts shared by retrieval and background warming. The caller orders events by newest place;
- * pages prefer on-stage, named and linked pages, then newest sections. No lexical shortlist is used.
+ * pages prefer on-stage, named and linked pages, then newest sections. The caller supplies which
+ * embedding lanes are enabled. No lexical shortlist is used.
  */
 export function recordVectorTexts(
     records: { events: readonly MemoryEvent[]; pages: readonly MemoryPage[] },
-    targets: Pick<StructuredMemorySettings["laneTargets"], "events" | "pages">,
+    lanes: { events: boolean; pages: boolean },
     found: ReadonlyMap<string, PageMatch> = new Map(),
 ): { events: string[]; pages: string[] } {
     const scene = records.pages.find(({ type }) => type === "scene");
-    const sections =
-        targets.pages > 0
-            ? records.pages
-                  .filter((page) => page !== scene && page.contextMode !== "always" && page.contextMode !== "never")
-                  .flatMap((page) => shownSections(page).map((section) => ({ page, section })))
-            : [];
+    const sections = lanes.pages
+        ? records.pages
+              .filter((page) => page !== scene && page.contextMode !== "always" && page.contextMode !== "never")
+              .flatMap((page) => shownSections(page).map((section) => ({ page, section })))
+        : [];
     const priority = (page: MemoryPage) => PAGE_MATCHES.indexOf(found.get(page.id) ?? "similarity");
     sections.sort((a, b) => priority(a.page) - priority(b.page) || b.section.updatedAt - a.section.updatedAt);
     return {
-        events:
-            targets.events > 0 ? [...new Set(records.events.filter(memoryEventCovers).flatMap(eventVectorTexts))] : [],
+        events: lanes.events ? [...new Set(records.events.filter(memoryEventCovers).flatMap(eventVectorTexts))] : [],
         pages: [...new Set(sections.map(({ page, section }) => sectionVectorText(page, section)))],
     };
 }
@@ -903,7 +904,7 @@ async function relatedPages(
 }
 
 /**
- * Embedding-free placement and page reading, including the required offer and enabled lane targets.
+ * Embedding-free placement and page reading, including the required offer and the input's resolved lane targets.
  * Required pages never also enter the pages lane, so a page has only one item and tag.
  *
  * - Both page lanes filter a character's relationship lines against the same cast: visible pages on
@@ -927,8 +928,7 @@ async function relatedPages(
  * false denial of it.
  */
 export async function prepareRetrieval(input: RetrievalInput) {
-    const { events, pages, entries, window, settings } = input;
-    const targets = settings.laneTargets;
+    const { events, pages, entries, window, settings, targets } = input;
     const stage = new Set(input.stage);
     const positions = new Map<string, number>();
     entries.forEach(({ messageId }, index) => {
@@ -1015,8 +1015,7 @@ export async function retrieveLanes(
 ): Promise<RetrievedLanes> {
     const prepared = options.prepared ?? (await prepareRetrieval(input));
     const { stage, excluded, leaveOut, placed, query, eligible, reading, found, required } = prepared;
-    const { threads, entries, window, settings } = input;
-    const targets = settings.laneTargets;
+    const { threads, entries, window, settings, targets } = input;
     const embeddings = sendEmbeddings(
         host,
         query.map(({ text }) => text),
@@ -1028,7 +1027,7 @@ export async function retrieveLanes(
                 events: eligible.toSorted((a, b) => b.place - a.place).map(({ event }) => event),
                 pages: input.pages,
             },
-            targets,
+            { events: targets.events > 0, pages: targets.pages > 0 },
             found,
         ),
     );
@@ -1056,7 +1055,7 @@ export async function retrieveLanes(
             {
                 lane: "flow",
                 target: targets.flow > 0 ? targets.flow : FLOW_TARGET,
-                ...flowItems(placed, eligible, entries, settings),
+                ...flowItems(placed, eligible, entries, input),
             },
             { lane: "pages", target: targets.pages, items: related.items },
             {

@@ -118,6 +118,18 @@ export type MemoryManifestItemKind = (typeof MEMORY_MANIFEST_ITEM_KINDS)[number]
 export const STRUCTURED_MEMORY_CADENCES = ["everyTurn", "everyK", "tokens", "manual"] as const;
 export type StructuredMemoryCadence = (typeof STRUCTURED_MEMORY_CADENCES)[number];
 
+export const STRUCTURED_MEMORY_LANE_SPLITS = ["auto", "manual"] as const;
+export type StructuredMemoryLaneSplit = (typeof STRUCTURED_MEMORY_LANE_SPLITS)[number];
+
+/** Each optional lane's core target as a share of the applied memory maximum under `auto`. */
+export const STRUCTURED_MEMORY_LANE_SHARES = {
+    flow: 0.4,
+    pages: 0.3,
+    events: 0.15,
+    evidence: 0.1,
+    threads: 0.05,
+} as const satisfies StructuredMemorySettings["laneTargets"];
+
 /**
  * Which recorded changes are highlighted: none, the kinds the preset lists, or every one. A change that
  * replaces a person's correction is highlighted in all three.
@@ -613,7 +625,9 @@ export interface StructuredMemorySettings {
     flowEvents: number;
     /** The newest full timeline candidates that carry key lines; an integer >= 0. */
     flowKeyLineEvents: number;
-    /** Each lane's token target; integers >= 0. */
+    /** A stored value that is absent or invalid normalizes to `auto`. */
+    laneSplit: StructuredMemoryLaneSplit;
+    /** Each lane's stored token target under `manual`; integers >= 0, preserved under `auto`. */
     laneTargets: { flow: number; pages: number; events: number; evidence: number; threads: number };
     /** The tokens the required lane may take before the send fails; an integer >= 1. */
     requiredCap: number;
@@ -1677,6 +1691,7 @@ export function normalizeStructuredMemorySettings(input: unknown): StructuredMem
         windowTurns: integerIn(source.windowTurns, 3, 1),
         flowEvents: integerIn(source.flowEvents, 8, 0),
         flowKeyLineEvents: integerIn(source.flowKeyLineEvents, 3, 0),
+        laneSplit: memberOf(STRUCTURED_MEMORY_LANE_SPLITS, source.laneSplit) ?? "auto",
         laneTargets: {
             flow: integerIn(laneTargets.flow, 1500, 0),
             pages: integerIn(laneTargets.pages, 2000, 0),
@@ -1701,6 +1716,32 @@ export function normalizeStructuredMemorySettings(input: unknown): StructuredMem
         highlightChangeGrade: integerIn(source.highlightChangeGrade, 5, 0, STRUCTURED_MEMORY_LIMITS.gradeMax),
         volatileBeforeLastUser:
             typeof source.volatileBeforeLastUser === "boolean" ? source.volatileBeforeLastUser : false,
+    };
+}
+
+/** The send's lane targets, without changing the stored counts; a small maximum can floor a share to 0. */
+export function resolveLaneTargets(
+    settings: Pick<StructuredMemorySettings, "laneSplit" | "laneTargets">,
+    maximum: number,
+): StructuredMemorySettings["laneTargets"] {
+    if (settings.laneSplit === "manual") return { ...settings.laneTargets };
+    return {
+        flow: Math.floor(maximum * STRUCTURED_MEMORY_LANE_SHARES.flow),
+        pages: Math.floor(maximum * STRUCTURED_MEMORY_LANE_SHARES.pages),
+        events: Math.floor(maximum * STRUCTURED_MEMORY_LANE_SHARES.events),
+        evidence: Math.floor(maximum * STRUCTURED_MEMORY_LANE_SHARES.evidence),
+        threads: Math.floor(maximum * STRUCTURED_MEMORY_LANE_SHARES.threads),
+    };
+}
+
+/** Background warming has no send maximum: both embedding lanes warm under `auto`. */
+export function structuredMemoryEmbeddingLanes(settings: Pick<StructuredMemorySettings, "laneSplit" | "laneTargets">): {
+    events: boolean;
+    pages: boolean;
+} {
+    return {
+        events: settings.laneSplit !== "manual" || settings.laneTargets.events > 0,
+        pages: settings.laneSplit !== "manual" || settings.laneTargets.pages > 0,
     };
 }
 

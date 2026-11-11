@@ -1781,6 +1781,11 @@ async function threadRetractionServer() {
     const threadIds = async () => {
         const records = readRecordSet(s.store.memory, characterId, chatId)!;
         const current = (s.store.readChatSource(characterId, chatId).data as Chat).message;
+        const settings = normalizeStructuredMemorySettings({
+            flowEvents: 0,
+            laneSplit: "manual",
+            laneTargets: { pages: 0, events: 0, evidence: 0, threads: 1000 },
+        });
         const result = await retrieveLanes(
             { db, embeddings, fence() {} },
             {
@@ -1789,10 +1794,8 @@ async function threadRetractionServer() {
                 entries: current.map((m) => ({ messageId: m.chatId, role: m.role, text: m.data })),
                 window: { start: 0, dropped: new Set() },
                 stage: [],
-                settings: normalizeStructuredMemorySettings({
-                    flowEvents: 0,
-                    laneTargets: { pages: 0, events: 0, evidence: 0, threads: 1000 },
-                }),
+                settings,
+                targets: settings.laneTargets,
             },
         );
         return result.lanes

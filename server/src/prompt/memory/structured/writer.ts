@@ -15,6 +15,7 @@ import {
     memoryThreadEnded,
     normalizeStructuredMemorySettings,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
+    structuredMemoryEmbeddingLanes,
     structuredMemoryHighlightOverride,
     structuredMemoryWriterLanguage,
     writerPaused,
@@ -694,16 +695,13 @@ function admitRecording(
 }
 
 /**
- * Embeds what a commit wrote into the vector cache: the event's texts, unless the preset gives the
- * events lane nothing, and `sectionTexts`, unless it gives the pages lane nothing. Answers the text of a
+ * Embeds what a commit wrote into the vector cache: the event's texts and `sectionTexts`, unless the
+ * preset disables their lane with a manual target of 0. Answers the text of a
  * failure, which keeps the records; an ended task or a host failure is thrown.
  */
 async function warmRecords(host: MemoryHost, event: MemoryEventWrite, sectionTexts: readonly string[]) {
-    const { laneTargets } = writerSettings(host);
-    const texts = [
-        ...(laneTargets.events === 0 ? [] : eventVectorTexts(event)),
-        ...(laneTargets.pages === 0 ? [] : sectionTexts),
-    ];
+    const lanes = structuredMemoryEmbeddingLanes(writerSettings(host));
+    const texts = [...(lanes.events ? eventVectorTexts(event) : []), ...(lanes.pages ? sectionTexts : [])];
     if (texts.length === 0) {
         return undefined;
     }

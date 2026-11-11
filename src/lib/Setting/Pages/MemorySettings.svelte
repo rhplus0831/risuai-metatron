@@ -42,10 +42,13 @@
         STRUCTURED_MEMORY_CADENCES,
         STRUCTURED_MEMORY_HIGHLIGHT_KINDS,
         STRUCTURED_MEMORY_HIGHLIGHT_MODES,
+        STRUCTURED_MEMORY_LANE_SHARES,
+        STRUCTURED_MEMORY_LANE_SPLITS,
         STRUCTURED_MEMORY_LIMITS,
         type StructuredMemoryCadence,
         type StructuredMemoryHighlightKind,
         type StructuredMemoryHighlightMode,
+        type StructuredMemoryLaneSplit,
         type StructuredMemorySettings,
     } from "../../../../shared/structuredMemory.ts";
     import SettingRenderer from "../SettingRenderer.svelte";
@@ -205,6 +208,13 @@
     // Structured Memory selects by `memoryAlgorithmType`, ahead of the flags, as the server does. It
     // shares the selected HypaV3 preset for its budget and keeps its own settings in `structured`.
     const structuredMemorySelected = $derived(settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM);
+    const laneSharePercents = {
+        flow: Math.round(STRUCTURED_MEMORY_LANE_SHARES.flow * 100),
+        pages: Math.round(STRUCTURED_MEMORY_LANE_SHARES.pages * 100),
+        events: Math.round(STRUCTURED_MEMORY_LANE_SHARES.events * 100),
+        evidence: Math.round(STRUCTURED_MEMORY_LANE_SHARES.evidence * 100),
+        threads: Math.round(STRUCTURED_MEMORY_LANE_SHARES.threads * 100),
+    };
 
     /**
      * Changes the preset's `structured`. A stored value can be partial or damaged, which every reader
@@ -663,41 +673,58 @@
             (read) => read.requiredCap,
             (next, count) => (next.requiredCap = count),
         )}
-        {@render structuredCount(
-            preset,
-            text.flowTarget,
-            0,
-            (read) => read.laneTargets.flow,
-            (next, count) => (next.laneTargets.flow = count),
-        )}
-        {@render structuredCount(
-            preset,
-            text.pagesTarget,
-            0,
-            (read) => read.laneTargets.pages,
-            (next, count) => (next.laneTargets.pages = count),
-        )}
-        {@render structuredCount(
-            preset,
-            text.eventsTarget,
-            0,
-            (read) => read.laneTargets.events,
-            (next, count) => (next.laneTargets.events = count),
-        )}
-        {@render structuredCount(
-            preset,
-            text.evidenceTarget,
-            0,
-            (read) => read.laneTargets.evidence,
-            (next, count) => (next.laneTargets.evidence = count),
-        )}
-        {@render structuredCount(
-            preset,
-            text.threadsTarget,
-            0,
-            (read) => read.laneTargets.threads,
-            (next, count) => (next.laneTargets.threads = count),
-        )}
+        <span class="text-textcolor">{text.laneSplit}</span>
+        <SelectInput
+            className="mb-4"
+            value={structured.laneSplit}
+            onchange={({ currentTarget }) =>
+                setStructured(preset, (next) => (next.laneSplit = currentTarget.value as StructuredMemoryLaneSplit))}
+        >
+            {#each STRUCTURED_MEMORY_LANE_SPLITS as split (split)}
+                <OptionInput value={split}>{text.laneSplits[split]}</OptionInput>
+            {/each}
+        </SelectInput>
+        {#if structured.laneSplit === "manual"}
+            {@render structuredCount(
+                preset,
+                text.flowTarget,
+                0,
+                (read) => read.laneTargets.flow,
+                (next, count) => (next.laneTargets.flow = count),
+            )}
+            {@render structuredCount(
+                preset,
+                text.pagesTarget,
+                0,
+                (read) => read.laneTargets.pages,
+                (next, count) => (next.laneTargets.pages = count),
+            )}
+            {@render structuredCount(
+                preset,
+                text.eventsTarget,
+                0,
+                (read) => read.laneTargets.events,
+                (next, count) => (next.laneTargets.events = count),
+            )}
+            {@render structuredCount(
+                preset,
+                text.evidenceTarget,
+                0,
+                (read) => read.laneTargets.evidence,
+                (next, count) => (next.laneTargets.evidence = count),
+            )}
+            {@render structuredCount(
+                preset,
+                text.threadsTarget,
+                0,
+                (read) => read.laneTargets.threads,
+                (next, count) => (next.laneTargets.threads = count),
+            )}
+        {:else}
+            <span class="mb-4 text-xs text-textcolor2" data-structured-memory-lane-shares
+                >{text.laneShares(laneSharePercents)}</span
+            >
+        {/if}
         <span class="text-textcolor">{text.instructions}</span>
         <div class="mb-2">
             <TextAreaInput

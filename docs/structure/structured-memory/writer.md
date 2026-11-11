@@ -186,9 +186,12 @@ Compaction changes no event, and a warning does not fail the run.
   `summarizationModel` and `alwaysToggleOn` still apply with no control here.
 - `cadenceTokens` is the `tokens` cadence's threshold under a `tokens` budget mode, and `cadenceRatio` its share of the
   max context under a `ratio` one; each mode keeps the other's field.
-- The read path's settings sit beside the writer's: `laneTargets.flow` (default 1500, 0 for the title-only lane) is the
-  recent timeline's token target, `flowKeyLineEvents` (default 3) the timeline events that carry key lines, and
-  `flowEvents` the titles listed after the timeline ([the read path](read.md#the-read-path)).
+- The read path's settings sit beside the writer's: `laneSplit` (`auto` by default, also for a preset stored without it)
+  makes the lane targets shares of the memory maximum, and under `manual` the stored `laneTargets` apply, where
+  `laneTargets.flow` (default 1500, 0 for the title-only lane) is the recent timeline's token target.
+  `flowKeyLineEvents` (default 3) is the timeline events that carry key lines, and `flowEvents` the titles listed after
+  the timeline ([the read path](read.md#the-read-path)). The settings page hides the five lane token inputs under `auto`
+  and states the shares instead.
 
 ## Coupling
 
@@ -287,6 +290,10 @@ Compaction changes no event, and a warning does not fail the run.
   setting, because `setStructured` stores what the tab's normalizer keeps; the field reads as its default from then on.
   This holds for every setting here, needs an edit in the stale tab, a reload avoids it, and no record is touched.
   Decision: Structured Memory Recent Timeline D13 (owner, 2026-11-11).
+- The lane shares (`STRUCTURED_MEMORY_LANE_SHARES`) are starting values in code, not a setting, and are not measured
+  yet: a share set badly wastes nothing, since lending and the timeline's extension spend what a lane leaves, but it can
+  starve a lane's core round. A person who wants other targets chooses `manual`. Decision: Structured Memory Recent
+  Timeline D8 (owner, 2026-11-11).
 - A repair never carries an edit into later state; a rebuild from that point does. A later event with every cited
   message deleted no longer counts. Decision: Implementation Audit Fixes Q3.
 
@@ -298,9 +305,9 @@ Compaction changes no event, and a warning does not fail the run.
   attempt though `host.request` may retry, and `maxResponse` bounds the answer, so a low value fails runs on truncated
   JSON.
 - `MEMORY_SECTION_BUDGETS` are starting values with no setting.
-- Every numeric default in `normalizeStructuredMemorySettings` is a starting value too; the required cap and the lane
-  targets add up to the default `memoryBudgetTokens`. Only the cadence, highlight mode, and highlight kinds defaults are
-  owner decisions.
+- Every numeric default in `normalizeStructuredMemorySettings` is a starting value too; the required cap and the stored
+  lane targets add up to the default `memoryBudgetTokens`. Only the cadence, highlight mode, and highlight kinds
+  defaults are owner decisions.
 - A character's language override does not travel in a card: the card exporters use explicit field lists.
 - `readMemoryRecords`, `readRecordedMessages` and `historicalWindow` read every stored event of the chat (per send, task
   or window), and `buildPrompt` every open thread: the store has no bulk read.

@@ -70,7 +70,7 @@ import {
     type MemoryTaskLimits,
 } from "../../../../prompt/memory/memoryTasks.ts";
 import { applyEventRepair, applyPageEdit } from "../../../../prompt/memory/structured/edits.ts";
-import type { ExcludedItem, LaneSpend } from "../../../../prompt/memory/structured/lanes.ts";
+import { type ExcludedItem, type LaneSpend, readBudget } from "../../../../prompt/memory/structured/lanes.ts";
 import { readRecordSet, rebuildPlan, rebuildSeed } from "../../../../prompt/memory/structured/rebuild.ts";
 import {
     reconcileEvents,
@@ -813,6 +813,7 @@ export function createFixture(options: FixtureOptions) {
                     }),
                     stage: records.stage,
                     settings: structured,
+                    targets: readBudget(settings, maxContext, host.db.maxResponse).targets,
                 });
                 result.eventsOpen = retrieved.eventsOpen;
                 result.eventReasons = [

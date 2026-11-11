@@ -3104,6 +3104,10 @@ export const languageEnglish = {
             flowKeyLineEvents: "Recent events shown with key lines",
             flowTarget: "Tokens for the recent timeline",
             requiredCap: "Most tokens for required pages",
+            laneSplit: "How lane tokens are set",
+            laneSplits: { auto: "Shares of the memory maximum", manual: "Token counts entered here" },
+            laneShares: (shares: { flow: number; pages: number; events: number; evidence: number; threads: number }) =>
+                `Of the memory maximum: recent timeline ${shares.flow}%, related pages ${shares.pages}%, earlier events ${shares.events}%, original messages ${shares.evidence}%, open threads ${shares.threads}%. What a lane leaves goes to the others, and the recent timeline takes what is left last.`,
             pagesTarget: "Tokens for related pages",
             eventsTarget: "Tokens for earlier events",
             evidenceTarget: "Tokens for original messages",

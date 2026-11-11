@@ -553,6 +553,7 @@ const structuredDefaults = {
     windowTurns: 3,
     flowEvents: 8,
     flowKeyLineEvents: 3,
+    laneSplit: "auto",
     laneTargets: { flow: 1500, pages: 2000, events: 1500, evidence: 700, threads: 300 },
     requiredCap: 1500,
     screening: { refusal: [], format: [] },
@@ -575,6 +576,7 @@ const structuredCustom = {
     windowTurns: 1,
     flowEvents: 0,
     flowKeyLineEvents: 0,
+    laneSplit: "manual",
     laneTargets: { flow: 54, pages: 0, events: 21, evidence: 32, threads: 43 },
     requiredCap: 1,
     screening: { refusal: ["Cannot comply"], format: ["Bad format"] },
@@ -644,6 +646,7 @@ describe("Structured Memory settings", () => {
             windowTurns: [0, -1, 1.5, "3", null, NaN, Infinity],
             flowEvents: [-1, 0.5, "8", null, NaN, Infinity],
             flowKeyLineEvents: [-1, 0.5, "3", null, NaN, Infinity],
+            laneSplit: ["sometimes", "", null, 1, false, [], {}],
             requiredCap: [0, -1, 1.5, "1500", null, NaN, Infinity],
             language: [null, 1, [], {}],
             instructions: [null, 1, [], {}],
@@ -679,6 +682,20 @@ describe("Structured Memory settings", () => {
         expect(
             normalizeStructuredMemorySettings({ ...structuredCustom, cadenceRatio: 0.99, highlightChangeGrade: 0 }),
         ).toStrictEqual({ ...structuredCustom, cadenceRatio: 0.99, highlightChangeGrade: 0 });
+    });
+
+    it("defaults existing presets to auto and keeps stored lane counts through mode switches", () => {
+        const laneTargets = { flow: 54, pages: 0, events: 21, evidence: 32, threads: 43 };
+        const preset = normalizeHypaV3Presets({
+            items: [{ id: "stored", name: "Stored", settings: { structured: { laneTargets, requiredCap: 731 } } }],
+            selectedId: "stored",
+        }).items[0];
+        let structured = preset.settings.structured;
+        expect(structured).toMatchObject({ laneSplit: "auto", laneTargets, requiredCap: 731 });
+        for (const laneSplit of ["manual", "auto", "manual"] as const) {
+            structured = normalizeStructuredMemorySettings({ ...structured, laneSplit });
+            expect(structured).toMatchObject({ laneSplit, laneTargets, requiredCap: 731 });
+        }
     });
 
     it("validates each lane and screening list without resetting its siblings", () => {

@@ -70,8 +70,9 @@ const settings = (fields: Partial<Input["settings"]> = {}) =>
         laneTargets: { flow: 0, pages: 0, events: 1000, evidence: 0, threads: 0 },
         ...fields,
     });
+/** Retrieval with the settings' stored counts as its targets, as a manual split resolves them. */
 function input(fields: Partial<Input> = {}): Input {
-    return {
+    const base = {
         events: [event("memory")],
         threads: [],
         pages: [],
@@ -81,6 +82,7 @@ function input(fields: Partial<Input> = {}): Input {
         settings: settings(),
         ...fields,
     };
+    return { ...base, targets: fields.targets ?? base.settings.laneTargets };
 }
 const items = (result: Awaited<ReturnType<typeof retrieveLanes>>, lane: string) =>
     result.lanes.find((row) => row.lane === lane)!.items;
@@ -568,6 +570,34 @@ describe("selectMemory evidence from trimmed history", () => {
 });
 
 describe("structured memory retrieval", () => {
+    it("uses input lane targets even when stored counts disagree, keeping the required cap separate", async () => {
+        const h = harness();
+        const targets = { flow: 400, pages: 300, events: 150, evidence: 100, threads: 50 };
+        const stored = settings({
+            laneTargets: { flow: 0, pages: 0, events: 0, evidence: 0, threads: 0 },
+            requiredCap: 731,
+        });
+        const result = await retrieveLanes(h.host, input({ settings: stored, targets }));
+        expect(Object.fromEntries(result.lanes.map(({ lane, target }) => [lane, target]))).toEqual({
+            required: 731,
+            flow: 400,
+            pages: 300,
+            events: 150,
+            evidence: 100,
+            threads: 50,
+        });
+        expect(items(result, "events").map(({ id }) => id)).toEqual(["memory"]);
+
+        const disabled = await retrieveLanes(
+            h.host,
+            input({
+                settings: { ...stored, laneTargets: targets },
+                targets: { ...targets, events: 0 },
+            }),
+        );
+        expect(disabled.lanes.find(({ lane }) => lane === "events")).toMatchObject({ target: 0, items: [] });
+    });
+
     it("offers raw-window events only as titles and key lines only on the newest eligible full candidates", async () => {
         const h = harness();
         const entries = [
