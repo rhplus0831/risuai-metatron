@@ -4,7 +4,7 @@ Status: drafted 2026-11-12 at `97b64c89d` from the owner's request. D1 to D3 are
 day: the profile is the memory preset, and the connection is wanted too if it fits. The owner accepted D5 to D8 the
 same day. D4 and D9 to D23 are this plan's own, found against the code. Audited against `b6d07a04a` on 2026-11-12
 ([report](../reports/audits/plan-runner/per-chat-memory-2026-11-12.md)): eight findings, all fixed here (D17, D18,
-and D21 to D23 come from them). Landed: none.
+and D21 to D23 come from them). Landed: 1 (`ea39acfcb`).
 
 Sources: the owner's request (2026-11-12: memory is one switch per character; move it to the chat, let each chat choose
 Structured Memory, HypaV3, or Legacy, and let each chat choose the profile memory processing uses); the memory gate and
