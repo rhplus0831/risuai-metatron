@@ -4,7 +4,7 @@ Status: drafted 2026-11-13 at `d22254262` from the owner's request. D1 is the ow
 D3, and D5 the same day, as recommended. D4 and D6 to D18 are this plan's own, found against the code. Audited against
 `e2aded6dc` on 2026-11-13
 ([report](../reports/audits/plan-runner/structured-memory-reply-only-recording-2026-11-13.md)): eleven findings, all
-fixed here. D18 comes from the audit and narrows D2; the owner accepted it the same day. Landed: none.
+fixed here. D18 comes from the audit and narrows D2; the owner accepted it the same day. Landed: 1 (`40b54af0a`).
 
 Sources: the owner's request (2026-11-13: give Structured Memory HypaV3's "do not summarize user messages", because
 under some prompts the reply does not answer the user's message but takes it and expands on it); `shouldSummarizeChat`
