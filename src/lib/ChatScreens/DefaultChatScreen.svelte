@@ -46,6 +46,8 @@
         previousGreetingIndex,
     } from "../../../shared/greetings.ts";
     import { GENERATION_STAGES } from "../../../shared/jobs.ts";
+    import { chatMemoryAlgorithm } from "../../../shared/chatMemory.ts";
+    import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
     import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
     import { ChatStyleRegistry, setChatStyleRegistry } from "../../ts/parser/chatStyles";
     import { type Message } from "../../ts/storage/database.svelte";
@@ -147,18 +149,16 @@
      */
 
     const subModel = $derived(getModelInfoForMode("submodel").id);
-    /** The memory menu row opens the panel, whatever older flags the settings still hold. */
-    const structuredMemorySelected = $derived(settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM);
     /**
      * Which memory view the menu row opens. Structured memory and HypaV3 always get the row; HypaV2's alert
      * stays behind `showMenuHypaMemoryModal`.
      */
     const memoryMenuKind = $derived.by(() => {
-        if (structuredMemorySelected) return "structuredMemory";
-        const media = settings.memoryTranslateMedia;
-        if (!((media.supaModelType !== "none" && media.hypav2) || media.hypaV3)) return null;
-        if (media.hypav2) return settings.ui.showMenuHypaMemoryModal ? "hypaV2" : null;
-        return "hypaV3";
+        const algorithm = chatMemoryAlgorithm(chatMemorySettings(), selectedChat());
+        if (algorithm === STRUCTURED_MEMORY_ALGORITHM) return "structuredMemory";
+        if (algorithm === "hypaMemoryV3") return "hypaV3";
+        if (algorithm === "hypaMemoryV2") return settings.ui.showMenuHypaMemoryModal ? "hypaV2" : null;
+        return null;
     });
     /** The open chat's memory health state, shown above the composer and opening the panel like the menu row. */
     const memoryHealth = $derived.by(() => {

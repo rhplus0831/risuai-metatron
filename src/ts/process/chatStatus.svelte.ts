@@ -1,4 +1,4 @@
-import { chatMemoryEnabled } from "../../../shared/chatMemory.ts";
+import { chatMemoryAlgorithm, chatMemoryEnabled } from "../../../shared/chatMemory.ts";
 import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
 import { untrack } from "svelte";
 import { SvelteMap, SvelteSet } from "svelte/reactivity";
@@ -210,8 +210,8 @@ const requiredOverCapChats = new SvelteSet<string>();
 /** When every chat with a state was last read, for the page-return reads. */
 let healthReadAt = 0;
 
-function structuredMemorySelected(): boolean {
-    return settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
+function structuredMemorySelected(ref: ChatRef): boolean {
+    return chatMemoryAlgorithm(chatMemorySettings(), chatEntry(ref)) === STRUCTURED_MEMORY_ALGORITHM;
 }
 
 /** Shared derived keys for health states and reads: the open chat first, then the pinned chats. */
@@ -234,6 +234,8 @@ const healthChatKeys = $derived.by((): string[] => {
     }
     return keys;
 });
+
+const structuredHealthChatKeys = $derived(healthChatKeys.filter((key) => structuredMemorySelected(keyRef(key))));
 
 /**
  * Reads the health entries of `keys`, `MEMORY_HEALTH_CHATS_MAX` a request. A chat's answer applies only
@@ -275,16 +277,13 @@ function newestMemoryReport(messages: readonly DeepReadonly<Message>[]): NonNull
 
 const healthStates = $derived.by(() => {
     const states = new Map<string, MemoryHealthState>();
-    if (!structuredMemorySelected()) {
-        return states;
-    }
     const preset = selectedHypaV3Preset({
         hypaV3Presets: settings.hypaV3Presets.items,
         hypaV3PresetId: settings.hypaV3Presets.selectedId,
     })?.settings;
     const open = currentChatRef();
     const openKey = open ? chatStatusKey(open) : null;
-    for (const key of healthChatKeys) {
+    for (const key of structuredHealthChatKeys) {
         const ref = keyRef(key);
         if (!chatMemoryEnabled(chatEntry(ref), findCharacter(ref.chaId), chatMemorySettings())) {
             continue;
@@ -311,8 +310,8 @@ const healthStates = $derived.by(() => {
 
 /**
  * Returns the shared derived health states (`memoryHealthState`) by status key, current even outside
- * a reactive context: the pinned chats and the open chat, while Structured Memory is selected and the
- * chat's character has memory on. A chat not loaded is judged from its last read facts, so its stale
+ * a reactive context: the pinned chats and the open chat whose own algorithm is Structured Memory and whose
+ * memory switch is on. A chat not loaded is judged from its last read facts, so its stale
  * count is partial and it knows no gap; the open chat adds its newest report's gap against the preset's
  * `gapConfirmTokens`, its writer state, and its stale exclusions. An unavailable entry contributes no
  * facts, but those report inputs and the tab's required-over-cap mark still apply and take priority.
@@ -448,12 +447,7 @@ export function watchChatVisibility(): () => void {
         let known = new Set<string>();
         let previousOpen: string | null = null;
         $effect(() => {
-            if (!structuredMemorySelected()) {
-                known = new Set();
-                previousOpen = null;
-                return;
-            }
-            const keys = healthChatKeys;
+            const keys = structuredHealthChatKeys;
             const ref = currentChatRef();
             const openKey = ref && ref.chaId !== "§playground" ? chatStatusKey(ref) : null;
             const opened = openKey !== null && openKey !== previousOpen ? openKey : null;
@@ -472,11 +466,11 @@ export function watchChatVisibility(): () => void {
             const panelOpen = (hypaV3View ??= fromStore(hypaV3ModalOpen)).current;
             const closed = panelWasOpen && !panelOpen;
             panelWasOpen = panelOpen;
-            if (!closed || !untrack(structuredMemorySelected)) {
+            if (!closed) {
                 return;
             }
             const open = untrack(currentChatRef);
-            if (open && open.chaId !== "§playground") {
+            if (open && open.chaId !== "§playground" && untrack(() => structuredMemorySelected(open))) {
                 const key = chatStatusKey(open);
                 queueMicrotask(() => void readHealth([key]));
             }
@@ -486,11 +480,11 @@ export function watchChatVisibility(): () => void {
             const visible = isPageVisible();
             const returned = !pageWasVisible && visible;
             pageWasVisible = visible;
-            if (!returned || !untrack(structuredMemorySelected) || Date.now() - healthReadAt < HEALTH_REREAD_MS) {
+            if (!returned || Date.now() - healthReadAt < HEALTH_REREAD_MS) {
                 return;
             }
             healthReadAt = Date.now();
-            const keys = untrack(() => healthChatKeys);
+            const keys = untrack(() => structuredHealthChatKeys);
             if (keys.length > 0) {
                 queueMicrotask(() => void readHealth(keys));
             }

@@ -3808,3 +3808,33 @@ it("uses the chat switch for the writer notice when it disagrees with the owner"
     expect(query("[data-memory-writer-line]")?.dataset.memoryWriterLine).not.toBe("memoryOff");
     expect(query("[data-memory-writer-action]")?.dataset.memoryWriterAction).toBe("record");
 });
+
+it("App mounts the selected chat's panel despite the opposing global algorithm", async () => {
+    loadedStore.set(false);
+    setChatMeta(ref, { memoryMode: "structuredMemory" });
+    setChatMeta({ ...ref, chatId: "other" }, { memoryMode: "hypaV3" });
+    settings.ui.memoryAlgorithmType = "hypaV3";
+    Object.assign(settings.memoryTranslateMedia, {
+        hypaV3: true,
+        hypav2: false,
+        hanuraiEnable: false,
+        supaModelType: "none",
+    });
+    const { default: App } = await import("../../../App.svelte");
+    instance = mount(App, { target });
+    flushSync();
+    await settle();
+    expect(query('[data-memory-panel="pages"]')).not.toBeNull();
+    expect(query("[data-risu-memory-task]")).toBeNull();
+    settings.ui.memoryAlgorithmType = "structuredMemory";
+    selectChat("c", "other");
+    flushSync();
+    await settle();
+    expect(query("[data-memory-panel]")).toBeNull();
+    expect(query("[data-risu-memory-task]")).not.toBeNull();
+    selectChat("c", "k");
+    flushSync();
+    await settle();
+    expect(query('[data-memory-panel="pages"]')).not.toBeNull();
+    expect(query("[data-risu-memory-task]")).toBeNull();
+});

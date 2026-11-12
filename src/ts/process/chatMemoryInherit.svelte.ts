@@ -6,7 +6,7 @@ import {
     type StructuredMemoryFileRecords,
 } from "../../../shared/structuredMemory.ts";
 import { alertError } from "../alert";
-import { chatHasUnackedWork, createChat, type ChatRef } from "../storage/chatStore.svelte";
+import { chatEntry, chatHasUnackedWork, createChat, type ChatRef } from "../storage/chatStore.svelte";
 import type { Chat, MessageGenerationInfo } from "../storage/database.svelte";
 import {
     beginMutationScope,
@@ -14,7 +14,8 @@ import {
     GenerationBlockedError,
     type MutationScope,
 } from "../storage/resourceSync.svelte";
-import { settings } from "../storage/settingsViews.svelte";
+import { chatMemoryAlgorithm } from "../../../shared/chatMemory.ts";
+import { chatMemorySettings } from "../storage/chatMemory.svelte";
 import { inheritStructuredMemory, restoreStructuredMemory } from "./structuredMemory.svelte";
 
 /**
@@ -101,8 +102,9 @@ export function createInheritingChat(
         options,
     );
     const { id, name } = created;
-    void inheritMemory({ chaId: source.chaId, chatId: id }, source.chatId, scope).then((inherited) => {
-        if (!inherited && settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM) {
+    const ref = { chaId: source.chaId, chatId: id };
+    void inheritMemory(ref, source.chatId, scope).then((inherited) => {
+        if (!inherited && chatMemoryAlgorithm(chatMemorySettings(), chatEntry(ref)) === STRUCTURED_MEMORY_ALGORITHM) {
             alertError(language.structuredMemory.inherit.failed(name));
         }
     });

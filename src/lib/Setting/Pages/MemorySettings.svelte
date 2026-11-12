@@ -61,8 +61,8 @@
     /**
      * Handwritten memory providers, presets, and embedding model, with registry controls from
      * `src/ts/setting/memorySettingsData.ts`; owns `supaMemoryKey` and the HypaV3 budget controls.
-     * Structured Memory reads `ui.memoryAlgorithmType` before the legacy flags it clears; its branch
-     * shares the preset picker, budget mode, and memory maximum through snippets.
+     * The global algorithm selects settings for Legacy chats. HypaV3 and Structured Memory are always
+     * available, with one shared preset picker, budget mode, and memory maximum.
      */
 
     const currentCharacter = $derived(selectedCharacter());
@@ -206,10 +206,6 @@
         target.budgetMode = "tokens";
     }
     // End HypaV3
-
-    // Structured Memory selects by `memoryAlgorithmType`, ahead of the flags, as the server does. It
-    // shares the selected HypaV3 preset for its budget and keeps its own settings in `structured`.
-    const structuredMemorySelected = $derived(settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM);
 
     /** The optional lanes in spending order, which is the order of their rows and of the bar's parts. */
     const STRUCTURED_LANES = ["flow", "pages", "events", "evidence", "threads"] as const;
@@ -660,7 +656,8 @@
 
 <h2 class="mb-2 text-2xl font-bold mt-2">{language.memorySettings}</h2>
 
-<span class="text-textcolor mt-4">{language.type}</span>
+<span class="text-textcolor mt-4">{language.chatMemory.legacyAlgorithm}</span>
+<span class="mb-2 text-sm text-textcolor2">{language.chatMemory.legacyAlgorithmHelp}</span>
 
 <SelectInput
     className="mb-4"
@@ -719,245 +716,14 @@
     <OptionInput value={STRUCTURED_MEMORY_ALGORITHM}>{language.structuredMemory.name}</OptionInput>
 </SelectInput>
 
-{#if structuredMemorySelected}
-    {@const text = language.structuredMemory.settings}
-    <span class="max-w-full mb-6 text-sm text-wrap wrap-break-word text-textcolor2" data-structured-memory-description
-        >{text.description}</span
-    >
-    {@render presetPicker()}
-
-    {#if currentHypaV3?.settings}
-        {@const preset = currentHypaV3.settings}
-        {@const structured = normalizeStructuredMemorySettings(preset.structured)}
-
-        {@render sectionTitle("recording", text.sections.recording, true)}
-        <span class="text-textcolor">{text.language}</span>
-        <TextInput
-            marginBottom
-            size="sm"
-            placeholder={text.languagePlaceholder}
-            bind:value={() => structured.language, (value) => setStructured(preset, (next) => (next.language = value))}
-        />
-        <span class="text-textcolor">{text.cadence}</span>
-        <SelectInput
-            className="mb-4"
-            value={structured.cadence}
-            onchange={({ currentTarget }) =>
-                setStructured(preset, (next) => (next.cadence = currentTarget.value as StructuredMemoryCadence))}
-        >
-            {#each STRUCTURED_MEMORY_CADENCES as cadence (cadence)}
-                <OptionInput value={cadence}>{text.cadences[cadence]}</OptionInput>
-            {/each}
-        </SelectInput>
-        {#if structured.cadence === "everyK"}
-            {@render structuredCount(
-                preset,
-                text.cadenceTurns,
-                1,
-                (read) => read.cadenceTurns,
-                (next, count) => (next.cadenceTurns = count),
-            )}
-        {:else if structured.cadence === "tokens" && preset.budgetMode === "tokens"}
-            {@render structuredCount(
-                preset,
-                text.cadenceTokens,
-                1,
-                (read) => read.cadenceTokens,
-                (next, count) => (next.cadenceTokens = count),
-            )}
-        {:else if structured.cadence === "tokens"}
-            <span class="text-textcolor">{text.cadenceRatio}</span>
-            <SliderInput
-                marginBottom
-                min={0.01}
-                max={0.99}
-                step={0.01}
-                fixed={2}
-                bind:value={
-                    () => structured.cadenceRatio,
-                    (value) => setStructured(preset, (next) => (next.cadenceRatio = value))
-                }
-            />
-        {/if}
-        {@render sectionTitle("budget", text.sections.budget)}
-        {@render budgetModeControl(preset)}
-        {@render memoryMaximumControl(preset)}
-        {@render budgetReducedNotes(budgetReduced.filter(({ field }) => field === "memory"))}
-        <span class="text-textcolor">{text.laneSplit}</span>
-        <SelectInput
-            className="mb-2"
-            value={structured.laneSplit}
-            onchange={({ currentTarget }) =>
-                setStructured(preset, (next) => (next.laneSplit = currentTarget.value as StructuredMemoryLaneSplit))}
-        >
-            {#each STRUCTURED_MEMORY_LANE_SPLITS as split (split)}
-                <OptionInput value={split}>{text.laneSplits[split]}</OptionInput>
-            {/each}
-        </SelectInput>
-        {#if laneMaximum !== undefined}
-            <span class="mb-3 text-xs text-textcolor2" data-structured-memory-lane-maximum
-                >{text.laneMaximum(laneMaximum.toLocaleString())}</span
-            >
-        {/if}
-        {@render laneBudget(preset, structured)}
-        {#if structured.laneSplit !== "manual"}
-            <span class="mb-4 text-xs text-textcolor2" data-structured-memory-lane-shares
-                >{text.laneSharesHelp(laneTotal(structured.laneShares))}</span
-            >
-        {/if}
-        {@render structuredCount(
-            preset,
-            text.requiredCap,
-            1,
-            (read) => read.requiredCap,
-            (next, count) => (next.requiredCap = count),
-            undefined,
-            text.requiredCapHelp,
-        )}
-        {@render sectionTitle("recent", text.sections.recent)}
-        {@render recentTimeline(structured)}
-        {@render structuredCount(
-            preset,
-            text.windowTurns,
-            1,
-            (read) => read.windowTurns,
-            (next, count) => (next.windowTurns = count),
-            undefined,
-            text.windowTurnsHelp,
-        )}
-        {@render structuredCount(
-            preset,
-            text.flowKeyLineEvents,
-            0,
-            (read) => read.flowKeyLineEvents,
-            (next, count) => (next.flowKeyLineEvents = count),
-            undefined,
-            text.flowKeyLineEventsHelp,
-        )}
-        {@render structuredCount(
-            preset,
-            text.flowEvents,
-            0,
-            (read) => read.flowEvents,
-            (next, count) => (next.flowEvents = count),
-            undefined,
-            text.flowEventsHelp,
-        )}
-        {@render sectionTitle("prompts", text.sections.prompts)}
-        <span class="text-textcolor">{text.instructions}</span>
-        <div class="mb-2">
-            <TextAreaInput
-                size="sm"
-                placeholder={text.instructionsPlaceholder}
-                popupEditorContext={currentHypaV3?.id}
-                bind:value={
-                    () => structured.instructions,
-                    (value) => setStructured(preset, (next) => (next.instructions = value))
-                }
-            />
-        </div>
-        <span class="mb-4 text-xs text-textcolor2" data-structured-memory-instructions-help
-            >{text.instructionsHelp}</span
-        >
-        <div class="mb-2 flex items-center" data-structured-memory-key-line-guidance>
-            <Check
-                name={text.keyLineGuidance}
-                bind:check={
-                    () => structured.keyLineGuidance,
-                    (value) => setStructured(preset, (next) => (next.keyLineGuidance = value))
-                }
-            />
-        </div>
-        <span class="mb-4 text-xs text-textcolor2" data-structured-memory-key-line-guidance-help
-            >{text.keyLineGuidanceHelp}</span
-        >
-        <span class="text-textcolor">{text.screeningRefusal}</span>
-        <div class="mb-2" data-structured-memory-screening="refusal">
-            <TextAreaInput
-                size="sm"
-                placeholder={text.screeningPlaceholder}
-                bind:value={
-                    () => screeningText(structured, "refusal"),
-                    (value) => setScreening(preset, structured, "refusal", value)
-                }
-            />
-        </div>
-        <span class="text-textcolor">{text.screeningFormat}</span>
-        <div class="mb-2" data-structured-memory-screening="format">
-            <TextAreaInput
-                size="sm"
-                placeholder={text.screeningPlaceholder}
-                bind:value={
-                    () => screeningText(structured, "format"),
-                    (value) => setScreening(preset, structured, "format", value)
-                }
-            />
-        </div>
-        <span class="mb-4 text-xs text-textcolor2" data-structured-memory-screening-help>{text.screeningHelp}</span>
-        <StructuredMemoryPrompts
-            {structured}
-            presetId={currentHypaV3?.id}
-            setStructured={(change) => setStructured(preset, change)}
-        />
-        {@render sectionTitle("display", text.sections.display)}
-        <div class="mb-2 flex items-center">
-            <Check
-                name={text.volatileBeforeLastUser}
-                bind:check={
-                    () => structured.volatileBeforeLastUser,
-                    (value) => setStructured(preset, (next) => (next.volatileBeforeLastUser = value))
-                }
-            />
-        </div>
-        <span class="text-textcolor">{text.highlightMode}</span>
-        <SelectInput
-            className="mb-2"
-            value={structured.highlightMode}
-            onchange={({ currentTarget }) =>
-                setStructured(
-                    preset,
-                    (next) => (next.highlightMode = currentTarget.value as StructuredMemoryHighlightMode),
-                )}
-        >
-            {#each STRUCTURED_MEMORY_HIGHLIGHT_MODES as mode (mode)}
-                <OptionInput value={mode}>{language.structuredMemory.highlightModes[mode]}</OptionInput>
-            {/each}
-        </SelectInput>
-        <span class="mb-4 text-xs text-textcolor2" data-structured-memory-highlight-help>{text.highlightHelp}</span>
-        {#if structured.highlightMode === "important"}
-            {#each STRUCTURED_MEMORY_HIGHLIGHT_KINDS as kind (kind)}
-                <div class="mb-2 flex items-center">
-                    <Check
-                        name={text.highlightKinds[kind]}
-                        bind:check={
-                            () => structured.highlightKinds.includes(kind),
-                            (value) => setHighlightKind(preset, kind, value)
-                        }
-                    />
-                </div>
-            {/each}
-            {#if structured.highlightKinds.includes("change")}
-                {@render structuredCount(
-                    preset,
-                    text.highlightChangeGrade,
-                    0,
-                    (read) => read.highlightChangeGrade,
-                    (next, count) => (next.highlightChangeGrade = count),
-                    STRUCTURED_MEMORY_LIMITS.gradeMax,
-                )}
-            {/if}
-        {/if}
-    {/if}
-
-    <div class="mb-8"></div>
-{:else if settings.memoryTranslateMedia.hanuraiEnable}
+{#if memoryAlgorithm === "hanuraiMemory"}
     <span class="mb-2 text-textcolor2 text-sm text-wrap wrap-break-word max-w-full">{language.hanuraiDesc}</span>
     <span>Chunk Size</span>
     <NumberInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.hanuraiTokens} min={100} />
     <div class="flex mb-4">
         <Check bind:check={settings.memoryTranslateMedia.hanuraiSplit} name="Text Spliting" />
     </div>
-{:else if settings.memoryTranslateMedia.hypav2}
+{:else if memoryAlgorithm === "hypaMemoryV2"}
     <span class="mb-2 text-textcolor2 text-sm text-wrap wrap-break-word max-w-full">{language.hypaV2Desc}</span>
     <span class="text-textcolor mt-4">{language.SuperMemory} {language.model}</span>
     <SelectInput className="mt-2 mb-2" bind:value={settings.memoryTranslateMedia.supaModelType}>
@@ -978,206 +744,7 @@
     <NumberInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.hypaChunkSize} min={100} />
     <span class="text-textcolor">{language.hypaAllocatedTokens}</span>
     <NumberInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.hypaAllocatedTokens} min={100} />
-{:else if settings.memoryTranslateMedia.hypaV3}
-    <span class="max-w-full mb-6 text-sm text-wrap wrap-break-word text-textcolor2"
-        >{language.hypaV3Settings.descriptionLabel}</span
-    >
-    {@render presetPicker()}
-
-    {#if currentHypaV3?.settings}
-        {@const settings = currentHypaV3.settings}
-
-        <span class="text-textcolor">{language.SuperMemory} {language.model}</span>
-        <SelectInput className="mb-4" bind:value={settings.summarizationModel}>
-            <OptionInput value="subModel">{language.submodel}</OptionInput>
-            {#if "gpu" in navigator}
-                <OptionInput value="Qwen3-1.7B-q4f32_1-MLC">Qwen3 1.7B (GPU)</OptionInput>
-                <OptionInput value="Qwen3-4B-q4f32_1-MLC">Qwen3 4B (GPU)</OptionInput>
-                <OptionInput value="Qwen3-8B-q4f32_1-MLC">Qwen3 8B (GPU)</OptionInput>
-            {/if}
-        </SelectInput>
-        {#if settings.summarizationModel !== "subModel"}
-            <span class="text-draculared text-xs mb-2">{language.hypaV3Settings.localSummarizationWarning}</span>
-        {:else if memoryUsesPlugin}
-            <span class="text-draculared text-xs mb-2">{language.hypaV3Settings.pluginMemoryModelWarning}</span>
-        {/if}
-        <span class="text-textcolor2 text-xs mb-4">{language.hypaV3Settings.requestTriggerNote}</span>
-        <span class="text-textcolor">{language.summarizationPrompt} <Help key="summarizationPrompt" /></span>
-        <div class="mb-4">
-            <TextAreaInput
-                size="sm"
-                placeholder={language.hypaV3Settings.supaMemoryPromptPlaceHolder}
-                bind:value={settings.summarizationPrompt}
-                popupEditorContext={currentHypaV3?.id}
-            />
-        </div>
-        <span class="text-textcolor">{language.reSummarizationPrompt} <Help key="reSummarizationPrompt" /></span>
-        <div class="mb-4">
-            <TextAreaInput
-                size="sm"
-                placeholder={language.hypaV3Settings.supaMemoryPromptPlaceHolder}
-                bind:value={settings.reSummarizationPrompt}
-                popupEditorContext={currentHypaV3?.id}
-            />
-        </div>
-        {@render budgetModeControl(settings)}
-        {@render memoryMaximumControl(settings)}
-        {#if settings.budgetMode === "tokens"}
-            <span class="text-textcolor"
-                >{language.hypaV3Settings.lookaheadHeadroomTokensLabel}
-                <Help key="hypaV3LookaheadHeadroomTokens" /></span
-            >
-            <NumberInput
-                marginBottom
-                size="sm"
-                min={0}
-                bind:value={
-                    () => settings.lookaheadHeadroomTokens,
-                    (value) => setTokenAmount(settings, "lookaheadHeadroomTokens", value)
-                }
-            />
-            <span class="text-textcolor"
-                >{language.hypaV3Settings.extraSummarizationTokensLabel}
-                <Help key="hypaV3ExtraSummarizationTokens" /></span
-            >
-            <NumberInput
-                marginBottom
-                size="sm"
-                min={0}
-                bind:value={
-                    () => settings.extraSummarizationTokens,
-                    (value) => setTokenAmount(settings, "extraSummarizationTokens", value)
-                }
-            />
-            {@render budgetReducedNotes(budgetReduced)}
-        {:else}
-            <span class="text-textcolor"
-                >{language.hypaV3Settings.extraSummarizationRatioLabel}
-                <Help key="hypaV3ExtraSummarizationRatio" /></span
-            >
-            <SliderInput
-                marginBottom
-                min={0}
-                max={1 - settings.memoryTokensRatio}
-                step={0.01}
-                fixed={2}
-                bind:value={settings.extraSummarizationRatio}
-            />
-            <span class="text-textcolor"
-                >{language.hypaV3Settings.lookaheadHeadroomRatioLabel}
-                <Help key="hypaV3LookaheadHeadroomRatio" /></span
-            >
-            <SliderInput
-                marginBottom
-                min={0}
-                max={0.99}
-                step={0.01}
-                fixed={2}
-                bind:value={settings.lookaheadHeadroomRatio}
-            />
-            {#if hypaMaxContextUsable}
-                <button
-                    type="button"
-                    class="mb-4 self-start text-left text-sm text-textcolor2 underline hover:text-textcolor cursor-pointer"
-                    data-hypav3-convert-to-tokens
-                    onclick={() => convertToTokens(settings)}
-                    >{language.hypaV3Settings.convertToTokens(hypaMaxContext.toLocaleString())}</button
-                >
-            {/if}
-        {/if}
-        <span class="text-textcolor"
-            >{language.hypaV3Settings.maxChatsPerSummaryLabel} <Help key="hypaV3MaxChatsPerSummary" /></span
-        >
-        <NumberInput marginBottom size="sm" min={1} bind:value={settings.maxChatsPerSummary} />
-        <span class="text-textcolor"
-            >{language.hypaV3Settings.queryChatCountLabel} <Help key="hypaV3QueryChatCount" /></span
-        >
-        <NumberInput marginBottom size="sm" min={1} max={20} bind:value={settings.queryChatCount} />
-        <span class="text-textcolor"
-            >{language.hypaV3Settings.gapConfirmTokensLabel} <Help key="hypaV3GapConfirmTokens" /></span
-        >
-        <NumberInput marginBottom size="sm" min={0} bind:value={settings.gapConfirmTokens} />
-        <span class="text-textcolor"
-            >{language.hypaV3Settings.summaryChunkSeparatorLabel}
-            <Help key="hypaV3SummaryChunkSeparator" /></span
-        >
-        <TextInput marginBottom size="sm" bind:value={settings.summaryChunkSeparator} />
-        <span class="text-textcolor"
-            >{language.hypaV3Settings.recentMemoryRatioLabel} <Help key="hypaV3RecentMemoryRatio" /></span
-        >
-        <SliderInput marginBottom min={0} max={1} step={0.01} fixed={2} bind:value={settings.recentMemoryRatio} />
-        <span class="text-textcolor"
-            >{language.hypaV3Settings.similarMemoryRatioLabel} <Help key="hypaV3SimilarMemoryRatio" /></span
-        >
-        <SliderInput marginBottom min={0} max={1} step={0.01} fixed={2} bind:value={settings.similarMemoryRatio} />
-        <span class="text-textcolor"
-            >{language.hypaV3Settings.randomMemoryRatioLabel} <Help key="hypaV3RandomMemoryRatio" /></span
-        >
-        <NumberInput
-            marginBottom
-            disabled
-            size="sm"
-            value={parseFloat((1 - settings.recentMemoryRatio - settings.similarMemoryRatio).toFixed(2))}
-        />
-        <div class="mb-2 flex items-center">
-            <Check
-                name={language.hypaV3Settings.preserveOrphanedMemoryLabel}
-                bind:check={settings.preserveOrphanedMemory}
-            />
-            <Help key="hypaV3PreserveOrphanedMemory" />
-        </div>
-        <div class="mb-2 flex items-center">
-            <Check
-                name={language.hypaV3Settings.applyRegexScriptWhenRerollingLabel}
-                bind:check={settings.processRegexScript}
-            />
-            <Help key="hypaV3ProcessRegexScript" />
-        </div>
-        <div class="mb-2 flex items-center">
-            <Check
-                name={language.hypaV3Settings.doNotSummarizeUserMessageLabel}
-                bind:check={settings.doNotSummarizeUserMessage}
-            />
-            <Help key="hypaV3DoNotSummarizeUserMessage" />
-        </div>
-        <Accordion name="Advanced Settings" styled>
-            <div class="mb-2 flex items-center">
-                <Check name="Use Experimental Implementation" bind:check={settings.useExperimentalImpl} />
-                <Help key="hypaV3UseExperimentalImpl" />
-            </div>
-            <div class="mb-2 flex items-center">
-                <Check name="Always Toggle On" bind:check={settings.alwaysToggleOn} />
-                <Help key="hypaV3AlwaysToggleOn" />
-            </div>
-            {#if settings.useExperimentalImpl}
-                <span class="text-textcolor"
-                    >Summarization Requests Per Minute <Help key="hypaV3SummarizationRequestsPerMinute" /></span
-                >
-                <NumberInput marginBottom size="sm" min={1} bind:value={settings.summarizationRequestsPerMinute} />
-                <span class="text-textcolor"
-                    >Summarization Max Concurrent <Help key="hypaV3SummarizationMaxConcurrent" /></span
-                >
-                <NumberInput marginBottom size="sm" min={1} max={10} bind:value={settings.summarizationMaxConcurrent} />
-                <span class="text-textcolor"
-                    >Embedding Requests Per Minute <Help key="hypaV3EmbeddingRequestsPerMinute" /></span
-                >
-                <NumberInput marginBottom size="sm" min={1} bind:value={settings.embeddingRequestsPerMinute} />
-                <span class="text-textcolor">Embedding Max Concurrent <Help key="hypaV3EmbeddingMaxConcurrent" /></span>
-                <NumberInput marginBottom size="sm" min={1} max={10} bind:value={settings.embeddingMaxConcurrent} />
-            {:else}
-                <div class="mb-2 flex items-center">
-                    <Check
-                        name={language.hypaV3Settings.enableSimilarityCorrectionLabel}
-                        bind:check={settings.enableSimilarityCorrection}
-                    />
-                    <Help key="hypaV3EnableSimilarityCorrection" />
-                </div>
-            {/if}
-        </Accordion>
-    {/if}
-
-    <div class="mb-8"></div>
-{:else if settings.memoryTranslateMedia.supaModelType !== "none" && settings.memoryTranslateMedia.hypav2 === false && settings.memoryTranslateMedia.hypaV3 === false}
+{:else if memoryAlgorithm === "supaMemory"}
     <span class="mb-2 text-textcolor2 text-sm text-wrap wrap-break-word max-w-full">{language.supaDesc}</span>
     <span class="text-textcolor mt-4">{language.SuperMemory} {language.model}</span>
     <SelectInput className="mt-2 mb-2" bind:value={settings.memoryTranslateMedia.supaModelType}>
@@ -1207,6 +774,432 @@
     </div>
     <SettingRenderer items={memorySupaMemoryItems} />
 {/if}
+<h3 class="mb-2 mt-6 text-xl font-bold">{language.chatMemory.sharedPreset}</h3>
+<span class="mb-4 text-sm text-textcolor2">{language.chatMemory.sharedPresetHelp}</span>
+{@render presetPicker()}
+{#if currentHypaV3?.settings}
+    <h4 class="mb-2 text-lg font-semibold">{language.chatMemory.sharedBudget}</h4>
+    {@render budgetModeControl(currentHypaV3.settings)}
+    {@render memoryMaximumControl(currentHypaV3.settings)}
+    {@render budgetReducedNotes(budgetReduced.filter(({ field }) => field === "memory"))}
+{/if}
+
+<h3 class="mb-2 mt-6 text-xl font-bold">{language.structuredMemory.name}</h3>
+<span class="max-w-full mb-6 text-sm text-wrap wrap-break-word text-textcolor2" data-structured-memory-description
+    >{language.structuredMemory.settings.description}</span
+>
+
+{#if currentHypaV3?.settings}
+    {@const text = language.structuredMemory.settings}
+    {@const preset = currentHypaV3.settings}
+    {@const structured = normalizeStructuredMemorySettings(preset.structured)}
+
+    {@render sectionTitle("recording", text.sections.recording, true)}
+    <span class="text-textcolor">{text.language}</span>
+    <TextInput
+        marginBottom
+        size="sm"
+        placeholder={text.languagePlaceholder}
+        bind:value={() => structured.language, (value) => setStructured(preset, (next) => (next.language = value))}
+    />
+    <span class="text-textcolor">{text.cadence}</span>
+    <SelectInput
+        className="mb-4"
+        value={structured.cadence}
+        onchange={({ currentTarget }) =>
+            setStructured(preset, (next) => (next.cadence = currentTarget.value as StructuredMemoryCadence))}
+    >
+        {#each STRUCTURED_MEMORY_CADENCES as cadence (cadence)}
+            <OptionInput value={cadence}>{text.cadences[cadence]}</OptionInput>
+        {/each}
+    </SelectInput>
+    {#if structured.cadence === "everyK"}
+        {@render structuredCount(
+            preset,
+            text.cadenceTurns,
+            1,
+            (read) => read.cadenceTurns,
+            (next, count) => (next.cadenceTurns = count),
+        )}
+    {:else if structured.cadence === "tokens" && preset.budgetMode === "tokens"}
+        {@render structuredCount(
+            preset,
+            text.cadenceTokens,
+            1,
+            (read) => read.cadenceTokens,
+            (next, count) => (next.cadenceTokens = count),
+        )}
+    {:else if structured.cadence === "tokens"}
+        <span class="text-textcolor">{text.cadenceRatio}</span>
+        <SliderInput
+            marginBottom
+            min={0.01}
+            max={0.99}
+            step={0.01}
+            fixed={2}
+            bind:value={
+                () => structured.cadenceRatio, (value) => setStructured(preset, (next) => (next.cadenceRatio = value))
+            }
+        />
+    {/if}
+    {@render sectionTitle("budget", text.sections.budget)}
+    <span class="text-textcolor">{text.laneSplit}</span>
+    <SelectInput
+        className="mb-2"
+        value={structured.laneSplit}
+        onchange={({ currentTarget }) =>
+            setStructured(preset, (next) => (next.laneSplit = currentTarget.value as StructuredMemoryLaneSplit))}
+    >
+        {#each STRUCTURED_MEMORY_LANE_SPLITS as split (split)}
+            <OptionInput value={split}>{text.laneSplits[split]}</OptionInput>
+        {/each}
+    </SelectInput>
+    {#if laneMaximum !== undefined}
+        <span class="mb-3 text-xs text-textcolor2" data-structured-memory-lane-maximum
+            >{text.laneMaximum(laneMaximum.toLocaleString())}</span
+        >
+    {/if}
+    {@render laneBudget(preset, structured)}
+    {#if structured.laneSplit !== "manual"}
+        <span class="mb-4 text-xs text-textcolor2" data-structured-memory-lane-shares
+            >{text.laneSharesHelp(laneTotal(structured.laneShares))}</span
+        >
+    {/if}
+    {@render structuredCount(
+        preset,
+        text.requiredCap,
+        1,
+        (read) => read.requiredCap,
+        (next, count) => (next.requiredCap = count),
+        undefined,
+        text.requiredCapHelp,
+    )}
+    {@render sectionTitle("recent", text.sections.recent)}
+    {@render recentTimeline(structured)}
+    {@render structuredCount(
+        preset,
+        text.windowTurns,
+        1,
+        (read) => read.windowTurns,
+        (next, count) => (next.windowTurns = count),
+        undefined,
+        text.windowTurnsHelp,
+    )}
+    {@render structuredCount(
+        preset,
+        text.flowKeyLineEvents,
+        0,
+        (read) => read.flowKeyLineEvents,
+        (next, count) => (next.flowKeyLineEvents = count),
+        undefined,
+        text.flowKeyLineEventsHelp,
+    )}
+    {@render structuredCount(
+        preset,
+        text.flowEvents,
+        0,
+        (read) => read.flowEvents,
+        (next, count) => (next.flowEvents = count),
+        undefined,
+        text.flowEventsHelp,
+    )}
+    {@render sectionTitle("prompts", text.sections.prompts)}
+    <span class="text-textcolor">{text.instructions}</span>
+    <div class="mb-2">
+        <TextAreaInput
+            size="sm"
+            placeholder={text.instructionsPlaceholder}
+            popupEditorContext={currentHypaV3?.id}
+            bind:value={
+                () => structured.instructions, (value) => setStructured(preset, (next) => (next.instructions = value))
+            }
+        />
+    </div>
+    <span class="mb-4 text-xs text-textcolor2" data-structured-memory-instructions-help>{text.instructionsHelp}</span>
+    <div class="mb-2 flex items-center" data-structured-memory-key-line-guidance>
+        <Check
+            name={text.keyLineGuidance}
+            bind:check={
+                () => structured.keyLineGuidance,
+                (value) => setStructured(preset, (next) => (next.keyLineGuidance = value))
+            }
+        />
+    </div>
+    <span class="mb-4 text-xs text-textcolor2" data-structured-memory-key-line-guidance-help
+        >{text.keyLineGuidanceHelp}</span
+    >
+    <span class="text-textcolor">{text.screeningRefusal}</span>
+    <div class="mb-2" data-structured-memory-screening="refusal">
+        <TextAreaInput
+            size="sm"
+            placeholder={text.screeningPlaceholder}
+            bind:value={
+                () => screeningText(structured, "refusal"),
+                (value) => setScreening(preset, structured, "refusal", value)
+            }
+        />
+    </div>
+    <span class="text-textcolor">{text.screeningFormat}</span>
+    <div class="mb-2" data-structured-memory-screening="format">
+        <TextAreaInput
+            size="sm"
+            placeholder={text.screeningPlaceholder}
+            bind:value={
+                () => screeningText(structured, "format"), (value) => setScreening(preset, structured, "format", value)
+            }
+        />
+    </div>
+    <span class="mb-4 text-xs text-textcolor2" data-structured-memory-screening-help>{text.screeningHelp}</span>
+    <StructuredMemoryPrompts
+        {structured}
+        presetId={currentHypaV3?.id}
+        setStructured={(change) => setStructured(preset, change)}
+    />
+    {@render sectionTitle("display", text.sections.display)}
+    <div class="mb-2 flex items-center">
+        <Check
+            name={text.volatileBeforeLastUser}
+            bind:check={
+                () => structured.volatileBeforeLastUser,
+                (value) => setStructured(preset, (next) => (next.volatileBeforeLastUser = value))
+            }
+        />
+    </div>
+    <span class="text-textcolor">{text.highlightMode}</span>
+    <SelectInput
+        className="mb-2"
+        value={structured.highlightMode}
+        onchange={({ currentTarget }) =>
+            setStructured(
+                preset,
+                (next) => (next.highlightMode = currentTarget.value as StructuredMemoryHighlightMode),
+            )}
+    >
+        {#each STRUCTURED_MEMORY_HIGHLIGHT_MODES as mode (mode)}
+            <OptionInput value={mode}>{language.structuredMemory.highlightModes[mode]}</OptionInput>
+        {/each}
+    </SelectInput>
+    <span class="mb-4 text-xs text-textcolor2" data-structured-memory-highlight-help>{text.highlightHelp}</span>
+    {#if structured.highlightMode === "important"}
+        {#each STRUCTURED_MEMORY_HIGHLIGHT_KINDS as kind (kind)}
+            <div class="mb-2 flex items-center">
+                <Check
+                    name={text.highlightKinds[kind]}
+                    bind:check={
+                        () => structured.highlightKinds.includes(kind), (value) => setHighlightKind(preset, kind, value)
+                    }
+                />
+            </div>
+        {/each}
+        {#if structured.highlightKinds.includes("change")}
+            {@render structuredCount(
+                preset,
+                text.highlightChangeGrade,
+                0,
+                (read) => read.highlightChangeGrade,
+                (next, count) => (next.highlightChangeGrade = count),
+                STRUCTURED_MEMORY_LIMITS.gradeMax,
+            )}
+        {/if}
+    {/if}
+{/if}
+
+<div class="mb-8"></div>
+<h3 class="mb-2 mt-6 text-xl font-bold">{language.chatMemory.hypaV3}</h3>
+<span class="max-w-full mb-6 text-sm text-wrap wrap-break-word text-textcolor2"
+    >{language.hypaV3Settings.descriptionLabel}</span
+>
+
+{#if currentHypaV3?.settings}
+    {@const settings = currentHypaV3.settings}
+
+    <span class="text-textcolor">{language.SuperMemory} {language.model}</span>
+    <SelectInput className="mb-4" bind:value={settings.summarizationModel}>
+        <OptionInput value="subModel">{language.submodel}</OptionInput>
+        {#if "gpu" in navigator}
+            <OptionInput value="Qwen3-1.7B-q4f32_1-MLC">Qwen3 1.7B (GPU)</OptionInput>
+            <OptionInput value="Qwen3-4B-q4f32_1-MLC">Qwen3 4B (GPU)</OptionInput>
+            <OptionInput value="Qwen3-8B-q4f32_1-MLC">Qwen3 8B (GPU)</OptionInput>
+        {/if}
+    </SelectInput>
+    {#if settings.summarizationModel !== "subModel"}
+        <span class="text-draculared text-xs mb-2">{language.hypaV3Settings.localSummarizationWarning}</span>
+    {:else if memoryUsesPlugin}
+        <span class="text-draculared text-xs mb-2">{language.hypaV3Settings.pluginMemoryModelWarning}</span>
+    {/if}
+    <span class="text-textcolor2 text-xs mb-4">{language.hypaV3Settings.requestTriggerNote}</span>
+    <span class="text-textcolor">{language.summarizationPrompt} <Help key="summarizationPrompt" /></span>
+    <div class="mb-4">
+        <TextAreaInput
+            size="sm"
+            placeholder={language.hypaV3Settings.supaMemoryPromptPlaceHolder}
+            bind:value={settings.summarizationPrompt}
+            popupEditorContext={currentHypaV3?.id}
+        />
+    </div>
+    <span class="text-textcolor">{language.reSummarizationPrompt} <Help key="reSummarizationPrompt" /></span>
+    <div class="mb-4">
+        <TextAreaInput
+            size="sm"
+            placeholder={language.hypaV3Settings.supaMemoryPromptPlaceHolder}
+            bind:value={settings.reSummarizationPrompt}
+            popupEditorContext={currentHypaV3?.id}
+        />
+    </div>
+    {#if settings.budgetMode === "tokens"}
+        <span class="text-textcolor"
+            >{language.hypaV3Settings.lookaheadHeadroomTokensLabel}
+            <Help key="hypaV3LookaheadHeadroomTokens" /></span
+        >
+        <NumberInput
+            marginBottom
+            size="sm"
+            min={0}
+            bind:value={
+                () => settings.lookaheadHeadroomTokens,
+                (value) => setTokenAmount(settings, "lookaheadHeadroomTokens", value)
+            }
+        />
+        <span class="text-textcolor"
+            >{language.hypaV3Settings.extraSummarizationTokensLabel}
+            <Help key="hypaV3ExtraSummarizationTokens" /></span
+        >
+        <NumberInput
+            marginBottom
+            size="sm"
+            min={0}
+            bind:value={
+                () => settings.extraSummarizationTokens,
+                (value) => setTokenAmount(settings, "extraSummarizationTokens", value)
+            }
+        />
+        {@render budgetReducedNotes(budgetReduced.filter(({ field }) => field !== "memory"))}
+    {:else}
+        <span class="text-textcolor"
+            >{language.hypaV3Settings.extraSummarizationRatioLabel}
+            <Help key="hypaV3ExtraSummarizationRatio" /></span
+        >
+        <SliderInput
+            marginBottom
+            min={0}
+            max={1 - settings.memoryTokensRatio}
+            step={0.01}
+            fixed={2}
+            bind:value={settings.extraSummarizationRatio}
+        />
+        <span class="text-textcolor"
+            >{language.hypaV3Settings.lookaheadHeadroomRatioLabel}
+            <Help key="hypaV3LookaheadHeadroomRatio" /></span
+        >
+        <SliderInput
+            marginBottom
+            min={0}
+            max={0.99}
+            step={0.01}
+            fixed={2}
+            bind:value={settings.lookaheadHeadroomRatio}
+        />
+        {#if hypaMaxContextUsable}
+            <button
+                type="button"
+                class="mb-4 self-start text-left text-sm text-textcolor2 underline hover:text-textcolor cursor-pointer"
+                data-hypav3-convert-to-tokens
+                onclick={() => convertToTokens(settings)}
+                >{language.hypaV3Settings.convertToTokens(hypaMaxContext.toLocaleString())}</button
+            >
+        {/if}
+    {/if}
+    <span class="text-textcolor"
+        >{language.hypaV3Settings.maxChatsPerSummaryLabel} <Help key="hypaV3MaxChatsPerSummary" /></span
+    >
+    <NumberInput marginBottom size="sm" min={1} bind:value={settings.maxChatsPerSummary} />
+    <span class="text-textcolor">{language.hypaV3Settings.queryChatCountLabel} <Help key="hypaV3QueryChatCount" /></span
+    >
+    <NumberInput marginBottom size="sm" min={1} max={20} bind:value={settings.queryChatCount} />
+    <span class="text-textcolor"
+        >{language.hypaV3Settings.gapConfirmTokensLabel} <Help key="hypaV3GapConfirmTokens" /></span
+    >
+    <NumberInput marginBottom size="sm" min={0} bind:value={settings.gapConfirmTokens} />
+    <span class="text-textcolor"
+        >{language.hypaV3Settings.summaryChunkSeparatorLabel}
+        <Help key="hypaV3SummaryChunkSeparator" /></span
+    >
+    <TextInput marginBottom size="sm" bind:value={settings.summaryChunkSeparator} />
+    <span class="text-textcolor"
+        >{language.hypaV3Settings.recentMemoryRatioLabel} <Help key="hypaV3RecentMemoryRatio" /></span
+    >
+    <SliderInput marginBottom min={0} max={1} step={0.01} fixed={2} bind:value={settings.recentMemoryRatio} />
+    <span class="text-textcolor"
+        >{language.hypaV3Settings.similarMemoryRatioLabel} <Help key="hypaV3SimilarMemoryRatio" /></span
+    >
+    <SliderInput marginBottom min={0} max={1} step={0.01} fixed={2} bind:value={settings.similarMemoryRatio} />
+    <span class="text-textcolor"
+        >{language.hypaV3Settings.randomMemoryRatioLabel} <Help key="hypaV3RandomMemoryRatio" /></span
+    >
+    <NumberInput
+        marginBottom
+        disabled
+        size="sm"
+        value={parseFloat((1 - settings.recentMemoryRatio - settings.similarMemoryRatio).toFixed(2))}
+    />
+    <div class="mb-2 flex items-center">
+        <Check
+            name={language.hypaV3Settings.preserveOrphanedMemoryLabel}
+            bind:check={settings.preserveOrphanedMemory}
+        />
+        <Help key="hypaV3PreserveOrphanedMemory" />
+    </div>
+    <div class="mb-2 flex items-center">
+        <Check
+            name={language.hypaV3Settings.applyRegexScriptWhenRerollingLabel}
+            bind:check={settings.processRegexScript}
+        />
+        <Help key="hypaV3ProcessRegexScript" />
+    </div>
+    <div class="mb-2 flex items-center">
+        <Check
+            name={language.hypaV3Settings.doNotSummarizeUserMessageLabel}
+            bind:check={settings.doNotSummarizeUserMessage}
+        />
+        <Help key="hypaV3DoNotSummarizeUserMessage" />
+    </div>
+    <Accordion name="Advanced Settings" styled>
+        <div class="mb-2 flex items-center">
+            <Check name="Use Experimental Implementation" bind:check={settings.useExperimentalImpl} />
+            <Help key="hypaV3UseExperimentalImpl" />
+        </div>
+        <div class="mb-2 flex items-center">
+            <Check name="Always Toggle On" bind:check={settings.alwaysToggleOn} />
+            <Help key="hypaV3AlwaysToggleOn" />
+        </div>
+        {#if settings.useExperimentalImpl}
+            <span class="text-textcolor"
+                >Summarization Requests Per Minute <Help key="hypaV3SummarizationRequestsPerMinute" /></span
+            >
+            <NumberInput marginBottom size="sm" min={1} bind:value={settings.summarizationRequestsPerMinute} />
+            <span class="text-textcolor"
+                >Summarization Max Concurrent <Help key="hypaV3SummarizationMaxConcurrent" /></span
+            >
+            <NumberInput marginBottom size="sm" min={1} max={10} bind:value={settings.summarizationMaxConcurrent} />
+            <span class="text-textcolor"
+                >Embedding Requests Per Minute <Help key="hypaV3EmbeddingRequestsPerMinute" /></span
+            >
+            <NumberInput marginBottom size="sm" min={1} bind:value={settings.embeddingRequestsPerMinute} />
+            <span class="text-textcolor">Embedding Max Concurrent <Help key="hypaV3EmbeddingMaxConcurrent" /></span>
+            <NumberInput marginBottom size="sm" min={1} max={10} bind:value={settings.embeddingMaxConcurrent} />
+        {:else}
+            <div class="mb-2 flex items-center">
+                <Check
+                    name={language.hypaV3Settings.enableSimilarityCorrectionLabel}
+                    bind:check={settings.enableSimilarityCorrection}
+                />
+                <Help key="hypaV3EnableSimilarityCorrection" />
+            </div>
+        {/if}
+    </Accordion>
+{/if}
+
+<div class="mb-8"></div>
 
 <span class="text-textcolor">{language.embedding} <Help key="embedding" /></span>
 <SelectInput className="mb-4" bind:value={settings.memoryTranslateMedia.hypaModel}>

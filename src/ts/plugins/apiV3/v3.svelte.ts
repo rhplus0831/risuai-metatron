@@ -1,3 +1,10 @@
+import {
+    chatMemoryAlgorithm,
+    chatMemoryMode,
+    legacyMemoryAlgorithm,
+    type ChatMemorySettings,
+} from "../../../../shared/chatMemory.ts";
+import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
 import { selectedCharacter, characterList, characterSnapshot } from "../../storage/characterStore.svelte";
 import { settings, activePreset } from "../../storage/settingsViews.svelte";
 import { allowedDbKeys, handlePluginInstallViaPlugin, loadPlugins, type RisuPlugin } from "../plugins.svelte";
@@ -84,6 +91,7 @@ import {
     chatProjectionState,
     currentChatRef,
     ensureChatLoaded,
+    chatEntry,
     findChat,
     heldChatRevision,
     installChatProjection,
@@ -1111,7 +1119,7 @@ function chatsOfRead(
  * chats' records. A read asks only about chats with no check in flight and none in the last
  * `MEMORY_RECHECK_WINDOW_MS`, in one request, and only a chat whose revision moved costs a projection. It
  * waits for that run and for any run already asking about its other chats, fetches included, so a read with
- * nothing due takes what is held, with no request and no wait. Under another algorithm a held projection
+ * nothing due takes what is held, with no request and no wait. For a chat using another algorithm its projection
  * goes with no request, whatever the window says. A chat that is not loaded, that HypaV3 owns, or that is
  * not on the server yet is left out, and so never counts as checked. Whatever fails, a deadline included,
  * leaves the held value in place and counts as a check: this never rejects, so it never changes what the
@@ -1125,14 +1133,13 @@ async function refreshChatProjections(refs: readonly ChatRef[]): Promise<void> {
     try {
         const chats = refs.flatMap((ref) => {
             const state = chatProjectionState(ref);
-            return state ? [{ ref, state }] : [];
-        });
-        if (settings.ui.memoryAlgorithmType !== STRUCTURED_MEMORY_ALGORITHM) {
-            for (const { ref, state } of chats) {
+            if (!state) return [];
+            if (chatMemoryAlgorithm(chatMemorySettings(), state.chat) !== STRUCTURED_MEMORY_ALGORITHM) {
                 installChatProjection(ref, state, null);
+                return [];
             }
-            return;
-        }
+            return [{ ref, state }];
+        });
         const now = performance.now();
         for (const [key, settled] of chatChecksSettled) {
             if (now - settled < MEMORY_RECHECK_WINDOW_MS) {
@@ -1266,7 +1273,10 @@ function needsChatSnapshot(value: unknown): boolean {
 
 /** Detached server copies omit sealed projections outside structured memory, without changing the cache. */
 function detachedPluginChat(chat: Chat): Chat {
-    if (settings.ui.memoryAlgorithmType !== STRUCTURED_MEMORY_ALGORITHM && isSealedHypaV3Data(chat.hypaV3Data)) {
+    if (
+        chatMemoryAlgorithm(chatMemorySettings(), chat) !== STRUCTURED_MEMORY_ALGORITHM &&
+        isSealedHypaV3Data(chat.hypaV3Data)
+    ) {
         const copy = { ...chat };
         delete copy.hypaV3Data;
         return copy;
@@ -1339,7 +1349,14 @@ async function withHeldChatPage<T>(
     return undefined;
 }
 
-type SharedDetachedRead = { read: DetachedChatRead; needsSnapshot: boolean; structured: boolean };
+type SharedDetachedRead = {
+    read: DetachedChatRead;
+    needsSnapshot: boolean;
+    /** Classification of the response body under the fallback captured before the read. */
+    structured: boolean;
+    /** Classification of the list entry when the read was claimed. */
+    capturedStructured: boolean;
+};
 const detachedReadsInFlight = new Map<string, Promise<SharedDetachedRead>>();
 
 /**
@@ -1349,27 +1366,33 @@ const detachedReadsInFlight = new Map<string, Promise<SharedDetachedRead>>();
  * held-work checks, including the captured algorithm returned with every answer; rejection clears
  * only the pending entries belonging to this batch.
  */
-async function readSharedDetachedChats(refs: readonly ChatRef[]): Promise<Map<ChatRef, SharedDetachedRead>> {
+async function readSharedDetachedChats(
+    refs: readonly ChatRef[],
+    memorySettings: ChatMemorySettings,
+): Promise<Map<ChatRef, SharedDetachedRead>> {
     const generation = detachedChatCacheGeneration();
     const epoch = getResourceEpoch();
-    const structured = settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
+    const legacyAlgorithm = legacyMemoryAlgorithm(memorySettings);
     const claimed: {
         ref: ChatRef;
         key: string;
         owner: string;
+        capturedStructured: boolean;
         promise: Promise<SharedDetachedRead>;
         resolve: (value: SharedDetachedRead) => void;
         reject: (reason: unknown) => void;
     }[] = [];
     const pending = refs.map((ref) => {
         const owner = chatOwnerToken(ref.chaId);
+        const capturedStructured = chatMemoryAlgorithm(memorySettings, chatEntry(ref)) === STRUCTURED_MEMORY_ALGORITHM;
         const key = JSON.stringify([
             epoch,
             owner,
             ref.chaId,
             ref.chatId,
             heldChatRevision(ref),
-            structured,
+            capturedStructured,
+            legacyAlgorithm,
             generation,
         ]);
         let promise = detachedReadsInFlight.get(key);
@@ -1380,7 +1403,7 @@ async function readSharedDetachedChats(refs: readonly ChatRef[]): Promise<Map<Ch
                 resolve = done;
                 reject = fail;
             });
-            claimed.push({ ref, key, owner, promise, resolve, reject });
+            claimed.push({ ref, key, owner, capturedStructured, promise, resolve, reject });
             detachedReadsInFlight.set(key, promise);
         }
         return promise.then((value) => [ref, value] as const);
@@ -1389,9 +1412,13 @@ async function readSharedDetachedChats(refs: readonly ChatRef[]): Promise<Map<Ch
         void (async () => {
             try {
                 const reads = await readChatRefsDetached(claimed.map(({ ref }) => ref));
-                for (const { ref, owner, resolve } of claimed) {
+                for (const { ref, owner, capturedStructured, resolve } of claimed) {
                     const read = reads.get(ref.chaId)?.get(ref.chatId) ?? "absent";
                     const needsSnapshot = typeof read !== "string" && needsChatSnapshot(read.data);
+                    const structured =
+                        typeof read === "string"
+                            ? capturedStructured
+                            : chatMemoryAlgorithm(memorySettings, read.data) === STRUCTURED_MEMORY_ALGORITHM;
                     if (
                         typeof read !== "string" &&
                         !needsSnapshot &&
@@ -1400,7 +1427,7 @@ async function readSharedDetachedChats(refs: readonly ChatRef[]): Promise<Map<Ch
                     ) {
                         rememberDetachedChat(ref, read, structured, generation);
                     }
-                    resolve({ read, needsSnapshot, structured });
+                    resolve({ read, needsSnapshot, structured, capturedStructured });
                 }
             } catch (error) {
                 for (const { reject } of claimed) reject(error);
@@ -1424,8 +1451,9 @@ async function readSharedDetachedChats(refs: readonly ChatRef[]): Promise<Map<Ch
  * attempts before held-state fallback. The optional selector names one character's page and limits
  * its reads and refreshes to those members.
  * Final synchronous assembly fences unloaded copies by the algorithm of both their read and the
- * preceding settings flush. A switch discards those copies and retries once, flushing the new
- * setting before reading again; a second switch uses held-state loading.
+ * preceding settings flush. A chat's mode change discards only its copies; a global fallback change
+ * discards all detached copies. Either retries once after flushing; a second switch uses held-state
+ * loading. A body whose mode disagrees with its list entry takes the held path for that ref alone.
  * A restore halt refuses every result, including fully held pages and held-state fallbacks.
  */
 async function withDetachedDatabaseChats<T>(
@@ -1499,10 +1527,12 @@ async function withDetachedDatabaseChats<T>(
             if (held) return held.value;
         }
         const fallback = new Set<string>();
-        let flushedStructured = settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
+        let flushedSettings = chatMemorySettings();
+        let flushedLegacyAlgorithm = legacyMemoryAlgorithm(flushedSettings);
         const flush = async () => {
-            // Whole-chat responses follow the server's persisted setting, not the read's local flag.
-            flushedStructured = settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
+            // Legacy bodies follow the persisted fallback, even when a stale list entry has an explicit mode.
+            flushedSettings = chatMemorySettings();
+            flushedLegacyAlgorithm = legacyMemoryAlgorithm(flushedSettings);
             let flushed: Awaited<ReturnType<typeof flushResources>>;
             try {
                 flushed = await flushResources();
@@ -1545,7 +1575,16 @@ async function withDetachedDatabaseChats<T>(
                 if (isChatBehind(ref)) return true;
                 if (findChat(ref)) return false;
                 if (chatHasUnackedWork(ref) || chatHydrationHold(ref) !== "none") return true;
-                const read = reads.get(chaId)?.get(id)?.read;
+                const detached = reads.get(chaId)?.get(id);
+                // A mode change gets its per-ref retry at assembly. Its older response revision
+                // must not force all of this character's otherwise valid detached members to load.
+                if (
+                    detached &&
+                    detached.capturedStructured !==
+                        (chatMemoryAlgorithm(chatMemorySettings(), chatEntry(ref)) === STRUCTURED_MEMORY_ALGORITHM)
+                )
+                    return false;
+                const read = detached?.read;
                 if (read === "gone" || read === "absent") return true;
                 const held = heldChatRevision(ref);
                 return read !== undefined && held !== null && (compareRevision(read.revision, held) ?? -1) < 0;
@@ -1580,15 +1619,13 @@ async function withDetachedDatabaseChats<T>(
                     read: { revision: hit.entry.revision, data: hit.data },
                     needsSnapshot: false,
                     structured: hit.entry.structured,
+                    capturedStructured: hit.entry.structured,
                 });
                 cacheHits.set(`${ref.chaId}\u0000${ref.chatId}`, { ref, hit });
             }
-            if (
-                missing.length > 0 &&
-                flushedStructured === (settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM)
-            ) {
+            if (missing.length > 0 && flushedLegacyAlgorithm === legacyMemoryAlgorithm(chatMemorySettings())) {
                 try {
-                    const read = await readSharedDetachedChats(missing);
+                    const read = await readSharedDetachedChats(missing, flushedSettings);
                     for (const [ref, chat] of read) {
                         let held = reads.get(ref.chaId);
                         if (!held) reads.set(ref.chaId, (held = new Map()));
@@ -1613,8 +1650,10 @@ async function withDetachedDatabaseChats<T>(
                     checkOwners();
                     const detached = new Map<string, Map<string, Chat>>();
                     let retry = discardInvalidHits();
-                    let algorithmChanged = false;
-                    const structured = settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
+                    const changedAlgorithms: ChatRef[] = [];
+                    const loadRefs: ChatRef[] = [];
+                    let globalChanged = false;
+                    const memorySettings = chatMemorySettings();
                     for (const chaId of ids) {
                         const selected = members(chaId);
                         const before = prepared?.get(chaId);
@@ -1632,18 +1671,36 @@ async function withDetachedDatabaseChats<T>(
                         const copies = new Map<string, Chat>();
                         detached.set(chaId, copies);
                         for (const { id } of selected) {
-                            if (findChat({ chaId, chatId: id })) continue;
+                            const ref = { chaId, chatId: id };
+                            if (findChat(ref)) continue;
                             const read = reads.get(chaId)?.get(id);
-                            if (structured !== flushedStructured || (read && read.structured !== structured)) {
-                                algorithmChanged = true;
+                            const entry = chatEntry(ref);
+                            const structured =
+                                chatMemoryAlgorithm(memorySettings, entry) === STRUCTURED_MEMORY_ALGORITHM;
+                            if (legacyMemoryAlgorithm(memorySettings) !== flushedLegacyAlgorithm) {
+                                globalChanged = true;
+                            } else if (read && read.capturedStructured !== structured) {
+                                changedAlgorithms.push(ref);
                             } else if (read === undefined || typeof read.read === "string") {
                                 retry = true;
+                            } else if (chatMemoryMode(read.read.data) !== chatMemoryMode(entry)) {
+                                // A newer body can disagree with a stale summary. Load only this ref so
+                                // its own mode and projection are read together through the held path.
+                                loadRefs.push(ref);
+                            } else if (
+                                read.structured !== structured ||
+                                read.structured !==
+                                    (chatMemoryAlgorithm(memorySettings, read.read.data) ===
+                                        STRUCTURED_MEMORY_ALGORITHM)
+                            ) {
+                                changedAlgorithms.push(ref);
                             } else {
                                 copies.set(id, read.read.data);
                             }
                         }
                     }
-                    if (algorithmChanged) return { algorithmChanged: true } as const;
+                    if (globalChanged || changedAlgorithms.length > 0 || loadRefs.length > 0)
+                        return { globalChanged, changedAlgorithms, loadRefs } as const;
                     if (retry) return undefined;
                     for (const copies of detached.values()) {
                         for (const [id, chat] of copies) {
@@ -1654,20 +1711,32 @@ async function withDetachedDatabaseChats<T>(
                 },
                 prepared ? () => chatsOfRead(ids, undefined, (chaId) => prepared.get(chaId) ?? []) : refreshed,
             );
-            if (assembled && "algorithmChanged" in assembled) {
-                for (const [chaId, chats] of reads) {
-                    for (const chatId of chats.keys()) {
-                        const ref = { chaId, chatId };
-                        forgetDetachedChat(ref, cacheHits.get(`${chaId}\u0000${chatId}`)?.hit.entry);
-                    }
+            if (assembled && "changedAlgorithms" in assembled) {
+                const changed = assembled.globalChanged
+                    ? [...reads].flatMap(([chaId, chats]) => [...chats.keys()].map((chatId) => ({ chaId, chatId })))
+                    : [...assembled.changedAlgorithms, ...assembled.loadRefs];
+                for (const ref of changed) {
+                    const key = `${ref.chaId}\u0000${ref.chatId}`;
+                    forgetDetachedChat(ref, cacheHits.get(key)?.hit.entry);
+                    reads.get(ref.chaId)?.delete(ref.chatId);
+                    cacheHits.delete(key);
                 }
-                reads.clear();
-                cacheHits.clear();
-                if (refreshedAlgorithm) return await loaded();
-                refreshedAlgorithm = true;
-                if (!(await flush())) return await loaded();
-                // The refreshed algorithm gets the same membership/assembly retry budget.
-                round = -1;
+                for (const ref of assembled.loadRefs) {
+                    const key = `${ref.chaId}\u0000${ref.chatId}`;
+                    if (!pinned.has(key)) {
+                        releases.push(pinChat(ref));
+                        pinned.add(key);
+                    }
+                    await ensureChatLoaded(ref);
+                    checkOwners();
+                }
+                if (assembled.globalChanged || assembled.changedAlgorithms.length > 0) {
+                    if (refreshedAlgorithm) return await loaded();
+                    refreshedAlgorithm = true;
+                    if (!(await flush())) return await loaded();
+                    // The refreshed algorithm gets the same membership/assembly retry budget.
+                    round = -1;
+                }
             } else if (assembled) {
                 return assembled.value;
             }

@@ -127,17 +127,18 @@ The meter reads tokens and `memoryStatusWord`; its popover and Preview share `Me
   (`writerPaused`) on its own reply. It cannot wait for a task, since no window may be due. A later recording replaces
   the `memory` field.
 
-`pending` is never stored; `memoryReceiptView` owns missing-row display. The `MemoryReceiptLine` component reads the
-held chat to follow receipt-only feed patches, and uses `requestMemoryPanelTarget` to open the linked page history
-before the panel mounts. `Chat.svelte` also renders the line in the `mobilechat` and `cardboard` footers. Its component
-contract owns display and revert behavior.
+The receipt line shows only in a Structured Memory chat with memory on. `pending` is never stored; `memoryReceiptView`
+owns missing-row display. The `MemoryReceiptLine` component reads the held chat to follow receipt-only feed patches, and
+uses `requestMemoryPanelTarget` to open the linked page history before the panel mounts. `Chat.svelte` also renders the
+line in the `mobilechat` and `cardboard` footers. Its component contract owns display and revert behavior.
 
 ### The memory panel
 
-`src/App.svelte` mounts the panel under `hypaV3ModalOpen`; the `DefaultChatScreen` menu and `CharConfig` button open it
-in place of older memory flags. The component contract owns tab mounting and refresh. `TABS` puts the content tabs first
-(Pages, Timeline, Threads, Evidence missing), then Coverage, Preview, Log, and Settings, so a panel opens on Pages
-unless `takeMemoryPanelTarget` names a tab. Preview runs only on its button since its local send moves `refresh`.
+`src/App.svelte` mounts the panel under `hypaV3ModalOpen` when the selected chat's own algorithm (`chatMemoryAlgorithm`)
+is Structured Memory, the HypaV3 modal otherwise; the `DefaultChatScreen` menu and `CharConfig` button follow it too.
+The component contract owns tab mounting and refresh. `TABS` puts the content tabs first (Pages, Timeline, Threads,
+Evidence missing), then Coverage, Preview, Log, and Settings, so a panel opens on Pages unless `takeMemoryPanelTarget`
+names a tab. Preview runs only on its button since its local send moves `refresh`.
 
 Contents from `server/src/routes/structuredMemory.ts` supplies `adoption`, `rebuild`, `recordedLanguage`, `health`, and
 `unsupportedPages`; the tab's HypaV3 mirror decides none. A [held chat](lifecycle.md#the-adoption-choice) offers
@@ -299,9 +300,10 @@ owns the ordering details.
 ### The health badge
 
 `memoryHealthStates()` combines `POST /health` facts, the open chat's newest report and tab-held over-cap marks for open
-and pinned chats. `chatStatus.svelte.ts` owns state selection; `watchChatVisibility` owns the read triggers.
-`MEMORY_HEALTH_STATES` gives the worst-state order, while `CHAT_STATUS_PRIORITY` keeps health below unseen replies. The
-health route's prefix and byte budget are described in [records](records.md#the-read-routes) and its
+and pinned chats whose own algorithm is Structured Memory. `chatStatus.svelte.ts` owns state selection;
+`watchChatVisibility` owns the read triggers, which ask only for those chats. `MEMORY_HEALTH_STATES` gives the
+worst-state order, while `CHAT_STATUS_PRIORITY` keeps health below unseen replies. The health route's prefix and byte
+budget are described in [records](records.md#the-read-routes) and its
 [measurement](../../reports/measurements/structured-memory-health-read-2026-11-03.md). Contents' health feeds the writer
 line; a send's `writerState` gets `pending` with reason `repair` from in-hand `records.events`.
 
@@ -434,23 +436,20 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
 - A screened reply can stay in the writer's context-only `previous` slot, and a user message strands when the next reply
   is already recorded. Decision: Structured Memory slice 7e, archive.
 - `selectMemory` takes 520–584 ms on a 1,000-turn send, mostly tokenizing (296–356 ms) and cache reads. Counting each
-  text once per selection did not help (9 of about 2,190 counts were repeats; tried and reverted); the gain needs it to
-  reuse the counts `assemble.ts` already took for `currentTokens`. Decision: Found Issues Decisions (owner, 2026-11-08),
+  text once per selection did not help (9 of about 2,190 counts were repeats); the gain needs it to reuse the counts
+  `assemble.ts` already took for `currentTokens`. Decision: Found Issues Decisions (owner, 2026-11-08),
   [audit](../../reports/measurements/structured-memory-2026-11-03.md).
 - The recent timeline counts every offered full line, up to `flowCandidates` (200), before it spends, whatever the
-  budget: about 400 more counts on a 1,000-turn send, and `selectMemory` at 557–657 ms against 513–569 ms for the
-  title-only card. A lower bound would cut the run where a 50,000 maximum reaches it. Decision: Recent Timeline D14
-  (owner, 2026-11-11), [measured](../../reports/measurements/structured-memory-timeline-2026-11-11.md#selection-time).
-- Counting those lines on demand did not pay (tried and reverted, `b29a883a5`): the card stayed byte for byte, but it
-  saved 91–164 of about 2,600 counts at 3,276 and 6,553 tokens and none at 50,000, and it counts one line at a time,
-  which a network tokenizer cannot batch.
+  budget: about 400 more counts on a 1,000-turn send, and `selectMemory` 44–88 ms slower than the title-only card. A
+  lower bound would cut the run where a 50,000 maximum reaches it. Decision: Recent Timeline D14 (owner, 2026-11-11),
+  [measured](../../reports/measurements/structured-memory-timeline-2026-11-11.md#selection-time).
+- Counting those lines on demand did not pay (tried and reverted, `b29a883a5`): it saved at most 164 of about 2,600
+  counts, none at 50,000, and counts one line at a time, which a network tokenizer cannot batch.
 - Small contexts starve the last lanes: at 16,384 tokens of context the `threads` lane gets nothing once event lines
-  carry three quotes (found at 32,768; the timeline leaves the English 1,000-turn fixture so), and a query naming two
-  events loses one of them in a long chat at 32,768 too. Decision: Found Issues Decisions (owner, 2026-11-08),
-  [audit](../../reports/measurements/structured-memory-2026-11-03.md).
+  carry three quotes, and a query naming two events loses one of them in a long chat at 32,768 too. Decision: Found
+  Issues Decisions (owner, 2026-11-08), [audit](../../reports/measurements/structured-memory-2026-11-03.md).
 - Under `auto` at 16,384 (a maximum of 3,276) the pages lane's 45% loses one long page on stage on every send of a
-  1,000-turn fixture chat (pages of about 500 tokens in English, 900 in Korean), which the title-only card's 2,000 kept.
-  Decision: Recent Timeline D14 (owner, 2026-11-11),
+  1,000-turn fixture chat, which the title-only card's 2,000 kept. Decision: Recent Timeline D14 (owner, 2026-11-11),
   [measured](../../reports/measurements/structured-memory-timeline-2026-11-11.md#the-pages-lane-and-the-shares).
 
 ### Gotchas

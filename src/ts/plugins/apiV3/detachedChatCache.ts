@@ -1,3 +1,5 @@
+import { chatMemoryAlgorithm } from "../../../../shared/chatMemory.ts";
+import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
 import type { Chat } from "../../../../shared/database.ts";
 import {
     hypaV3DataHoldsSummaries,
@@ -13,10 +15,9 @@ import { readStructuredMemoryProjection, readStructuredMemoryRevisions } from "s
 import { readWithDeadline } from "src/ts/storage/readDeadline";
 import { terminalNotice } from "src/ts/alert";
 import { liveFeedCurrent } from "src/ts/network/eventFeed";
-import { heldChatRevision, isChatBehind, type ChatRef } from "src/ts/storage/chatStore.svelte";
+import { chatEntry, heldChatRevision, isChatBehind, type ChatRef } from "src/ts/storage/chatStore.svelte";
 import { getResourceEpoch } from "src/ts/storage/resourceClient";
 import { assertSaveAdmission, utf8ByteLength } from "src/ts/storage/resourceSync.svelte";
-import { settings } from "src/ts/storage/settingsViews.svelte";
 
 /**
  * Unloaded chat bodies retained by plugin full-chat reads, never installed in the chat store or
@@ -151,7 +152,7 @@ function bodyCurrent(ref: ChatRef, hit: DetachedChatCacheHit): boolean {
         forgetDetachedChat(ref, entry);
         return false;
     }
-    const structured = settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
+    const structured = chatMemoryAlgorithm(chatMemorySettings(), chatEntry(ref)) === STRUCTURED_MEMORY_ALGORITHM;
     return (
         hit.invalidation === invalidation &&
         epoch === getResourceEpoch() &&
@@ -262,7 +263,7 @@ export async function cachedDetachedChatsForRead(
                             (heldToken?.epoch === token.epoch &&
                                 heldToken.seq === token.seq &&
                                 token.revision <= heldToken.revision) ||
-                            settings.ui.memoryAlgorithmType !== STRUCTURED_MEMORY_ALGORITHM ||
+                            chatMemoryAlgorithm(chatMemorySettings(), chatEntry(ref)) !== STRUCTURED_MEMORY_ALGORITHM ||
                             !replaceProjection(ref, hit, value)
                         )
                             continue;

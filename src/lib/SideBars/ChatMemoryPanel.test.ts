@@ -133,3 +133,52 @@ describe("ChatMemoryPanel", () => {
         },
     );
 });
+
+it.each(["loaded", "unloaded"])("stores explicit modes and unsets Legacy for a %s chat", async (state) => {
+    const { settings } = await import("src/ts/storage/settingsViews.svelte");
+    const { language } = await import("src/lang");
+    settings.ui.memoryAlgorithmType = "hypaV3";
+    Object.assign(settings.memoryTranslateMedia, {
+        hypaV3: true,
+        hypav2: false,
+        hanuraiEnable: false,
+        supaModelType: "none",
+    });
+    const server = transport.server!;
+    if (state === "loaded") {
+        release = chats.pinChat(ref);
+        await chats.loadChat(ref);
+    }
+    const target = document.createElement("div");
+    document.body.appendChild(target);
+    instance = mount(ChatMemoryPanel, { target, props: { chatRef: ref } });
+    flushSync();
+    const select = target.querySelector("select")!;
+    expect([...select.options].map(({ value }) => value)).toEqual(["legacy", "hypaV3", "structuredMemory"]);
+    expect(select.options[0].textContent).toBe(language.chatMemory.legacy(`${language.HypaMemory} V3`));
+    expect(select.value).toBe("legacy");
+    for (const mode of ["structuredMemory", "hypaV3", "legacy"]) {
+        select.value = mode;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        flushSync();
+        const work = chats.takeChatWork(new Set());
+        const result = server.store.applyChanges({ chats: work.groups, chatOrders: work.orders });
+        chats.ackChatWork(work, result.chats, result.chatOrders);
+        const saved = server.chat("c", "k")!.data;
+        expect(select.value).toBe(mode);
+        if (mode === "legacy") {
+            expect(chats.chatEntry(ref)).not.toHaveProperty("memoryMode");
+            expect(saved).not.toHaveProperty("memoryMode");
+            expect(work.groups[0].ops).toEqual([{ op: "meta", set: {}, unset: ["memoryMode"] }]);
+        } else {
+            expect(chats.chatEntry(ref)).toHaveProperty("memoryMode", mode);
+            expect(saved).toHaveProperty("memoryMode", mode);
+        }
+    }
+    if (state === "unloaded") expect(chats.findChat(ref)).toBeUndefined();
+    else expect(chats.findChat(ref)).not.toHaveProperty("memoryMode");
+    expect(server.chat("c", "sibling")!.data).not.toHaveProperty("memoryMode");
+    settings.ui.memoryAlgorithmType = "structuredMemory";
+    flushSync();
+    expect(select.options[0].textContent).toBe(language.chatMemory.legacy(language.structuredMemory.name));
+});

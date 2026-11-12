@@ -27,6 +27,12 @@ export function setChatMemoryEnabled(ref: ChatRef, on: boolean) {
     setChatMeta(ref, { memoryEnabled: on }, on ? ["memoryTrimAck"] : []);
 }
 
+/** Store an explicit algorithm choice; Legacy is the absence of a stored mode, including on list entries. */
+export function setChatMemoryMode(ref: ChatRef, mode: ChatMemoryFields["memoryMode"]) {
+    if (mode === undefined) setChatMeta(ref, {}, ["memoryMode"]);
+    else setChatMeta(ref, { memoryMode: mode });
+}
+
 /** A new chat inherits its source's memory choices independently of the model binding preference. */
 export function initialChatMemory(chaId: string): ChatMemoryFields {
     return untrack(() => {

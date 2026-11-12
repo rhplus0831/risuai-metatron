@@ -1639,7 +1639,18 @@ export const languageKorean = {
     HypaMemory: "하이파메모리",
     memoryTrimWarning:
         "장기 기억이 설정되어 있지만 이 채팅에서는 꺼져 있습니다. 프롬프트가 최대 컨텍스트 크기를 초과하여 가장 오래된 메시지부터 모델에 전달되지 않습니다.",
-    chatMemory: { enabled: "이 채팅에서 메모리 사용" },
+    chatMemory: {
+        enabled: "이 채팅에서 메모리 사용",
+        mode: "메모리 모드",
+        legacy: (algorithm: string) => `레거시 (${algorithm})`,
+        hypaV3: "HypaV3",
+        legacyAlgorithm: "레거시 채팅의 알고리즘",
+        legacyAlgorithmHelp:
+            "레거시로 설정된 채팅은 이 알고리즘을 사용합니다. 각 채팅의 메모리 설정에서 HypaV3 또는 구조화 메모리를 선택할 수 있습니다.",
+        sharedPreset: "HypaV3 및 구조화 메모리 프리셋",
+        sharedPresetHelp: "두 모드 모두 이 프리셋을 사용합니다. 프리셋 선택은 전체에 적용됩니다.",
+        sharedBudget: "공유 메모리 예산",
+    },
     memoryTrimEnable: "이 채팅의 메모리 켜고 전송",
     memoryTrimOnce: "이번에만 제외하고 전송",
     memoryTrimIgnore: "계속 제외하고 전송 (이 채팅에서 다시 묻지 않음)",

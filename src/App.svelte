@@ -5,6 +5,8 @@
 </script>
 
 <script lang="ts">
+    import { chatMemoryAlgorithm } from "../shared/chatMemory.ts";
+    import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import {
         DynamicGUI,
@@ -335,7 +337,7 @@
     {/if}
     <!-- The selected chat's memory: shown once that chat is loaded. -->
     {#if $hypaV3ModalOpen && selectedChat()}
-        {#if settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM}
+        {#if chatMemoryAlgorithm(chatMemorySettings(), selectedChat()) === STRUCTURED_MEMORY_ALGORITHM}
             <StructuredMemoryPanel />
         {:else}
             <HypaV3Modal />

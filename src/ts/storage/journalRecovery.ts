@@ -1,5 +1,7 @@
 import { changeLanguage, language } from "src/lang";
 import { v4 as uuidv4 } from "uuid";
+import { chatMemoryAlgorithm, type ChatMemoryInput, type ChatMemorySettings } from "../../../shared/chatMemory.ts";
+import { chatMemorySettings } from "./chatMemory.svelte";
 import type { ChatOp } from "../../../shared/chats.ts";
 import { isCharacterTrashExpired } from "../../../shared/characters.ts";
 import { CHAT_META_FORBIDDEN_KEYS, CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
@@ -963,17 +965,62 @@ function finalHypaV3Data(ops: ChatOp[]): unknown {
 }
 
 /**
- * The unsealed `hypaV3Data` with summaries a replay's ops would store, the last op naming the field
- * winning: a meta set or a whole-chat replace, never a create, which is a new chat whose field no
- * projection owns. Undefined when none does, or the last is sealed, an unset, or holds no summaries.
+ * Every distinct real summary value a replay may lose to the server's projection guard, in write
+ * order. This is a scratch walk: ops, snapshots and retry identity are never changed. Each write
+ * uses its resulting mode and the summary ownership before it; accepted writes and removals update
+ * that ownership for later ops. Legacy conservatively considers both held and replayed UI settings.
+ * Only a loaded Structured chat with neither a seal nor real summaries proves no projection exists.
+ * Real summaries prove ownership, not absence of dormant records after those summaries are removed.
  */
-export function replayedHypaV3Data(ops: readonly ChatOp[]): unknown {
-    let value: unknown;
+export function replayedHypaV3Data(
+    ops: readonly ChatOp[],
+    context: {
+        held?: DeepReadonly<Chat>;
+        entry?: ChatMemoryInput;
+        settings: ChatMemorySettings;
+        recoveredSettings?: ChatMemorySettings;
+    } = { settings: chatMemorySettings() },
+): unknown[] {
+    const { held, entry, settings, recoveredSettings = settings } = context;
+    const realSummaries = (value: unknown) => !isSealedHypaV3Data(value) && hypaV3DataHoldsSummaries(value);
+    let mode: unknown = (held ?? entry)?.memoryMode;
+    let ownsSummaries = realSummaries(held?.hypaV3Data);
+    let noProjection =
+        held !== undefined &&
+        !ownsSummaries &&
+        !isSealedHypaV3Data(held.hypaV3Data) &&
+        chatMemoryAlgorithm(settings, held) === STRUCTURED_MEMORY_ALGORITHM;
+    const values: unknown[] = [];
     for (const op of ops) {
-        if (op.op === "meta" && namesHypaV3Data(op)) value = op.set?.hypaV3Data;
-        else if (op.op === "replace") value = op.chat.hypaV3Data;
+        if (op.op === "create") {
+            // A new chat has no pre-existing records. Its summaries and subsequent writes are safe.
+            mode = op.chat.memoryMode;
+            noProjection = true;
+            ownsSummaries = realSummaries(op.chat.hypaV3Data);
+            continue;
+        }
+        if (op.op !== "meta" && op.op !== "replace") continue;
+        if (op.op === "replace") mode = op.chat.memoryMode;
+        else if (Object.hasOwn(op.set ?? {}, "memoryMode")) mode = op.set!.memoryMode;
+        else if (op.unset?.includes("memoryMode")) mode = undefined;
+
+        const incoming = op.op === "replace" ? op.chat.hypaV3Data : op.set?.hypaV3Data;
+        const hasSet =
+            (op.op === "replace" ? Object.hasOwn(op.chat, "hypaV3Data") : Object.hasOwn(op.set ?? {}, "hypaV3Data")) &&
+            !isSealedHypaV3Data(incoming);
+        const structured =
+            chatMemoryAlgorithm(settings, { memoryMode: mode }) === STRUCTURED_MEMORY_ALGORITHM ||
+            chatMemoryAlgorithm(recoveredSettings, { memoryMode: mode }) === STRUCTURED_MEMORY_ALGORITHM;
+        const refused = hasSet && structured && !ownsSummaries && !noProjection;
+        if (refused && realSummaries(incoming) && !values.some((value) => equal(value, incoming)))
+            values.push(incoming);
+
+        // A refused meta set leaves its old field; a replacement omits the refused field entirely.
+        // Sealed sets are stripped before server application, while unsets still remove ownership.
+        if (op.op === "replace" || op.unset?.includes("hypaV3Data")) ownsSummaries = false;
+        if (hasSet && !refused) ownsSummaries = realSummaries(incoming);
     }
-    return !isSealedHypaV3Data(value) && hypaV3DataHoldsSummaries(value) ? value : undefined;
+    return values;
 }
 
 function onlyHypaV3Data(ops: ChatOp[]): boolean {
@@ -1247,15 +1294,16 @@ export async function recoverJournal(
             if (item) installations.push(item);
             else moves.push({ epoch: entry.epoch, scope: entry.scope, target: entry.target, version: entry.version });
         }
-        // Whether Structured Memory owns the chats' memory field once this recovery lands: as held, or
-        // as a replayed `ui` record of this very recovery selects it, which saves ahead of the chats.
+        // Legacy replay writes may see either UI selection: record installation can fail while
+        // other rows continue, so neither the held nor the recovered fallback can be ruled out.
         const recoveredUi = installations.find(
             ({ kind, id, decision }) =>
                 kind === RESOURCE_KIND.ui && id === SINGLETON_RESOURCE_ID && decision.action === "replay",
         )?.value;
-        const structuredSelected =
-            settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM ||
-            (isPlainObject(recoveredUi) && recoveredUi.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM);
+        const heldMemorySettings = chatMemorySettings();
+        const recoveredMemorySettings = isPlainObject(recoveredUi)
+            ? { ...heldMemorySettings, memoryAlgorithmType: recoveredUi.memoryAlgorithmType }
+            : heldMemorySettings;
         const parents = new Set(characterList().map((character) => character.chaId));
         for (const item of installations) {
             if (item.kind !== "characters" || item.decision.action !== "replay") continue;
@@ -1318,21 +1366,18 @@ export async function recoverJournal(
                 moves.push({ epoch, scope: entry.scope, target: entry.target, version: entry.version });
                 continue;
             }
-            // A replay sends its ops as they were (the retry contract), and the server drops a real
-            // HypaV3 value written to a chat the projection answers for, which a held sealed value shows.
-            // That value is kept first as a draft of its own, as Apply keeps a refused one; a chat not
-            // held is not known either way, so its value is kept too. A chat with no records takes the
-            // value and is held for the adoption choice, which needs no draft. A row whose value cannot
-            // be kept (a full journal) is not replayed: it becomes a draft whole, its ops kept.
+            // File each possibly refused summary write before installing the unchanged replay. A
+            // later mode change or field removal cannot recover a value refused by an earlier op.
+            // If any filing fails, keep the row whole as a draft, preserving all retry identity.
             if (decision.action === "replay") {
-                const value = replayedHypaV3Data(decision.ops);
-                const held = findChat(ref);
-                if (
-                    value !== undefined &&
-                    structuredSelected &&
-                    (held === undefined || isSealedHypaV3Data(held.hypaV3Data))
-                ) {
-                    let kept = false;
+                const values = replayedHypaV3Data(decision.ops, {
+                    held: findChat(ref),
+                    entry: chatEntry(ref),
+                    settings: heldMemorySettings,
+                    recoveredSettings: recoveredMemorySettings,
+                });
+                let kept = true;
+                for (const value of values) {
                     try {
                         await keepRecoveryMemory(
                             { id: "", epoch: entry.epoch, createdAt: entry.createdAt },
@@ -1341,15 +1386,16 @@ export async function recoverJournal(
                             false,
                             journal,
                         );
-                        kept = true;
                     } catch (error) {
                         console.warn("[Recovery] Could not keep a replayed chat's HypaV3 memory as a draft", error);
+                        kept = false;
                     }
                     check();
-                    if (!kept) {
-                        moves.push({ epoch, scope: entry.scope, target: entry.target, version: entry.version });
-                        continue;
-                    }
+                    if (!kept) break;
+                }
+                if (!kept) {
+                    moves.push({ epoch, scope: entry.scope, target: entry.target, version: entry.version });
+                    continue;
                 }
             }
             let splitIndex: number | undefined;

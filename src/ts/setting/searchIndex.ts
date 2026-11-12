@@ -1,5 +1,5 @@
 import type { SettingContext, SettingItem, SettingSection } from "./types";
-import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
+import { legacyMemoryAlgorithm } from "../../../shared/chatMemory.ts";
 import { language } from "src/lang";
 import { languageEnglish } from "src/lang/en";
 import { matchText, prepareQuery, MATCH_SCORE, type PreparedQuery } from "../util/koreanSearch";
@@ -131,20 +131,13 @@ function placeSections(sections: readonly SettingSection[], target: SettingTarge
     }
 }
 
-// `MemorySettings.svelte`'s chain: Structured Memory, Hanurai, HypaV2, HypaV3, then the SupaMemory
-// block (the only renderer of `memorySupaMemoryItems`), whose own test is transcribed as written.
-const supaMemoryBranch = (ctx: SettingContext): boolean => {
-    const media = ctx.settings.memoryTranslateMedia;
-    return (
-        ctx.settings.ui.memoryAlgorithmType !== STRUCTURED_MEMORY_ALGORITHM &&
-        !media.hanuraiEnable &&
-        !media.hypav2 &&
-        !media.hypaV3 &&
-        media.supaModelType !== "none" &&
-        media.hypav2 === false &&
-        media.hypaV3 === false
-    );
-};
+// Only Legacy's SupaMemory selection renders these registry items. HypaV3 and Structured Memory
+// have always-visible handwritten sections in `MemorySettings.svelte`.
+const supaMemoryBranch = (ctx: SettingContext): boolean =>
+    legacyMemoryAlgorithm({
+        ...ctx.settings.memoryTranslateMedia,
+        memoryAlgorithmType: ctx.settings.ui.memoryAlgorithmType,
+    }) === "supaMemory";
 
 placeItems(accessibilitySettingsHeader, { menu: 11 });
 placeSections(accessibilitySettingsSections, { menu: 11 });

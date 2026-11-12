@@ -109,7 +109,7 @@ it("selects Structured Memory ahead of legacy flags, clears those flags on choic
     for (const chatId of ["k", "other"]) expect(findChat({ chaId: "c", chatId })!.hypaV3Data).toEqual(savedMemory);
 });
 
-it("edits only consumed Structured Memory settings and shares the selected preset's memory budget with HypaV3", async () => {
+it("edits only consumed settings in the Structured Memory section and shares the preset's memory budget with HypaV3", async () => {
     settings.ui.memoryAlgorithmType = "structuredMemory";
     open();
     const preset = () => settings.hypaV3Presets.items.find((p) => p.id === settings.hypaV3Presets.selectedId)!.settings;
@@ -157,12 +157,12 @@ it("edits only consumed Structured Memory settings and shares the selected prese
             ...(conditional ? [control(conditional)] : []),
         ];
         // Exhaustive editable controls: an unconsumed setting must not acquire an editor here.
-        const embedding = [...target.querySelectorAll("span")].find(
-            (span) => span.textContent?.trim() === language.embedding,
+        const hypaV3Section = [...target.querySelectorAll("h3")].find(
+            (heading) => heading.textContent?.trim() === language.chatMemory.hypaV3,
         )!;
-        // Embedding and lore controls below the algorithm section are shared by the whole page.
+        // The HypaV3 section, then the embedding and lore controls, follow the Structured Memory section.
         const algorithmControls = [...target.querySelectorAll(fields)].filter(
-            (node) => !!(node.compareDocumentPosition(embedding) & Node.DOCUMENT_POSITION_FOLLOWING),
+            (node) => !!(node.compareDocumentPosition(hypaV3Section) & Node.DOCUMENT_POSITION_FOLLOWING),
         );
         expect(new Set(algorithmControls)).toEqual(new Set(allowed));
     };
@@ -499,3 +499,21 @@ it("draws the recent timeline from the window, the flow target and both event co
     change(control(text.laneSplit) as HTMLSelectElement, "manual");
     expect(part("full")).toEqual([strip.full, strip.fullValue(tokens(1500)), strip.keyLines(4)]);
 });
+
+it.each(["supaMemory", "structuredMemory"])(
+    "edits HypaV3 preset and Structured Memory controls under global %s",
+    (algorithm) => {
+        open();
+        change(selectWith("structuredMemory"), algorithm);
+        const preset = () => settings.hypaV3Presets.items.find(({ id }) => id === "first")!.settings;
+        expect(selectWith("first").value).toBe("first");
+        change(control(hypa.memoryBudgetTokensLabel) as HTMLInputElement, "2345");
+        expect(preset().memoryBudgetTokens).toBe(2345);
+        change(control(hypa.maxChatsPerSummaryLabel) as HTMLInputElement, "8");
+        expect(preset().maxChatsPerSummary).toBe(8);
+        change(control(text.windowTurns) as HTMLInputElement, "7");
+        expect(preset().structured.windowTurns).toBe(7);
+        expect(selectWith("structuredMemory").value).toBe(algorithm);
+        expect(settings.ui.memoryAlgorithmType).toBe(algorithm);
+    },
+);

@@ -11,6 +11,6 @@ export const gridOpenStore = writable(false);
 export const bookmarkListOpen = writable(false);
 /**
  * The selected chat's memory panel: `App.svelte` mounts `StructuredMemoryPanel` or `HypaV3Modal` by
- * `settings.ui.memoryAlgorithmType`, and only once that chat is loaded.
+ * `chatMemoryAlgorithm` for that chat, and only once that chat is loaded.
  */
 export const hypaV3ModalOpen = writable(false);

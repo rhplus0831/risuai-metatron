@@ -61,9 +61,14 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 
 ### UI
 
-- `src/lib/SideBars/ChatMemoryPanel.svelte` edits the chat switch in `OpenChatPanel.svelte` and
-  `ChatBindingDialog.svelte`, including unloaded chats. `src/ts/storage/chatMemory.svelte.ts` supplies the settings
-  adapter, `setChatMemoryEnabled`, and `initialChatMemory`; the character's Toggles panel has no memory checkbox.
+- `src/lib/SideBars/ChatMemoryPanel.svelte` edits the chat switch and mode in `OpenChatPanel.svelte` and
+  `ChatBindingDialog.svelte`, including unloaded chats. The mode select offers Legacy (named after the algorithm the
+  settings select now), HypaV3, and Structured Memory; Legacy unsets `memoryMode`. `src/ts/storage/chatMemory.svelte.ts`
+  supplies the settings adapter, `setChatMemoryEnabled`, `setChatMemoryMode`, and `initialChatMemory`; the character's
+  Toggles panel has no memory checkbox.
+- `MemorySettings.svelte`'s selector is the algorithm of Legacy chats, and only the legacy algorithm's own settings
+  (Hanurai, HypaV2, SupaMemory) follow it. The preset picker and budget controls, then the Structured Memory and HypaV3
+  sections, show whatever it selects, since any chat can choose either.
 - `src/lib/Others/HypaV3Modal.svelte` and its children in `src/lib/Others/HypaV3Modal/` edit a synced copy of the
   current chat's `hypaV3Data`; the modal's contract holds its save, refresh, and discard rules. A send's memory data is
   written by the job and by the background memory task.
@@ -93,8 +98,11 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
   owner's `supaMemory`. The preset default never writes the owner or chat.
 - The chat's algorithm is `chatMemoryAlgorithm`: a stored `memoryMode` of `structuredMemory` or `hypaV3` selects that
   algorithm whatever the global flags say; absent or any other value is Legacy, the global order below. Every server
-  reader asks it (the send, task admission, record now and rebuild, the settings fingerprint, the projection, the
-  upstream export); the tab's readers still follow the global order ([Limitations](#limitations)).
+  reader asks it: the send, task admission, record now and rebuild, the settings fingerprint, the projection, the
+  upstream export.
+- Every tab reader asks it too: the panel `App.svelte` mounts, the menu row and memory button, the receipt, the context
+  meter's estimate, health states per chat, message removal, the projection install and held-field guard, plugin reads
+  per ref, recovery per replayed write, and the inherit failure notice.
 - `legacyMemoryAlgorithm` shares the server priority with the settings view and selector: Structured Memory →
   `hanuraiEnable` → `hypav2` → `hypaV3` → SupaMemory when `supaModelType` is not `none` → none.
 - SupaMemory, HypaV2, and HypaV3 return data for the current chat's algorithm field; Hanurai returns prompt history and
@@ -201,9 +209,9 @@ formatting still applies.
 - Per-chat fields: `supaMemoryData`, `hypaV2Data`, `hypaV3Data`, `lastMemory`, `memoryTrimAck` (the owner's
   `supaMemoryOnCount` when the user answered "don't ask again" to the trim question).
 - Chat preferences: `memoryEnabled`, `memoryMode`, `memoryPresetId`, `memoryProfileId`. The switch affects execution
-  everywhere and the mode on the server ([Selection](#selection-in-assembleprompt)); the preset and connection are
-  stored and carried, and `chatHypaV3Preset` returns the globally selected preset. Malformed values read as absent; no
-  chat migration runs.
+  everywhere and the mode in the server and the tab ([Selection](#selection-in-assembleprompt)); the preset and
+  connection are stored and carried, and `chatHypaV3Preset` returns the globally selected preset. Malformed values read
+  as absent; no chat migration runs.
 - Per-owner fields (character or group): `supaMemory` (the default for a chat that never chose), `supaMemoryOnCount`
   (legacy off→on count, still incremented by plugin character writes; read through `supaMemoryOnCount` in
   `shared/characters.ts`). The upstream exporter derives `supaMemory` from whether any stored chat resolves on. Without
@@ -359,13 +367,12 @@ lookahead starts at stored coverage and does not defer summaries.
 ### Limitations
 
 - A tab loaded before chat memory preferences were introduced keeps showing the character's switch and writes
-  `supaMemory`, now only the default of a chat that never chose. A plugin whole-chat write from that tab can still
-  remove a field its copy never held. Reloading ends both limitations. Decision: owner, 2026-11-12.
-- A chat's stored mode decides its algorithm on the server only. The tab still mounts the panel, shows the receipt and
-  health, estimates context, and refreshes plugin projections by the global selection, so a chat given a mode by a
-  plugin, a chat file, or a recovery runs it on the server while the tab shows the global one; the switch's
-  `alwaysToggleOn` default already follows the mode in both. Decision: Per-Chat Memory plan, Order
-  ([plan](../plan/per-chat-memory.md)).
+  `supaMemory`, now only the default of a chat that never chose; a tab loaded before chat modes reached the tab shows
+  the global algorithm for a chat with a stored mode. A plugin whole-chat write from such a tab can still remove a field
+  its copy never held. Reloading ends these limitations. Decision: owner, 2026-11-12.
+- A mode change converts nothing and asks nothing new: a chat entering Structured Memory with stored summaries shows the
+  existing adopt-or-decline question, and its summaries and records stay for a later change back. Decision: Per-Chat
+  Memory plan, D10 ([plan](../plan/per-chat-memory.md)).
 - Writers inside a job (record now or the gap run when the tab must serve the model, and a send's own HypaV3 summaries)
   check the chat's algorithm only when admitted; a mode change during that job does not stop them. Detached tasks
   recheck at every window and commit ([Background memory task](#background-memory-task)). Decision: Per-Chat Memory

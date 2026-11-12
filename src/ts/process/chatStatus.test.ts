@@ -1299,3 +1299,56 @@ it("shows memory health for the chat switch independently of the owner's default
     chat.setChatMeta(b, { memoryEnabled: false });
     expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "requiredOverCap"]]));
 });
+
+it.each(["hypaV3", "structuredMemory"])(
+    "reads and shows health only for Structured chats under global %s, including panel close",
+    async (globalMode) => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(100_000);
+        const settings = await enableMemory();
+        settings.ui.memoryAlgorithmType = globalMode;
+        Object.assign(settings.memoryTranslateMedia, {
+            hypaV3: true,
+            hypav2: false,
+            hanuraiEnable: false,
+            supaModelType: "none",
+        });
+        chat.setChatMeta(a, { memoryMode: "structuredMemory" });
+        chat.setChatMeta(b, { memoryMode: "hypaV3", pinned: true });
+        view(a);
+        const { hypaV3ModalOpen } = await import("../screenVisibility");
+        hypaV3ModalOpen.set(false);
+        const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+        stubs.healthFetch.mockImplementation(async () => Response.json({ health: [{ ...healthy, storedStale: 1 }] }));
+        watch();
+        await settleHealth();
+        const requests = () => stubs.healthFetch.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).chats);
+        expect(requests()).toEqual([[{ characterId: "c", chatId: "k" }]]);
+        status.noteJobDone(b, { ...error, code: "memoryRequiredOverCap" });
+        expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "staleEvents"]]));
+
+        hypaV3ModalOpen.set(true);
+        await settleHealth();
+        hypaV3ModalOpen.set(false);
+        await settleHealth();
+        expect(requests()).toEqual([[{ characterId: "c", chatId: "k" }], [{ characterId: "c", chatId: "k" }]]);
+        chat.setChatMeta(a, { pinned: true });
+        view(b);
+        await settleHealth();
+        hypaV3ModalOpen.set(true);
+        await settleHealth();
+        hypaV3ModalOpen.set(false);
+        await settleHealth();
+        expect(stubs.healthFetch).toHaveBeenCalledTimes(2);
+        visibility.mockReturnValue("hidden");
+        document.dispatchEvent(new Event("visibilitychange"));
+        await settleHealth();
+        vi.setSystemTime(160_000);
+        visibility.mockReturnValue("visible");
+        document.dispatchEvent(new Event("visibilitychange"));
+        await settleHealth();
+        expect(requests()).toHaveLength(3);
+        expect(requests().at(-1)).toEqual([{ characterId: "c", chatId: "k" }]);
+        expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "staleEvents"]]));
+    },
+);

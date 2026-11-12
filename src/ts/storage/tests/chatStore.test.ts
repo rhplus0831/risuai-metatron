@@ -3470,3 +3470,153 @@ describe("projection refresh installation", () => {
         }
     });
 });
+
+describe("chat memory modes", () => {
+    const summary = (text: string) => ({ summaries: [{ text, chatMemos: ["a"], isImportant: false }] });
+
+    it("installs projections only for Structured chats despite the opposing global algorithm", async () => {
+        const { chat, ref, server, commit } = await boot();
+        try {
+            const { settings } = await import("../settingsViews.svelte");
+            Object.assign(settings.memoryTranslateMedia, {
+                hypaV3: true,
+                hypav2: false,
+                hanuraiEnable: false,
+                supaModelType: "none",
+            });
+            chat.setChatMeta(ref, { memoryMode: "structuredMemory" });
+            commit();
+            settings.ui.memoryAlgorithmType = "hypaV3";
+            const projection = sealHypaV3Data(summary("Structured event"), server.chat("c", "k")!.revision);
+            expect(chat.installChatProjection(ref, chat.chatProjectionState(ref)!, projection)).toBe(true);
+            expect(chat.findChat(ref)!.hypaV3Data).toEqual(projection);
+            chat.setChatMeta(ref, { memoryMode: "hypaV3" });
+            commit();
+            settings.ui.memoryAlgorithmType = "structuredMemory";
+            const newer = sealHypaV3Data(summary("Must stay dormant"), server.chat("c", "k")!.revision);
+            expect(chat.installChatProjection(ref, chat.chatProjectionState(ref)!, newer)).toBe(false);
+            expect(chat.findChat(ref)!.hypaV3Data).toEqual(projection);
+        } finally {
+            server.close();
+        }
+    });
+
+    it.each(["metadata", "plugin whole-chat diff"])(
+        "%s protects held memory by the mode the write leaves",
+        async (writer) => {
+            const { chat, ref, server, commit } = await boot();
+            try {
+                const { settings } = await import("../settingsViews.svelte");
+                Object.assign(settings.memoryTranslateMedia, {
+                    hypaV3: true,
+                    hypav2: false,
+                    hanuraiEnable: false,
+                    supaModelType: "none",
+                });
+                const { alertToast } = await import("../../alert");
+                const projection = sealHypaV3Data(summary("Held Structured event"));
+                const incoming = summary("New HypaV3 summary");
+                for (const mode of ["structuredMemory", "hypaV3"] as const) {
+                    const opposite = mode === "structuredMemory" ? "hypaV3" : "structuredMemory";
+                    settings.ui.memoryAlgorithmType = opposite;
+                    // Install a server copy with a held projection, then change mode and memory in one write.
+                    chat.acceptRemoteChat({
+                        ...server.chat("c", "k")!,
+                        data: { ...server.chat("c", "k")!.data, memoryMode: opposite, hypaV3Data: projection },
+                    });
+                    vi.mocked(alertToast).mockClear();
+                    const patch = { memoryMode: mode, hypaV3Data: incoming, note: `Written by ${writer}` };
+                    if (writer === "metadata") chat.setChatMeta(ref, patch);
+                    else {
+                        const baseline = chat.captureChatBaseline(ref);
+                        chat.applyChatResult(baseline, { ...clone(baseline.chat), ...patch });
+                    }
+                    expect(chat.findChat(ref)).toMatchObject({
+                        memoryMode: mode,
+                        note: patch.note,
+                        hypaV3Data: mode === "structuredMemory" ? projection : incoming,
+                    });
+                    const { work } = commit();
+                    expect(work.groups[0].ops).toEqual([
+                        {
+                            op: "meta",
+                            set: {
+                                memoryMode: mode,
+                                ...(mode === "hypaV3" ? { hypaV3Data: incoming } : {}),
+                                // The second write leaves the note as already stored.
+                                ...(mode === "structuredMemory" ? { note: patch.note } : {}),
+                            },
+                            unset: [],
+                        },
+                    ]);
+                    expect(vi.mocked(alertToast)).toHaveBeenCalledTimes(mode === "structuredMemory" ? 1 : 0);
+                    if (mode === "hypaV3") expect(server.chat("c", "k")!.data.hypaV3Data).toEqual(incoming);
+                    else expect(server.chat("c", "k")!.data).not.toHaveProperty("hypaV3Data");
+                }
+            } finally {
+                server.close();
+            }
+        },
+    );
+
+    it("asks before removing cited messages only in a Structured-mode chat", async () => {
+        const { chat, ref, server, commit, take } = await boot();
+        try {
+            const { settings } = await import("../settingsViews.svelte");
+            Object.assign(settings.memoryTranslateMedia, {
+                hypaV3: true,
+                hypav2: false,
+                hanuraiEnable: false,
+                supaModelType: "none",
+            });
+            const { alertConfirm } = await import("../../alert");
+            const { language } = await import("src/lang");
+            chat.setChatMeta(ref, { memoryMode: "structuredMemory" });
+            commit();
+            settings.ui.memoryAlgorithmType = "hypaV3";
+            let decide!: (answer: boolean) => void;
+            const answer = new Promise<boolean>((resolve) => {
+                decide = resolve;
+            });
+            const confirm = vi
+                .mocked(alertConfirm)
+                .mockReset()
+                .mockImplementation(() => {
+                    return answer;
+                });
+            const fetch = server.fetch.bind(server);
+            const requests = vi.spyOn(server, "fetch").mockImplementation((path, init) =>
+                path.includes("/coverage")
+                    ? Promise.resolve(
+                          Response.json({
+                              revision: "memory-revision",
+                              next: null,
+                              runs: [],
+                              events: [{ id: "event", status: "active", messageIds: ["a"] }],
+                          }),
+                      )
+                    : fetch(path, init),
+            );
+            chat.removeMessages(ref, ["a"]);
+            await vi.dynamicImportSettled();
+            expect(confirm).toHaveBeenCalledExactlyOnceWith(language.structuredMemory.removeRetracts(1));
+            expect(ids(chat.findChat(ref))).toEqual(["a", "b", "c"]);
+            expect(take().groups).toEqual([]);
+            decide(false);
+            await vi.dynamicImportSettled();
+            expect(ids(chat.findChat(ref))).toEqual(["a", "b", "c"]);
+            chat.setChatMeta(ref, { memoryMode: "hypaV3" });
+            commit();
+            settings.ui.memoryAlgorithmType = "structuredMemory";
+            requests.mockClear();
+            confirm.mockClear();
+            chat.removeMessages(ref, ["a"]);
+            expect(ids(chat.findChat(ref))).toEqual(["b", "c"]);
+            expect(take().groups[0].ops).toEqual([{ op: "remove", ids: ["a"] }]);
+            expect(requests).not.toHaveBeenCalled();
+            expect(confirm).not.toHaveBeenCalled();
+        } finally {
+            server.close();
+        }
+    });
+});

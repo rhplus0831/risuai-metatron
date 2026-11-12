@@ -1391,3 +1391,36 @@ it.each([
     await expect(b.sync.flushResources()).rejects.toBeInstanceOf(b.sync.GenerationBlockedError);
     expect(b.fake.texts("c", "held")).toEqual(["Saved held", "Before generation"]);
 });
+
+it("keeps mixed-mode detached reads separate and invalidates only the chat whose mode changes", async () => {
+    boundary.liveFeedCurrent.mockReturnValue(true);
+    const projected = { ...chatData("projected"), memoryMode: "structuredMemory" } satisfies Chat;
+    const hypa = { ...chatData("hypa"), memoryMode: "hypaV3" } satisfies Chat;
+    const fake = await structuredFixture([projected, hypa]);
+    remember(fake, "c", "projected");
+    remember(fake, "c", "hypa", "Dormant Structured event");
+    const b = await boot(fake);
+    const first = structuredClone(await b.api.getDatabase(["characters"]));
+    const firstChats = returnedCharacter(first, "c").chats;
+    expect(firstChats[0].hypaV3Data?.summaries).toEqual([
+        { text: "A remembered promise", chatMemos: ["message"], isImportant: false },
+    ]);
+    expect(isSealedHypaV3Data(firstChats[0].hypaV3Data)).toBe(true);
+    expect(firstChats[1]).not.toHaveProperty("hypaV3Data");
+    fake.requests.length = 0;
+    expect(await b.api.getDatabase(["characters"])).toEqual(first);
+    expect(requestedChats(fake)).toEqual([]);
+
+    b.chat.setChatMeta(ref("c", "hypa"), { memoryMode: "structuredMemory" });
+    await b.sync.flushResources();
+    fake.requests.length = 0;
+    const second = returnedCharacter(await b.api.getDatabase(["characters"]), "c").chats;
+    expect(second[0]).toEqual(firstChats[0]);
+    expect(second[1]).toMatchObject({
+        memoryMode: "structuredMemory",
+        hypaV3Data: { summaries: [{ text: "Dormant Structured event", chatMemos: ["message"], isImportant: false }] },
+    });
+    expect(isSealedHypaV3Data(second[1].hypaV3Data)).toBe(true);
+    expect(requestedChats(fake)).toEqual([{ characterId: "c", id: "hypa" }]);
+    for (const id of ["projected", "hypa"]) expect(b.chat.findChat(ref("c", id))).toBeUndefined();
+});

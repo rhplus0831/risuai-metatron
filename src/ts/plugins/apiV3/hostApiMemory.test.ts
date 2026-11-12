@@ -608,3 +608,28 @@ it("preserves declined real summaries and refreshes an adopted chat's projection
     expect(projectionRequests().map(([path]) => path)).toEqual([projectionPath("k1")]);
     expect(chats.findChat(ref)?.hypaV3Data).toEqual(real);
 });
+
+it.each(["hypaV3", "structuredMemory"])(
+    "answers mixed-mode refs independently in one plugin read under global %s",
+    async (algorithm) => {
+        const rows = install();
+        for (const [index, mode] of (["structuredMemory", "hypaV3"] as const).entries()) {
+            rows[index].data.memoryMode = mode;
+            chats.acceptRemoteChat(rows[index]);
+        }
+        settings.ui.memoryAlgorithmType = algorithm;
+        Object.assign(settings.memoryTranslateMedia, {
+            hypaV3: true,
+            hypav2: false,
+            hanuraiEnable: false,
+            supaModelType: "none",
+        });
+        respond(2);
+        const host = await api();
+        const result = await host.getChar();
+        expect(result.chats[0].hypaV3Data).toEqual(memory(1, 2));
+        expect(result.chats[1]).not.toHaveProperty("hypaV3Data");
+        expect(refsOf(revisionRequests()[0][1])).toEqual([{ characterId: "c", chatId: "k0" }]);
+        expect(projectionRequests().map(([path]) => path)).toEqual([projectionPath("k0")]);
+    },
+);

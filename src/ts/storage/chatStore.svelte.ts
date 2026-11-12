@@ -1,7 +1,13 @@
 // First: module effects elsewhere (`stores.svelte`) read `selectedChat()` while this module may still be loading.
 import { onCharacterSelectionChanged, selection } from "./selection.svelte";
 import { setOpenChatBindingSource, settings } from "./settingsViews.svelte";
-import { chatMemorySummary, type ChatMemorySummary, type ChatMemoryInput } from "../../../shared/chatMemory.ts";
+import {
+    chatMemoryAlgorithm,
+    chatMemorySummary,
+    type ChatMemorySummary,
+    type ChatMemoryInput,
+} from "../../../shared/chatMemory.ts";
+import { chatMemorySettings } from "./chatMemory.svelte";
 import { untrack } from "svelte";
 import { createSubscriber } from "svelte/reactivity";
 import { v4 as uuidv4 } from "uuid";
@@ -3484,7 +3490,7 @@ export function createChat(
     chat.message ??= [];
     prepareMessages(chat.message, new Set());
     const key = keyOf(chaId, chat.id);
-    settleHypaV3Data(key, chat, undefined);
+    settleHypaV3Data(key, chat, undefined, chat.memoryMode);
     const index = Math.max(0, Math.min(options.index ?? ids.length, ids.length));
     const created = insertChat(chaId, index, chat);
     changed(key);
@@ -4007,7 +4013,7 @@ function removalTarget(ref: ChatRef, ids: readonly string[]): { chat: Chat; pres
 
 /**
  * Removes messages by id: a person's delete. Removing several needs the chat's current revision on the
- * server. The checks throw here, in every chat. Under Structured Memory the removal itself comes later,
+ * server. The checks throw here, in every chat. When this chat uses Structured Memory the removal itself comes later,
  * or not at all (`removeAfterAsking`), so the messages may still be there when this returns.
  */
 export function removeMessages(ref: ChatRef, ids: readonly string[]) {
@@ -4015,7 +4021,7 @@ export function removeMessages(ref: ChatRef, ids: readonly string[]) {
     if (present.length === 0) {
         return;
     }
-    if (settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM) {
+    if (chatMemoryAlgorithm(chatMemorySettings(), chat) === STRUCTURED_MEMORY_ALGORITHM) {
         void removeAfterAsking(ref, present);
     } else {
         applyRemoval(ref, chat, present);
@@ -4200,9 +4206,10 @@ function noticeRefusedProjection(key: string) {
  * for a new chat; `baseline` the value the writer started from, the held one when it has none. Nothing
  * here authorizes: a seal only says a value is a projection.
  *
- * With Structured Memory selected the field is the projection's: a sealed value held, or on an existing
+ * When the resulting mode selects Structured Memory the field is the projection's: a sealed value held, or on an existing
  * chat anything but a real value with summaries, the one thing that means HypaV3 owns the field
- * (`hypaV3DataHoldsSummaries`).
+ * (`hypaV3DataHoldsSummaries`). Ownership comes from the held value before the write;
+ * `modeAfter` is the mode the emitted operation leaves, including a metadata diff or unset.
  *
  * - A sealed value is never taken: it is a projection, this chat's or another's, or an older one a
  *   plugin read before a refresh. It raises the notice only when its seal is no longer intact and the
@@ -4221,6 +4228,7 @@ function keepsHeldHypaV3Data(
     incoming: unknown,
     held: Chat | undefined,
     baseline: unknown,
+    modeAfter: unknown,
     source: "write" | "recovery" = "write",
 ): boolean {
     const differs = () => JSON.stringify(incoming) !== JSON.stringify(baseline);
@@ -4233,7 +4241,7 @@ function keepsHeldHypaV3Data(
     const heldValue = held?.hypaV3Data;
     const projectionsField = () =>
         (isSealedHypaV3Data(heldValue) || !hypaV3DataHoldsSummaries(heldValue)) &&
-        settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
+        chatMemoryAlgorithm(chatMemorySettings(), { memoryMode: modeAfter }) === STRUCTURED_MEMORY_ALGORITHM;
     if (incoming === undefined) {
         return (
             isSealedHypaV3Data(heldValue) ||
@@ -4254,8 +4262,14 @@ function keepsHeldHypaV3Data(
  * `keepsHeldHypaV3Data` for a whole copy: `chat`, the copy a write takes in, gets the held value when
  * the field stays, so whatever holds the copy next holds that. Returns whether it stayed.
  */
-function settleHypaV3Data(key: string, chat: Chat, held: Chat | undefined, baseline = held): boolean {
-    if (!keepsHeldHypaV3Data(key, chat.hypaV3Data, held, baseline?.hypaV3Data)) {
+function settleHypaV3Data(
+    key: string,
+    chat: Chat,
+    held: Chat | undefined,
+    modeAfter: unknown,
+    baseline = held,
+): boolean {
+    if (!keepsHeldHypaV3Data(key, chat.hypaV3Data, held, baseline?.hypaV3Data, modeAfter)) {
         return false;
     }
     if (held?.hypaV3Data === undefined) {
@@ -4306,7 +4320,7 @@ export function chatProjectionState(ref: ChatRef): ChatProjectionState | undefin
  * revision says nothing of its messages.
  *
  * - A null answer removes a sealed value. A real value stays.
- * - A value goes in only with this algorithm selected, sealed intact, at the held revision's epoch and
+ * - A value goes in only when this chat resolves to Structured Memory, sealed intact, at the held revision's epoch and
  *   `seq`, and past the counter of a held token of that `seq`. `compareRevision` alone would take a larger
  *   `seq`, which is another chat under these ids.
  *
@@ -4342,7 +4356,7 @@ export function installChatProjection(
         const heldToken = parseRevisionToken(state.memoryRevision);
         if (
             state.hypaV3Owned ||
-            settings.ui.memoryAlgorithmType !== STRUCTURED_MEMORY_ALGORITHM ||
+            chatMemoryAlgorithm(chatMemorySettings(), chat) !== STRUCTURED_MEMORY_ALGORITHM ||
             !sealedHypaV3DataIntact(answer) ||
             !token ||
             !revision ||
@@ -4440,13 +4454,20 @@ export function setChatMeta(
         if (JSON.stringify(chat[key]) === JSON.stringify(value)) {
             continue;
         }
-        if (
-            key !== "hypaV3Data" ||
-            !keepsHeldHypaV3Data(keyOf(ref.chaId, ref.chatId), value, loaded, chat[key], source)
-        ) {
-            changes[key] = clone(value);
-        } else if (source === "recovery" && !isSealedHypaV3Data(value)) {
-            refusedHypaV3Data = clone(value);
+        changes[key] = clone(value);
+    }
+    // Equal-valued sets have already dropped out. An unset of such a mode still applies, just as
+    // it does in the emitted meta op; only a retained set wins over an unset.
+    const modeAfter = Object.hasOwn(changes, "memoryMode")
+        ? changes.memoryMode
+        : unset.includes("memoryMode")
+          ? undefined
+          : chat.memoryMode;
+    if (Object.hasOwn(changes, "hypaV3Data")) {
+        const value = changes.hypaV3Data;
+        if (keepsHeldHypaV3Data(keyOf(ref.chaId, ref.chatId), value, loaded, chat.hypaV3Data, modeAfter, source)) {
+            delete changes.hypaV3Data;
+            if (source === "recovery" && !isSealedHypaV3Data(value)) refusedHypaV3Data = value;
         }
     }
     const removals = unset.filter((key) => {
@@ -4459,7 +4480,7 @@ export function setChatMeta(
             !Object.hasOwn(changes, key) &&
             !Object.hasOwn(SERVER_META_DEFAULTS, key) &&
             (key !== "hypaV3Data" ||
-                !keepsHeldHypaV3Data(keyOf(ref.chaId, ref.chatId), undefined, loaded, chat[key], source))
+                !keepsHeldHypaV3Data(keyOf(ref.chaId, ref.chatId), undefined, loaded, chat[key], modeAfter, source))
         );
     });
     if (Object.keys(changes).length === 0 && removals.length === 0) {
@@ -4554,7 +4575,7 @@ export function replaceChat(ref: ChatRef, input: DeepReadonly<Chat>) {
     prepareMessages(chat.message, new Set());
     delete chat.isStreaming;
     delete chat.activeStreamingDisplayOptimizationMode;
-    settleHypaV3Data(keyOf(ref.chaId, ref.chatId), chat, heldChat(ref));
+    settleHypaV3Data(keyOf(ref.chaId, ref.chatId), chat, heldChat(ref), chat.memoryMode);
     dropMessagePositions(keyOf(ref.chaId, ref.chatId));
     const retained = new Set(chat.message.map((message) => message.chatId));
     const removesCandidates = heldChat(ref)!.message.some(
@@ -4665,11 +4686,16 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
     }
 
     // After every refusal of the whole result, so the notice speaks of a write that goes on.
-    const heldHypaV3Data = settleHypaV3Data(keyOf(ref.chaId, ref.chatId), next, current, baseline.chat);
+    const replaces =
+        reordered && baseline.version === (versions.get(keyOf(ref.chaId, ref.chatId)) ?? 0) && !isChatGenerating(ref);
+    const modeAfter =
+        replaces || JSON.stringify(next.memoryMode) !== JSON.stringify(baseline.chat.memoryMode)
+            ? next.memoryMode
+            : current.memoryMode;
+    const heldHypaV3Data = settleHypaV3Data(keyOf(ref.chaId, ref.chatId), next, current, modeAfter, baseline.chat);
 
     if (reordered) {
-        const unchanged = baseline.version === (versions.get(keyOf(ref.chaId, ref.chatId)) ?? 0);
-        if (unchanged && !isChatGenerating(ref)) {
+        if (replaces) {
             replaceChat(ref, next);
             return;
         }
@@ -4861,7 +4887,7 @@ export function installRecoveredChat(
     const copy = clone<typeof intent>(intent);
     const seq = nextSeq();
     if ("snapshot" in copy) {
-        settleHypaV3Data(key, copy.snapshot, undefined);
+        settleHypaV3Data(key, copy.snapshot, undefined, copy.snapshot.memoryMode);
         insertChat(ref.chaId, memberIds(ref.chaId).length, copy.snapshot);
         changed(key);
     } else if (deleting) {
@@ -5305,7 +5331,7 @@ export function installCharacterChats(chaId: string, chats: Chat[], character: {
     for (const chat of prepared) {
         // Only a chat the mirror holds whole is an existing one here: of any other, nothing says what
         // the field is, and a value this drops would be lost with the chat's `replace`.
-        settleHypaV3Data(keyOf(chaId, chat.id!), chat, heldChat({ chaId, chatId: chat.id! }));
+        settleHypaV3Data(keyOf(chaId, chat.id!), chat, heldChat({ chaId, chatId: chat.id! }), chat.memoryMode);
     }
     setChatList(chaId, loadedEntries(prepared));
     // Explicit recreation supersedes the refused intent; reconciliation below queues its replacement.

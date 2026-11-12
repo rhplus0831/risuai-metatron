@@ -18,7 +18,7 @@
 
 <script lang="ts">
     import { chatEntry } from "src/ts/storage/chatStore.svelte";
-    import { chatMemoryEnabled } from "../../../shared/chatMemory.ts";
+    import { chatMemoryAlgorithm, chatMemoryEnabled } from "../../../shared/chatMemory.ts";
     import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
     import { tick } from "svelte";
     import {
@@ -1262,7 +1262,7 @@
 
 {#snippet memoryReceipt()}
     {@const owner = displayedChat ? findCharacter(displayedChat.chaId) : undefined}
-    {#if settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM && role === "char" && idx >= 0 && messageId !== undefined && displayedChat && !disabled && owner && chatMemoryEnabled(chatEntry(displayedChat), owner, chatMemorySettings())}
+    {#if chatMemoryAlgorithm(chatMemorySettings(), displayedChat ? chatEntry(displayedChat) : undefined) === STRUCTURED_MEMORY_ALGORITHM && role === "char" && idx >= 0 && messageId !== undefined && displayedChat && !disabled && owner && chatMemoryEnabled(chatEntry(displayedChat), owner, chatMemorySettings())}
         <MemoryReceiptLine chatRef={displayedChat} {messageId} {idx} {locked} owner={owner as AnyClientCharacter} />
     {/if}
 {/snippet}

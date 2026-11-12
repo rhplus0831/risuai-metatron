@@ -14,7 +14,7 @@
     import { openSetting } from "src/ts/setting/settingJump.svelte";
     import { INTERACTION_SETTINGS_MENU } from "src/ts/settingsMenu";
     import { chatBinding } from "src/ts/storage/chatBinding.svelte";
-    import { findChat, setChatMeta, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { chatEntry, findChat, setChatMeta, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { readSettingsRoot, settings } from "src/ts/storage/settingsViews.svelte";
     import { settingsOpen, SettingsMenuIndex, MEMORY_SETTINGS_MENU } from "src/ts/stores.svelte";
     import { createTokenCountField } from "src/ts/tokenCountField";
@@ -29,7 +29,8 @@
         type ContextReport,
     } from "../../../shared/contextReport.ts";
     import { maxContextOverrideOf } from "../../../shared/sections.ts";
-    import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
+    import { chatMemoryAlgorithm } from "../../../shared/chatMemory.ts";
+    import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
     import type { TabTokenScope } from "../../../shared/tokenizerChoice.ts";
     import MemoryManifest from "../Others/StructuredMemory/MemoryManifest.svelte";
     import Portal from "../UI/GUI/Portal.svelte";
@@ -239,12 +240,7 @@
      * history before it unchanged, and the same token scope and sizes.
      */
     function estimateBasis(r: ContextReport, trim: Basis["trim"], messageId: string): Basis | null {
-        const memoryConfigured =
-            readSettingsRoot("memoryAlgorithmType") === STRUCTURED_MEMORY_ALGORITHM ||
-            readSettingsRoot("supaModelType") !== "none" ||
-            !!readSettingsRoot("hanuraiEnable") ||
-            !!readSettingsRoot("hypav2") ||
-            !!readSettingsRoot("hypaV3");
+        const memoryConfigured = chatMemoryAlgorithm(chatMemorySettings(), chatEntry(chatRef)) !== "none";
         if (memoryConfigured || readSettingsRoot("presetChain") || chatBinding(chatRef)?.ok === false) {
             return null;
         }

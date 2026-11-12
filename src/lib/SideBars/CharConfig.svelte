@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { chatMemoryEnabled } from "../../../shared/chatMemory.ts";
+    import { chatMemoryAlgorithm, chatMemoryEnabled } from "../../../shared/chatMemory.ts";
     import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
     import { currentChatRef, selectedChat } from "src/ts/storage/chatStore.svelte";
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
@@ -1763,7 +1763,7 @@
             <Check bind:check={currentCharacter.escapeOutput} name={language.escapeOutput} />
         </div>
 
-        {#if settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM}
+        {#if chatMemoryAlgorithm(chatMemorySettings(), currentChat) === STRUCTURED_MEMORY_ALGORITHM}
             <Button
                 onclick={() => {
                     $hypaV3ModalOpen = true;
@@ -1772,7 +1772,7 @@
             >
                 {language.structuredMemory.panel.title}
             </Button>
-        {:else if settings.memoryTranslateMedia.supaModelType !== "none" && settings.memoryTranslateMedia.hypav2}
+        {:else if chatMemoryAlgorithm(chatMemorySettings(), currentChat) === "hypaMemoryV2"}
             <Button
                 onclick={() => {
                     const chat = selectedChat();
@@ -1788,7 +1788,7 @@
             >
                 {language.hypaMemoryV2Modal}
             </Button>
-        {:else if settings.memoryTranslateMedia.hypaV3}
+        {:else if chatMemoryAlgorithm(chatMemorySettings(), currentChat) === "hypaMemoryV3"}
             <Button
                 onclick={() => {
                     $hypaV3ModalOpen = true;

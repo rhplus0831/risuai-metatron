@@ -352,8 +352,10 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   included.
 - Full-chat reads inside hooks use `withChatsLoaded`, loading whole characters. Outside-hook page fallbacks use
   `withHeldChatPage` (JSDoc); more than 32 missing members use the whole-character loader.
-- The server projects a detached read by its saved memory algorithm, so a switch before the final assembly discards the
-  unloaded copies and reads once more after flushing the setting; a second switch loads.
+- The server projects a detached read by each chat's saved memory algorithm (its stored mode, else the saved global
+  selection), so every unloaded copy carries its chat's classification. A chat whose classification moves before the
+  final assembly discards only its own copy, a change of the global fallback discards them all, and either reads once
+  more after flushing; a second change loads. A body whose mode disagrees with its list entry loads that chat alone.
 - `getDatabase(keys, { chats: "summaries" })` reads, flushes, pins, and loads no chat (`chatSummaryList` in
   `src/ts/storage/chatStore.svelte.ts`); every plugin character setter strips `chatSummaries`.
 - `getChatFromIndex`, `setChatToIndex`, `parseRisuChat`, and `sendChat` capture their chat by id first and await

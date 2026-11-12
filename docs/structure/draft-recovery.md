@@ -140,10 +140,13 @@
   installations retain their reservations. Committed whole-row moves to drafts and expiry cleanup also free
   reservations; partial moves keep remaining layers reserved. A whole chat/order move that yields no draft aborts
   recovery, and expiry purges reservations even when `readOwn` omits those rows.
-- A replay whose ops carry a real `hypaV3Data` under Structured Memory (as held, or as a replayed `ui` row selects it),
-  to a chat holding a sealed projection or not loaded, first files that value as a memory-only draft
-  (`replayedHypaV3Data`, `keepRecoveryMemory`), as Apply does for a refused one: the server drops it from a chat its
-  projection answers for, and the ops are sent unchanged. A filing that fails leaves the row a draft whole.
+- A replay first files as a memory-only draft each distinct real `hypaV3Data` its ops may lose (`replayedHypaV3Data`,
+  `keepRecoveryMemory`), as Apply does for a refused one: the server drops one written to a chat its projection answers
+  for, and the ops are sent unchanged. A filing that fails leaves the row a draft whole.
+- That walk judges each write by the mode in force at its op (the held mode, then earlier ops' sets, unsets, and
+  replacements, then its own; Legacy counts as Structured when the held or a replayed `ui` row selects it) and by the
+  ownership before it: real summaries own the field, and only a loaded Structured chat with neither a seal nor summaries
+  is known to have no projection. A later mode change does not cancel an earlier draft; a create is exempt.
 
 ### Recovery drafts
 

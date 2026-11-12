@@ -50,9 +50,9 @@
 Records become `hypaV3Data` through `projectChatMemory` and `projectHypaV3Data`. A tab's `/api/resources` whole read
 seals and overlays it through `overlayMemoryProjection`, charging the chats' `memory_events` bytes in a budgeted read.
 The mirror holds it for plugins. Writes built from the mirror leave it out; the server strips one a stale tab or
-recovered resend carries, so no stored chat holds one. A tab can hold one after selecting another algorithm. A chat file
-export recognizes the projection by its seal and drops it; an unsealed one would be exported as real summaries. Plugin
-reads refresh through the revision and projection routes.
+recovered resend carries, so no stored chat holds one. A tab can hold one after its chat leaves Structured Memory. A
+chat file export recognizes the projection by its seal and drops it; an unsealed one would be exported as real
+summaries. Plugin reads refresh through the revision and projection routes.
 
 The upstream export writes it unsealed (`memory-projected`) for each chat whose own algorithm, resolved from its stored
 metadata before the memory fields are stripped, is Structured Memory; a failed memory walk or event projection leaves
@@ -72,17 +72,20 @@ authorizes nothing. Other reads take stored data ([Invariants](#invariants)).
 ### The tab's mirror
 
 `keepsHeldHypaV3Data` drops only the refused field, so the rest of the write applies; a plugin's chat write reaches it
-through `setChatToIndex`, `applyChatResult`, and `settleHypaV3Data`. A recovery draft's Apply passes `setChatMeta` a
-recovery source: no plugin notice, and the refused value is filed as a draft ([Apply](../draft-recovery.md#apply)).
-`sendChat` omits projections from mirror-built writes and journal snapshots. `server/src/data/chatStore.ts`'s
-`withoutProjection` strips sealed values a stale tab or recovered resend carries, in `prepareWholeChat` and `prepareOp`,
-and `refusesHypaV3Data` drops an unsealed one at apply time from a chat the projection answers for, except under a
-checkpoint load (`restoredFields`). It judges the algorithm by the mode the write leaves (a `meta` op's own set or unset
-of `memoryMode`, a replacement's incoming mode; malformed reads as Legacy) and summary ownership by the value stored
-before the write; [Chat recovery](../draft-recovery.md#chat-recovery) drafts a replayed one. A job's copy and a patch's
-`meta` leave a held projection in place unless they bring summaries (`keepsProjection`). A whole read
-(`applyRemoteChat`, `installRead`) takes the field as answered; without it, the held projection goes.
-`installChatProjection` is the field's one change outside a write.
+through `setChatToIndex`, `applyChatResult`, and `settleHypaV3Data`. Like the server it judges by the mode the write
+leaves, with ownership from the held value: `setChatMeta` by the op it emits (an equal-valued mode set drops out, so an
+unset beside it wins), a plugin diff by the delta applied to the current chat (the result's mode only where it differs
+from the baseline's), and a whole replacement or create by the incoming chat's mode. A recovery draft's Apply passes
+`setChatMeta` a recovery source: no plugin notice, and the refused value is filed as a draft
+([Apply](../draft-recovery.md#apply)). `sendChat` omits projections from mirror-built writes and journal snapshots.
+`server/src/data/chatStore.ts`'s `withoutProjection` strips sealed values a stale tab or recovered resend carries, in
+`prepareWholeChat` and `prepareOp`, and `refusesHypaV3Data` drops an unsealed one at apply time from a chat the
+projection answers for, except under a checkpoint load (`restoredFields`). It judges the algorithm by the mode the write
+leaves (a `meta` op's own set or unset of `memoryMode`, a replacement's incoming mode; malformed reads as Legacy) and
+summary ownership by the value stored before the write; [Chat recovery](../draft-recovery.md#chat-recovery) drafts a
+replayed one. A job's copy and a patch's `meta` leave a held projection in place unless they bring summaries
+(`keepsProjection`). A whole read (`applyRemoteChat`, `installRead`) takes the field as answered; without it, the held
+projection goes. `installChatProjection` is the field's one change outside a write.
 
 ### A plugin's read
 
@@ -98,10 +101,18 @@ before the write; [Chat recovery](../draft-recovery.md#chat-recovery) drafts a r
 3. The tab passes answers and the captured `chatProjectionState` to `installChatProjection`. Its comment defines the
    fence, token ordering, and null-answer handling.
 
+Each ref is classed by its own chat's algorithm: a read may mix chats of both kinds, and a held projection of a chat
+that is not Structured goes with no request. `detachedPluginChat` drops a sealed value from a detached body by that
+body's mode.
+
 `refreshChatProjections` defines eligibility, joined checks and the recheck window; `rotatingWindow` shares turns across
 caps. `MEMORY_REFRESH_DEADLINE_MS` bounds it (`readWithDeadline`) because a hook's read holds a send. Failure, refusal,
 or deadline returns the held value. An unloaded chat's cached body keeps its projection apart and checks revisions at
-every reuse, with no window (`cachedDetachedChatsForRead`); a failed check reads the chat whole.
+every reuse, with no window (`cachedDetachedChatsForRead`); a failed check reads the chat whole. A cached body, an
+in-flight claim, and a returned read each carry their chat's classification, and `withDetachedDatabaseChats` fences
+assembly on the Legacy fallback captured at its flush: a chat whose classification moved drops and rereads only its own
+copy, a body whose mode disagrees with its list entry is loaded for that ref alone, and a change of the global fallback
+drops every copy and retries once.
 
 ### The upstream export
 

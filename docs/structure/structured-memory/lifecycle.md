@@ -89,12 +89,13 @@ stored source version read it, so a markup-only write leaves a version 3 event u
 separate write: a crash between the chat commit and its notice leaves the event readable as `missing` or `changed` for a
 later repair.
 
-For a user-confirmed delete, `removeAfterAsking` checks coverage and asks before carrying `retract` through the save;
-the chat store guide owns its save and lock checks. That delete also undoes what its newest recorded turn wrote: before
-the thread replay and the flagging, the reaction rewinds the headings its tail events changed with `rewindPageHeadings`
-and trashes the pages they created. The `reconcile.ts` header owns which events are the tail and which headings rewind;
-the panel's `retract` and a re-record's retire only flag. `/cut`, `/del`, `runMultisend`, rerolls, scripts, server
-triggers and recovered drafts can remove messages without that mark, leaving `missing` for panel repair.
+For a user-confirmed delete in a chat whose own algorithm is Structured Memory, `removeAfterAsking` checks coverage and
+asks before carrying `retract` through the save; in another chat `removeMessages` removes at once; the chat store guide
+owns its save and lock checks. That delete also undoes what its newest recorded turn wrote: before the thread replay and
+the flagging, the reaction rewinds the headings its tail events changed with `rewindPageHeadings` and trashes the pages
+they created. The `reconcile.ts` header owns which events are the tail and which headings rewind; the panel's `retract`
+and a re-record's retire only flag. `/cut`, `/del`, `runMultisend`, rerolls, scripts, server triggers and recovered
+drafts can remove messages without that mark, leaving `missing` for panel repair.
 
 ### A checkpoint
 

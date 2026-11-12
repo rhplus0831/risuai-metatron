@@ -109,9 +109,11 @@ section.
   [media-aux](media-aux.md); its handwritten provider toggles include `saveSignatures`, shown for a `geminiThinking`
   model whether or not streaming is on) and `PromptPresetSettings` (the prompt preset). Connections, profile editing,
   slot selection, and what the toggles do belong to [LLM requests](llm-requests.md).
-- `MemorySettings`: memory providers, presets, the embedding model, `supaMemoryKey`, and the HypaV3 budget controls.
-  Summarization, budget, and task behavior belong to [memory](memory.md), the structured-memory branch to
-  [writer settings](structured-memory/writer.md#state); the prompt-preset max-context override it reads is in
+- `MemorySettings`: memory providers, presets, the embedding model, `supaMemoryKey`, and the HypaV3 budget controls. The
+  algorithm selector is what Legacy chats use and gates only Hanurai, HypaV2, and SupaMemory (and the search index's
+  `supaMemoryBranch`); the preset picker, the budget controls, and the Structured Memory and HypaV3 sections show under
+  every selection. Summarization, budget, and task behavior belong to [memory](memory.md), the structured-memory branch
+  to [writer settings](structured-memory/writer.md#state); the prompt-preset max-context override it reads is in
   [State](#state).
 - `ImageGenerationSettings` (provider controls, `NAIApiKey`, WaveSpeed LoRA rows) and `VoiceSettings` (TTS, Emotion
   Images): runtime behavior is in [media](media-aux.md).
