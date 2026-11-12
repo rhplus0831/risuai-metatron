@@ -2,7 +2,9 @@
 
 Status: drafted 2026-11-12 at `97b64c89d` from the owner's request. D1 to D3 are the owner's, D3 as clarified the same
 day: the profile is the memory preset, and the connection is wanted too if it fits. The owner accepted D5 to D8 the
-same day. D4 and D9 to D20 are this plan's own, found against the code. Not audited. Landed: none.
+same day. D4 and D9 to D23 are this plan's own, found against the code. Audited against `b6d07a04a` on 2026-11-12
+([report](../reports/audits/plan-runner/per-chat-memory-2026-11-12.md)): eight findings, all fixed here (D17, D18,
+and D21 to D23 come from them). Landed: none.
 
 Sources: the owner's request (2026-11-12: memory is one switch per character; move it to the chat, let each chat choose
 Structured Memory, HypaV3, or Legacy, and let each chat choose the profile memory processing uses); the memory gate and
@@ -50,8 +52,8 @@ Not goals: an embedding model per chat; converting one algorithm's data into the
   and the selector in `MemorySettings.svelte` shows its own order (HypaV3, HypaV2, Supa, Hanurai).
 - **Who asks which algorithm is selected.** Server: `assemblePrompt`, `startChecks` and `warmWork`, `admitRecord`
   (record now and rebuild), `memorySettingsFingerprint`, `structuredMemorySelected` in the resource store (projection
-  overlay on reads, projection revisions, `projectsChat` for the `hypaV3Data` write guard, the rebuild lock), and the
-  upstream exporter. Tab: the panel choice in `App.svelte`, the menu row in `DefaultChatScreen.svelte`, the memory
+  overlay on reads, the event bytes `readRefsWithinBudget` charges for it, projection revisions, `projectsChat` for
+  the `hypaV3Data` write guard, the rebuild lock), and the upstream exporter. Tab: the panel choice in `App.svelte`, the menu row in `DefaultChatScreen.svelte`, the memory
   button in `CharConfig.svelte`, the receipt in `Chat.svelte`, `ContextMeter.svelte`, `chatStatus.svelte.ts`,
   `removeMessages`, `projectionsField`, and `installChatProjection` in `chatStore.svelte.ts`, the detached chat reads
   and their cache in `plugins/apiV3`, `journalRecovery.ts`, and `chatMemoryInherit.svelte.ts`. Each of them has the
@@ -59,14 +61,17 @@ Not goals: an embedding model per chat; converting one algorithm's data into the
 - **What a switch of algorithm does to a chat's data.** Nothing is converted. Structured records stay in their tables
   and HypaV3 summaries stay in `hypaV3Data`. A chat with summaries and no records that enters Structured Memory waits
   for the adopt-or-decline answer (`adoptionHold`); stored summaries own `hypaV3Data`, so the projection stands aside
-  until a reset. A task checks the algorithm when it starts, not at each commit.
+  until a reset. A task checks the algorithm when it starts, not at each window or commit. A HypaV3 summary that lands
+  on a chat whose `hypaV3Data` the projection owns is dropped by the write guard (`refusesHypaV3Data`), and
+  `checkpointOf` still counts it as committed.
 - **The memory preset.** `hypaV3Presets` with one selected id (`hypaV3PresetId`; the `hypaV3Presets` record's
   `selectedId`). `selectedHypaV3Preset` returns that preset, or the first when the id is gone. HypaV3 and the
   Structured Memory writer and read path both take their settings from it.
   - Server readers go through a job scope's `db`: `getCurrentHypaV3Preset` (HypaV3), `writerCadence`, `writer.ts`,
     `testRun.ts`, `warmWork`, `writerNotice` in `assemblePrompt`, `memorySettingsFingerprint`, and `summarizesLocally`.
-    Every scope, a job's and a task's, is built by `loadJobScope`, which has the chat. The one reader with no scope is
-    `readWriterSettings` in the resource store, called by `rebuild.ts`.
+    Every scope that runs memory, a job's and a task's, is built by `loadJobScope`, which has the chat (the display
+    transform builds its own and runs no memory). The one reader with no scope is `readWriterSettings` in the resource
+    store, called by `memoryWorkCost` in `rebuild.ts` for the cost preview.
   - Tab readers take `settings.hypaV3Presets.selectedId`: `getCurrentHypaV3Preset` in `src/ts/process/memory/hypav3.ts`
     (four uses there, and `modal-footer.svelte` and `modal-summary-item.svelte`), `CoverageTab.svelte`,
     `memoryRecordPress.ts`, `StructuredMemoryPanel.svelte`, `chatStatus.svelte.ts`, the `alwaysToggleOn` hook, and
@@ -80,9 +85,15 @@ Not goals: an embedding model per chat; converting one algorithm's data into the
   with `missingNamedProfile` when it is gone.
 - **Chat fields.** `Chat` in `shared/database.ts`; a scalar is written with `setChatMeta` (the `meta` op), which
   applies on an older revision. The server keeps unknown fields as sent. A field edited on a chat that is not loaded
-  must be in `ChatSummary`, `summaryFields` (`server/src/data/chatStore.ts`), and `SUMMARY_FIELD_TYPES`. Copy and
-  branch carry every field; a new chat takes its bindings from `initialChatBinding`. Chats are not part of the boot
-  normalization pass, and no migration reads one record to write another.
+  must be in `ChatSummary`, `summaryFields` (`server/src/data/chatStore.ts`), and `SUMMARY_FIELD_TYPES`; on such a
+  chat `setChatMeta` throws for any other key, set or unset, and queues an unset only for a key the summary holds.
+  Copy and branch carry the chat's metadata (all but `pinned`); a new chat takes its bindings from
+  `initialChatBinding`. Chats are not part of the boot normalization pass, and no migration reads one record to write
+  another.
+- **Plugin writes of whole chats.** `applyChatResult` compares a plugin's chat with the baseline of the plugin's read
+  and unsets a key the result omits. A plugin instance keeps sixteen baselines and a write consumes one; with none
+  left, `reconcileCharacterChats` takes the chat as it is now for the baseline, so a field set after the plugin read
+  its copy is unset.
 - **Settings pages and the open chat.** The Model, Prompt, and Persona pages show the open chat's bound record, with
   `BindingScopeNote` saying whose it is, and their pickers write the chat. `MemorySettings.svelte` knows no chat. It
   shows one algorithm's settings: the Structured Memory block only while Structured Memory is selected, the HypaV3
@@ -109,8 +120,9 @@ the server, the tab, and stored data).
   `memoryAlgorithmType`, or the selected preset routes it there or says in its report why that reader is about the
   global setting itself.
 - **A tab loaded before a slice.** It does not know the fields. It keeps showing the character's switch and writes
-  `supaMemory`, which from slice 1 on is only the default of a chat that never chose. Nothing is lost; a reload ends
-  it. Slice 1 records this in `memory.md` Limitations.
+  `supaMemory`, which from slice 1 on is only the default of a chat that never chose; that switch removes no chat
+  field. A plugin's whole-chat write from such a tab can still remove a field its copy never held, since D21's
+  protection is in the new bundle. A reload ends both. Slice 1 records this in `memory.md` Limitations.
 - **Strings.** New text goes in `src/lang/en.ts` with its Korean in `src/lang/ko.ts` in the same slice. The settings
   UI says "connection" for a model profile and "preset" for a HypaV3 preset; the new text does too.
 - **Guide.** Each slice names its guides; their `Invariants` apply, and the slice updates the sections and module
@@ -123,22 +135,39 @@ the server, the tab, and stored data).
 
 ## Order
 
-Serial: 1 → 2 → 3 → 4 → 5. All five edit `shared/chatMemory.ts`, the chat memory panel, the language files, and
-`memory.md`. Slice 2 gives the server the per-chat mode while nothing can store one; slice 3 gives the tab the same
-and adds the control that stores it. Slices 4 and 5 each need only slice 1.
+Serial: 1 → 2 → 3 → 4 → 5. Every slice edits `shared/chatMemory.ts` and `memory.md`; slices 1, 3, 4, and 5 edit the
+chat memory panel and the language files. Other files more than one slice edits:
 
-If the run stops early, each prefix stands alone: after slice 1 the switch is the chat's; after slice 2 nothing new
-is visible; after slice 3 the mode works with the preset and connection every chat shares; after slice 4 the owner's
-three requests are met, and slice 5 is the addition.
+- Server: `assemble.ts` (1, 2), `memoryTasks.ts` (1, 2, 5), `recordJob.ts` (1, 2), `jobScope.ts` (2, 4, 5),
+  `runner.ts` (1, 5), `resourceStore.ts` (2, 4), `server/src/data/chatStore.ts` (1 for the summary projection, 2 for
+  the `hypaV3Data` write guard), the upstream exporter (1, 2).
+- Tab: `chatStore.svelte.ts` (1, 3), `MemorySettings.svelte` (1, 3, 4, 5), `Chat.svelte` and `CharConfig.svelte` (1,
+  3), `chatStatus.svelte.ts` (1, 3, 4), `CoverageTab.svelte` and `StructuredMemoryPanel.svelte` (1, 4),
+  `src/ts/process/memory/hypav3.ts` (4, 5), `src/ts/characters.ts` (4, 5).
+- Tests and guides: `memoryJobs`, `memoryTasks`, `assemble`, `upstreamExport`, `chatStatus`,
+  `StructuredMemoryPanel`, `MemorySettings.*`, and `shared/tests/chatMemory.test.ts`, in the slices that name them;
+  `structured-memory/projection.md` (2, 3), `writer.md` (2, 4, 5), `read.md` (3, 4), `settings-i18n.md` (3, 4).
+
+Slice 2 gives the server the per-chat mode before any control of ours stores one; slice 3 gives the tab the same and
+adds the control. The server already keeps a `memoryMode` it is sent, from a plugin, a chat file, or a recovery, so
+between slices 2 and 3 such a chat runs its mode on the server while the tab still shows the global one. Slices 4 and
+5 each depend only on slice 1's fields and resolver, and are written on top of whatever landed before them.
+
+If the run stops early, each prefix supports the controls it has shipped: after slice 1 the switch is the chat's;
+after slice 2 there is no new control, and a mode a chat was given some other way runs on the server alone, as said
+above; after slice 3 the mode works with the preset and connection every chat shares; after slice 4 the owner's three
+requests are met, and slice 5 is the addition.
 
 ## Slice 1. The switch moves to the chat (_hard_, `memory.md`, `chat-store.md`, `persistence.md`)
 
 **Change.**
 
 - `Chat` gains `memoryEnabled?: boolean`, `memoryMode?: "hypaV3" | "structuredMemory"`, `memoryPresetId?: string`,
-  and `memoryProfileId?: string`. All four join `ChatSummary`, `summaryFields` (bump `SUMMARY_PROJECTION_VERSION`),
-  `SUMMARY_FIELD_TYPES`, the `keep` rows of `shared/chatCheckpoints.ts`, and `METATRON_CHAT_FIELDS` of the upstream
-  exporter. Only `memoryEnabled` is read in this slice.
+  and `memoryProfileId?: string`. All four, and the existing numeric `memoryTrimAck`, join `ChatSummary`,
+  `summaryFields` (a stored `false` is projected; bump `SUMMARY_PROJECTION_VERSION`, which rebuilds the summary rows
+  of an existing database without touching a chat's revision), and `SUMMARY_FIELD_TYPES`. The four join the `keep`
+  rows of `shared/chatCheckpoints.ts` and `METATRON_CHAT_FIELDS` of the upstream exporter. Only `memoryEnabled` is
+  read in this slice.
 - `shared/chatMemory.ts`, used by the server and the tab:
   - `legacyMemoryAlgorithm(settings)`: the server's order as one function (Structured Memory, Hanurai, HypaV2, HypaV3,
     SupaMemory, none). `assemblePrompt`, `settingsViews.svelte.ts`, and the selector in `MemorySettings.svelte` take it
@@ -153,26 +182,37 @@ three requests are met, and slice 5 is the addition.
 - Every reader of the switch listed under Current State calls `chatMemoryEnabled`. The `onCharacterSelected` hook that
   writes `supaMemory` for `alwaysToggleOn` is removed.
 - Turning a chat's memory on is one tab function (`setChatMemoryEnabled`): a `meta` op that sets `memoryEnabled` and,
-  when turning on, unsets `memoryTrimAck` (D9). The "memory" answer of `confirmMemoryTrim` writes the same pair to the
-  chat instead of patching the owner. No core path increments `supaMemoryOnCount` any more; `applyPluginCharacter`
-  keeps its own increment, and the comparison in `confirmMemoryTrim` stays.
+  when turning on, unsets `memoryTrimAck` (D9). With the ack in the summary, the unset is queued for a chat that is
+  not loaded too. The "memory" answer of `confirmMemoryTrim` writes the same pair to the chat through
+  `services.writeChat`, as its "ignore" answer writes the ack, instead of patching the owner. No core path increments
+  `supaMemoryOnCount` any more; `applyPluginCharacter` keeps its own increment, and the comparison in
+  `confirmMemoryTrim` stays.
 - A new chat stores the resolved switch of the chat it is made from, next to `initialChatBinding` in both new-chat
   paths (`SideChatList.svelte` and `ChatList.svelte`), with the mode, preset, and connection that chat stores (D6). A
-  character's first chat stores nothing. Copy, branch, and chat-file import already carry the fields.
+  first chat made for a new character or group stores nothing. Copy, branch, chat-file import, plugin creation,
+  recovery, and the upstream import carry the fields a chat is given.
+- When `reconcileCharacterChats` has no retained baseline of the plugin's read and takes the current chat instead, it
+  keeps the four memory fields the result omits, by filling them into the incoming chat before `applyChatResult`, so
+  the branch that replaces the whole chat is covered too (D21). With a retained baseline the diff is as for every
+  field. The rule does not reach `setChatToIndex`, other fields, or `memoryTrimAck`.
 - UI: a chat memory panel (`ChatMemoryPanel.svelte`, by `chatRef`, reading the chat's list entry so it works on a
   chat that is not loaded) under `ChatBindingPanel` in `OpenChatPanel.svelte` and `ChatBindingDialog.svelte`. In this
   slice it holds the switch alone. The checkbox leaves `Toggles.svelte`, and with it the character editor. The trim
   question's first answer reads as turning memory on for this chat.
-- The upstream exporter writes a character's `supaMemory` as `true` when any of its chats resolves to on (D7).
+- The upstream exporter writes a character's `supaMemory` as `true` when any of its chats resolves to on (D7). It
+  resolves each chat before `upstreamChat` strips the fields, from the settings as stored: the exporter turns
+  `hypaV3PresetId` into upstream's position before it reaches the characters.
 
 **Test.** `shared/tests/chatMemory.test.ts`: the legacy order, each default of `chatMemoryEnabled`, a stored `false`
 over `alwaysToggleOn`, a malformed value read as absent. `memoryJobs.test.ts`: two chats of one character, one on and
 one off, send with and without memory; the "memory" answer sets the chat and leaves the owner and its count alone;
 "ignore" then turning the chat on then off asks again. `memoryTasks.test.ts`: `memoryOff` follows the chat.
-`Toggles.test.ts` loses its memory cases; a `ChatMemoryPanel` test covers the switch on a loaded and an unloaded chat
-and the ack removal. A new-chat test for the inherited switch. `upstreamExport.test.ts`: the four fields are excluded
-and `supaMemory` is derived. `chatStatus.test.ts` and `StructuredMemoryPanel.test.ts`: health and the writer notice
-follow the chat.
+`Toggles.test.ts` loses its memory cases; a `ChatMemoryPanel` test covers the switch on a loaded and an unloaded chat,
+and the ack removed on both. `chatSummaries.test.ts`: the five fields projected, `false` included, after a reopen at
+the new version. `chatCheckpoints.test.ts`: the kept fixture holds the four. `hostApiChats.test.ts`: a write with no
+retained baseline keeps the four fields, and one with a baseline unsets an omitted one. A new-chat test for the
+inherited switch. `upstreamExport.test.ts`: the four fields are excluded and `supaMemory` is derived.
+`chatStatus.test.ts` and `StructuredMemoryPanel.test.ts`: health and the writer notice follow the chat.
 
 **Manual checks.** The panel at phone width in the sidebar and in the Chat settings dialog; two tabs on one chat, the
 switch toggled in one; the trim question's three answers on a real send; an upstream `.bin` export opened in upstream
@@ -187,24 +227,41 @@ RisuAI with memory on for the right characters.
 - `assemblePrompt` branches on the chat's algorithm; `memoryConfigured` is "the chat's algorithm is not none".
 - `startChecks`, `warmWork`, and `admitRecord` compare the task's kind with the chat's algorithm. The skip reasons
   keep their names.
-- `memorySettingsFingerprint` adds the Structured Memory part when the chat's algorithm is Structured Memory, and
-  holds the chat's algorithm itself, so a task queued before a mode change is stale when it starts. A window already
-  running when the mode changes finishes as it does under a global switch today (D17).
+- `memorySettingsFingerprint` adds the Structured Memory part when the chat's algorithm is Structured Memory. A queued
+  task is skipped when the chat's algorithm no longer matches its kind (`notStructuredMemory`, `notHypaV3`); a stored
+  mode that resolves to the same algorithm as before does not invalidate it.
+- A task also asks the chat's algorithm before each further window and before each commit, for both kinds and for a
+  rebuild's staging and swap; a mismatch ends the task as skipped and writes nothing (D17). The check reads the chat
+  as stored and the global selector as stored, not the task's scope, in the same synchronous step as the commit. The
+  stop does not abort: `endRunning` aborts the task's controller, so the task takes the path HypaV3 already has for
+  ending unsaved, which cancels queued requests and awaits the active ones. `checkpointOf` does not count a HypaV3
+  summary the write guard dropped.
 - The resource store asks per chat. `structuredMemorySelected()` becomes a function of a chat's stored mode and the
-  global row: `projectsChat` and the rebuild lock read the mode of one chat row (`json_extract` on its metadata, as
-  `selectMemoryAlgorithm` does for the setting), `readProjection` and `readProjectionRevisions` decide per ref, and
-  the whole-chat overlay decides per chat from the metadata it already parsed. The projection keeps following the
-  algorithm and not the switch (D11).
+  global row, read once per read operation: `projectsChat` and the rebuild lock read the mode of one chat row
+  (`json_extract` on its metadata, as `selectMemoryAlgorithm` does for the setting), `readProjection` and
+  `readProjectionRevisions` decide per ref, and the whole-chat overlay decides per chat from the metadata it already
+  parsed. `readRefsWithinBudget` charges event bytes for the chats whose algorithm is Structured Memory and for no
+  other: `chatEventBytes` and `characterEventBytes` take the stored mode of each chat row in their aggregate, beside
+  the global row. Charging every chat instead would bill dormant records, and a character with many of them would
+  need more rounds inside the one deadline a whole read has. The projection keeps following the algorithm and not the
+  switch (D11).
+- The `hypaV3Data` write guard decides by the mode the operation leaves: a `meta` op that sets or unsets `memoryMode`
+  and writes `hypaV3Data` is judged by the mode after its own set and unset, a malformed one reading as Legacy, not
+  by the row before it.
 - The upstream exporter projects a chat's records when that chat's algorithm is Structured Memory.
 
 **Test.** `assemble.test.ts`: under each global selection, a chat with a stored mode runs that mode and its neighbor
 runs the global one; a HypaV3-mode chat runs with `hypaV3` off globally; a Structured-mode chat with stored summaries
 and no records reports the adoption hold. `memoryTasks.test.ts`: both task kinds are admitted by the chat's mode and
-skipped with the existing reasons otherwise; a queued task goes stale on a mode change.
-`structuredMemoryRoutes.test.ts`: record now and rebuild are admitted for a Structured-mode chat under another global
-selection and refused for a HypaV3-mode chat under global Structured Memory. Resource store tests: a read of two chats
-of one character overlays the projection on the Structured one only; the `hypaV3Data` write guard and the rebuild lock
-follow the chat. `upstreamExport.test.ts`: per-chat projection.
+skipped with the existing reasons otherwise; a queued task is skipped on a mode change; a mode change between two
+windows ends a structured task and a rebuild before the next one; a HypaV3 summary returning after the chat moved to
+Structured Memory is neither stored nor counted. `structuredMemoryRoutes.test.ts`: record now and rebuild are admitted
+for a Structured-mode chat under another global selection and refused for a HypaV3-mode chat under global Structured
+Memory. Resource store tests: a read of two chats of one character overlays the projection on the Structured one
+only, and charges that one's event bytes and not the other's, as a chat read and as a collection read; the
+`hypaV3Data` write guard and the rebuild lock
+follow the chat; one op that sets a mode and `hypaV3Data` is judged by that mode. `upstreamExport.test.ts`: per-chat
+projection.
 
 **Manual checks.** None reachable: no control stores a mode until slice 3.
 
@@ -214,12 +271,21 @@ follow the chat. `upstreamExport.test.ts`: per-chat projection.
 
 - Every tab reader of the selected algorithm under Current State takes the chat's: which panel `App.svelte` mounts for
   the selected chat, the menu row and memory button, the receipt, the context meter's estimate, health states (per
-  chat key, not all-or-nothing), `removeMessages`, `projectionsField`, `installChatProjection`, and the failure notice
-  of `chatMemoryInherit.svelte.ts`.
-- Plugin reads: `refreshChatProjections`, `detachedPluginChat`, `readSharedDetachedChats`, and `detachedChatCache.ts`
-  hold "this chat is under Structured Memory" per ref instead of one boolean per batch. A mode change of one chat
-  invalidates that chat's entries only.
-- `journalRecovery.ts` decides per replayed chat: its held or replayed mode over the held or replayed global setting.
+  chat key, not all-or-nothing: the state map, and the gates of the health read and of the refresh on panel close in
+  `chatStatus.svelte.ts`), `removeMessages`, `projectionsField`, `installChatProjection`, and the failure notice of
+  `chatMemoryInherit.svelte.ts`.
+- Plugin reads: `refreshChatProjections`, `detachedPluginChat`, `readSharedDetachedChats`, the batch's comparison
+  after its flush, and `detachedChatCache.ts` hold "this chat is under Structured Memory" per ref instead of one
+  boolean per batch. A mode change of one chat invalidates that chat's entries only: it moves the chat's revision,
+  which the cache already checks.
+- `journalRecovery.ts` decides per replayed write, not per chat. It walks the chat's replayed ops in order and judges
+  each real `hypaV3Data` write by the mode in force at that op: the held chat's or its summary's, then every earlier
+  replayed op, then that op's own `memoryMode` set or unset, with the held or replayed global setting where no mode
+  is stored. A value the projection guard may refuse is kept as a recovery draft, and a later mode change in the same
+  replay does not cancel that. Where the stored ownership is unknown it protects, as the global rule does today. The
+  replayed ops and their retry identity are unchanged.
+- The tab's own guard on a held `hypaV3Data` (`keepsHeldHypaV3Data` in `setChatMeta` and the plugin diff) uses the
+  same rule as the server's: the mode the write leaves.
 - The panel gains the mode select: Legacy (with the name of the algorithm Settings selects now), HypaV3, Structured
   Memory. Choosing Legacy unsets the field.
 - `MemorySettings.svelte`: the selector says it is what chats on Legacy use. The HypaV3 preset and the Structured
@@ -231,7 +297,9 @@ follow the chat. `upstreamExport.test.ts`: per-chat projection.
 **Test.** `chatStatus.test.ts`: health for a Structured-mode chat under global HypaV3, none for a HypaV3-mode chat
 under global Structured Memory. `chatStore` tests: projection install and the held-field rule per chat; message
 removal asks only in a Structured chat. `hostApi.test.ts` and the detached cache tests: two refs of different modes in
-one read, and a mode change dropping one entry. A journal recovery test with a replayed mode change.
+one read, and a mode change dropping one entry. `journalRecovery.test.ts`: a replayed summary written under Structured
+Memory, an append, then a replayed change to HypaV3 keeps the summary as a draft; the same summary after the mode
+change is replayed without one.
 `ChatMemoryPanel`: the select stores and unsets, on a loaded and an unloaded chat. `MemorySettings` tests: both blocks
 reachable under a legacy selection. An `App` or screen test: the panel mounted follows the chat.
 
@@ -252,16 +320,24 @@ health badge open; a chat moved HypaV3 → Structured (adoption question) → Hy
 - `memorySettingsFingerprint` needs no change: it fingerprints the scope's preset, so a task goes stale when its
   chat's preset is edited or replaced, and no longer when another preset is.
 - Tab: `getCurrentHypaV3Preset` takes the chat, for its four uses in `hypav3.ts` and the two HypaV3 modal components;
+  a caller that awaits resolves the preset from the chat it captured, not from the selection after the await.
   `CoverageTab.svelte`, `memoryRecordPress.ts`, `StructuredMemoryPanel.svelte`, and the health states (per chat key)
-  call `chatHypaV3Preset`, as `chatMemoryEnabled` already does for `alwaysToggleOn`.
+  call `chatHypaV3Preset`, as `chatMemoryEnabled` already does for `alwaysToggleOn`. The cost preview's screening
+  follows the chat's preset through `readWriterSettings`.
 - The panel gains the preset select: Default (with the name of the preset Settings selects now), then each preset by
   name. Default unsets the field. A stored id that names no preset shows as deleted, and the chat runs on the default
   (D12).
 - `MemorySettings.svelte` follows the open chat as the Model and Prompt pages do (D14). While the open chat stores a
-  preset that exists, the page shows and edits that preset, marks it as this chat's, and its preset select writes the
-  chat. Otherwise, and at home, it shows the default and its select writes `selectedId` as today. Creating, importing,
-  and deleting presets are unchanged; a deleted preset leaves chats that named it on the default.
-- Chat-file import drops a `memoryPresetId` that names no preset here, where `addChats` sanitizes bindings.
+  preset that exists, the page shows and edits that preset and marks it as this chat's. Otherwise, and at home, it
+  shows the default. The page reads the open chat itself (`currentChatRef` and the chat's list entry); the binding
+  views of `settingsViews.svelte.ts` do not carry memory fields. The preset in view is the stored record, not a copy,
+  because the page's effects and `setStructured` edit it in place.
+- Selecting a preset on that page goes through one action for the select, Create, and Import, which all assign
+  `selectedId` today: with an open chat that names an existing preset it writes the chat's `memoryPresetId`, otherwise
+  `selectedId`. Import captures that target before its file chooser's await. Delete removes the record and repairs
+  `selectedId` when it named the deleted one; a chat that named it runs on the default.
+- Chat-file import drops a `memoryPresetId` that names no preset here, where `addChats` sanitizes bindings. Recovery
+  and backup restore keep ids as stored.
 
 **Test.** `shared/tests/chatMemory.test.ts`: stored, absent, and gone. A `jobScope` test: the scope of a chat with a
 stored preset reads that preset through `selectedHypaV3Preset(scope.db)`, and the stored `selectedId` is untouched.
@@ -269,7 +345,8 @@ stored preset reads that preset through `selectedHypaV3Preset(scope.db)`, and th
 HypaV3 and under Structured Memory. `memoryTasks.test.ts`: editing the chat's preset stales its queued task; editing
 the default preset does not. A rebuild test: screening follows the chat's preset. `StructuredMemoryPanel.test.ts` and
 `chatStatus.test.ts`: cadence and health follow the chat's preset. `MemorySettings` tests: with an open chat that
-stores a preset the page edits that preset and the select writes the chat; without one it writes `selectedId`.
+stores a preset the page edits that preset and the select, Create, and Import write the chat and leave `selectedId`;
+without one they write `selectedId`.
 `ChatMemoryPanel`: select, unset, deleted state. An import test for the dropped id.
 
 **Manual checks.** Two chats on presets with different budgets, compared in the context report of a real send; the
@@ -285,19 +362,24 @@ modal's manual summarize on a chat with its own preset.
   are the four that resolve `"memory"` today (`memorySettingsFingerprint`, `jobMemoryBlockingReason`, `startChecks`,
   `openRun` in the writer) and the two memory hosts, which pass the same `profileId` on their request. The fingerprint
   already holds the resolved profile, so a change of connection stales queued tasks.
-- The tab's HypaV3 summarize (`src/ts/process/memory/hypav3.ts`) passes the chat's `profileId` the same way.
-- Covered: every request of the memory host, in a job or a task, including record now, the gap run, rebuild and its
-  cost preview, and the writer's test run. Not covered, and said so under the control: a fixed-model `supaModelType`,
-  a local summarization model, embeddings (D16). Lua's own `memory`-mode request (`server/src/lua/bindings.ts`) is not
-  a memory host request and keeps the slot.
-- A named connection that is gone refuses, as every named profile does (D15). The panel shows it as deleted, in the
-  way `ChatBindingPanel` shows a deleted binding.
+- The tab's HypaV3 summarize (`src/ts/process/memory/hypav3.ts`) passes the chat's `profileId` the same way, and the
+  model name it reports beside that request follows it. The Plugin-model warning of `MemorySettings.svelte` follows
+  the open chat's connection.
+- Covered: every request of the memory host, in a job or a task, including record now, the gap run, rebuild, and the
+  writer's test run. Not covered, and said so under the control: a fixed-model `supaModelType`, a local summarization
+  model, embeddings (D16). Lua's own `memory`-mode request (`server/src/lua/bindings.ts`) is not a memory host request
+  and keeps the slot. The rebuild cost preview resolves no model and stays a model-independent estimate.
+- A named connection that is gone refuses the memory request, as every named profile does (D15). What that does to a
+  send is what a refused memory request does today: a send that needs a new HypaV3 summary fails, a background task
+  fails, and a Structured Memory gap run lets the send continue with the gap. The panel shows the connection as
+  deleted, in the way `ChatBindingPanel` shows a deleted binding.
 - The panel gains the connection select: the preset's memory slot (default, unsets the field) and each connection by
   name. Chat-file import drops a `memoryProfileId` that names no connection here.
 
 **Test.** `server/src/tests` for the resolver: named, absent, gone. `memoryJobs.test.ts` and `memoryTasks.test.ts`: a
 chat's memory request runs on the named connection while the main request stays on the preset's; a gone connection
-fails the memory step with the named-profile message; a connection change stales a queued task; a Plugin-format
+refuses the memory request with the named-profile message, with the three outcomes above; a connection change stales a
+queued task; a Plugin-format
 connection gives `pluginModel`. A writer test: `openRun` records the named model. `ChatMemoryPanel`: select, unset,
 deleted state. An import test for the dropped id.
 
@@ -306,8 +388,8 @@ named connection and sending; the HypaV3 modal's manual summarize on a chat with
 
 ## Decisions
 
-D1 to D3 are the owner's request of 2026-11-12; the owner accepted D5 to D8 the same day. The rest are this plan's and
-wait for the audit.
+D1 to D3 are the owner's request of 2026-11-12; the owner accepted D5 to D8 the same day. The rest are this plan's;
+D17, D18, and D21 to D23 are as the audit of 2026-11-12 left them.
 
 - D1. Whether memory runs is chosen per chat.
 - D2. Each chat chooses Structured Memory, HypaV3, or Legacy; Legacy follows the globally configured memory as today.
@@ -346,13 +428,29 @@ wait for the audit.
   rule is that a dangling id refuses and never redirects, since another connection can mean another provider and
   another bill.
 - D16. The connection covers the memory host's requests only.
-- D17. A task window already running when a chat's mode changes finishes. The fingerprint stops the next start. This
-  is the fence a global switch has today; a check at each commit is left to the audit to ask for.
+- D17. A provider call already running when a chat's mode changes is left to return, and its result is not accepted:
+  a task asks the chat's algorithm before each further window and before each commit, and ends as skipped on a
+  mismatch. A global switch has only the start check today, and a HypaV3 summary that returns after it is dropped by
+  the write guard while the task counts it. A mode is changed per chat far more casually than the global selector
+  (audit AUD-2).
 - D18. The four fields are summary fields, so the Chat settings dialog can edit a chat that is not loaded.
+  `memoryTrimAck` joins them, because `setChatMeta` can neither name nor unset a key the summary lacks on such a chat
+  (audit AUD-1).
 - D19. A malformed stored value reads as absent in the resolver; the server normalizer does not reject it. The server
   keeps unknown chat fields as sent today, and a refusal would fail a chat-file import over a setting.
 - D20. The embedding model stays one setting. Stored vectors are tied to the model that made them, so a model per chat
   is its own design.
+- D21. When `reconcileCharacterChats` has no retained baseline of a plugin's read, it keeps the four memory fields
+  the plugin's chat omits. Such a write would otherwise turn a chat's memory off, or return its mode, preset, and
+  connection to the defaults, with no one having asked. `memoryTrimAck` is left out: losing it only asks the trim
+  question again. The rule for every other field and for `setChatToIndex` stays; a general change to plugin writes is
+  not this plan's (audit AUD-3).
+- D22. Recovery judges each replayed `hypaV3Data` write by the mode in force at that write, because the server
+  applies and guards each op in turn: a summary dropped under Structured Memory is not restored by a later op that
+  moves the chat to HypaV3 (audit AUD-8).
+- D23. `readRefsWithinBudget` charges event bytes only for chats under Structured Memory, as today's global gate does
+  for all or none. Charging every chat was the simpler rule; it would add rounds for characters with dormant records
+  inside a whole read's one deadline (audit AUD-5).
 
 ## Not In This Plan
 
