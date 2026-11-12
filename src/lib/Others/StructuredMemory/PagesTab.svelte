@@ -391,20 +391,23 @@
         return parts;
     }
 
-    /** One answer serves Read's blocks and Manage's row until the next selection or refresh. */
+    /**
+     * One answer serves Read's blocks and Manage's row until the next selection or refresh. A refresh's
+     * reread keeps the rows it replaces until it settles, so Read's blocks do not blink on every writer
+     * run; a new selection has already emptied them.
+     */
     async function readNamingEvents(id: string) {
         const ref = chatRef;
         const atRefresh = refresh;
         const number = ++namingNumber;
         namingRead = atRefresh;
-        namingResult = null;
-        namingFailure = null;
         const result = await findStructuredMemory(ref, { page: id });
         if (number !== namingNumber || !sameChat(ref) || selectedId !== id || atRefresh !== refresh) {
             return;
         }
         if (result.outcome === "ok") {
             namingResult = result.value;
+            namingFailure = null;
         } else {
             namingFailure = memoryReadFailureText(result);
         }

@@ -181,8 +181,9 @@ page. `read` asks for it on selection and shows four blocks under the sections, 
 page knows or believes (each fact with its event's link, a believed or secret one marked), the newest relationship shift
 per other page and direction, the threads naming it with their states (running ones first), and the events naming it.
 `manage` shows the events alone behind a closed disclosure and asks when it opens; an answer serves both views until the
-selection or `refresh` moves. The page's own `knowledge` and `relationships` sections are the writer's digest, which its
-rules keep short, so these blocks are where a fact recorded only on an event shows.
+selection or `refresh` moves, and a refresh's reread keeps the rows it replaces until it settles. The page's own
+`knowledge` and `relationships` sections are the writer's digest, which its rules keep short, so these blocks are where
+a fact recorded only on an event shows.
 
 The event list is newest first, unknown positions last, each row with its story time and an Important mark from
 `importantEventGrade`. It shows the newest `RECENT_EVENTS` (5) and every important event until Show all is pressed, so a

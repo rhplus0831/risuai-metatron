@@ -39,6 +39,7 @@ import {
 } from "src/ts/process/structuredMemory.svelte";
 import {
     ADOPTED_WRITER_RUN,
+    MEMORY_FIND_HITS_MAX,
     sealHypaV3Data,
     STRUCTURED_MEMORY_LIMITS,
     writerPaused,
@@ -1043,6 +1044,112 @@ it("reads what events and threads say of a page, keeps a long event list short, 
     expect(query('[data-memory-panel="timeline"]')).not.toBeNull();
     expect(query('[data-memory-event="e6"] > button')?.getAttribute("aria-expanded")).toBe("true");
     expect(query('[data-memory-event="e6"]')?.textContent).toContain("Details: Gate opens.");
+});
+
+it("asks what events say of a page in Manage only when the row opens", async () => {
+    serveMemory();
+    await open();
+    click('[data-memory-page="p"]');
+    await settle();
+    await choosePageView("manage");
+    click('[data-memory-page="scene"]');
+    await settle();
+    expect(reads("find?page=scene")).toHaveLength(0);
+    click("[data-memory-page-events] > button[aria-expanded]");
+    await settle();
+    expect(reads("find?page=scene")).toHaveLength(1);
+    expect(query("[data-memory-page-events]")?.textContent).toContain(language.structuredMemory.pages.eventsNamingNone);
+});
+
+it("rereads what events say of a page on refresh, keeping its rows meanwhile, and drops answers that came late", async () => {
+    const state = serveMemory();
+    const lookups: { page: string | null; answer: ReturnType<typeof deferred<Response>> }[] = [];
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.startsWith("/api/memory/structured/c/k/find?page=")) {
+            const answer = deferred<Response>();
+            lookups.push({ page: new URL(url, "http://memory.test").searchParams.get("page"), answer });
+            return answer.promise;
+        }
+        return fetch(url, init, options);
+    });
+    const naming = (id: string) =>
+        Response.json({
+            revision: state.revision,
+            hits: [{ kind: "event", id, title: id, sourceIndex: 0, excerpt: "" }],
+            next: null,
+        });
+    const eventLinks = () =>
+        [...target.querySelectorAll<HTMLElement>("[data-memory-page-event]")].map(
+            (link) => link.dataset.memoryPageEvent,
+        );
+
+    await open();
+    click('[data-memory-page="p"]');
+    await settle();
+    click('[data-memory-page="scene"]');
+    await settle();
+    expect(lookups.map(({ page }) => page)).toEqual(["p", "scene"]);
+    // The answer for the page left behind changes nothing.
+    lookups[0].answer.resolve(naming("for-the-page-left"));
+    await settle();
+    expect(eventLinks()).toEqual([]);
+    lookups[1].answer.resolve(naming("first"));
+    await settle();
+    expect(eventLinks()).toEqual(["first"]);
+
+    click("[data-memory-panel-refresh]");
+    await settle();
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(lookups.map(({ page }) => page)).toEqual(["p", "scene", "scene", "scene"]);
+    // The rows stay while the reread is out, and the older refresh's answer is dropped.
+    expect(eventLinks()).toEqual(["first"]);
+    lookups[2].answer.resolve(naming("older-refresh"));
+    await settle();
+    expect(eventLinks()).toEqual(["first"]);
+    lookups[3].answer.resolve(naming("newest"));
+    await settle();
+    expect(eventLinks()).toEqual(["newest"]);
+});
+
+it("says when a page's lookup fails and when its event list was cut", async () => {
+    const state = serveMemory();
+    let fail = true;
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.startsWith("/api/memory/structured/c/k/find?page=")) return fetch(url, init, options);
+        if (fail) return Response.json({ error: "Unavailable" }, { status: 500 });
+        return Response.json({
+            revision: state.revision,
+            hits: Array.from({ length: MEMORY_FIND_HITS_MAX + 1 }, (_, index) => ({
+                kind: "event",
+                id: `e${index}`,
+                title: `Event ${index}`,
+                sourceIndex: index,
+                excerpt: "",
+            })),
+            next: null,
+        });
+    });
+    await open();
+    click('[data-memory-page="p"]');
+    await settle();
+    expect(query("[data-memory-page-events-failure]")?.getAttribute("role")).toBe("alert");
+    expect(query("[data-memory-page-event]")).toBeNull();
+
+    fail = false;
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(query("[data-memory-page-events-failure]")).toBeNull();
+    // The cut drops the oldest event, and the line says the list holds the newest.
+    expect(query("[data-memory-page-event]")?.dataset.memoryPageEvent).toBe(`e${MEMORY_FIND_HITS_MAX}`);
+    click("[data-memory-page-events-all]");
+    expect(target.querySelectorAll("[data-memory-page-event]")).toHaveLength(MEMORY_FIND_HITS_MAX);
+    expect(query('[data-memory-page-event="e0"]')).toBeNull();
+    expect(query("[data-memory-page-events-more]")?.textContent).toBe(
+        language.structuredMemory.pages.eventsMore(MEMORY_FIND_HITS_MAX),
+    );
 });
 
 it("shows a page with nothing said of it without empty blocks, and dims a replaced value's line", async () => {
