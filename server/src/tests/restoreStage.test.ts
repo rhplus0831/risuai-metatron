@@ -112,7 +112,8 @@ it("stages and installs source revisions, order, fences and exact checkpoint byt
         ino: stat.ino,
         sha256: hash(readFileSync(output)),
     });
-    expect(readFileSync(source)).toEqual(sourceBytes);
+    // `Buffer.equals`, not `toEqual`: the matcher walks a database file byte by byte.
+    expect(readFileSync(source).equals(sourceBytes)).toBe(true);
     expect(rows(output, "SELECT * FROM resources WHERE kind = 'single'")).toEqual([]);
     const file = path.join(dir, "live.sqlite");
     const store = createResourceStore({ file, kinds, normalizationIdentity: { commit: "test-build", dirty: false } });
@@ -815,7 +816,7 @@ it("restores two-column and declined snapshots with their records and loads a ch
         ]);
         const report = await stageValidatedSnapshot(source, output, kinds);
         await verifyStagedFile(output, report);
-        expect(readFileSync(source)).toEqual(originalBytes);
+        expect(readFileSync(source).equals(originalBytes)).toBe(true);
         const restored = createResourceStore({ file: path.join(dir, "restored-decline.sqlite"), kinds });
         try {
             seedLiveMemory(restored);

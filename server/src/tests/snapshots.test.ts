@@ -470,7 +470,8 @@ describe("checkpoint snapshots", () => {
         const before = state();
         expect(() => store.readSnapshot(invalid)).toThrow(ResourceValidationError);
         expect(state()).toEqual(before);
-        expect(readFileSync(invalid)).toEqual(fileBefore);
+        // `Buffer.equals`, not `toEqual`: the matcher walks a database file byte by byte, over a second per case.
+        expect(readFileSync(invalid).equals(fileBefore)).toBe(true);
     });
 });
 

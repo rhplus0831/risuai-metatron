@@ -138,7 +138,8 @@ function expectMessagePages(db: DatabaseSync, id: string, groups: string[][]) {
     expect(checkpoint(db, id).pages).toEqual(hashes);
     const stored = pages(db);
     for (let i = 0; i < hashes.length; i++) {
-        expect(Buffer.from(stored[hashes[i]], "utf8")).toEqual(Buffer.from(texts[i], "utf8"));
+        // Strings, not Buffers: `toEqual` walks a Buffer byte by byte, two seconds for a one-MiB page.
+        expect(stored[hashes[i]]).toBe(texts[i]);
     }
     return hashes;
 }

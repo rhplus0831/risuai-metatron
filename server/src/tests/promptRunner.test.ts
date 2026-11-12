@@ -2894,6 +2894,9 @@ describe("in-place reply candidates", () => {
         redirected.mockRestore();
         await patchPreset("modelProfiles", profileId, profile);
         await patchProviders({ genTime: 1 });
+        // Two-byte words, not one unbroken run of a letter: the tokenizer merges a run in quadratic time, and
+        // the byte caps under test count the same either way. Ends in a letter: a reply loses a trailing space.
+        const words = (letter: string, bytes: number) => `${letter} `.repeat(bytes / 2 - 1) + letter.repeat(2);
         for (const scenario of ["count", "total", "reply", "snapshot"] as const) {
             const candidates =
                 scenario === "count"
@@ -2902,7 +2905,7 @@ describe("in-place reply candidates", () => {
                       ? Array.from({ length: 3 }, (_, i) => ({ id: String(i), data: String(i).repeat(50 * 1024) }))
                       : undefined;
             const previous =
-                candidates?.at(-1)?.data ?? (scenario === "reply" ? "X".repeat(193 * 1024) : "Previous reply.");
+                candidates?.at(-1)?.data ?? (scenario === "reply" ? words("X", 193 * 1024) : "Previous reply.");
             const id = await seed({
                 messages: [
                     { role: "user", chatId: "u", data: "Question." },
@@ -2912,9 +2915,9 @@ describe("in-place reply candidates", () => {
                         ...(scenario === "snapshot" ? { scriptstateCheckpoint: undefined } : {}),
                     }),
                 ],
-                ...(scenario === "snapshot" ? { chat: { scriptstate: { $large: "X".repeat(65 * 1024) } } } : {}),
+                ...(scenario === "snapshot" ? { chat: { scriptstate: { $large: words("X", 65 * 1024) } } } : {}),
             });
-            mode = { chunks: [scenario === "total" ? "N".repeat(100 * 1024) : "New reply."], delayMs: 0 };
+            mode = { chunks: [scenario === "total" ? words("N", 100 * 1024) : "New reply."], delayMs: 0 };
             const result = await job("reroll", id, { rerollMessageId: "r" });
             expect(result.terminal, scenario + JSON.stringify(result.terminal)).toMatchObject({
                 type: "done",
@@ -2937,7 +2940,7 @@ describe("in-place reply candidates", () => {
             if (scenario === "total") {
                 expect(final.candidates.map((entry: any) => entry.data)).toEqual([
                     "2".repeat(50 * 1024),
-                    "N".repeat(100 * 1024),
+                    words("N", 100 * 1024),
                 ]);
                 expect(
                     Buffer.byteLength(
