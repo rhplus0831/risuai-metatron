@@ -735,7 +735,7 @@ describe("structured memory retrieval", () => {
             [
                 "These records are authoritative for the past, and the scene for the present; recent messages win over both.",
                 "",
-                "Recent events (oldest first; the last is just before the messages below):",
+                "Recent events (oldest first; the last ones may already be in the messages below):",
                 "[m:flow:older] 3 turns ago: Arrival",
                 newestPlain,
             ].join("\n"),

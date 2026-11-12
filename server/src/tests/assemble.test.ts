@@ -1043,7 +1043,7 @@ describe("the context report", () => {
             expect(rawIds(result.formated)).toEqual(["u3", "a3", "u4"]);
             const card = result.formated.find(({ memo }) => memo === "supaMemory")!.content;
             expect(card).toContain(
-                "Recent events (oldest first; the last is just before the messages below):\n3 turns ago: (Dawn) Gate opened: Ada entered the courtyard.\n2 turns ago: (Noon) Promise: Ben agreed to return by sunset.\n1 turn ago: Waiting",
+                "Recent events (oldest first; the last ones may already be in the messages below):\n3 turns ago: (Dawn) Gate opened: Ada entered the courtyard.\n2 turns ago: (Noon) Promise: Ben agreed to return by sunset.\n1 turn ago: Waiting",
             );
             expect(card).not.toContain("This stays in raw history.");
             expect(

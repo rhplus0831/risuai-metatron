@@ -64,7 +64,7 @@ describe("structured memory card", () => {
             [
                 "These records are authoritative for the past, and the scene for the present; recent messages win over both.",
                 "",
-                "Recent events (oldest first; the last is just before the messages below):",
+                "Recent events (oldest first; the last ones may already be in the messages below):",
                 "[m:flow:gate] 3 turns ago: (Dawn) Gate opened: Ada unlocked the gate.",
                 '[m:flow:promise] 2 turns ago: (Noon) Promise: Ben agreed to return. "I will return." (Ben) "Before sunset."',
             ].join("\n"),
@@ -132,7 +132,7 @@ describe("structured memory card", () => {
                 [
                     "These records are authoritative for the past, and the scene for the present; recent messages win over both.",
                     "",
-                    "Recent events (oldest first; the last is just before the messages below):",
+                    "Recent events (oldest first; the last ones may already be in the messages below):",
                     older,
                     newestLine,
                 ].join("\n"),

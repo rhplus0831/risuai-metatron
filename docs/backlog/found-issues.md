@@ -12,24 +12,8 @@ The eighteenth batch was cleared the same day by a Sol implementer with session 
 
 The nineteenth batch and the eight entries of the 2026-11-10 full guide audit (twelve in all) were cleared on 2026-11-10 by Sol implementers and test writers in three worktrees with session verification: eight fixed with regression tests (three in the plugin sandbox, style scoping, the popup editor's row, the chat export's candidate receipts, memory task job ids in shares and reports, the e2e program in `pnpm check:changed`), the dead boot fixture capture driver deleted, the wasmoon upgrade note moved to its module, the checkpoint benchmark given its place in the audit report, and the full-screen alert e2e failure closed as the dev stack's reload on file edits (8 of 8 quiet runs passed; a run under Markdown touches failed the same way).
 
-The twentieth and twenty-first batches, a build entry, and one finding still in memory (eight in all) were worked on 2026-11-12 by Sol implementers and test writers in three worktrees with session verification: five fixed (the pdf.js character map URL, the Korean export line, the history jump's scroll and the refresh scan with regression tests, the eval's capture beyond titles); the on-demand timeline count tried and reverted as not worth its cost (`b29a883a5`, `bb2ede7d6`; the read guide's Limitation has the numbers); the read round's byte charge reproduced and moved to [known issues](known-issues.md#structured-memory); and the timeline heading left below for the owner's wording.
+The twentieth and twenty-first batches, a build entry, and one finding still in memory (eight in all) were worked on 2026-11-12 by Sol implementers and test writers in three worktrees with session verification: five fixed (the pdf.js character map URL, the Korean export line, the history jump's scroll and the refresh scan with regression tests, the eval's capture beyond titles); the on-demand timeline count tried and reverted as not worth its cost (`b29a883a5`, `bb2ede7d6`; the read guide's Limitation has the numbers); the read round's byte charge reproduced and moved to [known issues](known-issues.md#structured-memory); and the timeline heading reworded the same day by the owner's decision (`the last ones may already be in the messages below`).
 
 ## Contents
 
-- [Structured memory](#structured-memory): 1
-
-## Structured memory
-
-### The timeline heading can call a window event's title the last before the messages
-
-`card.ts:86` heads the flow block `Recent events (oldest first; the last is just before the messages below):`, the
-wording the Recent Timeline plan prescribed. Lines are ordered by place, and an event whose sources are all inside the
-raw window keeps its title line (D12), so the block's last line can be an event among the messages below rather than
-just before them. Raised on 2026-11-11 by the challenger of that plan's slice 1; not changed, since the wording is
-the plan's.
-
-**Why it matters:** the heading tells the model something the card's order does not always hold; whether a model reads
-it that way is unmeasured.
-
-**Suggested handling:** the owner decides the wording (for example, "the last ones may already be in the messages
-below"); a one-line change in `card.ts` and its tests.
+None.

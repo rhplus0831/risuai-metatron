@@ -83,7 +83,7 @@ const CARD_LANES: Record<MemoryManifestLane, { part: keyof CardParts; heading: s
     evidence: { part: "volatile", heading: "Original messages:" },
     threads: { part: "volatile", heading: "Open threads:" },
 };
-const TIMELINE_HEADING = "Recent events (oldest first; the last is just before the messages below):";
+const TIMELINE_HEADING = "Recent events (oldest first; the last ones may already be in the messages below):";
 
 /** Normalize record text before comparison and rendering; whitespace differences do not make a distinct fact. */
 export const flattened = (text: string) => text.replace(/\s+/g, " ").trim();
