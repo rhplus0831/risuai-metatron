@@ -44,6 +44,8 @@ codes; the entries name the role and the identifiers to look up.
 - `vitest.setup.ts`: mocks KaTeX, sets `globalThis.safeStructuredClone` to a JSON clone, installs happy-dom's
   `Node.prototype.nodeName` shim (without it DOMPurify mis-sanitizes under happy-dom), and installs the
   [network guard](#network-guard) through `vitest.testNetwork.ts` (`allowTestLoopbackOrigin`, `classifyTestRequest`).
+- `vitest.resetModules.ts` `installSelectiveModuleReset`, `keepsModule`: the `vi.resetModules()` the setup file
+  installs, which keeps `node_modules` and `shared/` modules evaluated ([Gotchas](#gotchas)).
 
 ### Test inventory
 
@@ -239,13 +241,13 @@ rg --files e2e | rg '\.spec\.ts$'
 rg --files util/playwright
 ```
 
-- Setup, icon rewriting, and the network guard: `vitest.setup.test.ts`, `vitest.lucideImports.test.ts`,
-  `vitest.testNetwork.test.ts` (happy-dom), and `vitest.testNetwork.node.test.ts` (Node). The guard suites use
-  registered loopback listeners and controlled global stubs.
+- Setup, module reset, icon rewriting, and the network guard: `vitest.setup.test.ts`, `vitest.resetModules.test.ts`,
+  `vitest.lucideImports.test.ts`, `vitest.testNetwork.test.ts` (happy-dom), and `vitest.testNetwork.node.test.ts`
+  (Node). The guard suites use registered loopback listeners and controlled global stubs.
 - Wrapper helpers and inventory: `util/{agentE2e,agentTestResults,testInventory}.test.ts` exercise pure result/selection
   logic and temporary repository fixtures; no full app stack.
 - Focused command:
-  `pnpm --silent test:agent vitest.setup.test.ts vitest.lucideImports.test.ts vitest.testNetwork util/agentE2e.test.ts util/agentTestResults.test.ts util/testInventory.test.ts`.
+  `pnpm --silent test:agent vitest.setup.test.ts vitest.resetModules.test.ts vitest.lucideImports.test.ts vitest.testNetwork util/agentE2e.test.ts util/agentTestResults.test.ts util/testInventory.test.ts`.
   These files have no slow tags or e2e membership.
 - Not tested directly: the `util/agentTest.mjs` CLI and `util/overloadTest.mjs` supervisor. Their helper tests do not
   replace a manual end-to-end run when those entrypoints change.
@@ -400,6 +402,13 @@ test, follow [Recipes](#recipes); `readSlowTable` in `util/testInventory.mjs` ha
 - Import lucide icons as plain names (`import { X, Check as Ok } from "@lucide/svelte"`). Another form (a type, `icons`,
   a default or namespace import) keeps that statement on the package's main entry, and every test that reaches it
   repeats the package main entry and its icon exports; `vitest.lucideImports.test.ts` fails on it.
+- `vi.resetModules()` re-evaluates `src/`, `server/`, and test helpers only: a package or `shared/` module keeps its
+  module-level state (the Svelte runtime, a memoization cache) for the whole test file. The reset after a `vi.doMock` or
+  `vi.doUnmock` is Vitest's full one, because a kept module may import the mocked one. The kept set saves about 4 s of
+  the gate ([measurements](../reports/measurements/test-gate-cpu-profile-2026-11-12.md)); `vitest.resetModules.ts` reads
+  Vitest's worker state, and `vitest.resetModules.test.ts` fails when an upgrade changes it.
+- `expect(buffer).toEqual(buffer)` walks a Buffer byte by byte (over a second for a database file): compare with
+  `Buffer.equals`, or as strings. A fixture of one repeated letter costs the tokenizer quadratic time: use spaced words.
 - A Vitest file that reaches the settings views or the records needs the client environment (happy-dom): the records use
   Svelte's client `$state`, so `@vitest-environment node` fits only pure schema tests. Install a flat fixture with
   `src/ts/storage/tests/installFlatDatabase.ts`.

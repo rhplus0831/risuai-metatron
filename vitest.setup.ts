@@ -1,4 +1,5 @@
 import { afterAll, afterEach, vi } from "vitest";
+import { installSelectiveModuleReset } from "./vitest.resetModules.ts";
 import { testNetwork } from "./vitest.testNetwork.ts";
 
 // Test-only shim for happy-dom's `Node.prototype.nodeName`.
@@ -78,6 +79,9 @@ function installHappyDomNodeNameShim(win: (Window & typeof globalThis) | undefin
         },
     });
 }
+
+// `vi.resetModules()` keeps `node_modules` and `shared/` modules evaluated (see the file).
+installSelectiveModuleReset();
 
 await installTestNetworkGuard();
 
