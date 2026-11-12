@@ -1,6 +1,6 @@
 # Structured Memory Reply-Only Recording Plan audit, 2026-11-13
 
-- Plan: `docs/plan/structured-memory-reply-only-recording.md`
+- Plan: `docs/plan/structured-memory-reply-only-recording.md`, archived: `git show eb1855de0:docs/plan/structured-memory-reply-only-recording.md`
 - Commit audited: `e2aded6dc` (`dev`); the corrected plan is committed with this report
 - Mode: `full`
 - Model: GPT-6-Astra (`xhigh`), read-only, in place of the usual Sol session because both slices cross the shared

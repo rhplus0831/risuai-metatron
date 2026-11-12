@@ -192,6 +192,11 @@ Work that finished plans named and left: features put off, a plan's Later list, 
 - Not planned (the plan's Not In This Plan list): an embedding model per chat; a character-level default for new chats, or "apply to every chat of this character"; converting records to summaries or summaries to records on a mode change, beyond the existing adoption; removing `supaMemory` or `supaMemoryOnCount` from stored records; Hanurai, HypaV2, or SupaMemory as per-chat modes of their own; preset fields that only some chats override.
 - Left by the run: writers inside a job check the chat's algorithm only when admitted (memory.md Limitations); a send's in-job HypaV3 checkpoint is in [found issues](found-issues.md#memory).
 
+## Structured Memory Reply-Only Recording
+
+- Not planned (the plan's Not In This Plan list): a source that records that its text was not read, so that an edit of an unread user message marks nothing for a re-record; filtering the chat that CBS reads in the writer's instructions and custom frames; citing the leftover user messages at adoption time; showing user messages to the writer as context only, or a per-chat override of the switch; leaving user messages out of the evidence lane or the projection; any change to HypaV3's `doNotSummarizeUserMessage`.
+- Left by the run: a character's `request` trigger or a plugin's `beforeRequest` hook can still put user messages into a writer request (writer.md Limitations).
+
 ## Dependency Upgrades
 
 Not a plan: the upgrade rounds of 2026-10-30 left these behind on purpose. Versions were read from `package.json` on 2026-11-11.
