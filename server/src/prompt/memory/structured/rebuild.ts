@@ -23,6 +23,7 @@ import type { GenerationRunnerDeps } from "../../../jobs/runSetup.ts";
 import { jobMemoryBlockingReason, jobMemoryTaskBase } from "../../runner.ts";
 import { MEMORY_TASK_LIMITS } from "../memoryTasks.ts";
 import { admitRecord, RECORD_REFUSALS } from "./recordJob.ts";
+import { reconcileEvents } from "./reconcile.ts";
 import {
     anchoredMessages,
     type ConfirmedMessage,
@@ -61,8 +62,9 @@ import type { WriterMemory } from "./writer.ts";
  *   crosses it: with none kept, an adopted chat's stored summaries would stop being resettable.
  * - A backfill stands behind records that already exist, so each of its windows is a historical write
  *   (`server/src/prompt/memory/structured/writer.ts`) on a copy of the live pages, and its swap adds events
- *   and new pages and nothing else.
- *   Rebuilding is what refreshes pages.
+ *   and new pages. With `omitUserMessages` on at the swap, `backfillFolds` also attaches uncited user
+ *   messages to the live events covering their replies, keeping only merges that reconcile active.
+ *   Its preview counts possible attachments by stored status without hashing. Rebuilding refreshes pages.
  * - Neither touches `hypaV3Data` or any chat: no receipt is written, so a stopped run leaves nothing on
  *   messages, and an adopted chat's stored summaries wait for a reset.
  * - The rest of a run is `rebuildWork` in `server/src/prompt/memory/memoryTasks.ts`, its start and resume a
@@ -126,26 +128,32 @@ export function rebuildPlan({
     screening: WriterCadence["screening"];
     omitUserMessages?: boolean;
 }): string[][] {
-    return rebuildEntryPlan(anchoredMessages(messages), { events, mode, turns, screening, omitUserMessages }).map(
+    return rebuildEntryPlan(rebuildTurns(messages, screening), { events, mode, turns, omitUserMessages }).map(
         (entries) => entries.map(({ id }) => id),
     );
 }
 
-/** The plan's entries, retained so a preview can count messages and bytes without rereading the transcript. */
-function rebuildEntryPlan(
-    anchored: readonly ConfirmedMessage[],
-    { events, mode, turns, screening, omitUserMessages }: Omit<Parameters<typeof rebuildPlan>[0], "messages">,
-): ConfirmedMessage[][] {
+/** Confirmed turns shared by planning and folds, with stored positions and screened replies left out. */
+function rebuildTurns(messages: readonly Message[], screening: WriterCadence["screening"]): ConfirmedMessage[][] {
+    const anchored = anchoredMessages(messages);
     const confirmed = anchored
         .slice(0, anchored.findLastIndex(({ message }) => message.role === "char") + 1)
         .filter(({ message }) => memoryScreenReason(message, screening) === null);
+    return turnsOf(confirmed);
+}
+
+/** The plan's entries, retained so a preview can count messages and bytes without rereading the transcript. */
+function rebuildEntryPlan(
+    confirmed: readonly (readonly ConfirmedMessage[])[],
+    { events, mode, turns, omitUserMessages }: Omit<Parameters<typeof rebuildPlan>[0], "messages" | "screening">,
+): ConfirmedMessage[][] {
     const excluded =
         mode === "backfill"
             ? recordedMessages(events)
             : mode === "rebuild"
               ? retractedMessages(events)
               : new Set<string>();
-    const open = turnsOf(confirmed)
+    const open = confirmed
         .map((turn) => turn.filter(({ id }) => !excluded.has(id)))
         .filter((entries) => entries.length > 0);
     const plan: ConfirmedMessage[][] = [];
@@ -172,6 +180,87 @@ function rebuildEntryPlan(
         plan.push(pending);
     }
     return plan;
+}
+
+/**
+ * Uncited user messages grouped by the newest active live event citing their turn's reply. Any live or
+ * staged citation excludes a message, including a retracted one; suppression does not exclude a target.
+ * Equal revisions prefer the later live entry. The caller supplies reconciled events for a swap and
+ * stored events for a preview, so this selection hashes nothing.
+ */
+function backfillCandidates(
+    confirmed: readonly (readonly ConfirmedMessage[])[],
+    live: readonly MemoryEvent[],
+    staged: readonly MemoryEvent[],
+): Map<string, { event: MemoryEvent; entries: ConfirmedMessage[] }> {
+    const cited = recordedMessages([...live, ...staged]);
+    const targets = new Map<string, MemoryEvent>();
+    for (const event of live) {
+        if (event.status !== "active") {
+            continue;
+        }
+        for (const { messageId } of storedMemorySources(event.sources)) {
+            const previous = targets.get(messageId);
+            if (!previous || event.createdRevision >= previous.createdRevision) {
+                targets.set(messageId, event);
+            }
+        }
+    }
+    const candidates = new Map<string, { event: MemoryEvent; entries: ConfirmedMessage[] }>();
+    for (const turn of confirmed) {
+        const reply = turn.find(({ message }) => message.role === "char");
+        const event = reply && targets.get(reply.id);
+        if (!event) {
+            continue;
+        }
+        const entries = turn.filter(({ id, message }) => message.role === "user" && !cited.has(id));
+        if (entries.length > 0) {
+            const group = candidates.get(event.id);
+            if (group) {
+                group.entries.push(...entries);
+            } else {
+                candidates.set(event.id, { event, entries });
+            }
+        }
+    }
+    return candidates;
+}
+
+/**
+ * Live events with uncited user messages attached to the events covering their replies. Both target
+ * selection and the merged result must reconcile active against the stored chat, each in one batch.
+ * New anchors are inserted by current position before an existing source, never re-anchoring it;
+ * missing sources keep their relative place. Every other field stays as stored. A target shared by
+ * several turns is returned once, or left out whole if the new list invalidates its anchors or keep.
+ */
+export function backfillFolds({
+    messages,
+    live,
+    staged,
+    screening,
+}: {
+    messages: readonly Message[];
+    live: readonly MemoryEvent[];
+    staged: readonly MemoryEvent[];
+    screening: WriterCadence["screening"];
+}): MemoryEvent[] {
+    const candidates = backfillCandidates(rebuildTurns(messages, screening), reconcileEvents(live, messages), staged);
+    const positions = new Map(messages.map(({ chatId }, index) => [chatId, index]));
+    const merged = [...candidates.values()].map(({ event, entries }) => {
+        const additions = windowOf(entries).sources;
+        const sources: MemoryEvent["sources"] = [];
+        let next = 0;
+        // Every addition precedes a reply this event cites, so none needs appending at the end.
+        for (const source of event.sources) {
+            const position = positions.get(source.messageId);
+            while (position !== undefined && next < additions.length && entries[next].index < position) {
+                sources.push(additions[next++]);
+            }
+            sources.push(source);
+        }
+        return { ...event, sources };
+    });
+    return reconcileEvents(merged, messages).filter(({ status }) => status === "active");
 }
 
 /** Whether a person marked `section`: such a section outlives a rebuild whole. */
@@ -327,8 +416,9 @@ function swappedEvent(
 }
 
 /**
- * What the swap writes of `staged` over `live`, or null for a run that recorded no event, which must leave
- * the live records alone. Called in the swap's synchronous step, so each list is read once in the run's life.
+ * What the swap writes of `staged` over `live`, or null for a run with no staged event and no backfill
+ * fold. Rebuild and fresh modes ignore folds. Called in the swap's synchronous step, so each list is
+ * read once in the run's life.
  *
  * A rebuild replaces a live event only when it is not retracted, has a source, and every source's message
  * is cited by a staged event: a replacement committed for everything it said. Any other is carried, left
@@ -349,8 +439,9 @@ function swappedEvent(
  * them. Its staged events take only the adoption lineage, from any live event, so the stored summaries
  * of an adopted chat stay resettable; the page tools' reverts and corrections are gone with the pages.
  *
- * A backfill writes the staged events and the pages that are not live: a page that is stays as it stands,
- * with any flag it gained during the run, and a link a historical event would add to it is dropped.
+ * A backfill writes the staged events, the folds, and the pages that are not live: a page that is stays
+ * as it stands, with any flag it gained during the run, and a link a historical event would add to it is
+ * dropped. Folds omit `createdRevision`; the store preserves the revision of the existing row.
  * Trashed pages stay untouched in a rebuild and a backfill: `live.pages` comes from `contents.pages`, which
  * excludes trash in `server/src/data/memoryStore.ts`, so their ids are never removed there; a fresh rebuild
  * reads them from `live.contents.trash`.
@@ -359,14 +450,18 @@ export function rebuildChanges(
     mode: StructuredMemoryRebuildMode,
     live: MemoryRecordSet & { contents?: Pick<MemoryContents, "trash"> },
     staged: MemoryRecordSet,
+    folds: readonly MemoryEvent[] = [],
 ): MemoryChanges | null {
-    if (staged.events.length === 0) {
+    if (staged.events.length === 0 && (mode !== "backfill" || folds.length === 0)) {
         return null;
     }
     const livePages = new Map(live.pages.map((page) => [page.id, page]));
     if (mode === "backfill") {
         return {
-            events: staged.events.map((event) => swappedEvent(event, [])),
+            events: [
+                ...staged.events.map((event) => swappedEvent(event, [])),
+                ...folds.map(({ createdRevision, ...event }): MemoryEventWrite => event),
+            ],
             pages: staged.pages.filter(({ id }) => !livePages.has(id)),
         };
     }
@@ -466,7 +561,8 @@ function windowsCost(
  * What a press would cost, from the chat as stored and its live records; null for a missing chat. Reads only.
  * `turns` is what the tab would ask of a rebuild or a backfill. Those previews read the transcript once,
  * counting windows with a message the writer reads, and only read messages and their UTF-8 bytes,
- * without hashing messages or building writer windows.
+ * without hashing messages or building writer windows. A backfill with `omitUserMessages` also counts
+ * possible folds by the live events' stored status; reconciliation at the swap can reject them.
  * Record now's windows are the writer's own, in windows of `turns` turns, because a route has no job scope
  * to read the cadence from, up to `maxWriterWindows`, marked events first.
  */
@@ -484,11 +580,11 @@ export async function memoryWorkCost(
     if (mode !== "record") {
         const listed = store.memory.readContents(chaId, chatId)?.events ?? [];
         const events = listed.flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "events", id)?.data ?? []);
-        const plan = rebuildEntryPlan(anchoredMessages(chat.message), {
+        const confirmed = rebuildTurns(chat.message, screening);
+        const plan = rebuildEntryPlan(confirmed, {
             events,
             mode,
             turns,
-            screening,
             omitUserMessages,
         });
         let calls = 0;
@@ -508,7 +604,19 @@ export async function memoryWorkCost(
                 calls++;
             }
         }
-        return { calls, messages, estimatedTokens: memoryCostTokens(bytes, calls) };
+        return {
+            calls,
+            messages,
+            estimatedTokens: memoryCostTokens(bytes, calls),
+            ...(mode === "backfill" && omitUserMessages
+                ? {
+                      folds: [...backfillCandidates(confirmed, events, []).values()].reduce(
+                          (count, { entries }) => count + entries.length,
+                          0,
+                      ),
+                  }
+                : {}),
+        };
     }
     const confirmedBefore = through ?? writerCeiling(chat.message);
     const windows =

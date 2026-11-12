@@ -2644,6 +2644,76 @@ function serveRebuildContents() {
     return state;
 }
 
+it("shows nothing to record only when a backfill has neither calls nor folds", async () => {
+    serveRebuildContents();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) =>
+        url.includes("/cost?")
+            ? Response.json({ calls: 0, messages: 0, estimatedTokens: 0, folds: 0 })
+            : fetch(url, init, options),
+    );
+    vi.mocked(alertConfirm).mockReset().mockResolvedValue(true);
+    await open();
+    press('[data-memory-rebuild-action="backfill"]');
+    await settle();
+    expect(alertToast).toHaveBeenCalledExactlyOnceWith(language.structuredMemory.rebuild.nothing);
+    expect(alertConfirm).not.toHaveBeenCalled();
+    expect(io.runServerJob).not.toHaveBeenCalled();
+});
+
+it("confirms a fold-only backfill without a model cost and starts it only on yes", async () => {
+    serveRebuildContents();
+    settings.hypaV3Presets.items[0].settings.structured!.cadence = "everyTurn";
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) =>
+        url.includes("/cost?")
+            ? Response.json({ calls: 0, messages: 0, estimatedTokens: 0, folds: 3 })
+            : fetch(url, init, options),
+    );
+    io.runServerJob.mockResolvedValue(previewAnswer({}));
+    const confirm = vi.mocked(alertConfirm).mockReset().mockResolvedValue(false);
+    await open();
+    press('[data-memory-rebuild-action="backfill"]');
+    await settle();
+    const text = language.structuredMemory.rebuild;
+    expect(confirm).toHaveBeenCalledExactlyOnceWith(text.confirmBackfillFolds(3));
+    expect(confirm.mock.calls[0][0]).toContain("No model is called.");
+    expect(alertToast).not.toHaveBeenCalled();
+    expect(io.runServerJob).not.toHaveBeenCalled();
+    confirm.mockResolvedValue(true);
+    press('[data-memory-rebuild-action="backfill"]');
+    await settle();
+    expect(io.runServerJob).toHaveBeenCalledExactlyOnceWith(
+        characterList().find(({ chaId }) => chaId === "c"),
+        ref,
+        {
+            kind: "command",
+            command: { type: "memoryRebuild", mode: "backfill", turns: 1 },
+            label: "memoryRebuild",
+            context: { mode: "manual" },
+        },
+    );
+    expect(alertToast).not.toHaveBeenCalledWith(text.nothing);
+});
+
+it("includes both model cost and folds in a mixed backfill confirmation", async () => {
+    serveRebuildContents();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) =>
+        url.includes("/cost?")
+            ? Response.json({ calls: 2, messages: 4, estimatedTokens: 6400, folds: 3 })
+            : fetch(url, init, options),
+    );
+    const confirm = vi.mocked(alertConfirm).mockReset().mockResolvedValue(false);
+    await open();
+    press('[data-memory-rebuild-action="backfill"]');
+    await settle();
+    const text = language.structuredMemory.rebuild;
+    expect(confirm).toHaveBeenCalledExactlyOnceWith(text.confirmBackfill(`${text.cost(2, 6400)} ${text.folds(3)}`));
+    expect(alertToast).not.toHaveBeenCalled();
+    expect(io.runServerJob).not.toHaveBeenCalled();
+});
+
 it("offers a language rebuild without starting it and confirms rebuild, start over, and fill gaps even for one call, hiding them while held", async () => {
     const state = serveRebuildContents();
     settings.hypaV3Presets.items[0].settings.structured!.language = "Korean";

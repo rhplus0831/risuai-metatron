@@ -125,9 +125,11 @@ resettable. It is the one path that empties the trash in one write.
 ### Backfill
 
 Backfill includes an adopted chat's user messages that summaries left uncovered, even when their replies were recorded.
-Its windows precede existing records, so `rebuildWork` gives the staged writer `historical: { frozenPages }`:
-`admissionState`, `historicalAnalysis`, `withoutFrozenTargets` and `commitPages` leave existing pages, their links, the
-scene and threads alone while adding events and new pages.
+With the preset's `omitUserMessages` on, those messages' windows hold nothing the writer reads, so the run moves past
+them with no call and [the swap](#the-swap) attaches them to live events instead. Its windows precede existing records,
+so `rebuildWork` gives the staged writer `historical: { frozenPages }`: `admissionState`, `historicalAnalysis`,
+`withoutFrozenTargets` and `commitPages` leave existing pages, their links, the scene and threads alone while adding
+events and new pages.
 
 ### The swap
 
@@ -135,6 +137,12 @@ scene and threads alone while adding events and new pages.
 `server/src/data/resourceStore.ts` wraps `server/src/data/memoryStore.ts`'s swap in one transaction: one ordinary live
 `write`, moving the memory revision exactly once. The store's comments own validation, scene and `createdRevision`
 rules, staged-run transfer and cleanup.
+
+In a backfill whose preset has `omitUserMessages` on as stored at the swap (the task's snapshot is not read),
+`backfillFolds` attaches every user message no live or staged event cites, in a turn whose reply a live event cites, to
+the newest such event that reconciles active against the chat as stored then, a suppressed one included. The new anchors
+go in by chat position, and a target whose merged list would not reconcile active is left out whole. The folds are
+ordinary updates in the same write, keeping `createdRevision`, so a run that staged nothing but folds ends `rebuilt`.
 
 Only this changes what a chat reads. Staged writes touch no live tables and publish nothing; a plugin refreshes one
 projection for the swap. Failure or abandon leaves live records and their revision alone.
@@ -176,10 +184,12 @@ abandoned.
 owns window counting, and the shared answer and `memoryCostTokens` own the
 [estimate](../../reports/measurements/structured-memory-2026-11-03.md).
 
-`pressMemoryRebuild` asks for rebuild/backfill when cost is nonzero or unknown; a zero-window preview ends with a toast.
-`pressMemoryRecord` asks at two calls or more, or an unreadable preview with unknown cost, before submitting the job.
-The press functions and `recordTurns` own cadence conversion; the server accepts `turns` 1 or 2 without checking that
-cadence.
+A backfill preview with `omitUserMessages` on also answers `folds`: the user messages the swap may attach, judged by the
+events' stored status without hashing, so an upper bound. `pressMemoryRebuild` asks for rebuild/backfill when cost is
+nonzero or unknown, or when folds are counted: with no call it asks without a model cost. A preview with neither ends
+with a toast. `pressMemoryRecord` asks at two calls or more, or an unreadable preview with unknown cost, before
+submitting the job. The press functions and `recordTurns` own cadence conversion; the server accepts `turns` 1 or 2
+without checking that cadence.
 
 ### The language change
 
@@ -254,8 +264,8 @@ beside the rebuild buttons. The comparison starts no work; a person must press. 
 Decisions: Structured Memory slice 6b, archive, unless an entry names another.
 
 - A stopped run keeps the lock until a person resumes or abandons, across restarts too.
-- A backfill adds events and new pages and leaves current state alone: existing pages, the scene, and threads learn
-  nothing from it. A rebuild refreshes them.
+- A backfill adds events and new pages, and under `omitUserMessages` sources to live events, and leaves current state
+  alone: existing pages, the scene, and threads learn nothing from it. A rebuild refreshes them.
 - A rebuild forgets reverts on sections with no mark: such a section is written anew, its history goes, and the writer
   can propose the change again. Decision: Structured Memory slice 7b, archive.
 - A fresh rebuild forgets everything a person did to the records, and the confirmation says so; it does not touch the

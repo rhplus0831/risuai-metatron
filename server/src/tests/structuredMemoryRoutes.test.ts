@@ -2603,6 +2603,48 @@ function stageRun(s: Awaited<ReturnType<typeof server>>, id = chatId) {
     );
 }
 
+it("previews folds by stored status only for backfill with user omission enabled", async () => {
+    const s = await server();
+    bindChat(s);
+    // The reply has changed since anchoring: the preview is an upper bound, not a reconciliation.
+    s.write({
+        events: [
+            {
+                ...event("adopted"),
+                writerRun: ADOPTED_WRITER_RUN,
+                sources: [{ messageId: "a", index: 1, hash: "old-reply-hash" }],
+            },
+        ],
+    });
+    const kind = createKindRegistry(DEFAULT_RESOURCE_KINDS).get("hypaV3Presets")!;
+    for (const omitUserMessages of [true, false]) {
+        const record = s.store.get(kind, "main")!;
+        const data = record.data as { selectedId: string; items: { id: string; settings: Record<string, unknown> }[] };
+        s.store.put(
+            kind,
+            "main",
+            {
+                ...data,
+                items: data.items.map((item) => ({
+                    ...item,
+                    settings: { ...item.settings, structured: { omitUserMessages } },
+                })),
+            },
+            record.revision,
+        );
+        for (const mode of ["backfill", "rebuild", "fresh", "record"] as const) {
+            const cost = await answer(
+                await s.request(`${base}/cost?mode=${mode}&turns=1${mode === "record" ? "&through=a" : ""}`),
+            );
+            if (mode === "backfill" && omitUserMessages) {
+                expect(cost).toEqual({ calls: 0, messages: 0, estimatedTokens: 0, folds: 1 });
+            } else {
+                expect(cost).not.toHaveProperty("folds");
+            }
+        }
+    }
+});
+
 it("previews rebuild, backfill and record costs from stored messages without writing, even during a run", async () => {
     const s = await server();
     bindChat(s);

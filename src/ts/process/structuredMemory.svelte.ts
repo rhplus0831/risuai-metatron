@@ -827,9 +827,19 @@ function parseResetAnswer(body: AnswerBody): StructuredMemoryResetAnswer | null 
 
 function parseCostAnswer(body: AnswerBody): StructuredMemoryCostAnswer | null {
     const { calls, messages, estimatedTokens } = body;
-    return [calls, messages, estimatedTokens].every((count) => storedCount(count) !== undefined)
-        ? (body as StructuredMemoryCostAnswer)
-        : null;
+    if (![calls, messages, estimatedTokens].every((count) => storedCount(count) !== undefined)) {
+        return null;
+    }
+    const answer = body as StructuredMemoryCostAnswer;
+    return Object.hasOwn(body, "folds")
+        ? {
+              ...answer,
+              folds:
+                  typeof body.folds === "number" && Number.isSafeInteger(body.folds) && body.folds >= 0
+                      ? body.folds
+                      : 0,
+          }
+        : answer;
 }
 
 function parseAbandonAnswer(body: AnswerBody): StructuredMemoryAbandonAnswer | null {

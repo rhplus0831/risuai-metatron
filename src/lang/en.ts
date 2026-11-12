@@ -3073,6 +3073,10 @@ export const languageEnglish = {
                 `Discard every memory record of this chat and write it again from its messages? ${cost} The records stay as they are until the last turn is done, and this chat cannot generate until this ends or you abandon it. Every page, event, and thread is then replaced, including what you locked, pinned, corrected, or added, and the trash is emptied. This cannot be undone.`,
             confirmBackfill: (cost: string) =>
                 `Record the turns no event cites? ${cost} The records stay as they are until the last turn is done, and this chat cannot generate until this ends or you abandon it. Existing pages and threads do not change: a rebuild is what refreshes them.`,
+            confirmBackfillFolds: (count: number) =>
+                `Fill gaps by attaching up to ${count} user message${count === 1 ? "" : "s"} to the events that cover their replies? No model is called. This chat cannot generate until this ends or you abandon it.`,
+            folds: (count: number) =>
+                `Up to ${count} user message${count === 1 ? " is" : "s are"} also attached to the events that cover their replies.`,
             cost: (calls: number, tokens: number) => memoryCostText(calls, tokens),
             costUnknown: "The cost could not be read, so it is unknown.",
             nothing: "Nothing to do: this chat has no turn to record.",

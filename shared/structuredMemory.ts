@@ -796,7 +796,17 @@ export type StructuredMemoryCostMode = StructuredMemoryRebuildMode | "record";
  * add a patch call and compaction calls. `messages` are the messages those windows hold, and
  * `estimatedTokens` the input of the analysis calls alone (`memoryCostTokens`).
  */
-export type StructuredMemoryCostAnswer = { calls: number; messages: number; estimatedTokens: number };
+export type StructuredMemoryCostAnswer = {
+    calls: number;
+    messages: number;
+    estimatedTokens: number;
+    /**
+     * Present only for a backfill with `omitUserMessages` on: uncited user messages whose replies a live
+     * event with stored `status: "active"` cites, suppressed events included. Counted without hashing or
+     * reconciliation, so an upper bound on the attachments the swap accepts.
+     */
+    folds?: number;
+};
 
 /**
  * What one analysis call costs past its window's messages, in tokens: the frame, the cast, the scene, the

@@ -24,6 +24,7 @@ import type { SerializableHypaV3Data } from "../../../shared/memory.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import {
     CHARACTER_SECTION_SLOTS,
+    coveredMessages,
     MEMORY_SECTION_BUDGETS,
     type MemoryEventDraft,
     type MemoryPage,
@@ -33,7 +34,8 @@ import {
 import { MAX_READ_RESPONSE_BYTES } from "../../../shared/resources.ts";
 import { defaultPrompts } from "../prompt/memory/structured/prompts.ts";
 import { revertChange } from "../prompt/memory/structured/pages.ts";
-import { readRecordSet, rebuildSeed } from "../prompt/memory/structured/rebuild.ts";
+import { readRecordSet, rebuildPlan, rebuildSeed } from "../prompt/memory/structured/rebuild.ts";
+import { adoptedEvents } from "../prompt/memory/structured/adopt.ts";
 import { readMemoryRecords } from "../prompt/memory/structured/step.ts";
 import {
     reconcileEvents,
@@ -3526,6 +3528,156 @@ describe("structured memory tasks", () => {
         await finishRecording(t, manual);
         expect(eventRecord(t).sources.map(({ messageId }) => messageId)).toEqual(["m1", "m2"]);
         expect(t.store.memory.readRecord("c", "k1", "events", "old")!.data.status).toBe("retracted");
+    });
+
+    const adoptReplies = (t: Harness, chatMemos = ["m2", "m4", "m6"]) => {
+        const data = { summaries: [{ text: "The journey so far.", chatMemos, isImportant: false }] };
+        t.write("k1", [{ op: "meta", set: { hypaV3Data: data } }]);
+        writeMemory(t.store, "c", "k1", {
+            events: adoptedEvents({
+                data,
+                messages: t.chat("k1")!.message,
+                hashOf: messageSourceHash,
+                newId: () => "adopted",
+            }),
+        });
+        return t.store.memory.readRecord("c", "k1", "events", "adopted")!.data;
+    };
+
+    it.each([true, false])(
+        "backfills an adopted chat with omitUserMessages=%s, covering its leftover users",
+        async (omitUserMessages) => {
+            const t = structuredHarness({ hypaSettings: { structured: { cadence: "everyTurn", omitUserMessages } } });
+            const adopted = adoptReplies(t);
+            const messages = t.chat("k1")!.message;
+            const plan = rebuildPlan({
+                messages,
+                events: [adopted],
+                mode: "backfill",
+                turns: 1,
+                screening: { refusal: [], format: [] },
+                omitUserMessages,
+            });
+            expect(plan).toEqual([["m1"], ["m3"], ["m5"]]);
+            const input = beginStagedRun(t, "backfill", plan);
+            const terminal = t.nextTerminal("k1");
+            expect(t.service.rebuild(input).outcome).toBe("queued");
+            if (!omitUserMessages) {
+                for (const [index, id] of ["m1", "m3", "m5"].entries()) {
+                    const request = await nextPatch(t, index, terminal);
+                    expect(t.provider.asked(request)).toContain(`[m:${id}]`);
+                    expect(t.provider.asked(request)).toContain(messages.find(({ chatId }) => chatId === id)!.data);
+                    request.answer(JSON.stringify(analysis({ summary: `Recorded ${id}.` })));
+                }
+            }
+            const ended = await Promise.race([
+                terminal,
+                t.provider.request(omitUserMessages ? 0 : 3).then(() => {
+                    throw new Error("Unexpected model call for adopted users");
+                }),
+            ]);
+            await t.service.drain();
+            expect(ended.status).toMatchObject({ state: "done", reason: "rebuilt", done: 3, total: 3 });
+            expect(t.provider.requests).toHaveLength(omitUserMessages ? 0 : 3);
+            const records = readRecordSet(t.store.memory, "c", "k1")!.events;
+            expect(coveredMessages(reconcileEvents(records, messages))).toEqual(
+                new Set(["m1", "m2", "m3", "m4", "m5", "m6"]),
+            );
+            expect(t.store.memory.rebuild.status("c", "k1")).toBeNull();
+            const savedAdoption = records.find(({ id }) => id === "adopted")!;
+            if (omitUserMessages) {
+                expect(records).toHaveLength(1);
+                expect(savedAdoption).toEqual({
+                    ...adopted,
+                    sources: messages.slice(0, 6).map((message, index) => ({
+                        messageId: message.chatId!,
+                        index,
+                        hash: messageSourceHash(message),
+                    })),
+                });
+                expect(contents(t).runs).toEqual([]);
+            } else {
+                expect(savedAdoption).toEqual(adopted);
+                expect(
+                    records
+                        .filter(({ id }) => id !== "adopted")
+                        .map(({ sources }) => sources.map(({ messageId }) => messageId)),
+                ).toEqual([["m1"], ["m3"], ["m5"]]);
+                expect(contents(t).runs).toHaveLength(3);
+            }
+        },
+    );
+
+    it("swaps staged replies with folds only when the preset switch is on at the swap", async () => {
+        for (const omitAtSwap of [true, false]) {
+            const t = structuredHarness({
+                hypaSettings: { structured: { cadence: "everyTurn", omitUserMessages: true } },
+            });
+            const adopted = adoptReplies(t, ["m2", "m4"]);
+            const messages = t.chat("k1")!.message;
+            const plan = rebuildPlan({
+                messages,
+                events: [adopted],
+                mode: "backfill",
+                turns: 1,
+                screening: { refusal: [], format: [] },
+                omitUserMessages: true,
+            });
+            expect(plan).toEqual([["m1"], ["m3"], ["m5", "m6"]]);
+            const input = beginStagedRun(t, "backfill", plan);
+            const before = contents(t).revision;
+            const terminal = t.nextTerminal("k1");
+            expect(t.service.rebuild(input).outcome).toBe("queued");
+            const request = await nextPatch(t, 0, terminal);
+            expect(t.provider.asked(request)).toContain("[m:m6]");
+            expect(t.provider.asked(request)).not.toContain("User line");
+            expect(t.store.memory.rebuild.status("c", "k1")).toMatchObject({ done: 2, total: 3 });
+            expect(t.store.memory.readRecord("c", "k1", "events", "adopted")!.data).toEqual(adopted);
+            expect(contents(t).revision).toBe(before);
+            t.replace("hypaV3Presets", (data) => ({
+                ...data,
+                items: data.items.map((item: any) => ({
+                    ...item,
+                    settings: {
+                        ...item.settings,
+                        structured: { ...item.settings.structured, omitUserMessages: omitAtSwap },
+                    },
+                })),
+            }));
+            request.answer(JSON.stringify(analysis()));
+            const ended = await Promise.race([
+                terminal,
+                t.provider.request(1).then(() => {
+                    throw new Error("Unexpected model call for leftover users");
+                }),
+            ]);
+            await t.service.drain();
+            expect(ended.status).toMatchObject({ state: "done", reason: "rebuilt", done: 3, total: 3 });
+            expect(t.provider.requests).toHaveLength(1);
+            const records = readRecordSet(t.store.memory, "c", "k1")!.events;
+            expect(records).toHaveLength(2);
+            expect(records.find(({ id }) => id === "adopted")).toEqual(
+                omitAtSwap
+                    ? {
+                          ...adopted,
+                          sources: messages.slice(0, 4).map((message, index) => ({
+                              messageId: message.chatId!,
+                              index,
+                              hash: messageSourceHash(message),
+                          })),
+                      }
+                    : adopted,
+            );
+            expect(records.find(({ id }) => id !== "adopted")?.sources.map(({ messageId }) => messageId)).toEqual([
+                "m5",
+                "m6",
+            ]);
+            expect(coveredMessages(reconcileEvents(records, messages))).toEqual(
+                new Set(omitAtSwap ? ["m1", "m2", "m3", "m4", "m5", "m6"] : ["m2", "m4", "m5", "m6"]),
+            );
+            expect(Number(contents(t).revision.split(":").at(-1))).toBe(Number(before.split(":").at(-1)) + 1);
+            expect(t.store.memory.rebuild.status("c", "k1")).toBeNull();
+        }
     });
 
     it("advances a reply-less rebuild window without a model call when users are omitted", async () => {

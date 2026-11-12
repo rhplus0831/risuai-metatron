@@ -641,7 +641,9 @@ type RoundRead = {
  * - `GET /api/memory/structured/:characterId/:chatId/cost?mode=rebuild|backfill|record&turns=1|2&through=ID`:
  *   what a rebuild, a backfill, or a press of record now through `through` would cost, reading only,
  *   answered `StructuredMemoryCostAnswer`: an estimate, because a route has no job scope to reach a real
- *   tokenizer. 400 for another `mode` or `turns` or a `through` that is no id, 404 `chatGone`.
+ *   tokenizer. A backfill with `omitUserMessages` on also answers `folds`, an upper bound on uncited user
+ *   messages it may attach to live events, counted by stored status without hashing or reconciliation.
+ *   400 for another `mode` or `turns` or a `through` that is no id, 404 `chatGone`.
  * - `GET /api/memory/structured/default-prompts`: the writer's default analysis and patch frames as stored
  *   text, with their slots in place and no preset text, and the texts of each call's `format` and `rules`
  *   slots, answered `StructuredMemoryDefaultPromptsAnswer` (`structured/prompts.ts`). It names no chat and

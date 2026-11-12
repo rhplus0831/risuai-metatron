@@ -1039,6 +1039,25 @@ it("keeps the adoption reason on a receipt but restores the writer action after 
     }
 });
 
+it("preserves a cost preview's fold count and leaves an absent count absent", async () => {
+    const cost = { calls: 0, messages: 0, estimatedTokens: 0 };
+    for (const value of [{ ...cost, folds: 3 }, { ...cost, folds: 0 }, cost]) {
+        authFetch.mockResolvedValueOnce(Response.json(value));
+        expect(await readStructuredMemoryCost(ref, { mode: "backfill", turns: 1 })).toEqual({ outcome: "ok", value });
+    }
+});
+
+it("reads malformed fold counts as zero without discarding the cost preview", async () => {
+    const cost = { calls: 1, messages: 2, estimatedTokens: 3000 };
+    for (const folds of [null, "3", -1, 1.5, true, {}, Number.MAX_SAFE_INTEGER + 1]) {
+        authFetch.mockResolvedValueOnce(Response.json({ ...cost, folds }));
+        expect(await readStructuredMemoryCost(ref, { mode: "backfill", turns: 1 })).toEqual({
+            outcome: "ok",
+            value: { ...cost, folds: 0 },
+        });
+    }
+});
+
 it("reads cost previews and durable run metadata and abandons through the epoch-bound chat endpoint", async () => {
     authFetch.mockImplementation(async (url, init) => {
         expect(new Headers(init?.headers).get(RESOURCE_EPOCH_HEADER)).toBe("epoch");

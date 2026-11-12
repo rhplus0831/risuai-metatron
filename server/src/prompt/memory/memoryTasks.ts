@@ -25,6 +25,7 @@ import { LLMFormat } from "../../../../shared/llm.ts";
 import type { SerializableHypaV3Data } from "../../../../shared/memory.ts";
 import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../../shared/resources.ts";
 import {
+    type MemoryEvent,
     normalizeStructuredMemorySettings,
     STRUCTURED_MEMORY_ALGORITHM,
     structuredMemoryEmbeddingLanes,
@@ -68,6 +69,7 @@ import {
 } from "./hypav3.ts";
 import { createMemoryTaskHost, MemoryHostFailure, type MemoryTaskHostDeps } from "./memoryTaskHost.ts";
 import {
+    backfillFolds,
     readRecordSet,
     rebuildChanges,
     rebuildStore,
@@ -350,7 +352,10 @@ const statusKind = (input: Pick<AnyMemoryTaskInput, "kind">) =>
  *   through the writer's replay rule. After `maxWriterWindows` windows or half of `taskDeadlineMs` the task
  *   queues its input again and ends, so each stays under the deadline; a refused queue stops the run. At
  *   the cursor's end, in one synchronous step behind the same fence and the hold, `rebuildChanges` and the
- *   store's `swap` end the run; a run that recorded no event refuses it and stops (`nothingRecorded`).
+ *   store's `swap` end the run. A backfill reads the chat preset's omission switch and screening as stored
+ *   at the swap, not the task's snapshot, and with omission on attaches uncited user messages to live
+ *   events covering their replies (`backfillFolds`). A run with neither a staged event nor a surviving
+ *   fold refuses the swap and stops (`nothingRecorded`); folds alone end `done rebuilt` with no model call.
  * - A stopped run: every end of a run's task but a person's pause and a chain leaves its reason and error
  *   on the row (`noteRebuildStop`), which outlives the terminal, except that maintenance and an epoch
  *   change write nothing. The run waits for a person: nothing resumes it, also after a restart.
@@ -1263,6 +1268,8 @@ export function createMemoryTasks(deps: {
     /**
      * Ends a run whose every window is done, in one synchronous step: the same fence, the hold on the live
      * records, then one atomic change of them. Whatever refuses leaves the run stopped and them as they are.
+     * A backfill folds against the chat and its preset's omission switch and screening as stored at the
+     * swap, not the task's snapshot; the ordinary write preserves each target's creation revision.
      */
     const swapRebuild = (task: Task, input: StructuredMemoryTaskInput, mode: StructuredMemoryRebuildMode) => {
         const { chaId, chatId } = input.chatRef;
@@ -1280,7 +1287,22 @@ export function createMemoryTasks(deps: {
             endRunning(task, "skipped", { reason: "awaitingAdoption" });
             return;
         }
-        const changes = rebuildChanges(mode, stored, staged);
+        let folds: MemoryEvent[] = [];
+        if (mode === "backfill") {
+            const chat = store.readChatSource(chaId, chatId).data as Chat | null;
+            if (chat) {
+                const { screening, omitUserMessages } = store.memory.readWriterSettings(chat.memoryPresetId);
+                if (omitUserMessages) {
+                    folds = backfillFolds({
+                        messages: chat.message,
+                        live: stored.events,
+                        staged: staged.events,
+                        screening,
+                    });
+                }
+            }
+        }
+        const changes = rebuildChanges(mode, stored, staged, folds);
         if (!changes) {
             endRunning(task, "skipped", { reason: "nothingRecorded" });
             return;

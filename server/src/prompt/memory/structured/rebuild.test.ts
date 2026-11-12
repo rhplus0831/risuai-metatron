@@ -6,14 +6,16 @@ import { createHypaV3Preset } from "../../../../../shared/hypaV3Presets.ts";
 import type { Message } from "../../../../../shared/database.ts";
 import {
     ADOPTED_WRITER_RUN,
+    memoryAnchorState,
     memoryCostTokens,
+    reconcileMemoryEvents,
     type MemoryEvent,
     type MemoryPage,
 } from "../../../../../shared/structuredMemory.ts";
 import { messageSourceHash } from "../../../data/memoryStore.ts";
 import { memoryRecords } from "../../../tests/memoryFixtures.ts";
 import { applyPageTool } from "./pages.ts";
-import { memoryWorkCost, rebuildChanges, rebuildPlan, rebuildSeed, rebuildWindow } from "./rebuild.ts";
+import { backfillFolds, memoryWorkCost, rebuildChanges, rebuildPlan, rebuildSeed, rebuildWindow } from "./rebuild.ts";
 
 const messages: Message[] = ["u1", "a1", "u2", "a2", "u3", "a3", "u4"].map((id) => ({
     chatId: id,
@@ -28,6 +30,148 @@ const event = (id: string, ids: string[], extra: Partial<MemoryEvent> = {}): Mem
 });
 
 const NO_SCREENING: { refusal: string[]; format: string[] } = { refusal: [], format: [] };
+
+const anchor = (message: Message, index: number) => ({
+    messageId: message.chatId!,
+    index,
+    hash: messageSourceHash(message),
+});
+
+it("folds three turns into the newest active adopted event in chat order without re-anchoring, and only once", () => {
+    const replies = [1, 3, 5].map((index) => anchor(messages[index], index + 10));
+    const adopted = event("adopted", [], {
+        writerRun: ADOPTED_WRITER_RUN,
+        suppressed: true,
+        sources: replies,
+    });
+    const older = { ...adopted, id: "older", createdRevision: 1, suppressed: false };
+    const stale = { ...adopted, id: "stale", createdRevision: 8, status: "stale" as const };
+    const args = { messages, live: [adopted, stale, older], staged: [], screening: NO_SCREENING };
+    const before = structuredClone(args);
+    const expected = {
+        ...adopted,
+        sources: [
+            anchor(messages[0], 0),
+            replies[0],
+            anchor(messages[2], 2),
+            replies[1],
+            anchor(messages[4], 4),
+            replies[2],
+        ],
+    };
+    expect(backfillFolds(args)).toEqual([expected]);
+    expect(reconcileMemoryEvents([expected], messages, messageSourceHash)).toEqual([expected]);
+    expect(backfillFolds({ ...args, live: [expected, stale, older] })).toEqual([]);
+    expect(args).toEqual(before);
+});
+
+it("leaves users uncited when their reply has only retracted, stored stale, or newly stale events", () => {
+    const reply = anchor(messages[1], 1);
+    for (const target of [
+        event("retracted", [], { sources: [reply], status: "retracted" }),
+        event("stale", [], { sources: [reply], status: "stale" }),
+        event("changed", [], {
+            sources: [{ ...reply, hash: messageSourceHash({ ...messages[1], data: "Before edit" }) }],
+        }),
+    ]) {
+        expect(backfillFolds({ messages, live: [target], staged: [], screening: NO_SCREENING }), target.id).toEqual([]);
+    }
+});
+
+it("does not fold user messages already cited by live or staged events in any status", () => {
+    const target = event("adopted", [], { sources: [1, 3, 5].map((index) => anchor(messages[index], index)) });
+    const citedLive = event("live-user", ["u2"], { status: "stale" });
+    const citedStaged = event("staged-user", ["u1"], { status: "retracted" });
+    expect(
+        backfillFolds({ messages, live: [target, citedLive], staged: [citedStaged], screening: NO_SCREENING }),
+    ).toEqual([
+        { ...target, sources: [target.sources[0], target.sources[1], anchor(messages[4], 4), target.sources[2]] },
+    ]);
+});
+
+it("folds the user before a screened reply into the next reply's event", () => {
+    const first = event("screened", [], { sources: [anchor(messages[1], 1)] });
+    const next = event("next", [], { sources: [anchor(messages[3], 3)] });
+    expect(
+        backfillFolds({
+            messages,
+            live: [first, next],
+            staged: [],
+            screening: { refusal: ["a1"], format: [] },
+        }),
+    ).toEqual([{ ...next, sources: [anchor(messages[0], 0), anchor(messages[2], 2), next.sources[0]] }]);
+});
+
+it.each(["moved", "inserted", "changed"] as const)(
+    "drops the whole fold when the merged sources would reconcile %s",
+    (reason) => {
+        const current: Message[] =
+            reason === "inserted"
+                ? [
+                      messages[0],
+                      messages[2],
+                      { chatId: "disabled", role: "user", data: "Hidden", disabled: true },
+                      messages[3],
+                  ]
+                : messages.slice(0, 4);
+        const sources =
+            reason === "moved"
+                ? [anchor(current[3], 3), anchor(current[1], 1)]
+                : reason === "inserted"
+                  ? [anchor(current[3], 2)]
+                  : [{ ...anchor(current[3], 3), hash: messageSourceHash({ ...current[3], data: "Before edit" }) }];
+        const target = event("target", [], {
+            sources,
+            ...(reason === "inserted" ? {} : { keptState: memoryAnchorState(sources, current, messageSourceHash) }),
+        });
+        const additions =
+            reason === "changed"
+                ? [anchor(current[2], 2)]
+                : [
+                      anchor(current[0], 0),
+                      anchor(current[reason === "inserted" ? 1 : 2], reason === "inserted" ? 1 : 2),
+                  ];
+        expect(reconcileMemoryEvents([target], current, messageSourceHash)[0].status).toBe("active");
+        expect(
+            reconcileMemoryEvents([{ ...target, sources: [...additions, ...sources] }], current, messageSourceHash)[0],
+        ).toMatchObject({ status: "stale", staleReason: reason });
+        expect(backfillFolds({ messages: current, live: [target], staged: [], screening: NO_SCREENING })).toEqual([]);
+    },
+);
+
+it("writes folds in a backfill with or without staged events and returns null only when both are empty", () => {
+    const original = event("adopted", ["a1"]);
+    const fold = { ...original, sources: [anchor(messages[0], 0), ...original.sources] };
+    const { createdRevision: _foldRevision, ...writtenFold } = fold;
+    const staged = event("new", ["u2", "a2"]);
+    const { createdRevision: _stagedRevision, ...writtenStaged } = staged;
+    const live = { pages: [], threads: [], events: [original] };
+    const empty = { pages: [], threads: [], events: [] };
+    expect(rebuildChanges("backfill", live, empty, [fold])).toEqual({ pages: [], events: [writtenFold] });
+    expect(rebuildChanges("backfill", live, { ...empty, events: [staged] }, [fold])).toEqual({
+        pages: [],
+        events: [writtenStaged, writtenFold],
+    });
+    expect(rebuildChanges("backfill", live, empty, [])).toBeNull();
+});
+
+it("ignores folds in rebuild and fresh swaps even when nothing was staged", () => {
+    const original = event("adopted", ["a1"]);
+    const fold = { ...original, sources: [anchor(messages[0], 0), ...original.sources] };
+    const staged = event("new", ["u2", "a2"]);
+    const { createdRevision: _revision, ...written } = staged;
+    const live = { pages: [], threads: [], events: [original] };
+    const empty = { pages: [], threads: [], events: [] };
+    for (const mode of ["rebuild", "fresh"] as const) {
+        expect(rebuildChanges(mode, live, empty, [fold])).toBeNull();
+        expect(rebuildChanges(mode, live, { ...empty, events: [staged] }, [fold])).toEqual({
+            events: [written],
+            pages: [],
+            threads: [],
+            remove: { events: mode === "fresh" ? ["adopted"] : [], pages: [], threads: [] },
+        });
+    }
+});
 
 function costStore(
     message: Message[],
@@ -124,11 +268,14 @@ it("previews only readable windows, messages and UTF-8 bytes in every work mode"
             // Fresh reads all 15 bytes (9 reply bytes when on). Rebuild/backfill leave a1 out:
             // 11 bytes when off, and 5 reply bytes when on. Record now skips the covered turn:
             // 8 bytes when off and 5 when on, grouped into one call. Each call adds 3,000 tokens.
+            // A backfill with the switch on also counts u1, whose reply the active event cites, as a fold.
             expect(cost, `${mode}, omit=${setting}`).toEqual(
                 setting === true
                     ? mode === "fresh"
                         ? { calls: 2, messages: 3, estimatedTokens: 6003 }
-                        : { calls: 1, messages: 2, estimatedTokens: 3002 }
+                        : mode === "backfill"
+                          ? { calls: 1, messages: 2, estimatedTokens: 3002, folds: 1 }
+                          : { calls: 1, messages: 2, estimatedTokens: 3002 }
                     : mode === "fresh"
                       ? { calls: 2, messages: 6, estimatedTokens: 6005 }
                       : mode === "record"

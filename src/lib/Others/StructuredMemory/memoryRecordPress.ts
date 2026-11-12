@@ -124,8 +124,9 @@ async function runRebuildCommand(
 
 /**
  * A press of Rebuild, Start over, or Fill gaps: preview through `readStructuredMemoryCost` in
- * `src/ts/process/structuredMemory.svelte.ts`, then confirmation before the command. A zero-window
- * preview only shows the nothing-to-record toast; an unreadable preview asks with an unknown cost.
+ * `src/ts/process/structuredMemory.svelte.ts`, then confirmation before the command. A preview with no
+ * calls or folds only shows the nothing-to-record toast; folds alone ask without a model cost, and folds
+ * alongside calls add their upper bound to the backfill cost. An unreadable preview asks with an unknown cost.
  * Windows hold one turn under the `everyTurn` cadence and two under any other.
  */
 export async function pressMemoryRebuild(
@@ -136,17 +137,23 @@ export async function pressMemoryRebuild(
     const text = language.structuredMemory.rebuild;
     const turns = writerSettings(chatRef).cadence === "everyTurn" ? 1 : 2;
     const cost = await readStructuredMemoryCost(chatRef, { mode, turns });
-    if (cost.outcome === "ok" && cost.value.calls === 0) {
+    const folds = cost.outcome === "ok" ? (cost.value.folds ?? 0) : 0;
+    if (cost.outcome === "ok" && cost.value.calls === 0 && folds === 0) {
         alertToast(text.nothing);
         return;
     }
-    const costText = cost.outcome === "ok" ? text.cost(cost.value.calls, cost.value.estimatedTokens) : text.costUnknown;
+    let costText = cost.outcome === "ok" ? text.cost(cost.value.calls, cost.value.estimatedTokens) : text.costUnknown;
+    if (mode === "backfill" && folds > 0) {
+        costText += ` ${text.folds(folds)}`;
+    }
     const question =
         mode === "rebuild"
             ? text.confirmRebuild(costText)
             : mode === "fresh"
               ? text.confirmFresh(costText)
-              : text.confirmBackfill(costText);
+              : cost.outcome === "ok" && cost.value.calls === 0 && folds > 0
+                ? text.confirmBackfillFolds(folds)
+                : text.confirmBackfill(costText);
     if (await alertConfirm(question)) {
         await runRebuildCommand(owner, chatRef, { type: "memoryRebuild", mode, turns }, text.started);
     }
