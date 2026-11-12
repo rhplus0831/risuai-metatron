@@ -20,7 +20,7 @@
 | ---------------------------------- | --------------------------------------------------------------------------------------------- |
 | `dev`                              | Vite only; requires a running `server`.                                                       |
 | `build`                            | Vite with source maps, then `util/compressDist.mjs`.                                          |
-| `check`                            | `svelte-check` (client), server `tsc` (cache in `node_modules/.cache/tsc/`), then e2e `tsc`.  |
+| `check`                            | `util/changedChecks.mjs types --all`; see [Changed-file checks](#changed-file-checks).        |
 | `check:changed` / `format:changed` | `util/changedChecks.mjs` `types` / `format`; see [Changed-file checks](#changed-file-checks). |
 | `check:docs` / `docs:*`            | See [Documentation check](#documentation-check).                                              |
 | `server`                           | Node runs `server/src/main.ts` with type stripping.                                           |
@@ -33,6 +33,11 @@
   the paths git says changed against the merge base with `origin/dev`. Its header defines the changed set and when
   `types` skips one of its three programs (client, server, e2e); `types` never narrows a program to the changed files,
   and its first line names the guides owning the changed paths and the unowned source paths.
+- `types --all` is `pnpm check`: client `svelte-check`, server `tsc` (incremental cache in `node_modules/.cache/tsc/`),
+  and e2e `tsc`, with nothing skipped and no stored result replayed, so CI runs it. Both `types` forms start their
+  programs together, print one block per program as it ends, and end with a verdict line (`typeCheckVerdict`) naming
+  every failed program; the exit code is 1 when any failed. Read the verdict line or the exit code: the last block is
+  the slowest program, not the failed one.
 
 ### Documentation check
 
@@ -299,6 +304,9 @@ Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
   stay under the compiler cache without writing generated files.
 - `util/agentDevHost.test.ts` and `util/agentDataSandbox.test.ts` (node) cover the `dev:agent` runner's host resolution
   and the sandbox.
+- `util/changedChecks.test.ts` (node) covers `typeCheckTargets`, `ownersLine`, and `typeCheckVerdict`. Not tested: the
+  spawned programs and their output blocks; after changing the runner, add a type error to a `.svelte`, a `server/`, and
+  an `e2e/` file and check that `pnpm check` reports all three.
 - `util/{docsBudget,docsRead,docsOwner,docsContracts,docsLedger,docsDue,guideReads}.test.ts` (node) run the
   documentation scripts through exported functions over temporary fixtures; `docsDue` uses temporary git repositories to
   check ownership, commit counts, and verification records.

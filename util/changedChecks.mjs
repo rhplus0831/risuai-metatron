@@ -1,4 +1,5 @@
-// `pnpm format:changed` and `pnpm check:changed`: the local checks narrowed to what git says changed.
+// `pnpm check`, `pnpm check:changed`, and `pnpm format:changed`: the type check, and the local checks
+// narrowed to what git says changed.
 // The changed set is every path that differs between the base and the working tree (committed, staged,
 // or not), plus untracked files that `.gitignore` does not hide. The base defaults to the merge base of
 // HEAD and `origin/dev`, so a branch's own commits count; with no `origin/dev` it is HEAD.
@@ -10,13 +11,19 @@
 //     changed files: it is only skipped when every changed path is one it cannot read. The e2e program
 //     reads `e2e/`, `src/`, `shared/`, and `util/` imports, plus the root tsconfig and dependencies; it
 //     does not read the Playwright runner config. An unknown path runs all three programs. The server
-//     `tsc` keeps an incremental cache, as `pnpm check` does.
+//     `tsc` keeps an incremental cache in `node_modules/.cache/tsc/`.
 //     Its first line names the guides that own the changed paths (`ownersLine`, from the manifest
 //     `util/docsOwner.mjs` reads), the guides sharing a file included, then the changed paths under the owned
 //     roots (`src/`, `server/`, `shared/`, `util/`, `e2e/`, `public/`) that no rule owns. A changed path
 //     outside those roots with no rule (docs, root Markdown, the lockfile) is left out of the line.
-// `--base <ref>` picks another base. `pnpm check` and `pnpm format:check` stay the full checks; CI runs
-// those.
+//   - `types --all` (`pnpm check`): all three programs, whatever changed, with no git lookup and no
+//     owner line. Nothing is skipped and no stored result is replayed, so CI runs this one.
+// Either `types` form starts its programs together: each prints one block when it ends (its name, its
+// duration, its exit code, then its whole output), so blocks never interleave and come in the order
+// the programs finish, not a fixed one. The last line is the verdict (`typeCheckVerdict`): it names
+// every program that failed, since a failed block can sit above a later passing one. The exit code
+// is 1 when any program failed. Side by side the three take as long as `svelte-check` alone.
+// `--base <ref>` picks another base. `pnpm format:check` stays the full formatting check; CI runs it.
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -47,13 +54,30 @@ const CLIENT_ONLY = [
     /^(index\.html|tsconfig\.json|tsconfig\.node\.json|vite\.config\.ts|svelte\.config\.[cm]?[jt]s)$/,
 ];
 
-const SERVER_TSC_ARGS = [
-    "-p",
-    "server/tsconfig.json",
-    "--incremental",
-    "--tsBuildInfoFile",
-    "node_modules/.cache/tsc/server.tsbuildinfo",
-];
+/** The three type-checked programs, by their `typeCheckTargets` key. */
+const PROGRAMS = {
+    // Not `svelte-check --incremental`: with svelte-check 4.7 it reported two errors the normal run
+    // does not, an unused `@ts-expect-error` and a `LegacyComponentType` mismatch.
+    client: {
+        label: "svelte-check",
+        pkg: "svelte-check",
+        bin: "svelte-check",
+        args: ["--tsconfig", "./tsconfig.json"],
+    },
+    server: {
+        label: "tsc server",
+        pkg: "typescript",
+        bin: "tsc",
+        args: [
+            "-p",
+            "server/tsconfig.json",
+            "--incremental",
+            "--tsBuildInfoFile",
+            "node_modules/.cache/tsc/server.tsbuildinfo",
+        ],
+    },
+    e2e: { label: "tsc e2e", pkg: "typescript", bin: "tsc", args: ["-p", "e2e/tsconfig.json", "--noEmit"] },
+};
 
 const isInert = (file) => INERT.some((pattern) => pattern.test(file));
 
@@ -124,20 +148,38 @@ function binPath(root, pkg, name) {
     return path.join(dir, typeof bin === "string" ? bin : bin[name]);
 }
 
-/** Runs a package's bin with Node, buffering its output so parallel runs print one block each. */
-function run(root, label, pkg, name, args) {
+/**
+ * Runs a package's bin with Node, buffering its output so parallel runs print one block each, headed
+ * `[<tag>] <label> (<seconds> s, exit <code>)`. Resolves to the exit code, 1 when a signal ended it.
+ */
+function run(root, tag, label, pkg, name, args) {
     return new Promise((resolve) => {
         const started = Date.now();
-        const child = spawn(process.execPath, [binPath(root, pkg, name), ...args], { cwd: root });
+        // The child writes to a pipe, so it is told when the block will be shown on a terminal.
+        const env = process.stdout.isTTY ? { ...process.env, FORCE_COLOR: "1" } : process.env;
+        const child = spawn(process.execPath, [binPath(root, pkg, name), ...args], { cwd: root, env });
         const chunks = [];
         child.stdout.on("data", (chunk) => chunks.push(chunk));
         child.stderr.on("data", (chunk) => chunks.push(chunk));
         child.on("close", (code) => {
             const seconds = ((Date.now() - started) / 1000).toFixed(1);
-            process.stdout.write(`[changed] ${label} (${seconds} s, exit ${code})\n${Buffer.concat(chunks)}`);
+            process.stdout.write(`[${tag}] ${label} (${seconds} s, exit ${code})\n${Buffer.concat(chunks)}`);
             resolve(code ?? 1);
         });
     });
+}
+
+/**
+ * The exit code and last line of a type check from its programs' `results` (`{ label, code }`, in
+ * the order they were started): 1 and the failed programs when any exit code is not 0.
+ */
+export function typeCheckVerdict(tag, results, seconds) {
+    const failed = results.filter(({ code }) => code !== 0);
+    if (results.length === 0) return { code: 0, line: `[${tag}] no program to run` };
+    const took = `${results.length} of ${Object.keys(PROGRAMS).length} programs in ${seconds.toFixed(1)} s`;
+    if (failed.length === 0) return { code: 0, line: `[${tag}] passed: ${took}` };
+    const names = failed.map(({ label, code }) => `${label} (exit ${code})`).join(", ");
+    return { code: 1, line: `[${tag}] FAILED: ${names}; ${took}` };
 }
 
 async function format(root, files, write) {
@@ -147,7 +189,7 @@ async function format(root, files, write) {
         return 0;
     }
     const mode = write ? "--write" : "--check";
-    return run(root, `prettier ${mode}: ${present.length} files`, "prettier", "prettier", [
+    return run(root, "changed", `prettier ${mode}: ${present.length} files`, "prettier", "prettier", [
         mode,
         "--cache",
         "--ignore-unknown",
@@ -157,34 +199,47 @@ async function format(root, files, write) {
     ]);
 }
 
-async function types(root, files) {
-    const targets = typeCheckTargets(files);
+/** Runs the programs `targets` selects side by side and prints the verdict line; resolves to the exit code. */
+async function types(root, tag, targets) {
+    const started = Date.now();
     const runs = [];
-    if (targets.client) {
-        // Not `svelte-check --incremental`: with svelte-check 4.7 it reported two errors the normal run
-        // does not, an unused `@ts-expect-error` and a `LegacyComponentType` mismatch.
-        runs.push(run(root, "svelte-check", "svelte-check", "svelte-check", ["--tsconfig", "./tsconfig.json"]));
-    } else console.log("[changed] svelte-check: skipped, no changed path reaches the client program");
-    if (targets.server) runs.push(run(root, "tsc server", "typescript", "tsc", SERVER_TSC_ARGS));
-    else console.log("[changed] tsc server: skipped, no changed path reaches the server program");
-    if (targets.e2e) runs.push(run(root, "tsc e2e", "typescript", "tsc", ["-p", "e2e/tsconfig.json", "--noEmit"]));
-    else console.log("[changed] tsc e2e: skipped, no changed path reaches the e2e program");
-    const codes = await Promise.all(runs);
-    return codes.find((code) => code !== 0) ?? 0;
+    for (const [key, { label, pkg, bin, args }] of Object.entries(PROGRAMS)) {
+        if (targets[key]) {
+            // `tsc` colors its output only for a terminal, and here it writes to a pipe.
+            const shown = bin === "tsc" && process.stdout.isTTY ? [...args, "--pretty"] : args;
+            runs.push(run(root, tag, label, pkg, bin, shown).then((code) => ({ label, code })));
+        } else {
+            console.log(`[${tag}] ${label}: skipped, no changed path reaches the ${key} program`);
+        }
+    }
+    const { code, line } = typeCheckVerdict(tag, await Promise.all(runs), (Date.now() - started) / 1000);
+    console.log(line);
+    return code;
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
     const [command, ...args] = process.argv.slice(2);
     const baseIndex = args.indexOf("--base");
+    const all = command === "types" && args.includes("--all");
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-    if (!["format", "types"].includes(command) || (baseIndex !== -1 && !args[baseIndex + 1])) {
-        console.error("usage: node util/changedChecks.mjs <format [--write] | types> [--base <ref>]");
+    if (
+        !["format", "types"].includes(command) ||
+        (baseIndex !== -1 && (all || !args[baseIndex + 1])) ||
+        (args.includes("--all") && !all)
+    ) {
+        console.error("usage: node util/changedChecks.mjs <format [--write] | types> [--base <ref>] | types --all");
         process.exit(2);
     }
-    const base = resolveBase(root, baseIndex === -1 ? undefined : args[baseIndex + 1]);
-    const files = changedFiles(root, base);
-    if (command === "types") console.log(rootOwnersLine(root, files));
-    console.log(`[changed] base ${base.slice(0, 9)}: ${files.length} changed paths`);
-    process.exitCode =
-        command === "format" ? await format(root, files, args.includes("--write")) : await types(root, files);
+    if (all) {
+        process.exitCode = await types(root, "check", { client: true, server: true, e2e: true });
+    } else {
+        const base = resolveBase(root, baseIndex === -1 ? undefined : args[baseIndex + 1]);
+        const files = changedFiles(root, base);
+        if (command === "types") console.log(rootOwnersLine(root, files));
+        console.log(`[changed] base ${base.slice(0, 9)}: ${files.length} changed paths`);
+        process.exitCode =
+            command === "format"
+                ? await format(root, files, args.includes("--write"))
+                : await types(root, "changed", typeCheckTargets(files));
+    }
 }
