@@ -1,4 +1,4 @@
-import { chatMemoryEnabled } from "../../../../../shared/chatMemory.ts";
+import { chatMemoryAlgorithm, chatMemoryEnabled } from "../../../../../shared/chatMemory.ts";
 import { eligibleHistory } from "../../../../../shared/contextReport.ts";
 import { summarizesLocally } from "../../../../../shared/hypaV3Presets.ts";
 import type {
@@ -98,7 +98,7 @@ export function admitRecord(job: RunningJob, deps: GenerationRunnerDeps, message
         admitProviderModels(scope, job.hooks.providers);
         job.emit({ type: "accepted", jobId: job.id, revision: scope.chatRevision, text: "" });
         const { db } = scope;
-        if (db.memoryAlgorithmType !== STRUCTURED_MEMORY_ALGORITHM) {
+        if (chatMemoryAlgorithm(db, scopeChat(scope)) !== STRUCTURED_MEMORY_ALGORITHM) {
             throw new GenerationRunnerError(400, "Structured memory is not this chat's memory");
         }
         if (

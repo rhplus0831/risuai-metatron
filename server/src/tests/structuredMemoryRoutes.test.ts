@@ -2829,6 +2829,80 @@ it("keeps adopted summaries and their reset offer through repeated swaps, replac
     }
 });
 
+it.each(["memoryRecord", "memoryRebuild"] as const)(
+    "admits %s by the chat's mode and refuses HypaV3-mode chats under global Structured Memory",
+    async (type) => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        for (const mode of ["structuredMemory", "hypaV3"] as const) {
+            const s = await server({ memoryTaskOptions: { now: () => 1 } });
+            const context = bindChat(s);
+            const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+            const memory = kinds.get("memoryTranslateMedia")!;
+            const settings = s.store.get(memory, "main")!;
+            s.store.put(memory, "main", { ...(settings.data as object), hypaV3: true }, settings.revision);
+            const ui = kinds.get("ui")!;
+            s.store.put(
+                ui,
+                "main",
+                {
+                    ...(s.store.get(ui, "main")!.data as object),
+                    memoryAlgorithmType: mode === "structuredMemory" ? "hypaV3" : "structuredMemory",
+                },
+                s.store.get(ui, "main")!.revision,
+            );
+            s.store.applyChanges({
+                chats: [
+                    {
+                        characterId,
+                        chatId,
+                        baseRevision: s.store.chatRevision(characterId, chatId),
+                        ops: [{ op: "meta", set: { memoryMode: mode, memoryEnabled: true } }],
+                    },
+                ],
+            });
+            context.chatRevision = s.store.chatRevision(characterId, chatId)!;
+            const tasks = s.context.memoryTasks!;
+            const ref = { chaId: characterId, chatId };
+            const lease = await tasks.acquireSummaryWriter(ref, "admission-test");
+            try {
+                const accepted = await answer(
+                    await s.json("/api/generations", {
+                        kind: "command",
+                        clientId: "tab",
+                        context,
+                        command:
+                            type === "memoryRecord" ? { type, messageId: "a" } : { type, mode: "rebuild", turns: 1 },
+                    }),
+                );
+                await s.context.generationJobs.drain();
+                const terminal = s.context.generationJobs.status(accepted.jobId, "tab")?.terminal;
+                if (mode === "structuredMemory") {
+                    expect(terminal).toMatchObject({ type: "done" });
+                    expect(tasks.status(ref)).toMatchObject({ kind: "structuredMemory", state: "queued" });
+                    if (type === "memoryRebuild")
+                        expect(s.store.memory.rebuild.status(characterId, chatId)).toMatchObject({
+                            mode: "rebuild",
+                            done: 0,
+                            total: 1,
+                        });
+                } else {
+                    expect(terminal).toMatchObject({
+                        type: "error",
+                        status: 400,
+                        message: "Structured memory is not this chat's memory",
+                    });
+                    expect(tasks.status(ref)).toBeNull();
+                    expect(s.store.memory.rebuild.status(characterId, chatId)).toBeNull();
+                }
+                expect(s.store.memory.readContents(characterId, chatId)!.events).toEqual([]);
+            } finally {
+                tasks.cancel(ref);
+                lease.release();
+            }
+        }
+    },
+);
+
 it("refuses held rebuild starts and resumes through the same job admission as record now and still abandons", async () => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const s = await server({ memoryTaskOptions: { now: () => 1 } });

@@ -2619,6 +2619,265 @@ describe("structured memory tasks", () => {
         patchPrompt: "<|im_start|>user<|im_sep|>CUSTOM PATCH {{user}}\n{{slot::cast}}\n{{slot::previous}}<|im_end|>",
     };
 
+    it("warms deferred records only when the chat's mode selects Structured Memory", async () => {
+        for (const mode of ["structuredMemory", "hypaV3"] as const) {
+            const t = harness({
+                hypaSettings: {
+                    structured: {
+                        laneSplit: "manual",
+                        laneTargets: { events: 100, pages: 0, evidence: 0, threads: 0 },
+                    },
+                },
+            });
+            t.replace("ui", (data) => ({
+                ...data,
+                memoryAlgorithmType: mode === "structuredMemory" ? "hypaV3" : "structuredMemory",
+            }));
+            t.write("k1", [{ op: "meta", set: { memoryMode: mode } }]);
+            const source = t.chat("k1")!.message[0];
+            writeMemory(t.store, "c", "k1", {
+                events: [event("promise", [{ messageId: source.chatId!, index: 0, hash: messageSourceHash(source) }])],
+            });
+            t.service.warmVectors(writerInput(t));
+            await turns(1);
+            await t.service.drain();
+            expect(t.embeddings.bodies.flatMap(({ input }) => input)).toEqual(
+                mode === "structuredMemory" ? ["Recorded promise"] : [],
+            );
+            expect(t.events).toEqual([]);
+        }
+    });
+
+    const recordedWindow = (id: string, call: WriterCall) => ({
+        events: [event(id, call.window.sources)],
+        runs: [
+            {
+                id,
+                window: call.window.sources,
+                model: "test-writer",
+                inputTokens: 0,
+                outputTokens: 0,
+                durationMs: 0,
+                result: "recorded" as const,
+            },
+        ],
+    });
+
+    it.each(["structuredMemory", "hypaV3"] as const)(
+        "admits a %s task by the stored chat mode under the opposite global selection",
+        async (mode) => {
+            const t = harness({ structuredWriter: async (call) => record(t, call) });
+            t.replace("ui", (data) => ({
+                ...data,
+                memoryAlgorithmType: mode === "hypaV3" ? "structuredMemory" : "hypaV3",
+            }));
+            if (mode === "hypaV3") t.replace("memoryTranslateMedia", (data) => ({ ...data, hypaV3: false }));
+            t.write("k1", [{ op: "meta", set: { memoryMode: mode } }]);
+            const terminal = t.nextTerminal("k1");
+            t.service.handOff(mode === "structuredMemory" ? writerInput(t, "m3") : t.input("k1", { entries: 2 }));
+            if (mode === "hypaV3") {
+                const request = await nextPatch(t, 0, terminal);
+                request.answer("A remembered journey");
+            }
+            expect((await terminal).status).toMatchObject({ state: "done", done: 1, total: 1 });
+            await t.service.drain();
+            if (mode === "structuredMemory") expect(contents(t).events.map(({ id }) => id)).toEqual(["m2"]);
+            else expect(t.summaries("k1")).toEqual(["A remembered journey"]);
+        },
+    );
+
+    it.each(["structuredMemory", "hypaV3"] as const)(
+        "skips a %s task when the stored mode disagrees, including a mode changed while queued",
+        async (mode) => {
+            for (const changeWhileQueued of [false, true]) {
+                const t = structuredHarness({
+                    structuredWriter: async () => {
+                        throw new Error("An ineligible writer ran");
+                    },
+                });
+                if (mode === "hypaV3") {
+                    t.replace("ui", (data) => ({ ...data, memoryAlgorithmType: "hypaV3" }));
+                    t.replace("memoryTranslateMedia", (data) => ({ ...data, hypaV3: true }));
+                }
+                t.write("k1", [{ op: "meta", set: { memoryMode: mode } }]);
+                const input = mode === "structuredMemory" ? writerInput(t, "m3") : t.input("k1", { entries: 2 });
+                const other = mode === "structuredMemory" ? "hypaV3" : "structuredMemory";
+                const lease = await t.service.acquireSummaryWriter(ref("k1"), "hold-start");
+                const terminal = t.nextTerminal("k1");
+                if (!changeWhileQueued) t.write("k1", [{ op: "meta", set: { memoryMode: other } }]);
+                t.service.handOff(input);
+                expect(t.service.status(ref("k1"))?.state).toBe("queued");
+                if (changeWhileQueued) t.write("k1", [{ op: "meta", set: { memoryMode: other } }]);
+                lease.release();
+                const ended = await Promise.race([
+                    terminal,
+                    t.provider.request(0).then(() => {
+                        throw new Error("An ineligible summary request ran");
+                    }),
+                ]);
+                expect(ended.status).toMatchObject({
+                    state: "skipped",
+                    reason: mode === "structuredMemory" ? "notStructuredMemory" : "notHypaV3",
+                    done: 0,
+                });
+                await t.service.drain();
+                expect(contents(t).events).toEqual([]);
+                expect(t.summaries("k1")).toEqual([]);
+            }
+        },
+    );
+
+    it("keeps a queued Structured task valid when Legacy changes to the same explicit algorithm", async () => {
+        const t = structuredHarness({ structuredWriter: async (call) => record(t, call) });
+        const lease = await t.service.acquireSummaryWriter(ref("k1"), "hold-start");
+        const terminal = t.nextTerminal("k1");
+        t.service.handOff(writerInput(t, "m3"));
+        t.write("k1", [{ op: "meta", set: { memoryMode: "structuredMemory" } }]);
+        lease.release();
+        expect((await terminal).status).toMatchObject({ state: "done", done: 1 });
+        expect(contents(t).events.map(({ id }) => id)).toEqual(["m2"]);
+    });
+
+    it("invalidates a queued Structured-mode task when its writer language changes under global HypaV3", async () => {
+        const t = harness({
+            structuredWriter: async () => {
+                throw new Error("The stale writer ran");
+            },
+        });
+        t.write("k1", [{ op: "meta", set: { memoryMode: "structuredMemory" } }]);
+        const lease = await t.service.acquireSummaryWriter(ref("k1"), "hold-start");
+        const terminal = t.nextTerminal("k1");
+        t.service.handOff(writerInput(t, "m3"));
+        t.write("k1", [{ op: "meta", set: { structuredMemoryLanguage: "Korean" } }]);
+        lease.release();
+        expect((await terminal).status).toMatchObject({ state: "skipped", reason: "staleInput", done: 0 });
+        expect(contents(t).events).toEqual([]);
+    });
+
+    it.each([false, true])(
+        "stops before another Structured window when the stored algorithm changes (rebuild=%s)",
+        async (rebuild) => {
+            for (const change of ["mode", "global"] as const) {
+                let calls = 0;
+                let saved: ReturnType<typeof readRecordSet>;
+                const t = structuredHarness({
+                    structuredWriter: async (call) => {
+                        calls++;
+                        const memory = rebuild ? t.store.memory.rebuild.staged : t.store.memory;
+                        const result = call.commit(
+                            memory.readContents("c", "k1")!.revision,
+                            recordedWindow("first", call),
+                        );
+                        expect(result.outcome).toBe("committed");
+                        if (change === "mode") t.write("k1", [{ op: "meta", set: { memoryMode: "hypaV3" } }]);
+                        else {
+                            t.replace("ui", (data) => ({ ...data, memoryAlgorithmType: "hypaV3" }));
+                            t.replace("memoryTranslateMedia", (data) => ({ ...data, hypaV3: true }));
+                        }
+                        saved = readRecordSet(memory, "c", "k1");
+                        return { outcome: "recorded" };
+                    },
+                });
+                if (change === "mode") t.write("k1", [{ op: "meta", set: { memoryMode: "structuredMemory" } }]);
+                const terminal = t.nextTerminal("k1");
+                if (rebuild)
+                    t.service.rebuild(
+                        beginStagedRun(t, "rebuild", [
+                            ["m1", "m2"],
+                            ["m3", "m4"],
+                        ]),
+                    );
+                else t.service.handOff(writerInput(t, "m5"));
+                expect((await terminal).status).toMatchObject({
+                    state: "skipped",
+                    reason: "notStructuredMemory",
+                    done: 1,
+                });
+                await t.service.drain();
+                expect(calls).toBe(1);
+                expect(readRecordSet(rebuild ? t.store.memory.rebuild.staged : t.store.memory, "c", "k1")).toEqual(
+                    saved!,
+                );
+                if (rebuild) expect(contents(t).events).toEqual([]);
+            }
+        },
+    );
+
+    it.each([false, true])(
+        "refuses a returning Structured commit after the chat changes mode (rebuild=%s)",
+        async (rebuild) => {
+            const arrived = deferred<WriterCall>();
+            const release = deferred();
+            const t = structuredHarness({
+                structuredWriter: async (call) => {
+                    arrived.resolve(call);
+                    await release.promise;
+                    const memory = rebuild ? t.store.memory.rebuild.staged : t.store.memory;
+                    call.commit(memory.readContents("c", "k1")!.revision, recordedWindow("late", call));
+                    return { outcome: "recorded" };
+                },
+            });
+            t.write("k1", [{ op: "meta", set: { memoryMode: "structuredMemory" } }]);
+            const terminal = t.nextTerminal("k1");
+            if (rebuild) t.service.rebuild(beginStagedRun(t, "rebuild", [["m1", "m2"]]));
+            else t.service.handOff(writerInput(t, "m3"));
+            await arriveOrEnd(arrived, terminal);
+            t.write("k1", [{ op: "meta", set: { memoryMode: "hypaV3" } }]);
+            const live = readRecordSet(t.store.memory, "c", "k1");
+            const staged = rebuild ? readRecordSet(t.store.memory.rebuild.staged, "c", "k1") : null;
+            release.resolve();
+            expect((await terminal).status).toMatchObject({ state: "skipped", reason: "notStructuredMemory", done: 0 });
+            await t.service.drain();
+            expect(readRecordSet(t.store.memory, "c", "k1")).toEqual(live);
+            if (rebuild) expect(readRecordSet(t.store.memory.rebuild.staged, "c", "k1")).toEqual(staged);
+        },
+    );
+
+    it("keeps a finished rebuild staged when the chat changes mode before the swap", async () => {
+        const t = structuredHarness({
+            structuredWriter: async (call) => {
+                const staged = t.store.memory.rebuild.staged;
+                expect(
+                    call.commit(staged.readContents("c", "k1")!.revision, recordedWindow("staged", call)).outcome,
+                ).toBe("committed");
+                t.write("k1", [{ op: "meta", set: { memoryMode: "hypaV3" } }]);
+                return { outcome: "recorded" };
+            },
+        });
+        const live = readRecordSet(t.store.memory, "c", "k1");
+        const terminal = t.nextTerminal("k1");
+        t.service.rebuild(beginStagedRun(t, "rebuild", [["m1", "m2"]]));
+        expect((await terminal).status).toMatchObject({ state: "skipped", reason: "notStructuredMemory", done: 1 });
+        expect(readRecordSet(t.store.memory, "c", "k1")).toEqual(live);
+        expect(t.store.memory.rebuild.staged.readContents("c", "k1")!.events.map(({ id }) => id)).toEqual(["staged"]);
+    });
+
+    it("discards an in-flight HypaV3 summary without counting a save after the chat moves to Structured Memory", async () => {
+        const t = harness();
+        t.write("k1", [{ op: "meta", set: { memoryMode: "hypaV3" } }]);
+        writeMemory(t.store, "c", "k1", { events: [event("dormant", [])] });
+        const terminal = t.nextTerminal("k1");
+        handOff(t, "k1", { entries: 4 });
+        const request = await nextPatch(t, 0, terminal);
+        t.write("k1", [{ op: "meta", set: { memoryMode: "structuredMemory" } }]);
+        const before = t.chat("k1");
+        expect(request.signal.aborted).toBe(false);
+        request.answer("This result is now obsolete");
+        const ended = await Promise.race([
+            terminal,
+            t.provider.request(1).then(() => {
+                throw new Error("An obsolete task requested another summary");
+            }),
+        ]);
+        await t.service.drain();
+        expect(ended.status).toMatchObject({ state: "skipped", reason: "notHypaV3", done: 0 });
+        expect(ended.status).not.toHaveProperty("lastCommittedRevision");
+        expect(t.events.every(({ status }) => status.done === 0)).toBe(true);
+        expect(t.chat("k1")).toEqual(before);
+        expect(t.summaries("k1")).toEqual([]);
+        expect(t.provider.requests).toHaveLength(1);
+    });
+
     it("records the event with only an analysis request when every character slot is locked", async () => {
         const t = structuredHarness();
         const page = memoryRecords(["cara"], "Cara").pages[0];

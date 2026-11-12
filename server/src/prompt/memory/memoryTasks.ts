@@ -1,4 +1,9 @@
-import { chatMemoryEnabled } from "../../../../shared/chatMemory.ts";
+import {
+    chatMemoryAlgorithm,
+    chatMemoryEnabled,
+    type ChatMemoryInput,
+    type ChatMemorySettings,
+} from "../../../../shared/chatMemory.ts";
 import { randomUUID } from "node:crypto";
 import type { Chat, character, groupChat } from "../../../../shared/database.ts";
 import { greetingText } from "../../../../shared/greetings.ts";
@@ -18,7 +23,7 @@ import type {
 } from "../../../../shared/jobs.ts";
 import { LLMFormat } from "../../../../shared/llm.ts";
 import type { SerializableHypaV3Data } from "../../../../shared/memory.ts";
-import { RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../../shared/resources.ts";
 import {
     normalizeStructuredMemorySettings,
     STRUCTURED_MEMORY_ALGORITHM,
@@ -88,8 +93,9 @@ import { chatAdoptionHold, commitWindow, createStructuredWriter, writerHostDeps 
  * need, and the Structured Memory writer (with a rebuild's runs). Separate cache-only requests warm
  * deferred Structured Memory records without publishing writer statuses. `createMemoryTasks`'s doc
  * comment holds the queue, the start checks, the work of each kind, and the ends; `MEMORY_TASK_LIMITS` the
- * caps; the host a task runs on is `memoryTaskHost.ts`. Its registry lives in process memory: a
- * restart loses queued work, which the next send finds again.
+ * caps; the host a task runs on is `memoryTaskHost.ts`. Writer windows and commits recheck the stored
+ * algorithm; a mismatch skips the task, draining concurrent HypaV3 calls before ending. Its registry
+ * lives in process memory: a restart loses queued work, which the next send finds again.
  */
 
 /** The service's caps and times. Tests shrink them. */
@@ -299,9 +305,8 @@ const statusKind = (input: Pick<AnyMemoryTaskInput, "kind">) =>
  *   reason): the chat exists (`chatGone`); the epoch and source generation are the input's
  *   (`staleInput`); the admitted binding is still the chat's (`bindingInvalid`); a fresh `loadJobScope`
  *   with the input's effective presets, the admitted persona, and the speaker (`chain` binding when a
- *   `presetChain` picked the prompt preset) loads (`bindingInvalid`); the owner's memory is on
- *   (`memoryOff`); the input's method is the active one: HypaV3 (`notHypaV3`, also while
- *   `memoryAlgorithmType` selects Structured Memory ahead of the flags) or Structured Memory
+ *   `presetChain` picked the prompt preset) loads (`bindingInvalid`); the chat's memory is on
+ *   (`memoryOff`); the input's method matches the chat's resolved algorithm: HypaV3 (`notHypaV3`) or Structured Memory
  *   (`notStructuredMemory`), which holds no task for a chat with a rebuild's run but the run's own
  *   (`memoryRebuilding`); the `memory` slot is not a Plugin model (`pluginModel`) and the owner has
  *   no applicable `request` trigger (`requestTrigger`); the preset's summarization model is `subModel`
@@ -310,7 +315,9 @@ const statusKind = (input: Pick<AnyMemoryTaskInput, "kind">) =>
  *   `skipped staleInput`), a lookahead plan, an execution whose every summary is validated against the
  *   chat as stored and saved at once: a `meta` write merged onto the stored value, on the admitted
  *   revision (a recreated chat conflicts) and the input's epoch, refused (`writeSkipped`) when the
- *   source generation moved, the merge refuses, or the write conflicts. Then the new summaries'
+ *   source generation moved, the merge refuses, the guard drops the value, or the write conflicts.
+ *   Each further window and commit checks the stored algorithm; a mismatch latches `notHypaV3`,
+ *   cancels queued calls and drains active ones before ending skipped. Then the new summaries'
  *   vectors are warmed (also the saved prefix of a provider failure); a warming failure keeps them.
  * - Structured Memory work: the fresh scope's chat and the stored events give the windows below the
  *   ceiling: an automatic task's is the input's, the only thing it takes from the hand-off; a manual
@@ -376,6 +383,12 @@ export function createMemoryTasks(deps: {
     if (!charactersKind) {
         throw new Error(`Unknown resource kind ${RESOURCE_KIND.characters}`);
     }
+
+    const memorySettingRefs = [RESOURCE_KIND.ui, RESOURCE_KIND.memoryTranslateMedia].map((name) => {
+        const kind = kinds.get(name);
+        if (!kind) throw new Error(`Unknown resource kind ${name}`);
+        return { kind, id: SINGLETON_RESOURCE_ID };
+    });
 
     let registryEpoch = store.epoch();
     let entries = new Map<string, ChatEntry>();
@@ -787,15 +800,15 @@ export function createMemoryTasks(deps: {
         const { scope } = loaded;
         const db = scope.db;
         const owner = db.characters.find((entry) => entry?.chaId === input.chatRef.chaId)!;
-        const structured = db.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
+        const algorithm = chatMemoryAlgorithm(db, scopeChat(scope));
         if (input.kind === "structuredMemory") {
-            if (!structured) {
+            if (algorithm !== STRUCTURED_MEMORY_ALGORITHM) {
                 return { skip: "notStructuredMemory" };
             }
             if (!input.rebuild && store.memory.rebuild.status(input.chatRef.chaId, input.chatRef.chatId)) {
                 return { skip: "memoryRebuilding" };
             }
-        } else if (structured || db.hanuraiEnable || db.hypav2 || !db.hypaV3) {
+        } else if (algorithm !== "hypaMemoryV3") {
             return { skip: "notHypaV3" };
         }
         const memoryModel = resolveJobRequestModel(scope.request.db, "memory");
@@ -824,6 +837,26 @@ export function createMemoryTasks(deps: {
         }
         if (task.ended) {
             throw task.controller.signal.reason;
+        }
+    };
+
+    /** The current algorithm: stored metadata and the same stored sections loadJobScope projects, no messages. */
+    const storedAlgorithm = (
+        input: MemoryTaskBase,
+        chat: ChatMemoryInput | undefined = store.chatMeta(input.chatRef.chaId, input.chatRef.chatId)?.data,
+    ) => {
+        const settings = Object.assign(
+            {},
+            ...store.readRefs(memorySettingRefs).items.map(({ data }) => data),
+        ) as ChatMemorySettings;
+        return chatMemoryAlgorithm(settings, chat);
+    };
+
+    /** Sequential writers can end at a window or commit boundary without aborting another provider call. */
+    const requireStructured = (task: Task, input: StructuredMemoryTaskInput) => {
+        if (storedAlgorithm(input) !== STRUCTURED_MEMORY_ALGORITHM) {
+            endRunning(task, "skipped", { reason: "notStructuredMemory" });
+            live(task);
         }
     };
 
@@ -874,7 +907,11 @@ export function createMemoryTasks(deps: {
 
     /** One summary save (synchronous): a `meta` write on the admitted revision, merged onto the stored value. */
     const checkpointOf =
-        (task: Task, input: MemoryTaskInput): NonNullable<HypaV3ExecutionHooks["checkpoint"]> =>
+        (
+            task: Task,
+            input: MemoryTaskInput,
+            shouldStop: (chat?: ChatMemoryInput) => boolean,
+        ): NonNullable<HypaV3ExecutionHooks["checkpoint"]> =>
         (write) => {
             live(task);
             gate.assertOpen();
@@ -887,7 +924,7 @@ export function createMemoryTasks(deps: {
                 return "skipped";
             }
             const stored = store.chatMeta(chaId, chatId);
-            if (!stored) {
+            if (!stored || shouldStop(stored.data)) {
                 return "skipped";
             }
             const merged = write.merge((stored.data as Chat).hypaV3Data as SerializableHypaV3Data | null | undefined);
@@ -895,6 +932,7 @@ export function createMemoryTasks(deps: {
                 console.warn("[HypaV3] The memory data changed during the summary; this summary is not saved");
                 return "skipped";
             }
+            let persisted = false;
             try {
                 store.applyChanges(
                     {
@@ -909,9 +947,15 @@ export function createMemoryTasks(deps: {
                     },
                     {
                         epoch: input.epoch,
-                        // Counted before the change is published: a listener that ends the task meanwhile
-                        // reports this summary too.
-                        committed: (applied) => {
+                        changes: true,
+                        // A committed metadata op may have dropped hypaV3Data. Count only the value
+                        // that survived the guard, before publication can end the task.
+                        committed: (applied, written) => {
+                            const meta = written?.chats[0]?.meta;
+                            persisted =
+                                meta !== undefined &&
+                                JSON.stringify(JSON.parse(meta).hypaV3Data) === JSON.stringify(merged);
+                            if (!persisted) return [];
                             task.done++;
                             const revision = applied.chats[0]?.revision;
                             if (revision) {
@@ -927,7 +971,7 @@ export function createMemoryTasks(deps: {
                 }
                 throw error;
             }
-            return "committed";
+            return persisted ? "committed" : "skipped";
         };
 
     /** Ends the task for a thrown error (nothing when it already ended). */
@@ -992,15 +1036,25 @@ export function createMemoryTasks(deps: {
 
         const ownerIsGroup =
             scope.db.characters.find((entry) => entry?.chaId === input.chatRef.chaId)?.type === "group";
+        // A mode mismatch stops admission and saves, but leaves active experimental requests to
+        // return through the executor's drain. Only then may endRunning abort the task's signal.
+        let modeChanged = false;
+        const shouldStop = (chat?: ChatMemoryInput) =>
+            (modeChanged ||= storedAlgorithm(input, chat) !== "hypaMemoryV3");
         const execution = await executeHypaV3Plan(host, prepared, plan, {
+            shouldStop,
             progress: (done, total) => {
                 task.total = total;
                 publishRunning(task);
             },
-            checkpoint: checkpointOf(task, input),
+            checkpoint: checkpointOf(task, input, shouldStop),
             validate: createHypaV3SourceValidator(input.sources, () => readCurrent(input, ownerIsGroup)),
         });
         live(task);
+        if (shouldStop()) {
+            endRunning(task, "skipped", { reason: "notHypaV3" });
+            return;
+        }
 
         let warming: string | undefined;
         if (execution.endReason === "complete" || execution.endReason === "providerFailed") {
@@ -1056,6 +1110,7 @@ export function createMemoryTasks(deps: {
             if (closed || !inputCurrent(input)) {
                 return { outcome: "refused", reason: "staleInput" };
             }
+            requireStructured(task, input);
             const retired = retireRerecorded(store, input.chatRef, window, changes);
             if (!retired) {
                 return { outcome: "refused", reason: "windowChanged" };
@@ -1135,6 +1190,7 @@ export function createMemoryTasks(deps: {
         let warming: string | undefined;
         for (const window of allowed) {
             live(task);
+            requireStructured(task, input);
             const historical = historicalWindow(store, chaId, chatId, messages, window);
             const result = await structuredWriter({
                 scope,
@@ -1172,7 +1228,9 @@ export function createMemoryTasks(deps: {
     const rebuildOpen = (task: Task, input: StructuredMemoryTaskInput) => {
         live(task);
         gate.assertOpen();
-        return !closed && inputCurrent(input);
+        if (closed || !inputCurrent(input)) return false;
+        requireStructured(task, input);
+        return true;
     };
 
     /**
@@ -1262,6 +1320,10 @@ export function createMemoryTasks(deps: {
         while (done < total) {
             task.done = done;
             publishRunning(task);
+            if (!rebuildOpen(task, input)) {
+                endRunning(task, "skipped", { reason: "staleInput" });
+                return;
+            }
             if (windows >= limits.maxWriterWindows || now() >= chainAt) {
                 const answer = service.rebuild(input);
                 if (answer.outcome === "refused") {
@@ -1425,7 +1487,7 @@ export function createMemoryTasks(deps: {
         if ("skip" in loaded) return;
         const { scope } = loaded;
         if (
-            scope.db.memoryAlgorithmType !== STRUCTURED_MEMORY_ALGORITHM ||
+            chatMemoryAlgorithm(scope.db, scopeChat(scope)) !== STRUCTURED_MEMORY_ALGORITHM ||
             memorySettingsFingerprint(scope) !== input.settingsFingerprint
         )
             return;

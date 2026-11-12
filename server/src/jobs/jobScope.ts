@@ -1,3 +1,4 @@
+import { chatMemoryAlgorithm } from "../../../shared/chatMemory.ts";
 import { createHash } from "node:crypto";
 import type {
     Chat,
@@ -403,7 +404,7 @@ function fingerprintedHypaV3Preset(preset: HypaV3Preset | undefined): unknown {
  * selected HypaV3 preset, the `memory` slot as a job's request resolves it (the model, its profile,
  * which names a credential but holds none, the descriptor's format and wire id, a custom model's
  * definition, and the request's temperature and response size, or the refusal), and the embedding
- * model with its custom endpoint and model (never its key). Under the Structured Memory algorithm
+ * model with its custom endpoint and model (never its key). When this chat selects Structured Memory
  * alone it also covers the writer: the preset's `structured` settings, the owner's and the chat's
  * language overrides, and `db.language`, which an empty language follows. The key is absent otherwise,
  * so no other algorithm's digest depends on them. Equal for two scopes read from the same settings.
@@ -429,7 +430,7 @@ export function memorySettingsFingerprint(scope: JobScope): string {
                   },
         hypaModel: db.hypaModel ?? null,
         hypaCustom: { url: db.hypaCustomSettings?.url ?? "", model: db.hypaCustomSettings?.model ?? "" },
-        ...(db.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM
+        ...(chatMemoryAlgorithm(db, scopeChat(scope)) === STRUCTURED_MEMORY_ALGORITHM
             ? { structuredMemory: structuredMemoryFingerprint(scope, preset) }
             : {}),
     };

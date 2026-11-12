@@ -1,3 +1,4 @@
+import { chatMemoryAlgorithm } from "../../../shared/chatMemory.ts";
 import type { RerollAttemptWrite } from "./chatStore.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
@@ -938,6 +939,9 @@ export function createResourceStore(options: {
     const selectMemoryAlgorithm = db.prepare(
         "SELECT json_extract(data, '$.memoryAlgorithmType') AS algorithm FROM resources WHERE kind = ? AND id = ?",
     );
+    const selectChatMemoryMode = db.prepare(
+        "SELECT json_extract(meta, '$.memoryMode') AS memoryMode FROM chats WHERE characterId = ? AND id = ?",
+    );
     const insert = db.prepare(
         "INSERT INTO resources (kind, id, revision, schemaVersion, data) VALUES (?, ?, 1, ?, ?) " +
             "ON CONFLICT (kind, id) DO NOTHING",
@@ -1458,7 +1462,8 @@ export function createResourceStore(options: {
     const memoryTables = createMemoryTables(db, { token, parse: parseToken });
     const checkpointTables = createCheckpointTables(db, { token, parse: parseToken }, memoryTables.rows);
     const chatTables = createChatTables(db, { token, parse: parseToken }, guard, {
-        projectsChat: (chatSeq) => structuredMemorySelected() && memoryTables.hasEvents(chatSeq),
+        projectsChat: (chatSeq, modeAfter) =>
+            projectsMode(modeAfter, legacyStructuredMemorySelected()) && memoryTables.hasEvents(chatSeq),
     });
     if (checkpointTables.sweep() > 0) {
         countWrite();
@@ -1630,16 +1635,32 @@ export function createResourceStore(options: {
         return rows.map((row) => ({ id: row.id, revision: token(row.seq, row.revision), data: JSON.parse(row.data) }));
     }
 
-    /** Whether Structured Memory is the selected algorithm: one row, read once per read operation. */
-    function structuredMemorySelected(): boolean {
+    /** The global fallback for projection, captured once per read operation. */
+    function legacyStructuredMemorySelected(): boolean {
         const row = selectMemoryAlgorithm.get(RESOURCE_KIND.ui, SINGLETON_RESOURCE_ID) as
             { algorithm: unknown } | undefined;
         return row?.algorithm === STRUCTURED_MEMORY_ALGORITHM;
     }
 
-    /** Whether a read overlays projections: it asks to, has whole chats to answer, and the algorithm is selected. */
+    /** Whether a chat's mode selects Structured Memory under this read's captured global fallback. */
+    function projectsMode(memoryMode: unknown, legacyStructured: boolean): boolean {
+        return (
+            chatMemoryAlgorithm(
+                { memoryAlgorithmType: legacyStructured ? STRUCTURED_MEMORY_ALGORITHM : undefined },
+                { memoryMode },
+            ) === STRUCTURED_MEMORY_ALGORITHM
+        );
+    }
+
+    /** One stored mode, without loading messages or parsing the whole metadata in JavaScript. */
+    function storedChatProjects(characterId: string, chatId: string, legacyStructured: boolean): boolean {
+        const row = selectChatMemoryMode.get(characterId, chatId) as { memoryMode: unknown } | undefined;
+        return row !== undefined && projectsMode(row.memoryMode, legacyStructured);
+    }
+
+    /** Whether a read asks to overlay projections and has whole chats to answer. */
     function overlaysMemoryProjection({ memoryProjection, chats = [], chatCollections = [] }: ReadRefsOptions) {
-        return memoryProjection === true && chats.length + chatCollections.length > 0 && structuredMemorySelected();
+        return memoryProjection === true && chats.length + chatCollections.length > 0;
     }
 
     /**
@@ -1668,9 +1689,9 @@ export function createResourceStore(options: {
      * and leaves it as stored when that is null. A projection that throws leaves the chat as stored too: a
      * malformed record must not fail a chat read.
      */
-    function overlayMemoryProjection(chat: ChatRead) {
+    function overlayMemoryProjection(chat: ChatRead, legacyStructured: boolean) {
         const seq = chat.revision === null ? undefined : parseToken(chat.revision)?.seq;
-        if (seq === undefined || !chat.data) {
+        if (seq === undefined || !chat.data || !projectsMode(chat.data.memoryMode, legacyStructured)) {
             return;
         }
         try {
@@ -1691,6 +1712,7 @@ export function createResourceStore(options: {
         refs: readonly { kind: ResourceKind; id: string }[],
         options: ReadRefsOptions,
         overlaying = overlaysMemoryProjection(options),
+        legacyStructured = overlaying && legacyStructuredMemorySelected(),
     ): ResourceReadRefsResult & Required<Pick<ResourceReadRefsResult, "chats" | "chatCollections">> {
         const items = refs.map(({ kind, id }) => {
             assertKind(kind);
@@ -1701,7 +1723,7 @@ export function createResourceStore(options: {
         const chats = (options.chats ?? []).map(({ characterId, id }) => {
             const chat = readChatOrMissing(characterId, id);
             if (overlaying) {
-                overlayMemoryProjection(chat);
+                overlayMemoryProjection(chat, legacyStructured);
             }
             return chat;
         });
@@ -1712,7 +1734,7 @@ export function createResourceStore(options: {
             const collection = chatTables.readCollection(characterId);
             if (overlaying) {
                 for (const chat of collection?.chats ?? []) {
-                    overlayMemoryProjection(chat);
+                    overlayMemoryProjection(chat, legacyStructured);
                 }
             }
             return { characterId, order: collection?.order ?? null, chats: collection?.chats ?? [] };
@@ -2256,10 +2278,11 @@ export function createResourceStore(options: {
                 if (stored === null) {
                     return null;
                 }
-                if (!structuredMemorySelected()) {
+                const legacyStructured = legacyStructuredMemorySelected();
+                if (!storedChatProjects(characterId, chatId, legacyStructured)) {
                     return { revision: null, data: null };
                 }
-                if (memoryTables.chatEventBytes(characterId, chatId) > maxEventBytes) {
+                if (memoryTables.chatEventBytes(characterId, chatId, legacyStructured) > maxEventBytes) {
                     return "tooLarge";
                 }
                 const seq = parseToken(stored)!.seq;
@@ -2268,12 +2291,12 @@ export function createResourceStore(options: {
             },
             /**
              * Per ref, in order, the memory revision of a chat a whole read projects
-             * (`memoryTables.readProjectionRevisions`). The algorithm is read once for the call, and under
-             * another one every entry is null and no memory table is read.
+             * (`memoryTables.readProjectionRevisions`). The global fallback is read once for the call;
+             * each ref resolves its stored mode, and another algorithm answers null.
              */
             readProjectionRevisions(refs: readonly MemoryChatRef[]): (string | null)[] {
                 assertOpen();
-                return structuredMemorySelected() ? memoryTables.readProjectionRevisions(refs) : refs.map(() => null);
+                return memoryTables.readProjectionRevisions(refs, legacyStructuredMemorySelected());
             },
             /**
              * The health entries of each chat's live records (`memoryTables.readHealth`), in request order,
@@ -2397,13 +2420,15 @@ export function createResourceStore(options: {
                     });
                 },
                 /**
-                 * The generation lock's one read: the chat holds a run and `structuredMemorySelected()`
-                 * reads the one global `memoryAlgorithmType` setting. Switching away releases every chat's
-                 * run lock at once, so no chat is locked behind a panel that no longer mounts.
+                 * A run locks generation only while this chat's stored mode and global fallback select
+                 * Structured Memory. Switching its algorithm away releases its lock without deleting the run.
                  */
                 rebuilding(characterId: string, chatId: string): boolean {
                     assertOpen();
-                    return memoryTables.rebuild.status(characterId, chatId) !== null && structuredMemorySelected();
+                    return (
+                        memoryTables.rebuild.status(characterId, chatId) !== null &&
+                        storedChatProjects(characterId, chatId, legacyStructuredMemorySelected())
+                    );
                 },
                 /** Commits the run's `changes` whole and ends it, in one transaction; answers the live token. */
                 swap(
@@ -2507,9 +2532,10 @@ export function createResourceStore(options: {
             }
             if (options.chats) {
                 const whole = chatTables.readAll();
-                if (options.memoryProjection && structuredMemorySelected()) {
+                if (options.memoryProjection) {
+                    const legacyStructured = legacyStructuredMemorySelected();
                     for (const chat of whole.chats) {
-                        overlayMemoryProjection(chat);
+                        overlayMemoryProjection(chat, legacyStructured);
                     }
                 }
                 return { epoch, kinds: result, ...whole };
@@ -2545,7 +2571,7 @@ export function createResourceStore(options: {
          * served whatever its size. Each list, served or left out, keeps its request order, so
          * re-sending `unanswered` finds the remaining groups in the same order. Every ref is checked
          * first: one left out still refuses the request. A read that overlays projections also charges
-         * each chat's and collection's stored events, which is conservative: a projection holds less.
+         * eligible chats' stored events, which is conservative: a projection holds less.
          * Charges are stored UTF-8 bytes before parsing, not wire sizes: octet_length(data) for a
          * resource, meta plus message rows for a chat (two queries), order text plus separate chat-meta
          * and message aggregates for a whole collection, order text plus stored chatSummaries rows
@@ -2569,6 +2595,7 @@ export function createResourceStore(options: {
             }
             const { chats = [], chatRows = [], chatCollections = [], chatSummaryCollections = [] } = options;
             const overlaying = overlaysMemoryProjection(options);
+            const legacyStructured = overlaying && legacyStructuredMemorySelected();
             const groups: ReadGroup[] = [];
             const characterGroups = new Map<string, ReadGroup>();
             /** The group of the entry that costs `charge`: its character's when it has one, else a new one. */
@@ -2595,7 +2622,7 @@ export function createResourceStore(options: {
                     null,
                     () =>
                         chatTables.chatBytes(characterId, id) +
-                        (overlaying ? memoryTables.chatEventBytes(characterId, id) : 0),
+                        (overlaying ? memoryTables.chatEventBytes(characterId, id, legacyStructured) : 0),
                 ),
             );
             const rowGroups = chatRows.map((request) => groupOf(null, () => chatTables.rowsBytes(request)));
@@ -2604,7 +2631,7 @@ export function createResourceStore(options: {
                     characterId,
                     () =>
                         chatTables.collectionBytes(characterId) +
-                        (overlaying ? memoryTables.characterEventBytes(characterId) : 0),
+                        (overlaying ? memoryTables.characterEventBytes(characterId, legacyStructured) : 0),
                 ),
             );
             const summaryGroups = chatSummaryCollections.map((characterId) =>
@@ -2639,6 +2666,7 @@ export function createResourceStore(options: {
                     chatSummaryCollections: servedSummaries,
                 },
                 overlaying,
+                legacyStructured,
             );
             if (groups.every((group) => group.served)) {
                 return read;

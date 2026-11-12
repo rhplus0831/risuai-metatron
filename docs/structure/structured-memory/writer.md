@@ -65,10 +65,12 @@ as recorded, keeping [adoption](lifecycle.md#adopting-hypav3-summaries) from aut
 
 ### The writer task
 
-`db.memoryAlgorithmType === "structuredMemory"` selects `structuredMemoryStep` ahead of the flag chain in
-`server/src/prompt/assemble.ts`. The writer is the [memory task service](../memory.md#background-memory-task)'s second
-kind. The step [reads](read.md#the-read-path) before it returns the hand-off; `confirmedWindows` at `limit: 1` supplies
-`due`.
+`structuredMemoryStep` runs when the chat's algorithm (`chatMemoryAlgorithm`: a stored `memoryMode`, else
+`db.memoryAlgorithmType` ahead of the flag chain) is Structured Memory, in `server/src/prompt/assemble.ts`. A detached
+task or rebuild rereads it from the stored chat and settings before each window and commit and ends skipped
+`notStructuredMemory` on a mismatch ([background memory task](../memory.md#background-memory-task)). The writer is the
+[memory task service](../memory.md#background-memory-task)'s second kind. The step [reads](read.md#the-read-path) before
+it returns the hand-off; `confirmedWindows` at `limit: 1` supplies `due`.
 
 An input job with a service and source-generation-bound chat snapshot can hand off even when not due: `handOffMemory`
 needs it for a waiting manual start. Unlike HypaV3, the step skips the blocking-reason precheck. It asks `memoryGap`
@@ -221,8 +223,9 @@ Compaction changes no event, and a warning does not fail the run.
   treat a bad stored value as unset. No normalizer deletes one: the tab holds what it sent, so a server-only deletion
   would make a later conflict merge against a record the server does not have.
 - `memorySettingsFingerprint` digests `structured` without its highlight fields, the language overrides (not the chat's
-  highlight either: a highlight only marks a commit), and `db.language` only while `memoryAlgorithmType` is
-  `structuredMemory`, so a change to them never marks another algorithm's queued task stale.
+  highlight either: a highlight only marks a commit), and `db.language` only while the chat's algorithm is Structured
+  Memory, so a change to them never marks another algorithm's queued task stale. The stored mode itself is not digested:
+  a mode change that resolves to the same algorithm keeps a queued task.
 - A message is recorded when any stored event cites it, in any status, retracted and stale included: that only stops the
   writer recording it again automatically, so nothing brings back what the user retracted. It is not coverage: dropping
   raw history asks whether an active event covers it, and never reads this set.

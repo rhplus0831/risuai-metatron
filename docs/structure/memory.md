@@ -91,12 +91,16 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 - Memory runs when `chatMemoryEnabled` in `shared/chatMemory.ts` resolves on and an algorithm is configured. A boolean
   `memoryEnabled` wins; absent or malformed values use `alwaysToggleOn` under HypaV3 or Structured Memory, then the
   owner's `supaMemory`. The preset default never writes the owner or chat.
+- The chat's algorithm is `chatMemoryAlgorithm`: a stored `memoryMode` of `structuredMemory` or `hypaV3` selects that
+  algorithm whatever the global flags say; absent or any other value is Legacy, the global order below. Every server
+  reader asks it (the send, task admission, record now and rebuild, the settings fingerprint, the projection, the
+  upstream export); the tab's readers still follow the global order ([Limitations](#limitations)).
 - `legacyMemoryAlgorithm` shares the server priority with the settings view and selector: Structured Memory →
   `hanuraiEnable` → `hypav2` → `hypaV3` → SupaMemory when `supaModelType` is not `none` → none.
 - SupaMemory, HypaV2, and HypaV3 return data for the current chat's algorithm field; Hanurai returns prompt history and
   token counts or an overflow alert, with no persistent memory.
 - `memoryAlgorithmType`'s `structuredMemory` selects [its step](structured-memory/writer.md#the-writer-task) ahead of
-  that order; no other value is read.
+  that order for a Legacy chat; no other value is read.
 
 ### Server
 
@@ -146,6 +150,14 @@ and [live-update feed](live-update-feed.md); the other task kind is the
 [Structured Memory writer](structured-memory/writer.md#the-writer-task), which also runs
 [chat rebuilds](structured-memory/rebuild.md#a-run).
 
+A task's kind must match the chat's algorithm at its start (`notHypaV3`, `notStructuredMemory`), and again before each
+further window and each commit, read from the chat and the settings as stored rather than the task's scope. A mismatch
+ends the task skipped with the same reasons and accepts no further result; a HypaV3 task first lets its in-flight
+requests return and saves none of them. A summary save counts only when the stored value kept it, so one the
+[projection](structured-memory/projection.md#the-tabs-mirror) guard dropped is not reported as saved. A mode change that
+resolves to the same algorithm leaves a queued task valid: the settings fingerprint holds the resolved algorithm's
+fields, never the stored mode.
+
 ### Progress and the stop control
 
 Job memory work reports through `MemoryProgress` (`shared/jobs.ts`); detached tasks use `memoryTask` frames. The owner
@@ -188,9 +200,10 @@ formatting still applies.
       ratios ([upstream export](backup-sync-hub.md#upstream-database-export)).
 - Per-chat fields: `supaMemoryData`, `hypaV2Data`, `hypaV3Data`, `lastMemory`, `memoryTrimAck` (the owner's
   `supaMemoryOnCount` when the user answered "don't ask again" to the trim question).
-- Chat preferences: `memoryEnabled`, `memoryMode`, `memoryPresetId`, `memoryProfileId`. Only the switch affects
-  execution; the other three are stored and carried. `chatMemoryAlgorithm` still returns the legacy algorithm and
-  `chatHypaV3Preset` the globally selected preset. Malformed values read as absent; no chat migration runs.
+- Chat preferences: `memoryEnabled`, `memoryMode`, `memoryPresetId`, `memoryProfileId`. The switch affects execution
+  everywhere and the mode on the server ([Selection](#selection-in-assembleprompt)); the preset and connection are
+  stored and carried, and `chatHypaV3Preset` returns the globally selected preset. Malformed values read as absent; no
+  chat migration runs.
 - Per-owner fields (character or group): `supaMemory` (the default for a chat that never chose), `supaMemoryOnCount`
   (legacy off→on count, still incremented by plugin character writes; read through `supaMemoryOnCount` in
   `shared/characters.ts`). The upstream exporter derives `supaMemory` from whether any stored chat resolves on. Without
@@ -275,7 +288,7 @@ lookahead starts at stored coverage and does not defer summaries.
 
 - Add or change a top-level algorithm: the selector in `MemorySettings.svelte`, the fields in `shared/sections.ts` and
   their defaults in the server normalizer, and the branch plus persistence in the server's `assemblePrompt`. Verify the
-  `chatMemoryEnabled` gate and `legacyMemoryAlgorithm` priority order.
+  `chatMemoryEnabled` gate, `chatMemoryAlgorithm`, and the `legacyMemoryAlgorithm` priority order.
 - Add an embedding model: `hypamemory.ts` (`HypaModel`, `localModels`, `getEmbeds`), `hypamemoryv2.ts:getAPIEmbeds`,
   `transformers.ts` `EmbeddingModel`, and the UI options. A Voyage model is one entry in `VOYAGE_EMBEDDING_MODELS` or
   `VOYAGE_CONTEXT_MODELS` plus its `HypaModel` value; the settings list both tables.
@@ -348,6 +361,15 @@ lookahead starts at stored coverage and does not defer summaries.
 - A tab loaded before chat memory preferences were introduced keeps showing the character's switch and writes
   `supaMemory`, now only the default of a chat that never chose. A plugin whole-chat write from that tab can still
   remove a field its copy never held. Reloading ends both limitations. Decision: owner, 2026-11-12.
+- A chat's stored mode decides its algorithm on the server only. The tab still mounts the panel, shows the receipt and
+  health, estimates context, and refreshes plugin projections by the global selection, so a chat given a mode by a
+  plugin, a chat file, or a recovery runs it on the server while the tab shows the global one; the switch's
+  `alwaysToggleOn` default already follows the mode in both. Decision: Per-Chat Memory plan, Order
+  ([plan](../plan/per-chat-memory.md)).
+- Writers inside a job (record now or the gap run when the tab must serve the model, and a send's own HypaV3 summaries)
+  check the chat's algorithm only when admitted; a mode change during that job does not stop them. Detached tasks
+  recheck at every window and commit ([Background memory task](#background-memory-task)). Decision: Per-Chat Memory
+  plan, D17 ([plan](../plan/per-chat-memory.md)).
 - A message edited after a hand-off invalidates its window and every later one: a chat edited often while a long backlog
   is summarized can restart the backlog more than once (not measured). Decision: HypaV3 Background Memory D15 and D16,
   [archive](../archived-plan/README.md).

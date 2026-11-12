@@ -26,7 +26,9 @@ import { createVectorCache, type CachedVector } from "../data/vectorCache.ts";
 import { createEmbeddings } from "../prompt/embeddings.ts";
 import { messageSourceHash } from "../data/memoryStore.ts";
 import type { MemoryEvent } from "../../../shared/structuredMemory.ts";
-import type { MemoryRecords } from "../prompt/memory/structured/step.ts";
+import { createResourceStore } from "../data/resourceStore.ts";
+import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
+import { readMemoryRecords, type MemoryRecords } from "../prompt/memory/structured/step.ts";
 import { memoryRecords } from "./memoryFixtures.ts";
 import type { MemoryHost } from "../prompt/memory/host.ts";
 import {
@@ -1008,6 +1010,129 @@ describe("the context report", () => {
         });
         const rawIds = (formated: OpenAIChat[]) =>
             formated.flatMap(({ memo }) => (memo && memo !== "supaMemory" ? [memo] : []));
+
+        function modeTestEmbeddings() {
+            const cache = createVectorCache({ file: ":memory:", now: () => 0 });
+            onTestFinished(() => cache.close());
+            const embeddings = createEmbeddings({
+                cache,
+                transformers: {
+                    runEmbedding: async (texts) => texts.map(() => new Float32Array([1, 0])),
+                    runSummarizer: async () => "",
+                    runImageCaption: async () => "",
+                    runTextGeneration: async () => "",
+                    dispose: async () => {},
+                },
+            }).forJob({
+                db: { hypaModel: "MiniLM" } as never,
+                supaMemoryKey: "",
+                signal: new AbortController().signal,
+            });
+            return embeddings;
+        }
+
+        it.each([
+            [
+                "Structured Memory",
+                {
+                    memoryAlgorithmType: "structuredMemory",
+                    hanuraiEnable: true,
+                    hypav2: true,
+                    hypaV3: true,
+                    supaModelType: "subModel",
+                },
+                "structuredMemory",
+            ],
+            ["Hanurai", { hanuraiEnable: true, hypav2: true, hypaV3: true, supaModelType: "subModel" }, "hanurai"],
+            ["HypaV2", { hypav2: true, hypaV3: true, supaModelType: "subModel" }, "hypaV2"],
+            ["HypaV3", { hypaV3: true, supaModelType: "subModel" }, "hypaV3"],
+            ["SupaMemory", { supaModelType: "subModel" }, "supa"],
+            ["none", { supaModelType: "none" }, undefined],
+        ] as const)(
+            "uses each chat's stored mode while its Legacy neighbor follows global %s",
+            async (_name, global, legacyKind) => {
+                const assembly = structuredAssembly({
+                    messages: [{ chatId: "u", data: "Hello" }],
+                    maxContext: 2000,
+                    settings: { cadence: "manual" },
+                    embeddings: modeTestEmbeddings(),
+                });
+                Object.assign(assembly.host.db, {
+                    memoryAlgorithmType: undefined,
+                    hanuraiEnable: false,
+                    hypav2: false,
+                    hypaV3: false,
+                    hanuraiTokens: 0,
+                    ...global,
+                });
+                const chats = [
+                    {
+                        ...structuredClone(assembly.chat),
+                        id: "structured",
+                        memoryEnabled: true,
+                        memoryMode: "structuredMemory" as const,
+                    },
+                    {
+                        ...structuredClone(assembly.chat),
+                        id: "hypa",
+                        memoryEnabled: true,
+                        memoryMode: "hypaV3" as const,
+                    },
+                    { ...structuredClone(assembly.chat), id: "legacy", memoryEnabled: true },
+                ];
+                for (const [index, expected] of ["structuredMemory", "hypaV3", legacyKind].entries()) {
+                    assembly.host.chat = () => chats[index];
+                    assembly.host.chatRef = { chaId: "counter", chatId: chats[index].id };
+                    const { report } = await assembly.run();
+                    expect(report.memory?.kind, chats[index].id).toBe(expected);
+                }
+            },
+        );
+
+        it("holds a Structured-mode send for adoption of its stored HypaV3 summaries under global HypaV3", async () => {
+            const assembly = structuredAssembly({
+                messages: [{ chatId: "u", data: "Hello" }],
+                maxContext: 2000,
+                embeddings: modeTestEmbeddings(),
+            });
+            assembly.host.db.memoryAlgorithmType = "";
+            assembly.chat.memoryMode = "structuredMemory";
+            assembly.chat.hypaV3Data = { summaries: [{ text: "Earlier journey", chatMemos: [], isImportant: false }] };
+            const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+            const store = createResourceStore({ file: ":memory:", kinds });
+            try {
+                store.applyChanges({
+                    ops: [
+                        {
+                            kind: kinds.get("characters")!,
+                            id: "counter",
+                            baseRevision: null,
+                            data: { chaId: "counter" },
+                        },
+                    ],
+                    chats: [
+                        {
+                            characterId: "counter",
+                            chatId: "k",
+                            baseRevision: null,
+                            ops: [{ op: "create", chat: assembly.chat }],
+                        },
+                    ],
+                });
+                assembly.host.memoryJob!.structuredMemory!.records = () => readMemoryRecords(store, "counter", "k");
+                const result = await assembly.run();
+                expect(result.generationInfo.memory).toMatchObject({
+                    state: "notAutomatic",
+                    reason: "awaitingAdoption",
+                });
+                expect(result.report.memory?.kind).toBe("structuredMemory");
+                expect(assembly.recordGap).not.toHaveBeenCalled();
+                expect(store.chatMeta("counter", "k")!.data.hypaV3Data).toEqual(assembly.chat.hypaV3Data);
+                expect(store.memory.readContents("counter", "k")!.events).toEqual([]);
+            } finally {
+                store.close();
+            }
+        });
 
         it("sends summaries for events outside the raw window and reports them as included timeline items with events closed", async () => {
             const messages: Entry[] = [

@@ -1,4 +1,4 @@
-import { chatMemoryEnabled, type ChatMemorySettings } from "../../../../shared/chatMemory.ts";
+import { chatMemoryAlgorithm, chatMemoryEnabled, type ChatMemorySettings } from "../../../../shared/chatMemory.ts";
 import type {
     Chat,
     Credential,
@@ -77,8 +77,8 @@ import { collectUpstreamAssetReferences } from "./assetReferences.ts";
  *   character fields; inlays and device-local plugin storage are left out and counted.
  * - Structured memory: a structured chat's `hypaV3Data` is the projection of its records, unsealed:
  *   upstream restores plain HypaV3 data, and a re-import here takes it as real. A chat is structured
- *   by the rule of a tab's read: the algorithm selected in the snapshot's `ui` record, at least one
- *   event, and no stored value with summaries, which wins.
+ *   by the rule of a tab's read: its mode and snapshot settings resolve to Structured Memory, it has
+ *   at least one event, and no stored value with summaries, which wins.
  *
  * Every left-out or reshaped item is reported (`shared/upstreamExportReport.ts`). The rows are parsed
  * here, so the result shares no object with the input.
@@ -395,16 +395,7 @@ export function buildUpstreamDatabase(
     db.plugins = plugins;
     db.pluginCustomStorage = upstreamPluginStorage(records.get(RESOURCE_KIND.pluginStorage), plugins, report);
 
-    const ui = records.get(RESOURCE_KIND.ui);
-    db.characters = upstreamCharacters(
-        characterRecords,
-        chats,
-        options,
-        now,
-        isPlainObject(ui) && ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM,
-        memorySettings,
-        report,
-    );
+    db.characters = upstreamCharacters(characterRecords, chats, options, now, memorySettings, report);
 
     if (!options.includeSecrets) {
         clearAuxiliaryKeys(db, report);
@@ -953,12 +944,11 @@ function upstreamCharacters(
     snapshot: UpstreamExportChats,
     options: UpstreamExportOptions,
     now: number,
-    structuredMemory: boolean,
     memorySettings: ChatMemorySettings,
     report: UpstreamExportReport,
 ): Root[] {
     const eventsBySeq = new Map<number, string[]>();
-    for (const { chatSeq, data } of structuredMemory ? (snapshot.memoryEvents ?? []) : []) {
+    for (const { chatSeq, data } of snapshot.memoryEvents ?? []) {
         const list = eventsBySeq.get(chatSeq);
         if (list) {
             list.push(data);
@@ -968,7 +958,7 @@ function upstreamCharacters(
     }
     /** What a chat of the character `name` is projected from, undefined when it has nothing to project. */
     const memoryOf = (seq: number, name: string): UpstreamChatMemory | undefined => {
-        if (structuredMemory && snapshot.memoryEvents === null) {
+        if (snapshot.memoryEvents === null) {
             return { name, events: null };
         }
         const events = eventsBySeq.get(seq);
@@ -1019,9 +1009,17 @@ function upstreamCharacters(
             if (!row) {
                 return [];
             }
-            memoryEnabled ||= chatMemoryEnabled(JSON.parse(row.meta), owner, memorySettings);
+            const metadata = JSON.parse(row.meta);
+            memoryEnabled ||= chatMemoryEnabled(metadata, owner, memorySettings);
+            const projected = chatMemoryAlgorithm(memorySettings, metadata) === STRUCTURED_MEMORY_ALGORITHM;
             const messages = (messagesBySeq.get(row.seq) ?? []).sort((a, b) => a.position - b.position);
-            const chat = upstreamChat(row.meta, messages, memoryOf(row.seq, name), `characters[${name}]`, report);
+            const chat = upstreamChat(
+                row.meta,
+                messages,
+                projected ? memoryOf(row.seq, name) : undefined,
+                `characters[${name}]`,
+                report,
+            );
             if (
                 chat.message.some((message) => typeof message.data === "string" && INLAY_REFERENCE.test(message.data))
             ) {

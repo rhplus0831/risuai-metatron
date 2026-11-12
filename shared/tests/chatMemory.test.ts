@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { chatMemoryEnabled, legacyMemoryAlgorithm, type ChatMemorySettings } from "../chatMemory.ts";
+import {
+    chatMemoryAlgorithm,
+    chatMemoryEnabled,
+    legacyMemoryAlgorithm,
+    type ChatMemorySettings,
+} from "../chatMemory.ts";
 import { createHypaV3Preset } from "../hypaV3Presets.ts";
 
 const presets = [
@@ -9,6 +14,12 @@ const presets = [
 const automatic = { hypaV3Presets: presets, hypaV3PresetId: "automatic", supaModelType: "none" };
 
 describe("chat memory resolution", () => {
+    it("falls back to the global algorithm for a malformed stored mode", () => {
+        expect(chatMemoryAlgorithm({ hypaV3: true, supaModelType: "none" }, { memoryMode: ["structuredMemory"] })).toBe(
+            "hypaMemoryV3",
+        );
+    });
+
     it("uses the legacy priority even when lower-priority algorithms are enabled", () => {
         const settings: ChatMemorySettings = {
             memoryAlgorithmType: "structuredMemory",

@@ -54,17 +54,20 @@ recovered resend carries, so no stored chat holds one. A tab can hold one after 
 export recognizes the projection by its seal and drops it; an unsealed one would be exported as real summaries. Plugin
 reads refresh through the revision and projection routes.
 
-The upstream export writes it unsealed (`memory-projected`); a failed memory walk or event projection leaves chats as
-stored (`memory-unreadable`) and never stops the export. `pinned` or a grade at least `importantEventGrade` becomes
-`isImportant`; see `projectHypaV3Data` for metric rules and `projectChatMemory` for reconciliation and order.
+The upstream export writes it unsealed (`memory-projected`) for each chat whose own algorithm, resolved from its stored
+metadata before the memory fields are stripped, is Structured Memory; a failed memory walk or event projection leaves
+chats as stored (`memory-unreadable`) and never stops the export. `pinned` or a grade at least `importantEventGrade`
+becomes `isImportant`; see `projectHypaV3Data` for metric rules and `projectChatMemory` for reconciliation and order.
 
 ### A tab's read
 
-`server/src/routes/resources.ts` opts its GET and POST whole reads into `memoryProjection`; `overlaysMemoryProjection`
-allows it only while the algorithm is selected. `sealedMemoryProjection` projects chats with events and no stored
-summaries; real summaries retain HypaV3 ownership. A failed overlay returns the stored chat and warns once. The
-non-cryptographic seal identifies an unchanged projection and authorizes nothing. Other reads take stored data
-([Invariants](#invariants)).
+`server/src/routes/resources.ts` opts its GET and POST whole reads into `memoryProjection`; `overlayMemoryProjection`
+projects only a chat whose algorithm is Structured Memory (`chatMemoryAlgorithm`: its stored mode, else the global
+selection, read once per read operation), and a budgeted read charges `memory_events` bytes for those chats alone.
+`readProjection`, `readProjectionRevisions` (per ref), and the rebuild lock decide per chat the same way.
+`sealedMemoryProjection` projects chats with events and no stored summaries; real summaries retain HypaV3 ownership. A
+failed overlay returns the stored chat and warns once. The non-cryptographic seal identifies an unchanged projection and
+authorizes nothing. Other reads take stored data ([Invariants](#invariants)).
 
 ### The tab's mirror
 
@@ -74,8 +77,10 @@ recovery source: no plugin notice, and the refused value is filed as a draft ([A
 `sendChat` omits projections from mirror-built writes and journal snapshots. `server/src/data/chatStore.ts`'s
 `withoutProjection` strips sealed values a stale tab or recovered resend carries, in `prepareWholeChat` and `prepareOp`,
 and `refusesHypaV3Data` drops an unsealed one at apply time from a chat the projection answers for, except under a
-checkpoint load (`restoredFields`); [Chat recovery](../draft-recovery.md#chat-recovery) drafts a replayed one. A job's
-copy and a patch's `meta` leave a held projection in place unless they bring summaries (`keepsProjection`). A whole read
+checkpoint load (`restoredFields`). It judges the algorithm by the mode the write leaves (a `meta` op's own set or unset
+of `memoryMode`, a replacement's incoming mode; malformed reads as Legacy) and summary ownership by the value stored
+before the write; [Chat recovery](../draft-recovery.md#chat-recovery) drafts a replayed one. A job's copy and a patch's
+`meta` leave a held projection in place unless they bring summaries (`keepsProjection`). A whole read
 (`applyRemoteChat`, `installRead`) takes the field as answered; without it, the held projection goes.
 `installChatProjection` is the field's one change outside a write.
 

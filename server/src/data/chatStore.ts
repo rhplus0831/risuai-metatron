@@ -1397,14 +1397,14 @@ export function createChatTables(
     db: DatabaseSync,
     tokens: TokenFunctions,
     guard?: MessageGuard,
-    /** Whether the memory projection answers for the chat with this `seq`: the algorithm is selected and it has event rows. */
-    memory?: { projectsChat(chatSeq: number): boolean },
+    /** Whether the memory projection answers for the chat with this `seq`: the resulting mode selects the algorithm and it has event rows. */
+    memory?: { projectsChat(chatSeq: number, modeAfter: unknown): boolean },
 ) {
     let attempts = new Map<string, RerollAttempt>();
     /**
      * Whether a write's unsealed `hypaV3Data` is refused because the projection owns the chat's field:
-     * the projection answers for the chat (`memory.projectsChat`) and the value stored in `meta` does not
-     * hold summaries, the one thing that means HypaV3 owns it (`hypaV3DataHoldsSummaries`). A boot replay,
+     * the projection answers for the resulting mode (`memory.projectsChat`) and the value stored before
+     * the write holds no summaries, the one thing that means HypaV3 owns it (`hypaV3DataHoldsSummaries`). A boot replay,
      * a quarantine retry, or a tab from before the switch sends its ops as they were, so the field goes
      * here and the rest of the write applies, as a stale tab's sealed value does in `withoutProjection`;
      * otherwise a replayed value would stand the projection aside with no choice offered, since the
@@ -1413,8 +1413,8 @@ export function createChatTables(
      * chat's fields as captured, with the captured memory rows after them (`restoredFields`), so it is
      * no write of a tab's and keeps the field.
      */
-    const refusesHypaV3Data = (chatSeq: number, meta: Record<string, unknown>, restored: boolean) =>
-        !restored && memory?.projectsChat(chatSeq) === true && !hypaV3DataHoldsSummaries(meta.hypaV3Data);
+    const refusesHypaV3Data = (chatSeq: number, meta: Record<string, unknown>, modeAfter: unknown, restored: boolean) =>
+        !restored && memory?.projectsChat(chatSeq, modeAfter) === true && !hypaV3DataHoldsSummaries(meta.hypaV3Data);
     let stagedAttempts: Map<string, RerollAttempt> | null = null;
     const attemptKey = (characterId: string, chatId: string) => `${characterId}\u0000${chatId}`;
     const liveAttempt = (characterId: string, chatId: string) => {
@@ -2344,7 +2344,10 @@ export function createChatTables(
                     const incoming = JSON.parse(op.meta) as Record<string, unknown>;
                     recordMap(attempt, jobToken, stored.scriptstate, incoming.scriptstate);
                     let { meta, summary } = op;
-                    if (Object.hasOwn(incoming, "hypaV3Data") && refusesHypaV3Data(chatSeq, stored, restoredFields)) {
+                    if (
+                        Object.hasOwn(incoming, "hypaV3Data") &&
+                        refusesHypaV3Data(chatSeq, stored, incoming.memoryMode, restoredFields)
+                    ) {
                         const { hypaV3Data: _refused, ...kept } = incoming;
                         meta = serialize(kept).text;
                         summary = summaryText(kept);
@@ -2392,8 +2395,14 @@ export function createChatTables(
                     const current = JSON.parse(row!.meta) as Record<string, unknown>;
                     const previousVariables = current.scriptstate;
                     const { hypaV3Data: _refused, ...kept } = op.set;
+                    const modeAfter = Object.hasOwn(op.set, "memoryMode")
+                        ? op.set.memoryMode
+                        : op.unset.includes("memoryMode")
+                          ? undefined
+                          : current.memoryMode;
                     const set =
-                        Object.hasOwn(op.set, "hypaV3Data") && refusesHypaV3Data(chatSeq, current, restoredFields)
+                        Object.hasOwn(op.set, "hypaV3Data") &&
+                        refusesHypaV3Data(chatSeq, current, modeAfter, restoredFields)
                             ? kept
                             : op.set;
                     for (const key of op.unset) {

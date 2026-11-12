@@ -1191,7 +1191,166 @@ it("restores a checkpoint's real summaries to a chat the projection answers for"
     expect(store.memory.readContents("c", "k")!.events).toEqual([]);
 });
 
-it("does not read memory tables for resource reads under another algorithm", () => {
+function seedMixedModes(store: ResourceStore) {
+    seed(store);
+    const memory = kinds.get("memoryTranslateMedia")!;
+    const settings = store.get(memory, "main")!;
+    store.put(memory, "main", { ...(settings.data as object), hypaV3: true }, settings.revision);
+    store.applyChanges({
+        chats: [
+            group(store.chatRevision("c", "k"), [
+                { op: "meta", set: { memoryMode: "structuredMemory", memoryEnabled: false } },
+            ]),
+            group(null, [{ op: "create", chat: { ...chat, memoryMode: "hypaV3" } }], "c", "hypa"),
+        ],
+    });
+    for (const id of ["k", "hypa"])
+        write(
+            store,
+            contents(store, "c", id).revision,
+            { events: records(["event"], "The gate opens.").events },
+            "c",
+            id,
+        );
+}
+
+it("projects only the Structured-mode chat in mixed-mode reads even with its memory switch off", () => {
+    const { store } = fileStore();
+    seedMixedModes(store);
+    const refs = ["hypa", "k"].map((id) => ({ characterId: "c", id }));
+    const revision = contents(store).revision;
+    for (const algorithm of ["structuredMemory", "hypaV3"]) {
+        const ui = kinds.get("ui")!;
+        store.put(ui, "main", { memoryAlgorithmType: algorithm }, store.get(ui, "main")!.revision);
+        const named = store.readRefs([], { chats: refs, chatCollections: ["c"], memoryProjection: true });
+        for (const chats of [
+            named.chats,
+            named.chatCollections[0].chats,
+            store.readKinds([characters], { chats: true, memoryProjection: true }).chats!,
+        ]) {
+            expect(chats.find(({ id }) => id === "k")!.data!.hypaV3Data).toMatchObject({
+                summaries: [{ text: "The gate opens." }],
+            });
+            expect(chats.find(({ id }) => id === "hypa")!.data).not.toHaveProperty("hypaV3Data");
+        }
+        expect(store.memory.readProjection("c", "k")).toMatchObject({
+            revision,
+            data: { summaries: [{ text: "The gate opens." }] },
+        });
+        expect(store.memory.readProjection("c", "hypa")).toEqual({ revision: null, data: null });
+        expect(
+            store.memory.readProjectionRevisions(refs.map(({ id, characterId }) => ({ characterId, chatId: id }))),
+        ).toEqual([null, revision]);
+    }
+});
+
+it("charges only the Structured chat's event bytes for individual and collection reads", () => {
+    const { store, db } = fileStore();
+    seedMixedModes(store);
+    store.put(characters, "sentinel", { chaId: "sentinel" }, null);
+    const refs = [{ kind: characters, id: "sentinel" }];
+    // The stored fixture sizes define the budget; only k's events belong in it.
+    const size = (sql: string) => (db.prepare(sql).get() as { bytes: number }).bytes;
+    const sentinelBytes = size(
+        "SELECT octet_length(data) AS bytes FROM resources WHERE kind = 'characters' AND id = 'sentinel'",
+    );
+    const chatBytes =
+        size("SELECT SUM(octet_length(meta)) AS bytes FROM chats WHERE characterId = 'c'") +
+        size(
+            "SELECT SUM(octet_length(m.data)) AS bytes FROM messages m JOIN chats c ON c.seq = m.chatSeq WHERE c.characterId = 'c'",
+        );
+    const eventBytes = size(
+        "SELECT SUM(octet_length(e.data)) AS bytes FROM memory_events e JOIN chats c ON c.seq = e.chatSeq WHERE c.characterId = 'c' AND c.id = 'k'",
+    );
+    const orderBytes = size("SELECT octet_length(ids) AS bytes FROM chatOrders WHERE characterId = 'c'");
+    for (const algorithm of ["structuredMemory", "hypaV3"]) {
+        const ui = kinds.get("ui")!;
+        store.put(ui, "main", { memoryAlgorithmType: algorithm }, store.get(ui, "main")!.revision);
+        for (const collection of [false, true]) {
+            const options = {
+                memoryProjection: true,
+                ...(collection
+                    ? { chatCollections: ["c"] }
+                    : {
+                          chats: [
+                              { characterId: "c", id: "hypa" },
+                              { characterId: "c", id: "k" },
+                          ],
+                      }),
+            };
+            const budget = sentinelBytes + chatBytes + eventBytes + (collection ? orderBytes : 0);
+            const fits = store.readRefsWithinBudget(refs, options, budget);
+            expect(fits.unanswered, `${algorithm}, collection=${collection}`).toBeUndefined();
+            const short = store.readRefsWithinBudget(refs, options, budget - 1);
+            if (collection) {
+                expect(short.chatCollections).toEqual([]);
+                expect(short.unanswered?.chatCollections).toEqual(["c"]);
+            } else {
+                expect(short.chats.map(({ id }) => id)).toEqual(["hypa"]);
+                expect(short.unanswered?.chats).toEqual([{ characterId: "c", id: "k" }]);
+            }
+        }
+    }
+});
+
+it("guards hypaV3Data using the mode left by the same metadata operation", () => {
+    const { store } = fileStore();
+    seedMixedModes(store);
+    const ui = kinds.get("ui")!;
+    store.put(ui, "main", { memoryAlgorithmType: "structuredMemory" }, store.get(ui, "main")!.revision);
+    const summaries = { summaries: [{ text: "A new HypaV3 journey", chatMemos: ["m"], isImportant: false }] };
+    store.applyChanges({
+        chats: [
+            group(store.chatRevision("c", "k"), [{ op: "meta", set: { memoryMode: "hypaV3", hypaV3Data: summaries } }]),
+        ],
+    });
+    expect(store.chatMeta("c", "k")!.data.hypaV3Data).toEqual(summaries);
+    store.put(ui, "main", { memoryAlgorithmType: "hypaV3" }, store.get(ui, "main")!.revision);
+    store.applyChanges({
+        chats: [
+            group(
+                store.chatRevision("c", "hypa"),
+                [{ op: "meta", set: { memoryMode: "structuredMemory", hypaV3Data: { lastSelectedSummaries: [] } } }],
+                "c",
+                "hypa",
+            ),
+        ],
+    });
+    expect(store.chatMeta("c", "hypa")!.data).not.toHaveProperty("hypaV3Data");
+    // Subsequent writes follow the stored mode too, preserving the summary owner's data.
+    store.applyChanges({
+        chats: [
+            group(store.chatRevision("c", "hypa"), [{ op: "meta", set: { hypaV3Data: summaries } }], "c", "hypa"),
+            group(store.chatRevision("c", "k"), [{ op: "meta", set: { hypaV3Data: summaries } }]),
+        ],
+    });
+    expect(store.chatMeta("c", "hypa")!.data).not.toHaveProperty("hypaV3Data");
+    expect(
+        store.readRefs([], { chats: [{ characterId: "c", id: "k" }], memoryProjection: true }).chats[0].data!
+            .hypaV3Data,
+    ).toEqual(summaries);
+    expect(contents(store).events.map(({ id }) => id)).toEqual(["event"]);
+});
+
+it("holds a rebuild's generation lock only while that chat resolves to Structured Memory", () => {
+    const { store } = fileStore();
+    seedMixedModes(store);
+    for (const chatId of ["k", "hypa"])
+        store.memory.rebuild.begin("c", chatId, { epoch: store.epoch(), mode: "rebuild", plan: [["m"]] }, {});
+    for (const algorithm of ["structuredMemory", "hypaV3"]) {
+        const ui = kinds.get("ui")!;
+        store.put(ui, "main", { memoryAlgorithmType: algorithm }, store.get(ui, "main")!.revision);
+        expect(store.memory.rebuild.rebuilding("c", "k")).toBe(true);
+        expect(store.memory.rebuild.rebuilding("c", "hypa")).toBe(false);
+    }
+    store.applyChanges({
+        chats: [group(store.chatRevision("c", "k"), [{ op: "meta", set: { memoryMode: "hypaV3" } }])],
+    });
+    expect(store.memory.rebuild.rebuilding("c", "k")).toBe(false);
+    expect(store.memory.rebuild.status("c", "k")).toMatchObject({ mode: "rebuild", done: 0, total: 1 });
+});
+
+it("projects nothing and reads no event bodies for resource reads under another algorithm", () => {
     const { store } = fileStore();
     seed(store);
     write(store, contents(store).revision, { events: records(["event"]).events });
@@ -1214,7 +1373,8 @@ it("does not read memory tables for resource reads under another algorithm", () 
         "hypaV3Data",
     );
     expect(store.readRefsWithinBudget([], options, 100_000).chats[0].data).not.toHaveProperty("hypaV3Data");
-    expect(accessed).toEqual([]);
+    // A chat's own mode can still select Structured Memory, so only the per-chat byte charges may ask.
+    expect(accessed.filter((sql) => !/^SELECT COALESCE\(SUM\(octet_length\(e\.data\)\), 0\)/.test(sql))).toEqual([]);
 });
 
 it("charges event bytes to budgeted chat and collection reads", () => {
@@ -1248,7 +1408,7 @@ it("charges event bytes to budgeted chat and collection reads", () => {
     }
 });
 
-it("checks ordered projection revisions without messages and skips memory tables under another algorithm", () => {
+it("checks ordered projection revisions without messages and answers null under another algorithm", () => {
     const { store, db } = fileStore();
     seed(store);
     const ui = kinds.get("ui")!;
@@ -1293,7 +1453,7 @@ it("checks ordered projection revisions without messages and skips memory tables
     store.put(ui, "main", { memoryAlgorithmType: "hypaV3" }, store.get(ui, "main")!.revision);
     accessed.length = 0;
     expect(store.memory.readProjectionRevisions(refs)).toEqual(refs.map(() => null));
-    expect(accessed.filter((sql) => /\b(?:memory_\w+|messages)\b/.test(sql))).toEqual([]);
+    expect(accessed.filter((sql) => /\bmessages\b/.test(sql))).toEqual([]);
 });
 
 it("persists a one-way decline at revision one and repeats without a write", () => {

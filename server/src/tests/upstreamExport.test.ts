@@ -1617,6 +1617,43 @@ describe("Structured Memory export", () => {
         );
     }
 
+    it("exports records as HypaV3 summaries only for chats whose own mode selects Structured Memory", async () => {
+        const history = projectionHistory();
+        for (const algorithm of ["structuredMemory", "hypaV3"]) {
+            const snapshot = await snapshotOf(
+                (w) => {
+                    w.put(SECTION_KIND.ui, "main", { memoryAlgorithmType: algorithm });
+                    w.put("memoryTranslateMedia", "main", { hypaV3: true, supaModelType: "none" });
+                    w.put("characters", "memory", { chaId: "memory", type: "character", name: "Memory" });
+                    for (const [id, memoryMode] of [
+                        ["structured", "structuredMemory"],
+                        ["hypa", "hypaV3"],
+                        ["owned", "structuredMemory"],
+                    ] as const) {
+                        w.chat("memory", id, {
+                            name: id,
+                            message: history.messages,
+                            memoryMode,
+                            memoryEnabled: false,
+                            ...(id === "owned" ? { hypaV3Data: real } : {}),
+                        });
+                    }
+                },
+                {
+                    populate: (store) => {
+                        for (const id of ["structured", "hypa", "owned"])
+                            writeMemory(store, "memory", id, { events: history.events });
+                    },
+                },
+            );
+            const { db } = exportOf(snapshot);
+            const chats = chatsOf(db, "Memory");
+            expect(chats.find(({ name }) => name === "structured")!.hypaV3Data).toEqual(history.expected);
+            expect(chats.find(({ name }) => name === "hypa")).not.toHaveProperty("hypaV3Data");
+            expect(chats.find(({ name }) => name === "owned")!.hypaV3Data).toEqual(real);
+        }
+    });
+
     it("exports the reconciled chronological projection unsealed using the snapshot algorithm and stored summary ownership", async () => {
         for (const algorithm of ["structuredMemory", "hypaV3"]) {
             const snapshot = await memorySnapshot(algorithm);

@@ -156,9 +156,12 @@ send could write live records through a gap run or hand-off that the swap would 
 | Maintenance, shutdown, restart            | Task ends, run stays; no automatic resume or startup scan                    |
 | Snapshot restore                          | `DELETE FROM chats` cascades the run away                                    |
 
-The algorithm is the one global setting (`structuredMemorySelected`), so a switch releases every chat's run. Memory
-routes still fence the run: their fence reads `status`, not `rebuilding`. A checkpoint load it lets through is a
-whole-chat replace, so that run can then only be abandoned.
+The algorithm is the chat's (`chatMemoryAlgorithm` on its stored mode and the global selection), so a switch of the
+global selection releases the run of every Legacy chat, and a chat's own mode change releases its run alone. A detached
+rebuild rereads it before each window, staged commit, cursor advance, continuation, and the swap, and ends skipped
+`notStructuredMemory` on a mismatch, leaving the run stopped. Memory routes still fence the run: their fence reads
+`status`, not `rebuilding`. A checkpoint load it lets through is a whole-chat replace, so that run can then only be
+abandoned.
 
 ### The cost preview
 

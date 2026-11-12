@@ -680,14 +680,20 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
             "ON CONFLICT (chatSeq) DO UPDATE SET revision = excluded.revision",
     );
     const setDeclined = db.prepare("UPDATE memory_state SET adoptionDeclined = 1 WHERE chatSeq = ?");
-    // A budgeted read's charges for the events a projection answers: stored sizes only.
+    // The shared chatMemoryAlgorithm rule in SQL: only the two valid modes override Legacy.
+    // CASE keeps absent and null modes in the fallback, like every other malformed value.
+    const projectsMode =
+        "CASE json_extract(c.meta, '$.memoryMode') " + "WHEN 'structuredMemory' THEN 1 WHEN 'hypaV3' THEN 0 ELSE ? END";
+    // A budgeted read's charges for eligible chats' events: stored sizes only.
     const sumChatEventBytes = db.prepare(
         "SELECT COALESCE(SUM(octet_length(e.data)), 0) AS bytes FROM memory_events e " +
-            "JOIN chats c ON c.seq = e.chatSeq WHERE c.characterId = ? AND c.id = ?",
+            "JOIN chats c ON c.seq = e.chatSeq WHERE c.characterId = ? AND c.id = ? AND " +
+            projectsMode,
     );
     const sumCharacterEventBytes = db.prepare(
         "SELECT COALESCE(SUM(octet_length(e.data)), 0) AS bytes FROM memory_events e " +
-            "JOIN chats c ON c.seq = e.chatSeq WHERE c.characterId = ?",
+            "JOIN chats c ON c.seq = e.chatSeq WHERE c.characterId = ? AND " +
+            projectsMode,
     );
     // The revision of a chat a whole read projects, with no message read. `json_array_length` mirrors
     // `hypaV3DataHoldsSummaries` on the stored metadata: NULL for a value without the list, 0 for a
@@ -697,7 +703,8 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
             "LEFT JOIN memory_state s ON s.chatSeq = c.seq " +
             "WHERE c.characterId = ? AND c.id = ? " +
             "AND EXISTS (SELECT 1 FROM memory_events e WHERE e.chatSeq = c.seq) " +
-            "AND COALESCE(json_array_length(c.meta, '$.hypaV3Data.summaries'), 0) = 0",
+            "AND COALESCE(json_array_length(c.meta, '$.hypaV3Data.summaries'), 0) = 0 AND " +
+            projectsMode,
     );
     // The health facts, with no record parsed in JavaScript and no body leaving SQLite: the runs' results
     // in order, counts over the events' status column and their `rerecord` field, and one pass over the
@@ -982,11 +989,11 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
         /**
          * Per ref, in order, the memory revision of a chat a whole read projects, one statement each and
          * no message read: a missing chat, one whose stored `hypaV3Data` holds summaries, and one with no
-         * event row answer null.
+         * event row, or one selecting another algorithm answer null.
          */
-        readProjectionRevisions(refs: readonly MemoryChatRef[]): (string | null)[] {
+        readProjectionRevisions(refs: readonly MemoryChatRef[], legacyStructured: boolean): (string | null)[] {
             return refs.map(({ characterId, chatId }) => {
-                const row = selectProjectionRevision.get(characterId, chatId) as
+                const row = selectProjectionRevision.get(characterId, chatId, Number(legacyStructured)) as
                     { seq: number; revision: number } | undefined;
                 return row ? tokens.token(row.seq, row.revision) : null;
             });
@@ -1037,14 +1044,14 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
             return chat ? (selectUnsupportedPages.all(chat.seq) as { id: string }[]).map(({ id }) => id) : [];
         },
 
-        /** The stored bytes of a chat's events, 0 without any. */
-        chatEventBytes(characterId: string, chatId: string): number {
-            return (sumChatEventBytes.get(characterId, chatId) as { bytes: number }).bytes;
+        /** The stored bytes of a Structured chat's events, 0 otherwise, using this read's global selection. */
+        chatEventBytes(characterId: string, chatId: string, legacyStructured: boolean): number {
+            return (sumChatEventBytes.get(characterId, chatId, Number(legacyStructured)) as { bytes: number }).bytes;
         },
 
-        /** The stored bytes of the events of all a character's chats, 0 without any. */
-        characterEventBytes(characterId: string): number {
-            return (sumCharacterEventBytes.get(characterId) as { bytes: number }).bytes;
+        /** The stored event bytes of a character's Structured chats, using this read's global selection. */
+        characterEventBytes(characterId: string, legacyStructured: boolean): number {
+            return (sumCharacterEventBytes.get(characterId, Number(legacyStructured)) as { bytes: number }).bytes;
         },
 
         write,

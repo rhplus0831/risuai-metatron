@@ -1,4 +1,4 @@
-import { chatMemoryEnabled, legacyMemoryAlgorithm } from "../../../shared/chatMemory.ts";
+import { chatMemoryAlgorithm, chatMemoryEnabled } from "../../../shared/chatMemory.ts";
 import { createHash } from "node:crypto";
 import type { CbsParseArg } from "../../../shared/cbs/evaluator.ts";
 import {
@@ -1903,7 +1903,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         addSection("lorebook", tokens);
     }
 
-    const memoryAlgorithm = legacyMemoryAlgorithm(db);
+    const memoryAlgorithm = chatMemoryAlgorithm(db, currentChat);
     const structuredMemory = memoryAlgorithm === STRUCTURED_MEMORY_ALGORITHM;
     const memoryConfigured = memoryAlgorithm !== "none";
     let useMemory = memoryConfigured && (chatMemoryEnabled(currentChat, nowChatroom, db) || host.memoryTrim.enabled());

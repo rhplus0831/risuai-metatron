@@ -39,8 +39,11 @@ export function chatMemoryMode(chat: ChatMemoryInput | null | undefined): Chat["
     return mode === "hypaV3" || mode === STRUCTURED_MEMORY_ALGORITHM ? mode : undefined;
 }
 
-/** Stored modes are carried as metadata; execution still follows the global algorithm. */
-export function chatMemoryAlgorithm(settings: ChatMemorySettings, _chat: ChatMemoryInput | null | undefined) {
+/** A valid stored mode selects the chat's algorithm; absent or malformed modes follow the global settings. */
+export function chatMemoryAlgorithm(settings: ChatMemorySettings, chat: ChatMemoryInput | null | undefined) {
+    const mode = chatMemoryMode(chat);
+    if (mode === STRUCTURED_MEMORY_ALGORITHM) return STRUCTURED_MEMORY_ALGORITHM;
+    if (mode === "hypaV3") return "hypaMemoryV3";
     return legacyMemoryAlgorithm(settings);
 }
 
