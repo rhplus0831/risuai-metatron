@@ -3528,6 +3528,29 @@ describe("structured memory tasks", () => {
         expect(t.store.memory.readRecord("c", "k1", "events", "old")!.data.status).toBe("retracted");
     });
 
+    it("advances a reply-less rebuild window without a model call when users are omitted", async () => {
+        const t = structuredHarness({ hypaSettings: { structured: { cadence: "everyTurn", omitUserMessages: true } } });
+        const input = beginStagedRun(t, "backfill", [["m1"], ["m3", "m4"]]);
+        const terminal = t.nextTerminal("k1");
+        expect(t.service.rebuild(input).outcome).toBe("queued");
+        const request = await nextPatch(t, 0, terminal);
+        expect(t.store.memory.rebuild.status("c", "k1")).toMatchObject({ done: 1, total: 2 });
+        expect(t.provider.asked(request)).toContain("[m:m4]");
+        expect(t.provider.asked(request)).not.toContain("User line");
+        request.answer(JSON.stringify(analysis()));
+        const ended = await Promise.race([
+            terminal,
+            t.provider.request(1).then(() => {
+                throw new Error("Unexpected model call for the reply-less window");
+            }),
+        ]);
+        expect(ended.status).toMatchObject({ state: "done", done: 2, total: 2, reason: "rebuilt" });
+        await t.service.drain();
+        expect(t.provider.requests).toHaveLength(1);
+        expect(eventRecord(t).sources.map(({ messageId }) => messageId)).toEqual(["m3", "m4"]);
+        expect(t.store.memory.rebuild.status("c", "k1")).toBeNull();
+    });
+
     it("rechecks screening after the plan when each rebuild or backfill window reaches the writer", async () => {
         for (const mode of ["rebuild", "backfill"] as const) {
             const t = structuredHarness({
@@ -5947,6 +5970,34 @@ describe("structured memory tasks", () => {
                 expect(run).not.toHaveProperty("patchInput");
             }
         }
+    });
+
+    it("rebuilds a failed input after omitUserMessages changes the settings fingerprint", async () => {
+        const t = structuredHarness({
+            hypaSettings: { structured: { cadence: "everyTurn", omitUserMessages: false } },
+        });
+        const first = await beginAnalysis(t);
+        expect(t.provider.asked(first.request)).toContain("User line 1 of the story.");
+        first.request.fail("Provider rejected the analysis");
+        expect((await first.terminal).status.state).toBe("failed");
+        await t.service.drain();
+        const failed = runRecord(t);
+        t.replace("hypaV3Presets", (data) => ({
+            ...data,
+            items: data.items.map((item: any) => ({
+                ...item,
+                settings: { ...item.settings, structured: { ...item.settings.structured, omitUserMessages: true } },
+            })),
+        }));
+        const retry = await beginAnalysis(t);
+        expect(runRecord(t).settingsFingerprint).not.toBe(failed.settingsFingerprint);
+        expect(runRecord(t).window).toEqual(failed.window);
+        expect(t.provider.asked(retry.request)).not.toContain("User line 1 of the story.");
+        expect(t.provider.asked(retry.request)).toContain("[m:m2]");
+        expect(t.provider.asked(retry.request)).toContain("Char line 2 of the story.");
+        retry.request.answer(JSON.stringify(analysis()));
+        await finishRecording(t, retry.terminal);
+        expect(eventRecord(t).sources.map(({ messageId }) => messageId)).toEqual(["m1", "m2"]);
     });
 
     it("replays a failed snapshot byte for byte despite thread changes and rebuilds when settings change", async () => {

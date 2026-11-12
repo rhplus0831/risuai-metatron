@@ -91,6 +91,12 @@ abandon and release read-only; the tab's task fence alone cannot release a run's
 
 Read `rebuildPlan` in `server/src/prompt/memory/structured/rebuild.ts`.
 
+With the preset's `omitUserMessages` on, a turn with no reply left after the mode's exclusions is a window of its own,
+and only turns that keep a reply are grouped by `turns`, so a leftover user message is never cited by the next turn's
+event. A run keeps the plan it began with, so a resume after the switch changed records the old grouping.
+`rebuildWindow` returns null for a window none of whose messages the writer reads (`memoryWriterReads`), as for one with
+nothing left, so `rebuildWork` moves the cursor with no call; the cost preview counts neither its call nor its messages.
+
 ### What a rebuild keeps
 
 `rebuildSeed` supplies `begin` before the writer starts; `seededPage` keeps a person's page choices and, by id, the

@@ -4455,6 +4455,32 @@ describe("structured memory job hand-offs", () => {
             }
         });
 
+        it("uses the cadence test window when omission leaves the newest run with no readable message", async () => {
+            await patchHypaV3({ structured: { cadence: "everyTurn", omitUserMessages: true } });
+            const chaId = await seedCharacter({ messages });
+            const store = testStore();
+            try {
+                const run = memoryRecords(["last-user-only"]).runs[0];
+                run.window = [{ messageId: "u2", index: 2, hash: messageSourceHash(messages[2] as Message) }];
+                writeMemory(store, chaId, "k", { runs: [run] });
+                const before = readRecordSet(store.memory, chaId, "k");
+                state.summaries = [analysis(0)];
+                const result = await testJob(chaId);
+                expect(result.terminal).toMatchObject({
+                    type: "done",
+                    result: { kind: "memoryTest", outcome: "recorded", messageIds: ["u1", "a1"] },
+                });
+                const prompt = JSON.stringify(summaries()[0].body.messages);
+                expect(prompt).toContain("[m:a1]");
+                expect(prompt).toContain("First reply");
+                expect(prompt).not.toContain("Second user");
+                expect(prompt).not.toContain("First user");
+                expect(readRecordSet(store.memory, chaId, "k")).toEqual(before);
+            } finally {
+                store.close();
+            }
+        });
+
         it("falls back to a fresh test window when screening now matches the newest recorded run", async () => {
             await patchHypaV3({
                 structured: { cadence: "everyTurn", screening: { refusal: ["SECOND REPLY"], format: [] } },

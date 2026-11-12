@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, it } from "vitest";
-import type { Database } from "../../../../../shared/database.ts";
+import type { Database, Message } from "../../../../../shared/database.ts";
 import { memoryRecords } from "../../../tests/memoryFixtures.ts";
 import { showTargets } from "./patches.ts";
 import { createNodeCbsEvaluator } from "../../../tests/cbsHost.ts";
@@ -34,6 +34,51 @@ const analysisInput: AnalysisInput = {
     window: { messages: [], sources: [] },
     speaker: () => "Cara",
 };
+
+it("omits users from message and context slots without shifting source ids or the context boundary", () => {
+    const messages: Message[] = ["u0", "a0", "u1", "a1", "u2", "a2", "u3", "a3", "u4", "a4", "u5", "a5"].map((id) => ({
+        chatId: id,
+        role: id.startsWith("u") ? "user" : "char",
+        data: id,
+    }));
+    const input: AnalysisInput = {
+        ...analysisInput,
+        messages,
+        speaker: ({ role }) => (role === "user" ? "Uma" : "Cara"),
+        window: {
+            messages: messages.slice(8),
+            sources: messages
+                .slice(8)
+                .map((message, index) => ({ messageId: message.chatId!, index: index + 8, hash: "source" })),
+        },
+    };
+    const absent = analysisSlots(input);
+    const off = analysisSlots({ ...input, omitUserMessages: false });
+    const on = analysisSlots({ ...input, omitUserMessages: true });
+    expect(absent.previous).toBe("Context only: never quote it.\nCara: a2\nUma: u3\nCara: a3");
+    expect(absent.messages).toBe("[m:u4] Uma:\nu4\n\n[m:a4] Cara:\na4\n\n[m:u5] Uma:\nu5\n\n[m:a5] Cara:\na5");
+    expect(off).toEqual(absent);
+    expect(on.previous).toBe("Context only: never quote it.\nCara: a1\nCara: a2\nCara: a3");
+    expect(on.messages).toBe("[m:a4] Cara:\na4\n\n[m:a5] Cara:\na5");
+    expect(on).toEqual({ ...absent, previous: on.previous, messages: on.messages });
+
+    const { risuChatParser } = createNodeCbsEvaluator({ characters: [], username: "Uma" } as unknown as Database, {
+        selectedCharID: -1,
+    });
+    const host = { parseChatML: (text: string) => parseChatML(text, risuChatParser) };
+    for (const frame of [
+        "",
+        "<|im_start|>user<|im_sep|>{{slot::previous}}\n{{slot::scene}}\n{{slot::messages}}<|im_end|>",
+    ]) {
+        expect(assembleAnalysisPrompt(host, frame, off)).toEqual(assembleAnalysisPrompt(host, frame, absent));
+        const prompt = assembleAnalysisPrompt(host, frame, on)
+            .map(({ content }) => content)
+            .join("\n");
+        expect(prompt).toContain(on.previous);
+        expect(prompt).toContain(on.messages);
+        for (const id of ["u3", "u4", "u5"]) expect(prompt).not.toContain(id);
+    }
+});
 
 it("adds one key-line guidance rule to the default analysis prompt only when enabled", () => {
     const { risuChatParser } = createNodeCbsEvaluator({ characters: [], username: "Uma" } as unknown as Database, {

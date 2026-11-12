@@ -19,6 +19,7 @@ import {
     memoryThreadEnded,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
     memorySourceText,
+    memoryWriterReads,
 } from "../../../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../../../shared/valueKinds.ts";
 import { type MemoryEventWrite, messageSourceHash } from "../../../data/memoryStore.ts";
@@ -30,7 +31,7 @@ import type { WriterWindow } from "./window.ts";
  * bounded draft, and `admitAnalysis` turns the draft into records against the state it is given.
  *
  * The model's output is never trusted for what code owns. Ids, grades, status, and sources are code's;
- * a quote must be found in the window's messages as `memorySourceText`, a page or thread id must exist, and whatever
+ * a quote must be found in a window message the writer reads as `memorySourceText`, a page or thread id must exist, and whatever
  * fails is listed in the receipt and kept out of the records, never dropped silently.
  */
 
@@ -496,8 +497,9 @@ function repeatsEvent(
  * The records a draft comes to against the state given, read fresh for each attempt.
  *
  * - Evidence: a key line's text and a knowledge or state item's `quote` must be a non-empty contiguous
- *   piece of a window message's `memorySourceText` (its `data` without display markup), never of a
- *   context message or of the text the prompt showed, so one that spans an `[Image]` fails. What fails goes to `unverified` with `quoteNotFound`.
+ *   piece of a read window message's `memorySourceText` (its `data` without display markup), never of
+ *   an omitted user message, a context message or the text the prompt showed, so one that spans an
+ *   `[Image]` fails. What fails goes to `unverified` with `quoteNotFound`. Sources still cite the whole window.
  * - Pages: a page reference is a page's id, or the title of a create it accepted (`created`). A
  *   participant, `who`, or knower that names neither is removed and a knowledge, state, or relationship
  *   item that names neither is left out, each listed as `unknownPage`, and `scene.participants` reads
@@ -518,6 +520,8 @@ export function admitAnalysis(arg: {
     /** What bounding the draft cut. */
     warnings: readonly Warning[];
     window: WriterWindow;
+    /** Leaves user messages out of quote evidence, while keeping their sources. */
+    omitUserMessages?: boolean;
     runId: string;
     /** The ids of the chat's pages. */
     pages: ReadonlySet<string>;
@@ -553,7 +557,9 @@ export function admitAnalysis(arg: {
             [...new Set(ids)].filter((reference) => named(reference, field)).map((reference) => pageOf(reference)!),
         ),
     ];
-    const windowTexts = window.messages.map(({ data }) => memorySourceText(data));
+    const windowTexts = window.messages
+        .filter((message) => memoryWriterReads(message, arg))
+        .map(({ data }) => memorySourceText(data));
     /** Whether an item stands: its quote is in the window and the page it names, if any, exists. */
     const verified = (kind: string, quote: string, pageId?: string) => {
         const quoted = quote.trim() !== "" && windowTexts.some((text) => text.includes(quote));

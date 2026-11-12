@@ -340,7 +340,8 @@ const statusKind = (input: Pick<AnyMemoryTaskInput, "kind">) =>
  *   its terminal.
  * - Rebuild work: the run holds what the task works, so a task takes its plan once and goes on from the
  *   run's cursor, `done` and `total` counting the whole run. Each window reads the chat as stored
- *   (`rebuildWindow`), and one with nothing left moves the cursor with no call. The writer then runs on
+ *   (`rebuildWindow`), and one with no remaining message the writer reads moves the cursor with no call,
+ *   including when current settings omit its user messages. The writer then runs on
  *   the staged store (`rebuildStore`), marked manual, and in a backfill as a historical write. Its `commit`
  *   checks what any commit does, the hold on the live records, then `commitWindow` under the window's own
  *   last message, inclusive, with no receipt: a rebuild writes no chat, so `lastCommittedRevision` stays. A
@@ -1338,11 +1339,8 @@ export function createMemoryTasks(deps: {
                 endRunning(task, "skipped", { reason: "chatGone" });
                 return;
             }
-            const window = rebuildWindow(
-                scopeChat(scope)?.message ?? [],
-                plan[done],
-                writerCadence(scope.db).screening,
-            );
+            const { screening, omitUserMessages } = writerCadence(scope.db);
+            const window = rebuildWindow(scopeChat(scope)?.message ?? [], plan[done], screening, omitUserMessages);
             if (window) {
                 const result = await stagedWriter({
                     scope,

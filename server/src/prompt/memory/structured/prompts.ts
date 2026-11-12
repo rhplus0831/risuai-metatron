@@ -15,6 +15,7 @@ import {
     STRUCTURED_MEMORY_LIMITS as LIMITS,
     type StructuredMemoryDefaultPromptsAnswer,
     memorySourceText,
+    memoryWriterReads,
 } from "../../../../../shared/structuredMemory.ts";
 import type { MemoryEventWrite } from "../../../data/memoryStore.ts";
 import type { MemoryHost } from "../host.ts";
@@ -39,7 +40,7 @@ import type { WriterWindow } from "./window.ts";
  * that quotes it; default-prompts answers, patch calls, and compaction calls keep their rules.
  *
  * The analysis prompt's size is a cost on every recorded turn: its fixed parts stay short and everything
- * it lists is bounded. Only `messages` is not, because a quote must be found in the window's whole text.
+ * it lists is bounded. Only `messages` is not, because a quote must be found in a read message's whole text.
  * The default patch prompt holds no message and everything in it is bounded, so it needs no size check
  * of its own; a custom one is checked by the writer, since its frame can be any length. Neither needs the
  * compaction prompt: it holds one section, and no run keeps it.
@@ -80,6 +81,8 @@ export type AnalysisInput = {
     language: string;
     /** Adds the key-line selection rule to the analysis rules slot. */
     keyLineGuidance?: boolean;
+    /** Leaves user messages out of the window text and earlier context. */
+    omitUserMessages?: boolean;
     /** The pages to list (`castSlice`). */
     cast: readonly CastRow[];
     scene: MemoryPage | null;
@@ -271,11 +274,17 @@ Section:
  */
 const shownText = (message: Message) => memorySourceText(message.data).replace(INLAY_TOKEN_REGEX, "[Image]");
 
-/** The last recorded event and the eligible messages before the window: what the model may read but not quote. */
+/**
+ * The last recorded event and the earlier eligible messages the writer reads, which it may not quote.
+ * Locate the window's start before filtering, then take the last `contextMessages` read messages before it.
+ */
 function previousSlot(input: AnalysisInput): string {
     const eligible = eligibleHistory(input.messages).messages;
     const first = eligible.findIndex(({ chatId }) => chatId === input.window.sources[0]?.messageId);
-    const context = eligible.slice(Math.max(0, first - LIMITS.contextMessages), Math.max(0, first));
+    const context = eligible
+        .slice(0, Math.max(0, first))
+        .filter((message) => memoryWriterReads(message, input))
+        .slice(-LIMITS.contextMessages);
     const lines = [
         ...(input.previousTitle !== undefined ? [`Last recorded event: ${input.previousTitle}`] : []),
         ...context.map(
@@ -337,8 +346,10 @@ export function promptThreads(
 }
 
 /**
- * The slot values of one recording. Window text is `memorySourceText`, display markup removed, as quote
- * verification reads it, except that inlays show as `[Image]`; filling after ChatML and CBS parsing prevents that text becoming prompt syntax.
+ * The slot values of one recording. Only messages the writer reads supply window and context text;
+ * each window message keeps its own source id. Text is `memorySourceText`, display markup removed, as
+ * quote verification reads it, except that inlays show as `[Image]`; filling after ChatML and CBS parsing
+ * prevents that text becoming prompt syntax.
  * When `input.keyLineGuidance` is true, `rules` gains the key-line selection rule; otherwise it stays unchanged.
  */
 export function analysisSlots(input: AnalysisInput): AnalysisSlots {
@@ -355,9 +366,10 @@ export function analysisSlots(input: AnalysisInput): AnalysisSlots {
             ].join("\n") || NONE,
         previous: previousSlot(input),
         messages: input.window.messages
-            .map(
-                (message, index) =>
-                    `[m:${input.window.sources[index].messageId}] ${input.speaker(message)}:\n${shownText(message)}`,
+            .flatMap((message, index) =>
+                memoryWriterReads(message, input)
+                    ? [`[m:${input.window.sources[index].messageId}] ${input.speaker(message)}:\n${shownText(message)}`]
+                    : [],
             )
             .join("\n\n"),
     };

@@ -4,6 +4,7 @@ import {
     type MemoryAnchoredSource,
     type MemoryRun,
     memoryScreenReason,
+    memoryWriterReads,
     normalizeStructuredMemorySettings,
     storedMemorySources,
     type StructuredMemorySlotWarnings,
@@ -47,7 +48,8 @@ import { createStructuredWriter, writerHostDeps } from "./writer.ts";
  *   Not the job's own host, which reaches those.
  * - The window is the newest run's when every message it names is still an eligible message with the
  *   same hash (`windowStillConfirmed` through the window's own last message), rebuilt from the stored
- *   messages by id. A test saves nothing, so it needs no confirmation past the window itself: a run
+ *   messages by id, with no screened reply and at least one message the writer reads. A test saves
+ *   nothing, so it needs no confirmation past the window itself: a run
  *   recorded through the newest reply, or a chat with no user message after it, still has that window.
  *   Else the first window the cadence would close before the chat's ceiling (`writerCeiling`), closed as
  *   a manual start closes it; with no ceiling, or no such window, there is nothing to test, which the
@@ -96,7 +98,7 @@ function slotWarnings(host: MemoryHost): StructuredMemoryTestResult["slots"] {
     return { analysis: of(settings.analysisPrompt, "analysis"), patch: of(settings.patchPrompt, "patch") };
 }
 
-/** The window to test: see the file's comment. */
+/** The newest run's usable window with a message to read, else the cadence's window; see the file's comment. */
 async function testWindow(
     deps: GenerationRunnerDeps,
     scope: JobScope,
@@ -116,9 +118,11 @@ async function testWindow(
     if (last && windowStillConfirmed({ sources }, messages, last.messageId, { inclusive: true })) {
         const byId = new Map(anchoredMessages(messages).map((entry) => [entry.id, entry]));
         const entries = sources.map(({ messageId }) => byId.get(messageId)!);
-        // A reply the screening lists now match leaves the newest run's window behind: the test takes
-        // the window the cadence would close instead, as a run would.
-        if (entries.every(({ message }) => memoryScreenReason(message, cadence.screening) === null)) {
+        // A screened reply or a window with nothing the writer reads falls back to the cadence's window.
+        if (
+            entries.every(({ message }) => memoryScreenReason(message, cadence.screening) === null) &&
+            entries.some(({ message }) => memoryWriterReads(message, cadence))
+        ) {
             return windowOf(entries);
         }
     }

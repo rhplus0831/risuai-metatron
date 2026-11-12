@@ -645,6 +645,8 @@ export interface StructuredMemorySettings {
     instructions: string;
     /** Adds guidance for choosing key lines when recording events; defaults to false. */
     keyLineGuidance: boolean;
+    /** Leaves user text out of new recordings while keeping its sources; defaults to false. */
+    omitUserMessages: boolean;
     /** `analysisPrompt` and `patchPrompt` replace the default prompts. */
     fineTuning: boolean;
     /** ChatML of the analysis call under `fineTuning`. */
@@ -1385,6 +1387,14 @@ export function writerPaused(runs: readonly Pick<MemoryRun, "result">[]): boolea
     return trailingFailures(runs) >= STRUCTURED_MEMORY_LIMITS.consecutiveFailures;
 }
 
+/** Whether the writer reads a message's text; unread messages still belong to their window's sources. */
+export function memoryWriterReads(
+    message: Pick<Message, "role">,
+    settings: Partial<Pick<StructuredMemorySettings, "omitUserMessages">>,
+): boolean {
+    return settings.omitUserMessages !== true || message.role !== "user";
+}
+
 /** Why the preset's screening keeps a reply out of the writer's windows; the Coverage view's reason codes. */
 export type MemoryScreenReason = "screenedRefusal" | "screenedFormat";
 
@@ -1752,6 +1762,7 @@ export function normalizeStructuredMemorySettings(input: unknown): StructuredMem
         screening: { refusal: textList(screening.refusal), format: textList(screening.format) },
         instructions: typeof source.instructions === "string" ? source.instructions : "",
         keyLineGuidance: typeof source.keyLineGuidance === "boolean" ? source.keyLineGuidance : false,
+        omitUserMessages: typeof source.omitUserMessages === "boolean" ? source.omitUserMessages : false,
         fineTuning: typeof source.fineTuning === "boolean" ? source.fineTuning : false,
         analysisPrompt: typeof source.analysisPrompt === "string" ? source.analysisPrompt : "",
         patchPrompt: typeof source.patchPrompt === "string" ? source.patchPrompt : "",

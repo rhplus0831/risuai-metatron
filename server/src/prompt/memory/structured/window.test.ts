@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { Message } from "../../../../../shared/database.ts";
+import { createHypaV3Preset } from "../../../../../shared/hypaV3Presets.ts";
 import { messageSourceHash } from "../../../data/memoryStore.ts";
 import { memoryRecords } from "../../../tests/memoryFixtures.ts";
 import { writerState } from "./step.ts";
@@ -10,11 +11,59 @@ import {
     confirmedWindows,
     windowStillConfirmed,
     writerCeiling,
+    writerCadence,
     type WriterCadence,
     type WriterWindow,
 } from "./window.ts";
 
 describe("confirmed writer windows", () => {
+    it("counts only reply tokens when omission is enabled while keeping every turn source", async () => {
+        const messages: Message[] = [
+            { chatId: "u1", role: "user", data: "Long user text" },
+            { chatId: "a1", role: "char", data: "abc" },
+            { chatId: "u2", role: "user", data: "More user text" },
+            { chatId: "a2", role: "char", data: "def" },
+            { chatId: "u3", role: "user", data: "Last user text" },
+            { chatId: "a3", role: "char", data: "ghi" },
+            { chatId: "next", role: "user", data: "Confirm" },
+        ];
+        for (const setting of [{}, { omitUserMessages: false }, { omitUserMessages: true }]) {
+            const preset = createHypaV3Preset(
+                "Tokens",
+                {
+                    budgetMode: "tokens",
+                    structured: { cadence: "tokens", cadenceTokens: 6, ...setting },
+                },
+                "tokens",
+            );
+            const windows = await confirmedWindows({
+                messages,
+                confirmedBefore: "next",
+                recorded: new Set(),
+                cadence: writerCadence({ hypaV3Presets: [preset], hypaV3PresetId: preset.id }),
+                maxContext: 100,
+                tokenizer: { tokenizeChat: async ({ content }) => content.length },
+                limit: 10,
+            });
+            const expected = setting.omitUserMessages
+                ? [["u1", "a1", "u2", "a2"]]
+                : [
+                      ["u1", "a1"],
+                      ["u2", "a2"],
+                      ["u3", "a3"],
+                  ];
+            expect(windows?.map(({ messages }) => messages.map(({ chatId }) => chatId))).toEqual(expected);
+            expect(windows?.map(({ sources }) => sources)).toEqual(
+                expected.map((ids) =>
+                    ids.map((messageId) => {
+                        const index = messages.findIndex(({ chatId }) => chatId === messageId);
+                        return { messageId, index, hash: messageSourceHash(messages[index]) };
+                    }),
+                ),
+            );
+        }
+    });
+
     it("closes only uncovered confirmed turns at the selected cadence", async () => {
         const message = (id: string, disabled?: Message["disabled"]): Message => ({
             chatId: id,

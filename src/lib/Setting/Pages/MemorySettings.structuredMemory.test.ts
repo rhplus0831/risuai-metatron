@@ -156,6 +156,7 @@ it("edits only consumed settings in the Structured Memory section and shares the
                   ]),
             control(text.instructions),
             kindBox(text.keyLineGuidance),
+            kindBox(text.omitUserMessages),
             control(text.screeningRefusal),
             control(text.screeningFormat),
             kindBox(text.fineTuning),
@@ -252,6 +253,29 @@ it("edits only consumed settings in the Structured Memory section and shares the
     change(selectWith("first"), "second");
     expect(settings.hypaV3Presets.selectedId).toBe("second");
     expect((control(hypa.memoryBudgetTokensLabel) as HTMLInputElement).value).toBe("4321");
+});
+
+it("writes omitUserMessages only in the selected preset when its checkbox is toggled", () => {
+    settings.ui.memoryAlgorithmType = "structuredMemory";
+    open();
+    change(selectWith("first"), "second");
+    const wrapper = target.querySelector("[data-structured-memory-omit-user-messages]");
+    expect(wrapper?.textContent).toContain(text.omitUserMessages);
+    expect(target.querySelector("[data-structured-memory-omit-user-messages-help]")?.textContent).toContain(
+        text.omitUserMessagesHelp,
+    );
+    const checkbox = wrapper!.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    expect(checkbox.checked).toBe(false);
+    for (const expected of [true, false]) {
+        checkbox.click();
+        flushSync();
+        expect(
+            settings.hypaV3Presets.items.find(({ id }) => id === "second")!.settings.structured.omitUserMessages,
+        ).toBe(expected);
+        expect(
+            settings.hypaV3Presets.items.find(({ id }) => id === "first")!.settings.structured.omitUserMessages,
+        ).toBe(false);
+    }
 });
 
 it("enables key-line guidance in the selected preset when its checkbox is ticked", () => {

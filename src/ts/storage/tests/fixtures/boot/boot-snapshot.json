@@ -528,6 +528,7 @@
           },
           "instructions": "",
           "keyLineGuidance": false,
+          "omitUserMessages": false,
           "fineTuning": false,
           "analysisPrompt": "",
           "patchPrompt": "",

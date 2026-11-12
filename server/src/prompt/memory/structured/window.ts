@@ -7,6 +7,7 @@ import {
     type MemoryEvent,
     memoryRerecordTarget,
     memoryScreenReason,
+    memoryWriterReads,
     normalizeStructuredMemorySettings,
     storedMemorySources,
     type StructuredMemorySettings,
@@ -36,7 +37,8 @@ import type { MemoryTokenizer } from "../host.ts";
  * - A window before another event's cited message uses the historical write path (`historicalWindow`)
  *   to preserve current state, whether it repairs an event or records previously unrecorded messages.
  * - Windows close in order over the turns left. A trailing partial one stays open unless a manual
- *   start closes it.
+ *   start closes it. The token cadence counts only the messages the writer reads, while every window
+ *   keeps all its messages and sources, including user messages when `omitUserMessages` is on.
  * - What is recorded can be asked to be recorded again, one event at a time (`rerecord` on the event): a
  *   person's repair marks it, and so does an edit of a message it cites. That asks nothing of `recorded`:
  *   each event a start re-records gets one window of its own ahead of the rest, and the ordinary windows
@@ -57,12 +59,12 @@ export type WriterWindow = { sources: MemoryAnchoredSource[]; messages: Message[
 
 /**
  * What decides when a window closes and what stays out of one: the writer's settings, the budget mode of
- * their preset, and the preset's screening lists.
+ * their preset, the preset's screening lists, and which messages the writer reads for token counting.
  */
 export type WriterCadence = Pick<
     StructuredMemorySettings,
     "cadence" | "cadenceTurns" | "cadenceTokens" | "cadenceRatio" | "screening"
-> & { budgetMode?: HypaV3Settings["budgetMode"] };
+> & { budgetMode?: HypaV3Settings["budgetMode"]; omitUserMessages?: boolean };
 
 /** Screening that keeps nothing out. */
 const NO_SCREENING: WriterCadence["screening"] = { refusal: [], format: [] };
@@ -73,13 +75,20 @@ export type ConfirmedMessage = { id: string; message: Message; index: number };
 /** Where windows stop: before the message `id`, or through it when a press confirmed it (`inclusive`). */
 export type WriterCeiling = { id: string; inclusive: boolean };
 
-/** The scope's chat memory preset supplies cadence and screening settings. */
+/** The scope's chat memory preset supplies cadence, screening, and which messages the writer reads. */
 export function writerCadence(db: Parameters<typeof selectedHypaV3Preset>[0]): WriterCadence {
     const settings = selectedHypaV3Preset(db)?.settings;
-    const { cadence, cadenceTurns, cadenceTokens, cadenceRatio, screening } = normalizeStructuredMemorySettings(
-        settings?.structured,
-    );
-    return { cadence, cadenceTurns, cadenceTokens, cadenceRatio, screening, budgetMode: settings?.budgetMode };
+    const { cadence, cadenceTurns, cadenceTokens, cadenceRatio, screening, omitUserMessages } =
+        normalizeStructuredMemorySettings(settings?.structured);
+    return {
+        cadence,
+        cadenceTurns,
+        cadenceTokens,
+        cadenceRatio,
+        screening,
+        omitUserMessages,
+        budgetMode: settings?.budgetMode,
+    };
 }
 
 /**
@@ -309,7 +318,7 @@ function rerecordWindows(
  *
  * `tokenizer` counts a stored message as `role` and `data` alone, so the job's step and its task decide
  * alike; `maxContext` is the input's in both. Only the `tokens` cadence counts: there the turns
- * accumulate until their messages reach `cadenceTokens` under budget mode `tokens`, otherwise
+ * accumulate until the messages the writer reads reach `cadenceTokens` under budget mode `tokens`, otherwise
  * `cadenceRatio` of `maxContext`, at least 1. `everyTurn` closes each turn, `everyK` closes each
  * `cadenceTurns` turns, and `manual` closes nothing without a person's start.
  *
@@ -353,6 +362,9 @@ export async function confirmedWindows(arg: {
         turns++;
         if (cadence.cadence === "tokens") {
             for (const { message } of unrecorded) {
+                if (!memoryWriterReads(message, cadence)) {
+                    continue;
+                }
                 tokens += await tokenizer.tokenizeChat({
                     role: message.role === "user" ? "user" : "assistant",
                     content: message.data,

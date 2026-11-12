@@ -20,7 +20,8 @@
 - `shared/structuredMemory.ts`: writer settings and pure rules; `StructuredMemorySettings`,
   `normalizeStructuredMemorySettings`, `STRUCTURED_MEMORY_CADENCES`, `STRUCTURED_MEMORY_HIGHLIGHT_MODES`,
   `STRUCTURED_MEMORY_HIGHLIGHT_KINDS`, `structuredMemoryLanguageOverride`, `structuredMemoryHighlightOverride`,
-  `structuredMemoryWriterLanguage`, `MEMORY_SECTION_BUDGETS`, `memorySectionOverBudget`, `writerPaused`.
+  `structuredMemoryWriterLanguage`, `MEMORY_SECTION_BUDGETS`, `memorySectionOverBudget`, `writerPaused`,
+  `memoryWriterReads`.
 - `shared/memory.ts`: preset settings shape; `HypaV3Settings.structured`.
 - `shared/hypaV3Presets.ts`: preset defaults; `createHypaV3Preset`.
 - `server/src/jobs/jobScope.ts`: task settings digest; `memorySettingsFingerprint`.
@@ -62,6 +63,12 @@ message data with fresh source anchors.
 A person's press takes every repair mark before ordinary work. Automatic work takes only marks explained by an edit
 (`automaticRerecords`), so a restored mark or one whose text was put back waits for a press. Adopted event sources count
 as recorded, keeping [adoption](lifecycle.md#adopting-hypav3-summaries) from automatically recording them again.
+
+A window always cites every message of its turns, also under `omitUserMessages`: what the writer is shown narrows, not
+what it records over. `memoryWriterReads` is the one rule for what the writer reads, and the prompt, the cast slice,
+quote verification, and the `tokens` cadence all go through it. Every window `confirmedWindows` makes holds a reply, so
+it always has something to read. A rebuild window or the test run's newest run can hold none; neither makes a call on it
+([rebuild](rebuild.md#the-plan)).
 
 ### The writer task
 
@@ -193,6 +200,10 @@ Compaction changes no event, and a warning does not fail the run.
   the chat's stored id to `readWriterSettings`.
 - A chat's `structuredMemoryLanguage` wins over its owner's, and the owner's over the preset's `language`, where `""`
   follows `db.language`. A chat's `structuredMemoryHighlight` wins over the preset's `highlightMode`.
+- `omitUserMessages` defaults to false and applies to events recorded from then on. On, the writer is handed no user
+  message, as a window message or a context line, and a quote only a user message holds is `quoteNotFound`; its events
+  still cite the user messages, so coverage and reconciliation read them as before, and turning it off leaves no message
+  unrecorded. It is separate from HypaV3's `doNotSummarizeUserMessage`, which Structured Memory never reads.
 - `keyLineGuidance` defaults to false and applies to events recorded from then on; stored events keep their key lines
   until re-recorded or rebuilt.
 - `MemorySettings.svelte` exposes only the fields something reads, and shares with HypaV3 only the preset picker, the
@@ -313,6 +324,16 @@ Compaction changes no event, and a warning does not fail the run.
   wastes nothing, since lending and the timeline's extension spend what a lane leaves, but it can starve a lane's core
   round. A preset sets its own in `laneShares` under `auto`, or token counts under `manual`. Decision: Structured Memory
   Recent Timeline D8 (owner, 2026-11-11); shares became a preset setting at the owner's request on 2026-11-12.
+- Under `omitUserMessages` a user message's source keeps an ordinary anchor, so editing that message still marks its
+  event for a re-record and the event reads stale on a send before it. The re-record is a full window, with a patch call
+  when there are targets, for a result that read none of the edited text, and on an adopted event it replaces the
+  summary with a writer event. Avoiding it needs a source that says its text was not read, a new hash version. Decision:
+  Structured Memory Reply-Only Recording D14 (2026-11-13).
+- `omitUserMessages` filters only what the code supplies. CBS in the preset's own instructions or custom frame is parsed
+  over the whole chat in every writer call, so a transcript function (`userhistory`, `history`, `lastmessage`,
+  `previouschatlog`) or text that calls one (`persona`, `call::`, and the like) still brings user messages in, past any
+  quote check. So do the owner's `request` trigger and a plugin's `beforeRequest` hook on a job's writer request.
+  Decision: Structured Memory Reply-Only Recording D18 (owner, 2026-11-13).
 - A repair never carries an edit into later state; a rebuild from that point does. A later event with every cited
   message deleted no longer counts. Decision: Implementation Audit Fixes Q3.
 

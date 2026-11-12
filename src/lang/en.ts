@@ -3193,6 +3193,9 @@ export const languageEnglish = {
             keyLineGuidance: "Ask the writer to pick key lines that matter",
             keyLineGuidanceHelp:
                 "When on, the writer keeps lines that carry a decision, a promise, a revealed fact, or a feeling, and leaves out greetings and filler. It applies to events recorded from now on. Stored events keep their key lines until re-recorded or rebuilt.",
+            omitUserMessages: "Leave user messages out of recording",
+            omitUserMessagesHelp:
+                "The writer is given replies only. A user message still counts as recorded and leaves the prompt with its turn, but what it says reaches memory only when a reply restates it. For prompts where the reply expands on what you wrote. CBS in your own writer instructions can still bring user messages in. Applies to events recorded from now on.",
             fineTuning: "Fine-tune the recording prompts",
             fineTuningConfirm:
                 "Replace the writer's default prompts with your own? A prompt that loses a required field or slot breaks recording: every run fails until the prompt is fixed or this box is unticked. Blank prompts start as copies of the defaults.",

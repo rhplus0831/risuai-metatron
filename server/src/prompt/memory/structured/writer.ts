@@ -13,6 +13,7 @@ import {
     type MemoryRun,
     type MemoryThread,
     memoryThreadEnded,
+    memoryWriterReads,
     normalizeStructuredMemorySettings,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
     structuredMemoryEmbeddingLanes,
@@ -306,7 +307,11 @@ function buildPrompt(
     const slots = analysisSlots({
         language: writerLanguage(arg),
         keyLineGuidance: settings.keyLineGuidance,
-        cast: castSlice(pages, window.messages),
+        omitUserMessages: settings.omitUserMessages,
+        cast: castSlice(
+            pages,
+            window.messages.filter((message) => memoryWriterReads(message, settings)),
+        ),
         scene,
         threads,
         moreThreads,
@@ -678,6 +683,7 @@ function admitRecording(
             draft: analysis.event,
             warnings: [...warnings, ...dropped],
             window: arg.window,
+            omitUserMessages: writerSettings(arg.host).omitUserMessages,
             runId,
             ...state,
             created: plan.names,

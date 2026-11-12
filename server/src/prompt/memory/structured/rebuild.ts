@@ -6,6 +6,7 @@ import {
     type MemoryEvent,
     type MemoryPage,
     memoryScreenReason,
+    memoryWriterReads,
     type MemorySection,
     type MemoryThread,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
@@ -50,7 +51,9 @@ import type { WriterMemory } from "./writer.ts";
  *
  * - The plan: the windows are worked out once, at the start, as message ids (`rebuildPlan`), so a step
  *   parses no event to find what is next. Planning and rebuild/backfill cost previews read the transcript
- *   once and hash nothing. A run's window then reads the chat as stored (`rebuildWindow`).
+ *   once and hash nothing. With `omitUserMessages`, a turn with no reply left has its own window;
+ *   the others group by the requested turn count. A run's window then reads the chat as stored
+ *   (`rebuildWindow`); one with no message the writer reads moves the cursor with no model call.
  * - What a rebuild keeps: a person's work is seeded at the start (`rebuildSeed`), so the writer sees those
  *   pages and a lock binds it. No event is seeded: carrying is decided at the swap (`rebuildChanges`), so a
  *   retraction that lands during the run counts, and the writer reads only what the run wrote.
@@ -102,9 +105,11 @@ function retractedMessages(events: readonly MemoryEvent[]): Set<string> {
  * through the newest eligible reply, inclusive, because a person's start confirms it, as a press of record
  * now does. Unlike the writer's own windows, a turn does not drop out for a recorded reply: each lists the
  * messages `mode` does not exclude (a fresh rebuild excludes none, a retraction included), and one with
- * any left counts, which is what takes the user messages an adopted chat's summaries left uncovered. A reply `screening` keeps out of the writer's windows is dropped
- * before the turns are made, so the user message before it folds into the next turn. Empty when there is
- * nothing to do. Reads the transcript once and hashes nothing; the cost preview uses the same entries.
+ * any left counts, which is what takes the user messages an adopted chat's summaries left uncovered.
+ * With `omitUserMessages`, a turn with no reply left closes any pending group and gets its own window;
+ * only turns with a reply group by `turns`. A reply `screening` keeps out of the writer's windows is
+ * dropped before the turns are made, so the user message before it folds into the next turn. Empty when
+ * there is nothing to do. Reads the transcript once and hashes nothing; the cost preview uses the same entries.
  */
 export function rebuildPlan({
     messages,
@@ -112,22 +117,24 @@ export function rebuildPlan({
     mode,
     turns,
     screening,
+    omitUserMessages,
 }: {
     messages: readonly Message[];
     events: readonly MemoryEvent[];
     mode: StructuredMemoryRebuildMode;
     turns: 1 | 2;
     screening: WriterCadence["screening"];
+    omitUserMessages?: boolean;
 }): string[][] {
-    return rebuildEntryPlan(anchoredMessages(messages), { events, mode, turns, screening }).map((entries) =>
-        entries.map(({ id }) => id),
+    return rebuildEntryPlan(anchoredMessages(messages), { events, mode, turns, screening, omitUserMessages }).map(
+        (entries) => entries.map(({ id }) => id),
     );
 }
 
 /** The plan's entries, retained so a preview can count messages and bytes without rereading the transcript. */
 function rebuildEntryPlan(
     anchored: readonly ConfirmedMessage[],
-    { events, mode, turns, screening }: Omit<Parameters<typeof rebuildPlan>[0], "messages">,
+    { events, mode, turns, screening, omitUserMessages }: Omit<Parameters<typeof rebuildPlan>[0], "messages">,
 ): ConfirmedMessage[][] {
     const confirmed = anchored
         .slice(0, anchored.findLastIndex(({ message }) => message.role === "char") + 1)
@@ -142,8 +149,27 @@ function rebuildEntryPlan(
         .map((turn) => turn.filter(({ id }) => !excluded.has(id)))
         .filter((entries) => entries.length > 0);
     const plan: ConfirmedMessage[][] = [];
-    for (let start = 0; start < open.length; start += turns) {
-        plan.push(open.slice(start, start + turns).flat());
+    let pending: ConfirmedMessage[] = [];
+    let pendingTurns = 0;
+    for (const turn of open) {
+        if (!turn.some(({ message }) => memoryWriterReads(message, { omitUserMessages }))) {
+            if (pending.length > 0) {
+                plan.push(pending);
+                pending = [];
+                pendingTurns = 0;
+            }
+            plan.push(turn);
+            continue;
+        }
+        pending.push(...turn);
+        if (++pendingTurns === turns) {
+            plan.push(pending);
+            pending = [];
+            pendingTurns = 0;
+        }
+    }
+    if (pending.length > 0) {
+        plan.push(pending);
     }
     return plan;
 }
@@ -217,17 +243,22 @@ export type RebuildWindow = { window: WriterWindow; ceiling: WriterCeiling };
 /**
  * The plan's window `ids` from `messages` as stored: those a send still reads and `screening` leaves in,
  * since a reply can be edited after the plan was taken, in chat order, with fresh anchors. Its own last
- * message is its ceiling, inclusive. Null with none left.
+ * message is its ceiling, inclusive. Null when none of the remaining messages is read by the writer,
+ * including a resumed window whose replies are now screened. Otherwise all remaining sources stay.
  */
 export function rebuildWindow(
     messages: readonly Message[],
     ids: readonly string[],
     screening: WriterCadence["screening"],
+    omitUserMessages = false,
 ): RebuildWindow | null {
     const wanted = new Set(ids);
     const entries = anchoredMessages(messages).filter(
         ({ id, message }) => wanted.has(id) && memoryScreenReason(message, screening) === null,
     );
+    if (!entries.some(({ message }) => memoryWriterReads(message, { omitUserMessages }))) {
+        return null;
+    }
     const last = entries.at(-1);
     return last ? { window: windowOf(entries), ceiling: { id: last.id, inclusive: true } } : null;
 }
@@ -415,21 +446,27 @@ export function rebuildStore(store: Pick<ResourceStore, "memory" | "chatMeta" | 
     };
 }
 
-/** What `windows` come to as a preview. */
-function windowsCost(windows: readonly (readonly Pick<Message, "data">[])[]): StructuredMemoryCostAnswer {
-    const messages = windows.flat();
+/** A preview counts only windows with a message to read, and only those messages' text. */
+function windowsCost(
+    windows: readonly (readonly Pick<Message, "role" | "data">[])[],
+    settings: Pick<WriterCadence, "omitUserMessages">,
+): StructuredMemoryCostAnswer {
+    const read = windows.map((window) => window.filter((message) => memoryWriterReads(message, settings)));
+    const calls = read.filter((window) => window.length > 0).length;
+    const messages = read.flat();
     const bytes = messages.reduce((total, { data }) => total + Buffer.byteLength(data, "utf8"), 0);
     return {
-        calls: windows.length,
+        calls,
         messages: messages.length,
-        estimatedTokens: memoryCostTokens(bytes, windows.length),
+        estimatedTokens: memoryCostTokens(bytes, calls),
     };
 }
 
 /**
  * What a press would cost, from the chat as stored and its live records; null for a missing chat. Reads only.
  * `turns` is what the tab would ask of a rebuild or a backfill. Those previews read the transcript once,
- * counting the plan's messages and UTF-8 bytes without hashing messages or building writer windows.
+ * counting windows with a message the writer reads, and only read messages and their UTF-8 bytes,
+ * without hashing messages or building writer windows.
  * Record now's windows are the writer's own, in windows of `turns` turns, because a route has no job scope
  * to read the cadence from, up to `maxWriterWindows`, marked events first.
  */
@@ -442,21 +479,36 @@ export async function memoryWorkCost(
     if (!chat) {
         return null;
     }
-    // A route has no job scope, so the preset's screening is read from the store.
-    const { screening } = store.memory.readWriterSettings(chat.memoryPresetId);
+    // A route has no job scope, so what the preset screens or omits is read from the store.
+    const { screening, omitUserMessages } = store.memory.readWriterSettings(chat.memoryPresetId);
     if (mode !== "record") {
         const listed = store.memory.readContents(chaId, chatId)?.events ?? [];
         const events = listed.flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "events", id)?.data ?? []);
-        const plan = rebuildEntryPlan(anchoredMessages(chat.message), { events, mode, turns, screening });
+        const plan = rebuildEntryPlan(anchoredMessages(chat.message), {
+            events,
+            mode,
+            turns,
+            screening,
+            omitUserMessages,
+        });
+        let calls = 0;
         let messages = 0;
         let bytes = 0;
         for (const entries of plan) {
-            messages += entries.length;
+            let read = false;
             for (const { message } of entries) {
+                if (!memoryWriterReads(message, { omitUserMessages })) {
+                    continue;
+                }
+                read = true;
+                messages++;
                 bytes += Buffer.byteLength(message.data, "utf8");
             }
+            if (read) {
+                calls++;
+            }
         }
-        return { calls: plan.length, messages, estimatedTokens: memoryCostTokens(bytes, plan.length) };
+        return { calls, messages, estimatedTokens: memoryCostTokens(bytes, calls) };
     }
     const confirmedBefore = through ?? writerCeiling(chat.message);
     const windows =
@@ -467,14 +519,24 @@ export async function memoryWorkCost(
                   confirmedBefore,
                   inclusive: through !== undefined,
                   recorded: readRecordedMessages(store, chaId, chatId),
-                  cadence: { cadence: "everyK", cadenceTurns: turns, cadenceTokens: 1, cadenceRatio: 0.5, screening },
+                  cadence: {
+                      cadence: "everyK",
+                      cadenceTurns: turns,
+                      cadenceTokens: 1,
+                      cadenceRatio: 0.5,
+                      screening,
+                      omitUserMessages,
+                  },
                   maxContext: 0,
                   tokenizer: { tokenizeChat: () => Promise.resolve(0) },
                   limit: MEMORY_TASK_LIMITS.maxWriterWindows,
                   manual: true,
                   rerecord: readRerecordEvents(store, chaId, chatId),
               });
-    return windowsCost((windows ?? []).map(({ messages }) => messages));
+    return windowsCost(
+        (windows ?? []).map(({ messages }) => messages),
+        { omitUserMessages },
+    );
 }
 
 const refusal = (message: string) => new GenerationRunnerError(409, message, { stage: "setup" });
@@ -551,12 +613,14 @@ export async function runMemoryRebuild(
         }
         const { mode, turns } = command;
         const records = readRecordSet(store.memory, characterId, chatId);
+        const { screening, omitUserMessages } = writerCadence(scope.db);
         const plan = rebuildPlan({
             messages: scopeChat(scope)?.message ?? [],
             events: records?.events ?? [],
             mode,
             turns,
-            screening: writerCadence(scope.db).screening,
+            screening,
+            omitUserMessages,
         });
         if (!records || plan.length === 0) {
             throw refusal("This chat has no turn to record");

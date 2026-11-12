@@ -940,6 +940,18 @@
     <span class="mb-4 text-xs text-textcolor2" data-structured-memory-key-line-guidance-help
         >{text.keyLineGuidanceHelp}</span
     >
+    <div class="mb-2 flex items-center" data-structured-memory-omit-user-messages>
+        <Check
+            name={text.omitUserMessages}
+            bind:check={
+                () => structured.omitUserMessages,
+                (value) => setStructured(preset, (next) => (next.omitUserMessages = value))
+            }
+        />
+    </div>
+    <span class="mb-4 text-xs text-textcolor2" data-structured-memory-omit-user-messages-help
+        >{text.omitUserMessagesHelp}</span
+    >
     <span class="text-textcolor">{text.screeningRefusal}</span>
     <div class="mb-2" data-structured-memory-screening="refusal">
         <TextAreaInput

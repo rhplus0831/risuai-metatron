@@ -561,6 +561,7 @@ const structuredDefaults = {
     language: "",
     instructions: "",
     keyLineGuidance: false,
+    omitUserMessages: false,
     analysisPrompt: "",
     patchPrompt: "",
     fineTuning: false,
@@ -586,6 +587,7 @@ const structuredCustom = {
     language: "ko",
     instructions: "Keep names",
     keyLineGuidance: true,
+    omitUserMessages: true,
     analysisPrompt: "Analyze this",
     patchPrompt: "Patch this",
     fineTuning: true,
@@ -596,6 +598,24 @@ const structuredCustom = {
 };
 
 describe("Structured Memory settings", () => {
+    it("defaults absent or non-boolean omitUserMessages to false and preserves booleans through presets", () => {
+        for (const [structured, expected] of [
+            [undefined, false],
+            [{}, false],
+            [{ omitUserMessages: false }, false],
+            [{ omitUserMessages: true }, true],
+            [{ omitUserMessages: "true" }, false],
+        ] as const) {
+            expect(normalizeStructuredMemorySettings(structured).omitUserMessages).toBe(expected);
+            const preset = createHypaV3Preset("Reply only", { structured }, "reply-only");
+            expect(preset.settings.structured.omitUserMessages).toBe(expected);
+            expect(
+                normalizeHypaV3Presets({ items: [preset], selectedId: preset.id }).items[0].settings.structured
+                    .omitUserMessages,
+            ).toBe(expected);
+        }
+    });
+
     it("defaults absent or invalid key-line guidance to false and preserves stored booleans", () => {
         for (const input of [undefined, {}, { keyLineGuidance: "true" }, { keyLineGuidance: false }]) {
             expect(normalizeStructuredMemorySettings(input).keyLineGuidance).toBe(false);

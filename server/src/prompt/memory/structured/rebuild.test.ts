@@ -29,11 +29,16 @@ const event = (id: string, ids: string[], extra: Partial<MemoryEvent> = {}): Mem
 
 const NO_SCREENING: { refusal: string[]; format: string[] } = { refusal: [], format: [] };
 
-function costStore(message: Message[], events: MemoryEvent[] = [], screening: typeof NO_SCREENING = NO_SCREENING) {
+function costStore(
+    message: Message[],
+    events: MemoryEvent[] = [],
+    screening: typeof NO_SCREENING = NO_SCREENING,
+    omitUserMessages?: boolean,
+) {
     return {
         readChatSource: () => ({ data: { message } }),
         memory: {
-            readWriterSettings: () => ({ screening }),
+            readWriterSettings: () => ({ screening, omitUserMessages }),
             readContents: () => ({ events }),
             readRecord: (_chaId: string, _chatId: string, _kind: string, id: string) => ({
                 data: events.find((record) => record.id === id),
@@ -41,6 +46,98 @@ function costStore(message: Message[], events: MemoryEvent[] = [], screening: ty
         },
     } as unknown as Parameters<typeof memoryWorkCost>[0];
 }
+
+it("plans reply-less turns separately and groups only turns with replies when omission is on", () => {
+    for (const mode of ["rebuild", "backfill", "fresh"] as const) {
+        const events = [event("reply-only", ["a1"], { status: mode === "rebuild" ? "retracted" : "active" })];
+        const args = { messages, events, mode, turns: 2 as const, screening: NO_SCREENING };
+        const legacy =
+            mode === "fresh"
+                ? [
+                      ["u1", "a1", "u2", "a2"],
+                      ["u3", "a3"],
+                  ]
+                : [
+                      ["u1", "u2", "a2"],
+                      ["u3", "a3"],
+                  ];
+        expect(rebuildPlan(args)).toEqual(legacy);
+        expect(rebuildPlan({ ...args, omitUserMessages: false })).toEqual(legacy);
+        expect(rebuildPlan({ ...args, omitUserMessages: true })).toEqual(
+            mode === "fresh"
+                ? [
+                      ["u1", "a1", "u2", "a2"],
+                      ["u3", "a3"],
+                  ]
+                : [["u1"], ["u2", "a2", "u3", "a3"]],
+        );
+    }
+});
+
+it("returns no rebuild window when current replies are gone, disabled or screened under omission", () => {
+    const screening = { refusal: ["refusal"], format: [] };
+    for (const current of [
+        [messages[0]],
+        [messages[0], { ...messages[1], disabled: true }],
+        [messages[0], { ...messages[1], data: "A refusal" }],
+    ]) {
+        const expected = {
+            ceiling: { id: "u1", inclusive: true },
+            window: {
+                messages: [messages[0]],
+                sources: [{ messageId: "u1", index: 0, hash: messageSourceHash(messages[0]) }],
+            },
+        };
+        expect(rebuildWindow(current, ["u1", "a1"], screening)).toEqual(expected);
+        expect(rebuildWindow(current, ["u1", "a1"], screening, false)).toEqual(expected);
+        expect(rebuildWindow(current, ["u1", "a1"], screening, true)).toBeNull();
+    }
+    expect(rebuildWindow(messages, ["u1", "a1"], screening, true)).toEqual({
+        ceiling: { id: "a1", inclusive: true },
+        window: {
+            messages: messages.slice(0, 2),
+            sources: messages
+                .slice(0, 2)
+                .map((message, index) => ({ messageId: message.chatId, index, hash: messageSourceHash(message) })),
+        },
+    });
+});
+
+it("previews only readable windows, messages and UTF-8 bytes in every work mode", async () => {
+    const current: Message[] = [
+        { chatId: "u1", role: "user", data: "한" },
+        { chatId: "a1", role: "char", data: "😀" },
+        { chatId: "u2", role: "user", data: "é" },
+        { chatId: "a2", role: "char", data: "答" },
+        { chatId: "u3", role: "user", data: "x" },
+        { chatId: "a3", role: "char", data: "ok" },
+        { chatId: "pending", role: "user", data: "Not confirmed" },
+    ];
+    for (const mode of ["rebuild", "backfill", "fresh", "record"] as const) {
+        const events = [event("reply-only", ["a1"], { status: mode === "rebuild" ? "retracted" : "active" })];
+        for (const setting of [undefined, false, true]) {
+            const cost = await memoryWorkCost(
+                costStore(current, events, NO_SCREENING, setting),
+                { chaId: "character", chatId: "chat" },
+                { mode, turns: 2 },
+            );
+            // Fresh reads all 15 bytes (9 reply bytes when on). Rebuild/backfill leave a1 out:
+            // 11 bytes when off, and 5 reply bytes when on. Record now skips the covered turn:
+            // 8 bytes when off and 5 when on, grouped into one call. Each call adds 3,000 tokens.
+            expect(cost, `${mode}, omit=${setting}`).toEqual(
+                setting === true
+                    ? mode === "fresh"
+                        ? { calls: 2, messages: 3, estimatedTokens: 6003 }
+                        : { calls: 1, messages: 2, estimatedTokens: 3002 }
+                    : mode === "fresh"
+                      ? { calls: 2, messages: 6, estimatedTokens: 6005 }
+                      : mode === "record"
+                        ? { calls: 1, messages: 4, estimatedTokens: 3003 }
+                        : { calls: 2, messages: 5, estimatedTokens: 6004 },
+            );
+        }
+    }
+});
 
 it("previews two rebuild calls with 6,000 overhead tokens and four text tokens", async () => {
     // Two turns total 3 + 4 + 2 + 1 = 10 UTF-8 bytes, so ceil(10 / 3) = 4 text tokens.

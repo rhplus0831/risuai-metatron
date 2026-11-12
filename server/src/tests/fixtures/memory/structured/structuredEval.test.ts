@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { HypaV3Settings } from "../../../../../../shared/memory.ts";
 import type { MemoryEvent, MemoryManifestItem } from "../../../../../../shared/structuredMemory.ts";
+import { writeMemory } from "../../../memoryFixtures.ts";
 import { analysisOverhead, resolveLabel, scoreProbe, sendLedger, summarizeScores, writerLedger } from "./evaluate.ts";
 import { createFixture, createStubTokenizers, PINNED_PRESET, type FixtureOptions } from "./harness.ts";
 import {
@@ -97,6 +98,64 @@ const fixture = (options: Pick<FixtureOptions, "story" | "algorithm" | "maxConte
 describe("structured memory evaluation", () => {
     beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }));
     afterEach(() => vi.useRealTimers());
+
+    it("records replies with full turn coverage while excluding user text, cast matches and quote evidence", async () => {
+        const story = generateStory({ language: "en", turns: 20, seed: 17 });
+        story.turns = story.turns.slice(0, 2);
+        story.turns[0].user = "User-only secret: Obsidian Observatory.";
+        story.turns[0].char += " Reply-only landmark: Copper Pavilion.";
+        story.turns[0].analysis.keyLines.push({ speaker: "User", text: story.turns[0].user });
+        const f = fixture({ story, algorithm: "structuredMemory" });
+        const kind = f.kinds.get("hypaV3Presets")!;
+        const preset = f.store.get(kind, "main")!;
+        const data = preset.data as { items: { settings: HypaV3Settings }[] };
+        f.store.put(
+            kind,
+            "main",
+            {
+                ...data,
+                items: data.items.map((item) => ({
+                    ...item,
+                    settings: { ...item.settings, structured: { ...item.settings.structured, omitUserMessages: true } },
+                })),
+            },
+            preset.revision,
+        );
+        writeMemory(f.store, "c", "k", {
+            pages: ["Obsidian Observatory", "Copper Pavilion"].map((title, index) => ({
+                ...plainRecords().pages[0],
+                id: `landmark-${index}`,
+                title,
+                type: "location",
+                namedByUser: true,
+            })),
+        });
+        await f.rebuild();
+        const requests = f.calls.filter(({ kind }) => kind === "analysis");
+        expect(requests).toHaveLength(2);
+        for (const [index, request] of requests.entries()) {
+            const prompt = request.messages.map(({ content }) => content).join("\n");
+            for (const turn of story.turns) expect(prompt).not.toContain(turn.user);
+            expect(prompt).toContain(`[m:${story.turns[index].charId}]`);
+            expect(prompt).toContain(story.turns[index].char);
+        }
+        const cast = requests[0].messages.find(({ role }) => role === "user")!.content.split("\n\nScene:")[0];
+        expect(cast).not.toContain("Obsidian Observatory");
+        expect(cast).toContain("Copper Pavilion");
+        const events = f.records().events;
+        expect(events.map(({ sources }) => sources.map(({ messageId }) => messageId))).toEqual([
+            [userMessageId(1), charMessageId(1)],
+            [userMessageId(2), charMessageId(2)],
+        ]);
+        expect(events[0].keyLines.map(({ text }) => text)).not.toContain(story.turns[0].user);
+        const runs = f.store.memory.readContents("c", "k")!.runs;
+        const first = f.store.memory.readRecord("c", "k", "runs", runs[0].id)!.data;
+        expect(first.receipt?.unverified).toContainEqual({
+            kind: "keyLine",
+            text: story.turns[0].user,
+            reason: "quoteNotFound",
+        });
+    });
 
     it("generates reproducible Korean and English chats with ten characters and labelled probes", () => {
         for (const language of ["ko", "en"] as const) {

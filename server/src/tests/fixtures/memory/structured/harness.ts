@@ -505,12 +505,14 @@ export function createFixture(options: FixtureOptions) {
                 throw new Error("The chat has no memory tables");
             }
             const messages = scopeChat(scope)?.message ?? [];
+            const { screening, omitUserMessages } = writerCadence(scope.db);
             const plan = rebuildPlan({
                 messages,
                 events: records.events,
                 mode: "rebuild",
                 turns: 1,
-                screening: writerCadence(scope.db).screening,
+                screening,
+                omitUserMessages,
             });
             if (plan.length === 0) {
                 throw new Error("The chat has no turn to record");

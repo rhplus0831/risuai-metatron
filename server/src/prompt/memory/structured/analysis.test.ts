@@ -22,6 +22,45 @@ const draft = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("analysis admission", () => {
+    it("rejects user-only quotes as quoteNotFound under omission and keeps the full source coverage", () => {
+        const messages: Message[] = [
+            { chatId: "u", role: "user", data: "The secret is amber." },
+            { chatId: "a", role: "char", data: "The gate is open." },
+        ];
+        const sources = messages.map((message, index) => ({
+            messageId: message.chatId!,
+            index,
+            hash: messageSourceHash(message),
+        }));
+        const keyLines = [
+            { speaker: "Uma", text: "The secret is amber." },
+            { speaker: "Cara", text: "The gate is open." },
+        ];
+        const parsed = parseAnalysis(JSON.stringify(draft({ keyLines })));
+        if (!parsed.ok) throw new Error(parsed.error);
+        for (const setting of [{}, { omitUserMessages: false }, { omitUserMessages: true }]) {
+            const admitted = admitAnalysis({
+                ...setting,
+                draft: parsed.analysis.event,
+                warnings: [],
+                window: { messages, sources },
+                messages,
+                runId: "run",
+                pages: new Set(),
+                threads: new Map(),
+                lastEvent: null,
+                newId: () => "event",
+            });
+            expect(admitted.event.keyLines).toEqual(setting.omitUserMessages ? [keyLines[1]] : keyLines);
+            expect(admitted.unverified).toEqual(
+                setting.omitUserMessages
+                    ? [{ kind: "keyLine", text: "The secret is amber.", reason: "quoteNotFound" }]
+                    : [],
+            );
+            expect(admitted.event.sources).toEqual(sources);
+        }
+    });
+
     it("replaces a repeated event's earlier thread moves so retracting it undoes the admitted moves", () => {
         const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
         const store = createResourceStore({ file: ":memory:", kinds });

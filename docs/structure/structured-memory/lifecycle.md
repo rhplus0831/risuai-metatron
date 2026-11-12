@@ -332,6 +332,11 @@ takes over.
   archive.
 - Under `doNotSummarizeUserMessage` a summary cites only replies, so an adopted chat's user messages stay uncovered
   until [a backfill](rebuild.md#backfill). Decision: Structured Memory slice 6a, archive.
+- With the preset's `omitUserMessages` on, a backfill leaves those user messages uncovered: their windows hold nothing
+  the writer reads. With nothing else to record the preview counts no call and the press only shows its toast; a run
+  that starts all the same moves past them and stops `nothingRecorded`, holding the rebuild lock until abandoned. To
+  record them, abandon such a run, turn the switch off, and backfill. Decision: Structured Memory Reply-Only Recording,
+  Order (2026-11-13).
 - A declined chat is never reset, since its summaries have no other copy, so its plugins keep reading them without any
   later event. Selecting HypaV3 and using its modal is the way out. A held chat's send has no summaries or card, so its
   older history trims until the choice. Decision: Structured Memory slice 6c, archive.
