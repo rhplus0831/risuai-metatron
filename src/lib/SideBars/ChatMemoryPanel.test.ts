@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { normalizeModelProfiles } from "../../../shared/presets.ts";
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StoreBackedServer } from "src/ts/storage/tests/storeBackedServer";
@@ -245,5 +246,67 @@ it.each(["loaded", "unloaded"])(
         expect(server.chat("c", "sibling")!.data).not.toHaveProperty("memoryPresetId");
         if (state === "unloaded") expect(chats.findChat(ref)).toBeUndefined();
         else expect(chats.findChat(ref)).toHaveProperty("memoryPresetId", "personal");
+    },
+);
+
+it.each(["loaded", "unloaded"])(
+    "selects, clears and preserves a deleted memory connection for the %s chat",
+    async (state) => {
+        const { settings } = await import("src/ts/storage/settingsViews.svelte");
+        const { language } = await import("src/lang");
+        settings.modelProfiles = normalizeModelProfiles([
+            { id: "default", name: "Main connection", modelId: "gpt-4o" },
+            { id: "personal", name: "Chat connection", modelId: "gpt-4o-mini" },
+        ]);
+        const server = transport.server!;
+        if (state === "loaded") {
+            release = chats.pinChat(ref);
+            await chats.loadChat(ref);
+        }
+        const target = document.createElement("div");
+        document.body.append(target);
+        instance = mount(ChatMemoryPanel, { target, props: { chatRef: ref } });
+        flushSync();
+        const select = [...target.querySelectorAll("select")].find((control) =>
+            [...control.options].some((option) => option.textContent === "Chat connection"),
+        )!;
+        const persist = () => {
+            const work = chats.takeChatWork(new Set());
+            const result = server.store.applyChanges({ chats: work.groups, chatOrders: work.orders });
+            chats.ackChatWork(work, result.chats, result.chatOrders);
+            return server.chat("c", "k")!.data;
+        };
+        const choose = (label: string) => {
+            select.value = [...select.options].find((option) => option.textContent === label)!.value;
+            select.dispatchEvent(new Event("change", { bubbles: true }));
+            flushSync();
+        };
+        const defaultLabel = language.chatMemory.defaultConnection;
+        expect([...select.options].map((option) => option.textContent)).toEqual([
+            defaultLabel,
+            "Main connection",
+            "Chat connection",
+        ]);
+        expect(select.selectedIndex).toBe(0);
+        choose("Chat connection");
+        expect(persist()).toHaveProperty("memoryProfileId", "personal");
+        expect(chats.chatEntry(ref)).toHaveProperty("memoryProfileId", "personal");
+        choose(defaultLabel);
+        expect(persist()).not.toHaveProperty("memoryProfileId");
+        expect(chats.chatEntry(ref)).not.toHaveProperty("memoryProfileId");
+        choose("Chat connection");
+        persist();
+        settings.modelProfiles = settings.modelProfiles.filter(({ id }) => id !== "personal");
+        flushSync();
+        // Svelte reselects after the option list changes in a MutationObserver callback.
+        await Promise.resolve();
+        flushSync();
+        expect(select.selectedOptions[0]?.textContent).toBe(language.chatMemory.deletedConnection("personal"));
+        expect(select.options[0].textContent).toBe(defaultLabel);
+        expect(persist()).toHaveProperty("memoryProfileId", "personal");
+        expect(chats.chatEntry(ref)).toHaveProperty("memoryProfileId", "personal");
+        expect(server.chat("c", "sibling")!.data).not.toHaveProperty("memoryProfileId");
+        if (state === "unloaded") expect(chats.findChat(ref)).toBeUndefined();
+        else expect(chats.findChat(ref)).toHaveProperty("memoryProfileId", "personal");
     },
 );

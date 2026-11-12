@@ -209,8 +209,8 @@ export function getModelInfo(id?: string | null, scope?: PresetScope, profile?: 
 }
 
 /** Catalogue metadata for a mode, using the same profile routing as requests on both runtimes. */
-export function getModelInfoForMode(mode: ModelModeExtended, scope?: PresetScope): LLMModel {
-    const resolved = resolveModelSlot(mode, scope);
+export function getModelInfoForMode(mode: ModelModeExtended, scope?: PresetScope, profileId?: string): LLMModel {
+    const resolved = resolveModelSlot(mode, scope, undefined, profileId);
     return getModelInfo(resolved.modelId ?? "", scope, resolved.kind === "profile" ? resolved.profile : null);
 }
 

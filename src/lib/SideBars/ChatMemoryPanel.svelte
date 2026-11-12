@@ -1,6 +1,11 @@
 <script lang="ts">
     import { language } from "src/lang";
-    import { chatMemoryEnabled, chatMemoryMode, legacyMemoryAlgorithm } from "../../../shared/chatMemory.ts";
+    import {
+        chatMemoryEnabled,
+        chatMemoryMode,
+        chatMemoryProfileId,
+        legacyMemoryAlgorithm,
+    } from "../../../shared/chatMemory.ts";
     import { chatEntry, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { findCharacter } from "src/ts/storage/characterStore.svelte";
     import {
@@ -8,6 +13,7 @@
         setChatMemoryEnabled,
         setChatMemoryMode,
         setChatMemoryPreset,
+        setChatMemoryProfile,
     } from "src/ts/storage/chatMemory.svelte";
     import CheckInput from "../UI/GUI/CheckInput.svelte";
 
@@ -33,6 +39,10 @@
     const presetDeleted = $derived(
         presetId !== undefined && !settings.hypaV3Presets.items.some((preset) => preset.id === presetId),
     );
+
+    const profiles = $derived(settings.modelProfiles ?? []);
+    const profileId = $derived(chatMemoryProfileId(entry));
+    const profileDeleted = $derived(profileId !== undefined && !profiles.some((profile) => profile.id === profileId));
 
     const legacyName = $derived.by(() => {
         switch (legacyMemoryAlgorithm(chatMemorySettings())) {
@@ -101,5 +111,31 @@
                 {/each}
             </SelectInput>
         </label>
+        <label class="mt-2 block min-w-0 text-sm text-textcolor">
+            <span class="mb-1 block">{language.chatMemory.connection}</span>
+            <SelectInput
+                size="sm"
+                className="w-full min-w-0 max-w-full"
+                value={profileId === undefined ? "" : `profile:${profileId}`}
+                onchange={({ currentTarget }) => {
+                    if (chatEntry(chatRef))
+                        setChatMemoryProfile(
+                            chatRef,
+                            currentTarget.value === "" ? undefined : currentTarget.value.slice("profile:".length),
+                        );
+                }}
+            >
+                <OptionInput value="">{language.chatMemory.defaultConnection}</OptionInput>
+                {#if profileId !== undefined && profileDeleted}
+                    <OptionInput value={`profile:${profileId}`}
+                        >{language.chatMemory.deletedConnection(profileId)}</OptionInput
+                    >
+                {/if}
+                {#each profiles as profile (profile.id)}
+                    <OptionInput value={`profile:${profile.id}`}>{profile.name}</OptionInput>
+                {/each}
+            </SelectInput>
+        </label>
+        <p class="mt-1 text-xs text-textcolor/60">{language.chatMemory.connectionHelp}</p>
     </div>
 {/if}

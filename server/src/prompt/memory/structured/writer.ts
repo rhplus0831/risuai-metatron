@@ -29,8 +29,7 @@ import {
 import { ResourceBatchConflictError, ResourceConflictError, type ResourceStore } from "../../../data/resourceStore.ts";
 import { jobModuleLorebooks } from "../../../jobs/cbsHost.ts";
 import { JobWriteConflictError } from "../../../jobs/generationJobs.ts";
-import { scopeChat } from "../../../jobs/jobScope.ts";
-import { resolveJobRequestModel } from "../../../llm/request.ts";
+import { resolveScopeMemoryModel, scopeChat } from "../../../jobs/jobScope.ts";
 import { HypaProcesser } from "../../embeddings.ts";
 import type { MemoryHost } from "../host.ts";
 import { MemoryHostFailure, type MemoryTaskHostDeps } from "../memoryTaskHost.ts";
@@ -472,7 +471,8 @@ export function commitWindow(
 
 /**
  * Starts a run: from the records as stored, closes what an earlier run left `pending` and commits this
- * one with its snapshot, in one write. Answers the run, or how the writer ended without a call. Nothing
+ * one with its snapshot, including the model resolved from the scope's captured memory connection, in
+ * one write. Answers the run, or how the writer ended without a call. Nothing
  * awaited here costs a model call, so a moved revision just starts over. A run that cannot be sent, its
  * prompt too large to store or its custom frame unusable, is the same write with the failed row in place
  * of the pending one; a `MemoryHostFailure` while a custom frame is parsed (a CBS limit) is written so
@@ -481,7 +481,7 @@ export function commitWindow(
 async function openRun(store: WriterStore, arg: WriterArg): Promise<OpenedRun | StructuredMemoryWriterResult> {
     const { input, tokenizer, commit } = arg;
     const { chaId, chatId } = input.chatRef;
-    const memoryModel = resolveJobRequestModel(arg.scope.request.db, "memory");
+    const memoryModel = resolveScopeMemoryModel(arg.scope);
     const id = randomUUID();
     for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt++) {
         const contents = store.memory.readContents(chaId, chatId);

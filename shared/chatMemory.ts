@@ -58,6 +58,12 @@ export function chatHypaV3Preset(
     return preset ?? selectedHypaV3Preset({ hypaV3Presets: presets, hypaV3PresetId: selectedId });
 }
 
+/** A non-empty named connection, including a deleted id so request routing refuses instead of falling back. */
+export function chatMemoryProfileId(chat: ChatMemoryInput | null | undefined): string | undefined {
+    const id = chat?.memoryProfileId;
+    return typeof id === "string" && id.length > 0 ? id : undefined;
+}
+
 /** An explicit chat switch wins over the preset default and then the owner's legacy switch. */
 export function chatMemoryEnabled(
     chat: ChatMemoryInput | null | undefined,

@@ -46,11 +46,11 @@ import {
     type JobScope,
     loadJobScope,
     memorySettingsFingerprint,
+    resolveScopeMemoryModel,
     refreshChat,
     scopeChat,
 } from "../../jobs/jobScope.ts";
 import { moduleTriggers } from "../../jobs/runSetup.ts";
-import { resolveJobRequestModel } from "../../llm/request.ts";
 import { RequestTargetGoneError } from "../../llm/settings.ts";
 import { hasRequestTriggers } from "../triggers.ts";
 import { HypaProcesser } from "../embeddings.ts";
@@ -308,7 +308,7 @@ const statusKind = (input: Pick<AnyMemoryTaskInput, "kind">) =>
  *   `presetChain` picked the prompt preset) loads (`bindingInvalid`); the chat's memory is on
  *   (`memoryOff`); the input's method matches the chat's resolved algorithm: HypaV3 (`notHypaV3`) or Structured Memory
  *   (`notStructuredMemory`), which holds no task for a chat with a rebuild's run but the run's own
- *   (`memoryRebuilding`); the `memory` slot is not a Plugin model (`pluginModel`) and the owner has
+ *   (`memoryRebuilding`); the chat's resolved memory model is not a Plugin model (`pluginModel`) and the owner has
  *   no applicable `request` trigger (`requestTrigger`); the preset's summarization model is `subModel`
  *   (`localSummarization`); the settings fingerprint is the input's (`staleInput`).
  * - HypaV3 work: prepare without the orphan cleanup (stored coverage past the input's history:
@@ -811,7 +811,7 @@ export function createMemoryTasks(deps: {
         } else if (algorithm !== "hypaMemoryV3") {
             return { skip: "notHypaV3" };
         }
-        const memoryModel = resolveJobRequestModel(scope.request.db, "memory");
+        const memoryModel = resolveScopeMemoryModel(scope);
         if (memoryModel.kind === "resolved" && memoryModel.modelInfo.format === LLMFormat.Plugin) {
             return { skip: "pluginModel" };
         }

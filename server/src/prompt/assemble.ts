@@ -571,7 +571,7 @@ type StructuredMemoryStepResult =
  *
  * An input job with a memory task service gets the writer's hand-off, whether or not a window is due,
  * since a waiting manual start takes one that is not, and the receipt its reply carries when recording
- * will not reach it (`writerNotice`). Nothing here refuses a tab-bound `memory` slot or a `request`
+ * will not reach it (`writerNotice`). Nothing here refuses a tab-bound memory connection or a `request`
  * trigger as `hypaV3Step` does: the task ends `skipped` with the reason, and a person starts the
  * recording, which runs in a job of its own or on the gap's yes. An event an edit marked for a re-record
  * counts as due (`automaticRerecords`), or a send with nothing else due would never hand it off; the gap

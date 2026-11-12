@@ -1,4 +1,4 @@
-import { chatHypaV3Preset, chatMemoryAlgorithm } from "../../../shared/chatMemory.ts";
+import { chatHypaV3Preset, chatMemoryAlgorithm, chatMemoryProfileId } from "../../../shared/chatMemory.ts";
 import { createHash } from "node:crypto";
 import type {
     Chat,
@@ -51,8 +51,9 @@ import { GenerationRunnerError, type RunningJob } from "./generationJobs.ts";
  *
  * - frozen identity and configuration: `db` (the database projection the CBS evaluator and lore
  *   activation read, assembled for the chat's memory preset and the job's prompt and model presets
- *   and personas, with every credential field `""` as in the client's mirror), the two presets, the profiles and the
- *   personas, and `request` (the request layer's own settings, credentials included).
+ *   and personas, with every credential field `""` as in the client's mirror), the two presets,
+ *   the profiles and personas, `memoryProfileId` (the chat's memory connection), and `request` (the request layer's
+ *   own settings, credentials included).
  *   Settings changed while the job runs do not reach it;
  * - the live overlay: the job's chat and the characters, which `refreshChat` and `refreshCharacter`
  *   read again after the job's own writes and after a callback that may have written. After the
@@ -84,6 +85,8 @@ export type JobScope = {
     modelPreset: ModelPreset;
     /** Captured model profiles, shared by the job's main and auxiliary requests. */
     modelProfiles: ModelProfile[];
+    /** The chat's named memory connection, captured at load and unchanged by live chat refreshes. */
+    readonly memoryProfileId?: string;
     /**
      * The job's persona (`context.personaId`): the chat's bound persona (a transform's is its display
      * persona), also the forwarded `db.username` and `db.personaPrompt`. A chat job has no separate
@@ -301,6 +304,8 @@ export function loadJobScope(
         db.hypaV3PresetId = memoryPreset.id;
     }
 
+    const memoryProfileId = chatMemoryProfileId(chatRecord.data as Chat);
+
     const characters = (read.kinds[RESOURCE_KIND.characters] ?? []).map((record) => characterShell(record.data));
     db.characters = characters;
     const owner = characters.find((entry) => entry.chaId === context.characterId);
@@ -343,6 +348,7 @@ export function loadJobScope(
         promptPreset: preset,
         modelPreset,
         modelProfiles,
+        memoryProfileId,
         effectivePersona,
         request,
     };
@@ -408,9 +414,18 @@ function fingerprintedHypaV3Preset(preset: HypaV3Preset | undefined): unknown {
     return { ...preset, settings };
 }
 
+/** Resolve the scope's captured memory connection, or its model preset's memory slot when unset. */
+export function resolveScopeMemoryModel(scope: JobScope) {
+    return resolveJobRequestModel(
+        scope.request.db,
+        "memory",
+        scope.memoryProfileId !== undefined ? { profileId: scope.memoryProfileId } : {},
+    );
+}
+
 /**
  * A digest of the memory-relevant settings of `scope` (`MemoryTaskInput.settingsFingerprint`): the
- * chat's HypaV3 preset, the `memory` slot as a job's request resolves it (the model, its profile,
+ * chat's HypaV3 preset, its memory connection as a job's request resolves it (the model, its profile,
  * which names a credential but holds none, the descriptor's format and wire id, a custom model's
  * definition, and the request's temperature and response size, or the refusal), and the embedding
  * model with its custom endpoint and model (never its key). When this chat selects Structured Memory
@@ -420,7 +435,7 @@ function fingerprintedHypaV3Preset(preset: HypaV3Preset | undefined): unknown {
  */
 export function memorySettingsFingerprint(scope: JobScope): string {
     const db = scope.db;
-    const memory = resolveJobRequestModel(scope.request.db, "memory");
+    const memory = resolveScopeMemoryModel(scope);
     const preset = selectedHypaV3Preset(db);
     const projection = {
         hypaV3Preset: fingerprintedHypaV3Preset(preset),

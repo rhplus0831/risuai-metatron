@@ -172,6 +172,11 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
   `applyReverseProxyOverride` (`shared/llm/reverseProxy.ts`) before dispatch.
 - Slot routing is `resolveSlotProfile`'s on both runtimes ([slot resolver](#model-preset-slots)): a refusal fails the
   tab's attempt with `noRetry` and the server's before dispatch; no alternate profile is tried.
+- Memory-host requests pass the chat's captured `memoryProfileId` as the named `profileId`; without one they use the
+  model preset's `memory` slot. `resolveScopeMemoryModel` in `server/src/jobs/jobScope.ts` supplies the same resolution
+  to fingerprints, task checks, and writer runs. The tab's HypaV3 `summarize` also passes the chat's named profile.
+  Deleted named profiles refuse with `missingNamedProfile`, never fall back. Lua's own `memory`-mode request in
+  `server/src/lua/bindings.ts` keeps the slot. Tokenization still follows the main model ([Invariants](#invariants)).
 - The server builds a detached request context with profile roots, resolves the named credential, reforms the prompt
   from model flags, and dispatches by `LLMFormat`. A bound Vertex account populates `vertexCredential`; other bound keys
   replace `arg.key`. See [credential binding](#credentials).

@@ -691,6 +691,102 @@ async function answerAll(t: Harness, count: number, from = 0) {
     }
 }
 
+/** A named connection independent of the model preset's main and memory slots. */
+function bindMemoryConnection(t: Harness, modelId = "reverse_proxy", extra: Record<string, unknown> = {}) {
+    t.replace("modelProfiles", (profiles) => [
+        ...profiles,
+        {
+            ...profiles[0],
+            id: "chat-memory",
+            name: "Chat memory",
+            modelId,
+            customProxyRequestModel: "chat-memory-model",
+            ...extra,
+        },
+    ]);
+    t.write("k1", [{ op: "meta", set: { memoryProfileId: "chat-memory" } }]);
+}
+
+describe("a task's chat memory connection", () => {
+    beforeEach(() => vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }));
+    afterEach(() => vi.useRealTimers());
+
+    it("sends HypaV3 summaries through the named connection", async () => {
+        const t = harness();
+        bindMemoryConnection(t);
+        const terminal = t.nextTerminal("k1");
+        handOff(t, "k1", { entries: 2 });
+        const request = await Promise.race([
+            t.provider.request(0),
+            terminal.then(({ status }) => {
+                throw new Error(JSON.stringify(status));
+            }),
+        ]);
+        expect(request.body.model).toBe("chat-memory-model");
+        request.answer("The named connection's summary");
+        expect((await terminal).status).toMatchObject({ state: "done", done: 1 });
+        expect(t.summaries("k1")).toEqual(["The named connection's summary"]);
+    });
+
+    it("fails an admitted task on the named-profile refusal when its connection is gone", async () => {
+        const t = harness();
+        t.write("k1", [{ op: "meta", set: { memoryProfileId: "deleted" } }]);
+        const terminal = t.nextTerminal("k1");
+        handOff(t, "k1", { entries: 2 });
+        const end = await Promise.race([
+            terminal,
+            t.provider.request(0).then(() => {
+                throw new Error("A gone named connection fell back to the provider");
+            }),
+        ]);
+        expect(end.status).toMatchObject({
+            state: "failed",
+            done: 0,
+            error: expect.stringContaining("Cannot send the request: the connection it names no longer exists."),
+        });
+        expect(t.provider.requests).toEqual([]);
+        expect(t.summaries("k1")).toEqual([]);
+    });
+
+    it("stales a queued task when only its chat's connection changes", async () => {
+        const t = harness();
+        bindMemoryConnection(t);
+        t.replace("modelProfiles", (profiles) => [
+            ...profiles,
+            { ...profiles.find((profile: { id: string }) => profile.id === "chat-memory"), id: "other-memory" },
+        ]);
+        const lease = await t.service.acquireSummaryWriter(ref("k1"), "send");
+        const terminal = t.nextTerminal("k1");
+        handOff(t, "k1", { entries: 2 });
+        t.write("k1", [{ op: "meta", set: { memoryProfileId: "other-memory" } }]);
+        lease.release();
+        const end = await Promise.race([
+            terminal,
+            t.provider.request(0).then(() => {
+                throw new Error("A stale task called the provider");
+            }),
+        ]);
+        expect(end.status).toMatchObject({ state: "skipped", reason: "staleInput", done: 0 });
+        expect(t.provider.requests).toEqual([]);
+        expect(t.summaries("k1")).toEqual([]);
+    });
+
+    it("skips a Plugin-format named connection with pluginModel even when the memory slot runs on the server", async () => {
+        const t = harness();
+        bindMemoryConnection(t, "reverse_proxy", { customAPIFormat: LLMFormat.Plugin, currentPluginProvider: "prov" });
+        const terminal = t.nextTerminal("k1");
+        handOff(t, "k1", { entries: 2 });
+        const end = await Promise.race([
+            terminal,
+            t.provider.request(0).then(() => {
+                throw new Error("The Plugin connection fell back to the provider");
+            }),
+        ]);
+        expect(end.status).toMatchObject({ state: "skipped", reason: "pluginModel", done: 0 });
+        expect(t.provider.requests).toEqual([]);
+    });
+});
+
 describe("a hand-off's run", () => {
     it("starts after the writer lease is released, saves one summary per commit before the next request, warms the summaries' vectors, and a later selection embeds no summary document", async () => {
         const t = harness();
@@ -2666,6 +2762,33 @@ describe("structured memory tasks", () => {
             "<|im_start|>user<|im_sep|>CUSTOM ANALYSIS {{user}}\n{{slot::scene}}\n{{slot::messages}}<|im_end|>",
         patchPrompt: "<|im_start|>user<|im_sep|>CUSTOM PATCH {{user}}\n{{slot::cast}}\n{{slot::previous}}<|im_end|>",
     };
+
+    it.each(["automatic", "record now", "rebuild"] as const)(
+        "uses the named connection and records its model for %s recording",
+        async (mode) => {
+            // A distinct model id in the slot makes the persisted run's model observable too.
+            const t = structuredHarness({ memoryModelId: "gpt-4o" });
+            bindMemoryConnection(t);
+            const terminal = t.nextTerminal("k1");
+            if (mode === "rebuild")
+                expect(t.service.rebuild(beginStagedRun(t, "rebuild", [["m1", "m2"]])).outcome).toBe("queued");
+            else if (mode === "record now")
+                expect(t.service.record(writerInput(t, "m3"), { through: "m2" }).outcome).toBe("queued");
+            else t.service.handOff(writerInput(t, "m3"));
+            const request = await nextPatch(t, 0, terminal);
+            expect(request.body.model).toBe("chat-memory-model");
+            const memory = mode === "rebuild" ? t.store.memory.rebuild.staged : t.store.memory;
+            const pending = memory
+                .readContents("c", "k1")!
+                .runs.map(({ id }) => memory.readRecord("c", "k1", "runs", id)!.data);
+            expect(pending).toEqual([expect.objectContaining({ result: "pending", model: "reverse_proxy" })]);
+            request.answer(JSON.stringify(analysis()));
+            expect((await terminal).status).toMatchObject({ state: "done", done: 1, total: 1 });
+            await t.service.drain();
+            expect(runRecord(t)).toMatchObject({ result: "recorded", model: "reverse_proxy" });
+            expect(t.provider.requests).toHaveLength(1);
+        },
+    );
 
     it("warms deferred records only when the chat's mode selects Structured Memory", async () => {
         for (const mode of ["structuredMemory", "hypaV3"] as const) {

@@ -57,7 +57,7 @@ export type {
     SerializableSummary,
 } from "../../../../shared/memory.ts";
 export { createHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
-import { chatHypaV3Preset, type ChatMemoryInput } from "../../../../shared/chatMemory.ts";
+import { chatHypaV3Preset, chatMemoryProfileId, type ChatMemoryInput } from "../../../../shared/chatMemory.ts";
 
 interface SummaryChunk {
     text: string;
@@ -149,6 +149,7 @@ async function hypaMemoryV3MainExp(
     context?: SummarizeContext,
 ): Promise<HypaV3Result> {
     const settings = getCurrentHypaV3Preset(room).settings;
+    const profileId = chatMemoryProfileId(room);
 
     // Validate settings
     if (settings.recentMemoryRatio + settings.similarMemoryRatio > 1) {
@@ -348,7 +349,7 @@ async function hypaMemoryV3MainExp(
         };
 
         const summarizationTasks = toSummarizeArray.map(
-            (item) => () => summarizeWithSettings(item, false, context, settings),
+            (item) => () => summarizeWithSettings(item, false, context, settings, profileId),
         );
 
         // Start of performance measurement: summarize
@@ -853,6 +854,7 @@ async function hypaMemoryV3Main(
     context?: SummarizeContext,
 ): Promise<HypaV3Result> {
     const settings = getCurrentHypaV3Preset(room).settings;
+    const profileId = chatMemoryProfileId(room);
 
     // Validate settings
     if (settings.recentMemoryRatio + settings.similarMemoryRatio > 1) {
@@ -1025,7 +1027,7 @@ async function hypaMemoryV3Main(
             console.log(logPrefix, "Attempting summarization:", "\nTarget:", toSummarize);
 
             try {
-                const summarizeResult = await summarizeWithSettings(toSummarize, false, context, settings);
+                const summarizeResult = await summarizeWithSettings(toSummarize, false, context, settings, profileId);
 
                 data.summaries.push({
                     text: summarizeResult,
@@ -1238,7 +1240,13 @@ async function hypaMemoryV3Main(
                 console.log(logPrefix, "Attempting summarization for similarity search:", "\nTarget:", recentChats);
 
                 try {
-                    const summarizeResult = await summarizeWithSettings(recentChats, false, context, settings);
+                    const summarizeResult = await summarizeWithSettings(
+                        recentChats,
+                        false,
+                        context,
+                        settings,
+                        profileId,
+                    );
 
                     queries.push(summarizeResult);
                 } catch (error) {
@@ -1516,13 +1524,14 @@ function sanitizeSummaryContent(content: string): string {
  * One summary of `oaiMessages` (`isResummarize` picks the re-summarization prompt): inlay tokens
  * become `[Image]`, the prompt with `{{slot}}` expanded goes through `parseChatML` for the context's
  * chat, and then:
- * - `subModel`: `requestChatData(..., "memory")` with the context's chat and plugin context (`context`,
- *   else the plugin context captured now); `<Thoughts>` blocks are stripped.
+ * - `subModel`: `requestChatData(..., "memory")` with the chat's named connection and plugin context
+ *   (`context`, else captured now); `<Thoughts>` blocks are stripped.
  * - Any other value is a WebLLM model: `chatCompletion` with the system message first; `<think>`
  *   blocks are stripped.
  *
- * A failed or empty answer throws. The preset is read from the context's chat list entry, or the
- * current chat when no context was supplied. The modal passes the chat captured when the action began.
+ * A failed or empty answer throws. The preset and connection are read before awaiting from the
+ * context's chat list entry, or the current chat when no context was supplied. The modal passes the
+ * chat captured when the action began.
  */
 export async function summarize(
     oaiMessages: OpenAIChat[],
@@ -1531,15 +1540,17 @@ export async function summarize(
 ): Promise<string> {
     const ref = context ? (context.chatRef ?? context.pluginContext?.chatRef) : currentChatRef();
     const settings = getCurrentHypaV3Preset(ref ? chatEntry(ref) : undefined).settings;
-    return summarizeWithSettings(oaiMessages, isResummarize, context, settings);
+    const profileId = chatMemoryProfileId(ref ? chatEntry(ref) : undefined);
+    return summarizeWithSettings(oaiMessages, isResummarize, context, settings, profileId);
 }
 
-/** The legacy composition keeps the same preset settings through all of its awaited windows. */
+/** The legacy composition keeps its room's preset settings and connection across awaited windows. */
 async function summarizeWithSettings(
     oaiMessages: OpenAIChat[],
     isResummarize: boolean,
     context: SummarizeContext | undefined,
     settings: HypaV3Settings,
+    profileId: string | undefined,
 ): Promise<string> {
     const strMessages = oaiMessages.map((chat) => `${chat.role}: ${sanitizeSummaryContent(chat.content)}`).join("\n");
 
@@ -1570,9 +1581,9 @@ async function summarizeWithSettings(
         const scope = context?.pluginContext ?? capturePluginContext(context?.chatRef);
         let modelId = "";
         try {
-            modelId = resolveModelSlot("memory", scope).modelId ?? "";
+            modelId = resolveModelSlot("memory", scope, undefined, profileId).modelId ?? "";
         } catch {
-            // A gone model preset: the request below refuses it.
+            // A gone model preset or named connection: the request below refuses it.
         }
         console.log(logPrefix, `Using ax model ${modelId} for summarization.`);
 
@@ -1583,6 +1594,7 @@ async function summarizeWithSettings(
                 useStreaming: false,
                 noMultiGen: true,
                 ...(context?.chatRef ? { chatRef: context.chatRef } : {}),
+                ...(profileId !== undefined ? { profileId } : {}),
                 ...(scope ? { pluginContext: scope } : {}),
             },
             "memory",

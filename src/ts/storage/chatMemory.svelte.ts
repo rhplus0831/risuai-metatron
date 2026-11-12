@@ -39,6 +39,12 @@ export function setChatMemoryPreset(ref: ChatRef, id: string | undefined) {
     else setChatMeta(ref, { memoryPresetId: id });
 }
 
+/** Store a connection choice; the model preset's memory slot is used when the field is unset. */
+export function setChatMemoryProfile(ref: ChatRef, id: string | undefined) {
+    if (id === undefined) setChatMeta(ref, {}, ["memoryProfileId"]);
+    else setChatMeta(ref, { memoryProfileId: id });
+}
+
 /** A new chat inherits its source's memory choices independently of the model binding preference. */
 export function initialChatMemory(chaId: string): ChatMemoryFields {
     return untrack(() => {

@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { normalizeModelProfiles } from "../../shared/presets.ts";
 import { language } from "src/lang";
 import { createHypaV3Preset } from "../../shared/hypaV3Presets.ts";
 import type { Chat } from "../../shared/database.ts";
@@ -1053,4 +1054,28 @@ it("keeps imported memory preset ids that exist locally and drops ids of missing
         }
     }
     expect(settings.hypaV3Presets.selectedId).toBe("local-memory");
+});
+
+it("keeps imported memory connection ids that exist locally and drops ids of missing connections", async () => {
+    const { run, alpha, chatsOf, settings, sync, fake } = await boot();
+    settings.modelProfiles = normalizeModelProfiles([
+        { id: "local-memory", name: "Local memory", modelId: "gpt-4o-mini" },
+    ]);
+    const inputs = ["local-memory", "missing-memory"].map((memoryProfileId) => ({
+        ...chatV2(memoryProfileId, null, "Imported message"),
+        memoryProfileId,
+    }));
+    await run({ name: "chats.json", data: encode({ type: "risuAllChats", ver: 2, folders: [], data: inputs }) });
+    const imported = chatsOf(alpha).slice(0, 2);
+    expect(imported).toHaveLength(2);
+    await sync.flushResources();
+    for (const chat of imported) {
+        for (const copy of [chat, fake.chat(alpha, chat.id)!.data]) {
+            if (chat.name === "local-memory") expect(copy).toHaveProperty("memoryProfileId", "local-memory");
+            else {
+                expect(chat.name).toBe("missing-memory");
+                expect(copy).not.toHaveProperty("memoryProfileId");
+            }
+        }
+    }
 });

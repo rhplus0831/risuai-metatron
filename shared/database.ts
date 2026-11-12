@@ -1290,11 +1290,11 @@ export interface Chat {
     memoryTrimAck?: number;
     /** This chat's memory switch; absent or malformed values use the preset or owner's default. */
     memoryEnabled?: boolean;
-    /** Stored mode preference. Execution currently follows the global memory algorithm. */
+    /** The chat's memory algorithm; an absent or malformed mode reads as Legacy (the global selector). */
     memoryMode?: "hypaV3" | "structuredMemory";
-    /** Stored memory preset binding; memory currently uses the globally selected preset. */
+    /** The chat's HypaV3 memory preset; an absent, malformed, or deleted id reads as the Settings default. */
     memoryPresetId?: string;
-    /** Stored memory connection binding; requests currently use the model preset's memory slot. */
+    /** Named connection for memory-host requests; an absent or empty id uses the model preset's memory slot. */
     memoryProfileId?: string;
     /**
      * The context meter's chip does not warn of lore entries dropped by the lore budget in this chat

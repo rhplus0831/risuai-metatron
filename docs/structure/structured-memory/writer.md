@@ -106,6 +106,10 @@ replacement commits. Reconciliation holds no fence; a running writer meets `revi
 [rebuild's staged set](rebuild.md#a-run). `writer.ts` owns replay eligibility, the run row, pause and failure behavior,
 custom prompts, dry runs and warming. A historical write [leaves current state alone](rebuild.md#backfill).
 
+`openRun` records the model from `resolveScopeMemoryModel`: the chat's named connection captured by `loadJobScope`, or
+its model preset's memory slot when unset. The analysis, patch, and compaction calls use that same captured connection,
+including record now, gap runs, rebuilds, and test runs. A deleted named connection refuses without slot fallback.
+
 Across modules, each window opens a `pending` run with its exact analysis input, then parses and admits the analysis
 before deciding whether to call the patcher. Compaction follows only after patches; event, threads, pages and run close
 in one memory write. A revision conflict rebuilds planning against fresh records without another model call, up to three
@@ -127,9 +131,9 @@ runs marked events first, then older ordinary work. The `recordJob.ts` header ow
 paths. The tab calls `runServerJob` because `runServerCommand` refuses group chats.
 
 Without a tab-bound request, the job queues a fresh manual input and ends before the service starts; a later hand-off
-retains that manual start and target. With a Plugin `memory` slot, a `request` trigger, or no service, the job holds the
-writer lease and runs the windows itself because those requests need the job's tab context. `openJobStatus` publishes
-the job writer through the service registry, fencing tabs through the terminal chat revision. The command's
+retains that manual start and target. With a Plugin memory connection, a `request` trigger, or no service, the job holds
+the writer lease and runs the windows itself because those requests need the job's tab context. `openJobStatus`
+publishes the job writer through the service registry, fencing tabs through the terminal chat revision. The command's
 `done.result.memoryRecord` selects the `completed` or `queued` toast; a skipped window is translated by `alertJobError`
 from `memoryRecordSkipped`.
 

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { chatHypaV3Preset, legacyMemoryAlgorithm } from "../../../../shared/chatMemory.ts";
+    import { chatHypaV3Preset, chatMemoryProfileId, legacyMemoryAlgorithm } from "../../../../shared/chatMemory.ts";
     import { chatMemorySettings, setChatMemoryPreset } from "src/ts/storage/chatMemory.svelte";
     import { chatEntry, currentChatRef, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
@@ -140,14 +140,14 @@
         });
     });
 
-    // The `memory` slot on a plugin provider: the server calls it through the tab, and treats every
+    // The open chat's memory connection on a plugin provider: the server calls it through the tab, and treats every
     // `pluginmodel:::` id so, even one whose plugin this tab has not registered.
     const memoryUsesPlugin = $derived.by(() => {
         try {
-            const info = getModelInfoForMode("memory");
+            const info = getModelInfoForMode("memory", undefined, chatMemoryProfileId(openChat));
             return info.format === LLMFormat.Plugin || info.id.startsWith("pluginmodel:::");
         } catch {
-            // A gone model preset: the request refuses it.
+            // A gone model preset or named connection: the request refuses it.
             return false;
         }
     });

@@ -37,7 +37,7 @@ import { createStructuredWriter, writerHostDeps } from "./writer.ts";
  * validator made of it. The answer is the job's `done.result` (`StructuredMemoryTestResult`).
  *
  * - Admission is record now's (`admitRecord`): another algorithm, memory off, a local summarization
- *   model, and an adoption hold refuse it. Then a `memory` slot or a `request` trigger that needs the
+ *   model, and an adoption hold refuse it. Then a memory connection or a `request` trigger that needs the
  *   tab refuses it, naming which, because a tab callback's effects persist and a test keeps nothing. So
  *   does a queued or running memory task of the chat. It takes no writer lease: acquiring one cancels a
  *   running task, and the job holds the chat's slot, so nothing starts meanwhile; a rebuild's lock and a

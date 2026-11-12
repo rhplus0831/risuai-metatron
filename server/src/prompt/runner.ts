@@ -68,6 +68,7 @@ import {
     type JobScope,
     loadJobScope,
     memorySettingsFingerprint,
+    resolveScopeMemoryModel,
     memoryTokenPolicy,
     refreshCharacter,
     refreshChatAfterWrite,
@@ -780,7 +781,7 @@ export function jobMemoryTaskBase(arg: {
 
 /** Why a job's memory requests need its tab: a Plugin `memory` model, a `request` trigger; or null. */
 export function jobMemoryBlockingReason(scope: JobScope): Exclude<MemoryBlockingReason, "gap"> | null {
-    const resolved = resolveJobRequestModel(scope.request.db, "memory");
+    const resolved = resolveScopeMemoryModel(scope);
     if (resolved.kind === "resolved" && resolved.modelInfo.format === LLMFormat.Plugin) {
         return "pluginModel";
     }
@@ -815,6 +816,7 @@ export function createJobMemoryHost(arg: {
             const response = await services.request(
                 {
                     formated: memoryPrompt,
+                    ...(scope.memoryProfileId !== undefined ? { profileId: scope.memoryProfileId } : {}),
                     bias: {},
                     useStreaming: false,
                     noMultiGen: true,

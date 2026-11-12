@@ -61,22 +61,28 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 
 ### UI
 
-- `src/lib/SideBars/ChatMemoryPanel.svelte` edits the chat switch, mode, and preset in `OpenChatPanel.svelte` and
-  `ChatBindingDialog.svelte`, including unloaded chats. The mode select offers Legacy (named after the algorithm the
-  settings select now), HypaV3, and Structured Memory; Legacy unsets `memoryMode`. `src/ts/storage/chatMemory.svelte.ts`
-  supplies the settings adapter, `setChatMemoryEnabled`, `setChatMemoryMode`, `setChatMemoryPreset`, and
-  `initialChatMemory`; the character's Toggles panel has no memory checkbox.
+- `src/lib/SideBars/ChatMemoryPanel.svelte` edits the chat switch, mode, preset, and connection in
+  `OpenChatPanel.svelte` and `ChatBindingDialog.svelte`, including unloaded chats. The mode select offers Legacy (named
+  after the algorithm the settings select now), HypaV3, and Structured Memory; Legacy unsets `memoryMode`.
+  `src/ts/storage/chatMemory.svelte.ts` supplies the settings adapter, `setChatMemoryEnabled`, `setChatMemoryMode`,
+  `setChatMemoryPreset`, `setChatMemoryProfile`, and `initialChatMemory`; the character's Toggles panel has no memory
+  checkbox.
 - The preset select names the current default first (unsetting `memoryPresetId`), then each preset. A missing stored id
-  stays selected as deleted.
+  stays selected as deleted. The connection select likewise keeps a deleted id selected, offers the model preset's
+  memory slot first (unsetting `memoryProfileId`), then each connection by name from `settings.modelProfiles`. Its note
+  excludes fixed SupaMemory/HypaV2 summarization models, local summarization models, and embeddings; English and Korean
+  strings live under `chatMemory`.
 - `MemorySettings.svelte`'s selector is the algorithm of Legacy chats, and only the legacy algorithm's own settings
   (Hanurai, HypaV2, SupaMemory) follow it. The preset picker and budget controls, then the Structured Memory and HypaV3
   sections, show whatever it selects, since any chat can choose either. The page edits the open chat's existing memory
-  preset in place, otherwise the default; [settings UI](settings-i18n.md#pages) owns selection and import targeting.
+  preset in place, otherwise the default; [settings UI](settings-i18n.md#pages) owns selection and import targeting. Its
+  Plugin-model warning resolves the open chat's memory connection; a deleted connection shows no such warning.
 - `src/lib/Others/HypaV3Modal.svelte` and its children in `src/lib/Others/HypaV3Modal/` edit a synced copy of the
   current chat's `hypaV3Data`; the modal's contract holds its save, refresh, and discard rules. A send's memory data is
   written by the job and by the background memory task. The tab's `getCurrentHypaV3Preset(chat)` reads that chat's
-  preset; `summarize` uses its captured context's chat list entry, and the legacy composition keeps its room's preset
-  settings across awaited windows.
+  preset; `summarize` reads the preset and connection from the context's chat list entry (or the current chat when no
+  context was supplied) before awaiting. The legacy composition keeps its room's preset settings and connection across
+  awaited windows.
 - `memoryWriteFence` applies the per-chat fence ([Memory writes](#memory-writes)): `isLocalSend` and
   `generatingChatKeys` with the `chatGenerating` notice, plus `memoryTaskFenced`
   (`src/ts/process/memoryTasks.svelte.ts`) with the `memoryTasks.editFenced` notice. See [ui theming](ui-theming.md) for
@@ -120,6 +126,17 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 A send's memory step runs in the job (`server/src/prompt/assemble.ts`); the browser code serves the HypaV3 modal and the
 playground. Server algorithms use `MemoryHost` (`server/src/prompt/memory/host.ts`), which binds their requests,
 embeddings, and token counts to the job or task.
+
+`loadJobScope` captures `chatMemoryProfileId` once, alongside the chat's preset, in `JobScope.memoryProfileId`.
+`resolveScopeMemoryModel` resolves that named connection for the fingerprint, blocking reason, task start checks, and
+writer's `openRun`; both hosts pass the same `profileId` on every request. Live chat refreshes cannot switch a run's
+connection. This covers HypaV3, the Structured Memory writer (record now, gap runs, rebuilds, and test runs), and the
+`subModel` paths of SupaMemory/HypaV2. Fixed completion models, local summarization, embeddings, and Lua's own
+`memory`-mode requests keep their existing routing; the rebuild cost preview resolves no model.
+
+A deleted named connection refuses with `missingNamedProfile`. A send that needs a new HypaV3 summary fails. A
+background task admitted with the deleted connection fails on its call; one queued before deletion goes stale at the
+fingerprint check. A Structured Memory gap run leaves the gap and lets the send continue.
 
 ### Server persistence
 
@@ -213,21 +230,24 @@ formatting still applies.
       ratios ([upstream export](backup-sync-hub.md#upstream-database-export)).
 - Per-chat fields: `supaMemoryData`, `hypaV2Data`, `hypaV3Data`, `lastMemory`, `memoryTrimAck` (the owner's
   `supaMemoryOnCount` when the user answered "don't ask again" to the trim question).
-- Chat preferences: `memoryEnabled`, `memoryMode`, `memoryPresetId`, `memoryProfileId`. The switch, mode, and preset
-  affect execution in the server and tab ([Selection](#selection-in-assembleprompt)); the connection is stored and
-  carried. `chatHypaV3Preset` returns the preset named by `memoryPresetId` when it exists, else `selectedHypaV3Preset`'s
-  default. Absent, malformed, and deleted ids all fall back without rewriting a chat.
+- Chat preferences: `memoryEnabled`, `memoryMode`, `memoryPresetId`, `memoryProfileId` affect server and tab execution.
+  `chatHypaV3Preset` returns the preset named by `memoryPresetId` when it exists, else `selectedHypaV3Preset`'s default.
+  Absent, malformed, and deleted preset ids fall back without rewriting a chat. `chatMemoryProfileId` in
+  `shared/chatMemory.ts` returns a non-empty string unchanged (no trimming or membership check); absent, non-string, and
+  empty values mean the model preset's memory slot. Deleted connection ids remain named and refuse ([Server](#server)).
 - `loadJobScope` applies the chat's existing preset to its own `db.hypaV3PresetId`, leaving the stored selection alone:
   budget, summarization, writer, cadence, screening, test runs, warm work, notices, and the settings fingerprint all
-  follow that scope. Editing another preset does not stale this chat's queued task.
+  follow that scope. Editing another preset does not stale this chat's queued task. The fingerprint already hashes the
+  resolved memory profile, so changing the chat's connection stales queued work without a separate id field in the
+  digest.
 - Per-owner fields (character or group): `supaMemory` (the default for a chat that never chose), `supaMemoryOnCount`
   (legacy off→on count, still incremented by plugin character writes; read through `supaMemoryOnCount` in
   `shared/characters.ts`). The upstream exporter derives `supaMemory` from whether any stored chat resolves on. Without
   exported chat rows, it resolves an empty chat against the owner and settings for the synthetic first chat.
 - New chats inherit their source chat's resolved switch and valid stored mode, preset, and connection, regardless of
   `newChatBinding`; they never inherit `memoryTrimAck`. A first chat stores no memory preferences. Copy, branch, import,
-  plugin creation, and recovery carry supplied metadata. Chat-file import drops a memory preset id that names no preset
-  here; recovery and backup restore keep ids as stored.
+  plugin creation, and recovery carry supplied metadata. Chat-file import drops memory preset and connection ids that
+  name no corresponding record here; recovery and backup restore keep ids as stored.
 - Stores: `hypaV3ModalOpen`, `hypaV3ProgressStore`, and `memoryProgressStore` (per job). The tab's task status and fence
   mirror is module state in `src/ts/process/memoryTasks.svelte.ts`. Server task state and source generations are
   volatile; a restart drops queued work for the next send to find again.

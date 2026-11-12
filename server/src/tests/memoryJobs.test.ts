@@ -252,6 +252,26 @@ async function patchPreset(kind: "presets" | "modelPresets" | "modelProfiles", p
     });
     expect(res.status, JSON.stringify(res.body).slice(0, 300)).toBe(200);
 }
+/** Install a connection without changing either of the model preset's slots. */
+async function installChatMemoryConnection() {
+    const current = await single("modelProfiles");
+    const main = current.data.find((profile: { id: string }) => profile.id === profileId);
+    const result = await batch({
+        ops: [
+            {
+                kind: "modelProfiles",
+                id: "main",
+                baseRevision: current.revision,
+                data: [
+                    ...current.data.filter((profile: { id: string }) => profile.id !== "chat-memory"),
+                    { ...main, id: "chat-memory", name: "Chat memory", customProxyRequestModel: "chat-memory-model" },
+                ],
+            },
+        ],
+    });
+    expect(result.status).toBe(200);
+}
+
 /** Patches the selected HypaV3 preset's settings. */
 async function patchHypaV3(settings: Record<string, unknown>) {
     const current = await single("hypaV3Presets");
@@ -1228,6 +1248,32 @@ describe("HypaV2, SupaMemory, Hanurai, and the priority", () => {
 describe("per-chat memory sends", () => {
     beforeEach(() => vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }));
     afterEach(() => vi.useRealTimers());
+
+    it("uses the chat connection for HypaV3 summaries and the preset's main slot for the reply", async () => {
+        await patchSettings({ hypaV3: true });
+        await installChatMemoryConnection();
+        const chaId = await seedCharacter();
+        await setChatMeta(chaId, { memoryProfileId: "chat-memory" });
+        const result = await job("send", chaId, { input: "Continue", userMessageId: "latest" });
+        expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+        expect(summaries().length).toBeGreaterThan(0);
+        expect(summaries().map(({ body }) => body.model)).toEqual(summaries().map(() => "chat-memory-model"));
+        expect(mains().map(({ body }) => body.model)).toEqual(["m"]);
+        expect((await readChat(chaId)).data.hypaV3Data.summaries.length).toBeGreaterThan(0);
+    });
+
+    it("fails a send needing a new HypaV3 summary with the named-profile refusal for a gone connection", async () => {
+        await patchSettings({ hypaV3: true });
+        const chaId = await seedCharacter();
+        await setChatMeta(chaId, { memoryProfileId: "deleted" });
+        const result = await job("send", chaId, { input: "Continue", userMessageId: "latest" });
+        expect(result.terminal).toMatchObject({
+            type: "error",
+            message: expect.stringContaining("Cannot send the request: the connection it names no longer exists."),
+        });
+        expect(upstream).toEqual([]);
+        expect((await readChat(chaId)).data.hypaV3Data?.summaries ?? []).toEqual([]);
+    });
 
     it(
         "sends two chats of one owner with and without memory, asking even when the owner is on",
@@ -3461,6 +3507,59 @@ describe("structured memory job hand-offs", () => {
                 kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
             });
 
+        it.each(["chat-memory", "deleted"])(
+            "runs an approved Structured Memory gap with connection %s and keeps the reply on the main slot",
+            async (connection) => {
+                await installChatMemoryConnection();
+                const chaId = await seedCharacter();
+                await setChatMeta(chaId, { memoryProfileId: connection });
+                state.summaries = Array.from({ length: 24 }, (_, index) => analysis(index));
+                const result = await job(
+                    "send",
+                    chaId,
+                    { input: "Continue", userMessageId: "latest" },
+                    { answer: () => "generate" },
+                );
+                expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                expect(questions(result.events).map(({ kind }) => kind)).toEqual(["memoryGap"]);
+                expect(mains().map(({ body }) => body.model)).toEqual(["m"]);
+                const store = openStore();
+                try {
+                    const records = readRecordSet(store.memory, chaId, "k")!;
+                    if (connection === "deleted") {
+                        expect(summaries()).toEqual([]);
+                        expect(records.events).toEqual([]);
+                        expect(
+                            records.contents.runs.map(
+                                ({ id }) => store.memory.readRecord(chaId, "k", "runs", id)!.data,
+                            ),
+                        ).toEqual([
+                            expect.objectContaining({
+                                result: "failed",
+                                error: "Cannot send the request: the connection it names no longer exists.",
+                            }),
+                        ]);
+                        const reply = (await readChat(chaId)).data.message.at(-1);
+                        expect(reply.data).toBe("Main reply.");
+                        expect(reply.generationInfo.context.memory).toMatchObject({
+                            kind: "structuredMemory",
+                            coverage: "gap",
+                            writer: { state: "failed" },
+                        });
+                    } else {
+                        expect(summaries().length).toBeGreaterThan(0);
+                        expect(summaries().map(({ body }) => body.model)).toEqual(
+                            summaries().map(() => "chat-memory-model"),
+                        );
+                        expect(records.events.length).toBeGreaterThan(0);
+                        expect(records.contents.runs.every(({ result }) => result === "recorded")).toBe(true);
+                    }
+                } finally {
+                    store.close();
+                }
+            },
+        );
+
         it("trimming only blank history leaves coverage intact and asks no memory gap question", async () => {
             const chaId = await seedCharacter({
                 extra: { firstMessage: "" },
@@ -4186,6 +4285,46 @@ describe("structured memory job hand-offs", () => {
             });
         const testJob = (chaId: string, hooks?: Record<string, unknown>) =>
             job("command", chaId, { mode: "manual" }, { command: { type: "memoryTest" }, ...(hooks ? { hooks } : {}) });
+
+        it("uses the chat's named connection for the writer test run", async () => {
+            await installChatMemoryConnection();
+            const chaId = await seedCharacter({ messages: messages.slice(0, 3) });
+            await setChatMeta(chaId, { memoryProfileId: "chat-memory" });
+            state.summaries = [analysis(0)];
+            const result = await testJob(chaId);
+            expect(result.terminal).toMatchObject({
+                type: "done",
+                result: { kind: "memoryTest", outcome: "recorded" },
+            });
+            expect(summaries().map(({ body }) => body.model)).toEqual(["chat-memory-model"]);
+            expect(mains()).toEqual([]);
+        });
+
+        it("uses the chat's named connection for Record now on a job with a request trigger", async () => {
+            await installChatMemoryConnection();
+            const chaId = await seedCharacter({
+                messages: messages.slice(0, 2),
+                extra: { lowLevelAccess: true, triggerscript: [requestTrigger] },
+            });
+            await setChatMeta(chaId, { memoryProfileId: "chat-memory" });
+            state.summaries = [analysis(0)];
+            const result = await job(
+                "command",
+                chaId,
+                { mode: "manual" },
+                { command: { type: "memoryRecord", messageId: "a1" } },
+            );
+            expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+            expect(summaries().map(({ body }) => body.model)).toEqual(["chat-memory-model"]);
+            const store = testStore();
+            try {
+                expect(store.memory.readContents(chaId, "k")!.runs).toEqual([
+                    expect.objectContaining({ result: "recorded" }),
+                ]);
+            } finally {
+                store.close();
+            }
+        });
 
         it("tests the newest window through an unanswered reply, returns validation and slot warnings, and saves nothing", async () => {
             await patchHypaV3({

@@ -21,8 +21,8 @@ import type { HypaV3SeparatorLimits, MemoryHost, MemoryTokenizer } from "./host.
 /**
  * The `MemoryHost` of a detached memory task (`createMemoryTaskHost`), the counterpart of the job's
  * host that the runner builds (`server/src/prompt/runner.ts`): no tab, no job channel, and requests
- * through the memory slot alone. A fatal host failure (`MemoryHostFailure`) ends the task `failed`,
- * not `cancelled`.
+ * through the chat's captured memory connection (the model preset's memory slot when unset). A fatal
+ * host failure (`MemoryHostFailure`) ends the task `failed`, not `cancelled`.
  */
 
 /**
@@ -79,7 +79,7 @@ export type MemoryTaskHostDeps = {
  *   Plain-text `tokenize` and the requests' own counting use the same captured scope, so a Plugin main
  *   model the job admitted still counts as it did in the job.
  * - Requests: `requestChatDataOuter` (retries, `banCharacterset`) → `llm.runInJob` with the fresh
- *   request settings (the `memory` slot and its credentials), one synthetic job id, mode and source
+ *   request settings (the chat's captured memory connection and its credentials), one synthetic job id, mode and source
  *   `"memory"`, the input's chat, and a stub channel. No `request` trigger, no plugin replacers, no
  *   tools, no inlays. A failure's text is redacted.
  * - CBS: one write-disabled evaluator with one task-wide budget (summarization prompts, stop strings).
@@ -227,7 +227,14 @@ export function createMemoryTaskHost(arg: {
         request: (formated) =>
             fenced(async (): Promise<requestDataResponse> => {
                 const response = await requestChatDataOuter(
-                    { formated, bias: {}, useStreaming: false, noMultiGen: true, chatRef },
+                    {
+                        formated,
+                        bias: {},
+                        useStreaming: false,
+                        noMultiGen: true,
+                        chatRef,
+                        ...(scope.memoryProfileId !== undefined ? { profileId: scope.memoryProfileId } : {}),
+                    },
                     "memory",
                     {
                         db: requestDb,

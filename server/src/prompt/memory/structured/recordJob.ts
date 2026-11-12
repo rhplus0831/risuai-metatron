@@ -64,7 +64,7 @@ import { chatAdoptionHold, commitWindow, createStructuredWriter, writerRequestDb
  *   `done`.
  * - With a service and nothing that needs the tab: the input goes to `MemoryTasks.record`. The job ends
  *   at once, and the task starts after its terminal.
- * - A Plugin `memory` slot, a `request` trigger, or no service: the writer runs here on the chat's
+ * - A Plugin memory connection, a `request` trigger, or no service: the writer runs here on the chat's
  *   writer lease, as a blocking HypaV3 summary does, because only the job's requests reach the plugin
  *   provider and the trigger. Repair windows run first, then ordinary windows oldest first, up to
  *   `maxWriterWindows` with a task's request policy. The first nonrecorded window ends the job; any run

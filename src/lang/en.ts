@@ -1359,6 +1359,11 @@ export const languageEnglish = {
     memoryTrimWarning:
         "Long-term memory is set up, but it is off for this chat. The prompt is over the context size, so the oldest messages will be left out of what the model sees.",
     chatMemory: {
+        connection: "Memory connection",
+        defaultConnection: "Default (model preset's memory slot)",
+        deletedConnection: (id: string) => `Deleted connection (${id})`,
+        connectionHelp:
+            "Does not apply to fixed summarization models in SupaMemory/HypaV2, local summarization models, or embeddings.",
         preset: "Memory preset",
         defaultPreset: (name: string) => `Default (${name})`,
         deletedPreset: (id: string) => `Deleted preset (${id})`,

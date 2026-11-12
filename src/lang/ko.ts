@@ -1640,6 +1640,10 @@ export const languageKorean = {
     memoryTrimWarning:
         "장기 기억이 설정되어 있지만 이 채팅에서는 꺼져 있습니다. 프롬프트가 최대 컨텍스트 크기를 초과하여 가장 오래된 메시지부터 모델에 전달되지 않습니다.",
     chatMemory: {
+        connection: "메모리 연결",
+        defaultConnection: "기본값 (모델 프리셋의 메모리 슬롯)",
+        deletedConnection: (id: string) => `삭제된 연결 (${id})`,
+        connectionHelp: "SupaMemory/HypaV2의 고정 요약 모델, 로컬 요약 모델, 임베딩에는 적용되지 않습니다.",
         preset: "메모리 프리셋",
         defaultPreset: (name: string) => `기본값 (${name})`,
         deletedPreset: (id: string) => `삭제된 프리셋 (${id})`,

@@ -458,7 +458,7 @@ export type GenerationNotice =
 export type MemoryChatRef = { chaId: string; chatId: string };
 
 /**
- * Why a send summarizes inside the job: the `memory` slot is a Plugin model (its requests run in the
+ * Why a send summarizes inside the job: the chat's resolved memory model is a Plugin model (its requests run in the
  * job's tab), the chat owner has a `request` trigger that applies to them, or the user approved
  * summarizing a gap now (`memoryGap`). Null: an ordinary blocking run or a selection.
  */
@@ -569,7 +569,7 @@ export type MemoryTokenPolicy = {
  * and deep-copied:
  *
  * - the counts: `maxContext`, `maxResponse`, and the token policy; `settingsFingerprint`, a digest of
- *   the memory-relevant settings (the Hypa preset, the `memory` slot, the embedding model);
+ *   the memory-relevant settings (the Hypa preset, the memory connection, the embedding model);
  * - `binding`: the ids the job was admitted with; `effective`: the presets it ran with and whether a
  *   `presetChain` picked the prompt preset;
  * - `speakerId`: the character the job replied as (null for none);
