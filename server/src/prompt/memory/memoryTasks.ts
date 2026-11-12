@@ -1,3 +1,4 @@
+import { chatMemoryEnabled } from "../../../../shared/chatMemory.ts";
 import { randomUUID } from "node:crypto";
 import type { Chat, character, groupChat } from "../../../../shared/database.ts";
 import { greetingText } from "../../../../shared/greetings.ts";
@@ -773,7 +774,7 @@ export function createMemoryTasks(deps: {
         const { scope } = loaded;
         const db = scope.db;
         const owner = db.characters.find((entry) => entry?.chaId === input.chatRef.chaId);
-        if (!owner?.supaMemory) {
+        if (!chatMemoryEnabled(scopeChat(scope), owner, db)) {
             return { skip: "memoryOff" };
         }
         return { scope };

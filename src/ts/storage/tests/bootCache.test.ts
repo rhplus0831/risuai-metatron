@@ -1492,3 +1492,40 @@ describe("the idle commit", () => {
         expect(commit).toHaveBeenCalledTimes(1);
     });
 });
+
+it("drops pre-memory summary collections on warm boot and installs the current memory metadata", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    const server = seededServer();
+    const store = cacheStore();
+    await (await loadBootSnapshot(depsFor(server, store))).commit();
+    const revision = "00000000-0000-0000-0000-000000000001:1:1";
+    const order = { characterId: "c1", revision, ids: ["k"] };
+    const oldSummary = { characterId: "c1", id: "k", revision, name: "K", fmIndex: -1 };
+    const memory = {
+        memoryEnabled: false,
+        memoryMode: "structuredMemory",
+        memoryPresetId: "memory-preset",
+        memoryProfileId: "memory-connection",
+        memoryTrimAck: 7,
+    };
+    server.state.chatOrders = [order];
+    server.state.chatSummaries = [{ ...oldSummary, ...memory }];
+    await seedRaw({
+        records: [
+            [
+                recordKey("@chatCollection", "c1"),
+                {
+                    kind: "@chatCollection",
+                    id: "c1",
+                    revision: chatCollectionClaim(1, "c1", revision, [oldSummary]),
+                    text: JSON.stringify({ format: 1, summaries: [oldSummary], order }),
+                },
+            ],
+        ],
+    });
+    const deps = depsFor(server, store);
+    const boot = await loadBootSnapshot(deps);
+    expect(deps.requests[0].known?.chatCollections ?? []).toEqual([]);
+    expect(boot.snapshot.chatSummaries).toEqual([{ ...oldSummary, ...memory }]);
+    await boot.commit();
+});

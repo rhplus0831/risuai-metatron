@@ -771,8 +771,8 @@ export interface character {
     };
     supaMemory?: boolean;
     /**
-     * How many times `supaMemory` was turned on (off→on) by the memory toggle, its HypaV3
-     * `alwaysToggleOn`, or the trim question's "turn memory on"; missing is 0. A chat's
+     * Legacy count of off→on changes to `supaMemory`; plugin character writes still increment it.
+     * Core memory switches write the chat and remove its trim acknowledgement. Missing is 0. A chat's
      * `memoryTrimAck` holds only while it equals this (`supaMemoryOnCount` in `shared/characters.ts`).
      */
     supaMemoryOnCount?: number;
@@ -1288,6 +1288,14 @@ export interface Chat {
      * question: the question is skipped for this chat while the owner's count is still this value.
      */
     memoryTrimAck?: number;
+    /** This chat's memory switch; absent or malformed values use the preset or owner's default. */
+    memoryEnabled?: boolean;
+    /** Stored mode preference. Execution currently follows the global memory algorithm. */
+    memoryMode?: "hypaV3" | "structuredMemory";
+    /** Stored memory preset binding; memory currently uses the globally selected preset. */
+    memoryPresetId?: string;
+    /** Stored memory connection binding; requests currently use the model preset's memory slot. */
+    memoryProfileId?: string;
     /**
      * The context meter's chip does not warn of lore entries dropped by the lore budget in this chat
      * (its popover still lists them). Present only while set (unset to warn again, never false).

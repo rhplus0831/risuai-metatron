@@ -1,5 +1,10 @@
 <script module lang="ts">
-    import { characterList, selectedCharacter } from "src/ts/storage/characterStore.svelte";
+    import {
+        characterList,
+        selectedCharacter,
+        findCharacter,
+        type AnyClientCharacter,
+    } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
 
     const currentCharacter = $derived(selectedCharacter());
@@ -12,6 +17,9 @@
 </script>
 
 <script lang="ts">
+    import { chatEntry } from "src/ts/storage/chatStore.svelte";
+    import { chatMemoryEnabled } from "../../../shared/chatMemory.ts";
+    import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
     import { tick } from "svelte";
     import {
         ArrowLeft,
@@ -1253,8 +1261,9 @@
 </script>
 
 {#snippet memoryReceipt()}
-    {#if settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM && role === "char" && idx >= 0 && messageId !== undefined && displayedChat && !disabled && currentCharacter?.supaMemory}
-        <MemoryReceiptLine chatRef={displayedChat} {messageId} {idx} {locked} owner={currentCharacter} />
+    {@const owner = displayedChat ? findCharacter(displayedChat.chaId) : undefined}
+    {#if settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM && role === "char" && idx >= 0 && messageId !== undefined && displayedChat && !disabled && owner && chatMemoryEnabled(chatEntry(displayedChat), owner, chatMemorySettings())}
+        <MemoryReceiptLine chatRef={displayedChat} {messageId} {idx} {locked} owner={owner as AnyClientCharacter} />
     {/if}
 {/snippet}
 

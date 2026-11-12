@@ -934,27 +934,24 @@ describe("characters another writer created or deleted", () => {
     });
 
     it("keeps the selected character after an earlier one is removed without running the selection's side effects", async () => {
-        const { fake, sync, selection, settings, characters, character } = await boot();
-        settings.memoryTranslateMedia.hypaV3 = true;
-        settings.hypaV3Presets.items = [
-            { ...(settings.hypaV3Presets.items?.[0] ?? {}), id: "h", name: "H", settings: { alwaysToggleOn: true } },
-        ] as any;
-        settings.hypaV3Presets.selectedId = "h";
-        selection.selectCharacterAt(1);
-        // Selecting `d` is a selection: it switches its memory on (a write), counting the turn-on.
-        expect(character("d").supaMemory).toBe(true);
-        expect(character("d").supaMemoryOnCount).toBe(1);
-        character("d").supaMemory = false;
-        await tick();
-        await sync.flushResources();
-        expect(fake.record("characters", "d")!.data.supaMemory).toBe(false);
-        const batches = fake.batchCount();
-        fake.store.delete(characterKind(fake), "c", fake.record("characters", "c")!.revision);
-        await settle(fake);
-        expect(selection.selectedIndex()).toBe(0);
-        expect(characters()[0].chaId).toBe("d");
-        expect(character("d").supaMemory).toBe(false);
-        expect(fake.batchCount()).toBe(batches);
+        const { fake, selection, characters } = await boot();
+        const selected: string[] = [];
+        const off = selection.onCharacterSelected((chaId) => selected.push(chaId));
+        try {
+            selection.selectCharacterAt(1);
+            // Selecting `d` is a selection: its listeners run once.
+            expect(selected).toEqual(["d"]);
+            const batches = fake.batchCount();
+            fake.store.delete(characterKind(fake), "c", fake.record("characters", "c")!.revision);
+            await settle(fake);
+            expect(selection.selectedIndex()).toBe(0);
+            expect(characters()[0].chaId).toBe("d");
+            // The index moved, the selection did not: no listener ran and nothing was written.
+            expect(selected).toEqual(["d"]);
+            expect(fake.batchCount()).toBe(batches);
+        } finally {
+            off();
+        }
     });
 });
 

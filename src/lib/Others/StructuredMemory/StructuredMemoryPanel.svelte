@@ -1,4 +1,7 @@
 <script lang="ts">
+    import { chatEntry } from "src/ts/storage/chatStore.svelte";
+    import { chatMemoryEnabled } from "../../../../shared/chatMemory.ts";
+    import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
     import { RefreshCcwIcon, XIcon } from "@lucide/svelte";
     import { untrack, type Component } from "svelte";
     import { language } from "src/lang";
@@ -242,7 +245,9 @@
     const adoptable = $derived(heldFacts?.adoptable ?? 0);
     const notice = $derived(
         memoryWriterNotice({
-            memoryOn: chatRef !== null && !!findCharacter(chatRef.chaId)?.supaMemory,
+            memoryOn:
+                chatRef !== null &&
+                chatMemoryEnabled(chatEntry(chatRef), findCharacter(chatRef.chaId), chatMemorySettings()),
             cadence,
             paused: heldFacts?.paused ?? false,
             pendingRepairs: heldFacts?.pendingRepairs ?? 0,

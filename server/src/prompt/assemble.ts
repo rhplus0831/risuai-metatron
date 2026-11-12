@@ -1,3 +1,4 @@
+import { chatMemoryEnabled, legacyMemoryAlgorithm } from "../../../shared/chatMemory.ts";
 import { createHash } from "node:crypto";
 import type { CbsParseArg } from "../../../shared/cbs/evaluator.ts";
 import {
@@ -1902,10 +1903,10 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         addSection("lorebook", tokens);
     }
 
-    const structuredMemory = db.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM;
-    const memoryConfigured =
-        structuredMemory || db.supaModelType !== "none" || db.hanuraiEnable || db.hypav2 || db.hypaV3;
-    let useMemory = memoryConfigured && (!!nowChatroom.supaMemory || host.memoryTrim.enabled());
+    const memoryAlgorithm = legacyMemoryAlgorithm(db);
+    const structuredMemory = memoryAlgorithm === STRUCTURED_MEMORY_ALGORITHM;
+    const memoryConfigured = memoryAlgorithm !== "none";
+    let useMemory = memoryConfigured && (chatMemoryEnabled(currentChat, nowChatroom, db) || host.memoryTrim.enabled());
     if (memoryConfigured && !useMemory && currentTokens > maxContextTokens) {
         // Count the entries the trim below would drop using the same token accounting. Ask only
         // when at least one dropped chat history entry has text or multimodals.
@@ -1987,7 +1988,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                         manifest: step.manifest,
                     };
                 }
-            } else if (db.hanuraiEnable) {
+            } else if (memoryAlgorithm === "hanuraiMemory") {
                 const hn = await hanuraiMemory(memory, chats, {
                     currentTokens,
                     maxContextTokens,
@@ -2003,7 +2004,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                 chats = hn.chats;
                 currentTokens = hn.tokens;
                 memoryRun = { kind: "hanurai", coverage: "unknown" };
-            } else if (db.hypav2) {
+            } else if (memoryAlgorithm === "hypaMemoryV2") {
                 const room = detachedChat();
                 // The value the algorithm reads: its result is placed onto the value stored at the write.
                 const baseline = structuredClone(room.hypaV2Data);
@@ -2044,7 +2045,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                 }
 
                 currentChat = host.chat();
-            } else if (db.hypaV3) {
+            } else if (memoryAlgorithm === "hypaMemoryV3") {
                 const sources = hypaV3Sources(chats, historyStart, greetingSource, ms);
                 const step = await hypaV3Step(host, {
                     chats,

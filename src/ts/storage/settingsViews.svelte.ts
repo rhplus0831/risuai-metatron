@@ -1,3 +1,4 @@
+import { legacyMemoryAlgorithm } from "../../../shared/chatMemory.ts";
 import { untrack } from "svelte";
 import isEqual from "lodash/isEqual";
 import type {
@@ -642,15 +643,7 @@ function sectionView(section: SectionKind): object {
                 // on read only; the records stay unchanged until the user selects an algorithm.
                 const memory = trackedRecord<SettingsViews["memoryTranslateMedia"]>("memoryTranslateMedia");
                 if (!memory) return value;
-                const derived = memory.hanuraiEnable
-                    ? "hanuraiMemory"
-                    : memory.hypav2
-                      ? "hypaMemoryV2"
-                      : memory.hypaV3
-                        ? "hypaMemoryV3"
-                        : memory.supaModelType !== "none"
-                          ? "supaMemory"
-                          : "none";
+                const derived = legacyMemoryAlgorithm({ ...memory, memoryAlgorithmType: value });
                 // An absent selector with nothing enabled stays absent (fresh boots and fixtures), not "none".
                 return value === undefined && derived === "none" ? value : derived;
             },

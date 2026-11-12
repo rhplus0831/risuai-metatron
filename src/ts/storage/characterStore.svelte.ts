@@ -1,11 +1,9 @@
 import { untrack } from "svelte";
 import { v4 } from "uuid";
 import type { character, groupChat } from "../../../shared/database.ts";
-import { selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
-import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
-import { onCharacterSelected, selectCharacter, selection } from "./selection.svelte";
-import { CharacterShapeError, normalizeCharacter, supaMemoryOnCount } from "../../../shared/characters.ts";
+import { selectCharacter, selection } from "./selection.svelte";
+import { CharacterShapeError, normalizeCharacter } from "../../../shared/characters.ts";
 import { ModuleShapeError, upgradeLorebook } from "../../../shared/modules.ts";
 import type { Chat } from "../../../shared/database.ts";
 import {
@@ -417,27 +415,6 @@ export function selectedCharacter(): AnyClientCharacter | undefined {
     const chaId = selection.characterId;
     return chaId === null ? undefined : list().find((entry) => entry?.chaId === chaId);
 }
-
-// The memory preset that turns memory on for every chat does so when a character is selected (a
-// turn-on that counts, as the toggle's: `supaMemoryOnCount`), under HypaV3 or Structured Memory, which
-// share the preset: when HypaV3 is on (`memoryTranslateMedia.hypaV3`) or the Structured Memory
-// algorithm is selected (`ui.memoryAlgorithmType`), the selected HypaV3 preset has `alwaysToggleOn`,
-// and the character's `supaMemory` is not already `true`.
-onCharacterSelected((chaId) => {
-    untrack(() => {
-        const found = findCharacter(chaId);
-        if (
-            (settings.memoryTranslateMedia.hypaV3 || settings.ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM) &&
-            selectedHypaV3Preset({
-                hypaV3Presets: settings.hypaV3Presets.items,
-                hypaV3PresetId: settings.hypaV3Presets.selectedId,
-            })?.settings?.alwaysToggleOn &&
-            found?.supaMemory !== true
-        ) {
-            updateCharacter(chaId, { supaMemory: true, supaMemoryOnCount: supaMemoryOnCount(found) + 1 });
-        }
-    });
-});
 
 /**
  * The body of `replaceCharacterFields` after its checks. Replaces the own fields of the record at `index` with

@@ -1,3 +1,5 @@
+import { chatMemoryEnabled } from "../../../shared/chatMemory.ts";
+import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
 import { untrack } from "svelte";
 import { SvelteMap, SvelteSet } from "svelte/reactivity";
 import { fromStore, get, writable } from "svelte/store";
@@ -284,7 +286,7 @@ const healthStates = $derived.by(() => {
     const openKey = open ? chatStatusKey(open) : null;
     for (const key of healthChatKeys) {
         const ref = keyRef(key);
-        if (!findCharacter(ref.chaId)?.supaMemory) {
+        if (!chatMemoryEnabled(chatEntry(ref), findCharacter(ref.chaId), chatMemorySettings())) {
             continue;
         }
         const entry = healthFacts.get(key) ?? null;

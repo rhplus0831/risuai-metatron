@@ -1,4 +1,5 @@
 <script lang="ts">
+    import ChatMemoryPanel from "../SideBars/ChatMemoryPanel.svelte";
     import { XIcon } from "@lucide/svelte";
     import { language } from "src/lang";
     import { chatEntry, type ChatRef } from "src/ts/storage/chatStore.svelte";
@@ -11,7 +12,7 @@
     }
 
     /*
-     * A chat's binding panel as a dialog, for any chat: the chat list's "Chat settings" and the send
+     * A chat's binding and memory panels as a dialog, for any chat: the chat list's "Chat settings" and the send
      * area's "Set up this chat" open it. An ordinary overlay like the picker lists: `App.svelte` mounts
      * it before them, so a picker opened from a row paints on top, and alerts (`z-50`) stay above both.
      * It closes when its chat stops being a member.
@@ -54,6 +55,7 @@
         {#if entry}
             <span class="text-textcolor2 text-sm mb-3 truncate">{entry.name}</span>
             <ChatBindingPanel {chatRef} />
+            <ChatMemoryPanel {chatRef} />
         {/if}
     </div>
 </div>

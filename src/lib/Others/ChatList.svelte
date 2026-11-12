@@ -1,4 +1,5 @@
 <script>
+    import { initialChatMemory } from "src/ts/storage/chatMemory.svelte";
     import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { alertConfirm, alertError } from "../../ts/alert";
     import { language } from "../../lang";
@@ -129,6 +130,7 @@
                         {
                             // Read before the chat is created: it becomes the selected chat.
                             ...initialChatBinding(cha.chaId),
+                            ...initialChatMemory(cha.chaId),
                             ...initialChatTranslation(cha.chaId),
                             ...initialChatToggles(cha.chaId),
                             message,

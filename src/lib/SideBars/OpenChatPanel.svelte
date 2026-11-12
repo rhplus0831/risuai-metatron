@@ -1,4 +1,5 @@
 <script lang="ts">
+    import ChatMemoryPanel from "./ChatMemoryPanel.svelte";
     import { ArrowLeftIcon } from "@lucide/svelte";
     import { language } from "src/lang";
     import type { AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
@@ -14,7 +15,7 @@
     /**
      * The sidebar's chat tab while a chat is open (`selection.chatOpen`), in place of the chat list:
      * a way back to the list (the closed-chat screen), the chat's name with rename and export, its
-     * binding and, while a target language is set, its translation settings (these three read the list
+     * binding, memory switch and, while a target language is set, translation settings (these read the list
      * entry, so they show while the chat loads), the chat's author note, and the toggles.
      *
      * Every child is bound to the open chat's ref, and its pickers and dialogs act on that ref. The editors that
@@ -47,6 +48,7 @@
             <OpenChatHeader chat={currentRef} />
         {/key}
         <ChatBindingPanel chatRef={currentRef} />
+        <ChatMemoryPanel chatRef={currentRef} />
         {#if settings.memoryTranslateMedia.translator !== ""}
             <ChatTranslationPanel chatRef={currentRef} />
         {/if}

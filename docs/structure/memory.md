@@ -61,6 +61,9 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 
 ### UI
 
+- `src/lib/SideBars/ChatMemoryPanel.svelte` edits the chat switch in `OpenChatPanel.svelte` and
+  `ChatBindingDialog.svelte`, including unloaded chats. `src/ts/storage/chatMemory.svelte.ts` supplies the settings
+  adapter, `setChatMemoryEnabled`, and `initialChatMemory`; the character's Toggles panel has no memory checkbox.
 - `src/lib/Others/HypaV3Modal.svelte` and its children in `src/lib/Others/HypaV3Modal/` edit a synced copy of the
   current chat's `hypaV3Data`; the modal's contract holds its save, refresh, and discard rules. A send's memory data is
   written by the job and by the background memory task.
@@ -85,9 +88,11 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 
 ### Selection, in `assemblePrompt`
 
-- Memory runs only when `nowChatroom.supaMemory` is set on the character or group.
-- The priority order is `db.hanuraiEnable` → `db.hypav2` → `db.hypaV3` → otherwise `supaMemory` (as selected by
-  `supaModelType`).
+- Memory runs when `chatMemoryEnabled` in `shared/chatMemory.ts` resolves on and an algorithm is configured. A boolean
+  `memoryEnabled` wins; absent or malformed values use `alwaysToggleOn` under HypaV3 or Structured Memory, then the
+  owner's `supaMemory`. The preset default never writes the owner or chat.
+- `legacyMemoryAlgorithm` shares the server priority with the settings view and selector: Structured Memory →
+  `hanuraiEnable` → `hypav2` → `hypaV3` → SupaMemory when `supaModelType` is not `none` → none.
 - SupaMemory, HypaV2, and HypaV3 return data for the current chat's algorithm field; Hanurai returns prompt history and
   token counts or an overflow alert, with no persistent memory.
 - `memoryAlgorithmType`'s `structuredMemory` selects [its step](structured-memory/writer.md#the-writer-task) ahead of
@@ -155,11 +160,13 @@ it matches a removable entry), so a prompt still over the context with them ends
 
 ### The no-memory trim question
 
-For input jobs, when a memory method is configured but the owner's `supaMemory` is off, a no-memory trim asks before
+For input jobs, when a memory method is configured but the chat's resolved switch is off, a no-memory trim asks before
 dropping chat history unless `memoryTrimAck` still applies; a trim that drops only blank history entries (no text, no
 multimodals: the final re-check's rule) asks nothing. `preview` and `previewPrompt` trim without asking. The owner sees
 `alertSelect` in [the job channel](network-jobs.md#job-channel): enable memory, trim once, or ignore future prompts by
-recording `memoryTrimAck`. An unanswered or invalid answer ends the job. The late removable-message cleanup after
+recording `memoryTrimAck`. Enabling writes `memoryEnabled: true` and removes this chat's acknowledgement in one metadata
+operation, leaving the owner and its count alone. The runner rechecks the chat's resolved switch before the
+acknowledgement comparison. An unanswered or invalid answer ends the job. The late removable-message cleanup after
 formatting still applies.
 
 ## State
@@ -181,8 +188,16 @@ formatting still applies.
       ratios ([upstream export](backup-sync-hub.md#upstream-database-export)).
 - Per-chat fields: `supaMemoryData`, `hypaV2Data`, `hypaV3Data`, `lastMemory`, `memoryTrimAck` (the owner's
   `supaMemoryOnCount` when the user answered "don't ask again" to the trim question).
-- Per-owner fields (character or group): `supaMemory` (the toggle), `supaMemoryOnCount` (its off→on transitions; read
-  through `supaMemoryOnCount` in `shared/characters.ts`).
+- Chat preferences: `memoryEnabled`, `memoryMode`, `memoryPresetId`, `memoryProfileId`. Only the switch affects
+  execution; the other three are stored and carried. `chatMemoryAlgorithm` still returns the legacy algorithm and
+  `chatHypaV3Preset` the globally selected preset. Malformed values read as absent; no chat migration runs.
+- Per-owner fields (character or group): `supaMemory` (the default for a chat that never chose), `supaMemoryOnCount`
+  (legacy off→on count, still incremented by plugin character writes; read through `supaMemoryOnCount` in
+  `shared/characters.ts`). The upstream exporter derives `supaMemory` from whether any stored chat resolves on. Without
+  exported chat rows, it resolves an empty chat against the owner and settings for the synthetic first chat.
+- New chats inherit their source chat's resolved switch and valid stored mode, preset, and connection, regardless of
+  `newChatBinding`; they never inherit `memoryTrimAck`. A first chat stores no memory preferences. Copy, branch, import,
+  plugin creation, and recovery carry supplied metadata.
 - Stores: `hypaV3ModalOpen`, `hypaV3ProgressStore`, and `memoryProgressStore` (per job). The tab's task status and fence
   mirror is module state in `src/ts/process/memoryTasks.svelte.ts`. Server task state and source generations are
   volatile; a restart drops queued work for the next send to find again.
@@ -248,9 +263,11 @@ lookahead starts at stored coverage and does not defer summaries.
 
 ### The memory toggle count
 
-- Every core path that turns `supaMemory` on increments `supaMemoryOnCount`; `memoryTrimAck` stays effective only while
-  it matches that count. The tab owns those increments (the runner also increments for its own trim answer), so moving
-  the count server-side alone would double-count.
+- Turning a chat's memory on through `setChatMemoryEnabled` or the trim answer removes its `memoryTrimAck` in the same
+  metadata operation. Turning it off stores `false`; it never returns the switch to the owner's default. The ack is a
+  summary field, so an unloaded chat can invalidate it too.
+- `memoryTrimAck` remains effective only while it matches the owner's `supaMemoryOnCount`. Core paths no longer
+  increment that count, and character selection never writes memory state.
 - `applyPluginCharacter` preserves the stored count and adds one only for an off→on change to the same `chaId`; new or
   differently identified records are not counted.
 
@@ -258,7 +275,7 @@ lookahead starts at stored coverage and does not defer summaries.
 
 - Add or change a top-level algorithm: the selector in `MemorySettings.svelte`, the fields in `shared/sections.ts` and
   their defaults in the server normalizer, and the branch plus persistence in the server's `assemblePrompt`. Verify the
-  `supaMemory` gate and the priority order.
+  `chatMemoryEnabled` gate and `legacyMemoryAlgorithm` priority order.
 - Add an embedding model: `hypamemory.ts` (`HypaModel`, `localModels`, `getEmbeds`), `hypamemoryv2.ts:getAPIEmbeds`,
   `transformers.ts` `EmbeddingModel`, and the UI options. A Voyage model is one entry in `VOYAGE_EMBEDDING_MODELS` or
   `VOYAGE_CONTEXT_MODELS` plus its `HypaModel` value; the settings list both tables.
@@ -287,6 +304,13 @@ lookahead starts at stored coverage and does not defer summaries.
 
 ## Tests
 
+- Switch and metadata checks span `shared/tests`,
+  `server/src/tests/{memoryJobs,memoryTasks,assemble,chatSummaries,upstreamExport}.test.ts`,
+  `src/ts/storage/tests/{chatStore,bootCache,settingsViews,chatBindingNewChat}.test.ts`, and
+  `src/ts/plugins/apiV3/hostApiChats.test.ts`. UI checks include `src/lib/SideBars`,
+  `src/ts/process/chatStatus.test.ts`, and `src/lib/Others/StructuredMemory/StructuredMemoryPanel.test.ts`.
+- Not tested: the chat memory panel at phone width, two-tab switch synchronization, the three trim answers on a real
+  send, and an exported backup opened in upstream with each character's derived switch.
 - Focused:
   `pnpm --silent test:agent src/ts/process/memory src/ts/process/memoryTasks.test.ts src/lib/Others/HypaV3*.test.ts src/lib/Setting/Pages/MemorySettings.*.test.ts`
   for the tab; `pnpm --silent test:agent server/src/tests/{memory*,hypaV3*,embeddings,vectorCache,transformers}.test.ts`
@@ -321,6 +345,9 @@ lookahead starts at stored coverage and does not defer summaries.
 
 ### Limitations
 
+- A tab loaded before chat memory preferences were introduced keeps showing the character's switch and writes
+  `supaMemory`, now only the default of a chat that never chose. A plugin whole-chat write from that tab can still
+  remove a field its copy never held. Reloading ends both limitations. Decision: owner, 2026-11-12.
 - A message edited after a hand-off invalidates its window and every later one: a chat edited often while a long backlog
   is summarized can restart the backlog more than once (not measured). Decision: HypaV3 Background Memory D15 and D16,
   [archive](../archived-plan/README.md).

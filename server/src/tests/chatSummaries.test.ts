@@ -884,3 +884,32 @@ describe("the routes", () => {
         expect(atCap.status).toBe(200);
     });
 });
+
+it("reopens an old projection with all five chat memory fields, including false, without moving chat revisions", () => {
+    const { store, db, open } = summaryFile();
+    const memory = {
+        memoryEnabled: false,
+        memoryMode: "structuredMemory",
+        memoryPresetId: "memory-preset",
+        memoryProfileId: "memory-connection",
+        memoryTrimAck: 7,
+    };
+    store.applyChanges({
+        ops: [{ kind: characters, id: "c", baseRevision: null, data: { chaId: "c" } }],
+        chats: [group("k", [create({ ...fullChat("k", "K"), ...memory })])],
+    });
+    const revision = store.chatRevision("c", "k");
+    store.close();
+    // Version 1 predates memory metadata. Its current-revision row must still be rebuilt on open.
+    db.prepare("UPDATE chatSummaries SET text = ?").run(JSON.stringify({ name: "K", fmIndex: 2 }));
+    db.prepare("UPDATE meta SET value = '1' WHERE key = 'summaryProjectionVersion'").run();
+    const reopened = open();
+    expect(reopened.chatRevision("c", "k")).toBe(revision);
+    expect(reopened.readKinds([], { chatSummaries: true }).chatSummaries).toEqual([
+        expect.objectContaining({ characterId: "c", id: "k", revision, ...memory }),
+    ]);
+    expect(reopened.readRefs([], { chatSummaryCollections: ["c"] }).chatSummaryCollections![0].chats[0]).toMatchObject(
+        memory,
+    );
+    expect(JSON.parse((storedProjection(db) as { text: string }).text)).toMatchObject(memory);
+});

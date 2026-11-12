@@ -116,7 +116,7 @@ export const languageKorean = {
         additionalAssets:
             "채팅에 표시할 추가 미디어 에셋입니다.\n\n- 파일 경로로 사용하려면 `{{raw::<에셋 이름>}}`\n- 이미지로 표시하려면 `{{image::<에셋 이름>}}`\n- 비디오로 표시하려면 `{{video::<에셋 이름>}}`\n- 오디오로 재생하려면 `{{audio::<에셋 이름>}}`을 사용하세요.\n    - 오디오는 배경 HTML에 넣는 것을 권장합니다.",
         superMemory:
-            "수파메모리는 이전 대화의 요약본을 AI에게 전달해 캐릭터가 더 오랜 맥락을 기억하도록 돕는 기능입니다.\n\n수파메모리 모델은 대화를 요약할 모델을 지정합니다. 보조 모델은 2000 토큰 이상을 지원하고 검열이 없는 모델이 아니라면 권장하지 않습니다.\n\n수파메모리 프롬프트는 요약을 요청할 때 보낼 지시문입니다. 비워 두면 기본 프롬프트를 사용하며, 특별한 이유가 없다면 비워 두는 것을 권장합니다.\n\n설정을 마친 뒤 각 캐릭터의 설정 탭에서 활성화할 수 있습니다.",
+            "수파메모리는 이전 대화의 요약본을 AI에게 전달해 캐릭터가 더 오랜 맥락을 기억하도록 돕는 기능입니다.\n\n수파메모리 모델은 대화를 요약할 모델을 지정합니다. 보조 모델은 2000 토큰 이상을 지원하고 검열이 없는 모델이 아니라면 권장하지 않습니다.\n\n수파메모리 프롬프트는 요약을 요청할 때 보낼 지시문입니다. 비워 두면 기본 프롬프트를 사용하며, 특별한 이유가 없다면 비워 두는 것을 권장합니다.\n\n설정을 마친 뒤 채팅 설정이나 열린 채팅의 사이드바에서 메모리를 켤 수 있습니다.",
         replaceGlobalNote: "내용을 입력하면 현재 글로벌 노트 대신 이 내용을 사용합니다.",
         backgroundHTML:
             "채팅 화면 배경에 삽입할 마크다운/HTML 코드입니다.\n\n추가 에셋도 함께 활용할 수 있습니다. 예를 들어 배경 음악을 넣으려면 `{{audio::<에셋 이름>}}`을 사용하세요.\n\n또한 다음 구문도 사용할 수 있습니다:\n - `{{bg::<에셋 이름>}}`: 해당 에셋을 배경 이미지로 삽입합니다.",
@@ -324,7 +324,8 @@ export const languageKorean = {
             "활성화하면 최근 대화의 요약본도 유사도 검색 쿼리에 추가로 활용합니다. 실험적 하이파메모리 V3에서는 작동하지 않습니다.",
         hypaV3UseExperimentalImpl:
             "실험적 하이파메모리 V3 구현으로 전환합니다. 요청 속도 제한(Rate Limit) 설정을 사용할 수 있으며 쿼리 방식이 달라집니다.",
-        hypaV3AlwaysToggleOn: "활성화하면 캐릭터를 선택할 때 하이파메모리 토글을 자동으로 켭니다.",
+        hypaV3AlwaysToggleOn:
+            "하이파 V3 또는 구조화 메모리를 사용하는 채팅이 메모리 사용 여부를 선택하지 않았다면 기본으로 켭니다. 채팅에서 직접 꺼 둔 경우에는 꺼진 상태를 유지합니다.",
         hypaV3SummarizationRequestsPerMinute:
             "요약 작업 시 분당 최대 수파메모리 모델 요청 횟수입니다. 수파메모리 모델로 보조 모델을 사용할 때만 적용됩니다.",
         hypaV3SummarizationMaxConcurrent:
@@ -1056,7 +1057,6 @@ export const languageKorean = {
     creator: "제작자",
     CharVersion: "캐릭터 버전",
     Speech: "음성",
-    ToggleSuperMemory: "수파메모리 토글",
     SuperMemory: "수파메모리",
     useExperimental: "실험적 요소 보이기",
     showMemoryLimit: "기억 한계선 표시",
@@ -1637,10 +1637,10 @@ export const languageKorean = {
     customInnerFormat: "커스텀 내부 포맷",
     innerFormat: "내부 포맷",
     HypaMemory: "하이파메모리",
-    ToggleHypaMemory: "하이파메모리 토글",
     memoryTrimWarning:
         "장기 기억이 설정되어 있지만 이 채팅에서는 꺼져 있습니다. 프롬프트가 최대 컨텍스트 크기를 초과하여 가장 오래된 메시지부터 모델에 전달되지 않습니다.",
-    memoryTrimEnable: "메모리 켜고 전송",
+    chatMemory: { enabled: "이 채팅에서 메모리 사용" },
+    memoryTrimEnable: "이 채팅의 메모리 켜고 전송",
     memoryTrimOnce: "이번에만 제외하고 전송",
     memoryTrimIgnore: "계속 제외하고 전송 (이 채팅에서 다시 묻지 않음)",
     resetPromptTemplateConfirm: "정말로 프롬프트 템플릿을 초기화하시겠습니까?",
@@ -2405,7 +2405,7 @@ export const languageKorean = {
         startFailed: (error: string) => `백그라운드 요약을 시작하지 못했습니다: ${error}`,
         cancelFailed: (error: string) => `백그라운드 요약을 취소하지 못했습니다: ${error}`,
         reasons: {
-            memoryOff: "이 캐릭터의 메모리 기능이 꺼져 있습니다",
+            memoryOff: "이 채팅의 메모리 기능이 꺼져 있습니다",
             notHypaV3: "현재 사용 중인 메모리가 하이파 V3가 아닙니다",
             pluginModel: "메모리 모델이 브라우저 탭에서 실행되어 메시지 전송 중에 요약합니다",
             requestTrigger: "요청 트리거가 적용되어 메시지 전송 중에 요약합니다",
@@ -2438,7 +2438,6 @@ export const languageKorean = {
     },
     structuredMemory: {
         name: "구조화 기억",
-        toggle: "구조화 기억 토글",
         requiredOverCap: (tokens: number, limit: number, pages: string) =>
             `오류: 필수 기억 문서가 ${tokens} 토큰을 차지해 한도(${limit} 토큰)를 초과했습니다: ${pages}. 문서 내용을 줄이거나 전송 시점을 '관련 있을 때'로 변경해 주세요.`,
         removeRetracts: (events: number) =>

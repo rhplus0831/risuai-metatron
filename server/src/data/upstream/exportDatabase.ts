@@ -1,3 +1,4 @@
+import { chatMemoryEnabled, type ChatMemorySettings } from "../../../../shared/chatMemory.ts";
 import type {
     Chat,
     Credential,
@@ -185,6 +186,10 @@ const METATRON_CHARACTER_FIELDS = ["customNotificationMessage", "supaMemoryOnCou
  */
 const METATRON_CHAT_FIELDS = [
     "pinned",
+    "memoryEnabled",
+    "memoryMode",
+    "memoryPresetId",
+    "memoryProfileId",
     "memoryTrimAck",
     "loreBudgetWarnOff",
     "structuredMemoryLanguage",
@@ -363,6 +368,16 @@ export function buildUpstreamDatabase(
     forwardPersonaRoots(db, persona, personas);
 
     db.translatorPresets = upstreamTranslatorPresets(db, report);
+    // Preserve the stored preset id and settings before converting them for upstream.
+    const memorySettings = {
+        memoryAlgorithmType: db.memoryAlgorithmType,
+        hanuraiEnable: db.hanuraiEnable,
+        hypav2: db.hypav2,
+        hypaV3: db.hypaV3,
+        supaModelType: db.supaModelType,
+        hypaV3Presets: structuredClone(db.hypaV3Presets),
+        hypaV3PresetId: db.hypaV3PresetId,
+    } as ChatMemorySettings;
     db.hypaV3PresetId = positionOf(db.hypaV3Presets, db.hypaV3PresetId);
     // After `forwardSelectedPreset`: the root `maxContext` is the exported one.
     db.hypaV3Presets = upstreamHypaV3Presets(db.hypaV3Presets, db.maxContext);
@@ -387,6 +402,7 @@ export function buildUpstreamDatabase(
         options,
         now,
         isPlainObject(ui) && ui.memoryAlgorithmType === STRUCTURED_MEMORY_ALGORITHM,
+        memorySettings,
         report,
     );
 
@@ -938,6 +954,7 @@ function upstreamCharacters(
     options: UpstreamExportOptions,
     now: number,
     structuredMemory: boolean,
+    memorySettings: ChatMemorySettings,
     report: UpstreamExportReport,
 ): Root[] {
     const eventsBySeq = new Map<number, string[]>();
@@ -981,6 +998,8 @@ function upstreamCharacters(
     }
 
     return records.map((character) => {
+        const owner = { supaMemory: character.supaMemory };
+        let memoryEnabled = false;
         const chaId = character.chaId as string;
         const name = typeof character.name === "string" ? character.name : chaId;
         const stripped = METATRON_CHARACTER_FIELDS.filter((field) => Object.hasOwn(character, field));
@@ -1000,6 +1019,7 @@ function upstreamCharacters(
             if (!row) {
                 return [];
             }
+            memoryEnabled ||= chatMemoryEnabled(JSON.parse(row.meta), owner, memorySettings);
             const messages = (messagesBySeq.get(row.seq) ?? []).sort((a, b) => a.position - b.position);
             const chat = upstreamChat(row.meta, messages, memoryOf(row.seq, name), `characters[${name}]`, report);
             if (
@@ -1009,6 +1029,8 @@ function upstreamCharacters(
             }
             return [chat];
         });
+        // A synthetic first chat has no preferences and must inherit the owner's resolved default.
+        character.supaMemory = chats.length === 0 ? chatMemoryEnabled({}, owner, memorySettings) : memoryEnabled;
         // Upstream reads the selected character's `chats[chatPage]` unguarded (U `globalApi.svelte.ts`
         // change tracker, `parser/chatVar.svelte.ts`), so a character without chats gets the empty one
         // upstream's creation makes (U `characters.ts`); its boot gives it an id. The import's creation

@@ -1,3 +1,4 @@
+import { chatMemoryEnabled } from "../../../shared/chatMemory.ts";
 import type { RerollAttemptWrite } from "../data/chatStore.ts";
 import {
     candidateOf,
@@ -1169,9 +1170,9 @@ async function runSpeaker(arg: {
 
     /**
      * `AssemblyHost.memoryTrim.confirm`: none for a preview (it trims as before); "memory" when the user
-     * turned memory on in this job or the owner stored now has it on; the user's answer when this job
-     * already asked; "trim" when this chat said "don't ask again" since the owner's memory was last
-     * turned on (checked anew each time: a turn-on during the job voids it); otherwise the owner's tab
+     * turned memory on in this job or the chat's switch now resolves on; the user's answer when this job
+     * already asked; "trim" while this chat's acknowledgement matches the owner's legacy count
+     * (turning this chat on removes its acknowledgement); otherwise the owner's tab
      * is asked. The owner (a character or a group) is the job's `characterId`, read from the store, not
      * the job's frozen projection.
      */
@@ -1188,7 +1189,7 @@ async function runSpeaker(arg: {
         }
         const readOwner = () => store.get(charactersKind, characterId)?.data as (character | groupChat) | undefined;
         const owner = readOwner();
-        if (owner?.supaMemory === true) {
+        if (chatMemoryEnabled(chatNow(), owner, db)) {
             state.memoryTrim = "memory";
             return state.memoryTrim;
         }
@@ -1202,32 +1203,16 @@ async function runSpeaker(arg: {
         }
         const choice = answer as MemoryTrimChoice;
         if (choice === "memory") {
-            // Read inside the write (it may run again on a conflict): an owner turned on meanwhile is
-            // kept as it is, and only a real off→on transition counts.
-            let found = false;
-            job.write(() => {
-                const row = store.get(charactersKind, characterId);
-                found = !!row;
-                const data = row?.data as (character | groupChat) | undefined;
-                if (!row || !data || data.supaMemory === true) {
-                    return {};
-                }
-                return {
-                    ops: [
-                        {
-                            kind: charactersKind,
-                            id: characterId,
-                            baseRevision: row.revision,
-                            patch: { set: { supaMemory: true, supaMemoryOnCount: supaMemoryOnCount(data) + 1 } },
-                        },
-                    ],
-                };
-            });
-            if (!found) {
-                throw new GenerationRunnerError(404, "The job's character no longer exists");
-            }
-            refreshCharacter(store, kinds, scope, characterId);
-            job.emitRecords({ refs: [{ kind: RESOURCE_KIND.characters, id: characterId }] });
+            services.writeChat(
+                (chat) => [
+                    {
+                        op: "meta",
+                        set: { memoryEnabled: true },
+                        ...(Object.hasOwn(chat, "memoryTrimAck") ? { unset: ["memoryTrimAck"] } : {}),
+                    },
+                ],
+                nativeCtx,
+            );
             state.memoryTrim = "memory";
             return state.memoryTrim;
         }

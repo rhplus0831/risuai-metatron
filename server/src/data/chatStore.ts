@@ -1,3 +1,4 @@
+import { chatMemorySummary } from "../../../shared/chatMemory.ts";
 import {
     isRerollCarrier,
     selectCandidateChange,
@@ -647,7 +648,7 @@ type SummaryProjection = Omit<SummaryFields, "lastMessageAt">;
  * The shape of the stored projection (`summaryText`). Bump it whenever the projection's shape changes:
  * an open that finds another value in the `meta` table's `summaryProjectionVersion` rebuilds every row.
  */
-export const SUMMARY_PROJECTION_VERSION = 1;
+export const SUMMARY_PROJECTION_VERSION = 2;
 
 /**
  * A chat summary's listed fields: the projection of its stored metadata (the JSON copy, never a
@@ -677,8 +678,8 @@ function summaryFields(meta: Record<string, unknown>): SummaryProjection {
     if (meta.pinned === true) {
         fields.pinned = true;
     }
-    // The translation settings: a new chat inherits them.
-    Object.assign(fields, chatTranslationSummary(meta));
+    // List-editable translation and memory metadata.
+    Object.assign(fields, chatTranslationSummary(meta), chatMemorySummary(meta));
     return fields;
 }
 

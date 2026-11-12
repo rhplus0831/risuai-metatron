@@ -124,6 +124,11 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 
 ### Summaries and refresh
 
+- `ChatSummary`, server `summaryFields`, and tab `metaOf` carry `memoryEnabled`, `memoryMode`, `memoryPresetId`,
+  `memoryProfileId`, and `memoryTrimAck` through the shared `chatMemorySummary` helper. Only valid types are projected;
+  an explicit `false` is retained. `SUMMARY_FIELD_TYPES` permits unloaded edits and acknowledgement removal.
+- Summary changes bump both `SUMMARY_PROJECTION_VERSION` (stored summaries rebuild at the existing chat revisions) and
+  `CHAT_SUMMARY_FORMAT` (warm boot caches discard the old projection).
 - A live update reaches `noteRemoteChat` ([chat live updates](live-updates.md#chat-live-updates)): a loaded chat takes a
   fitting body, an unloaded member its summary (`applyRemoteSummary`), everything else asks for the character's list.
   Whole-chat reads are for loaded chats only (`idleChatRefreshes`); a server copy never loads a chat.
@@ -138,6 +143,10 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   (`captureChatBaseline` can take an already assembled read copy); `reconcileCharacterChats` takes a plugin's whole list
   and an optional supplier of read-time baselines ([plugins](plugin-sandbox.md)). A structured chat's `hypaV3Data` is a
   projection the mirror holds and no send carries: [the rules](structured-memory/projection.md#the-hypav3-projection).
+- Without a retained plugin read baseline, `reconcileCharacterChats` fills each own-property-absent memory preference
+  (`memoryEnabled`, `memoryMode`, `memoryPresetId`, `memoryProfileId`) from the current chat before `applyChatResult`,
+  covering whole-chat reorder replacements. A retained baseline uses the ordinary diff. Other fields, `memoryTrimAck`,
+  and `setChatToIndex` keep their existing rules.
 - A `createChatFieldDraft` copy is fenced by `loreWriteFenced` over `localSends` and `generatingChatKeys`, also before
   structural override actions; the job's Lua lorebook upsert writes from the stored chat
   ([scripts](scripts-triggers.md)).

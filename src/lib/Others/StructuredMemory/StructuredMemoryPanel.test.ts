@@ -3794,3 +3794,17 @@ it("confirms Keep all, sends keeps sequentially with returned revisions and stop
     ]);
     expect(query('[data-memory-page="q"]')?.getAttribute("aria-current")).toBe("true");
 });
+
+it("uses the chat switch for the writer notice when it disagrees with the owner", async () => {
+    serveMemory();
+    const owner = characterList().find(({ chaId }) => chaId === "c")!;
+    setChatMeta(ref, { memoryEnabled: false });
+    await open();
+    expect(query("[data-memory-writer-line]")?.dataset.memoryWriterLine).toBe("memoryOff");
+    expect(query("[data-memory-writer-action]")).toBeNull();
+    owner.supaMemory = false;
+    setChatMeta(ref, { memoryEnabled: true });
+    await settle();
+    expect(query("[data-memory-writer-line]")?.dataset.memoryWriterLine).not.toBe("memoryOff");
+    expect(query("[data-memory-writer-action]")?.dataset.memoryWriterAction).toBe("record");
+});

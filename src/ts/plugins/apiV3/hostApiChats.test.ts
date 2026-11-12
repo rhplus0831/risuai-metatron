@@ -967,3 +967,48 @@ describe("setter targets across dbWrite consent", () => {
         },
     );
 });
+
+describe("whole-character plugin writes of chat memory", () => {
+    const memory = {
+        memoryEnabled: false,
+        memoryMode: "structuredMemory",
+        memoryPresetId: "memory-preset",
+        memoryProfileId: "memory-connection",
+    };
+
+    it.each([false, true])(
+        "keeps omitted memory fields without a retained read, including reordered chats (%s)",
+        async (reorder) => {
+            chatStore.setChatMeta(refK, memory);
+            const api = await makeApi();
+            // An old plugin supplies its own whole character without first reading through this host.
+            const incoming = liveCharacters()[0];
+            incoming.chats[0].name = "Plugin edit";
+            if (reorder) {
+                // A changed message order takes the whole-chat replacement branch as well.
+                incoming.chats[0].message.reverse();
+                incoming.chats.reverse();
+            }
+            await api.setChar(incoming);
+            expect(chatStore.findChat(refK)).toMatchObject({ ...memory, name: "Plugin edit" });
+            expect(chatIds("c")).toEqual(reorder ? ["j", "k"] : ["k", "j"]);
+            expect(chatStore.findChat(refK)!.message.map((message) => message.chatId)).toEqual(
+                reorder ? ["b", "a"] : ["a", "b"],
+            );
+        },
+    );
+
+    it("unsets an omitted memory field when the plugin retained a read baseline", async () => {
+        chatStore.setChatMeta(refK, memory);
+        const api = await makeApi();
+        const incoming = await api.getChar();
+        delete incoming.chats[0].memoryEnabled;
+        await api.setChar(incoming);
+        expect(chatStore.findChat(refK)).not.toHaveProperty("memoryEnabled");
+        expect(chatStore.findChat(refK)).toMatchObject({
+            memoryMode: "structuredMemory",
+            memoryPresetId: "memory-preset",
+            memoryProfileId: "memory-connection",
+        });
+    });
+});

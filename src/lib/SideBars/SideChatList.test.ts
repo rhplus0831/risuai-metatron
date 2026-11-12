@@ -82,6 +82,7 @@ import { applyRawCharacter } from "src/ts/storage/records.svelte";
 import * as resourceSync from "src/ts/storage/resourceSync.svelte";
 import * as serverAuth from "src/ts/storage/serverAuth";
 import {
+    assembleChats,
     chatEntry,
     chatList,
     findChat,
@@ -542,7 +543,7 @@ describe("the sidebar's new chat button", () => {
         expect(ids("c")).toHaveLength(4);
         expect(ids("c").slice(1)).toEqual(["k", "j", "n"]);
         expect(first("c")).toMatchObject({ name: "New Chat 4", promptPresetId: "p1" });
-        expect(strip(first("c"))).toEqual({ promptPresetId: "p1" });
+        expect(strip(first("c"))).toEqual({ memoryEnabled: false, promptPresetId: "p1" });
         expect(selectedChatId("c")).toBe(ids("c")[0]);
         // The source keeps its review; the new chat has none.
         expect(chatEntry({ chaId: "c", chatId: "j" })).toMatchObject({ bindingReview: true });
@@ -558,7 +559,12 @@ describe("the sidebar's new chat button", () => {
         selectChat("c", "k");
         side.newChat().click();
         flushSync();
-        expect(strip(first("c"))).toEqual({ modelPresetId: "m1", promptPresetId: "p1", bindedPersona: "u1" });
+        expect(strip(first("c"))).toEqual({
+            memoryEnabled: false,
+            modelPresetId: "m1",
+            promptPresetId: "p1",
+            bindedPersona: "u1",
+        });
         expect(chatBinding({ chaId: "c", chatId: ids("c")[0] })).toEqual({
             ok: true,
             ids: { modelPresetId: "m1", promptPresetId: "p1", personaId: "u1" },
@@ -567,7 +573,12 @@ describe("the sidebar's new chat button", () => {
         // The chat just created is now the selected one: the next new chat inherits from it.
         side.newChat().click();
         flushSync();
-        expect(strip(first("c"))).toEqual({ modelPresetId: "m1", promptPresetId: "p1", bindedPersona: "u1" });
+        expect(strip(first("c"))).toEqual({
+            memoryEnabled: false,
+            modelPresetId: "m1",
+            promptPresetId: "p1",
+            bindedPersona: "u1",
+        });
     });
 
     it("an unbound selected chat gives nothing, never the tab's selection; empty gives nothing even from a bound chat", () => {
@@ -575,14 +586,14 @@ describe("the sidebar's new chat button", () => {
         const side = renderSide("c");
         side.newChat().click();
         flushSync();
-        expect(strip(first("c"))).toEqual({});
+        expect(strip(first("c"))).toEqual({ memoryEnabled: false });
         expect(first("c")).not.toMatchObject(TAB);
 
         settings.ui.newChatBinding = "empty";
         selectChat("c", "k");
         side.newChat().click();
         flushSync();
-        expect(strip(first("c"))).toEqual({});
+        expect(strip(first("c"))).toEqual({ memoryEnabled: false });
         expect(chatBinding({ chaId: "c", chatId: ids("c")[0] })).toMatchObject({ ok: false });
 
         // Anything but `empty` is inherit.
@@ -590,7 +601,12 @@ describe("the sidebar's new chat button", () => {
         selectChat("c", "k");
         side.newChat().click();
         flushSync();
-        expect(strip(first("c"))).toEqual({ modelPresetId: "m1", promptPresetId: "p1", bindedPersona: "u1" });
+        expect(strip(first("c"))).toEqual({
+            memoryEnabled: false,
+            modelPresetId: "m1",
+            promptPresetId: "p1",
+            bindedPersona: "u1",
+        });
     });
 
     it("a group chat inherits its selected chat's binding and starts with the members' first messages", () => {
@@ -598,7 +614,12 @@ describe("the sidebar's new chat button", () => {
         side.newChat().click();
         flushSync();
         expect(ids("g")).toHaveLength(2);
-        expect(strip(first("g"))).toEqual({ modelPresetId: "m1", promptPresetId: "p1", bindedPersona: "u1" });
+        expect(strip(first("g"))).toEqual({
+            memoryEnabled: false,
+            modelPresetId: "m1",
+            promptPresetId: "p1",
+            bindedPersona: "u1",
+        });
         expect(selectedChatId("g")).toBe(ids("g")[0]);
         expect(findChat({ chaId: "g", chatId: ids("g")[0] })?.message).toEqual([
             { saying: "c", role: "char", data: "Hello", chatId: expect.any(String) },
@@ -670,19 +691,24 @@ describe("the chat list modal's new chat button", () => {
         modal.newChat().click();
         flushSync();
         expect(ids("c")).toHaveLength(4);
-        expect(strip(first("c"))).toEqual({ promptPresetId: "p1" });
+        expect(strip(first("c"))).toEqual({ memoryEnabled: false, promptPresetId: "p1" });
         expect(first("c").name).toBe("New Chat 4");
         expect(selectedChatId("c")).toBe(ids("c")[0]);
 
         selectChat("c", "k");
         modal.newChat().click();
         flushSync();
-        expect(strip(first("c"))).toEqual({ modelPresetId: "m1", promptPresetId: "p1", bindedPersona: "u1" });
+        expect(strip(first("c"))).toEqual({
+            memoryEnabled: false,
+            modelPresetId: "m1",
+            promptPresetId: "p1",
+            bindedPersona: "u1",
+        });
 
         settings.ui.newChatBinding = "empty";
         modal.newChat().click();
         flushSync();
-        expect(strip(first("c"))).toEqual({});
+        expect(strip(first("c"))).toEqual({ memoryEnabled: false });
     });
 
     it("a group inherits too, with the members' first messages", () => {
@@ -691,7 +717,12 @@ describe("the chat list modal's new chat button", () => {
         modal.newChat().click();
         flushSync();
         expect(ids("g")).toHaveLength(2);
-        expect(strip(first("g"))).toEqual({ modelPresetId: "m1", promptPresetId: "p1", bindedPersona: "u1" });
+        expect(strip(first("g"))).toEqual({
+            memoryEnabled: false,
+            modelPresetId: "m1",
+            promptPresetId: "p1",
+            bindedPersona: "u1",
+        });
         expect(findChat({ chaId: "g", chatId: ids("g")[0] })?.message).toEqual([
             { saying: "c", role: "char", data: "Hello", chatId: expect.any(String) },
         ]);
@@ -802,4 +833,54 @@ describe("the chat list filter", () => {
         expect(shown(target)).toEqual(["Chat GK"]);
         expect(dragDisabled().every((disabled) => !disabled)).toBe(true);
     });
+});
+
+describe("new-chat memory inheritance", () => {
+    it.each(["sidebar", "modal"])(
+        "%s stores the resolved source switch and bindings, never its trim acknowledgement",
+        async (surface) => {
+            byChaId("c").supaMemory = true;
+            settings.ui.newChatBinding = "empty";
+            selectCharacter("c");
+            const source = { chaId: "c", chatId: "j" };
+            const memory = {
+                memoryMode: "structuredMemory",
+                memoryPresetId: "memory-preset",
+                memoryProfileId: "memory-connection",
+            };
+            setChatMeta(source, { ...memory, memoryTrimAck: 8 });
+            const panel = surface === "sidebar" ? renderSide("c") : renderModal();
+            for (const stored of [undefined, false, true]) {
+                selectChat("c", "j");
+                setChatMeta(
+                    source,
+                    { ...memory, memoryTrimAck: 8, ...(stored === undefined ? {} : { memoryEnabled: stored }) },
+                    stored === undefined ? ["memoryEnabled"] : [],
+                );
+                flushSync();
+                panel.newChat().click();
+                // Both button handlers create before their first await.
+                flushSync();
+                const created = findChat({ chaId: "c", chatId: selectedChatId("c")! })!;
+                expect(created.id).not.toBe("j");
+                expect(created).toMatchObject({ ...memory, memoryEnabled: stored ?? true });
+                expect(created).not.toHaveProperty("memoryTrimAck");
+                expect(chatEntry({ chaId: "c", chatId: created.id! })).toMatchObject({
+                    ...memory,
+                    memoryEnabled: stored ?? true,
+                });
+            }
+            expect(findChat(source)).toHaveProperty("memoryTrimAck", 8);
+            assembleChats(characterList(), [], [{ characterId: "c", revision: "empty", ids: [] }]);
+            flushSync();
+            expect(selectedChatId("c")).toBeNull();
+            panel.newChat().click();
+            flushSync();
+            const withoutSource = findChat({ chaId: "c", chatId: selectedChatId("c")! });
+            expect(withoutSource).toBeDefined();
+            for (const key of ["memoryEnabled", "memoryMode", "memoryPresetId", "memoryProfileId", "memoryTrimAck"]) {
+                expect(withoutSource).not.toHaveProperty(key);
+            }
+        },
+    );
 });

@@ -1225,6 +1225,132 @@ describe("HypaV2, SupaMemory, Hanurai, and the priority", () => {
     );
 });
 
+describe("per-chat memory sends", () => {
+    beforeEach(() => vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }));
+    afterEach(() => vi.useRealTimers());
+
+    it(
+        "sends two chats of one owner with and without memory, asking even when the owner is on",
+        async () => {
+            await patchSettings({ hypaV3: true });
+            const chaId = await seedCharacter();
+            await seedChat(chaId, "off");
+            await setChatMeta(chaId, { memoryEnabled: true });
+            const off = await readChat(chaId, "off");
+            expect(
+                (
+                    await batch({
+                        chats: [
+                            {
+                                characterId: chaId,
+                                chatId: "off",
+                                baseRevision: off.revision,
+                                ops: [{ op: "meta", set: { memoryEnabled: false } }],
+                            },
+                        ],
+                    })
+                ).status,
+            ).toBe(200);
+            const onSend = await job(
+                "send",
+                chaId,
+                { input: "Remember this", userMessageId: "on-user" },
+                { answer: () => "once" },
+            );
+            expect(onSend.terminal?.type, JSON.stringify(onSend.terminal)).toBe("done");
+            expect(questions(onSend.events)).toEqual([]);
+            expect(summaries().length).toBeGreaterThan(0);
+            expect(memoryCard(mains()[0].body.messages)).toBeDefined();
+            expect((await readChat(chaId)).data.hypaV3Data.summaries.length).toBeGreaterThan(0);
+            upstream.length = 0;
+            embedCalls.length = 0;
+            const offSend = await job(
+                "send",
+                chaId,
+                { chatId: "off", input: "Continue", userMessageId: "off-user" },
+                { answer: () => "once" },
+            );
+            expect(offSend.terminal?.type, JSON.stringify(offSend.terminal)).toBe("done");
+            expect(questions(offSend.events)).toEqual([expect.objectContaining({ kind: "memoryTrim" })]);
+            expect(summaries()).toEqual([]);
+            expect(embedCalls).toEqual([]);
+            expect(memoryCard(mains()[0].body.messages)).toBeUndefined();
+            expect((await readChat(chaId, "off")).data).not.toHaveProperty("hypaV3Data");
+        },
+        SLOW,
+    );
+
+    it(
+        "the memory answer enables only this chat, clears its ack, and runs memory in the same send",
+        async () => {
+            await patchSettings({ hypaV3: true });
+            const chaId = await seedCharacter({ extra: { supaMemory: false, supaMemoryOnCount: 7 } });
+            await setChatMeta(chaId, { memoryEnabled: false, memoryTrimAck: 6 });
+            const owner = await readCharacter(chaId);
+            const result = await job(
+                "send",
+                chaId,
+                { input: "Remember", userMessageId: "memory-user" },
+                { answer: () => "memory" },
+            );
+            expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+            expect(questions(result.events)).toEqual([expect.objectContaining({ kind: "memoryTrim" })]);
+            const chat = (await readChat(chaId)).data;
+            expect(chat).toHaveProperty("memoryEnabled", true);
+            expect(chat).not.toHaveProperty("memoryTrimAck");
+            expect(await readCharacter(chaId)).toEqual(owner);
+            expect(ownerRecords(result.events, chaId)).toEqual([]);
+            expect(summaries().length).toBeGreaterThan(0);
+            expect(memoryCard(mains()[0].body.messages)).toBeDefined();
+            expect(chat.hypaV3Data.summaries.length).toBeGreaterThan(0);
+        },
+        SLOW,
+    );
+
+    it(
+        "ignore suppresses this chat's question until its switch turns on and off again",
+        async () => {
+            await patchSettings({ hypaV3: true });
+            const chaId = await seedCharacter({ extra: { supaMemory: true, supaMemoryOnCount: 7 } });
+            await setChatMeta(chaId, { memoryEnabled: false });
+            const owner = await readCharacter(chaId);
+            const send = (id: string) =>
+                job("send", chaId, { input: "Continue", userMessageId: id }, { answer: () => "ignore" });
+            const first = await send("first");
+            expect(first.terminal?.type, JSON.stringify(first.terminal)).toBe("done");
+            expect(questions(first.events)).toHaveLength(1);
+            expect((await readChat(chaId)).data.memoryTrimAck).toBe(7);
+            const second = await send("second");
+            expect(second.terminal?.type, JSON.stringify(second.terminal)).toBe("done");
+            expect(questions(second.events)).toEqual([]);
+            // The tab's on operation sets the switch and removes the ack in one write.
+            const current = await readChat(chaId);
+            expect(
+                (
+                    await batch({
+                        chats: [
+                            {
+                                characterId: chaId,
+                                chatId: "k",
+                                baseRevision: current.revision,
+                                ops: [{ op: "meta", set: { memoryEnabled: true }, unset: ["memoryTrimAck"] }],
+                            },
+                        ],
+                    })
+                ).status,
+            ).toBe(200);
+            await setChatMeta(chaId, { memoryEnabled: false });
+            const third = await send("third");
+            expect(third.terminal?.type, JSON.stringify(third.terminal)).toBe("done");
+            expect(questions(third.events)).toHaveLength(1);
+            expect((await readChat(chaId)).data.memoryTrimAck).toBe(7);
+            expect(await readCharacter(chaId)).toEqual(owner);
+            expect(summaries()).toEqual([]);
+        },
+        SLOW,
+    );
+});
+
 // The no-memory trim question (`docs/structure/memory.md`, "The no-memory trim question"): a memory
 // method is set, the owner's toggle is off, and the trim would drop chat history. The three answers
 // through the owner socket; the per-chat "don't ask again" against the owner's `supaMemoryOnCount`
@@ -1234,75 +1360,41 @@ describe("HypaV2, SupaMemory, Hanurai, and the priority", () => {
 // while waiting end the job without a trim or a preference written.
 describe("the no-memory trim question", () => {
     it(
-        "'memory' turns the owner's toggle on (counting the transition), emits the record, runs memory in the same send, and is not asked again",
+        "'memory' turns this chat's memory on without touching the owner, runs memory in the same send, and is not asked again",
         async () => {
-            const ws = new WebSocket(
-                `${base.replace("http", "ws")}/api/events/ws?risu-auth=${encodeURIComponent(await signer.jwt())}`,
+            await patchSettings({ hypaV3: true });
+            const chaId = await seedCharacter({ extra: { supaMemory: false } });
+            const owner = await readCharacter(chaId);
+            const { events, terminal } = await job(
+                "send",
+                chaId,
+                { input: "Hello V3", userMessageId: "u1" },
+                { answer: () => "memory" },
             );
-            const frames: any[] = [];
-            ws.onmessage = (message) => frames.push(JSON.parse(String(message.data)));
-            try {
-                await new Promise<void>((resolve, reject) => {
-                    ws.onopen = () => resolve();
-                    ws.onerror = () => reject(new Error("feed socket failed"));
-                });
-                await waitFor(() => frames.some((frame) => frame.type === "hello"));
-                await patchSettings({ hypaV3: true });
-                const chaId = await seedCharacter({ extra: { supaMemory: false } });
-                let patchBase = "";
-                const { events, terminal } = await job(
-                    "send",
-                    chaId,
-                    { input: "Hello V3", userMessageId: "u1" },
-                    {
-                        answer: async () => {
-                            patchBase = (await readCharacter(chaId)).revision;
-                            return "memory";
-                        },
-                    },
-                );
-                expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
-                expect(questions(events)).toHaveLength(1);
-                // The owner: on, its first off→on transition counted, the record sent to the tab.
-                const owner = (await readCharacter(chaId)).data;
-                expect([owner.supaMemory, owner.supaMemoryOnCount]).toEqual([true, 1]);
-                expect(ownerRecords(events, chaId).map((event) => event.data.supaMemory)).toEqual([true]);
-                const memoryPatches = () =>
-                    frames
-                        .filter((frame) => frame.type === "change")
-                        .flatMap((frame) => frame.changes.resources)
-                        .filter(
-                            (ref) =>
-                                ref.kind === "characters" && ref.id === chaId && ref.patch?.set?.supaMemory === true,
-                        );
-                await waitFor(() => memoryPatches().length > 0);
-                expect(memoryPatches()).toHaveLength(1);
-                expect(memoryPatches()[0].patch).toEqual({
-                    baseRevision: patchBase,
-                    set: { supaMemory: true, supaMemoryOnCount: 1 },
-                    remove: [],
-                });
-                // Memory ran in this send: the summaries, the card in the main request, the data stored.
-                expect(summaries().length).toBeGreaterThan(0);
-                expect(mains()).toHaveLength(1);
-                expect(memoryCard(mains()[0].body.messages)?.content).toContain("Summary 1: events happened.");
-                const chat = await readChat(chaId);
-                expect(chat.data.hypaV3Data.summaries.length).toBe(summaries().length);
-                expect(chat.data.memoryTrimAck).toBeUndefined();
-                // The next send finds the owner on: no question, memory again.
-                upstream.length = 0;
-                const next = await job(
-                    "send",
-                    chaId,
-                    { input: "Hello again", userMessageId: "u2" },
-                    { answer: () => "once" },
-                );
-                expect(next.terminal?.type, JSON.stringify(next.terminal)).toBe("done");
-                expect(questions(next.events)).toHaveLength(0);
-                expect(memoryCard(mains()[0].body.messages)).toBeDefined();
-            } finally {
-                ws.close();
-            }
+            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            expect(questions(events)).toHaveLength(1);
+            // The chat stores the switch; the owner, its count, and its revision stay, and no record is sent.
+            expect(await readCharacter(chaId)).toEqual(owner);
+            expect(ownerRecords(events, chaId)).toEqual([]);
+            // Memory ran in this send: the summaries, the card in the main request, the data stored.
+            expect(summaries().length).toBeGreaterThan(0);
+            expect(mains()).toHaveLength(1);
+            expect(memoryCard(mains()[0].body.messages)?.content).toContain("Summary 1: events happened.");
+            const chat = await readChat(chaId);
+            expect(chat.data.memoryEnabled).toBe(true);
+            expect(chat.data.hypaV3Data.summaries.length).toBe(summaries().length);
+            expect(chat.data.memoryTrimAck).toBeUndefined();
+            // The next send finds the chat on: no question, memory again.
+            upstream.length = 0;
+            const next = await job(
+                "send",
+                chaId,
+                { input: "Hello again", userMessageId: "u2" },
+                { answer: () => "once" },
+            );
+            expect(next.terminal?.type, JSON.stringify(next.terminal)).toBe("done");
+            expect(questions(next.events)).toHaveLength(0);
+            expect(memoryCard(mains()[0].body.messages)).toBeDefined();
         },
         SLOW,
     );
@@ -1407,7 +1499,7 @@ describe("the no-memory trim question", () => {
     );
 
     it(
-        "a group send asks once for both speakers, and 'memory' turns the group's toggle on",
+        "a group send asks once for both speakers, and 'memory' turns the group chat's memory on",
         async () => {
             await patchSettings({ hypaV3: true });
             const bob = await seedCharacter({ count: 0, extra: { name: "Bob" } });
@@ -1456,8 +1548,9 @@ describe("the no-memory trim question", () => {
             expect(enabled.terminal?.type, JSON.stringify(enabled.terminal)).toBe("done");
             expect(questions(enabled.events)).toHaveLength(1);
             const group = (await readCharacter(memory)).data;
-            expect([group.type, group.supaMemory, group.supaMemoryOnCount]).toEqual(["group", true, 1]);
-            expect(ownerRecords(enabled.events, memory)).toHaveLength(1);
+            expect([group.type, group.supaMemory, group.supaMemoryOnCount]).toEqual(["group", false, undefined]);
+            expect(ownerRecords(enabled.events, memory)).toHaveLength(0);
+            expect((await readChat(memory)).data.memoryEnabled).toBe(true);
             expect(mains()).toHaveLength(2);
             expect(summaries().length).toBeGreaterThan(0);
             // Both speakers' requests carried the memory card; neither member's own toggle was touched.
@@ -4444,6 +4537,29 @@ describe("structured memory job hand-offs", () => {
                 expect((await api(`/api/memory/structured/${chaId}/k`)).body).toEqual(before);
             } finally {
                 await patchPreset("modelProfiles", { maxContext: 5000 });
+            }
+        });
+
+        it("record now and rebuild admit the chat switch even when the owner disagrees", async () => {
+            for (const command of [
+                { type: "memoryRecord", messageId: "a2" },
+                { type: "memoryRebuild", mode: "rebuild", turns: 1 },
+            ]) {
+                const chaId = await seedCharacter({ messages });
+                await setChatMeta(chaId, { memoryEnabled: false });
+                const off = await job("command", chaId, { mode: "manual" }, { command });
+                expect(off.terminal).toMatchObject({
+                    type: "error",
+                    message: expect.stringMatching(/memory is turned off/i),
+                });
+                await patchCharacter(chaId, { supaMemory: false });
+                await setChatMeta(chaId, { memoryEnabled: true });
+                fake.recordAnswer = {
+                    outcome: "queued",
+                    status: { kind: "structuredMemory", taskId: "record", state: "queued", done: 0, total: 0 },
+                };
+                const on = await job("command", chaId, { mode: "manual" }, { command });
+                expect(on.terminal?.type, JSON.stringify(on.terminal)).toBe("done");
             }
         });
 

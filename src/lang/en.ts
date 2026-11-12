@@ -146,7 +146,7 @@ export const languageEnglish = {
             "SuperMemory makes your character memorize more by giving summarized data to AI.\n\n" +
             "SuperMemory model is a model that summarizes that text. davinci is recommended, and Auxiliary models are not recommended unless it is an unfiltered model with over 2000 tokens with great summarizing skill.\n\n" +
             "SuperMemory Prompt decides what prompt should be sent to summarize. If you leave it blank, it will use the default prompt. leaving blank is recommended.\n\n" +
-            "After it is all setup, you can able it in the setting of a character.",
+            "After setup, turn memory on in Chat settings or the open chat sidebar.",
         replaceGlobalNote: "If it's not blank, it replaces current global note to this.",
         backgroundHTML:
             "A Markdown/HTML Data that would be injected to the background of chat screen.\n\n You can also use additional assets. for example, you can use `{{audio::<asset name}}` for background music." +
@@ -388,7 +388,7 @@ export const languageEnglish = {
         hypaV3UseExperimentalImpl:
             "Switches to the experimental HypaMemory V3 implementation. Enables rate limit settings and changes the query method.",
         hypaV3AlwaysToggleOn:
-            "If enabled, the HypaMemory toggle is automatically activated when selecting a character.",
+            "Defaults memory to on for chats using HypaV3 or Structured Memory that have not chosen a memory switch. A chat explicitly turned off stays off.",
         hypaV3SummarizationRequestsPerMinute:
             "Maximum SuperMemory model requests per minute for summarization. Only applies when the SuperMemory model is set to Auxiliary Model.",
         hypaV3SummarizationMaxConcurrent:
@@ -1112,7 +1112,6 @@ export const languageEnglish = {
     creator: "Creator",
     CharVersion: "Character Version",
     Speech: "Speech",
-    ToggleSuperMemory: "Toggle SupaMemory",
     SuperMemory: "SupaMemory",
     useExperimental: "Enable Experimental Features",
     showMemoryLimit: "Show Memory Limit",
@@ -1357,10 +1356,10 @@ export const languageEnglish = {
     customInnerFormat: "Custom Inner Format",
     innerFormat: "Inner Format",
     HypaMemory: "HypaMemory",
-    ToggleHypaMemory: "Toggle HypaMemory",
     memoryTrimWarning:
         "Long-term memory is set up, but it is off for this chat. The prompt is over the context size, so the oldest messages will be left out of what the model sees.",
-    memoryTrimEnable: "Turn memory on and send",
+    chatMemory: { enabled: "Use memory for this chat" },
+    memoryTrimEnable: "Turn memory on for this chat and send",
     memoryTrimOnce: "Send without them this time",
     memoryTrimIgnore: "Send without them, and don't ask again in this chat",
     resetPromptTemplateConfirm: "Do you really want to reset prompt template?",
@@ -2507,7 +2506,7 @@ export const languageEnglish = {
         startFailed: (error: string) => `The background summaries could not be started: ${error}`,
         cancelFailed: (error: string) => `The background summaries could not be cancelled: ${error}`,
         reasons: {
-            memoryOff: "memory is turned off for this character",
+            memoryOff: "memory is turned off for this chat",
             notHypaV3: "HypaV3 is not the memory in use",
             pluginModel: "the memory model runs in a tab, so summaries are made during a send",
             requestTrigger: "a request trigger applies, so summaries are made during a send",
@@ -2540,7 +2539,6 @@ export const languageEnglish = {
     },
     structuredMemory: {
         name: "Structured memory",
-        toggle: "Toggle Structured memory",
         requiredOverCap: (tokens: number, limit: number, pages: string) =>
             `Error: The required memory pages need ${tokens} tokens, over the limit of ${limit}: ${pages}. Shorten a page, or set it to auto.`,
         removeRetracts: (events: number) =>

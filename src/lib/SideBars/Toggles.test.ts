@@ -250,7 +250,7 @@ describe("per-chat prompt toggles", () => {
     });
 
     it.each(["unloaded", "null"] as const)(
-        "disables per-chat inputs for a %s ref but keeps jailbreak and memory enabled",
+        "disables per-chat inputs for a %s ref but keeps jailbreak enabled, with no memory switch",
         (state) => {
             activePreset.customPromptTemplateToggle = definitions;
             activePreset.jailbreak = "Jailbreak prompt";
@@ -270,15 +270,13 @@ describe("per-chat prompt toggles", () => {
                 state === "null" ? "selected chat title" : "legacy",
             );
             const jailbreak = checkbox(language.jailbreakToggle)!;
-            const memory = checkbox(language.ToggleSuperMemory)!;
-            for (const input of [jailbreak, memory]) {
-                expect(input.disabled).toBe(false);
-                expect(input.closest("fieldset[disabled]")).toBeNull();
-                input.click();
-                flushSync();
-            }
+            expect(jailbreak.disabled).toBe(false);
+            expect(jailbreak.closest("fieldset[disabled]")).toBeNull();
+            jailbreak.click();
+            flushSync();
             expect(settings.ui.jailbreakToggle).toBe(true);
-            expect(chara.supaMemory).toBe(true);
+            expect(checkbox(language.chatMemory.enabled)).toBeNull();
+            expect(chara.supaMemory).toBeUndefined();
             expect(settings.globalChatVariables).toEqual(legacy);
         },
     );
@@ -318,55 +316,6 @@ describe("per-chat prompt toggles", () => {
         expect(settings.globalChatVariables).toEqual(legacy);
         expect(findChat(ref)).toBeUndefined();
         expect(target.querySelector("fieldset")!.disabled).toBe(true);
-    });
-});
-
-describe("the memory toggle", () => {
-    it("counts each off→on transition of supaMemory and nothing else", () => {
-        const { chara, checkbox } = render();
-        const input = checkbox(language.ToggleSuperMemory);
-        expect(input, "the SupaMemory toggle is shown").not.toBeNull();
-        expect([chara.supaMemory, chara.supaMemoryOnCount]).toEqual([undefined, undefined]);
-        input!.click();
-        flushSync();
-        expect([chara.supaMemory, chara.supaMemoryOnCount]).toEqual([true, 1]);
-        expect(input!.checked).toBe(true);
-        // Off: no count. On again: the second transition.
-        input!.click();
-        flushSync();
-        expect([chara.supaMemory, chara.supaMemoryOnCount]).toEqual([false, 1]);
-        input!.click();
-        flushSync();
-        expect([chara.supaMemory, chara.supaMemoryOnCount]).toEqual([true, 2]);
-    });
-
-    it("keeps a stored count going and reads a malformed one as 0", () => {
-        const { chara, checkbox } = render();
-        chara.supaMemoryOnCount = 4;
-        checkbox(language.ToggleSuperMemory)!.click();
-        flushSync();
-        expect([chara.supaMemory, chara.supaMemoryOnCount]).toEqual([true, 5]);
-        chara.supaMemory = false;
-        (chara as { supaMemoryOnCount?: unknown }).supaMemoryOnCount = "9";
-        flushSync();
-        checkbox(language.ToggleSuperMemory)!.click();
-        flushSync();
-        expect([chara.supaMemory, chara.supaMemoryOnCount]).toEqual([true, 1]);
-    });
-
-    it("is shown for a HypaV2-only configuration, under the Hypa label", () => {
-        settings.memoryTranslateMedia.supaModelType = "none";
-        const hidden = render();
-        expect(hidden.checkbox(language.ToggleSuperMemory)).toBeNull();
-        expect(hidden.checkbox(language.ToggleHypaMemory)).toBeNull();
-        settings.memoryTranslateMedia.hypav2 = true;
-        flushSync();
-        const { chara, checkbox } = render();
-        const input = checkbox(language.ToggleHypaMemory);
-        expect(input).not.toBeNull();
-        input!.click();
-        flushSync();
-        expect([chara.supaMemory, chara.supaMemoryOnCount]).toEqual([true, 1]);
     });
 });
 
@@ -806,28 +755,7 @@ describe("toggle preset panel", () => {
     });
 });
 
-it("shows the Structured Memory toggle with legacy flags off and counts each turn-on", () => {
-    settings.ui.memoryAlgorithmType = "structuredMemory";
-    settings.memoryTranslateMedia.supaModelType = "none";
-    const { chara, checkbox } = render();
-    const toggle = checkbox(language.structuredMemory.toggle);
-    expect(toggle).not.toBeNull();
-    expect(toggle!.checked).toBe(false);
-    toggle!.click();
-    flushSync();
-    expect([chara.supaMemory, chara.supaMemoryOnCount]).toEqual([true, 1]);
-    toggle!.click();
-    flushSync();
-    expect([chara.supaMemory, chara.supaMemoryOnCount]).toEqual([false, 1]);
-    toggle!.click();
-    flushSync();
-    expect([chara.supaMemory, chara.supaMemoryOnCount]).toEqual([true, 2]);
-    settings.memoryTranslateMedia.hypaV3 = true;
-    flushSync();
-    expect(checkbox(language.structuredMemory.toggle)?.checked).toBe(true);
-});
-
-it("selecting a character applies Structured Memory's alwaysToggleOn and counts only an actual turn-on", () => {
+it("selecting a character under Structured Memory's alwaysToggleOn writes no memory state", () => {
     settings.ui.memoryAlgorithmType = "structuredMemory";
     settings.memoryTranslateMedia.supaModelType = "none";
     const preset = createHypaV3Preset("Automatic", { alwaysToggleOn: true });
@@ -835,8 +763,6 @@ it("selecting a character applies Structured Memory's alwaysToggleOn and counts 
     settings.hypaV3Presets.selectedId = preset.id;
     selectCharacter(null);
     selectCharacter("c");
-    expect(selectedCharacter()).toMatchObject({ supaMemory: true, supaMemoryOnCount: 1 });
-    selectCharacter(null);
-    selectCharacter("c");
-    expect(selectedCharacter()).toMatchObject({ supaMemory: true, supaMemoryOnCount: 1 });
+    expect(selectedCharacter()).not.toHaveProperty("supaMemory");
+    expect(selectedCharacter()).not.toHaveProperty("supaMemoryOnCount");
 });

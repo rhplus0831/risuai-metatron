@@ -1247,6 +1247,37 @@ describe("the writer lease", () => {
 });
 
 describe("the start checks", () => {
+    it.each([true, false])("memoryOff follows each chat when the owner's default is %s", async (ownerOn) => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        try {
+            const t = harness();
+            t.updateOwner((owner) => ({ ...owner, supaMemory: ownerOn }));
+            t.write("k1", [{ op: "meta", set: { memoryEnabled: false } }]);
+            t.write("k2", [{ op: "meta", set: { memoryEnabled: true } }]);
+            const skipped = t.nextTerminal("k1");
+            handOff(t, "k1", { entries: 2 });
+            const off = await Promise.race([
+                skipped.then((event) => event.status),
+                t.provider.request(0).then(() => ({ state: "unexpectedProviderRequest" })),
+            ]);
+            expect(off).toMatchObject({ state: "skipped", reason: "memoryOff" });
+            expect(t.summaries("k1")).toEqual([]);
+            const finished = t.nextTerminal("k2");
+            handOff(t, "k2", { entries: 2 });
+            const on = await Promise.race([
+                t.provider.request(0).then((request) => ({ request })),
+                finished.then((event) => ({ status: event.status })),
+            ]);
+            expect(on).toHaveProperty("request");
+            if (!("request" in on)) throw new Error("The enabled chat skipped memory");
+            on.request.answer("The enabled chat's summary");
+            expect((await finished).status).toMatchObject({ state: "done", done: 1 });
+            expect(t.summaries("k2")).toEqual(["The enabled chat's summary"]);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     for (const [name, reason, options, change] of [
         [
             "the owner's memory turned off",

@@ -1,4 +1,7 @@
 <script lang="ts">
+    import { chatEntry } from "src/ts/storage/chatStore.svelte";
+    import { chatMemoryEnabled } from "../../../../shared/chatMemory.ts";
+    import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
     import { ChevronDownIcon, ChevronRightIcon } from "@lucide/svelte";
     import { untrack } from "svelte";
     import { language } from "src/lang";
@@ -89,7 +92,9 @@
         ),
     );
     const windowTurns = $derived(writerSettings.windowTurns);
-    const memoryOn = $derived(!!findCharacter(chatRef.chaId)?.supaMemory);
+    const memoryOn = $derived(
+        chatMemoryEnabled(chatEntry(chatRef), findCharacter(chatRef.chaId), chatMemorySettings()),
+    );
     const coverage = $derived(
         reconciled
             ? joinMemoryCoverage(messages, reconciled, { windowTurns, memoryOn, screening: writerSettings.screening })

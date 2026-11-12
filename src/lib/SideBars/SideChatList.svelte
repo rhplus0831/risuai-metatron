@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { initialChatMemory } from "src/ts/storage/chatMemory.svelte";
     import { type AnyClientCharacter, characterList } from "src/ts/storage/characterStore.svelte";
     import { onDestroy, untrack } from "svelte";
     import { v4 } from "uuid";
@@ -306,6 +307,7 @@
             const newChat: Chat = {
                 // Read before the chat is created: it becomes the selected chat.
                 ...initialChatBinding(cha.chaId),
+                ...initialChatMemory(cha.chaId),
                 ...initialChatTranslation(cha.chaId),
                 ...initialChatToggles(cha.chaId),
                 message: [],

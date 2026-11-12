@@ -1,3 +1,4 @@
+import { chatMemoryEnabled } from "../../../../../shared/chatMemory.ts";
 import { eligibleHistory } from "../../../../../shared/contextReport.ts";
 import { summarizesLocally } from "../../../../../shared/hypaV3Presets.ts";
 import type {
@@ -100,8 +101,14 @@ export function admitRecord(job: RunningJob, deps: GenerationRunnerDeps, message
         if (db.memoryAlgorithmType !== STRUCTURED_MEMORY_ALGORITHM) {
             throw new GenerationRunnerError(400, "Structured memory is not this chat's memory");
         }
-        if (!db.characters.find((entry) => entry?.chaId === scope.characterId)?.supaMemory) {
-            throw new GenerationRunnerError(400, "Memory is turned off for this character");
+        if (
+            !chatMemoryEnabled(
+                scopeChat(scope),
+                db.characters.find((entry) => entry?.chaId === scope.characterId),
+                db,
+            )
+        ) {
+            throw new GenerationRunnerError(400, "Memory is turned off for this chat");
         }
         if (summarizesLocally(db)) {
             throw new GenerationRunnerError(400, "The memory writer cannot run a local summarization model");

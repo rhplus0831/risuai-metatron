@@ -1,6 +1,7 @@
 // First: module effects elsewhere (`stores.svelte`) read `selectedChat()` while this module may still be loading.
 import { onCharacterSelectionChanged, selection } from "./selection.svelte";
 import { setOpenChatBindingSource, settings } from "./settingsViews.svelte";
+import { chatMemorySummary, type ChatMemorySummary, type ChatMemoryInput } from "../../../shared/chatMemory.ts";
 import { untrack } from "svelte";
 import { createSubscriber } from "svelte/reactivity";
 import { v4 as uuidv4 } from "uuid";
@@ -535,7 +536,8 @@ type ChatEntryMeta = {
     modelPresetId?: string;
     bindingReview?: boolean;
     fmIndex: number;
-} & ChatTranslationFields;
+} & ChatTranslationFields &
+    ChatMemorySummary;
 
 /**
  * One character's chats: the ids in order (its membership), the loaded chats by id, and the summaries
@@ -1182,7 +1184,7 @@ function metaOf(
         modelPresetId?: unknown;
         bindingReview?: unknown;
         fmIndex?: unknown;
-    },
+    } & ChatMemoryInput,
     includeActivity = true,
 ): ChatEntryMeta {
     const meta: ChatEntryMeta = {
@@ -1213,8 +1215,8 @@ function metaOf(
     if (source.pinned === true) {
         meta.pinned = true;
     }
-    // The translation settings, as the server's summary carries them.
-    Object.assign(meta, chatTranslationSummary(source as Record<string, unknown>));
+    // List-editable translation and memory metadata, as the server summary carries them.
+    Object.assign(meta, chatTranslationSummary(source as Record<string, unknown>), chatMemorySummary(source));
     return meta;
 }
 
@@ -4370,6 +4372,11 @@ const SUMMARY_FIELD_TYPES: Readonly<Record<string, "string" | "number" | "boolea
     modelPresetId: "string",
     bindingReview: "boolean",
     fmIndex: "number",
+    memoryEnabled: "boolean",
+    memoryMode: "string",
+    memoryPresetId: "string",
+    memoryProfileId: "string",
+    memoryTrimAck: "number",
     ...CHAT_TRANSLATION_FIELD_TYPES,
 };
 
@@ -4750,7 +4757,8 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
  * Applies a whole character's chats handed back by a plugin: chats matched by id are diffed against
  * a supplied read baseline, else the current mirror; new ones are created, missing ones
  * deleted (unless a generation runs in them), and the order follows the incoming list. Changes to a
- * message being generated are skipped with a warning.
+ * message being generated are skipped with a warning. Without a read baseline, omitted memory
+ * preferences are kept even when a reorder replaces the whole chat.
  */
 export function reconcileCharacterChats(
     chaId: string,
@@ -4778,7 +4786,17 @@ export function reconcileCharacterChats(
         const ref = { chaId, chatId: chat.id! };
         if (isMember(ref)) {
             try {
-                applyChatResult(takeBaseline?.(ref) ?? captureChatBaseline(ref), chat);
+                const retained = takeBaseline?.(ref);
+                const baseline = retained ?? captureChatBaseline(ref);
+                if (!retained) {
+                    // A plugin without its read baseline cannot remove memory choices it never held.
+                    for (const key of ["memoryEnabled", "memoryMode", "memoryPresetId", "memoryProfileId"] as const) {
+                        if (!Object.hasOwn(chat, key) && Object.hasOwn(baseline.chat, key)) {
+                            Object.assign(chat, { [key]: baseline.chat[key] });
+                        }
+                    }
+                }
+                applyChatResult(baseline, chat);
             } catch (error) {
                 console.warn(
                     "[Chat] Skipped a plugin change to a chat (a message being generated, or a refused field)",

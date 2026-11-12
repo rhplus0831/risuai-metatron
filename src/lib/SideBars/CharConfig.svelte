@@ -1,4 +1,6 @@
 <script lang="ts">
+    import { chatMemoryEnabled } from "../../../shared/chatMemory.ts";
+    import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
     import { currentChatRef, selectedChat } from "src/ts/storage/chatStore.svelte";
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
@@ -1795,7 +1797,7 @@
             >
                 {language.hypaMemoryV3Modal}
             </Button>
-        {:else if currentChat && ((currentChat.supaMemoryData && currentChat.supaMemoryData.length > 4) || currentCharacter.supaMemory)}
+        {:else if currentChat && ((currentChat.supaMemoryData && currentChat.supaMemoryData.length > 4) || chatMemoryEnabled(currentChat, currentCharacter, chatMemorySettings()))}
             <span class="text-textcolor mt-4">{language.SuperMemory}</span>
             <TextAreaInput
                 popupEditorContext={chatContext}
@@ -1826,7 +1828,7 @@
             {language.convertToModule}
         </Button>
     {:else}
-        {#if currentChat && ((currentChat.supaMemoryData && currentChat.supaMemoryData.length > 4) || currentCharacter.supaMemory)}
+        {#if currentChat && ((currentChat.supaMemoryData && currentChat.supaMemoryData.length > 4) || chatMemoryEnabled(currentChat, currentCharacter, chatMemorySettings()))}
             <span class="text-textcolor mt-4">{language.SuperMemory}</span>
             <TextAreaInput
                 popupEditorContext={chatContext}

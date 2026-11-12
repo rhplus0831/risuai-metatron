@@ -1,3 +1,4 @@
+import type { ChatMemorySummary } from "./chatMemory.ts";
 import type { Chat, Message, MessageTranslation } from "./database.ts";
 import type { ChatTranslationFields } from "./translation/chatSettings.ts";
 
@@ -199,7 +200,7 @@ export type ChatRecord = { characterId: string; id: string; revision: string; da
 export type ChatOrderRecord = { characterId: string; revision: string; ids: string[] };
 
 /** Bump when the server's chat summary projection changes, including derived fields. */
-export const CHAT_SUMMARY_FORMAT = 1;
+export const CHAT_SUMMARY_FORMAT = 2;
 
 /**
  * A chat's summary: what a chat list shows, projected from the stored metadata and the memoized
@@ -221,7 +222,8 @@ export type ChatSummary = {
     modelPresetId?: string;
     bindingReview?: boolean;
     fmIndex: number;
-} & ChatTranslationFields;
+} & ChatTranslationFields &
+    ChatMemorySummary;
 
 /**
  * A 409 entry for a chat group (revision null: the chat is gone). `reason: "generating"`: the group

@@ -1283,3 +1283,19 @@ it("uses the newest report's strict gap threshold only for memory-enabled chats,
     expect(status.memoryHealthStates().size).toBe(0);
     expect(stubs.healthFetch).not.toHaveBeenCalled();
 });
+
+it("shows memory health for the chat switch independently of the owner's default", async () => {
+    await enableMemory();
+    const { findCharacter } = await import("../storage/characterStore.svelte");
+    view(a);
+    chat.setChatMeta(a, { memoryEnabled: false });
+    chat.setChatMeta(b, { memoryEnabled: true, pinned: true });
+    status.noteJobDone(a, { ...error, code: "memoryRequiredOverCap" });
+    status.noteJobDone(b, { ...error, code: "memoryRequiredOverCap" });
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyB, "requiredOverCap"]]));
+    Object.assign(findCharacter("c")!, { supaMemory: false });
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyB, "requiredOverCap"]]));
+    chat.setChatMeta(a, { memoryEnabled: true });
+    chat.setChatMeta(b, { memoryEnabled: false });
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "requiredOverCap"]]));
+});

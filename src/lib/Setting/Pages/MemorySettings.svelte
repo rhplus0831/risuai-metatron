@@ -1,4 +1,6 @@
 <script lang="ts">
+    import { legacyMemoryAlgorithm } from "../../../../shared/chatMemory.ts";
+    import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
     import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { activeMainProfile, settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
@@ -326,6 +328,7 @@
         };
         setStructured(target, (next) => (next.screening[kind] = screeningLines(value)));
     }
+    const memoryAlgorithm = $derived(legacyMemoryAlgorithm(chatMemorySettings()));
 </script>
 
 {#snippet presetPicker()}
@@ -661,17 +664,11 @@
 
 <SelectInput
     className="mb-4"
-    value={structuredMemorySelected
-        ? STRUCTURED_MEMORY_ALGORITHM
-        : settings.memoryTranslateMedia.hypaV3
+    value={memoryAlgorithm === "hypaMemoryV2"
+        ? "hypaV2"
+        : memoryAlgorithm === "hypaMemoryV3"
           ? "hypaV3"
-          : settings.memoryTranslateMedia.hypav2
-            ? "hypaV2"
-            : settings.memoryTranslateMedia.supaModelType !== "none"
-              ? "supaMemory"
-              : settings.memoryTranslateMedia.hanuraiEnable
-                ? "hanuraiMemory"
-                : "none"}
+          : memoryAlgorithm}
     onchange={(v) => {
         //@ts-expect-error 'value' doesn't exist on EventTarget, but target is HTMLSelectElement here
         const value = v.target.value;

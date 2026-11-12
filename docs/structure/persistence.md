@@ -199,6 +199,11 @@ carry them. The Translation page can clear `LLMTranslateCache` through `clearLLM
 
 - `ChatMeta` is defined in `shared/chats.ts`; fields are stored largely as sent, with defaults at their readers. The
   translation lists are owned by [translation](translation.md). Non-obvious field rules:
+- Memory preferences are `memoryEnabled?: boolean`, `memoryMode?: "hypaV3" | "structuredMemory"`,
+  `memoryPresetId?: string`, and `memoryProfileId?: string`. Only `memoryEnabled` affects behavior; the rest are carried
+  metadata. All four and numeric `memoryTrimAck` are summary fields. Checkpoints keep current preferences; upstream
+  export strips them and derives the owner's switch. Readers default malformed values without rewriting stored chats
+  ([memory](memory.md#state)).
 - `loreOverrides?` (`shared/lore/overrides.ts`) is not defaulted on write: readers use `?? []`. `normalizeChatMeta`
   refuses a present value that is not an array of `{ entry: { id: non-empty string, … }, off: boolean }`
   (`assertLoreOverrides`) and keeps only the first override per `entry.id`, the one the merge applies. The upstream
@@ -277,7 +282,7 @@ carry them. The Translation page can clear `LLMTranslateCache` through `clearLLM
   whole replacement (`replaceCharacterFields`), and raw before a save whose projection lacks a default
   (`canonicalCharacter`, no mark), so the text sent is the server's normalized text.
 - No default is applied at boot or on selection. Neither selection nor an ordinary send writes `lastInteraction` or
-  moves the character revision, except the `supaMemory` turn-on.
+  moves the character revision. The trim question's memory answer writes only the chat.
 - Every write of a character's own fields is saved, whichever character is selected. Membership changes only through
   `addCharacter`, `addPreparedCharacters` (a batch: one id set, one membership change, one order repair),
   `replaceCharacterAt`, `removeCharacter`, and `removeCharacters`: a `push`, `splice`, or index assignment through

@@ -1666,3 +1666,49 @@ describe("Structured Memory export", () => {
         ).rejects.toThrow();
     });
 });
+
+it("exports each owner's resolved memory switch and strips the four chat-only settings", async () => {
+    const memory = {
+        memoryMode: "structuredMemory",
+        memoryPresetId: "chat-preset",
+        memoryProfileId: "chat-connection",
+    };
+    const snapshot = await snapshotOf((w) => {
+        w.put("memoryTranslateMedia", "main", { hypaV3: true, supaModelType: "none" });
+        w.put("hypaV3Presets", "main", {
+            items: [
+                createHypaV3Preset("Manual", { alwaysToggleOn: false }, "manual"),
+                createHypaV3Preset("Auto", { alwaysToggleOn: true }, "automatic"),
+            ],
+            selectedId: "automatic",
+        });
+        for (const [id, supaMemory] of [
+            ["mixed", false],
+            ["off", true],
+            ["default", false],
+            ["empty", false],
+        ] as const) {
+            w.put("characters", id, { chaId: id, type: "character", name: id, supaMemory });
+        }
+        w.chat("mixed", "off", { name: "off", message: [], ...memory, memoryEnabled: false });
+        w.chat("mixed", "on", { name: "on", message: [], ...memory, memoryEnabled: true });
+        w.chat("off", "off", { name: "off", message: [], ...memory, memoryEnabled: false });
+        w.chat("default", "default", { name: "default", message: [] });
+    });
+    const { db } = exportOf(snapshot);
+    expect(["mixed", "off", "default", "empty"].map((name) => characterNamed(db, name).supaMemory)).toEqual([
+        true,
+        false,
+        true,
+        true,
+    ]);
+    // The selected preset is second, and must be resolved before its id becomes upstream's index.
+    expect(db.hypaV3PresetId).toBe(1);
+    for (const character of db.characters as Root[]) {
+        for (const chat of character.chats as Root[]) {
+            for (const key of ["memoryEnabled", "memoryMode", "memoryPresetId", "memoryProfileId"]) {
+                expect(chat).not.toHaveProperty(key);
+            }
+        }
+    }
+});
