@@ -7,9 +7,9 @@ import {
     readStructuredMemoryCost,
 } from "src/ts/process/structuredMemory.svelte";
 import type { AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
-import type { ChatRef } from "src/ts/storage/chatStore.svelte";
+import { chatEntry, type ChatRef } from "src/ts/storage/chatStore.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
-import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
+import { chatHypaV3Preset } from "../../../../shared/chatMemory.ts";
 import type { GenerationCommand } from "../../../../shared/jobs.ts";
 import { isPlainObject } from "../../../../shared/valueKinds.ts";
 import {
@@ -24,18 +24,15 @@ import {
  * copies: no press invents one locally. Rebuild command presses share this transport.
  */
 
-/** The writer's settings of the selected memory preset. */
-function writerSettings() {
-    const preset = selectedHypaV3Preset({
-        hypaV3Presets: settings.hypaV3Presets.items,
-        hypaV3PresetId: settings.hypaV3Presets.selectedId,
-    });
+/** The writer's settings of the target chat's memory preset, including unloaded chats. */
+function writerSettings(ref: ChatRef) {
+    const preset = chatHypaV3Preset(settings.hypaV3Presets.items, settings.hypaV3Presets.selectedId, chatEntry(ref));
     return normalizeStructuredMemorySettings(preset?.settings.structured);
 }
 
 /** The turns a window of record now holds, which a preview takes for the cadence's: at most two. */
-function recordTurns(): 1 | 2 {
-    const { cadence, cadenceTurns } = writerSettings();
+function recordTurns(ref: ChatRef): 1 | 2 {
+    const { cadence, cadenceTurns } = writerSettings(ref);
     return cadence === "tokens" || (cadence === "everyK" && cadenceTurns > 1) ? 2 : 1;
 }
 
@@ -48,7 +45,7 @@ export async function pressMemoryRecord(owner: AnyClientCharacter, chatRef: Chat
     const text = language.structuredMemory.receipt;
     const cost = await readStructuredMemoryCost(chatRef, {
         mode: "record",
-        turns: recordTurns(),
+        turns: recordTurns(chatRef),
         ...(messageId === undefined ? {} : { through: messageId }),
     });
     const question =
@@ -137,7 +134,7 @@ export async function pressMemoryRebuild(
     mode: StructuredMemoryRebuildMode,
 ) {
     const text = language.structuredMemory.rebuild;
-    const turns = writerSettings().cadence === "everyTurn" ? 1 : 2;
+    const turns = writerSettings(chatRef).cadence === "everyTurn" ? 1 : 2;
     const cost = await readStructuredMemoryCost(chatRef, { mode, turns });
     if (cost.outcome === "ok" && cost.value.calls === 0) {
         alertToast(text.nothing);

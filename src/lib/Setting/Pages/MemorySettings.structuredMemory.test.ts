@@ -3,10 +3,17 @@ import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
 import { language } from "src/lang";
-import { findChat } from "src/ts/storage/chatStore.svelte";
+import { chatEntry, findChat, selectChat, setChatMeta } from "src/ts/storage/chatStore.svelte";
+import { selectCharacter } from "src/ts/storage/selection.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import MemorySettings from "./MemorySettings.svelte";
+
+const picker = vi.hoisted(() => vi.fn<typeof import("src/ts/util").selectSingleFile>());
+vi.mock("src/ts/util", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("src/ts/util")>()),
+    selectSingleFile: picker,
+}));
 
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/storage/serverAuth", async () =>
@@ -83,6 +90,8 @@ beforeEach(() => {
         maxContext: 20000,
         maxResponse: 1000,
     });
+    selectCharacter(null);
+    picker.mockReset();
     target = document.createElement("div");
     document.body.append(target);
 });
@@ -515,5 +524,101 @@ it.each(["supaMemory", "structuredMemory"])(
         expect(preset().structured.windowTurns).toBe(7);
         expect(selectWith("structuredMemory").value).toBe(algorithm);
         expect(settings.ui.memoryAlgorithmType).toBe(algorithm);
+    },
+);
+
+it("shows and edits the open chat's stored preset while preserving the Settings preset", () => {
+    const ref = { chaId: "c", chatId: "k" };
+    setChatMeta(ref, { memoryPresetId: "second" });
+    selectCharacter("c");
+    selectChat("c", "k");
+    open();
+    expect(selectWith("first").value).toBe("second");
+    expect(target.querySelector("[data-chat-memory-preset-note]")?.textContent).toBe(
+        language.chatMemory.editingChatPreset,
+    );
+    expect((control(hypa.memoryBudgetTokensLabel) as HTMLInputElement).value).toBe("4321");
+    change(control(hypa.memoryBudgetTokensLabel) as HTMLInputElement, "2345");
+    change(control(text.windowTurns) as HTMLInputElement, "7");
+    expect(settings.hypaV3Presets.items.find(({ id }) => id === "second")!.settings).toMatchObject({
+        memoryBudgetTokens: 2345,
+        structured: { windowTurns: 7 },
+    });
+    expect(settings.hypaV3Presets.items.find(({ id }) => id === "first")!.settings).toMatchObject({
+        memoryBudgetTokens: 6000,
+        structured: { windowTurns: 3 },
+    });
+    expect(settings.hypaV3Presets.selectedId).toBe("first");
+    expect(chatEntry(ref)).toHaveProperty("memoryPresetId", "second");
+});
+
+it.each(["existing", "absent", "deleted", "home"] as const)(
+    "routes preset selection, Create and Import for an %s chat preset to the proper owner",
+    async (state) => {
+        const ref = { chaId: "c", chatId: "k" };
+        const other = { chaId: "c", chatId: "other" };
+        if (state === "existing" || state === "deleted")
+            setChatMeta(ref, { memoryPresetId: state === "existing" ? "second" : "gone" });
+        if (state !== "home") {
+            selectCharacter("c");
+            selectChat("c", "k");
+        }
+        open();
+        const owns = state === "existing";
+        expect(selectWith("first").value).toBe(owns ? "second" : "first");
+        expect(!!target.querySelector("[data-chat-memory-preset-note]")).toBe(owns);
+        const assertSelection = (id: string) => {
+            expect(settings.hypaV3Presets.selectedId).toBe(owns ? "first" : id);
+            if (owns) expect(chatEntry(ref)).toHaveProperty("memoryPresetId", id);
+            else if (state === "deleted") expect(chatEntry(ref)).toHaveProperty("memoryPresetId", "gone");
+            else expect(chatEntry(ref)).not.toHaveProperty("memoryPresetId");
+        };
+        change(selectWith("first"), owns ? "first" : "second");
+        assertSelection(owns ? "first" : "second");
+        const button = (icon: string) => {
+            const result = [...target.querySelectorAll("button")].find((entry) => entry.querySelector(`.${icon}`));
+            expect(result).toBeDefined();
+            return result!;
+        };
+        button("lucide-plus").click();
+        flushSync();
+        const created = settings.hypaV3Presets.items.at(-1)!;
+        expect(created.name).toBe("New Preset");
+        expect(created.id).not.toBe("first");
+        expect(created.id).not.toBe("second");
+        assertSelection(created.id);
+        let answer!: (file: { name: string; data: Uint8Array }) => void;
+        picker.mockImplementationOnce(
+            () =>
+                new Promise((resolve) => {
+                    answer = resolve;
+                }),
+        );
+        button("lucide-hard-drive-upload").click();
+        expect(picker).toHaveBeenCalledOnce();
+        // Selection can move while the chooser is open; Import keeps the target that opened it.
+        setChatMeta(other, { memoryPresetId: "second" });
+        selectCharacter("c");
+        selectChat("c", "other");
+        flushSync();
+        answer({
+            name: "memory.json",
+            data: new TextEncoder().encode(
+                JSON.stringify({
+                    type: "risu",
+                    ver: 1,
+                    data: { name: "Imported memory", settings: { memoryBudgetTokens: 1234 } },
+                }),
+            ),
+        });
+        for (let i = 0; i < 10; i++) {
+            await Promise.resolve();
+            flushSync();
+        }
+        const imported = settings.hypaV3Presets.items.at(-1)!;
+        expect(imported.name).toBe("Imported memory");
+        expect(imported.id).not.toBe(created.id);
+        assertSelection(imported.id);
+        expect(chatEntry(other)).toHaveProperty("memoryPresetId", "second");
     },
 );

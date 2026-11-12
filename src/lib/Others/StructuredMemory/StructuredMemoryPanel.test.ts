@@ -3838,3 +3838,21 @@ it("App mounts the selected chat's panel despite the opposing global algorithm",
     expect(query('[data-memory-panel="pages"]')).not.toBeNull();
     expect(query("[data-risu-memory-task]")).toBeNull();
 });
+
+it("shows the chat preset's manual cadence and follows the default when its preset is deleted", async () => {
+    const { createHypaV3Preset } = await import("../../../../shared/hypaV3Presets.ts");
+    serveMemory();
+    settings.hypaV3Presets.items[0].settings.structured!.cadence = "everyTurn";
+    settings.hypaV3Presets.items.push(
+        createHypaV3Preset("Manual chat", { structured: { cadence: "manual" } }, "manual-chat"),
+    );
+    setChatMeta(ref, { memoryPresetId: "manual-chat" });
+    await open();
+    const line = () => query("[data-memory-writer-line]")?.textContent;
+    expect(line()).toContain(language.structuredMemory.notAutomaticReasons.manual);
+    settings.hypaV3Presets.items = settings.hypaV3Presets.items.filter(({ id }) => id !== "manual-chat");
+    await settle();
+    expect(line()).not.toContain(language.structuredMemory.notAutomaticReasons.manual);
+    expect(findChat(ref)).toHaveProperty("memoryPresetId", "manual-chat");
+    expect(settings.hypaV3Presets.selectedId).toBe("memory");
+});

@@ -1352,3 +1352,43 @@ it.each(["hypaV3", "structuredMemory"])(
         expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "staleEvents"]]));
     },
 );
+
+it("judges each open chat's gap against its own preset threshold and falls back without changing deleted ids", async () => {
+    const settings = await enableMemory();
+    const { createHypaV3Preset } = await import("../../../shared/hypaV3Presets.ts");
+    settings.hypaV3Presets.items.push(
+        createHypaV3Preset("Low", { gapConfirmTokens: 5 }, "low"),
+        createHypaV3Preset("High", { gapConfirmTokens: 20 }, "high"),
+    );
+    chat.setChatMeta(a, { memoryPresetId: "low", pinned: true });
+    chat.setChatMeta(b, { memoryPresetId: "high", pinned: true });
+    const context = {
+        v: 1 as const,
+        maxContext: 1000,
+        maxResponse: 100,
+        input: 300,
+        sections: [],
+        adjustment: 300,
+        attributionExact: true,
+        history: { total: 2, kept: 1, totalUser: 1, keptUser: 1, droppedTokens: 20 },
+        lore: { budgetUsed: 0, budget: 0, rejectedCount: 0, rejectedTokens: 0, active: 0 },
+        tokenScope: "scope",
+        historyDigest: "digest",
+        memory: { kind: "structuredMemory" as const, tokens: 0, coverage: "gap" as const, gapTokens: 10 },
+    };
+    for (const ref of [a, b]) chat.patchMessage(ref, "m2", { generationInfo: { context } });
+    view(a);
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "gap"]]));
+    view(b);
+    expect(status.memoryHealthStates()).toEqual(new Map());
+    // A default edit cannot change either explicit chat's threshold.
+    settings.hypaV3Presets.items[0].settings.gapConfirmTokens = 0;
+    expect(status.memoryHealthStates()).toEqual(new Map());
+    view(a);
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyA, "gap"]]));
+    settings.hypaV3Presets.items = settings.hypaV3Presets.items.filter(({ id }) => id !== "high");
+    view(b);
+    expect(status.memoryHealthStates()).toEqual(new Map([[keyB, "gap"]]));
+    expect(chat.chatEntry(b)).toHaveProperty("memoryPresetId", "high");
+    expect(settings.hypaV3Presets.selectedId).toBe("memory");
+});

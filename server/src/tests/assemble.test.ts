@@ -21,6 +21,7 @@ import type { PromptItem } from "../../../shared/prompt.ts";
 import { ChatTokenCounter } from "../../../shared/prompt/chatTokens.ts";
 import { tokenizerIdentityKey } from "../../../shared/tokenizerChoice.ts";
 import { type RequestDb, tokenScopeFor } from "../llm/settings.ts";
+import { loadJobScope, scopeChat } from "../jobs/jobScope.ts";
 import { assemblePrompt, type AssemblyHost, type AssemblyMemoryJob } from "../prompt/assemble.ts";
 import { createVectorCache, type CachedVector } from "../data/vectorCache.ts";
 import { createEmbeddings } from "../prompt/embeddings.ts";
@@ -1085,6 +1086,100 @@ describe("the context report", () => {
                     assembly.host.chatRef = { chaId: "counter", chatId: chats[index].id };
                     const { report } = await assembly.run();
                     expect(report.memory?.kind, chats[index].id).toBe(expected);
+                }
+            },
+        );
+
+        it.each(["hypaV3", "structuredMemory"] as const)(
+            "reports each chat's preset budget under %s for the same character",
+            async (memoryMode) => {
+                const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+                const store = createResourceStore({ file: ":memory:", kinds });
+                try {
+                    const first = (name: string) =>
+                        (store.get(kinds.get(name)!, "main")!.data as { id: string }[])[0].id;
+                    const binding = {
+                        presetId: first("presets"),
+                        modelPresetId: first("modelPresets"),
+                        personaId: first("personas"),
+                    };
+                    const kind = kinds.get("hypaV3Presets")!;
+                    const record = store.get(kind, "main")!;
+                    store.put(
+                        kind,
+                        "main",
+                        {
+                            items: [100, 300].map((memoryBudgetTokens) =>
+                                createHypaV3Preset(
+                                    String(memoryBudgetTokens),
+                                    {
+                                        budgetMode: "tokens",
+                                        memoryBudgetTokens,
+                                        lookaheadHeadroomTokens: 0,
+                                        extraSummarizationTokens: 0,
+                                        similarMemoryRatio: 0,
+                                    },
+                                    `memory-${memoryBudgetTokens}`,
+                                ),
+                            ),
+                            selectedId: "memory-100",
+                        },
+                        record.revision,
+                    );
+                    store.put(
+                        kinds.get("characters")!,
+                        "counter",
+                        { chaId: "counter", type: "character", name: "Counter", firstMessage: "Hi!", supaMemory: true },
+                        null,
+                    );
+                    for (const budget of [100, 300]) {
+                        const chatId = `chat-${budget}`;
+                        store.applyChanges({
+                            chats: [
+                                {
+                                    characterId: "counter",
+                                    chatId,
+                                    baseRevision: null,
+                                    ops: [
+                                        {
+                                            op: "create",
+                                            chat: {
+                                                id: chatId,
+                                                message: [{ chatId: "u1", role: "user", data: "Hello" }],
+                                                promptPresetId: binding.presetId,
+                                                modelPresetId: binding.modelPresetId,
+                                                bindedPersona: binding.personaId,
+                                                memoryMode,
+                                                memoryEnabled: true,
+                                                memoryPresetId: `memory-${budget}`,
+                                            },
+                                        },
+                                    ],
+                                },
+                            ],
+                        });
+                        const scope = loadJobScope(store, kinds, {
+                            characterId: "counter",
+                            chatId,
+                            ...binding,
+                            mode: "normal",
+                            input: "",
+                            chatRevision: store.chatRevision("counter", chatId)!,
+                        });
+                        const assembly = structuredAssembly({ messages: [], maxContext: 1000, preview: true });
+                        // Use the job's resolved memory settings with the existing deterministic assembly host.
+                        Object.assign(assembly.host.db, {
+                            hypaV3Presets: scope.db.hypaV3Presets,
+                            hypaV3PresetId: scope.db.hypaV3PresetId,
+                        });
+                        assembly.host.chat = () => scopeChat(scope)!;
+                        assembly.host.chatRef = { chaId: "counter", chatId };
+                        const { report } = await assembly.run();
+                        expect(report.memory).toMatchObject({ kind: memoryMode, budget });
+                    }
+                    expect(store.get(kind, "main")!.data).toHaveProperty("selectedId", "memory-100");
+                } finally {
+                    store.close();
                 }
             },
         );

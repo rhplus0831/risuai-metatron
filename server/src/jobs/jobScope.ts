@@ -1,4 +1,4 @@
-import { chatMemoryAlgorithm } from "../../../shared/chatMemory.ts";
+import { chatHypaV3Preset, chatMemoryAlgorithm } from "../../../shared/chatMemory.ts";
 import { createHash } from "node:crypto";
 import type {
     Chat,
@@ -50,8 +50,8 @@ import { GenerationRunnerError, type RunningJob } from "./generationJobs.ts";
  * What a job reads, loaded at the job's start and kept apart in two parts:
  *
  * - frozen identity and configuration: `db` (the database projection the CBS evaluator and lore
- *   activation read, assembled for the job's prompt and model presets and personas, with every
- *   credential field `""` as in the client's mirror), the two presets, the profiles and the
+ *   activation read, assembled for the chat's memory preset and the job's prompt and model presets
+ *   and personas, with every credential field `""` as in the client's mirror), the two presets, the profiles and the
  *   personas, and `request` (the request layer's own settings, credentials included).
  *   Settings changed while the job runs do not reach it;
  * - the live overlay: the job's chat and the characters, which `refreshChat` and `refreshCharacter`
@@ -291,6 +291,15 @@ export function loadJobScope(
     // job persona's fields, and the selection indexes.
     forwardSelectedPreset(db, presets, preset, modelPreset, modelProfiles);
     forwardPersonaRoots(db, effectivePersona, personas);
+    // Only this scope's projection changes; the stored default selection stays untouched.
+    const memoryPreset = chatHypaV3Preset(
+        db.hypaV3Presets as HypaV3Preset[],
+        db.hypaV3PresetId as string | undefined,
+        chatRecord.data as Chat,
+    );
+    if (memoryPreset && memoryPreset.id === (chatRecord.data as Chat).memoryPresetId) {
+        db.hypaV3PresetId = memoryPreset.id;
+    }
 
     const characters = (read.kinds[RESOURCE_KIND.characters] ?? []).map((record) => characterShell(record.data));
     db.characters = characters;
@@ -387,7 +396,7 @@ export function memoryTokenPolicy(scope: JobScope, chatAdditionalTokens: number)
 }
 
 /**
- * The selected HypaV3 preset as `memorySettingsFingerprint` hashes it: without `settings.structured`,
+ * The scope's chat memory preset as `memorySettingsFingerprint` hashes it: without `settings.structured`,
  * which only the Structured Memory part of the digest reads, so a change to it leaves another
  * algorithm's tasks current. The remaining keys keep their order.
  */
@@ -401,7 +410,7 @@ function fingerprintedHypaV3Preset(preset: HypaV3Preset | undefined): unknown {
 
 /**
  * A digest of the memory-relevant settings of `scope` (`MemoryTaskInput.settingsFingerprint`): the
- * selected HypaV3 preset, the `memory` slot as a job's request resolves it (the model, its profile,
+ * chat's HypaV3 preset, the `memory` slot as a job's request resolves it (the model, its profile,
  * which names a credential but holds none, the descriptor's format and wire id, a custom model's
  * definition, and the request's temperature and response size, or the refusal), and the embedding
  * model with its custom endpoint and model (never its key). When this chat selects Structured Memory

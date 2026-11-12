@@ -1,5 +1,8 @@
 // @vitest-environment node
 import { expect, it } from "vitest";
+import { createResourceStore } from "../../../data/resourceStore.ts";
+import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../../../data/kinds.ts";
+import { createHypaV3Preset } from "../../../../../shared/hypaV3Presets.ts";
 import type { Message } from "../../../../../shared/database.ts";
 import {
     ADOPTED_WRITER_RUN,
@@ -495,4 +498,65 @@ it("screens rebuild and backfill plans and rechecks edited replies when building
     );
     expect(changes?.remove?.events ?? []).not.toContain("recorded");
     expect(events).toEqual(before);
+});
+
+it("screens the rebuild cost with the chat's preset and falls back after that preset is deleted", async () => {
+    const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+    const store = createResourceStore({ file: ":memory:", kinds });
+    try {
+        const kind = kinds.get("hypaV3Presets")!;
+        const record = store.get(kind, "main")!;
+        const defaults = createHypaV3Preset(
+            "Default",
+            { structured: { screening: { refusal: [], format: [] } } },
+            "default",
+        );
+        const personal = createHypaV3Preset(
+            "Chat",
+            { structured: { screening: { refusal: ["refusal"], format: [] } } },
+            "chat",
+        );
+        store.put(kind, "main", { items: [defaults, personal], selectedId: "default" }, record.revision);
+        store.put(kinds.get("characters")!, "c", { chaId: "c", type: "character", name: "C" }, null);
+        store.applyChanges({
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: null,
+                    ops: [
+                        {
+                            op: "create",
+                            chat: {
+                                id: "k",
+                                memoryPresetId: "chat",
+                                message: [
+                                    { chatId: "u1", role: "user", data: "Q" },
+                                    { chatId: "a1", role: "char", data: "refusal" },
+                                    { chatId: "u2", role: "user", data: "Q" },
+                                    { chatId: "a2", role: "char", data: "A" },
+                                ],
+                            },
+                        },
+                    ],
+                },
+            ],
+        });
+        // Screening folds the two user messages and the eligible answer into one 3-byte turn.
+        expect(await memoryWorkCost(store, { chaId: "c", chatId: "k" }, { mode: "rebuild", turns: 1 })).toEqual({
+            calls: 1,
+            messages: 3,
+            estimatedTokens: 3001,
+        });
+        store.put(kind, "main", { items: [defaults], selectedId: "default" }, store.get(kind, "main")!.revision);
+        // With the default's empty screening, both turns count: 10 bytes plus two call overheads.
+        expect(await memoryWorkCost(store, { chaId: "c", chatId: "k" }, { mode: "rebuild", turns: 1 })).toEqual({
+            calls: 2,
+            messages: 4,
+            estimatedTokens: 6004,
+        });
+        expect(store.chatMeta("c", "k")!.data.memoryPresetId).toBe("chat");
+    } finally {
+        store.close();
+    }
 });

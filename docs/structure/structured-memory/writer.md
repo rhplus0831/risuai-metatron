@@ -183,9 +183,12 @@ Compaction changes no event, and a warning does not fail the run.
 ## State
 
 - The records a writer run leaves, and the tables holding them: [structured memory](records.md#memory-tables).
-- The writer's settings are the selected memory preset's `settings.structured`, so they copy, export, and import with
-  the preset. A chat's `structuredMemoryLanguage` wins over its owner's, and the owner's over the preset's `language`,
-  where `""` follows `db.language`. A chat's `structuredMemoryHighlight` wins over the preset's `highlightMode`.
+- The writer's settings are the chat's memory preset's `settings.structured`, so they copy, export, and import with the
+  preset. `chatHypaV3Preset` resolves its stored id or the Settings default; `loadJobScope` applies it to the scope's
+  `db` for writer calls, cadence, screening, test runs, warm work, and notices. The cost preview has no scope and passes
+  the chat's stored id to `readWriterSettings`.
+- A chat's `structuredMemoryLanguage` wins over its owner's, and the owner's over the preset's `language`, where `""`
+  follows `db.language`. A chat's `structuredMemoryHighlight` wins over the preset's `highlightMode`.
 - `keyLineGuidance` defaults to false and applies to events recorded from then on; stored events keep their key lines
   until re-recorded or rebuilt.
 - `MemorySettings.svelte` exposes only the fields something reads, and shares with HypaV3 only the preset picker, the
@@ -225,7 +228,8 @@ Compaction changes no event, and a warning does not fail the run.
 - `memorySettingsFingerprint` digests `structured` without its highlight fields, the language overrides (not the chat's
   highlight either: a highlight only marks a commit), and `db.language` only while the chat's algorithm is Structured
   Memory, so a change to them never marks another algorithm's queued task stale. The stored mode itself is not digested:
-  a mode change that resolves to the same algorithm keeps a queued task.
+  a mode change that resolves to the same algorithm keeps a queued task. Its preset is the scope's chat preset, so
+  changing another preset leaves that task current.
 - A message is recorded when any stored event cites it, in any status, retracted and stale included: that only stops the
   writer recording it again automatically, so nothing brings back what the user retracted. It is not coverage: dropping
   raw history asks whether an active event covers it, and never reads this set.

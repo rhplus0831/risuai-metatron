@@ -1,6 +1,6 @@
 <script lang="ts">
     import { chatEntry } from "src/ts/storage/chatStore.svelte";
-    import { chatMemoryEnabled } from "../../../../shared/chatMemory.ts";
+    import { chatHypaV3Preset, chatMemoryEnabled } from "../../../../shared/chatMemory.ts";
     import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
     import { RefreshCcwIcon, XIcon } from "@lucide/svelte";
     import { untrack, type Component } from "svelte";
@@ -43,7 +43,6 @@
     import { hypaV3ModalOpen } from "src/ts/stores.svelte";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import SegmentedControl from "src/lib/UI/GUI/SegmentedControl.svelte";
-    import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
     import {
         normalizeStructuredMemorySettings,
         structuredMemoryWriterLanguage,
@@ -234,10 +233,11 @@
     const newestReply = $derived(newestAssistantMessageId(messages));
     const writerSettings = $derived(
         normalizeStructuredMemorySettings(
-            selectedHypaV3Preset({
-                hypaV3Presets: settings.hypaV3Presets.items,
-                hypaV3PresetId: settings.hypaV3Presets.selectedId,
-            })?.settings.structured,
+            chatHypaV3Preset(
+                settings.hypaV3Presets.items,
+                settings.hypaV3Presets.selectedId,
+                chatRef ? chatEntry(chatRef) : undefined,
+            )?.settings.structured,
         ),
     );
     const cadence = $derived(writerSettings.cadence);

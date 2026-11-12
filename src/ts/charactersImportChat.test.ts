@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { language } from "src/lang";
+import { createHypaV3Preset } from "../../shared/hypaV3Presets.ts";
 import type { Chat } from "../../shared/database.ts";
 import {
     MEMORY_RESTORE_BODY_BYTES,
@@ -1028,4 +1029,28 @@ it("keeps all imported chats and reports refused, unrestored and oversized recor
         ].join("\n\n"),
     );
     expect(alerts.normal).toHaveBeenCalledWith(language.successImport);
+});
+
+it("keeps imported memory preset ids that exist locally and drops ids of missing presets", async () => {
+    const { run, alpha, chatsOf, settings, sync, fake } = await boot();
+    settings.hypaV3Presets.items = [createHypaV3Preset("Local", {}, "local-memory")];
+    settings.hypaV3Presets.selectedId = "local-memory";
+    const inputs = ["local-memory", "missing-memory"].map((memoryPresetId) => ({
+        ...chatV2(memoryPresetId, null, "Imported message"),
+        memoryPresetId,
+    }));
+    await run({ name: "chats.json", data: encode({ type: "risuAllChats", ver: 2, folders: [], data: inputs }) });
+    const imported = chatsOf(alpha).slice(0, 2);
+    expect(imported).toHaveLength(2);
+    await sync.flushResources();
+    for (const chat of imported) {
+        for (const copy of [chat, fake.chat(alpha, chat.id)!.data]) {
+            if (chat.name === "local-memory") expect(copy).toHaveProperty("memoryPresetId", "local-memory");
+            else {
+                expect(chat.name).toBe("missing-memory");
+                expect(copy).not.toHaveProperty("memoryPresetId");
+            }
+        }
+    }
+    expect(settings.hypaV3Presets.selectedId).toBe("local-memory");
 });

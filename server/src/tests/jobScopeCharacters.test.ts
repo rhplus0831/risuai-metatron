@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createHypaV3Preset, selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import type { GenerationContext } from "../../../shared/jobs.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
@@ -137,4 +138,37 @@ describe("the characters of a job's scope", () => {
         expect(ids(scope)).toEqual(["earlier", "g", "late", "member", "named"]);
         expect(scope.db.characters.find((entry) => entry.chaId === "late")).toMatchObject({ name: "LATE", chats: [] });
     });
+});
+
+it("resolves the chat's memory preset in its job scope without changing the stored default", () => {
+    const h = (current = harness());
+    const kind = h.kinds.get("hypaV3Presets")!;
+    const record = h.store.get(kind, "main")!;
+    h.store.put(
+        kind,
+        "main",
+        {
+            items: [
+                createHypaV3Preset("Default", { memoryBudgetTokens: 100 }, "default"),
+                createHypaV3Preset("Chat", { memoryBudgetTokens: 300 }, "chat"),
+            ],
+            selectedId: "default",
+        },
+        record.revision,
+    );
+    h.store.applyChanges({
+        chats: [
+            {
+                characterId: "g",
+                chatId: "gk",
+                baseRevision: h.store.chatRevision("g", "gk"),
+                ops: [{ op: "meta", set: { memoryPresetId: "chat" } }],
+            },
+        ],
+    });
+    const stored = h.store.get(kind, "main");
+    const scope = loadJobScope(h.store, h.kinds, h.context);
+    expect(selectedHypaV3Preset(scope.db)).toMatchObject({ id: "chat", settings: { memoryBudgetTokens: 300 } });
+    expect(h.store.get(kind, "main")).toEqual(stored);
+    expect(h.store.chatMeta("g", "gk")!.data.memoryPresetId).toBe("chat");
 });

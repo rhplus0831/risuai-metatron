@@ -73,7 +73,8 @@ Read each module's header or component contract, then read the named export's co
 
 `structuredMemoryStep` in `server/src/prompt/assemble.ts` reads before the [writer hand-off](writer.md#the-writer-task).
 With `memoryJob.structuredMemory`, previews and service-free sends read as sends do; without it, history stays raw with
-no memory report.
+no memory report. Budget and lane settings come from the chat's memory preset applied by `loadJobScope`; missing,
+malformed, or deleted ids fall back to the Settings default through `chatHypaV3Preset`.
 
 1. The step reads records and calls `selectMemory`, which reconciles events against stored messages before
    `retrieveLanes` and `buildMemoryCard` run ([reconciliation](lifecycle.md#reconciliation-and-repairs)).
@@ -138,7 +139,9 @@ line in the `mobilechat` and `cardboard` footers. Its component contract owns di
 is Structured Memory, the HypaV3 modal otherwise; the `DefaultChatScreen` menu and `CharConfig` button follow it too.
 The component contract owns tab mounting and refresh. `TABS` puts the content tabs first (Pages, Timeline, Threads,
 Evidence missing), then Coverage, Preview, Log, and Settings, so a panel opens on Pages unless `takeMemoryPanelTarget`
-names a tab. Preview runs only on its button since its local send moves `refresh`.
+names a tab. Preview runs only on its button since its local send moves `refresh`. The panel, Coverage, and record and
+rebuild presses resolve the target chat's preset from `chatEntry(ref)`, including unloaded chats, for cadence, window
+size, and screening.
 
 Contents from `server/src/routes/structuredMemory.ts` supplies `adoption`, `rebuild`, `recordedLanguage`, `health`, and
 `unsupportedPages`; the tab's HypaV3 mirror decides none. A [held chat](lifecycle.md#the-adoption-choice) offers
@@ -294,16 +297,17 @@ and a commit that stores nothing. The answer crosses `done.result` as `Structure
 coverage. `WriterCadence` carries its lists, and the ceiling is found before screening, so pressing a screened reply
 still confirms earlier text; a manual re-record can include screened sources while an automatic start leaves the mark.
 Rebuild planning, cost preview and test runs use the same screened-window rules. `memoryWorkCost` lacks a job scope and
-gets settings through `store.memory.readWriterSettings` ([rebuild](rebuild.md#the-cost-preview)). The `window.ts` header
-owns the ordering details.
+passes the chat's stored preset id to `store.memory.readWriterSettings` ([rebuild](rebuild.md#the-cost-preview)). The
+`window.ts` header owns the ordering details.
 
 ### The health badge
 
 `memoryHealthStates()` combines `POST /health` facts, the open chat's newest report and tab-held over-cap marks for open
-and pinned chats whose own algorithm is Structured Memory. `chatStatus.svelte.ts` owns state selection;
-`watchChatVisibility` owns the read triggers, which ask only for those chats. `MEMORY_HEALTH_STATES` gives the
-worst-state order, while `CHAT_STATUS_PRIORITY` keeps health below unseen replies. The health route's prefix and byte
-budget are described in [records](records.md#the-read-routes) and its
+and pinned chats whose own algorithm is Structured Memory. Each key resolves its chat's preset; the open chat's gap is
+judged against that preset's `gapConfirmTokens`. `chatStatus.svelte.ts` owns state selection; `watchChatVisibility` owns
+the read triggers, which ask only for those chats. `MEMORY_HEALTH_STATES` gives the worst-state order, while
+`CHAT_STATUS_PRIORITY` keeps health below unseen replies. The health route's prefix and byte budget are described in
+[records](records.md#the-read-routes) and its
 [measurement](../../reports/measurements/structured-memory-health-read-2026-11-03.md). Contents' health feeds the writer
 line; a send's `writerState` gets `pending` with reason `repair` from in-hand `records.events`.
 

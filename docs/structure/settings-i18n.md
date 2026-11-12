@@ -109,12 +109,18 @@ section.
   [media-aux](media-aux.md); its handwritten provider toggles include `saveSignatures`, shown for a `geminiThinking`
   model whether or not streaming is on) and `PromptPresetSettings` (the prompt preset). Connections, profile editing,
   slot selection, and what the toggles do belong to [LLM requests](llm-requests.md).
-- `MemorySettings`: memory providers, presets, the embedding model, `supaMemoryKey`, and the HypaV3 budget controls. The
-  algorithm selector is what Legacy chats use and gates only Hanurai, HypaV2, and SupaMemory (and the search index's
-  `supaMemoryBranch`); the preset picker, the budget controls, and the Structured Memory and HypaV3 sections show under
-  every selection. Summarization, budget, and task behavior belong to [memory](memory.md), the structured-memory branch
-  to [writer settings](structured-memory/writer.md#state); the prompt-preset max-context override it reads is in
-  [State](#state).
+- `MemorySettings`: memory providers, presets, the embedding model, `supaMemoryKey`, and HypaV3 budget controls. The
+  algorithm selector is what Legacy chats use and gates Hanurai, HypaV2, and SupaMemory (and search's
+  `supaMemoryBranch`). The preset picker, budget controls, and Structured Memory and HypaV3 sections show under every
+  selection.
+- The Memory page reads `currentChatRef()` and `chatEntry`: an open chat naming an existing memory preset shows and
+  edits that stored record, marked as this chat's; otherwise, and at home, it edits the default. Select, Create, and
+  Import use one action, writing the chat's `memoryPresetId` only when it names an existing preset and `selectedId`
+  otherwise.
+- Import captures that target and chat ref before the file chooser; a deleted target never redirects it to the default.
+  Delete repairs `selectedId` only if it named the deleted record; chats naming it then use the default. Screening
+  textareas carry the preset id as `popupEditorContext`. Runtime behavior belongs to [memory](memory.md) and
+  [writer settings](structured-memory/writer.md#state); the prompt-preset max-context override is in [State](#state).
 - `ImageGenerationSettings` (provider controls, `NAIApiKey`, WaveSpeed LoRA rows) and `VoiceSettings` (TTS, Emotion
   Images): runtime behavior is in [media](media-aux.md).
 - `StorageSettings` (menu 23): its sections read the page's `Storage/storageController.svelte.ts` (via

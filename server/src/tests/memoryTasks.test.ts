@@ -1246,6 +1246,54 @@ describe("the writer lease", () => {
     });
 });
 
+it.each(["chat", "default"] as const)(
+    "a queued task becomes stale only when editing its own preset, editing %s",
+    async (edited) => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        try {
+            const t = harness();
+            t.replace("hypaV3Presets", (data) => ({
+                items: [
+                    { ...data.items[0], id: "default" },
+                    { ...data.items[0], id: "chat" },
+                ],
+                selectedId: "default",
+            }));
+            t.write("k1", [{ op: "meta", set: { memoryPresetId: "chat" } }]);
+            const lease = await t.service.acquireSummaryWriter(ref("k1"), "hold-start");
+            const terminal = t.nextTerminal("k1");
+            handOff(t, "k1", { entries: 2 });
+            expect(t.service.status(ref("k1"))?.state).toBe("queued");
+            t.replace("hypaV3Presets", (data) => ({
+                ...data,
+                items: data.items.map((item: { id: string; settings: object }) =>
+                    item.id === edited ? { ...item, settings: { ...item.settings, memoryTokensRatio: 0.3 } } : item,
+                ),
+            }));
+            lease.release();
+            const outcome = await Promise.race([
+                terminal.then((event) => ({ kind: "terminal" as const, status: event.status })),
+                t.provider.request(0).then((request) => ({ kind: "request" as const, request })),
+            ]);
+            if (edited === "chat") {
+                expect(outcome).toMatchObject({
+                    kind: "terminal",
+                    status: { state: "skipped", reason: "staleInput", done: 0 },
+                });
+                expect(t.summaries("k1")).toEqual([]);
+            } else {
+                expect(outcome.kind).toBe("request");
+                if (outcome.kind !== "request") throw new Error("The unrelated preset edit skipped this task");
+                outcome.request.answer("The chat remembers its journey");
+                expect((await terminal).status).toMatchObject({ state: "done", done: 1 });
+                expect(t.summaries("k1")).toEqual(["The chat remembers its journey"]);
+            }
+        } finally {
+            vi.useRealTimers();
+        }
+    },
+);
+
 describe("the start checks", () => {
     it.each([true, false])("memoryOff follows each chat when the owner's default is %s", async (ownerOn) => {
         vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });

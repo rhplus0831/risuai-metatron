@@ -205,7 +205,7 @@
         if (!chat) {
             return null;
         }
-        const shouldProcess = getCurrentHypaV3Preset().settings.processRegexScript;
+        const shouldProcess = getCurrentHypaV3Preset(chat).settings.processRegexScript;
 
         let msg = null;
         let msgIndex = -1;

@@ -11,8 +11,14 @@ import { chatCompletion, unloadEngine } from "../webllm";
 import { hypaV3ProgressStore } from "src/ts/stores.svelte";
 import { type ChatTokenizer } from "src/ts/tokenizer";
 import { inlayTokenRegex } from "src/ts/util/inlayTokens";
-import type { HypaV3Preset, HypaV3Data, SerializableHypaV3Data, Summary } from "../../../../shared/memory.ts";
-import type { ChatRef } from "src/ts/storage/chatStore.svelte";
+import type {
+    HypaV3Preset,
+    HypaV3Settings,
+    HypaV3Data,
+    SerializableHypaV3Data,
+    Summary,
+} from "../../../../shared/memory.ts";
+import { chatEntry, currentChatRef, type ChatRef } from "src/ts/storage/chatStore.svelte";
 import { capturePluginContext, type PluginCallContext } from "src/ts/plugins/apiV3/pluginContext";
 
 /**
@@ -51,7 +57,7 @@ export type {
     SerializableSummary,
 } from "../../../../shared/memory.ts";
 export { createHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
-import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
+import { chatHypaV3Preset, type ChatMemoryInput } from "../../../../shared/chatMemory.ts";
 
 interface SummaryChunk {
     text: string;
@@ -83,7 +89,7 @@ function splitBySeparator(text: string, separator: string): string[] {
 }
 
 /**
- * The legacy composition only (the oracle test runs it): the experimental main when the active
+ * The legacy composition only (the oracle test runs it): the experimental main when the chat's
  * preset has `useExperimentalImpl`, else the standard one. A missing preset is thrown as it is (it is
  * looked up first); the mains' errors are thrown with the `[HypaV3]` prefix. A local summarization
  * model's WebLLM engine is unloaded afterwards.
@@ -97,7 +103,7 @@ export async function hypaMemoryV3(
     tokenizer: ChatTokenizer,
     context?: SummarizeContext,
 ): Promise<HypaV3Result> {
-    const settings = getCurrentHypaV3Preset().settings;
+    const settings = getCurrentHypaV3Preset(room).settings;
 
     try {
         if (settings.useExperimentalImpl) {
@@ -142,7 +148,7 @@ async function hypaMemoryV3MainExp(
     tokenizer: ChatTokenizer,
     context?: SummarizeContext,
 ): Promise<HypaV3Result> {
-    const settings = getCurrentHypaV3Preset().settings;
+    const settings = getCurrentHypaV3Preset(room).settings;
 
     // Validate settings
     if (settings.recentMemoryRatio + settings.similarMemoryRatio > 1) {
@@ -341,7 +347,9 @@ async function hypaMemoryV3MainExp(
             });
         };
 
-        const summarizationTasks = toSummarizeArray.map((item) => () => summarize(item, false, context));
+        const summarizationTasks = toSummarizeArray.map(
+            (item) => () => summarizeWithSettings(item, false, context, settings),
+        );
 
         // Start of performance measurement: summarize
         console.log(logPrefix, `Starting ${toSummarizeArray.length} summarization.`);
@@ -844,7 +852,7 @@ async function hypaMemoryV3Main(
     tokenizer: ChatTokenizer,
     context?: SummarizeContext,
 ): Promise<HypaV3Result> {
-    const settings = getCurrentHypaV3Preset().settings;
+    const settings = getCurrentHypaV3Preset(room).settings;
 
     // Validate settings
     if (settings.recentMemoryRatio + settings.similarMemoryRatio > 1) {
@@ -1017,7 +1025,7 @@ async function hypaMemoryV3Main(
             console.log(logPrefix, "Attempting summarization:", "\nTarget:", toSummarize);
 
             try {
-                const summarizeResult = await summarize(toSummarize, false, context);
+                const summarizeResult = await summarizeWithSettings(toSummarize, false, context, settings);
 
                 data.summaries.push({
                     text: summarizeResult,
@@ -1230,7 +1238,7 @@ async function hypaMemoryV3Main(
                 console.log(logPrefix, "Attempting summarization for similarity search:", "\nTarget:", recentChats);
 
                 try {
-                    const summarizeResult = await summarize(recentChats, false, context);
+                    const summarizeResult = await summarizeWithSettings(recentChats, false, context, settings);
 
                     queries.push(summarizeResult);
                 } catch (error) {
@@ -1513,15 +1521,26 @@ function sanitizeSummaryContent(content: string): string {
  * - Any other value is a WebLLM model: `chatCompletion` with the system message first; `<think>`
  *   blocks are stripped.
  *
- * A failed or empty answer throws. The modal passes the chat it captured when the action began.
+ * A failed or empty answer throws. The preset is read from the context's chat list entry, or the
+ * current chat when no context was supplied. The modal passes the chat captured when the action began.
  */
 export async function summarize(
     oaiMessages: OpenAIChat[],
     isResummarize: boolean = false,
     context?: SummarizeContext,
 ): Promise<string> {
-    const settings = getCurrentHypaV3Preset().settings;
+    const ref = context ? (context.chatRef ?? context.pluginContext?.chatRef) : currentChatRef();
+    const settings = getCurrentHypaV3Preset(ref ? chatEntry(ref) : undefined).settings;
+    return summarizeWithSettings(oaiMessages, isResummarize, context, settings);
+}
 
+/** The legacy composition keeps the same preset settings through all of its awaited windows. */
+async function summarizeWithSettings(
+    oaiMessages: OpenAIChat[],
+    isResummarize: boolean,
+    context: SummarizeContext | undefined,
+    settings: HypaV3Settings,
+): Promise<string> {
     const strMessages = oaiMessages.map((chat) => `${chat.role}: ${sanitizeSummaryContent(chat.content)}`).join("\n");
 
     const summarizationPrompt = isResummarize
@@ -1622,12 +1641,9 @@ export async function summarize(
     return result;
 }
 
-/** The selected preset of the settings views (`selectedHypaV3Preset`); throws when the list is empty. */
-export function getCurrentHypaV3Preset(): HypaV3Preset {
-    const preset = selectedHypaV3Preset({
-        hypaV3Presets: appSettings.hypaV3Presets.items,
-        hypaV3PresetId: appSettings.hypaV3Presets.selectedId,
-    });
+/** The chat's memory preset, falling back to the Settings default; throws when the list is empty. */
+export function getCurrentHypaV3Preset(chat: ChatMemoryInput | null | undefined): HypaV3Preset {
+    const preset = chatHypaV3Preset(appSettings.hypaV3Presets.items, appSettings.hypaV3Presets.selectedId, chat);
 
     if (!preset) {
         throw new Error("Preset not found. Please select a valid preset.");

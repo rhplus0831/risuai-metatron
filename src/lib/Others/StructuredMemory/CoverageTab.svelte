@@ -1,6 +1,6 @@
 <script lang="ts">
     import { chatEntry } from "src/ts/storage/chatStore.svelte";
-    import { chatMemoryEnabled } from "../../../../shared/chatMemory.ts";
+    import { chatHypaV3Preset, chatMemoryEnabled } from "../../../../shared/chatMemory.ts";
     import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
     import { ChevronDownIcon, ChevronRightIcon } from "@lucide/svelte";
     import { untrack } from "svelte";
@@ -23,7 +23,6 @@
     import { findChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { ChatTokenizer } from "src/ts/tokenizer";
-    import { selectedHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
     import { normalizeStructuredMemorySettings } from "../../../../shared/structuredMemory.ts";
     import { codeText, memoryReadFailureText, memoryReasonText } from "./memoryText";
 
@@ -85,10 +84,8 @@
     const reconciled = $derived(facts && heldChat ? reconcileMemoryCoverage(facts, messages, hashOf) : facts);
     const writerSettings = $derived(
         normalizeStructuredMemorySettings(
-            selectedHypaV3Preset({
-                hypaV3Presets: settings.hypaV3Presets.items,
-                hypaV3PresetId: settings.hypaV3Presets.selectedId,
-            })?.settings.structured,
+            chatHypaV3Preset(settings.hypaV3Presets.items, settings.hypaV3Presets.selectedId, chatEntry(chatRef))
+                ?.settings.structured,
         ),
     );
     const windowTurns = $derived(writerSettings.windowTurns);

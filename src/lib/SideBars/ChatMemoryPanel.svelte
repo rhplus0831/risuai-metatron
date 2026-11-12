@@ -3,16 +3,36 @@
     import { chatMemoryEnabled, chatMemoryMode, legacyMemoryAlgorithm } from "../../../shared/chatMemory.ts";
     import { chatEntry, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { findCharacter } from "src/ts/storage/characterStore.svelte";
-    import { chatMemorySettings, setChatMemoryEnabled, setChatMemoryMode } from "src/ts/storage/chatMemory.svelte";
+    import {
+        chatMemorySettings,
+        setChatMemoryEnabled,
+        setChatMemoryMode,
+        setChatMemoryPreset,
+    } from "src/ts/storage/chatMemory.svelte";
     import CheckInput from "../UI/GUI/CheckInput.svelte";
 
     import SelectInput from "../UI/GUI/SelectInput.svelte";
     import OptionInput from "../UI/GUI/OptionInput.svelte";
     import { STRUCTURED_MEMORY_ALGORITHM } from "../../../shared/structuredMemory.ts";
 
+    import { selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
+    import { settings } from "src/ts/storage/settingsViews.svelte";
+
+    // Chat list metadata supports the same controls for loaded and unloaded chats.
     let { chatRef }: { chatRef: ChatRef } = $props();
     const entry = $derived(chatEntry(chatRef));
     const enabled = $derived(chatMemoryEnabled(entry, findCharacter(chatRef.chaId), chatMemorySettings()));
+
+    const presetId = $derived(typeof entry?.memoryPresetId === "string" ? entry.memoryPresetId : undefined);
+    const defaultPreset = $derived(
+        selectedHypaV3Preset({
+            hypaV3Presets: settings.hypaV3Presets.items,
+            hypaV3PresetId: settings.hypaV3Presets.selectedId,
+        }),
+    );
+    const presetDeleted = $derived(
+        presetId !== undefined && !settings.hypaV3Presets.items.some((preset) => preset.id === presetId),
+    );
 
     const legacyName = $derived.by(() => {
         switch (legacyMemoryAlgorithm(chatMemorySettings())) {
@@ -53,6 +73,32 @@
                 <OptionInput value="legacy">{language.chatMemory.legacy(legacyName)}</OptionInput>
                 <OptionInput value="hypaV3">{language.chatMemory.hypaV3}</OptionInput>
                 <OptionInput value={STRUCTURED_MEMORY_ALGORITHM}>{language.structuredMemory.name}</OptionInput>
+            </SelectInput>
+        </label>
+        <label class="mt-2 block min-w-0 text-sm text-textcolor">
+            <span class="mb-1 block">{language.chatMemory.preset}</span>
+            <SelectInput
+                size="sm"
+                className="w-full min-w-0 max-w-full"
+                value={presetId === undefined ? "" : `preset:${presetId}`}
+                onchange={({ currentTarget }) => {
+                    if (chatEntry(chatRef))
+                        setChatMemoryPreset(
+                            chatRef,
+                            currentTarget.value === "" ? undefined : currentTarget.value.slice("preset:".length),
+                        );
+                }}
+            >
+                <OptionInput value=""
+                    >{language.chatMemory.defaultPreset(defaultPreset?.name ?? language.none)}</OptionInput
+                >
+                {#if presetId !== undefined && presetDeleted}
+                    <OptionInput value={`preset:${presetId}`}>{language.chatMemory.deletedPreset(presetId)}</OptionInput
+                    >
+                {/if}
+                {#each settings.hypaV3Presets.items as preset (preset.id)}
+                    <OptionInput value={`preset:${preset.id}`}>{preset.name}</OptionInput>
+                {/each}
             </SelectInput>
         </label>
     </div>

@@ -1359,6 +1359,10 @@ export const languageEnglish = {
     memoryTrimWarning:
         "Long-term memory is set up, but it is off for this chat. The prompt is over the context size, so the oldest messages will be left out of what the model sees.",
     chatMemory: {
+        preset: "Memory preset",
+        defaultPreset: (name: string) => `Default (${name})`,
+        deletedPreset: (id: string) => `Deleted preset (${id})`,
+        editingChatPreset: "Editing this chat's memory preset.",
         enabled: "Use memory for this chat",
         mode: "Memory mode",
         legacy: (algorithm: string) => `Legacy (${algorithm})`,
@@ -1367,7 +1371,7 @@ export const languageEnglish = {
         legacyAlgorithmHelp:
             "Chats set to Legacy use this algorithm. Each chat can choose HypaV3 or Structured Memory in its memory settings.",
         sharedPreset: "HypaV3 and Structured Memory preset",
-        sharedPresetHelp: "Both modes use this preset. Preset selection applies globally.",
+        sharedPresetHelp: "Both modes use a memory preset. Each chat can choose its own or follow the default.",
         sharedBudget: "Shared memory budget",
     },
     memoryTrimEnable: "Turn memory on for this chat and send",

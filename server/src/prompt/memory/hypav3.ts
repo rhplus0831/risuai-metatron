@@ -120,7 +120,7 @@ async function splitBySeparator(
     return result.value as string[];
 }
 
-/** Which main the selected preset runs (`useExperimentalImpl`). */
+/** Which main the scope's chat memory preset runs (`useExperimentalImpl`). */
 export type HypaV3Implementation = "standard" | "experimental";
 
 /**
@@ -2607,7 +2607,7 @@ export async function summarize(
     throw new Error(LOCAL_SUMMARIZATION_UNSUPPORTED);
 }
 
-/** The selected preset of the job's settings (`selectedHypaV3Preset`); throws when the list is empty. */
+/** The chat's preset, applied to the job's settings by `loadJobScope`; throws when the list is empty. */
 export function getCurrentHypaV3Preset(host: MemoryHost): HypaV3Preset {
     const preset = selectedHypaV3Preset(host.db);
 

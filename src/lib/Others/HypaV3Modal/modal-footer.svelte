@@ -26,7 +26,7 @@
             // The selected chat is loading.
             return null;
         }
-        const shouldProcess = getCurrentHypaV3Preset().settings.processRegexScript;
+        const shouldProcess = getCurrentHypaV3Preset(chat).settings.processRegexScript;
 
         // Summaries exist
         if (hypaV3Data.summaries.length > 0) {

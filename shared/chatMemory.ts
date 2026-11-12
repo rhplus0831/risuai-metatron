@@ -47,13 +47,15 @@ export function chatMemoryAlgorithm(settings: ChatMemorySettings, chat: ChatMemo
     return legacyMemoryAlgorithm(settings);
 }
 
-/** Stored preset bindings are carried as metadata; memory still uses the global preset. */
+/** The chat's named preset when it exists; absent, malformed, or deleted ids use the Settings default. */
 export function chatHypaV3Preset(
     presets: HypaV3Preset[] | undefined,
     selectedId: string | undefined,
-    _chat: ChatMemoryInput | null | undefined,
+    chat: ChatMemoryInput | null | undefined,
 ) {
-    return selectedHypaV3Preset({ hypaV3Presets: presets, hypaV3PresetId: selectedId });
+    const id = chat?.memoryPresetId;
+    const preset = typeof id === "string" ? presets?.find((preset) => preset.id === id) : undefined;
+    return preset ?? selectedHypaV3Preset({ hypaV3Presets: presets, hypaV3PresetId: selectedId });
 }
 
 /** An explicit chat switch wins over the preset default and then the owner's legacy switch. */

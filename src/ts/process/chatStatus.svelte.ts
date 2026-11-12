@@ -1,11 +1,10 @@
-import { chatMemoryAlgorithm, chatMemoryEnabled } from "../../../shared/chatMemory.ts";
+import { chatHypaV3Preset, chatMemoryAlgorithm, chatMemoryEnabled } from "../../../shared/chatMemory.ts";
 import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
 import { untrack } from "svelte";
 import { SvelteMap, SvelteSet } from "svelte/reactivity";
 import { fromStore, get, writable } from "svelte/store";
 import { parseContextReport, type ContextReport } from "../../../shared/contextReport.ts";
 import type { Message } from "../../../shared/database.ts";
-import { selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import {
@@ -277,10 +276,6 @@ function newestMemoryReport(messages: readonly DeepReadonly<Message>[]): NonNull
 
 const healthStates = $derived.by(() => {
     const states = new Map<string, MemoryHealthState>();
-    const preset = selectedHypaV3Preset({
-        hypaV3Presets: settings.hypaV3Presets.items,
-        hypaV3PresetId: settings.hypaV3Presets.selectedId,
-    })?.settings;
     const open = currentChatRef();
     const openKey = open ? chatStatusKey(open) : null;
     for (const key of structuredHealthChatKeys) {
@@ -288,6 +283,11 @@ const healthStates = $derived.by(() => {
         if (!chatMemoryEnabled(chatEntry(ref), findCharacter(ref.chaId), chatMemorySettings())) {
             continue;
         }
+        const preset = chatHypaV3Preset(
+            settings.hypaV3Presets.items,
+            settings.hypaV3Presets.selectedId,
+            chatEntry(ref),
+        )?.settings;
         const entry = healthFacts.get(key) ?? null;
         const facts = entry === "unavailable" ? null : entry;
         const memory = key === openKey ? newestMemoryReport(findChat(ref)?.message ?? []) : null;
@@ -312,7 +312,7 @@ const healthStates = $derived.by(() => {
  * Returns the shared derived health states (`memoryHealthState`) by status key, current even outside
  * a reactive context: the pinned chats and the open chat whose own algorithm is Structured Memory and whose
  * memory switch is on. A chat not loaded is judged from its last read facts, so its stale
- * count is partial and it knows no gap; the open chat adds its newest report's gap against the preset's
+ * count is partial and it knows no gap; the open chat adds its newest report's gap against its own preset's
  * `gapConfirmTokens`, its writer state, and its stale exclusions. An unavailable entry contributes no
  * facts, but those report inputs and the tab's required-over-cap mark still apply and take priority.
  */

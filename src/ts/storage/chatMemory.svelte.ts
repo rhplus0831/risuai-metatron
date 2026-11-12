@@ -33,6 +33,12 @@ export function setChatMemoryMode(ref: ChatRef, mode: ChatMemoryFields["memoryMo
     else setChatMeta(ref, { memoryMode: mode });
 }
 
+/** Store a preset choice; Default unsets it, including on an unloaded chat's list entry. */
+export function setChatMemoryPreset(ref: ChatRef, id: string | undefined) {
+    if (id === undefined) setChatMeta(ref, {}, ["memoryPresetId"]);
+    else setChatMeta(ref, { memoryPresetId: id });
+}
+
 /** A new chat inherits its source's memory choices independently of the model binding preference. */
 export function initialChatMemory(chaId: string): ChatMemoryFields {
     return untrack(() => {

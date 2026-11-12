@@ -532,9 +532,9 @@ export async function importChat() {
          * needed). Every format passes here: each chat keeps only the bound ids that exist here and
          * waits for the user's confirmation before its first send (`importedChatBinding`), and keeps its
          * translator and toggle presets only when they exist here (`importedChatTranslation`,
-         * `importedChatTogglePreset`). `records` holds what the file held of each chat's memory, by the
-         * chat's place in `chats`; the restores run behind the action. Every chat is validated before
-         * the first write, so a refused chat leaves the import unapplied.
+         * `importedChatTogglePreset`). Its memory preset id is kept only when it exists here. `records`
+         * holds what the file held of each chat's memory, by the chat's place in `chats`; the restores run behind
+         * the action. Every chat is validated before the first write, so a refused chat leaves the import unapplied.
          */
         const addChats = (chats: Chat[], records: (StructuredMemoryFileRecords | undefined)[] = []) => {
             chats.forEach(validateChatInput);
@@ -546,6 +546,9 @@ export async function importChat() {
                     importedChatBinding(chat);
                     importedChatTranslation(chat);
                     importedChatTogglePreset(chat);
+                    if (!settings.hypaV3Presets.items.some((preset) => preset.id === chat.memoryPresetId)) {
+                        delete chat.memoryPresetId;
+                    }
                     const { id, name } = createChat(chaId, chat, { index });
                     if (records[index]) {
                         restores.push({ chatId: id, name, records: records[index] });

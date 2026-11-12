@@ -1,4 +1,4 @@
-import { chatMemoryAlgorithm } from "../../../shared/chatMemory.ts";
+import { chatHypaV3Preset, chatMemoryAlgorithm } from "../../../shared/chatMemory.ts";
 import type { RerollAttemptWrite } from "./chatStore.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
@@ -15,7 +15,6 @@ import type {
     ChatSummary,
 } from "../../../shared/chats.ts";
 import type { Message } from "../../../shared/database.ts";
-import { selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import { HIDDEN_HYDRATION_KINDS } from "../../../shared/jobs.ts";
 import type { HypaV3Preset } from "../../../shared/memory.ts";
 import {
@@ -2309,19 +2308,20 @@ export function createResourceStore(options: {
                 return memoryTables.readHealth(refs, budgetBytes);
             },
             /**
-             * The selected memory preset's writer settings, from the stored preset collection in one row
+             * The chat's memory preset writer settings, from the stored preset collection in one row
              * read, every field filled; the defaults with no preset. For a reader with no job scope.
              */
-            readWriterSettings(): StructuredMemorySettings {
+            readWriterSettings(memoryPresetId?: unknown): StructuredMemorySettings {
                 assertOpen();
                 const row = selectOne.get(RESOURCE_KIND.hypaV3Presets, SINGLETON_RESOURCE_ID) as
                     { data: string } | undefined;
                 const record: unknown = row ? JSON.parse(row.data) : undefined;
                 const { items, selectedId } = isPlainObject(record) ? record : {};
-                const preset = selectedHypaV3Preset({
-                    hypaV3Presets: Array.isArray(items) ? (items as HypaV3Preset[]) : [],
-                    ...(typeof selectedId === "string" ? { hypaV3PresetId: selectedId } : {}),
-                });
+                const preset = chatHypaV3Preset(
+                    Array.isArray(items) ? (items as HypaV3Preset[]) : [],
+                    typeof selectedId === "string" ? selectedId : undefined,
+                    { memoryPresetId },
+                );
                 return normalizeStructuredMemorySettings(preset?.settings?.structured);
             },
             /**

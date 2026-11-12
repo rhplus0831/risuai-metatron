@@ -182,3 +182,68 @@ it.each(["loaded", "unloaded"])("stores explicit modes and unsets Legacy for a %
     flushSync();
     expect(select.options[0].textContent).toBe(language.chatMemory.legacy(language.structuredMemory.name));
 });
+
+it.each(["loaded", "unloaded"])(
+    "selects, clears and preserves a deleted memory preset for a %s chat",
+    async (state) => {
+        const { createHypaV3Preset } = await import("../../../shared/hypaV3Presets.ts");
+        const { settings } = await import("src/ts/storage/settingsViews.svelte");
+        const { language } = await import("src/lang");
+        settings.hypaV3Presets.items = [
+            createHypaV3Preset("Settings preset", {}, "default"),
+            createHypaV3Preset("Chat preset", {}, "personal"),
+        ];
+        settings.hypaV3Presets.selectedId = "default";
+        const server = transport.server!;
+        if (state === "loaded") {
+            release = chats.pinChat(ref);
+            await chats.loadChat(ref);
+        }
+        const target = document.createElement("div");
+        document.body.append(target);
+        instance = mount(ChatMemoryPanel, { target, props: { chatRef: ref } });
+        flushSync();
+        const select = [...target.querySelectorAll("select")].find((control) =>
+            [...control.options].some((option) => option.textContent === "Chat preset"),
+        )!;
+        const persist = () => {
+            const work = chats.takeChatWork(new Set());
+            const result = server.store.applyChanges({ chats: work.groups, chatOrders: work.orders });
+            chats.ackChatWork(work, result.chats, result.chatOrders);
+            return server.chat("c", "k")!.data;
+        };
+        const choose = (label: string) => {
+            select.value = [...select.options].find((option) => option.textContent === label)!.value;
+            select.dispatchEvent(new Event("change", { bubbles: true }));
+            flushSync();
+        };
+        const defaultLabel = language.chatMemory.defaultPreset("Settings preset");
+        expect([...select.options].map((option) => option.textContent)).toEqual([
+            defaultLabel,
+            "Settings preset",
+            "Chat preset",
+        ]);
+        expect(select.selectedIndex).toBe(0);
+        choose("Chat preset");
+        expect(persist()).toHaveProperty("memoryPresetId", "personal");
+        expect(chats.chatEntry(ref)).toHaveProperty("memoryPresetId", "personal");
+        choose(defaultLabel);
+        expect(persist()).not.toHaveProperty("memoryPresetId");
+        expect(chats.chatEntry(ref)).not.toHaveProperty("memoryPresetId");
+        choose("Chat preset");
+        persist();
+        settings.hypaV3Presets.items = settings.hypaV3Presets.items.filter(({ id }) => id !== "personal");
+        flushSync();
+        // Svelte reselects after the option list changes in a MutationObserver callback.
+        await Promise.resolve();
+        flushSync();
+        expect(select.options[select.selectedIndex].textContent).toBe(language.chatMemory.deletedPreset("personal"));
+        expect(select.options[0].textContent).toBe(defaultLabel);
+        expect(persist()).toHaveProperty("memoryPresetId", "personal");
+        expect(chats.chatEntry(ref)).toHaveProperty("memoryPresetId", "personal");
+        expect(settings.hypaV3Presets.selectedId).toBe("default");
+        expect(server.chat("c", "sibling")!.data).not.toHaveProperty("memoryPresetId");
+        if (state === "unloaded") expect(chats.findChat(ref)).toBeUndefined();
+        else expect(chats.findChat(ref)).toHaveProperty("memoryPresetId", "personal");
+    },
+);

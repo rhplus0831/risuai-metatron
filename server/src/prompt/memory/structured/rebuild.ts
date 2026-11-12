@@ -443,7 +443,7 @@ export async function memoryWorkCost(
         return null;
     }
     // A route has no job scope, so the preset's screening is read from the store.
-    const { screening } = store.memory.readWriterSettings();
+    const { screening } = store.memory.readWriterSettings(chat.memoryPresetId);
     if (mode !== "record") {
         const listed = store.memory.readContents(chaId, chatId)?.events ?? [];
         const events = listed.flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "events", id)?.data ?? []);

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+    chatHypaV3Preset,
     chatMemoryAlgorithm,
     chatMemoryEnabled,
     legacyMemoryAlgorithm,
@@ -67,7 +68,7 @@ describe("chat memory resolution", () => {
         expect(chatMemoryEnabled({ memoryEnabled: true }, { supaMemory: false }, { supaModelType: "none" })).toBe(true);
     });
 
-    it("reads a malformed switch as absent without activating stored mode, preset, or connection", () => {
+    it("reads a malformed switch as absent, so the chat's mode and preset decide the default", () => {
         for (const memoryEnabled of ["false", 0, null, {}]) {
             const chat = {
                 memoryEnabled,
@@ -77,9 +78,45 @@ describe("chat memory resolution", () => {
             };
             expect(chatMemoryEnabled(chat, { supaMemory: true }, { supaModelType: "none" })).toBe(true);
             expect(chatMemoryEnabled(chat, { supaMemory: false }, { ...automatic, hypaV3PresetId: "manual" })).toBe(
-                false,
+                true,
             );
+            expect(
+                chatMemoryEnabled(
+                    { ...chat, memoryPresetId: "manual" },
+                    { supaMemory: false },
+                    { ...automatic, hypaV3: true },
+                ),
+            ).toBe(false);
             expect(chatMemoryEnabled(chat, { supaMemory: false }, { ...automatic, hypaV3: true })).toBe(true);
         }
     });
+});
+
+it("resolves an existing chat preset and falls back for absent, malformed and deleted ids without rewriting them", () => {
+    for (const [memoryPresetId, expectedId] of [
+        ["manual", "manual"],
+        [undefined, "automatic"],
+        [7, "automatic"],
+        ["deleted", "automatic"],
+    ] as const) {
+        const chat = memoryPresetId === undefined ? {} : { memoryPresetId };
+        const before = structuredClone(chat);
+        expect(chatHypaV3Preset(presets, "automatic", chat)?.id).toBe(expectedId);
+        expect(chat).toEqual(before);
+    }
+});
+
+it("uses the chat preset's alwaysToggleOn for both memory algorithms", () => {
+    for (const memoryMode of ["hypaV3", "structuredMemory"]) {
+        expect(chatMemoryEnabled({ memoryMode, memoryPresetId: "manual" }, { supaMemory: false }, automatic)).toBe(
+            false,
+        );
+        expect(
+            chatMemoryEnabled(
+                { memoryMode, memoryPresetId: "automatic" },
+                { supaMemory: false },
+                { ...automatic, hypaV3PresetId: "manual" },
+            ),
+        ).toBe(true);
+    }
 });

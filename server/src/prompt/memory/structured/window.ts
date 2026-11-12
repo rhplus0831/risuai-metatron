@@ -73,7 +73,7 @@ export type ConfirmedMessage = { id: string; message: Message; index: number };
 /** Where windows stop: before the message `id`, or through it when a press confirmed it (`inclusive`). */
 export type WriterCeiling = { id: string; inclusive: boolean };
 
-/** The selected memory preset's cadence and screening settings. */
+/** The scope's chat memory preset supplies cadence and screening settings. */
 export function writerCadence(db: Parameters<typeof selectedHypaV3Preset>[0]): WriterCadence {
     const settings = selectedHypaV3Preset(db)?.settings;
     const { cadence, cadenceTurns, cadenceTokens, cadenceRatio, screening } = normalizeStructuredMemorySettings(

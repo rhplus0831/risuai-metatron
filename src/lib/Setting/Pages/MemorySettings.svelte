@@ -1,6 +1,7 @@
 <script lang="ts">
-    import { legacyMemoryAlgorithm } from "../../../../shared/chatMemory.ts";
-    import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
+    import { chatHypaV3Preset, legacyMemoryAlgorithm } from "../../../../shared/chatMemory.ts";
+    import { chatMemorySettings, setChatMemoryPreset } from "src/ts/storage/chatMemory.svelte";
+    import { chatEntry, currentChatRef, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { activeMainProfile, settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
@@ -25,11 +26,7 @@
     import { PlusIcon, PencilIcon, TrashIcon, DownloadIcon, HardDriveUploadIcon } from "@lucide/svelte";
     import { alertError, alertInput, alertConfirm, alertNormal } from "src/ts/alert";
     import { createHypaV3Preset } from "src/ts/process/memory/hypav3";
-    import {
-        resolveHypaV3Budget,
-        selectedHypaV3Preset,
-        type HypaV3BudgetReduction,
-    } from "../../../../shared/hypaV3Presets.ts";
+    import { resolveHypaV3Budget, type HypaV3BudgetReduction } from "../../../../shared/hypaV3Presets.ts";
     import { maxContextOverrideOf } from "../../../../shared/sections.ts";
     import {
         VOYAGE_CONTEXT_MODELS,
@@ -62,7 +59,8 @@
      * Handwritten memory providers, presets, and embedding model, with registry controls from
      * `src/ts/setting/memorySettingsData.ts`; owns `supaMemoryKey` and the HypaV3 budget controls.
      * The global algorithm selects settings for Legacy chats. HypaV3 and Structured Memory are always
-     * available, with one shared preset picker, budget mode, and memory maximum.
+     * available, with one shared preset picker, budget mode, and memory maximum. The open chat's
+     * existing memory preset is edited in place; otherwise the page edits the Settings default.
      */
 
     const currentCharacter = $derived(selectedCharacter());
@@ -87,13 +85,26 @@
         if (revealMemoryKey) void scrollToCredential("supaMemoryKey");
     });
 
-    // HypaV3: the selected preset, by id (`hypaV3PresetId`); the first one when that id is gone.
+    const openChatRef = $derived(currentChatRef());
+    const openChat = $derived(openChatRef ? chatEntry(openChatRef) : undefined);
+    // Return the stored record: the controls and effects edit its settings in place.
     const currentHypaV3 = $derived(
-        selectedHypaV3Preset({
-            hypaV3Presets: settings.hypaV3Presets.items,
-            hypaV3PresetId: settings.hypaV3Presets.selectedId,
-        }),
+        chatHypaV3Preset(settings.hypaV3Presets.items, settings.hypaV3Presets.selectedId, openChat),
     );
+    const chatOwnsPreset = $derived(
+        openChatRef !== null && currentHypaV3 !== undefined && openChat?.memoryPresetId === currentHypaV3.id,
+    );
+    type PresetTarget = { kind: "chat"; ref: ChatRef } | { kind: "default" };
+    function presetTarget(): PresetTarget {
+        return chatOwnsPreset && openChatRef ? { kind: "chat", ref: { ...openChatRef } } : { kind: "default" };
+    }
+    function selectMemoryPreset(id: string, target: PresetTarget = presetTarget()) {
+        if (target.kind === "chat") {
+            if (chatEntry(target.ref)) setChatMemoryPreset(target.ref, id);
+        } else {
+            settings.hypaV3Presets.selectedId = id;
+        }
+    }
 
     $effect(() => {
         const settings = currentHypaV3?.settings;
@@ -328,15 +339,15 @@
 </script>
 
 {#snippet presetPicker()}
-    <span class="text-textcolor">Preset</span>
+    <span class="text-textcolor">{language.chatMemory.preset}</span>
+    {#if chatOwnsPreset}
+        <span class="mb-2 text-sm text-textcolor2" data-chat-memory-preset-note
+            >{language.chatMemory.editingChatPreset}</span
+        >
+    {/if}
     <select
         class={"risu-select border border-darkborderc focus:border-borderc rounded-md shadow-xs text-textcolor bg-transparent focus:ring-borderc focus:ring-2 focus:outline-hidden transition-colors duration-200 text-md px-4 py-2 mb-1"}
-        bind:value={
-            () => currentHypaV3?.id,
-            (value) => {
-                settings.hypaV3Presets.selectedId = value;
-            }
-        }
+        bind:value={() => currentHypaV3?.id, (value) => selectMemoryPreset(value)}
     >
         {#each settings.hypaV3Presets.items as preset (preset.id)}
             <option class="bg-darkbg appearance-none" value={preset.id}>{preset.name}</option>
@@ -349,7 +360,7 @@
             onclick={() => {
                 const newPreset = createHypaV3Preset("New Preset", { budgetMode: "tokens" });
                 settings.hypaV3Presets.items.push(newPreset);
-                settings.hypaV3Presets.selectedId = newPreset.id;
+                selectMemoryPreset(newPreset.id);
             }}
         >
             <PlusIcon size={24} />
@@ -447,6 +458,7 @@
             class="mr-2 text-textcolor2 hover:text-green-500 cursor-pointer"
             onclick={async () => {
                 try {
+                    const target = presetTarget();
                     const file = await selectSingleFile(["json"]);
                     if (!file) return;
                     const bytesImport = file.data;
@@ -462,7 +474,7 @@
                         objImport.data.settings || {},
                     );
                     settings.hypaV3Presets.items.push(newPreset);
-                    settings.hypaV3Presets.selectedId = newPreset.id;
+                    selectMemoryPreset(newPreset.id, target);
 
                     alertNormal(language.successImport);
                 } catch (error) {
@@ -933,6 +945,7 @@
         <TextAreaInput
             size="sm"
             placeholder={text.screeningPlaceholder}
+            popupEditorContext={currentHypaV3?.id}
             bind:value={
                 () => screeningText(structured, "refusal"),
                 (value) => setScreening(preset, structured, "refusal", value)
@@ -944,6 +957,7 @@
         <TextAreaInput
             size="sm"
             placeholder={text.screeningPlaceholder}
+            popupEditorContext={currentHypaV3?.id}
             bind:value={
                 () => screeningText(structured, "format"), (value) => setScreening(preset, structured, "format", value)
             }
