@@ -232,10 +232,11 @@ export function readsAsPast(texts: readonly string[]): boolean {
 
 /**
  * The texts embedded for `event`, summary and key lines alike. The writer warms these same texts
- * (`warmRecords` in `writer.ts`), so the vectors it warms are the ones read here.
+ * (`warmRecords` in `writer.ts`), so the vectors it warms are the ones read here. An event without
+ * `keyLines`, as a row loaded from a snapshot may be, gives its summary alone.
  */
 export function eventVectorTexts({ summary, keyLines }: Pick<MemoryEvent, "summary" | "keyLines">): string[] {
-    const texts = [summary, ...keyLines.map(({ text }) => text)].map((text) => text.trim());
+    const texts = [summary, ...(keyLines ?? []).map(({ text }) => text)].map((text) => text.trim());
     return [...new Set(texts)].filter(Boolean);
 }
 
@@ -422,7 +423,7 @@ function flowItems(
             line: flowLine(event, Math.max(1, turnsAgo)),
         };
         if (fullSet.has(placed)) {
-            const keyLines = full.length < flowKeyLineEvents ? event.keyLines : [];
+            const keyLines = full.length < flowKeyLineEvents ? (event.keyLines ?? []) : [];
             full.push({
                 ...title,
                 reason: "timeline",

@@ -96,15 +96,19 @@ export function flowLine({ id, title }: Pick<MemoryEvent, "id" | "title">, turns
     return taggedLine({ lane: "flow", id }, `${turnsAgo} ${turnsAgo === 1 ? "turn" : "turns"} ago: ${title}`);
 }
 
-/** The shared body of a full event, with its story time when present and its supplied key lines. */
+/**
+ * The shared body of a full event, with its story time when present and its supplied key lines. An event
+ * loaded from a snapshot may lack either (`checkMemoryRow` checks a row's columns, not its record's
+ * shape), which reads as none.
+ */
 function eventBody({
     storyTime,
     title,
     summary,
     keyLines,
 }: Pick<MemoryEvent, "storyTime" | "title" | "summary" | "keyLines">): string {
-    const time = flattened(storyTime.text);
-    const lines = keyLines.map(({ text, speaker }) => {
+    const time = flattened(storyTime?.text ?? "");
+    const lines = (keyLines ?? []).map(({ text, speaker }) => {
         const said = flattened(speaker);
         return ` "${flattened(text)}"${said && ` (${said})`}`;
     });

@@ -148,6 +148,15 @@ describe("structured memory card", () => {
         }
     });
 
+    it("renders an event loaded without story time or key lines as its title and summary", () => {
+        // A snapshot's row is checked by its columns, so its record can lack both.
+        const loaded = { id: "gate", title: "Gate opened", summary: "Ada unlocked the gate." } as Parameters<
+            typeof eventLine
+        >[0];
+        expect(eventLine(loaded)).toBe("[m:gate] Gate opened: Ada unlocked the gate.");
+        expect(flowEventLine(loaded, 1)).toBe("[m:flow:gate] 1 turn ago: Gate opened: Ada unlocked the gate.");
+    });
+
     it("keeps the title-only heading, exact legacy text and last-admitted trimming when the flow target is zero", async () => {
         const titles = [
             { ...candidate("flow", "newest", "[m:flow:newest] 2 turns ago: Promise", 2), reason: "recent" },

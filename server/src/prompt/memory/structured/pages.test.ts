@@ -564,6 +564,22 @@ it("merges references onto the target and trashes the source with an eventless h
     expect(event.participants).toEqual(["source", "target"]);
 });
 
+it("merges an event loaded without participants and leaves it without them", () => {
+    // A snapshot's row is checked by its columns, so its record can lack them.
+    const loaded: Partial<MemoryEvent> = {
+        ...memoryRecords(["event"]).events[0],
+        createdRevision: 1,
+        speakerId: "source",
+    };
+    delete loaded.participants;
+    const result = applyPageTool(
+        toolRecords([page("source"), page("target")], [loaded as MemoryEvent]),
+        { kind: "merge", sourceId: "source", targetId: "target" },
+        { now: 200, newId: () => "merge-history" },
+    );
+    expect(result.changes.events).toStrictEqual([{ ...loaded, speakerId: "target" }]);
+});
+
 it("splits selected sections and aliases into a reshaped page while leaving event references on the original", () => {
     const source = page("source", { aliases: ["Port", "Quay"], contextMode: "always", grade: 4, gradeByUser: true });
     const moved = { ...source.sections[0], heading: "Harbor", body: "At the waterfront", locked: true };

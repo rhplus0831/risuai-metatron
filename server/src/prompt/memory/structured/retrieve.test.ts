@@ -750,6 +750,36 @@ describe("structured memory retrieval", () => {
         expect(countedLines.toSorted()).toEqual([...costs.keys()].toSorted());
     });
 
+    it("retrieves an event loaded without story time, key lines, or participants", async () => {
+        const h = harness();
+        // A snapshot's row is checked by its columns, so its record can lack all three.
+        const bare: Partial<MemoryEvent> = event("bare", ["bare"], { title: "Arrival", summary: "Reached the gate." });
+        delete bare.storyTime;
+        delete bare.keyLines;
+        delete bare.participants;
+        const loaded = bare as MemoryEvent;
+        expect(eventVectorTexts(loaded)).toEqual(["Reached the gate."]);
+        const result = await retrieveLanes(
+            h.host,
+            input({
+                entries: [entry("bare"), entry("query", "What happened before?", "user"), entry("reply")],
+                events: [loaded],
+                stage: ["Ada"],
+                settings: settings({
+                    flowEvents: 1,
+                    flowKeyLineEvents: 1,
+                    laneTargets: { flow: 1000, pages: 0, events: 1000, evidence: 0, threads: 0 },
+                }),
+            }),
+        );
+        expect(result.lanes.find(({ lane }) => lane === "flow")!.flow!.full.map(({ line }) => line)).toEqual([
+            "[m:flow:bare] 2 turns ago: Arrival: Reached the gate.",
+        ]);
+        expect(items(result, "events").map(({ reason, line }) => [reason, line])).toEqual([
+            ["similarity", "[m:bare] Arrival: Reached the gate."],
+        ]);
+    });
+
     it("keeps scene attendance and every required section stable while filtering character sections in related pages", async () => {
         const h = harness((text) => (text.includes(": ") ? [0, 1] : [1, 0]));
         const result = await retrieveLanes(

@@ -351,3 +351,6 @@ group: no walk reads them.
 
 - The limits are starting values. Only `keyLinesPerEvent`, `pageCandidates`, `consecutiveFailures`, `axisMax`,
   `gradeMax`, `importantEventGrade`, and `dedupeSimilarity` are design numbers.
+- A loaded event can lack `storyTime`, `keyLines`, or `participants`, since `checkMemoryRow` checks a row's columns
+  only. The server's readers take them as empty (`eventBody`, `eventVectorTexts`, `remappedEvent`); a new reader must
+  too.

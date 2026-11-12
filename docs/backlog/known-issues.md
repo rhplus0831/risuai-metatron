@@ -36,9 +36,11 @@ Guide: [Structured Memory Records](../structure/structured-memory/records.md#kno
     served whatever its size. Measuring each record's serialized size inside the round cost 1.6 to 1.8 ms on a 10 to
     12 ms `/package` round of 500 ordinary events (about 18%), so it was not added.
   - `checkMemoryRow` checks a row's columns, not its record's shape, so an event without `storyTime`, `keyLines`, or
-    `participants` loads, where the chat-file restore (`restore.ts`) refuses it. `eventBody` in `card.ts` then throws
-    while a send builds its card (`storyTime.text`, `keyLines.map`), and `remappedEvent` in `pages.ts` throws on a
-    page merge (`participants`). The tab's readers supply these fields. The server has never written such an event.
+    `participants` loads, where the chat-file restore (`restore.ts`) refuses it. The server's readers take those three
+    as empty by the owner's decision of 2026-11-12 (`eventBody` in `card.ts`, `eventVectorTexts` and the timeline's
+    full lines in `retrieve.ts`, `remappedEvent` in `pages.ts`), and the tab's readers supply them. Still open: an
+    event's other parts (`summary`, `stateChanges`, `knowledge`, `relationshipShifts`, `openThreads`, `sources`) and a
+    part of the wrong type are read as written, and the tab's package export (`renderMemoryTimeline`) iterates
+    `keyLines` unguarded; none was run. The server has never written such an event.
 
-  Not fixed: the owner has not yet chosen between holding loaded rows to the restore's record shapes (one malformed
-  row then refuses the whole load), tolerating absent fields in the server's readers, or keeping both as Limitations.
+  Not fixed: the byte charge, since measuring costs every round; the owner has not said whether it is a Limitation.

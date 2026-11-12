@@ -954,7 +954,10 @@ function remappedIds(list: readonly string[], from: string, to: string): string[
     return list.includes(from) ? [...new Set(list.map((id) => (id === from ? to : id)))] : null;
 }
 
-/** `event` with every page reference to `from` on `to`, or null when it holds none. */
+/**
+ * `event` with every page reference to `from` on `to`, or null when it holds none. An event without
+ * `participants`, as a row loaded from a snapshot may be, stays without them.
+ */
 function remappedEvent(event: MemoryEvent, from: string, to: string): MemoryEvent | null {
     let changed = false;
     const list = (ids: string[]): string[] => {
@@ -972,7 +975,7 @@ function remappedEvent(event: MemoryEvent, from: string, to: string): MemoryEven
     };
     const mapped: MemoryEvent = {
         ...event,
-        participants: list(event.participants),
+        ...(event.participants ? { participants: list(event.participants) } : {}),
         stateChanges: event.stateChanges.map((change) => ({ ...change, pageId: one(change.pageId) })),
         knowledge: event.knowledge.map((item) => ({
             ...item,
