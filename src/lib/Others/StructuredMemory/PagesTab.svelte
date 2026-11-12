@@ -35,6 +35,7 @@
         MEMORY_CONTEXT_MODES,
         MEMORY_FIND_HITS_MAX,
         MEMORY_FIND_QUERY_CHARS,
+        memoryThreadEnded,
         STRUCTURED_MEMORY_LIMITS,
         type MemoryContextMode,
         type MemoryPage,
@@ -63,9 +64,15 @@
      * links show disabled ids, and sending disables live links. A title-only filter narrows the tree before
      * grouping and resets its row limit when changed; the trash stays unfiltered. Search text submits
      * that input, including in chats with only events, and replaces the tree with bounded plain-text hits
-     * until the trimmed input changes. Active searches rerun on refresh. Both detail views offer a closed
-     * events-naming-this-page row, read once per selection and refresh when opened, in source order with
-     * unknown positions last. Chat, selection, refresh, and read-number guards discard old answers.
+     * until the trimmed input changes. Active searches rerun on refresh.
+     *
+     * One page lookup per selection and refresh answers what the events and threads say of the page.
+     * Read asks for it at once and shows, each only when it has rows: what the page knows or believes,
+     * the newest relationship shift per other page and direction, the threads naming it, and the events
+     * naming it. Manage keeps the events alone behind a closed row and asks when it opens. The event list
+     * is newest first with unknown positions last, and shows the newest `RECENT_EVENTS` and every event
+     * graded important until a person asks for all, so a page every event names stays short. Chat,
+     * selection, refresh, and read-number guards discard old answers.
      *
      * An open section editor keeps its base body. A read or revert that changes that body closes the editor
      * with `changed`, so an old draft cannot replace new writer text. Read-only keeps the draft and disables
@@ -105,7 +112,11 @@
     /** The rows a list renders at once; a long chat stays cheap behind "show more". */
     const ROWS_AT_ONCE = 200;
     const FLAGS = ["disputed", "unsupported", "userCorrected"] as const;
-    const { sectionBodyChars, gradeMax, labelChars, aliasesPerPage } = STRUCTURED_MEMORY_LIMITS;
+    const { sectionBodyChars, gradeMax, labelChars, aliasesPerPage, importantEventGrade } = STRUCTURED_MEMORY_LIMITS;
+    /** The newest events a page's list shows before a person asks for all of them. */
+    const RECENT_EVENTS = 5;
+    /** The facts a page's knowledge list shows before a person asks for all of them. */
+    const FACTS_AT_ONCE = 8;
     const GRADES = Array.from({ length: gradeMax + 1 }, (_, grade) => grade);
     /** What makes a lore entry inactive, read by the lore activation as a decorator. */
     const LORE_INACTIVE = "@@dont_activate";
@@ -113,6 +124,7 @@
     const text = language.structuredMemory.pages;
     const toolText = text.tools;
     const panelText = language.structuredMemory.panel;
+    const threadText = language.structuredMemory.threads;
     const revertText = language.structuredMemory.revert;
     const unsupportedText = text.unsupported;
     let preserve = $state(true);
@@ -170,6 +182,8 @@
     let searchNumber = 0;
     let searchRead: number | null = null;
     let namingOpen = $state(false);
+    let namingAll = $state(false);
+    let knowledgeAll = $state(false);
     let namingResult = $state.raw<FindResult | null>(null);
     let namingFailure = $state<string | null>(null);
     let namingNumber = 0;
@@ -194,11 +208,41 @@
     const normalizedQuery = $derived(trimmedQuery.toLowerCase());
     const queryFits = $derived(trimmedQuery.length > 0 && trimmedQuery.length <= MEMORY_FIND_QUERY_CHARS);
     const showingSearch = $derived(only !== "unsupported" && searched !== null && trimmedQuery === searched);
-    const namingEvents = $derived(
-        (namingResult?.hits ?? [])
-            .filter((hit) => hit.kind === "event")
-            .toSorted((a, b) => (a.sourceIndex ?? Infinity) - (b.sourceIndex ?? Infinity)),
+    /** Newest first, as `findStructuredMemory` answers a page lookup. */
+    const namingEvents = $derived((namingResult?.hits ?? []).filter((hit) => hit.kind === "event"));
+    const shownNamingEvents = $derived(
+        namingAll
+            ? namingEvents
+            : namingEvents.filter(
+                  ({ mention }, index) => index < RECENT_EVENTS || (mention?.grade ?? 0) >= importantEventGrade,
+              ),
     );
+    /** Threads still running first, each group in storage order. */
+    const namingThreads = $derived(
+        (namingResult?.hits ?? [])
+            .filter((hit) => hit.kind === "thread")
+            .toSorted((a, b) => Number(memoryThreadEnded(a.state)) - Number(memoryThreadEnded(b.state))),
+    );
+    const namingKnowledge = $derived(
+        namingEvents.flatMap(({ id, title, mention }) =>
+            (mention?.knowledge ?? []).map((item) => ({ ...item, eventId: id, eventTitle: title })),
+        ),
+    );
+    /** The newest shift of each direction with each other page. */
+    const namingShifts = $derived.by(() => {
+        const newest = new Map<string, { other: string; incoming: boolean; direction: string; note: string }>();
+        for (const { mention } of namingEvents) {
+            for (const { from, to, direction, note } of mention?.shifts ?? []) {
+                const incoming = to === selectedId;
+                const other = incoming ? from : to;
+                const key = `${incoming ? "in" : "out"}:${other}`;
+                if (!newest.has(key)) {
+                    newest.set(key, { other, incoming, direction, note });
+                }
+            }
+        }
+        return [...newest.values()];
+    });
     const listedPages = $derived(
         only === "unsupported"
             ? (contents?.pages ?? []).filter(({ id }) => unsupportedIds.has(id))
@@ -329,7 +373,25 @@
         }
     }
 
-    /** Closed rows cache their answer until the next selection or refresh. */
+    /**
+     * A body as runs of lines, so Read can dim code's "(was: ...)" record of a replaced value: a body
+     * without one is a single run, shown as before.
+     */
+    function bodyParts(body: string): { text: string; was: boolean }[] {
+        const parts: { text: string; was: boolean }[] = [];
+        for (const line of body.split("\n")) {
+            const was = /^\s*\(was:/.test(line);
+            const last = parts.at(-1);
+            if (last && last.was === was) {
+                last.text += `\n${line}`;
+            } else {
+                parts.push({ text: line, was });
+            }
+        }
+        return parts;
+    }
+
+    /** One answer serves Read's blocks and Manage's row until the next selection or refresh. */
     async function readNamingEvents(id: string) {
         const ref = chatRef;
         const atRefresh = refresh;
@@ -514,6 +576,8 @@
         untrack(() => {
             namingNumber += 1;
             namingOpen = false;
+            namingAll = false;
+            knowledgeAll = false;
             namingResult = null;
             namingFailure = null;
             namingRead = null;
@@ -523,7 +587,7 @@
     $effect(() => {
         const id = selectedId;
         const atRefresh = refresh;
-        if (namingOpen && id !== null) {
+        if ((namingOpen || effectiveView === "read") && id !== null) {
             untrack(() => {
                 if (namingRead !== atRefresh) {
                     void readNamingEvents(id);
@@ -1598,6 +1662,44 @@
     {/if}
 {/snippet}
 
+{#snippet namingEventList()}
+    <ul class="flex flex-col items-start min-w-0 gap-1">
+        {#each shownNamingEvents as event (event.id)}
+            <li class="flex flex-wrap items-center min-w-0 max-w-full gap-2">
+                <MemoryLinkButton
+                    label={event.title}
+                    disabled={sending}
+                    onclick={() => open({ tab: "timeline", id: event.id })}
+                    data-memory-page-event={event.id}
+                />
+                {#if (event.mention?.grade ?? 0) >= importantEventGrade}
+                    <span class="px-1.5 rounded-sm bg-darkbutton text-textcolor2" data-memory-page-event-important>
+                        {text.eventImportant}
+                    </span>
+                {/if}
+                {#if event.mention?.storyTime}
+                    <span class="text-textcolor2 break-words">{event.mention.storyTime}</span>
+                {/if}
+            </li>
+        {:else}
+            <li class="text-textcolor2">{text.eventsNamingNone}</li>
+        {/each}
+    </ul>
+    {#if namingAll || shownNamingEvents.length < namingEvents.length}
+        <button
+            type="button"
+            class="self-start transition-colors text-textcolor2 hover:text-textcolor"
+            onclick={() => (namingAll = !namingAll)}
+            data-memory-page-events-all
+        >
+            {namingAll ? text.showFewer : text.showAll(namingEvents.length)}
+        </button>
+    {/if}
+    {#if namingResult?.more}
+        <p class="text-textcolor2" data-memory-page-events-more>{text.eventsMore(MEMORY_FIND_HITS_MAX)}</p>
+    {/if}
+{/snippet}
+
 {#snippet eventsNamingPage()}
     <div class="flex flex-col min-w-0 gap-2" data-memory-page-events>
         <button
@@ -1619,26 +1721,101 @@
             {:else if namingResult === null}
                 <p class="text-textcolor2">{panelText.loading}</p>
             {:else}
-                <ul class="flex flex-col items-start min-w-0 gap-1">
-                    {#each namingEvents as event (event.id)}
-                        <li class="min-w-0 max-w-full">
-                            <MemoryLinkButton
-                                label={event.title}
-                                disabled={sending}
-                                onclick={() => open({ tab: "timeline", id: event.id })}
-                                data-memory-page-event={event.id}
-                            />
-                        </li>
-                    {:else}
-                        <li class="text-textcolor2">{text.eventsNamingNone}</li>
-                    {/each}
-                </ul>
-                {#if namingResult.more}
-                    <p class="text-textcolor2" data-memory-page-events-more>{text.findMore(MEMORY_FIND_HITS_MAX)}</p>
-                {/if}
+                {@render namingEventList()}
             {/if}
         {/if}
     </div>
+{/snippet}
+
+{#snippet pageMentions()}
+    {#if namingFailure !== null}
+        <p role="alert" class="text-draculared" data-memory-page-events-failure>{namingFailure}</p>
+    {:else if namingResult === null}
+        <p class="text-textcolor2">{panelText.loading}</p>
+    {:else}
+        {#if namingKnowledge.length > 0}
+            <section class="flex flex-col min-w-0 gap-1 break-words" data-memory-page-knowledge>
+                <h3 class="font-semibold">{text.knowledge}</h3>
+                <ul class="flex flex-col min-w-0 gap-1">
+                    {#each knowledgeAll ? namingKnowledge : namingKnowledge.slice(0, FACTS_AT_ONCE) as item}
+                        <li class="flex flex-wrap items-center min-w-0 gap-2">
+                            <span class="min-w-0 whitespace-pre-wrap">{item.fact}</span>
+                            {#if item.stance === "believes"}
+                                <span class="px-1.5 rounded-sm bg-darkbutton text-textcolor2">{text.believes}</span>
+                            {/if}
+                            {#if item.secret}
+                                <span class="px-1.5 rounded-sm bg-darkbutton text-textcolor2">{text.secret}</span>
+                            {/if}
+                            <MemoryLinkButton
+                                label={item.eventTitle}
+                                disabled={sending}
+                                onclick={() => open({ tab: "timeline", id: item.eventId })}
+                                data-memory-page-fact-event={item.eventId}
+                            />
+                        </li>
+                    {/each}
+                </ul>
+                {#if namingKnowledge.length > FACTS_AT_ONCE}
+                    <button
+                        type="button"
+                        class="self-start transition-colors text-textcolor2 hover:text-textcolor"
+                        onclick={() => (knowledgeAll = !knowledgeAll)}
+                        data-memory-page-knowledge-all
+                    >
+                        {knowledgeAll ? text.showFewer : text.showAll(namingKnowledge.length)}
+                    </button>
+                {/if}
+            </section>
+        {/if}
+        {#if namingShifts.length > 0}
+            <section class="flex flex-col min-w-0 gap-1 break-words" data-memory-page-shifts>
+                <h3 class="font-semibold">{text.shifts}</h3>
+                <ul class="flex flex-col min-w-0 gap-1">
+                    {#each namingShifts as shift}
+                        <li
+                            class="flex flex-wrap items-center min-w-0 gap-2"
+                            data-memory-page-shift={shift.incoming ? "in" : "out"}
+                        >
+                            <span class="text-textcolor2" aria-label={shift.incoming ? text.shiftIn : text.shiftOut}>
+                                {shift.incoming ? "←" : "→"}
+                            </span>
+                            <MemoryLinkButton
+                                label={pageTitles.get(shift.other) ?? shift.other}
+                                disabled={sending || !pageTitles.has(shift.other)}
+                                onclick={() => select(shift.other)}
+                            />
+                            <span class="min-w-0">{shift.direction}{shift.note ? ` (${shift.note})` : ""}</span>
+                        </li>
+                    {/each}
+                </ul>
+            </section>
+        {/if}
+        {#if namingThreads.length > 0}
+            <section class="flex flex-col min-w-0 gap-1 break-words" data-memory-page-threads>
+                <h3 class="font-semibold">{text.threadsNaming}</h3>
+                <ul class="flex flex-col min-w-0 gap-1">
+                    {#each namingThreads as thread (thread.id)}
+                        <li
+                            class="flex flex-wrap items-center min-w-0 gap-2"
+                            class:text-textcolor2={memoryThreadEnded(thread.state)}
+                            data-memory-page-thread={thread.id}
+                        >
+                            <span class="min-w-0">{thread.title}</span>
+                            <span class="px-1.5 rounded-sm bg-darkbutton text-textcolor2">
+                                {codeText(threadText.states, thread.state)}
+                            </span>
+                        </li>
+                    {/each}
+                </ul>
+            </section>
+        {/if}
+        {#if namingEvents.length > 0}
+            <section class="flex flex-col min-w-0 gap-1 break-words" data-memory-page-events>
+                <h3 class="font-semibold">{text.eventsNaming}</h3>
+                {@render namingEventList()}
+            </section>
+        {/if}
+    {/if}
 {/snippet}
 
 {#snippet pageDetail(page: MemoryPage)}
@@ -1678,11 +1855,16 @@
                         <span class="px-1.5 rounded-sm bg-darkbutton text-textcolor2">{text.locked}</span>
                     {/if}
                 </div>
-                <p class="whitespace-pre-wrap" data-memory-section-body>{section.body}</p>
+                <div data-memory-section-body>
+                    {#each bodyParts(section.body) as part}
+                        <p class="whitespace-pre-wrap" class:text-textcolor2={part.was}>{part.text}</p>
+                    {/each}
+                </div>
             </section>
         {:else}
             <p class="text-textcolor2">{text.noSections}</p>
         {/each}
+        {@render pageMentions()}
     {:else}
         {#if page.type !== "scene" && !inTrash}
             {@render renameControl(page)}
@@ -1771,8 +1953,8 @@
                 {/each}
             </ul>
         {/if}
+        {@render eventsNamingPage()}
     {/if}
-    {@render eventsNamingPage()}
 {/snippet}
 
 {#snippet searchControls()}
@@ -1807,7 +1989,7 @@
             <p class="text-textcolor2">{panelText.loading}</p>
         {:else}
             <ul class="flex flex-col min-w-0 gap-1">
-                {#each searchResult.hits as hit}
+                {#each searchResult.hits.filter((hit) => hit.kind !== "thread") as hit}
                     <li class="min-w-0">
                         <button
                             type="button"

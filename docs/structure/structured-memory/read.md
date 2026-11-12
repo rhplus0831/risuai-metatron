@@ -161,11 +161,12 @@ rounds; `memory_events.seq` is storage order. `memoryTimelineRows` owns message 
 `jump(messageId)` opens the chat with `setChatOpen`, calls `requestMessageJump`, then closes the panel.
 
 A page opens in `read`: its title, type and aliases, its links, and each section with a body as plain text, the marks as
-badges. `manage` is the checking view, with every control, provenance, and the history. The choice lasts while Pages is
-mounted; Evidence missing, a page in the trash, and a jump to a history entry show `manage`. The jump scrolls its row
-once, when both the diff and the history list have rendered; another entry, page, target, or chat drops it. Links name
-live pages by title and select them; an id with no live page is a disabled button. A title filter narrows the tree
-before `memoryPageTree` groups it, so an emptied type loses its header; the trash list is not filtered.
+badges, a `(was: ...)` line dimmed. `manage` is the checking view, with every control, provenance, and the history. The
+choice lasts while Pages is mounted; Evidence missing, a page in the trash, and a jump to a history entry show `manage`.
+The jump scrolls its row once, when both the diff and the history list have rendered; another entry, page, target, or
+chat drops it. Links name live pages by title and select them; an id with no live page is a disabled button. A title
+filter narrows the tree before `memoryPageTree` groups it, so an emptied type loses its header; the trash list is not
+filtered.
 
 The title filter's Search text button or form submit reads `/find?q=...` through `findStructuredMemory`, including in
 chats with events but no pages. The action is disabled for blank or over-100-character trimmed input and while reading.
@@ -175,11 +176,19 @@ and excerpt and select that page; event hits show title and excerpt and open Tim
 or failure has its own line; `more` says the list was cut at `MEMORY_FIND_HITS_MAX` (200). Active searches rerun on
 `refresh`; older answers from another chat, input, read, or refresh cannot replace them. Evidence missing has no search.
 
-Both page detail views, the scene page included, offer a closed Events naming this page disclosure for each selection.
-Opening it reads `/find?page=...` once per selection and `refresh`; an open row rereads when `refresh` moves, and a
-closed one waits for its next open. Event links show their titles in ascending `sourceIndex` order, nulls last, and open
-Timeline. Empty, failure, and truncated reads have their own lines. Selection, chat, refresh, and read-number guards
-discard old answers; search-hit and event-link buttons are disabled while a page edit is pending.
+One page lookup (`/find?page=...`) per selection and `refresh` answers what the chat's events and threads say of the
+page. `read` asks for it on selection and shows four blocks under the sections, each only when it has rows: what the
+page knows or believes (each fact with its event's link, a believed or secret one marked), the newest relationship shift
+per other page and direction, the threads naming it with their states (running ones first), and the events naming it.
+`manage` shows the events alone behind a closed disclosure and asks when it opens; an answer serves both views until the
+selection or `refresh` moves. The page's own `knowledge` and `relationships` sections are the writer's digest, which its
+rules keep short, so these blocks are where a fact recorded only on an event shows.
+
+The event list is newest first, unknown positions last, each row with its story time and an Important mark from
+`importantEventGrade`. It shows the newest `RECENT_EVENTS` (5) and every important event until Show all is pressed, so a
+page every event names stays short. Event links open Timeline. Empty, failure, and truncated reads have their own lines.
+Selection, chat, refresh, and read-number guards discard old answers; search-hit and event-link buttons are disabled
+while a page edit is pending.
 
 An opened Timeline event shows what it changed under its key lines: state changes, knowledge, relationship shifts, and
 thread changes, through `MemoryEventFacts`, the component the Log renders a run's extraction with. Timeline passes the

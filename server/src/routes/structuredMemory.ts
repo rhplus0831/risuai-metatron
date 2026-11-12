@@ -12,9 +12,12 @@ import {
     MEMORY_FIND_QUERY_CHARS,
     MEMORY_HEALTH_CHATS_MAX,
     MEMORY_HEALTH_ROUND_BYTES,
+    MEMORY_KNOWLEDGE_STANCES,
     MEMORY_RECORD_KINDS,
     MEMORY_REVISION_CHATS_MAX,
     MEMORY_RUNS_ROUND_ROWS,
+    MEMORY_THREAD_STATES,
+    STRUCTURED_MEMORY_LIMITS,
     STRUCTURED_MEMORY_PATH,
     STRUCTURED_MEMORY_REBUILD_MODES,
     storedMemorySources,
@@ -40,6 +43,7 @@ import {
     type StructuredMemoryInheritAnswer,
     type StructuredMemoryLogRun,
     type StructuredMemoryPackageRound,
+    type StructuredMemoryPageMention,
     type StructuredMemoryPageToolAnswer,
     type StructuredMemoryProjectionAnswer,
     type StructuredMemoryRecordAnswer,
@@ -258,7 +262,7 @@ function lowerFindText(value: string): { text: string; offsets: number[] } {
 }
 
 /** A bounded display field, with neither edge cutting between the halves of a surrogate pair. */
-function findTextWindow(value: unknown, start = 0): string {
+function findTextWindow(value: unknown, start = 0, max: number = MEMORY_FIND_EXCERPT_CHARS): string {
     if (typeof value !== "string") {
         return "";
     }
@@ -268,11 +272,11 @@ function findTextWindow(value: unknown, start = 0): string {
         value.charCodeAt(index - 1) <= 0xdbff &&
         value.charCodeAt(index) >= 0xdc00 &&
         value.charCodeAt(index) <= 0xdfff;
-    start = Math.max(0, Math.min(start, value.length - MEMORY_FIND_EXCERPT_CHARS));
+    start = Math.max(0, Math.min(start, value.length - max));
     if (splitsPair(start)) {
         start -= 1;
     }
-    let end = Math.min(value.length, start + MEMORY_FIND_EXCERPT_CHARS);
+    let end = Math.min(value.length, start + max);
     if (splitsPair(end)) {
         end -= 1;
     }
@@ -342,15 +346,64 @@ function eventNamesPage(event: Record<string, unknown>, pageId: string): boolean
     );
 }
 
-/** One hit per event; text excerpts prefer summary, then key lines, then the already displayed title. */
+/**
+ * What `event` says of `pageId` for that page's view. A knowledge item counts when the page learned it
+ * or is one of a secret's knowers; a shift counts in either direction. Lists and texts are bounded as
+ * `StructuredMemoryPageMention` says, whatever a restored record holds.
+ */
+function pageMention(event: Record<string, unknown>, pageId: string): StructuredMemoryPageMention {
+    const { factChars, labelChars, knowledgePerEvent, relationshipShiftsPerEvent } = STRUCTURED_MEMORY_LIMITS;
+    const items = (value: unknown) => (Array.isArray(value) ? value.filter(isPlainObject) : []);
+    const knowledge = items(event.knowledge)
+        .flatMap((item): StructuredMemoryPageMention["knowledge"] => {
+            const knowers = Array.isArray(item.knowers) ? item.knowers : [];
+            const stance = MEMORY_KNOWLEDGE_STANCES.find((known) => known === item.stance);
+            return stance !== undefined && (item.pageId === pageId || knowers.includes(pageId))
+                ? [{ fact: findTextWindow(item.fact, 0, factChars), stance, secret: knowers.length > 0 }]
+                : [];
+        })
+        .slice(0, knowledgePerEvent);
+    const shifts = items(event.relationshipShifts)
+        .flatMap(({ from, to, direction, note }): StructuredMemoryPageMention["shifts"] =>
+            typeof from === "string" && typeof to === "string" && (from === pageId || to === pageId)
+                ? [
+                      {
+                          from,
+                          to,
+                          direction: findTextWindow(direction, 0, labelChars),
+                          note: findTextWindow(note, 0, factChars),
+                      },
+                  ]
+                : [],
+        )
+        .slice(0, relationshipShiftsPerEvent);
+    const storyTime = isPlainObject(event.storyTime) ? findTextWindow(event.storyTime.text, 0, labelChars) : "";
+    return { grade: Number.isSafeInteger(event.grade) ? (event.grade as number) : null, storyTime, knowledge, shifts };
+}
+
+/** A thread hit when its `who` names the page. */
+function findThreadHits(id: string, thread: unknown, pageId: string): StructuredMemoryFindHit[] {
+    if (!isPlainObject(thread) || !Array.isArray(thread.who) || !thread.who.includes(pageId)) {
+        return [];
+    }
+    const state = MEMORY_THREAD_STATES.find((known) => known === thread.state);
+    return state === undefined ? [] : [{ kind: "thread", id, title: findTextWindow(thread.title), state }];
+}
+
+/**
+ * One hit per event; text excerpts prefer summary, then key lines, then the already displayed title. A
+ * page lookup's hit carries what the event says of that page.
+ */
 function findEventHits(id: string, event: unknown, query: { q: string } | { page: string }): StructuredMemoryFindHit[] {
     if (!isPlainObject(event)) {
         return [];
     }
     let excerpt: string | null = null;
+    let mention: StructuredMemoryPageMention | undefined;
     if ("page" in query) {
         if (eventNamesPage(event, query.page)) {
             excerpt = "";
+            mention = pageMention(event, query.page);
         }
     } else {
         excerpt = findExcerpt(event.summary, query.q);
@@ -373,6 +426,7 @@ function findEventHits(id: string, event: unknown, query: { q: string } | { page
                   title: findTextWindow(event.title),
                   sourceIndex: firstSourceIndex(event.sources),
                   excerpt,
+                  ...(mention ? { mention } : {}),
               },
           ];
 }
@@ -437,12 +491,14 @@ type RoundRead = {
  *   the package round.
  * - `GET /api/memory/structured/:characterId/:chatId/find?cursor=N&revision=R`: exactly one of `q` (trimmed,
  *   1..MEMORY_FIND_QUERY_CHARS characters) and `page` (a resource id), otherwise 400. Text search walks
- *   live pages then non-retracted events; page lookup walks only non-retracted events, in contents order.
+ *   live pages then non-retracted events; page lookup walks non-retracted events then threads, in
+ *   contents order.
  *   Retracted events are neither charged nor read. Plain substring matching lowercases per code point:
  *   pages give one title/alias hit together, then one per matching section body; events give one hit,
  *   preferring summary, key lines, then title for the excerpt. Page lookup matches participants, state
- *   pageIds, knowledge pageIds/knowers, and relationship from/to, with an empty excerpt. Answers are
- *   StructuredMemoryFindRound. Every display field is capped at MEMORY_FIND_EXCERPT_CHARS; excerpts
+ *   pageIds, knowledge pageIds/knowers, and relationship from/to, with an empty excerpt and a `mention`
+ *   (`pageMention`), then gives one hit per thread whose `who` names the page. Answers are
+ *   StructuredMemoryFindRound. Every display field but a mention's is capped at MEMORY_FIND_EXCERPT_CHARS; excerpts
  *   center on the first match mapped to original offsets, with no split surrogate pairs. A page adds
  *   at most MEMORY_FIND_HITS_MAX hits; a round ends after the row that reaches that cap, with next at
  *   the following row (null at the end), so an answer has fewer than twice the cap. Stored bytes,
@@ -869,13 +925,14 @@ export function registerStructuredMemoryRoutes(
             const contents = store.memory.readKinds(
                 characterId,
                 chatId,
-                "q" in query ? ["pages", "events"] : ["events"],
+                "q" in query ? ["pages", "events"] : ["events", "threads"],
             )!;
             const listed = [
                 ...contents.pages.map(({ id, bytes }) => ({ kind: "pages", id, bytes }) as const),
                 ...contents.events
                     .filter(({ status }) => status !== "retracted")
                     .map(({ id, bytes }) => ({ kind: "events", id, bytes }) as const),
+                ...contents.threads.map(({ id, bytes }) => ({ kind: "threads", id, bytes }) as const),
             ];
             const round = roundOf(listed, cursor, packageRoundBytes);
             let next = round.next;
@@ -884,9 +941,13 @@ export function registerStructuredMemoryRoutes(
                 const { kind, id } = round.rows[index];
                 const record = read(kind, id);
                 hits.push(
-                    ...(kind === "pages" && "q" in query
-                        ? findPageHits(id, record, query.q)
-                        : findEventHits(id, record, query)),
+                    ...(kind === "threads"
+                        ? "page" in query
+                            ? findThreadHits(id, record, query.page)
+                            : []
+                        : kind === "pages" && "q" in query
+                          ? findPageHits(id, record, query.q)
+                          : findEventHits(id, record, query)),
                 );
                 if (hits.length >= MEMORY_FIND_HITS_MAX) {
                     const following = cursor + index + 1;

@@ -756,6 +756,8 @@ function serveMemory() {
                 revision: state.revision,
                 data: { ...state.page, id: "scene", type: "scene", contextMode: "always" },
             });
+        if (url.startsWith("/api/memory/structured/c/k/find?page="))
+            return Response.json({ revision: state.revision, hits: [], next: null });
         if (url.endsWith("/records/threads/t")) return Response.json({ revision: state.revision, data: state.thread });
         if (url.endsWith("/records/events/event"))
             return Response.json({
@@ -839,7 +841,7 @@ it("searches page and event text, selects hits, and restores the tree when clear
     state.page.sections[0].body = "A <b>beacon</b> shines.\nWait here.";
     const fetch = io.authFetch.getMockImplementation()!;
     io.authFetch.mockImplementation(async (url, init, options) => {
-        if (url.startsWith("/api/memory/structured/c/k/find?")) {
+        if (url.startsWith("/api/memory/structured/c/k/find?q=")) {
             expect(new URL(url, "http://memory.test").searchParams.get("q")).toBe("beacon");
             return Response.json({
                 revision: state.revision,
@@ -870,11 +872,11 @@ it("searches page and event text, selects hits, and restores the tree when clear
     click('[data-memory-page="scene"]');
     await settle();
     await setFilter("beacon");
-    expect(reads("find")).toHaveLength(0);
+    expect(reads("find?q=")).toHaveLength(0);
     expect(query("[data-memory-search-text]")?.textContent?.trim()).toBe(language.structuredMemory.pages.searchText);
     click("[data-memory-search-text]");
     await settle();
-    expect(reads("find")).toHaveLength(1);
+    expect(reads("find?q=")).toHaveLength(1);
     expect(query("[data-memory-page]")).toBeNull();
     expect(
         [...target.querySelectorAll<HTMLElement>("[data-memory-find-id]")].map((hit) => [
@@ -900,12 +902,12 @@ it("searches page and event text, selects hits, and restores the tree when clear
     expect(query("[data-memory-find-hits]")).toBeNull();
     expect(query('[data-memory-page="p"]')?.getAttribute("aria-current")).toBe("true");
     expect(query('[data-memory-page="scene"]')).not.toBeNull();
-    expect(reads("find")).toHaveLength(1);
+    expect(reads("find?q=")).toHaveLength(1);
 
     await setFilter("beacon");
     query("[data-memory-page-filter]")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     await settle();
-    expect(reads("find")).toHaveLength(2);
+    expect(reads("find?q=")).toHaveLength(2);
     click('[data-memory-find-id="event"]');
     await settle();
     expect(query('[data-memory-panel="timeline"]')).not.toBeNull();
@@ -913,12 +915,54 @@ it("searches page and event text, selects hits, and restores the tree when clear
     expect(query('[data-memory-event="event"]')?.textContent).toContain("The gate opened");
 });
 
-it("opens events naming a page in source order with unanchored events last and links to Timeline", async () => {
+it("reads what events and threads say of a page, keeps a long event list short, and links to Timeline", async () => {
     const state = serveMemory();
+    const pages = language.structuredMemory.pages;
+    const mention = { grade: 3, storyTime: "", knowledge: [], shifts: [] };
+    // Storage order, as the route answers: the tab's read orders them newest first, unanchored last.
     const events = [
-        { id: "unanchored", title: "Undated rumor", sourceIndex: null },
-        { id: "later", title: "Gate opens", sourceIndex: 2 },
-        { id: "earlier", title: "Mira arrives", sourceIndex: 0 },
+        { id: "unanchored", title: "Undated rumor", sourceIndex: null, mention },
+        { id: "e0", title: "Mira arrives", sourceIndex: 0, mention: { ...mention, grade: 6 } },
+        { id: "e1", title: "A quiet meal", sourceIndex: 1, mention },
+        {
+            id: "e2",
+            title: "First doubts",
+            sourceIndex: 2,
+            mention: { ...mention, shifts: [{ from: "scene", to: "p", direction: "wary", note: "" }] },
+        },
+        { id: "e3", title: "The patrol", sourceIndex: 3, mention },
+        {
+            id: "e4",
+            title: "A letter sent",
+            sourceIndex: 4,
+            mention: { ...mention, shifts: [{ from: "p", to: "gone", direction: "distant", note: "" }] },
+        },
+        {
+            id: "e5",
+            title: "The rescue",
+            sourceIndex: 5,
+            mention: {
+                ...mention,
+                shifts: [{ from: "scene", to: "p", direction: "warmer", note: "after the rescue" }],
+            },
+        },
+        {
+            id: "e6",
+            title: "Gate opens",
+            sourceIndex: 6,
+            mention: {
+                ...mention,
+                storyTime: "Dawn",
+                knowledge: [
+                    { fact: "The <b>hinge</b> is weak", stance: "believes", secret: true },
+                    { fact: "The gate opens at dawn", stance: "knows", secret: false },
+                ],
+            },
+        },
+    ];
+    const threads = [
+        { kind: "thread", id: "t-done", title: "Old debt", state: "done" },
+        { kind: "thread", id: "t", title: "A promise", state: "open" },
     ];
     const fetch = io.authFetch.getMockImplementation()!;
     io.authFetch.mockImplementation(async (url, init, options) => {
@@ -926,14 +970,14 @@ it("opens events naming a page in source order with unanchored events last and l
             expect(new URL(url, "http://memory.test").searchParams.get("page")).toBe("p");
             return Response.json({
                 revision: state.revision,
-                hits: events.map((event) => ({ kind: "event", ...event, excerpt: "" })),
+                hits: [...events.map((event) => ({ kind: "event", ...event, excerpt: "" })), ...threads],
                 next: null,
             });
         }
         if (url.includes("/coverage"))
             return Response.json({
                 revision: state.revision,
-                events: events.map((event) => ({ ...event, status: "active", messageIds: [] })),
+                events: events.map(({ mention: _, ...event }) => ({ ...event, status: "active", messageIds: [] })),
                 runs: [],
                 next: null,
             });
@@ -942,27 +986,79 @@ it("opens events naming a page in source order with unanchored events last and l
             return Response.json({ revision: state.revision, data: { ...event, summary: `Details: ${event.title}.` } });
         return fetch(url, init, options);
     });
-    const eventLinks = () => [...target.querySelectorAll<HTMLElement>("[data-memory-page-event]")];
+    const eventLinks = () =>
+        [...target.querySelectorAll<HTMLElement>("[data-memory-page-event]")].map(
+            (link) => link.dataset.memoryPageEvent,
+        );
+    const rows = (selector: string) =>
+        [...target.querySelectorAll<HTMLElement>(selector)].map((row) => row.textContent?.replace(/\s+/g, " ").trim());
 
     await open();
     click('[data-memory-page="p"]');
     await settle();
-    expect(query("[data-memory-page-events] > button")?.getAttribute("aria-expanded")).toBe("false");
-    expect(query("[data-memory-page-events] > button")?.textContent).toContain(
-        language.structuredMemory.pages.eventsNaming,
-    );
-    expect(eventLinks()).toHaveLength(0);
-    expect(reads("find")).toHaveLength(0);
-    click("[data-memory-page-events] > button");
-    await settle();
-    expect(eventLinks().map((link) => link.dataset.memoryPageEvent)).toEqual(["earlier", "later", "unanchored"]);
-    expect(eventLinks().map((link) => link.textContent)).toEqual(["Mira arrives", "Gate opens", "Undated rumor"]);
     expect(reads("find")).toHaveLength(1);
-    click('[data-memory-page-event="later"]');
+    // Read asks at once: the newest five and the one graded important, newest first.
+    expect(eventLinks()).toEqual(["e6", "e5", "e4", "e3", "e2", "e0"]);
+    expect(query("[data-memory-page-events] > button[aria-expanded]")).toBeNull();
+    const first = query('[data-memory-page-event="e6"]')!.closest("li")!;
+    expect(first.textContent).toContain("Dawn");
+    expect(first.querySelector("[data-memory-page-event-important]")).toBeNull();
+    expect(
+        query('[data-memory-page-event="e0"]')!.closest("li")!.querySelector("[data-memory-page-event-important]")
+            ?.textContent,
+    ).toContain(pages.eventImportant);
+    expect(query("[data-memory-page-events-all]")?.textContent?.trim()).toBe(pages.showAll(8));
+    click("[data-memory-page-events-all]");
+    expect(eventLinks()).toEqual(["e6", "e5", "e4", "e3", "e2", "e1", "e0", "unanchored"]);
+    expect(query("[data-memory-page-events-all]")?.textContent?.trim()).toBe(pages.showFewer);
+    click("[data-memory-page-events-all]");
+    expect(eventLinks()).toHaveLength(6);
+
+    expect(rows("[data-memory-page-knowledge] li")).toEqual([
+        `The <b>hinge</b> is weak ${pages.believes} ${pages.secret} Gate opens`,
+        "The gate opens at dawn Gate opens",
+    ]);
+    expect(query("[data-memory-page-knowledge] b")).toBeNull();
+    // The newest shift of each direction with each other page; a page that is gone shows its id, disabled.
+    expect(rows("[data-memory-page-shift]")).toEqual(["← Current scene warmer (after the rescue)", "→ gone distant"]);
+    expect(query('[data-memory-page-shift="out"] button')?.hasAttribute("disabled")).toBe(true);
+    expect(rows("[data-memory-page-thread]")).toEqual([
+        `A promise ${language.structuredMemory.threads.states.open}`,
+        `Old debt ${language.structuredMemory.threads.states.done}`,
+    ]);
+
+    // Manage keeps the events alone behind its closed row, from the same answer.
+    await choosePageView("manage");
+    expect(query("[data-memory-page-events] > button[aria-expanded]")?.getAttribute("aria-expanded")).toBe("false");
+    expect(query("[data-memory-page-events] > button[aria-expanded]")?.textContent).toContain(pages.eventsNaming);
+    expect(eventLinks()).toHaveLength(0);
+    for (const block of ["knowledge", "shift", "thread"]) expect(query(`[data-memory-page-${block}]`)).toBeNull();
+    click("[data-memory-page-events] > button[aria-expanded]");
+    await settle();
+    expect(eventLinks()).toHaveLength(6);
+    expect(reads("find")).toHaveLength(1);
+
+    click('[data-memory-page-event="e6"]');
     await settle();
     expect(query('[data-memory-panel="timeline"]')).not.toBeNull();
-    expect(query('[data-memory-event="later"] > button')?.getAttribute("aria-expanded")).toBe("true");
-    expect(query('[data-memory-event="later"]')?.textContent).toContain("Details: Gate opens.");
+    expect(query('[data-memory-event="e6"] > button')?.getAttribute("aria-expanded")).toBe("true");
+    expect(query('[data-memory-event="e6"]')?.textContent).toContain("Details: Gate opens.");
+});
+
+it("shows a page with nothing said of it without empty blocks, and dims a replaced value's line", async () => {
+    const state = serveMemory();
+    state.page.sections[0].body = "The gate is open.\n(was: The gate is shut.)";
+    await open();
+    click('[data-memory-page="p"]');
+    await settle();
+    expect(reads("find?page=p")).toHaveLength(1);
+    for (const block of ["knowledge", "shifts", "threads", "events"])
+        expect(query(`[data-memory-page-${block}]`)).toBeNull();
+    const parts = [...target.querySelectorAll<HTMLElement>("[data-memory-section-body] p")];
+    expect(parts.map((part) => [part.textContent, part.classList.contains("text-textcolor2")])).toEqual([
+        ["The gate is open.", false],
+        ["(was: The gate is shut.)", true],
+    ]);
 });
 
 it("reads page text without editing controls and remembers Manage across page selections", async () => {

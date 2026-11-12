@@ -529,6 +529,59 @@ it("stops collecting find rounds at 200 hits and reports more", async () => {
     ]);
 });
 
+it("reads every round of a page lookup and keeps its newest 200 events, then its threads", async () => {
+    const mention = {
+        grade: 7,
+        storyTime: "Dawn",
+        knowledge: [
+            { fact: "The gate is weak", stance: "believes", secret: true },
+            { fact: "No stance", stance: "guesses" },
+        ],
+        shifts: [{ from: "p", to: "other", direction: "closer" }, { from: "p" }],
+    };
+    // Storage order is oldest first, so a cap that stopped reading would keep the oldest events.
+    const events = Array.from({ length: 201 }, (_, index) => ({
+        kind: "event" as const,
+        id: `event-${index}`,
+        title: `Event ${index}`,
+        sourceIndex: index === 150 ? null : index,
+        excerpt: "",
+        ...(index === 200 ? { mention } : {}),
+    }));
+    const threads = [
+        { kind: "thread", id: "t", title: "A promise", state: "open" },
+        { kind: "thread", id: "odd", title: "Unknown state", state: "lost" },
+    ];
+    authFetch
+        .mockResolvedValueOnce(Response.json({ revision: "r1", hits: events.slice(0, 200), next: 310 }))
+        .mockResolvedValueOnce(Response.json({ revision: "r1", hits: [events[200], ...threads], next: null }));
+
+    const result = await findStructuredMemory(ref, { page: "p" });
+    if (result.outcome !== "ok") throw new Error(JSON.stringify(result));
+    const { hits, more } = result.value;
+    expect(more).toBe(true);
+    // The one event with no known position sorts last, so it is the one the cap drops.
+    expect(hits.map(({ id }) => id)).toEqual([
+        ...Array.from({ length: 201 }, (_, index) => `event-${200 - index}`).filter((id) => id !== "event-150"),
+        "t",
+    ]);
+    expect(hits[0]).toEqual({
+        ...events[200],
+        mention: {
+            grade: 7,
+            storyTime: "Dawn",
+            knowledge: [{ fact: "The gate is weak", stance: "believes", secret: true }],
+            shifts: [{ from: "p", to: "other", direction: "closer", note: "" }],
+        },
+    });
+    expect(hits[1]).not.toHaveProperty("mention");
+    expect(hits.at(-1)).toEqual(threads[0]);
+    expect(authFetch.mock.calls.map(([url]) => url)).toEqual([
+        `${base}/find?page=p`,
+        `${base}/find?page=p&cursor=310&revision=r1`,
+    ]);
+});
+
 it.each(["coverage", "log"])(
     "restarts the %s read from nothing and exports only the successful revision",
     async (kind) => {

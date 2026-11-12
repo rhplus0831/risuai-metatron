@@ -995,18 +995,21 @@ it("finds case-insensitive literal text in live pages and unretracted events", a
     expect(excerpt).not.toContain("Last");
 });
 
-it("finds each event naming a page through participants, state, knowledge, knowers or either relationship end", async () => {
+it("finds each event and thread naming a page, with what the event says of that page", async () => {
     const s = await server();
     const pageId = "gate/문";
     const stateChange = { pageId, section: "Facts", before: "closed", after: "open", quote: "Open" };
     const knowledge = { pageId, fact: "Open", stance: "knows" as const, quote: "Open" };
     const relationship = { from: pageId, to: "other", direction: "closer", note: "Trust" };
+    const thread = (id: string, who: string[]): MemoryThread => ({ id, title: `Thread ${id}`, who, state: "progress" });
+    const { factChars, labelChars } = STRUCTURED_MEMORY_LIMITS;
     const revision = s.write({
         pages: [page(pageId)],
         events: [
             {
                 ...event("participant"),
                 participants: [pageId],
+                grade: 7,
                 sources: [
                     { messageId: "m9", hash: "h", index: 9 },
                     { messageId: "lost", hash: null, index: null },
@@ -1014,26 +1017,59 @@ it("finds each event naming a page through participants, state, knowledge, knowe
                 ],
             },
             { ...event("state"), stateChanges: [stateChange] },
-            { ...event("knowledge"), knowledge: [knowledge] },
+            {
+                ...event("knowledge"),
+                storyTime: { text: "t".repeat(labelChars + 5) },
+                knowledge: [
+                    { ...knowledge, fact: "f".repeat(factChars + 5), stance: "believes" },
+                    { ...knowledge, pageId: "other", fact: "Someone else's" },
+                ],
+            },
             { ...event("knower"), knowledge: [{ ...knowledge, pageId: "other", knowers: [pageId] }] },
-            { ...event("from"), relationshipShifts: [relationship] },
+            { ...event("from"), relationshipShifts: [relationship, { ...relationship, from: "other", to: "third" }] },
             { ...event("to"), relationshipShifts: [{ ...relationship, from: "other", to: pageId }] },
             { ...event("multiple"), participants: [pageId], stateChanges: [stateChange], knowledge: [knowledge] },
             { ...event("retracted"), status: "retracted", participants: [pageId] },
             { ...event("text-only", pageId), title: pageId, participants: [`${pageId}-other`] },
         ],
+        threads: [thread("named", ["other", pageId]), thread("elsewhere", ["other"])],
     });
+    const mention = { grade: null, storyTime: "Morning", knowledge: [], shifts: [] };
+    const known = { fact: "Open", stance: "knows", secret: false };
+    const mentions: Record<string, object> = {
+        participant: { ...mention, grade: 7 },
+        state: mention,
+        knowledge: {
+            ...mention,
+            storyTime: "t".repeat(labelChars),
+            knowledge: [{ fact: "f".repeat(factChars), stance: "believes", secret: false }],
+        },
+        knower: { ...mention, knowledge: [{ ...known, secret: true }] },
+        from: { ...mention, shifts: [relationship] },
+        to: { ...mention, shifts: [{ ...relationship, from: "other", to: pageId }] },
+        multiple: { ...mention, knowledge: [known] },
+    };
     expect(await answer(await s.request(`${base}/find?${new URLSearchParams({ page: pageId })}`))).toEqual({
         revision,
-        hits: ["participant", "state", "knowledge", "knower", "from", "to", "multiple"].map((id) => ({
-            kind: "event",
-            id,
-            title: `Event ${id}`,
-            sourceIndex: id === "participant" ? 2 : null,
-            excerpt: "",
-        })),
+        hits: [
+            ...Object.entries(mentions).map(([id, said]) => ({
+                kind: "event",
+                id,
+                title: `Event ${id}`,
+                sourceIndex: id === "participant" ? 2 : null,
+                excerpt: "",
+                mention: said,
+            })),
+            { kind: "thread", id: "named", title: "Thread named", state: "progress" },
+        ],
         next: null,
     });
+    // A text search walks no thread and carries no mention.
+    const text = await answer(await s.request(`${base}/find?${new URLSearchParams({ q: "Thread named" })}`));
+    expect(text.hits).toEqual([]);
+    const body = await answer(await s.request(`${base}/find?${new URLSearchParams({ q: "Event body" })}`));
+    expect(body.hits).toHaveLength(7);
+    expect(body.hits.every((hit: object) => !("mention" in hit))).toBe(true);
 });
 
 it.each([

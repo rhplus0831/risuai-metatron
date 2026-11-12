@@ -13,9 +13,11 @@ import {
     isSealedHypaV3Data,
     MEMORY_FIND_HITS_MAX,
     MEMORY_HEALTH_CHATS_MAX,
+    MEMORY_KNOWLEDGE_STANCES,
     MEMORY_PACKAGE_VERSION,
     MEMORY_PAGE_TYPES,
     MEMORY_RESTORE_BODY_BYTES,
+    MEMORY_THREAD_STATES,
     memoryEventCovers,
     memoryScreenReason,
     memorySourceHashFields,
@@ -62,6 +64,7 @@ import {
     type StructuredMemoryInheritAnswer,
     type StructuredMemoryLogRun,
     type StructuredMemoryPackageRound,
+    type StructuredMemoryPageMention,
     type StructuredMemoryPageTool,
     type StructuredMemoryPageToolAnswer,
     type StructuredMemoryProjectionAnswer,
@@ -118,8 +121,8 @@ import { authFetch } from "../storage/serverAuth";
  * messages first, with the same rule a send uses, so an edit shows at once and with no request.
  * `readStructuredMemoryStory` collects stored summaries at one revision for Timeline's story view,
  * normalizing their display fields before the tab joins them by id with its coverage rows.
- * `findStructuredMemory` collects text hits or events naming a page at one revision, keeping at most
- * MEMORY_FIND_HITS_MAX hits and saying whether it dropped hits or left another round unread.
+ * `findStructuredMemory` collects text hits, or the events and threads naming a page, at one revision,
+ * keeping at most MEMORY_FIND_HITS_MAX of each and saying whether it dropped hits.
  * `memoryRunView` turns a stored run into what a Log row shows, `memoryPageTree` and
  * `memoryPageHistoryView` a page into its rows, and `memoryWriterNotice` the current state into the
  * panel's writer line. A receipt's link reaches a panel that is not there yet through
@@ -687,6 +690,27 @@ function parseStoryRound(body: AnswerBody, cursor: number): StructuredMemoryStor
 }
 
 /** Display fields from restored records can be missing or malformed; an unknown hit has no target. */
+/** A page lookup's mention as display fields, or nothing for a hit that carries none. */
+function parsePageMention(value: unknown): StructuredMemoryPageMention | undefined {
+    if (!isPlainObject(value)) {
+        return undefined;
+    }
+    return {
+        grade: Number.isSafeInteger(value.grade) ? (value.grade as number) : null,
+        storyTime: storedText(value.storyTime) ?? "",
+        knowledge: storedItems(value.knowledge).flatMap((item) => {
+            const stance = MEMORY_KNOWLEDGE_STANCES.find((known) => known === item.stance);
+            const fact = storedText(item.fact);
+            return stance !== undefined && fact !== undefined ? [{ fact, stance, secret: item.secret === true }] : [];
+        }),
+        shifts: storedItems(value.shifts).flatMap(({ from, to, direction, note }) =>
+            typeof from === "string" && typeof to === "string"
+                ? [{ from, to, direction: storedText(direction) ?? "", note: storedText(note) ?? "" }]
+                : [],
+        ),
+    };
+}
+
 function parseFindRound(body: AnswerBody, cursor: number): StructuredMemoryFindRound | null {
     const { revision, hits, next } = body;
     if (typeof revision !== "string" || !Array.isArray(hits) || !isForward(next, cursor)) {
@@ -708,8 +732,13 @@ function parseFindRound(body: AnswerBody, cursor: number): StructuredMemoryFindR
                         kind: "event",
                         ...common,
                         sourceIndex: Number.isSafeInteger(hit.sourceIndex) ? (hit.sourceIndex as number) : null,
+                        ...present("mention", parsePageMention(hit.mention)),
                     },
                 ];
+            }
+            const state = MEMORY_THREAD_STATES.find((known) => known === hit.state);
+            if (hit.kind === "thread" && state !== undefined) {
+                return [{ kind: "thread", id: hit.id, title: common.title, state }];
             }
             return [];
         }),
@@ -1297,16 +1326,26 @@ export function readStructuredMemoryStory(ref: ChatRef): Promise<StructuredMemor
     });
 }
 
-/** Bounded hits at one revision; a changed round restarts with no hits or truncation state kept. */
+/**
+ * Bounded hits at one revision; a changed round restarts with no hits or truncation state kept. A text
+ * search stops at the cap. A page lookup reads every round, because the list is in storage order and
+ * its cap must drop the oldest events, not the newest: it answers the newest `MEMORY_FIND_HITS_MAX`
+ * events by `sourceIndex`, newest first with unknown positions last, then the newest that many threads
+ * in storage order. `more` says a text search or a lookup's events were cut.
+ */
 export function findStructuredMemory(
     ref: ChatRef,
     query: { q: string } | { page: string },
 ): Promise<StructuredMemoryResult<{ revision: string; hits: StructuredMemoryFindHit[]; more: boolean }>> {
     const search = "q" in query ? `q=${encodeURIComponent(query.q)}` : `page=${encodeURIComponent(query.page)}`;
     return readAtOneRevision(async () => {
-        const hits: StructuredMemoryFindHit[] = [];
+        let hits: StructuredMemoryFindHit[] = [];
         let more = false;
         const read = await readRounds(`${chatPath(ref)}/find?${search}`, parseFindRound, (round) => {
+            if ("page" in query) {
+                hits.push(...round.hits);
+                return;
+            }
             const remaining = MEMORY_FIND_HITS_MAX - hits.length;
             hits.push(...round.hits.slice(0, remaining));
             if (hits.length === MEMORY_FIND_HITS_MAX) {
@@ -1314,6 +1353,16 @@ export function findStructuredMemory(
                 return false;
             }
         });
+        if ("page" in query) {
+            const events = hits
+                .filter((hit) => hit.kind === "event")
+                .sort((a, b) => (b.sourceIndex ?? -Infinity) - (a.sourceIndex ?? -Infinity));
+            more = events.length > MEMORY_FIND_HITS_MAX;
+            hits = [
+                ...events.slice(0, MEMORY_FIND_HITS_MAX),
+                ...hits.filter((hit) => hit.kind === "thread").slice(-MEMORY_FIND_HITS_MAX),
+            ];
+        }
         return read.outcome === "ok" ? { outcome: "ok", value: { revision: read.value, hits, more } } : read;
     });
 }

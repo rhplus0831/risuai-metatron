@@ -923,12 +923,41 @@ export const MEMORY_FIND_QUERY_CHARS = 100;
 export const MEMORY_FIND_EXCERPT_CHARS = 160;
 export const MEMORY_FIND_HITS_MAX = 200;
 
-/** One matching place in a live page, or one non-retracted event. All display text is plain. */
+/**
+ * What an event says of the page a lookup names, for that page's own view: the event's grade and story
+ * time, the facts the page learned or shares as a secret, and the relationship shifts from or to it.
+ * A fact or a note is capped at `factChars` and a label at `labelChars`, with the lists at the event's
+ * own limits, so a restored record cannot answer more than a written one.
+ */
+export type StructuredMemoryPageMention = {
+    grade: number | null;
+    storyTime: string;
+    knowledge: { fact: string; stance: MemoryKnowledgeStance; secret: boolean }[];
+    /** Page ids. */
+    shifts: { from: string; to: string; direction: string; note: string }[];
+};
+
+/**
+ * One matching place in a live page, one non-retracted event, or, on a page lookup alone, one thread
+ * whose `who` names the page. An event hit carries `mention` on a page lookup alone. All display text
+ * is plain.
+ */
 export type StructuredMemoryFindHit =
     | { kind: "page"; id: string; title: string; heading: string | null; excerpt: string }
-    | { kind: "event"; id: string; title: string; sourceIndex: number | null; excerpt: string };
+    | {
+          kind: "event";
+          id: string;
+          title: string;
+          sourceIndex: number | null;
+          excerpt: string;
+          mention?: StructuredMemoryPageMention;
+      }
+    | { kind: "thread"; id: string; title: string; state: MemoryThreadState };
 
-/** A find round's cursor walks live pages then non-retracted events for text, or only events for a page id. */
+/**
+ * A find round's cursor walks live pages then non-retracted events for text, or non-retracted events
+ * then threads for a page id.
+ */
 export type StructuredMemoryFindRound = {
     revision: string;
     hits: StructuredMemoryFindHit[];
