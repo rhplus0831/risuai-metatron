@@ -2714,6 +2714,8 @@ export const languageKorean = {
             filter: "제목으로 문서 찾기",
             filterNone: "제목이 일치하는 문서가 없습니다.",
             searchText: "본문 검색",
+            usedLegend: (count: number) => `마지막 전송에 포함됨 · ${count}`,
+            wasLines: (count: number) => `이전 내용 ${count}`,
             searchNone: "일치하는 내용이 없습니다.",
             findMore: (max: number) => `처음 ${max}개의 검색 결과를 표시합니다.`,
             eventsNaming: "이 문서를 언급한 사건",

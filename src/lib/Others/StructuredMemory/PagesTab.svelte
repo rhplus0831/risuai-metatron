@@ -1,5 +1,12 @@
 <script lang="ts">
-    import { ChevronDownIcon, ChevronRightIcon } from "@lucide/svelte";
+    import {
+        ChevronDownIcon,
+        ChevronRightIcon,
+        CircleQuestionMarkIcon,
+        CornerDownLeftIcon,
+        LockIcon,
+        PlusIcon,
+    } from "@lucide/svelte";
     import { untrack } from "svelte";
     import { language } from "src/lang";
     import { alertConfirm, alertError, alertToast } from "src/ts/alert";
@@ -57,14 +64,18 @@
      * the server decides all other fields. A refusal restores the copy and rereads; a success supplies the
      * next revision. A revert waits for the server's answer because only it knows the restored content.
      *
-     * Read is the initial view: title, type, aliases, links, and non-blank sections with plain text flags.
-     * Manage holds the page tools, section controls, sources, and history. The choice lasts across page
+     * Read is the initial view, for reading: title, type, aliases, links, and non-blank sections with
+     * plain text flags, the current state first. Its headings are small labels, its links to records
+     * are quiet, its text column is capped, and a section's "(was: ...)" lines stay folded behind a
+     * count until asked for; the fold closes again on another selection. Manage holds the page tools, section controls, sources, and history. The choice lasts across page
      * selections while mounted; trash and `only: "unsupported"` show Manage without changing that choice.
      * Links name live pages by title and select them, or open Pages from the unsupported view; missing
      * links show disabled ids, and sending disables live links. A title-only filter narrows the tree before
      * grouping and resets its row limit when changed; the trash stays unfiltered. Search text submits
      * that input, including in chats with only events, and replaces the tree with bounded plain-text hits
-     * until the trimmed input changes. Active searches rerun on refresh.
+     * until the trimmed input changes; its button shows only for typed text whose hits are not already
+     * showing. Active searches rerun on refresh. A page the last send used carries a dot in the tree,
+     * which one legend line above the tree names and counts among the listed pages.
      *
      * One page lookup per selection and refresh answers what the events and threads say of the page.
      * Read asks for it at once and shows, each only when it has rows: what the page knows or believes,
@@ -117,6 +128,10 @@
     const RECENT_EVENTS = 5;
     /** The facts a page's knowledge list shows before a person asks for all of them. */
     const FACTS_AT_ONCE = 8;
+    /** Read's section and block headings: smaller and dimmer than the text under them. */
+    const LABEL = "text-xs font-semibold text-textcolor2";
+    /** The section a character's every event replaces, which Read shows first and sets apart. */
+    const CURRENT_STATE = "currentState";
     const GRADES = Array.from({ length: gradeMax + 1 }, (_, grade) => grade);
     /** What makes a lore entry inactive, read by the lore activation as a decorator. */
     const LORE_INACTIVE = "@@dont_activate";
@@ -184,6 +199,8 @@
     let namingOpen = $state(false);
     let namingAll = $state(false);
     let knowledgeAll = $state(false);
+    /** Headings of the selected page whose "(was: ...)" lines Read is showing. */
+    let wasOpen = $state<string[]>([]);
     let namingResult = $state.raw<FindResult | null>(null);
     let namingFailure = $state<string | null>(null);
     let namingNumber = 0;
@@ -248,6 +265,8 @@
             ? (contents?.pages ?? []).filter(({ id }) => unsupportedIds.has(id))
             : (contents?.pages ?? []).filter(({ title }) => title.toLowerCase().includes(normalizedQuery)),
     );
+    /** Listed pages the last send used: the tree's legend counts them and each carries a dot. */
+    const usedCount = $derived(listedPages.filter(({ id }) => usedPages.has(id)).length);
     /** The tree in order, a group's first row carrying its type, so "show more" counts rows. */
     const treeRows = $derived(
         memoryPageTree(listedPages).flatMap(({ type, rows }) =>
@@ -389,6 +408,19 @@
             }
         }
         return parts;
+    }
+
+    /** Read's sections: the ones with a body, the current state first and the rest in the page's order. */
+    function readSections(page: MemoryPage): MemorySection[] {
+        const sections = page.sections.filter(({ body }) => body.trim() !== "");
+        return [
+            ...sections.filter(({ heading }) => heading === CURRENT_STATE),
+            ...sections.filter(({ heading }) => heading !== CURRENT_STATE),
+        ];
+    }
+
+    function toggleWas(heading: string) {
+        wasOpen = wasOpen.includes(heading) ? wasOpen.filter((open) => open !== heading) : [...wasOpen, heading];
     }
 
     /**
@@ -581,6 +613,7 @@
             namingOpen = false;
             namingAll = false;
             knowledgeAll = false;
+            wasOpen = [];
             namingResult = null;
             namingFailure = null;
             namingRead = null;
@@ -1381,54 +1414,46 @@
     </li>
 {/snippet}
 
-{#snippet newNoteControl()}
-    {#if canCreateNote}
-        {#if newNoteOpen}
-            <fieldset
-                class="flex flex-col min-w-0 gap-2 p-2 border rounded-md border-darkborderc"
-                disabled={controlsOff}
-                data-memory-new-note-form
+{#snippet newNoteForm()}
+    {#if canCreateNote && newNoteOpen}
+        <fieldset
+            class="flex flex-col min-w-0 gap-2 p-2 border rounded-md border-darkborderc"
+            disabled={controlsOff}
+            data-memory-new-note-form
+        >
+            <legend>{toolText.newNote}</legend>
+            <label class="flex flex-col min-w-0 gap-1" data-memory-new-note-title>
+                <span class="text-textcolor2">{toolText.renameTitle}</span>
+                <TextInput size="sm" bind:value={newNoteTitle} disabled={controlsOff} fullwidth />
+            </label>
+            <label class="flex flex-col min-w-0 gap-1" data-memory-new-note-heading>
+                <span class="text-textcolor2">{toolText.sectionHeading}</span>
+                <TextInput size="sm" bind:value={newNoteHeading} disabled={controlsOff} fullwidth />
+            </label>
+            <div data-memory-new-note-body>
+                <TextAreaInput
+                    bind:value={newNoteBody}
+                    height="36"
+                    optimaizedInput={false}
+                    popupEditor={false}
+                    ariaLabel={text.sectionText}
+                />
+            </div>
+            <span
+                class={newNoteBody.length > sectionBodyChars ? "text-draculared" : "text-textcolor2"}
+                data-memory-new-note-count
             >
-                <legend>{toolText.newNote}</legend>
-                <label class="flex flex-col min-w-0 gap-1" data-memory-new-note-title>
-                    <span class="text-textcolor2">{toolText.renameTitle}</span>
-                    <TextInput size="sm" bind:value={newNoteTitle} disabled={controlsOff} fullwidth />
-                </label>
-                <label class="flex flex-col min-w-0 gap-1" data-memory-new-note-heading>
-                    <span class="text-textcolor2">{toolText.sectionHeading}</span>
-                    <TextInput size="sm" bind:value={newNoteHeading} disabled={controlsOff} fullwidth />
-                </label>
-                <div data-memory-new-note-body>
-                    <TextAreaInput
-                        bind:value={newNoteBody}
-                        height="36"
-                        optimaizedInput={false}
-                        popupEditor={false}
-                        ariaLabel={text.sectionText}
-                    />
-                </div>
-                <span
-                    class={newNoteBody.length > sectionBodyChars ? "text-draculared" : "text-textcolor2"}
-                    data-memory-new-note-count
-                >
-                    {text.characters(newNoteBody.length, sectionBodyChars)}
-                </span>
-                <div class="flex flex-wrap justify-end gap-2">
-                    <Button size="sm" styled="outlined" disabled={controlsOff} onclick={() => (newNoteOpen = false)}>
-                        <span data-memory-new-note-cancel>{text.cancel}</span>
-                    </Button>
-                    <Button size="sm" disabled={controlsOff || !newNoteFits} onclick={createNote}>
-                        <span data-memory-new-note-save>{text.save}</span>
-                    </Button>
-                </div>
-            </fieldset>
-        {:else}
-            <div>
-                <Button size="sm" styled="outlined" disabled={controlsOff} onclick={startNewNote}>
-                    <span data-memory-new-note>{toolText.newNote}</span>
+                {text.characters(newNoteBody.length, sectionBodyChars)}
+            </span>
+            <div class="flex flex-wrap justify-end gap-2">
+                <Button size="sm" styled="outlined" disabled={controlsOff} onclick={() => (newNoteOpen = false)}>
+                    <span data-memory-new-note-cancel>{text.cancel}</span>
+                </Button>
+                <Button size="sm" disabled={controlsOff || !newNoteFits} onclick={createNote}>
+                    <span data-memory-new-note-save>{text.save}</span>
                 </Button>
             </div>
-        {/if}
+        </fieldset>
     {/if}
 {/snippet}
 
@@ -1649,12 +1674,13 @@
     {/if}
 {/snippet}
 
-{#snippet pageLinks(page: MemoryPage)}
+{#snippet pageLinks(page: MemoryPage, quiet: boolean)}
     {#if page.links.length > 0}
-        <div class="flex flex-wrap items-center gap-1" data-memory-page-links>
+        <div class={"flex flex-wrap items-center " + (quiet ? "gap-x-2" : "gap-1")} data-memory-page-links>
             <span class="text-xs text-textcolor2">{text.links}</span>
             {#each page.links as id}
                 <MemoryLinkButton
+                    {quiet}
                     label={pageTitles.get(id) ?? id}
                     disabled={sending || !pageTitles.has(id)}
                     onclick={() => (only === "unsupported" ? open({ tab: "pages", id }) : select(id))}
@@ -1665,23 +1691,27 @@
     {/if}
 {/snippet}
 
-{#snippet namingEventList()}
+{#snippet namingEventList(quiet: boolean)}
     <ul class="flex flex-col items-start min-w-0 gap-1">
         {#each shownNamingEvents as event (event.id)}
             <li class="flex flex-wrap items-center min-w-0 max-w-full gap-2">
                 <MemoryLinkButton
+                    {quiet}
                     label={event.title}
                     disabled={sending}
                     onclick={() => open({ tab: "timeline", id: event.id })}
                     data-memory-page-event={event.id}
                 />
                 {#if (event.mention?.grade ?? 0) >= importantEventGrade}
-                    <span class="px-1.5 rounded-sm bg-darkbutton text-textcolor2" data-memory-page-event-important>
+                    <span
+                        class="px-1.5 text-xs rounded-sm bg-darkbutton text-textcolor2"
+                        data-memory-page-event-important
+                    >
                         {text.eventImportant}
                     </span>
                 {/if}
                 {#if event.mention?.storyTime}
-                    <span class="text-textcolor2 break-words">{event.mention.storyTime}</span>
+                    <span class="text-xs text-textcolor2 break-words">{event.mention.storyTime}</span>
                 {/if}
             </li>
         {:else}
@@ -1724,7 +1754,7 @@
             {:else if namingResult === null}
                 <p class="text-textcolor2">{panelText.loading}</p>
             {:else}
-                {@render namingEventList()}
+                {@render namingEventList(false)}
             {/if}
         {/if}
     </div>
@@ -1738,30 +1768,39 @@
     {:else}
         {#if namingKnowledge.length > 0}
             <section class="flex flex-col min-w-0 gap-1 break-words" data-memory-page-knowledge>
-                <h3 class="font-semibold">{text.knowledge}</h3>
-                <ul class="flex flex-col min-w-0 gap-1">
+                <h3 class={LABEL}>{text.knowledge} · {namingKnowledge.length}</h3>
+                <ul class="flex flex-col min-w-0 border-t divide-y divide-darkborderc border-darkborderc">
                     {#each knowledgeAll ? namingKnowledge : namingKnowledge.slice(0, FACTS_AT_ONCE) as item}
-                        <li class="flex flex-wrap items-center min-w-0 gap-2">
-                            <span class="min-w-0 whitespace-pre-wrap">{item.fact}</span>
-                            {#if item.stance === "believes"}
-                                <span class="px-1.5 rounded-sm bg-darkbutton text-textcolor2">{text.believes}</span>
-                            {/if}
-                            {#if item.secret}
-                                <span class="px-1.5 rounded-sm bg-darkbutton text-textcolor2">{text.secret}</span>
-                            {/if}
-                            <MemoryLinkButton
-                                label={item.eventTitle}
-                                disabled={sending}
-                                onclick={() => open({ tab: "timeline", id: item.eventId })}
-                                data-memory-page-fact-event={item.eventId}
-                            />
+                        <li class="flex flex-col min-w-0 gap-0.5 py-2">
+                            <p class="whitespace-pre-wrap">{item.fact}</p>
+                            <div class="flex flex-wrap items-center min-w-0 text-xs gap-x-2 text-textcolor2">
+                                {#if item.stance === "believes"}
+                                    <span class="flex items-center gap-1">
+                                        <CircleQuestionMarkIcon size={12} class="shrink-0" aria-hidden="true" />
+                                        {text.believes}
+                                    </span>
+                                {/if}
+                                {#if item.secret}
+                                    <span class="flex items-center gap-1">
+                                        <LockIcon size={12} class="shrink-0" aria-hidden="true" />
+                                        {text.secret}
+                                    </span>
+                                {/if}
+                                <MemoryLinkButton
+                                    quiet
+                                    label={item.eventTitle}
+                                    disabled={sending}
+                                    onclick={() => open({ tab: "timeline", id: item.eventId })}
+                                    data-memory-page-fact-event={item.eventId}
+                                />
+                            </div>
                         </li>
                     {/each}
                 </ul>
                 {#if namingKnowledge.length > FACTS_AT_ONCE}
                     <button
                         type="button"
-                        class="self-start transition-colors text-textcolor2 hover:text-textcolor"
+                        class="self-start text-xs transition-colors text-textcolor2 hover:text-textcolor"
                         onclick={() => (knowledgeAll = !knowledgeAll)}
                         data-memory-page-knowledge-all
                     >
@@ -1772,7 +1811,7 @@
         {/if}
         {#if namingShifts.length > 0}
             <section class="flex flex-col min-w-0 gap-1 break-words" data-memory-page-shifts>
-                <h3 class="font-semibold">{text.shifts}</h3>
+                <h3 class={LABEL}>{text.shifts}</h3>
                 <ul class="flex flex-col min-w-0 gap-1">
                     {#each namingShifts as shift}
                         <li
@@ -1783,6 +1822,7 @@
                                 {shift.incoming ? "←" : "→"}
                             </span>
                             <MemoryLinkButton
+                                quiet
                                 label={pageTitles.get(shift.other) ?? shift.other}
                                 disabled={sending || !pageTitles.has(shift.other)}
                                 onclick={() => select(shift.other)}
@@ -1795,7 +1835,7 @@
         {/if}
         {#if namingThreads.length > 0}
             <section class="flex flex-col min-w-0 gap-1 break-words" data-memory-page-threads>
-                <h3 class="font-semibold">{text.threadsNaming}</h3>
+                <h3 class={LABEL}>{text.threadsNaming}</h3>
                 <ul class="flex flex-col min-w-0 gap-1">
                     {#each namingThreads as thread (thread.id)}
                         <li
@@ -1804,7 +1844,7 @@
                             data-memory-page-thread={thread.id}
                         >
                             <span class="min-w-0">{thread.title}</span>
-                            <span class="px-1.5 rounded-sm bg-darkbutton text-textcolor2">
+                            <span class="px-1.5 text-xs rounded-sm bg-darkbutton text-textcolor2">
                                 {codeText(threadText.states, thread.state)}
                             </span>
                         </li>
@@ -1814,72 +1854,109 @@
         {/if}
         {#if namingEvents.length > 0}
             <section class="flex flex-col min-w-0 gap-1 break-words" data-memory-page-events>
-                <h3 class="font-semibold">{text.eventsNaming}</h3>
-                {@render namingEventList()}
+                <h3 class={LABEL}>{text.eventsNaming}</h3>
+                {@render namingEventList(true)}
             </section>
         {/if}
     {/if}
 {/snippet}
 
 {#snippet pageDetail(page: MemoryPage)}
-    {#if only !== "unsupported" && !inTrash}
-        <SegmentedControl
-            bind:value={view}
-            options={[
-                { value: "read", label: text.views.read },
-                { value: "manage", label: text.views.manage },
-            ]}
-            margin={false}
-            size="sm"
-            label={text.view}
-        />
-    {/if}
-    <h2 class="text-base font-semibold break-words">{page.title}</h2>
-    {#if effectiveView === "read"}
-        <p class="text-textcolor2 break-words">
+    <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <h2 class="min-w-0 text-xl font-semibold break-words">{page.title}</h2>
+        <span class="px-1.5 text-xs rounded-sm bg-darkbutton text-textcolor2" data-memory-page-type>
             {codeText(text.types, page.type)}
-            {#if page.aliases.length > 0}
-                · {text.aliases}: {page.aliases.join(", ")}
-            {/if}
-        </p>
-        {@render pageLinks(page)}
-        {#each page.sections.filter(({ body }) => body.trim() !== "") as section}
-            <section class="flex flex-col min-w-0 gap-1 break-words" data-memory-section={section.heading}>
-                <div class="flex flex-wrap items-center gap-2">
-                    <h3 class="font-semibold">{codeText(text.headings, section.heading)}</h3>
-                    {#each FLAGS as flag (flag)}
-                        {#if section[flag]}
-                            <span class="px-1.5 rounded-sm bg-darkbutton text-textcolor2" data-memory-flag={flag}>
-                                {text.flags[flag]}
-                            </span>
-                        {/if}
-                    {/each}
-                    {#if section.locked}
-                        <span class="px-1.5 rounded-sm bg-darkbutton text-textcolor2">{text.locked}</span>
+        </span>
+        {#if only !== "unsupported" && !inTrash}
+            <div class="ml-auto">
+                <SegmentedControl
+                    bind:value={view}
+                    options={[
+                        { value: "read", label: text.views.read },
+                        { value: "manage", label: text.views.manage },
+                    ]}
+                    margin={false}
+                    size="sm"
+                    label={text.view}
+                />
+            </div>
+        {/if}
+    </div>
+    {#if effectiveView === "read"}
+        <div class="flex flex-col max-w-2xl min-w-0 gap-5" data-memory-page-read>
+            {#if page.aliases.length > 0 || page.links.length > 0}
+                <div class="flex flex-col min-w-0 gap-1 text-xs text-textcolor2">
+                    {#if page.aliases.length > 0}
+                        <p class="break-words" data-memory-page-aliases>
+                            {text.aliases}: {page.aliases.join(", ")}
+                        </p>
                     {/if}
+                    {@render pageLinks(page, true)}
                 </div>
-                <div data-memory-section-body>
-                    {#each bodyParts(section.body) as part}
-                        <p class="whitespace-pre-wrap" class:text-textcolor2={part.was}>{part.text}</p>
-                    {/each}
-                </div>
-            </section>
-        {:else}
-            <p class="text-textcolor2">{text.noSections}</p>
-        {/each}
-        {@render pageMentions()}
+            {/if}
+            {#each readSections(page) as section}
+                {@const parts = bodyParts(section.body)}
+                {@const wasLines = parts.filter(({ was }) => was).flatMap(({ text }) => text.split("\n")).length}
+                {@const showWas = wasOpen.includes(section.heading)}
+                <section
+                    class={"flex flex-col min-w-0 gap-1 break-words" +
+                        (section.heading === CURRENT_STATE ? " p-3 rounded-md bg-darkbutton/40" : "")}
+                    data-memory-section={section.heading}
+                >
+                    <div class="flex flex-wrap items-center gap-2">
+                        <h3 class={LABEL}>{codeText(text.headings, section.heading)}</h3>
+                        {#each FLAGS as flag (flag)}
+                            {#if section[flag]}
+                                <span
+                                    class="px-1.5 text-xs rounded-sm bg-darkbutton text-textcolor2"
+                                    data-memory-flag={flag}
+                                >
+                                    {text.flags[flag]}
+                                </span>
+                            {/if}
+                        {/each}
+                        {#if section.locked}
+                            <span class="px-1.5 text-xs rounded-sm bg-darkbutton text-textcolor2">{text.locked}</span>
+                        {/if}
+                    </div>
+                    <div data-memory-section-body>
+                        {#each showWas ? parts : parts.filter(({ was }) => !was) as part}
+                            <p class="whitespace-pre-wrap" class:text-textcolor2={part.was}>{part.text}</p>
+                        {/each}
+                    </div>
+                    {#if wasLines > 0}
+                        <button
+                            type="button"
+                            class="flex items-center self-start gap-1 text-xs transition-colors text-textcolor2 hover:text-textcolor"
+                            aria-expanded={showWas}
+                            onclick={() => toggleWas(section.heading)}
+                            data-memory-section-was
+                        >
+                            {#if showWas}
+                                <ChevronDownIcon size={12} class="shrink-0" />
+                            {:else}
+                                <ChevronRightIcon size={12} class="shrink-0" />
+                            {/if}
+                            {text.wasLines(wasLines)}
+                        </button>
+                    {/if}
+                </section>
+            {:else}
+                <p class="text-textcolor2">{text.noSections}</p>
+            {/each}
+            {@render pageMentions()}
+        </div>
     {:else}
         {#if page.type !== "scene" && !inTrash}
             {@render renameControl(page)}
         {/if}
-        <p class="text-textcolor2">{codeText(text.types, page.type)}</p>
         {#if page.aliases.length > 0}
             <p class="break-words">{text.aliases}: {page.aliases.join(", ")}</p>
         {/if}
         {#if page.type !== "scene" && !inTrash}
             {@render aliasesControl(page)}
         {/if}
-        {@render pageLinks(page)}
+        {@render pageLinks(page, false)}
         {#if page.trashedAt !== undefined}
             <p class="text-textcolor2" data-memory-trashed>{toolText.trashed}</p>
             <div class="flex flex-wrap items-center gap-2" data-memory-page-tools>
@@ -1960,27 +2037,44 @@
     {/if}
 {/snippet}
 
-{#snippet searchControls()}
+{#snippet listControls()}
     {#if only !== "unsupported"}
-        <form
-            class="flex items-start min-w-0 gap-2"
-            data-memory-page-filter
-            onsubmit={submitSearch}
-            oncompositionstart={() => (composing = true)}
-            oncompositionend={() => (composing = false)}
-        >
-            <div class="flex-1 min-w-0">
-                <TextInput bind:value={query} placeholder={text.filter} size="sm" fullwidth />
-            </div>
-            <button
-                type="submit"
-                class="shrink-0 px-2 py-1 transition-colors border rounded-md border-darkborderc text-textcolor2 hover:text-textcolor disabled:opacity-50 disabled:cursor-not-allowed"
-                disabled={!queryFits || searching}
-                data-memory-search-text
+        <div class="flex items-start min-w-0 gap-2">
+            <form
+                class="flex flex-col flex-1 min-w-0 gap-1"
+                data-memory-page-filter
+                onsubmit={submitSearch}
+                oncompositionstart={() => (composing = true)}
+                oncompositionend={() => (composing = false)}
             >
-                {text.searchText}
-            </button>
-        </form>
+                <TextInput bind:value={query} placeholder={text.filter} size="sm" fullwidth />
+                {#if trimmedQuery !== "" && !showingSearch}
+                    <button
+                        type="submit"
+                        class="flex items-center self-start gap-1 text-xs underline transition-colors decoration-dotted underline-offset-4 text-textcolor2 enabled:hover:text-textcolor disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled={!queryFits || searching}
+                        data-memory-search-text
+                    >
+                        {text.searchText}
+                        <CornerDownLeftIcon size={12} class="shrink-0" aria-hidden="true" />
+                    </button>
+                {/if}
+            </form>
+            {#if canCreateNote && !newNoteOpen}
+                <button
+                    type="button"
+                    class="p-1.5 transition-colors border rounded-md shrink-0 border-darkborderc text-textcolor2 enabled:hover:text-textcolor disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled={controlsOff}
+                    aria-label={toolText.newNote}
+                    title={toolText.newNote}
+                    onclick={startNewNote}
+                    data-memory-new-note
+                >
+                    <PlusIcon size={16} aria-hidden="true" />
+                </button>
+            {/if}
+        </div>
+        {@render newNoteForm()}
     {/if}
 {/snippet}
 
@@ -2064,8 +2158,7 @@
     {:else if only === "unsupported" && listedPages.length === 0}
         <p class="text-textcolor2" data-memory-unsupported-resolved>{unsupportedText.resolved}</p>
     {:else if contents.pages.length === 0 && contents.trash.length === 0}
-        {@render newNoteControl()}
-        {@render searchControls()}
+        {@render listControls()}
         {#if showingSearch}
             {@render searchHits()}
         {:else}
@@ -2075,38 +2168,48 @@
     {:else}
         <div class="flex flex-col min-w-0 gap-3 sm:flex-row">
             <div class="flex flex-col min-w-0 gap-2 sm:w-52 sm:shrink-0">
-                {@render newNoteControl()}
-                {@render searchControls()}
+                {@render listControls()}
                 {#if showingSearch}
                     {@render searchHits()}
                 {:else}
+                    {#if usedCount > 0}
+                        <p class="flex items-center gap-2 px-2 text-xs text-textcolor2" data-memory-used-legend>
+                            <span class="rounded-full size-1.5 shrink-0 bg-secondary-500"></span>
+                            {text.usedLegend(usedCount)}
+                        </p>
+                    {/if}
                     <ul class="flex flex-col min-w-0 gap-0.5">
                         {#if normalizedQuery !== "" && listedPages.length === 0}
-                            <li class="text-textcolor2" data-memory-page-filter-none>{text.filterNone}</li>
+                            <li class="px-2 text-textcolor2" data-memory-page-filter-none>{text.filterNone}</li>
                         {/if}
                         {#each treeRows.slice(0, shownRows) as { row, group } (row.id)}
                             {#if group !== null}
-                                <li class="mt-1 text-textcolor2" data-memory-page-group={group}>
+                                <li class="px-2 mt-2 text-xs text-textcolor2" data-memory-page-group={group}>
                                     {codeText(text.types, group)}
                                 </li>
                             {/if}
                             <li class="min-w-0">
                                 <button
                                     type="button"
-                                    class={"flex flex-wrap items-center w-full min-w-0 px-2 py-1 text-left transition-colors rounded-md gap-x-2 hover:bg-selected disabled:cursor-not-allowed" +
+                                    class={"flex items-center w-full min-w-0 px-2 py-1 text-left transition-colors rounded-md gap-x-2 hover:bg-selected disabled:cursor-not-allowed" +
                                         (row.id === selectedId ? " bg-selected" : "")}
                                     aria-current={row.id === selectedId}
                                     disabled={sending}
                                     onclick={() => select(row.id)}
                                     data-memory-page={row.id}
                                 >
-                                    <span class="min-w-0 break-words">{row.title}</span>
                                     {#if usedPages.has(row.id)}
                                         <span
-                                            class="px-1.5 rounded-sm bg-darkbutton text-secondary-500"
-                                            data-memory-used>{panelText.usedInLastSend}</span
-                                        >
+                                            class="rounded-full size-1.5 shrink-0 bg-secondary-500"
+                                            role="img"
+                                            aria-label={panelText.usedInLastSend}
+                                            title={panelText.usedInLastSend}
+                                            data-memory-used
+                                        ></span>
+                                    {:else if usedCount > 0}
+                                        <span class="size-1.5 shrink-0"></span>
                                     {/if}
+                                    <span class="min-w-0 break-words">{row.title}</span>
                                 </button>
                             </li>
                         {/each}
@@ -2122,7 +2225,7 @@
                             </li>
                         {/if}
                         {#if only !== "unsupported" && contents.trash.length > 0}
-                            <li class="mt-2 text-textcolor2" data-memory-trash-group>{toolText.trash}</li>
+                            <li class="px-2 mt-2 text-xs text-textcolor2" data-memory-trash-group>{toolText.trash}</li>
                             {#each contents.trash as row (row.id)}
                                 <li class="min-w-0">
                                     <button

@@ -2829,6 +2829,8 @@ export const languageEnglish = {
             filter: "Find a page by title",
             filterNone: "No page title matches.",
             searchText: "Search text",
+            usedLegend: (count: number) => `Used in the last send · ${count}`,
+            wasLines: (count: number) => `Earlier text (${count})`,
             searchNone: "Nothing matches.",
             findMore: (max: number) => `Showing the first ${max} matches.`,
             eventsNaming: "Events naming this page",

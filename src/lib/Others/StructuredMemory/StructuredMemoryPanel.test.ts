@@ -872,12 +872,15 @@ it("searches page and event text, selects hits, and restores the tree when clear
     await open();
     click('[data-memory-page="scene"]');
     await settle();
+    // The search action is offered only for typed text whose hits are not already showing.
+    expect(query("[data-memory-search-text]")).toBeNull();
     await setFilter("beacon");
     expect(reads("find?q=")).toHaveLength(0);
     expect(query("[data-memory-search-text]")?.textContent?.trim()).toBe(language.structuredMemory.pages.searchText);
     click("[data-memory-search-text]");
     await settle();
     expect(reads("find?q=")).toHaveLength(1);
+    expect(query("[data-memory-search-text]")).toBeNull();
     expect(query("[data-memory-page]")).toBeNull();
     expect(
         [...target.querySelectorAll<HTMLElement>("[data-memory-find-id]")].map((hit) => [
@@ -1152,20 +1155,43 @@ it("says when a page's lookup fails and when its event list was cut", async () =
     );
 });
 
-it("shows a page with nothing said of it without empty blocks, and dims a replaced value's line", async () => {
+it("shows a page with nothing said of it without empty blocks, the current state first, a replaced value's line folded", async () => {
     const state = serveMemory();
-    state.page.sections[0].body = "The gate is open.\n(was: The gate is shut.)";
+    state.page.sections[0].body = "The gate is open.\n(was: The gate is shut.)\n(was: The gate is barred.)";
+    state.page.sections.push({ ...state.page.sections[0], heading: "currentState", body: "Guarded." });
     await open();
     click('[data-memory-page="p"]');
     await settle();
     expect(reads("find?page=p")).toHaveLength(1);
     for (const block of ["knowledge", "shifts", "threads", "events"])
         expect(query(`[data-memory-page-${block}]`)).toBeNull();
-    const parts = [...target.querySelectorAll<HTMLElement>("[data-memory-section-body] p")];
-    expect(parts.map((part) => [part.textContent, part.classList.contains("text-textcolor2")])).toEqual([
+    expect(
+        [...target.querySelectorAll<HTMLElement>("[data-memory-section]")].map(
+            (section) => section.dataset.memorySection,
+        ),
+    ).toEqual(["currentState", "Facts"]);
+    const parts = () =>
+        [...target.querySelectorAll<HTMLElement>('[data-memory-section="Facts"] [data-memory-section-body] p')].map(
+            (part) => [part.textContent, part.classList.contains("text-textcolor2")],
+        );
+    const toggle = () => query('[data-memory-section="Facts"] [data-memory-section-was]');
+    expect(query('[data-memory-section="currentState"] [data-memory-section-was]')).toBeNull();
+    expect(parts()).toEqual([["The gate is open.", false]]);
+    expect(toggle()?.textContent?.trim()).toBe(language.structuredMemory.pages.wasLines(2));
+    expect(toggle()?.getAttribute("aria-expanded")).toBe("false");
+    click('[data-memory-section="Facts"] [data-memory-section-was]');
+    expect(toggle()?.getAttribute("aria-expanded")).toBe("true");
+    expect(parts()).toEqual([
         ["The gate is open.", false],
-        ["(was: The gate is shut.)", true],
+        ["(was: The gate is shut.)\n(was: The gate is barred.)", true],
     ]);
+    // Another page starts folded, and so does this one when it is selected again.
+    click('[data-memory-page="scene"]');
+    await settle();
+    click('[data-memory-page="p"]');
+    await settle();
+    expect(toggle()?.getAttribute("aria-expanded")).toBe("false");
+    expect(parts()).toEqual([["The gate is open.", false]]);
 });
 
 it("reads page text without editing controls and remembers Manage across page selections", async () => {
@@ -1199,9 +1225,10 @@ it("reads page text without editing controls and remembers Manage across page se
     expect(query("[data-memory-section-edit]")).toBeNull();
     expect(pageViewButton("read")?.getAttribute("aria-pressed")).toBe("true");
     expect(query("[data-memory-page-detail] h2")?.textContent).toBe("The gate");
-    const metadata = query("[data-memory-page-detail] h2")!.nextElementSibling!;
-    expect(metadata.textContent).toContain(language.structuredMemory.pages.types.location);
-    expect(metadata.textContent).toContain("North entrance, Old gate");
+    expect(query("[data-memory-page-detail] [data-memory-page-type]")?.textContent?.trim()).toBe(
+        language.structuredMemory.pages.types.location,
+    );
+    expect(query("[data-memory-page-aliases]")?.textContent).toContain("North entrance, Old gate");
     expect(query('[data-memory-section="Facts"] h3')?.textContent).toBe("Facts");
     expect(query('[data-memory-section="Blank"]')).toBeNull();
     expect(query("[data-memory-section-body] em")).toBeNull();
@@ -1741,6 +1768,11 @@ it("badges only verified Pages and Timeline records from the newest valid report
             .filter((row) => row.querySelector("[data-memory-used]"))
             .map((row) => row.getAttribute(attribute));
     expect(badged("[data-memory-page]", "data-memory-page")).toEqual(["p"]);
+    // The row carries a dot that names itself, and one legend line counts the pages the send used.
+    const dot = query('[data-memory-page="p"] [data-memory-used]')!;
+    expect(dot.textContent).toBe("");
+    expect(dot.getAttribute("aria-label")).toBe(language.structuredMemory.panel.usedInLastSend);
+    expect(query("[data-memory-used-legend]")?.textContent?.trim()).toBe(language.structuredMemory.pages.usedLegend(1));
     await chooseTab("timeline");
     expect(badged("[data-memory-event]", "data-memory-event")).toEqual(["event"]);
     patchMessage(ref, "a1", {
@@ -1750,6 +1782,7 @@ it("badges only verified Pages and Timeline records from the newest valid report
     expect(query("[data-memory-used]")).toBeNull();
     await chooseTab("pages");
     expect(query("[data-memory-used]")).toBeNull();
+    expect(query("[data-memory-used-legend]")).toBeNull();
 });
 
 it("follows record links between tabs and opens the chat and closes the panel for a message link", async () => {

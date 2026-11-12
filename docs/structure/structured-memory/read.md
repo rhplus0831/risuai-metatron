@@ -160,30 +160,35 @@ rounds; `memory_events.seq` is storage order. `memoryTimelineRows` owns message 
 [page tools](pages.md); each tab's contract holds its view rules. `open(target)` becomes the chosen tab's `focus`;
 `jump(messageId)` opens the chat with `setChatOpen`, calls `requestMessageJump`, then closes the panel.
 
-A page opens in `read`: its title, type and aliases, its links, and each section with a body as plain text, the marks as
-badges, a `(was: ...)` line dimmed. `manage` is the checking view, with every control, provenance, and the history. The
+A page opens in `read`: its title, type and aliases, its links, and each section with a body as plain text under a small
+label, the marks as badges, `currentState` first and set apart. A section's `(was: ...)` lines are folded behind a count
+and show dimmed when opened; another selection folds them again. Read's record links are `MemoryLinkButton`'s `quiet`
+form and its text column is capped. `manage` is the checking view, with every control, provenance, and the history. The
 choice lasts while Pages is mounted; Evidence missing, a page in the trash, and a jump to a history entry show `manage`.
 The jump scrolls its row once, when both the diff and the history list have rendered; another entry, page, target, or
 chat drops it. Links name live pages by title and select them; an id with no live page is a disabled button. A title
 filter narrows the tree before `memoryPageTree` groups it, so an emptied type loses its header; the trash list is not
 filtered.
 
-The title filter's Search text button or form submit reads `/find?q=...` through `findStructuredMemory`, including in
-chats with events but no pages. The action is disabled for blank or over-100-character trimmed input and while reading.
-The hits replace the tree, its no-match line, and show-more control while the trimmed input equals the searched text;
-editing it to anything else drops the hits and restores the filtered tree. Page hits show title, heading when present,
-and excerpt and select that page; event hits show title and excerpt and open Timeline. Text stays plain. An empty read
-or failure has its own line; `more` says the list was cut at `MEMORY_FIND_HITS_MAX` (200). Active searches rerun on
-`refresh`; older answers from another chat, input, read, or refresh cannot replace them. Evidence missing has no search.
+The tree marks a page the last send used with a dot, and one legend line above it names the dot and counts those among
+the listed pages. The title filter's Search text button or form submit reads `/find?q=...` through
+`findStructuredMemory`, including in chats with events but no pages. The button shows only for typed text whose hits are
+not already showing; the action is disabled for over-100-character trimmed input and while reading, and a blank submit
+does nothing. The hits replace the tree, its no-match line, and show-more control while the trimmed input equals the
+searched text; editing it to anything else drops the hits and restores the filtered tree. Page hits show title, heading
+when present, and excerpt and select that page; event hits show title and excerpt and open Timeline. Text stays plain.
+An empty read or failure has its own line; `more` says the list was cut at `MEMORY_FIND_HITS_MAX` (200). Active searches
+rerun on `refresh`; older answers from another chat, input, read, or refresh cannot replace them. Evidence missing has
+no search.
 
 One page lookup (`/find?page=...`) per selection and `refresh` answers what the chat's events and threads say of the
 page. `read` asks for it on selection and shows four blocks under the sections, each only when it has rows: what the
-page knows or believes (each fact with its event's link, a believed or secret one marked), the newest relationship shift
-per other page and direction, the threads naming it with their states (running ones first), and the events naming it.
-`manage` shows the events alone behind a closed disclosure and asks when it opens; an answer serves both views until the
-selection or `refresh` moves, and a refresh's reread keeps the rows it replaces until it settles. The page's own
-`knowledge` and `relationships` sections are the writer's digest, which its rules keep short, so these blocks are where
-a fact recorded only on an event shows.
+page knows or believes (each fact over one line holding its believed and secret marks and its event's link), the newest
+relationship shift per other page and direction, the threads naming it with their states (running ones first), and the
+events naming it. `manage` shows the events alone behind a closed disclosure and asks when it opens; an answer serves
+both views until the selection or `refresh` moves, and a refresh's reread keeps the rows it replaces until it settles.
+The page's own `knowledge` and `relationships` sections are the writer's digest, which its rules keep short, so these
+blocks are where a fact recorded only on an event shows.
 
 The event list is newest first, unknown positions last, each row with its story time and an Important mark from
 `importantEventGrade`. It shows the newest `RECENT_EVENTS` (5) and every important event until Show all is pressed, so a
