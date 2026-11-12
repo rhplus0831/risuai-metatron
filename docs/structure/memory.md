@@ -401,11 +401,11 @@ lookahead starts at stored coverage and does not defer summaries.
   its copy never held. Reloading ends these limitations. Decision: owner, 2026-11-12.
 - A mode change converts nothing and asks nothing new: a chat entering Structured Memory with stored summaries shows the
   existing adopt-or-decline question, and its summaries and records stay for a later change back. Decision: Per-Chat
-  Memory plan, D10 ([plan](../plan/per-chat-memory.md)).
+  Memory plan, D10.
 - Writers inside a job (record now or the gap run when the tab must serve the model, and a send's own HypaV3 summaries)
   check the chat's algorithm only when admitted; a mode change during that job does not stop them. Detached tasks
   recheck at every window and commit ([Background memory task](#background-memory-task)). Decision: Per-Chat Memory
-  plan, D17 ([plan](../plan/per-chat-memory.md)).
+  plan, D17.
 - A message edited after a hand-off invalidates its window and every later one: a chat edited often while a long backlog
   is summarized can restart the backlog more than once (not measured). Decision: HypaV3 Background Memory D15 and D16,
   [archive](../archived-plan/README.md).

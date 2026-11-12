@@ -187,6 +187,11 @@ Work that finished plans named and left: features put off, a plan's Later list, 
 
 - Not planned (the plan's Not In This Plan list): a raw window measured in tokens, or one that keeps history until the context is full; chapter or arc summaries of what is older than the timeline; opening the events lane more often, or any change to its thresholds; a share per chat (shares as a preset setting landed on 2026-11-12); a change to `eventSummaryChars`, `keyLinesPerEvent`, or anything the writer stores; card text that stays byte-stable for a provider's prompt cache.
 
+## Per-Chat Memory
+
+- Not planned (the plan's Not In This Plan list): an embedding model per chat; a character-level default for new chats, or "apply to every chat of this character"; converting records to summaries or summaries to records on a mode change, beyond the existing adoption; removing `supaMemory` or `supaMemoryOnCount` from stored records; Hanurai, HypaV2, or SupaMemory as per-chat modes of their own; preset fields that only some chats override.
+- Left by the run: writers inside a job check the chat's algorithm only when admitted (memory.md Limitations); a send's in-job HypaV3 checkpoint is in [found issues](found-issues.md#memory).
+
 ## Dependency Upgrades
 
 Not a plan: the upgrade rounds of 2026-10-30 left these behind on purpose. Versions were read from `package.json` on 2026-11-11.

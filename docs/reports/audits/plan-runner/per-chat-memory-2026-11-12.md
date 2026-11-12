@@ -1,6 +1,6 @@
 # Per-Chat Memory Plan audit, 2026-11-12
 
-- Plan: `docs/plan/per-chat-memory.md`
+- Plan: `docs/plan/per-chat-memory.md`, archived: `git show 4be7b051b:docs/plan/per-chat-memory.md`
 - Commit audited: `b6d07a04a` (`dev`); the corrected plan is committed with this report
 - Mode: `full`
 - Model: GPT-6-Astra (`xhigh`), read-only, in place of the usual Sol session because the plan crosses the server
