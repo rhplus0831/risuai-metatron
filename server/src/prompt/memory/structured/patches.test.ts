@@ -695,6 +695,33 @@ it("refuses remaining edits that would empty the page after an oversized creatio
     ]);
 });
 
+it("writes no (was: ...) line on a character's currentState, which each event replaces whole", () => {
+    const character: MemoryPage = {
+        ...page("who"),
+        type: "character",
+        sections: [section("identity", "A visitor"), section("currentState", "Waiting\n(was: Arriving)")],
+    };
+    const changes: PageChanges = new Map();
+    const warnings = applyPatches({
+        pages: new Map([[character.id, character]]),
+        changes,
+        patches: ["identity", "currentState"].map((heading) => ({
+            ...patch(heading, { body: `New ${heading}`, was: `Old ${heading}`, conflict: "change" }),
+            pageId: character.id,
+        })),
+        seen: shown([character]),
+        stamp: stamp(),
+    });
+    expect(warnings).toEqual([]);
+    const after = changes.get(character.id)!.page;
+    expect(after.sections.map(({ body }) => body)).toEqual(["New identity\n(was: Old identity)", "New currentState"]);
+    // The replaced body is in the history, so dropping the line loses nothing.
+    expect(after.history.map(({ heading, before }) => [heading, before?.body])).toEqual([
+        ["identity", "A visitor"],
+        ["currentState", "Waiting\n(was: Arriving)"],
+    ]);
+});
+
 it("keeps one (was: ...) line across replacements, refuses a body of was lines, and shows and keeps the disputed mark", () => {
     let chained = page();
     chained.sections[0] = section("Gate", "B\n(was: A)");

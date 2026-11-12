@@ -1,6 +1,7 @@
 import { truncateCheckpointText as clampText } from "../../../../../shared/chatCheckpoints.ts";
 import {
     CHARACTER_SECTION_SLOTS,
+    type CharacterSectionSlot,
     MEMORY_PATCH_CONFLICTS,
     MEMORY_PATCH_OPS,
     type MemoryHistoryChangeKind,
@@ -294,11 +295,15 @@ function withoutWasLines(body: string): string {
         .trim();
 }
 
-/** What an upsert makes of `section`, or `sectionTooLong` when a joined body would not fit. */
-function upsertOver(section: MemorySection, patch: MemoryPatch, body: string): SectionEdit | string {
+/**
+ * What an upsert makes of `section`, or `sectionTooLong` when a joined body would not fit. `keepsWas` is
+ * false for a section whose every change replaces it whole, where the line would only repeat the last
+ * turn: the page's history still holds the old body.
+ */
+function upsertOver(section: MemorySection, patch: MemoryPatch, body: string, keepsWas: boolean): SectionEdit | string {
     const { heading, conflict, confidence } = patch;
     const disputed = conflict === "contradiction" && (confidence ?? 0) < LIMITS.contradictionConfidence;
-    const was = replacedValue(patch.was);
+    const was = keepsWas ? replacedValue(patch.was) : "";
     const joined = disputed
         ? `${disputedStanding(section.body)}\n${DISPUTED_LINE} ${body}`
         : was === ""
@@ -353,7 +358,9 @@ function resolveGroup(
             return "sectionTooLong";
         }
         if (!section) sections++;
-        return section ? upsertOver(section, patch, body) : { heading, body, kind: "create" };
+        // A character's currentState holds the present alone (`PATCH_RULES`), so it keeps no replaced value.
+        const keepsWas = !(page.type === "character" && heading === ("currentState" satisfies CharacterSectionSlot));
+        return section ? upsertOver(section, patch, body, keepsWas) : { heading, body, kind: "create" };
     });
 }
 
@@ -390,7 +397,8 @@ function emptiesPage(page: MemoryPage, edits: readonly SectionEdit[]): boolean {
  * `<old>\n[disputed] <new>`, where `<old>` is a disputed body's standing value (`disputedStanding`),
  * sets `disputed` and warns. A replacing upsert appends `(was: ...)` for
  * nonblank `was`, cut before any `(was:` it carries, to a body stripped of such lines, so a section holds
- * one at most. Neither conflict waits for approval.
+ * one at most; a character's `currentState` gets none, because it is replaced whole on nearly every
+ * event and the line would repeat the turn before. Neither conflict waits for approval.
  */
 export function applyPatches(arg: {
     changes: PageChanges;
