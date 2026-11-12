@@ -35,18 +35,9 @@
 // ports are fixed, so a run waits for E2E_LOCK_PORT and then for the stack's ports to be free. There
 // is no rerun of failed specs alone: the specs share one stack's store in file order.
 // See `docs/structure/test-harness.md`.
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-    appendFileSync,
-    copyFileSync,
-    existsSync,
-    mkdirSync,
-    mkdtempSync,
-    readFileSync,
-    rmSync,
-    writeFileSync,
-} from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -54,6 +45,7 @@ import { fileURLToPath } from "node:url";
 import { changedFiles, loadSpecs, repositoryFiles, selectSpecs, specSummary } from "./agentE2e.mjs";
 import { MAX_RERUN_FILES, RESULTS_FILE_ENV, mergeRerun, planRerun, withoutFilters } from "./agentTestResults.mjs";
 import { E2E_SERVER_PORT, E2E_VITE_PORT } from "./playwright/globalSetup.mjs";
+import { workingTreeId } from "./workingTree.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cacheDir = join(root, "node_modules", ".cache", "agent-test");
@@ -295,30 +287,6 @@ async function waitForE2ePorts() {
     }
 }
 
-function git(gitArgs, env = {}) {
-    return spawnSync("git", gitArgs, { cwd: root, env: { ...process.env, ...env }, encoding: "utf8" });
-}
-
-// Tree id of the working tree: a copy of the real index (so unchanged files keep their stat cache
-// and are not re-hashed) with everything staged, written as a tree object. Null outside git.
-// A failed add or write-tree also disables caching; the tests still run.
-function workingTreeId() {
-    const gitDir = git(["rev-parse", "--git-dir"]);
-    if (gitDir.status !== 0) return null;
-    const realIndex = join(resolve(root, gitDir.stdout.trim()), "index");
-    const tmp = mkdtempSync(join(tmpdir(), "agent-test-"));
-    const tmpIndex = join(tmp, "index");
-    try {
-        if (existsSync(realIndex)) copyFileSync(realIndex, tmpIndex);
-        const env = { GIT_INDEX_FILE: tmpIndex };
-        if (git(["add", "-A", "--", "."], env).status !== 0) return null;
-        const tree = git(["write-tree"], env);
-        return tree.status === 0 ? tree.stdout.trim() : null;
-    } finally {
-        rmSync(tmp, { recursive: true, force: true });
-    }
-}
-
 function packageVersion(name) {
     try {
         return JSON.parse(readFileSync(join(root, "node_modules", name, "package.json"), "utf8")).version;
@@ -406,7 +374,8 @@ function printStderr(stderr, exitCode) {
     }
 }
 
-const tree = workingTreeId();
+// A failed add or write-tree also disables caching; the tests still run.
+const tree = workingTreeId(root);
 if (tree === null) log("not a git checkout (or git failed): running without the cache");
 
 const argsHash = createHash("sha256").update(JSON.stringify(keyArgs)).digest("hex").slice(0, 16);

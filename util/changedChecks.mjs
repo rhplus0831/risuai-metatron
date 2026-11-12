@@ -17,18 +17,24 @@
 //     roots (`src/`, `server/`, `shared/`, `util/`, `e2e/`, `public/`) that no rule owns. A changed path
 //     outside those roots with no rule (docs, root Markdown, the lockfile) is left out of the line.
 //   - `types --all` (`pnpm check`): all three programs, whatever changed, with no git lookup and no
-//     owner line. Nothing is skipped and no stored result is replayed, so CI runs this one.
+//     owner line. No program is skipped.
 // Either `types` form starts its programs together: each prints one block when it ends (its name, its
 // duration, its exit code, then its whole output), so blocks never interleave and come in the order
 // the programs finish, not a fixed one. The last line is the verdict (`typeCheckVerdict`): it names
 // every program that failed, since a failed block can sit above a later passing one. The exit code
 // is 1 when any program failed. Side by side the three take as long as `svelte-check` alone.
+// Either form replays a program's stored result instead of running it when nothing the program reads
+// has changed since a run in any worktree of the repository (`util/typeCheckCache.mjs` says what the
+// key holds); the block and the verdict say so. `--force` runs every selected program and replaces
+// its stored result, and so does `CI` in the environment: `util/ci/check.sh` passes `--force`.
 // `--base <ref>` picks another base. `pnpm format:check` stays the full formatting check; CI runs it.
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { OWNED_ROOTS, ownerOf, readOwnership } from "./docsOwner.mjs";
+import { cacheDirectory, cachedRun, checkSettings, programKey, workingTreeFiles } from "./typeCheckCache.mjs";
+import { workingTreeId } from "./workingTree.mjs";
 
 /** Paths outside all three type-checked programs: docs and assets. */
 const INERT = [
@@ -149,10 +155,10 @@ function binPath(root, pkg, name) {
 }
 
 /**
- * Runs a package's bin with Node, buffering its output so parallel runs print one block each, headed
- * `[<tag>] <label> (<seconds> s, exit <code>)`. Resolves to the exit code, 1 when a signal ended it.
+ * Runs a package's bin with Node, holding its output so parallel runs print one block each. Resolves
+ * to `{ code, output, seconds }`; `code` is null when a signal ended the program.
  */
-function run(root, tag, label, pkg, name, args) {
+function execute(root, pkg, name, args) {
     return new Promise((resolve) => {
         const started = Date.now();
         // The child writes to a pipe, so it is told when the block will be shown on a terminal.
@@ -162,21 +168,38 @@ function run(root, tag, label, pkg, name, args) {
         child.stdout.on("data", (chunk) => chunks.push(chunk));
         child.stderr.on("data", (chunk) => chunks.push(chunk));
         child.on("close", (code) => {
-            const seconds = ((Date.now() - started) / 1000).toFixed(1);
-            process.stdout.write(`[${tag}] ${label} (${seconds} s, exit ${code})\n${Buffer.concat(chunks)}`);
-            resolve(code ?? 1);
+            resolve({ code, output: Buffer.concat(chunks).toString("utf8"), seconds: (Date.now() - started) / 1000 });
         });
     });
 }
 
+/** Prints a run's block, headed `[<tag>] <label> (<seconds> s, exit <code>)`; resolves to the exit code, 1 for a signal. */
+async function run(root, tag, label, pkg, name, args) {
+    const { code, output, seconds } = await execute(root, pkg, name, args);
+    process.stdout.write(`[${tag}] ${label} (${seconds.toFixed(1)} s, exit ${code})\n${output}`);
+    return code ?? 1;
+}
+
+function ago(iso) {
+    const minutes = Math.round((Date.now() - Date.parse(iso)) / 60000);
+    if (minutes < 1) return "just now";
+    if (minutes < 60) return `${minutes} min ago`;
+    const hours = Math.round(minutes / 60);
+    return hours < 48 ? `${hours} h ago` : `${Math.round(hours / 24)} days ago`;
+}
+
 /**
- * The exit code and last line of a type check from its programs' `results` (`{ label, code }`, in
- * the order they were started): 1 and the failed programs when any exit code is not 0.
+ * The exit code and last line of a type check from its programs' `results` (`{ label, code, replayed }`,
+ * in the order they were started): 1 and the failed programs when any exit code is not 0. The line
+ * counts the results replayed from the cache.
  */
 export function typeCheckVerdict(tag, results, seconds) {
     const failed = results.filter(({ code }) => code !== 0);
     if (results.length === 0) return { code: 0, line: `[${tag}] no program to run` };
-    const took = `${results.length} of ${Object.keys(PROGRAMS).length} programs in ${seconds.toFixed(1)} s`;
+    const replayed = results.filter((result) => result.replayed).length;
+    const took =
+        `${results.length} of ${Object.keys(PROGRAMS).length} programs in ${seconds.toFixed(1)} s` +
+        (replayed > 0 ? `, ${replayed} replayed from stored results (--force runs them)` : "");
     if (failed.length === 0) return { code: 0, line: `[${tag}] passed: ${took}` };
     const names = failed.map(({ label, code }) => `${label} (exit ${code})`).join(", ");
     return { code: 1, line: `[${tag}] FAILED: ${names}; ${took}` };
@@ -199,18 +222,54 @@ async function format(root, files, write) {
     ]);
 }
 
-/** Runs the programs `targets` selects side by side and prints the verdict line; resolves to the exit code. */
-async function types(root, tag, targets) {
+/**
+ * The result-cache key of each program for the working tree's `files` (`workingTreeFiles`) under
+ * `settings` (`checkSettings`): a program's key covers only the files `typeCheckTargets` says reach it.
+ */
+export function programKeys(settings, files) {
+    return Object.fromEntries(
+        Object.entries(PROGRAMS).map(([program, { pkg, bin, args }]) => [
+            program,
+            programKey([pkg, bin, ...args], settings, files, (file) => typeCheckTargets([file])[program]),
+        ]),
+    );
+}
+
+/**
+ * Runs the programs `targets` selects side by side, each through the result cache, and prints the
+ * verdict line; resolves to the exit code. `force` runs every program whatever the cache holds.
+ */
+async function types(root, tag, targets, force) {
     const started = Date.now();
+    // What shapes a program's stored output: colors for a terminal, and `svelte-check` picks its
+    // machine format when CLAUDECODE is 1. A person never gets an agent's block replayed, nor the reverse.
+    const style = { terminal: Boolean(process.stdout.isTTY), agent: process.env.CLAUDECODE === "1" };
+    const installed = checkSettings(root);
+    const settings = installed && { ...installed, style };
+    const tree = settings && workingTreeFiles(root);
+    const dir = tree && cacheDirectory(root);
+    if (!dir) console.log(`[${tag}] no result cache: not a git checkout, or the installed packages cannot be read`);
+    const keys = dir ? programKeys(settings, tree.files) : {};
+    const unchanged = () => workingTreeId(root) === tree.tree;
     const runs = [];
-    for (const [key, { label, pkg, bin, args }] of Object.entries(PROGRAMS)) {
-        if (targets[key]) {
-            // `tsc` colors its output only for a terminal, and here it writes to a pipe.
-            const shown = bin === "tsc" && process.stdout.isTTY ? [...args, "--pretty"] : args;
-            runs.push(run(root, tag, label, pkg, bin, shown).then((code) => ({ label, code })));
-        } else {
-            console.log(`[${tag}] ${label}: skipped, no changed path reaches the ${key} program`);
+    for (const [program, { label, pkg, bin, args }] of Object.entries(PROGRAMS)) {
+        if (!targets[program]) {
+            console.log(`[${tag}] ${label}: skipped, no changed path reaches the ${program} program`);
+            continue;
         }
+        const key = keys[program] ?? null;
+        // `tsc` colors its output only for a terminal, and here it writes to a pipe.
+        const shown = bin === "tsc" && process.stdout.isTTY ? [...args, "--pretty"] : args;
+        const result = cachedRun({ dir, key, force, unchanged, run: () => execute(root, pkg, bin, shown) });
+        runs.push(
+            result.then(({ code, output, seconds, replayed, finishedAt }) => {
+                const how = replayed
+                    ? `replayed: nothing it reads changed since the ${seconds.toFixed(1)} s run ${ago(finishedAt)}`
+                    : `${seconds.toFixed(1)} s`;
+                process.stdout.write(`[${tag}] ${label} (${how}, exit ${code})\n${output}`);
+                return { label, code: code ?? 1, replayed };
+            }),
+        );
     }
     const { code, line } = typeCheckVerdict(tag, await Promise.all(runs), (Date.now() - started) / 1000);
     console.log(line);
@@ -221,17 +280,21 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
     const [command, ...args] = process.argv.slice(2);
     const baseIndex = args.indexOf("--base");
     const all = command === "types" && args.includes("--all");
+    const force = args.includes("--force") || Boolean(process.env.CI);
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     if (
         !["format", "types"].includes(command) ||
         (baseIndex !== -1 && (all || !args[baseIndex + 1])) ||
-        (args.includes("--all") && !all)
+        (command !== "types" && (args.includes("--all") || args.includes("--force")))
     ) {
-        console.error("usage: node util/changedChecks.mjs <format [--write] | types> [--base <ref>] | types --all");
+        console.error(
+            "usage: node util/changedChecks.mjs format [--write] [--base <ref>] | types [--force] [--base <ref>] | " +
+                "types --all [--force]",
+        );
         process.exit(2);
     }
     if (all) {
-        process.exitCode = await types(root, "check", { client: true, server: true, e2e: true });
+        process.exitCode = await types(root, "check", { client: true, server: true, e2e: true }, force);
     } else {
         const base = resolveBase(root, baseIndex === -1 ? undefined : args[baseIndex + 1]);
         const files = changedFiles(root, base);
@@ -240,6 +303,6 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
         process.exitCode =
             command === "format"
                 ? await format(root, files, args.includes("--write"))
-                : await types(root, "changed", typeCheckTargets(files));
+                : await types(root, "changed", typeCheckTargets(files), force);
     }
 }

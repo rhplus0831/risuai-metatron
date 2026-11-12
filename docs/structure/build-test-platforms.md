@@ -34,10 +34,16 @@
   `types` skips one of its three programs (client, server, e2e); `types` never narrows a program to the changed files,
   and its first line names the guides owning the changed paths and the unowned source paths.
 - `types --all` is `pnpm check`: client `svelte-check`, server `tsc` (incremental cache in `node_modules/.cache/tsc/`),
-  and e2e `tsc`, with nothing skipped and no stored result replayed, so CI runs it. Both `types` forms start their
-  programs together, print one block per program as it ends, and end with a verdict line (`typeCheckVerdict`) naming
-  every failed program; the exit code is 1 when any failed. Read the verdict line or the exit code: the last block is
-  the slowest program, not the failed one.
+  and e2e `tsc`, none skipped. Both `types` forms start their programs together, print one block per program as it ends,
+  and end with a verdict line (`typeCheckVerdict`) naming every failed program; the exit code is 1 when any failed. Read
+  the verdict line or the exit code: the last block is the slowest program, not the failed one.
+- `util/typeCheckCache.mjs` (`programKey`, `checkSettings`, `workingTreeFiles`, `cachedRun`): both `types` forms replay
+  a program's stored result, failures included, when nothing that program reads has changed; the block and the verdict
+  say so. Its header lists what a key holds. `util/workingTree.mjs` (`workingTreeId`) gives this cache and the test
+  wrapper the working tree's id.
+- Results are stored per program in `<git common dir>/type-check-cache/`, which every worktree shares, and deleted after
+  14 days. `--force` or `CI` in the environment runs every program: `util/ci/check.sh` passes `--force`. Why per
+  program, without docs, and shared: [measurements](../reports/measurements/type-check-time-2026-11-12.md).
 
 ### Documentation check
 
@@ -165,7 +171,7 @@ in [self-host-server](self-host-server.md).
   requests that target them; a newer run for the same ref cancels the older one. It sets up Node 24, runs
   `corepack enable` (so `pnpm` is the `packageManager` version), and caches the pnpm store at
   `${{ runner.temp }}/pnpm-store` (`PNPM_STORE_DIR`), keyed on `pnpm-lock.yaml`.
-- It then runs `util/ci/check.sh`, whose header lists the steps: `pnpm install --frozen-lockfile`, `pnpm check`,
+- It then runs `util/ci/check.sh`, whose header lists the steps: `pnpm install --frozen-lockfile`, `pnpm check --force`,
   `pnpm format:check`, `pnpm check:tests`, `pnpm check:docs`, `CI=1 pnpm test` (no `slow` tag), and `pnpm build`.
   `pnpm test:slow` and `pnpm test:e2e` are not in CI.
 - The job uses no secrets and no `save/` data. A person can run the same script locally; agents keep using
@@ -249,6 +255,9 @@ even without a save acknowledgement; see [Module import](characters-modules.md#m
 - The service worker paths (`/sw/register` and `/sw/img` with hex paths, fallback `/sw/check`, `/sw/share/*`) and Cache
   Storage `risuCache` are a contract with three consumers. Activation cleanup removes only `/sw/img/` entries: a pending
   share file must survive a worker update.
+- A result the type check replays must be one the programs would produce now. A new input to a program (a file kind
+  `typeCheckTargets` calls inert, a tool, an environment variable that changes the output) goes into the key in
+  `util/typeCheckCache.mjs` in the same change.
 - The asset signer only reads the page's key: abort any IndexedDB upgrade so an absent database stays absent, never
   create the `node` store, and close every opened connection (including a late success after a blocked open). Cache only
   successful tokens, not keys or missing-key results; retain the destination/method/origin/client-id gate and the single
@@ -304,9 +313,12 @@ Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
   stay under the compiler cache without writing generated files.
 - `util/agentDevHost.test.ts` and `util/agentDataSandbox.test.ts` (node) cover the `dev:agent` runner's host resolution
   and the sandbox.
-- `util/changedChecks.test.ts` (node) covers `typeCheckTargets`, `ownersLine`, and `typeCheckVerdict`. Not tested: the
-  spawned programs and their output blocks; after changing the runner, add a type error to a `.svelte`, a `server/`, and
-  an `e2e/` file and check that `pnpm check` reports all three.
+- `util/changedChecks.test.ts` (node) covers `typeCheckTargets`, `ownersLine`, and `typeCheckVerdict`;
+  `util/typeCheckCache.test.ts` (node) covers which edits change which program's key (`programKeys`), the working-tree
+  listing over temporary git repositories, and `cachedRun` (miss, replay, `--force`, what is never stored) over a
+  temporary directory. Not tested: the spawned programs and their output blocks. After changing the runner or the key,
+  run `pnpm check` twice, then add a type error to a `.svelte`, a `server/`, and an `e2e/` file in turn and check that
+  each is reported.
 - `util/{docsBudget,docsRead,docsOwner,docsContracts,docsLedger,docsDue,guideReads}.test.ts` (node) run the
   documentation scripts through exported functions over temporary fixtures; `docsDue` uses temporary git repositories to
   check ownership, commit counts, and verification records.

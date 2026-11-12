@@ -70,7 +70,7 @@ if [ -n "${PNPM_STORE_DIR:-}" ]; then
 fi
 
 step install "${install[@]}"
-step check pnpm check
+step check pnpm check --force
 step format:check pnpm format:check
 step check:tests pnpm check:tests
 step check:docs pnpm check:docs

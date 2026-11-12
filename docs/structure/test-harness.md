@@ -128,8 +128,8 @@ None is in the gate; all are in `util/playwright/`.
 `pnpm test` for agents, and the only entry point that runs tests without `CI` or `HUMAN` (`--tags-filter=slow` is
 `pnpm test:slow`). Across processes:
 
-1. The wrapper keys the cache by the working tree's `git write-tree`, versions, and arguments; a hit replays the stored
-   output before any lock.
+1. The wrapper keys the cache by the working tree's `git write-tree` (`workingTreeId` in `util/workingTree.mjs`),
+   versions, and arguments; a hit replays the stored output before any lock.
 2. A whole-suite run (no file filter) takes the machine-wide lock, so whole-suite runs from every checkout and worktree
    queue instead of sharing the CPUs; queued runs finish one after another in the single run's time
    ([timings](../reports/measurements/test-suite-lock-2026-10-30.md)).

@@ -99,6 +99,24 @@ describe("typeCheckVerdict", () => {
         expect(typeCheckVerdict("changed", [results[0], results[2]], 8).code).toBe(1);
     });
 
+    it("counts the results replayed from the cache, in a pass and in a failure", () => {
+        const results = [
+            { label: "svelte-check", code: 0, replayed: true },
+            { label: "tsc server", code: 2, replayed: true },
+            { label: "tsc e2e", code: 0, replayed: false },
+        ];
+
+        expect(typeCheckVerdict("check", [results[0], results[2]], 7.3).line).toBe(
+            "[check] passed: 2 of 3 programs in 7.3 s, 1 replayed from stored results (--force runs them)",
+        );
+        expect(typeCheckVerdict("check", results, 7.3)).toEqual({
+            code: 1,
+            line:
+                "[check] FAILED: tsc server (exit 2); 3 of 3 programs in 7.3 s, " +
+                "2 replayed from stored results (--force runs them)",
+        });
+    });
+
     it("counts only the programs that ran and passes when none had to", () => {
         expect(typeCheckVerdict("changed", [{ label: "tsc e2e", code: 0 }], 7.3).line).toBe(
             "[changed] passed: 1 of 3 programs in 7.3 s",
