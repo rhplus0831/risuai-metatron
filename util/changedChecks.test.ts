@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { ownersLine, typeCheckTargets } from "./changedChecks.mjs";
+import { ownersLine, typeCheckTargets, typeCheckVerdict } from "./changedChecks.mjs";
 import { parseOwnership } from "./docsOwner.mjs";
 
 describe("ownersLine", () => {
@@ -68,5 +68,59 @@ describe("typeCheckTargets", () => {
         expect(typeCheckTargets(["pnpm-lock.yaml"])).toEqual({ client: true, server: true, e2e: true });
         expect(typeCheckTargets(["vitest.testNetwork.ts"])).toEqual({ client: true, server: true, e2e: true });
         expect(typeCheckTargets(["somewhere/new.ts"])).toEqual({ client: true, server: true, e2e: true });
+    });
+});
+
+describe("typeCheckVerdict", () => {
+    it("passes with exit code 0 when every program exits 0", () => {
+        const results = [
+            { label: "svelte-check", code: 0 },
+            { label: "tsc server", code: 0 },
+            { label: "tsc e2e", code: 0 },
+        ];
+
+        expect(typeCheckVerdict("check", results, 35.44)).toEqual({
+            code: 0,
+            line: "[check] passed: 3 of 3 programs in 35.4 s",
+        });
+    });
+
+    it("fails with exit code 1 and names every failed program, whichever one finished last", () => {
+        const results = [
+            { label: "svelte-check", code: 0 },
+            { label: "tsc server", code: 2 },
+            { label: "tsc e2e", code: 1 },
+        ];
+
+        expect(typeCheckVerdict("check", results, 35)).toEqual({
+            code: 1,
+            line: "[check] FAILED: tsc server (exit 2), tsc e2e (exit 1); 3 of 3 programs in 35.0 s",
+        });
+        expect(typeCheckVerdict("changed", [results[0], results[2]], 8).code).toBe(1);
+    });
+
+    it("counts the results replayed from the cache, in a pass and in a failure", () => {
+        const results = [
+            { label: "svelte-check", code: 0, replayed: true },
+            { label: "tsc server", code: 2, replayed: true },
+            { label: "tsc e2e", code: 0, replayed: false },
+        ];
+
+        expect(typeCheckVerdict("check", [results[0], results[2]], 7.3).line).toBe(
+            "[check] passed: 2 of 3 programs in 7.3 s, 1 replayed from stored results (--force runs them)",
+        );
+        expect(typeCheckVerdict("check", results, 7.3)).toEqual({
+            code: 1,
+            line:
+                "[check] FAILED: tsc server (exit 2); 3 of 3 programs in 7.3 s, " +
+                "2 replayed from stored results (--force runs them)",
+        });
+    });
+
+    it("counts only the programs that ran and passes when none had to", () => {
+        expect(typeCheckVerdict("changed", [{ label: "tsc e2e", code: 0 }], 7.3).line).toBe(
+            "[changed] passed: 1 of 3 programs in 7.3 s",
+        );
+        expect(typeCheckVerdict("changed", [], 0)).toEqual({ code: 0, line: "[changed] no program to run" });
     });
 });
