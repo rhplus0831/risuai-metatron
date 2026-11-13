@@ -199,6 +199,23 @@ function remoteOverrides(loreOverrides: ChatLoreOverride[]) {
     flushSync();
 }
 
+it("renders the character lore token budget above 4096 without an upper limit", () => {
+    install({ globalLore: [] });
+    selectedCharacter()!.loreSettings = { tokenBudget: 8000, scanDepth: 4, recursiveScanning: false };
+    render(true);
+    click(button(language.settings));
+    const caption = [...target.querySelectorAll("span")].find((node) => node.textContent === language.loreBookToken)!;
+    const input = caption.nextElementSibling as HTMLInputElement;
+    expect(input.type).toBe("number");
+    expect(input.value).toBe("8000");
+    expect(input.min).toBe("0");
+    expect(input.hasAttribute("max")).toBe(false);
+
+    edit(input, "9000");
+    expect(selectedCharacter()!.loreSettings.tokenBudget).toBe(9000);
+    expect(input.value).toBe("9000");
+});
+
 beforeEach(() => {
     vi.useFakeTimers();
     vi.mocked(alertConfirm).mockReset().mockResolvedValue(true);

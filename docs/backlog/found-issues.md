@@ -30,7 +30,6 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 - [Assets](#assets): 1
 - [Selection](#selection): 1
 - [Server generation](#server-generation): 1
-- [Settings](#settings): 1
 
 ## Assets
 
@@ -84,21 +83,3 @@ for the length of the count.
 it to a worker thread." A size refusal before encoding at the shared gateway (`tokenizers/index.ts:19`) is the cheap
 bound; it was offered and not taken, since it also refuses legitimate large text. An exact count of a large text
 needs the encode off the serving thread, which is the worker design.
-
-## Settings
-
-### The lorebook token limit inputs cap at 4096 under a default of 8000
-
-Both inputs of the lorebook token limit carry `max` 4096: the global one (`adv.lbToken` in
-`src/ts/setting/memorySettingsData.ts:21`) and the lorebook's own (`src/lib/SideBars/LoreBook/LoreBookSetting.svelte:157`).
-The default is 8000 (`server/src/data/normalize/providers.ts:7`). `NumberInput` passes `max` to the element as an
-attribute only, so a typed value above it is stored, but the stepper stops at 4096. Found 2026-11-13 by the Lore
-Budget Send Stop plan's audit. Checked 2026-11-14 in Chromium (wide review, cut X1, and a second run), on both
-inputs: ArrowUp does nothing at 8000, one ArrowDown from 8000 stores 4096, and a typed 9000 is stored and used. The
-mouse spinners are hidden, so only keyboard stepping reaches it. With the lore budget stop on (the default), a send
-that no longer fits at 4096 stops with the dialog and calls no provider; with the stop off, the entry is left out.
-
-**Why it matters:** that plan's dialog sends a person to these inputs to raise the limit, where the box suggests 4096
-is the most, and one arrow key lowers a stored 8000 to 4096.
-
-**Suggested handling:** drop the `max` or raise it to a value above the default, on both inputs.

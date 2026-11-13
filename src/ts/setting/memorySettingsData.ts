@@ -18,7 +18,7 @@ export const memorySettingsItems: SettingItem[] = [
         type: "number",
         labelKey: "loreBookToken",
         bindKey: "loreBookToken",
-        options: { min: 0, max: 4096 },
+        options: { min: 0 },
     },
     {
         id: "acc.localActivationInGlobalLorebook",

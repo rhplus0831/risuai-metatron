@@ -149,6 +149,13 @@ const DEPENDENT_PAIRS: [string, string][] = [
 const duplicates = (ids: string[]) => ids.filter((id, index) => ids.indexOf(id) !== index);
 
 describe("settings page sections", () => {
+    it("keeps the global lore token budget nonnegative with no obsolete upper limit", () => {
+        const budget = memorySettingsItems.find((item) => item.bindKey === "loreBookToken")!;
+        expect(budget.type).toBe("number");
+        expect(budget.options?.min).toBe(0);
+        expect(budget.options?.max).toBeUndefined();
+    });
+
     it("keeps item ids unique across the catalog", () => {
         expect(duplicates(getFullSettingsData().map((item) => item.id))).toEqual([]);
     });
