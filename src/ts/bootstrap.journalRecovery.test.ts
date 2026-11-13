@@ -530,6 +530,42 @@ describe("boot journal recovery", () => {
         expect(ops()).toEqual([]);
     });
 
+    it("drafts latest-only updates and deletes when the server revision has moved", async () => {
+        page = await newPage();
+        expect(await page.journal.start()).toBe(true);
+        const ui = plain(server.record("ui", "main"));
+        const character = plain(server.record("characters", "c"));
+        await put(page.journal, UI, {
+            latest: intent(JSON.stringify({ ...ui.data, theme: "unsent local theme" }), ui.revision),
+        });
+        await put(page.journal, CHARACTER, { latest: intent(null, character.revision) });
+        const rows = await page.journal.readOwn();
+
+        server.set("ui", "main", { ...ui.data, theme: "remote theme" });
+        server.set("characters", "c", { ...character.data, desc: "remote description" });
+        const remoteUi = plain(server.record("ui", "main"));
+        const remoteCharacter = plain(server.record("characters", "c"));
+        await boot(page);
+        expect({
+            theme: page.settings.ui.theme,
+            character: page.characters.findCharacter("c"),
+        }).toMatchObject({ theme: "remote theme", character: { desc: "remote description" } });
+        expect(page.recoveryDrafts.entries).toHaveLength(2);
+        expect(await page.journal.listDrafts()).toEqual(
+            expect.arrayContaining(
+                rows.map((row) =>
+                    expect.objectContaining({ target: row.target, createdAt: row.createdAt, layers: row.layers }),
+                ),
+            ),
+        );
+        expect(await page.journal.readOwn()).toEqual([]);
+        await flush();
+        expect(ops("ui")).toEqual([]);
+        expect(ops("characters")).toEqual([]);
+        expect(server.record("ui", "main")).toEqual(remoteUi);
+        expect(server.record("characters", "c")).toEqual(remoteCharacter);
+    });
+
     it.each([false, true])("creates only an undispatched absent character (dispatched: %s)", async (dispatched) => {
         const first = await boot();
         await flush();
