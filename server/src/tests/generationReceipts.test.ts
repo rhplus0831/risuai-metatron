@@ -17,7 +17,7 @@ import {
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
 import { createSnapshotManager } from "../data/snapshots.ts";
-import { createGenerationJobs, type GenerationRunner } from "../jobs/generationJobs.ts";
+import { createGenerationJobs, markFailure, type GenerationRunner } from "../jobs/generationJobs.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
 import { createAuthStore } from "../routes/auth.ts";
 import { registerGenerationRoutes } from "../routes/generations.ts";
@@ -220,6 +220,41 @@ function requestFixture() {
 }
 
 describe("request identity over HTTP", () => {
+    it("replays a lore budget failure with its summary after reopening receipts", async () => {
+        const s = requestFixture();
+        const lore = {
+            budgetUsed: 4,
+            budget: 4,
+            rejectedCount: 1,
+            rejectedTokens: 5,
+            rejected: [{ name: "Castle", tokens: 5 }],
+        };
+        const runner = vi.fn<GenerationRunner>(async () => {
+            throw markFailure(new Error("Lore budget exceeded"), { stage: "assembly", code: "loreOverBudget", lore });
+        });
+        const jobs = s.registry(s.receipts, runner);
+        const created = await s.route(jobs)();
+        expect(created.status).toBe(200);
+        await jobs.drain();
+        jobs.beginShutdown();
+        jobs.dispose();
+        s.receipts.close();
+        const reopened = open(s.file, s.store.epoch(), () => Date.now());
+        const restarted = s.registry(reopened, runner);
+        expect(await s.route(restarted)()).toMatchObject({
+            status: 200,
+            body: {
+                jobId: created.body.jobId,
+                replayed: true,
+                status: {
+                    state: "ended",
+                    terminal: { type: "error", stage: "assembly", code: "loreOverBudget", lore },
+                },
+            },
+        });
+        expect(runner).toHaveBeenCalledTimes(1);
+    });
+
     it("replays a completed unanswered create before revision, binding, maintenance and shutdown refusals", async () => {
         const s = requestFixture();
         const runner = vi.fn<GenerationRunner>(async (job) => {

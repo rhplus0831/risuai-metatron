@@ -800,6 +800,108 @@ describe("the token budget", () => {
         expect(within.budget).toEqual({ used: 4, limit: 8, rejectedCount: 0, rejectedTokens: 0, rejected: [] });
     });
 
+    it("leaves every after-match flag unwritten when a required entry exceeds the budget", async () => {
+        const input = makeInput(
+            [
+                lore("keep", "x", "@@keep_activate_after_match\naaaa", { id: "keep", insertorder: 2 }),
+                lore("dont", "x", "@@dont_activate_after_match\nbbbbb", { id: "dont", insertorder: 1 }),
+            ],
+            [user("x")],
+            { loreBookToken: 4 },
+        );
+        const host = makeHost();
+        const writes = vi.spyOn(host, "setChatVar");
+        const stopped = await activateLore({ ...input, stopOverBudget: true }, host);
+        expect(stopped).toMatchObject({ stopped: true, actives: [] });
+        expect(writes).not.toHaveBeenCalled();
+        expect(stopped.budget).toEqual({
+            used: 4,
+            limit: 4,
+            rejectedCount: 1,
+            rejectedTokens: 5,
+            rejected: [{ name: "dont", tokens: 5 }],
+        });
+
+        const ordinary = await activateLore(input, host);
+        expect(ordinary).not.toHaveProperty("stopped");
+        expect(sources(ordinary)).toEqual(["keep"]);
+        expect(ordinary.budget).toEqual(stopped.budget);
+        expect(writes.mock.calls).toEqual([
+            ["__internal_ka_keep", "true"],
+            ["__internal_da_dont", "true"],
+        ]);
+    });
+
+    it("preserves activation and after-match flags when all entries fit with the option", async () => {
+        const input = makeInput(
+            [
+                lore("keep", "x", "@@keep_activate_after_match\na", { id: "keep", insertorder: 2 }),
+                lore("dont", "x", "@@dont_activate_after_match\nb", { id: "dont", insertorder: 1 }),
+            ],
+            [user("x")],
+            { loreBookToken: 2 },
+        );
+        const host = makeHost();
+        const writes = vi.spyOn(host, "setChatVar");
+        const result = await activateLore({ ...input, stopOverBudget: true }, host);
+        expect(result).toEqual(await activateLore(input, makeHost()));
+        expect(result).not.toHaveProperty("stopped");
+        expect(sources(result)).toEqual(["dont", "keep"]);
+        expect(writes.mock.calls).toEqual([
+            ["__internal_ka_keep", "true"],
+            ["__internal_da_dont", "true"],
+        ]);
+    });
+
+    it.each([
+        { label: "only decorated rejections", plain: false },
+        { label: "a plain rejection at priority -1000", plain: true },
+    ])("uses the ignore decorator to decide whether to stop with $label", async ({ plain }) => {
+        const host = makeHost();
+        const writes = vi.spyOn(host, "setChatVar");
+        const result = await run(
+            [
+                lore("droppable", "x", "@@ignore_on_max_context\n@@priority 200\n@@keep_activate_after_match\naa", {
+                    id: "drop",
+                    insertorder: 2,
+                }),
+                lore(
+                    "other",
+                    "x",
+                    `${plain ? "" : "@@ignore_on_max_context\n"}@@priority -1000\n@@dont_activate_after_match\nbb`,
+                    {
+                        id: "other",
+                        insertorder: 1,
+                    },
+                ),
+            ],
+            [user("x")],
+            host,
+            { loreBookToken: 1, stopOverBudget: true },
+        );
+        expect(result.budget).toEqual({
+            used: 0,
+            limit: 1,
+            rejectedCount: 2,
+            rejectedTokens: 4,
+            rejected: [
+                { name: "droppable", tokens: 2 },
+                { name: "other", tokens: 2 },
+            ],
+        });
+        expect(result.actives).toEqual([]);
+        if (plain) {
+            expect(result.stopped).toBe(true);
+            expect(writes).not.toHaveBeenCalled();
+        } else {
+            expect(result).not.toHaveProperty("stopped");
+            expect(writes.mock.calls).toEqual([
+                ["__internal_ka_drop", "true"],
+                ["__internal_da_other", "true"],
+            ]);
+        }
+    });
+
     it("names the rejected entries in the order the pass tried them, by comment, then key, then index", async () => {
         const result = await run(
             [

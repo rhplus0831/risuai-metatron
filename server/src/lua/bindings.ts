@@ -234,8 +234,12 @@ export type LuaBindingServices = {
         options?: { timeoutMs?: number; skipDisconnected?: boolean; orientation?: ImageOrientation },
     ): Promise<string | null>;
     tokenize(text: string): Promise<number>;
-    /** `loadLoreBookV3Prompt` of the job's chat (the live chat and the chat owner). */
-    activateLore(ctx: HostContext): ReturnType<typeof activateLore>;
+    /**
+     * `loadLoreBookV3Prompt` of the job's chat (the live chat and the chat owner). With
+     * `stopOverBudget`, an activation whose budget pass rejects an entry without
+     * `@@ignore_on_max_context` is `stopped` and queues no flag write (`LoreActivationInput`).
+     */
+    activateLore(ctx: HostContext, options?: { stopOverBudget?: boolean }): ReturnType<typeof activateLore>;
     /** The server CBS of the job's chat with `chara` (the chat's character when none). */
     parse(text: string, chara: character | groupChat | null | undefined): string;
     /** `calcString` of `src/ts/process/infunctions.ts`, bound to the job's chat. */
@@ -1287,8 +1291,11 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         return JSON.stringify({ success: true, result: result.result });
     };
 
-    /** `loadLoreBookV3Prompt` of the job's chat as stored now, for `selectedChar` (the chat owner). */
-    const activateJobLore = (selectedChar: character, ctx: HostContext) => {
+    /**
+     * `loadLoreBookV3Prompt` of the job's chat as stored now, for `selectedChar` (the chat owner).
+     * `options.stopOverBudget` is the activation's own option; only a send's assembly sets it.
+     */
+    const activateJobLore = (selectedChar: character, ctx: HostContext, options?: { stopOverBudget?: boolean }) => {
         return activateLore(
             {
                 character: selectedChar,
@@ -1297,6 +1304,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 loreBookDepth: scope.db.loreBookDepth,
                 loreBookToken: scope.db.loreBookToken,
                 userName: cbsHost.getUserName(ref),
+                ...(options?.stopOverBudget === true ? { stopOverBudget: true } : {}),
             },
             {
                 clone: (value) => structuredClone(value),
@@ -1891,7 +1899,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         collectStreamText,
         generateImageInlay,
         tokenize: (text) => deps.tokens.count(text, tokenScopeFor(scope.request.db)),
-        activateLore: (ctx) => activateJobLore(engineCharacter() as character, ctx),
+        activateLore: (ctx, options) => activateJobLore(engineCharacter() as character, ctx, options),
         parse: (text, chara) =>
             evaluator.risuChatParser(text, { chara: (chara ?? undefined) as character, chatRef: ref }),
         calc: (text) => cbsHost.calcString(text),

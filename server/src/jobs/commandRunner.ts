@@ -250,7 +250,8 @@ async function runManualTrigger(job: RunningJob, deps: GenerationRunnerDeps, nam
  * that one write; the owner receives the chat afterwards. A refused boundary writes nothing.
  *
  * Pending metadata is flushed before switching views. Each send view keeps registry methods and
- * the signal, drops the command/trigger/speaker/user/continue ids, and uses empty input (no input
+ * the signal, drops the command/trigger/speaker/user/continue ids and `stopOverLoreBudget` (a part
+ * never stops over the lore budget: no caller waits to answer for it), and uses empty input (no input
  * trigger or editinput), fresh run state and script budget, carrying emotion history forward.
  * Each part has its own generation ids, reply locks, stages and request-history rows. Translations
  * and memory hand off before it returns; removed replies' locks release without ending the job.
@@ -330,7 +331,8 @@ async function finishCommand(job: RunningJob, deps: GenerationRunnerDeps, comman
             };
         });
         job.emitRecords({ chats: [{ characterId, id: chatId }] });
-        const { userMessageId, continueMessageId, triggerId, speakerChaId, ...context } = job.context;
+        const { userMessageId, continueMessageId, triggerId, speakerChaId, stopOverLoreBudget, ...context } =
+            job.context;
         const send: RunningJob = {
             ...job,
             kind: "send",

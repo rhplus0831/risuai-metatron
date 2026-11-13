@@ -631,6 +631,7 @@ describe("generation jobs over HTTP and WebSocket", () => {
             [{ ...body, context: { ...body.context, input: 1 } }, /mode and .*input/],
             [{ ...body, context: { ...body.context, chatRevision: null } }, /chatRevision/],
             [{ ...body, context: { ...body.context, triggerId: "" } }, /triggerId/],
+            [{ ...body, context: { ...body.context, stopOverLoreBudget: "true" } }, /stopOverLoreBudget/],
         ] as [Record<string, unknown>, RegExp][]) {
             const res = await create(bad);
             expect(res.status, JSON.stringify(bad)).toBe(400);

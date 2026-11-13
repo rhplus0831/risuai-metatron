@@ -65,7 +65,9 @@
 
 - `shared/lore/activation.ts`: lore activation, shared with the server (`activateLore`, `LoreHost`, `LoreBudget`,
   `searchMatch`); the matching rules are under [Lore matching](#lore-matching). `/test_lorebook` returns the whole
-  result as JSON.
+  result as JSON. With `stopOverBudget`, a budget pass that leaves out an entry not marked `@@ignore_on_max_context`
+  stops the activation: `stopped: true`, no actives, the full `budget`, and no keep or don't-activate flag written. Only
+  a send job's first assembly asks ([server generation](server-generation.md#prompt-job-execution)).
 - `shared/lore/overrides.ts`: chat overrides of the owner's lore (`mergeOwnerLore`, `offOverrideIds`,
   `orphanedOverrideEntries`).
 - `src/ts/process/loreOverrides.ts`: the local refusal and the alert both refusals share (`refuseOrphanedOverrides`,
@@ -241,7 +243,9 @@ in [network jobs](network-jobs.md#job-recovery).
 `shared/lore/activation.ts` owns matching, recursion, budgeting, and decorators; read `searchMatch` and `activateLore`
 with the implementation. Overrides apply only to the chat owner's `globalLore`, not module lore. Orphans are dropped
 during activation and refused at generation admission. Child entries and keep/don't-activate decorators use
-matched-entry identities.
+matched-entry identities. The budget pass runs before those flags are written, so a stopped activation writes none; an
+`@@ignore_on_max_context` entry is tracked by its decorator, never by its priority, and is counted in `budget` but never
+stops it.
 
 ## Recipes
 

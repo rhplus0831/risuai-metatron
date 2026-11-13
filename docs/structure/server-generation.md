@@ -126,6 +126,11 @@ refusal the memory step recovered from or outlived replaces no later error.
   (`listTools`) and counts them in the resolved adapter's form ([LLM requests](llm-requests.md#server-request-layer));
   the recheck keeps that charge free, and the send's request offers that set without listing again. A plain `preview`
   job lists nothing; every other request lists its own.
+- `context.stopOverLoreBudget` (kept by `parseCreateBody` only when true; not in `requestFingerprint`) asks a `send`,
+  `continue`, `group`, or `reroll` job to stop at its first assembly when lore activation is stopped
+  ([Lore](chat-pipeline.md#lore)): `assemblePrompt` returns an `alert` coded `loreOverBudget` before history, and the
+  `error` terminal carries `lore` (`parseLoreBudgetStop`). What ran before activation stays; no reply request is made.
+  Later rounds and speakers, previews, and command-sequence parts (the part view drops the field) never stop.
 - After final chat writes, `runPromptSend` hands off translations and due memory input, detached, before returning.
 
 ### Reroll in place

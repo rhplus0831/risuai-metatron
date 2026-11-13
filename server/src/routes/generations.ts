@@ -199,6 +199,9 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
     ) {
         return "context.selectedPersonaId must be an id or null when present";
     }
+    if (context.stopOverLoreBudget !== undefined && typeof context.stopOverLoreBudget !== "boolean") {
+        return "context.stopOverLoreBudget must be a boolean when present";
+    }
     const client = context.client === undefined ? undefined : parseClientEnv(context.client);
     if (typeof client === "string") {
         return client;
@@ -225,6 +228,8 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
             ? { selectedPersonaId: context.selectedPersonaId as string | null }
             : {}),
         ...(client !== undefined ? { client } : {}),
+        // Kept for any kind: the runner honors it for the kinds that send, and for no other.
+        ...(context.stopOverLoreBudget === true ? { stopOverLoreBudget: true } : {}),
     };
     const hooks = parseGenerationHooks(body.hooks);
     if (typeof hooks === "string") {
@@ -271,6 +276,8 @@ export function registerGenerationRoutes(
      * during shutdown or maintenance. 409: requestIdReused, requestCancelled, chatBusy { jobId },
      * stale, chatBindingIncomplete { problems }, chatBindingMismatch, memoryRebuilding, or
      * chatLoreOverrideOrphaned { entries: [{ id, name }] }.
+     * `context.stopOverLoreBudget: true` is kept for any kind and refuses nothing here: a job that
+     * honors it is admitted and ends as an `error` terminal coded `loreOverBudget`.
      */
     app.post("/api/generations", limiter, async (c) => {
         const denied = await auth.checkAuth(c);

@@ -8,6 +8,7 @@ import {
     fixedShare,
     historyDigest,
     parseContextReport,
+    parseLoreBudgetStop,
     reportedLoreRejections,
     turnCount,
 } from "./contextReport.ts";
@@ -69,6 +70,30 @@ const message = (chatId: string, role: Message["role"], data: string, disabled?:
     role,
     data,
     ...(disabled === undefined ? {} : { disabled }),
+});
+
+describe("parseLoreBudgetStop", () => {
+    it("accepts a capped rejection summary and refuses malformed rejection lists", () => {
+        const value = {
+            budgetUsed: 12,
+            budget: 100,
+            rejectedCount: 9,
+            rejectedTokens: 18,
+            rejected: Array.from({ length: 8 }, (_, i) => ({ name: `entry ${i}`, tokens: 2 })),
+        };
+        expect(parseLoreBudgetStop(value)).toEqual(value);
+        for (const rejected of [
+            undefined,
+            "entry",
+            [{ name: 7, tokens: 2 }],
+            [{ name: "entry", tokens: -1 }],
+            [{ name: "n".repeat(81), tokens: 2 }],
+            Array.from({ length: 9 }, () => ({ name: "entry", tokens: 2 })),
+            [{ name: "entry", tokens: 2 }, ,],
+        ]) {
+            expect(parseLoreBudgetStop({ ...value, rejected }), JSON.stringify(rejected)).toBeNull();
+        }
+    });
 });
 
 describe("parseContextReport", () => {

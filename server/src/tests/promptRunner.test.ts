@@ -254,6 +254,46 @@ const editprocessScript = {
 };
 
 let seeded = 0;
+/** Single-token contents under the fixture's tik tokenizer; both exceed a zero lore budget. */
+const overBudgetLore = (key?: string) => ({
+    loreSettings: { tokenBudget: 0 },
+    globalLore: [
+        { id: "keep", comment: "Keep", content: "@@keep_activate_after_match\nA", insertorder: 200 },
+        { id: "dont", comment: "Dont", content: "@@dont_activate_after_match\nB", insertorder: 100 },
+    ].map((entry) => ({
+        ...entry,
+        key: key ?? "",
+        secondkey: "",
+        mode: "normal",
+        alwaysActive: key === undefined,
+        selective: false,
+    })),
+});
+const rejectedLore = {
+    budgetUsed: 0,
+    budget: 0,
+    rejectedCount: 2,
+    rejectedTokens: 2,
+    rejected: [
+        { name: "Keep", tokens: 1 },
+        { name: "Dont", tokens: 1 },
+    ],
+};
+
+/** Freeze job deadlines; a non-streaming provider needs no timer to deliver its answer. */
+async function prepareLoreBudgetJob() {
+    const providers = (await single("providers")).data;
+    const previousMode = mode;
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    onTestFinished(async () => {
+        await patchProviders(providers);
+        mode = previousMode;
+        vi.useRealTimers();
+    });
+    await patchProviders({ useStreaming: false, autoContinueChat: false, inlayErrorResponse: false, presetChain: "" });
+    mode = { chunks: ["Reply."], delayMs: 0 };
+}
+
 /** A character (or a group of `members`) with one chat `k` holding `messages`. */
 async function seedCharacter(options: {
     name: string;
@@ -747,6 +787,33 @@ describe("trigger stage chat copies", () => {
 });
 
 describe("a send", () => {
+    it("keeps the user message but makes no request or lore flag write when the lore budget option ends assembly", async () => {
+        await prepareLoreBudgetJob();
+        const chaId = await seedCharacter({ name: "Ann", extra: overBudgetLore() });
+        const before = bodies.length;
+        const context = { input: "Question.", userMessageId: "u-budget" };
+        const stopped = await job("send", chaId, { ...context, stopOverLoreBudget: true });
+        expect(stopped.terminal).toMatchObject({
+            type: "error",
+            stage: "assembly",
+            code: "loreOverBudget",
+            lore: rejectedLore,
+        });
+        const chat = await readChat(chaId);
+        expect(texts(chat)).toEqual(["user:Question."]);
+        expect(chat.data.message[0].chatId).toBe("u-budget");
+        expect(Object.keys(chat.data.scriptstate ?? {}).filter((key) => key.startsWith("$__internal_"))).toEqual([]);
+        expect(bodies).toHaveLength(before);
+
+        const ordinary = await job("send", chaId, context);
+        expect(ordinary.terminal?.type, JSON.stringify(ordinary.terminal)).toBe("done");
+        const replied = await readChat(chaId);
+        expect(texts(replied)).toEqual(["user:Question.", "char:Reply."]);
+        expect(bodies).toHaveLength(before + 1);
+        expect(replied.data.message.at(-1).generationInfo.context.lore).toEqual({ ...rejectedLore, active: 0 });
+        expect(replied.data.scriptstate).toMatchObject({ $__internal_ka_keep: "true", $__internal_da_dont: "true" });
+    });
+
     it(
         "reconstructs a runner checkpoint from the raw stream but sends the editoutput rewrite whole at the same chunk",
         async () => {
@@ -1254,6 +1321,28 @@ describe("a send", () => {
         SLOW,
     );
 
+    it("lets the later group speaker reply when only its lore activation exceeds the budget", async () => {
+        await prepareLoreBudgetJob();
+        const bob = await seedCharacter({ name: "Bob" });
+        const cid = await seedCharacter({ name: "Cid" });
+        const grp = await seedCharacter({
+            name: "Grp",
+            type: "group",
+            members: [bob, cid],
+            messages: [{ role: "user", data: "hello all", chatId: "u0" }],
+            extra: overBudgetLore("Reply."),
+        });
+        const before = bodies.length;
+        const result = await job("group", grp, { stopOverLoreBudget: true });
+        expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+        expect(bodies).toHaveLength(before + 2);
+        const chat = await readChat(grp);
+        expect(texts(chat)).toEqual(["user:hello all", "char:Reply.", "char:Reply."]);
+        expect(chat.data.message.slice(1).map((message: any) => message.saying)).toEqual([bob, cid]);
+        expect(chat.data.message[1].generationInfo.context.lore.rejectedCount).toBe(0);
+        expect(chat.data.message[2].generationInfo.context.lore).toEqual({ ...rejectedLore, active: 0 });
+    });
+
     it(
         "a group send's completion notifications name the group's chat and use the group's name and custom message, not the speaking member's",
         async () => {
@@ -1590,6 +1679,26 @@ describe("a send", () => {
             await patchPreset("modelProfiles", profileId, { maxContext: profile.maxContext });
             vi.useRealTimers();
         }
+    });
+
+    it.each(["preview", "previewPrompt"])("returns a %s result despite the lore budget option", async (kind) => {
+        await prepareLoreBudgetJob();
+        const chaId = await seedCharacter({
+            name: "Ann",
+            messages: [{ role: "user", data: "q", chatId: "u1" }],
+            extra: overBudgetLore(),
+        });
+        const before = bodies.length;
+        const result = await job(kind, chaId, { stopOverLoreBudget: true });
+        expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+        if (result.terminal?.type !== "done") throw new Error(JSON.stringify(result.terminal));
+        const messages =
+            kind === "preview"
+                ? (result.terminal.result as { messages: { role: string; content: string }[] }).messages
+                : JSON.parse(result.terminal.result as string).body.messages;
+        expect(messages.at(-1)).toMatchObject({ role: "user", content: "q" });
+        expect(bodies).toHaveLength(before);
+        expect(texts(await readChat(chaId))).toEqual(["user:q"]);
     });
 
     it(
@@ -2607,6 +2716,30 @@ describe("in-place reply candidates", () => {
             assertApplied();
             expect(await clientSetText(chaId, "r", "after end")).toBe(200);
         }
+    });
+
+    it("restores the selected candidate when an in-place reroll exceeds the lore budget", async () => {
+        await prepareLoreBudgetJob();
+        const candidates = [
+            { id: "a", data: "First" },
+            { id: "b", data: "Previous reply." },
+        ];
+        const chaId = await seed({
+            extra: overBudgetLore(),
+            messages: [{ role: "user", chatId: "u", data: "Question." }, carrier({ candidates, selected: 1 })],
+        });
+        const before = bodies.length;
+        const result = await job("reroll", chaId, { rerollMessageId: "r", stopOverLoreBudget: true });
+        expect(result.terminal).toMatchObject({
+            type: "error",
+            stage: "assembly",
+            code: "loreOverBudget",
+            lore: rejectedLore,
+        });
+        const reply = await storedCarrier(chaId);
+        expect(reply).toMatchObject({ data: "Previous reply.", selected: 1, candidates });
+        expect(reply.candidates).toHaveLength(2);
+        expect(bodies).toHaveLength(before);
     });
 
     it("writes the previous candidate back on stream abort and request failure while undoing only the attempt's variables", async () => {

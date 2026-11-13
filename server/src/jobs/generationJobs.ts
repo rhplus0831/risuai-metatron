@@ -40,6 +40,7 @@ import {
     type GenerationTerminalEvent,
     HIDDEN_HYDRATION_KINDS,
 } from "../../../shared/jobs.ts";
+import { type LoreBudgetStop, parseLoreBudgetStop } from "../../../shared/contextReport.ts";
 import { isProviderCode } from "../../../shared/requestHistory.ts";
 import { type BatchConflict, type ChatPatchBody, parseRevisionToken } from "../../../shared/resources.ts";
 import { type ChatWriteChange, messageOrderAfterChange } from "../data/chatStore.ts";
@@ -111,13 +112,15 @@ const socketPath = /^\/api\/generations\/([^/]+)\/ws$/;
 
 /**
  * Where a runner failed, for the terminal `error` event: the stage, the LLM request that failed when
- * it was one, its provider error code, and the failure's own code when a tab tells it apart by one.
+ * it was one, its provider error code, the failure's own code when a tab tells it apart by one, and,
+ * for a send stopped over the lore budget (`loreOverBudget`), the budget pass's result.
  */
 export type GenerationFailure = {
     stage?: GenerationErrorStage;
     requestId?: string;
     providerCode?: string | null;
     code?: GenerationErrorCode;
+    lore?: LoreBudgetStop;
 };
 
 /** A runner's failure with an HTTP-like status for the terminal `error` event. */
@@ -149,7 +152,8 @@ const foreignFailures = new WeakMap<object, GenerationFailure>();
  * marks request unless an inner site marked a stage. `server/src/prompt/runner.ts` runSpeaker
  * marks returned request failures as request, with request id/provider code; readReply distinguishes
  * request reads from persist checkpoints. Its runPromptSend catch fills an unmarked stage from
- * JobRunState.stage (setup, input, assembly, request or tail). errorTerminal copies checked fields.
+ * JobRunState.stage (setup, input, assembly, request or tail); its assembly alert branch marks
+ * the alert's code and, for a lore budget stop, `lore`. errorTerminal copies checked fields.
  */
 export function markFailure<E>(error: E, failure: GenerationFailure): E {
     if (typeof error !== "object" || error === null) {
@@ -162,7 +166,7 @@ export function markFailure<E>(error: E, failure: GenerationFailure): E {
         target = foreignFailures.get(error) ?? {};
         foreignFailures.set(error, target);
     }
-    for (const key of ["stage", "requestId", "providerCode", "code"] as const) {
+    for (const key of ["stage", "requestId", "providerCode", "code", "lore"] as const) {
         const value = failure[key];
         if ((target[key] === undefined || target[key] === null) && value !== undefined && value !== null) {
             (target as Record<string, unknown>)[key] = value;
@@ -1762,14 +1766,17 @@ export function createGenerationJobs(options: {
 
     /**
      * Copies markFailure/failureOf metadata into the failed terminal, admitting only checked
-     * stages, request ids, provider codes and error codes. It does not infer a stage: the nearest
+     * stages, request ids, provider codes and error codes, and `lore` only under the code
+     * `loreOverBudget` and as `parseLoreBudgetStop` returns it. It does not infer a stage: the nearest
      * marking site, or `server/src/prompt/runner.ts` runPromptSend's current-stage fallback, owns it.
      */
     function errorTerminal(error: unknown): TerminalInput {
         const status =
             error instanceof GenerationRunnerError && error.status >= 400 && error.status <= 599 ? error.status : 500;
-        // Only checked values: the event's failure fields are content-free.
+        // Only checked values: the event's failure fields are content-free, except `lore`, whose
+        // `rejected` names the lore entries a stopped send left out.
         const failure = failureOf(error);
+        const lore = failure.code === "loreOverBudget" ? parseLoreBudgetStop(failure.lore) : null;
         return {
             type: "error",
             reason: "failed",
@@ -1783,6 +1790,7 @@ export function createGenerationJobs(options: {
             ...(failure.code !== undefined && GENERATION_ERROR_CODES.includes(failure.code)
                 ? { code: failure.code }
                 : {}),
+            ...(lore ? { lore } : {}),
         };
     }
 

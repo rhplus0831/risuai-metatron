@@ -67,6 +67,21 @@ export function reportedLoreRejections(rejected: readonly ContextLoreRejected[])
     });
 }
 
+/**
+ * What a send that stopped over the lore budget tells its tab: the budget pass's result as a context
+ * report's `lore` holds it, without the actives (a stopped activation returns none). `rejected` is
+ * the first rejected entries (`reportedLoreRejections`), so `rejectedCount` can exceed its length.
+ * It travels on the `error` terminal coded `loreOverBudget`; readers go through `parseLoreBudgetStop`.
+ */
+export type LoreBudgetStop = {
+    /** The budget pass total, before @@inject_lore edits. */
+    budgetUsed: number;
+    budget: number;
+    rejectedCount: number;
+    rejectedTokens: number;
+    rejected: readonly ContextLoreRejected[];
+};
+
 /** One queued trim cost, including whether dropping it displaces a user message. */
 export type ContextTrimEntry = { tokens: number; kind: "example" | "marker" | "message"; user: boolean };
 
@@ -354,23 +369,8 @@ export function parseContextReport(value: unknown): ContextReport | null {
     if (!isRecord(lore) || !counts(lore, ["budgetUsed", "budget", "rejectedCount", "rejectedTokens", "active"])) {
         return null;
     }
-    if (lore.rejected !== undefined) {
-        const rejected = lore.rejected;
-        if (!Array.isArray(rejected) || rejected.length > CONTEXT_LORE_REJECTED.entries) {
-            return null;
-        }
-        for (let i = 0; i < rejected.length; i++) {
-            const entry: unknown = rejected[i];
-            if (
-                !Object.hasOwn(rejected, i) ||
-                !isRecord(entry) ||
-                typeof entry.name !== "string" ||
-                Array.from(entry.name).length > CONTEXT_LORE_REJECTED.nameLength ||
-                !isCount(entry.tokens)
-            ) {
-                return null;
-            }
-        }
+    if (lore.rejected !== undefined && !isLoreRejected(lore.rejected)) {
+        return null;
     }
     if (value.trim !== undefined) {
         const trim = value.trim;
@@ -433,6 +433,51 @@ export function parseContextReport(value: unknown): ContextReport | null {
         }
     }
     return value as ContextReport;
+}
+
+/**
+ * A list of rejected lore entries as `reportedLoreRejections` leaves it: at most
+ * `CONTEXT_LORE_REJECTED.entries` rows with every slot set, each a name within the length cap and a count.
+ */
+function isLoreRejected(value: unknown): value is ContextLoreRejected[] {
+    if (!Array.isArray(value) || value.length > CONTEXT_LORE_REJECTED.entries) {
+        return false;
+    }
+    for (let i = 0; i < value.length; i++) {
+        const entry: unknown = value[i];
+        if (
+            !Object.hasOwn(value, i) ||
+            !isRecord(entry) ||
+            typeof entry.name !== "string" ||
+            Array.from(entry.name).length > CONTEXT_LORE_REJECTED.nameLength ||
+            !isCount(entry.tokens)
+        ) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * The lore budget stop in `value` as a copy holding only its own fields (each entry its name and
+ * tokens), or null when the shape or any number is wrong: a count that is not finite or is negative,
+ * or a `rejected` list that a context report's `lore.rejected` would refuse, or that is missing.
+ */
+export function parseLoreBudgetStop(value: unknown): LoreBudgetStop | null {
+    if (!isRecord(value) || !counts(value, ["budgetUsed", "budget", "rejectedCount", "rejectedTokens"])) {
+        return null;
+    }
+    const rejected = value.rejected;
+    if (!isLoreRejected(rejected)) {
+        return null;
+    }
+    return {
+        budgetUsed: value.budgetUsed as number,
+        budget: value.budget as number,
+        rejectedCount: value.rejectedCount as number,
+        rejectedTokens: value.rejectedTokens as number,
+        rejected: rejected.map(({ name, tokens }) => ({ name, tokens })),
+    };
 }
 
 /** `memory.budgetReduced`: a non-empty list of known fields, each at most once, with two counts. */

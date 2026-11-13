@@ -8,7 +8,8 @@ import { mergeOwnerLore, offOverrideIds } from "./overrides.ts";
  * stores are imported. `src/ts/process/lorebook.svelte.ts` supplies the tab host and
  * `server/src/lua/bindings.ts` supplies the server host. Lore is cloned before child expansion;
  * chat overrides are resolved by `shared/lore/overrides.ts`. Recursive matching precedes the
- * single budget pass. Token counts must all succeed before pending activation flags are written;
+ * single budget pass. Token counts must all succeed, and the budget pass must not stop the
+ * activation (`LoreActivationInput.stopOverBudget`), before pending activation flags are written;
  * regex failures instead count as no match. Injection edits run after budgeting without recounting.
  */
 
@@ -30,6 +31,12 @@ export type LoreActivationInput = {
     loreBookToken: number;
     /** The user's name in the scanned text: the effective persona's (a bound persona wins). */
     userName: string;
+    /**
+     * Stop instead of dropping: when the budget pass rejects an entry that does not carry
+     * `@@ignore_on_max_context`, the activation returns no active, writes no flag, and is `stopped`.
+     * Rejected entries that all carry the decorator are dropped as without this option.
+     */
+    stopOverBudget?: boolean;
 };
 
 /**
@@ -84,7 +91,9 @@ export type LoreRejected = { name: string; tokens: number };
  * listed in the order it tried them (priority descending).
  *
  * The pass runs once, after every recursion round: an entry it rejects has still activated what its
- * content matched, and its keep and don't-activate-after-match flags are still written.
+ * content matched, and its keep and don't-activate-after-match flags are still written, unless the
+ * activation is `stopped`, which writes no entry's flag. Every rejected entry is counted and named,
+ * one with `@@ignore_on_max_context` included.
  */
 export type LoreBudget = {
     used: number;
@@ -94,8 +103,14 @@ export type LoreBudget = {
     rejected: LoreRejected[];
 };
 
-/** Activation output: emitted lore, matching diagnostics, and the pre-injection budget result. */
-export type LoreActivation = { actives: LoreActive[]; matchLog: LoreMatch[]; budget: LoreBudget };
+/**
+ * Activation output: emitted lore, matching diagnostics, and the pre-injection budget result.
+ *
+ * `stopped` is present only when `LoreActivationInput.stopOverBudget` was set and the budget pass
+ * rejected an entry without `@@ignore_on_max_context`: `actives` is then empty, `budget` is the
+ * pass's result as it would have been, and no keep or don't-activate-after-match flag was written.
+ */
+export type LoreActivation = { actives: LoreActive[]; matchLog: LoreMatch[]; budget: LoreBudget; stopped?: true };
 
 /**
  * Runs `steps` synchronously while every yielded value is a boolean; at the first promise it
@@ -337,6 +352,9 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
     let actives: LoreActive[] = [];
     const pendingCounts: { active: LoreActive; count: Promise<number> }[] = [];
     const activeNames = new Map<LoreActive, string>();
+    // The actives whose entry carries `@@ignore_on_max_context`. Their priority does not say so: a
+    // later `@@priority` replaces the decorator's, and the same value can come from elsewhere.
+    const droppableActives = new Set<LoreActive>();
     const pendingFlags = new Map<string, string>();
     let activatedIndexes: number[] = [];
     let disabledUIPrompts: string[] = [];
@@ -378,6 +396,7 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
             let dontSearchWhenRecursive = false;
             let keepActivateAfterMatch = false;
             let dontActivateAfterMatch = false;
+            let ignoreOnMaxContext = false;
             // A child takes its linked entry's name, as the editor shows it.
             let nameIndex = i;
 
@@ -543,6 +562,7 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
                     }
                     case "ignore_on_max_context": {
                         priority = -1000;
+                        ignoreOnMaxContext = true;
                         return;
                     }
                     case "additional_keys": {
@@ -687,6 +707,9 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
                     inject: inject ?? null,
                 };
                 activeNames.set(active, loreEntryName(fullLore[nameIndex], nameIndex));
+                if (ignoreOnMaxContext) {
+                    droppableActives.add(active);
+                }
                 // Parse CBS in entry order, with runVar left false as in the output path.
                 // Start each count now and await them together before the budget pass, so cutoff
                 // uses evaluated text without yielding at each entry's count.
@@ -731,11 +754,6 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
     pendingCounts.forEach(({ active }, index) => {
         active.tokens = counts[index];
     });
-    // Writes wait for the counts so an aborted or failed activation leaves no flag. Decorator
-    // reads use pendingFlags during the loop so entries sharing a key still see earlier writes.
-    for (const [key, value] of pendingFlags) {
-        host.setChatVar(key, value);
-    }
 
     const activesSorted = actives.sort((a, b) => {
         return b.priority - a.priority;
@@ -745,6 +763,8 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
     let rejectedCount = 0;
     let rejectedTokens = 0;
     const rejected: LoreRejected[] = [];
+    // Whether the pass rejected an entry its author did not mark as droppable.
+    let rejectedRequired = false;
 
     const activesFiltered = activesSorted.filter((act) => {
         if (usedTokens + act.tokens <= loreToken) {
@@ -754,8 +774,25 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
         rejectedCount++;
         rejectedTokens += act.tokens;
         rejected.push({ name: activeNames.get(act) ?? act.source, tokens: act.tokens });
+        if (!droppableActives.has(act)) {
+            rejectedRequired = true;
+        }
         return false;
     });
+    const budget: LoreBudget = { used: usedTokens, limit: loreToken, rejectedCount, rejectedTokens, rejected };
+
+    // The stop is decided before any flag is written, so the same activation can run again on the
+    // chat as it was: a don't-activate-after-match entry still activates then.
+    if (input.stopOverBudget === true && rejectedRequired) {
+        return { actives: [], matchLog, budget, stopped: true };
+    }
+
+    // Writes wait for the counts and the budget pass (which makes no host call) so an aborted,
+    // failed, or stopped activation leaves no flag. Decorator reads use pendingFlags during the
+    // loop so entries sharing a key still see earlier writes.
+    for (const [key, value] of pendingFlags) {
+        host.setChatVar(key, value);
+    }
 
     let activesResorted = activesFiltered.sort((a, b) => {
         return b.order - a.order;
@@ -797,6 +834,6 @@ export async function activateLore(input: LoreActivationInput, host: LoreHost): 
     return {
         actives: activesResorted.reverse(),
         matchLog: matchLog,
-        budget: { used: usedTokens, limit: loreToken, rejectedCount, rejectedTokens, rejected },
+        budget,
     };
 }

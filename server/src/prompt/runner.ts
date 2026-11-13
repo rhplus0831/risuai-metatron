@@ -286,7 +286,10 @@ function findCharacter(scope: JobScope, id: string | undefined): character {
     return { name: "Unknown Character", chats: [], chatPage: 0 } as unknown as character;
 }
 
-/** The kinds that run the input stage (a send's `userMessageId`). */
+/**
+ * The kinds that write a reply: they run the input stage (a send's `userMessageId`), and only they
+ * honor `context.stopOverLoreBudget`, so a preview is never stopped.
+ */
 const INPUT_KINDS = new Set(["send", "continue", "reroll", "group"]);
 
 /** The error a send's `throwError` shows when `inlayErrorResponse` is off. */
@@ -337,6 +340,14 @@ function reportStage(job: RunningJob, stage: GenerationStage): void {
  * 7. The final write stores extra samples as candidates; `done` names the persisted reply.
  * An in-place reroll locks its carrier before assembly, reads history without it until dispatch,
  * and restores the previous candidate in its final write on every end without a reply.
+ *
+ * With `context.stopOverLoreBudget`, the job's first assembly (the first speaker's first round) ends
+ * the job when the lore budget pass leaves out an entry without `@@ignore_on_max_context`: an `error`
+ * with stage `assembly`, code `loreOverBudget`, and the pass's result as `lore`. It ends right after
+ * lore activation, which then wrote no keep or don't-activate-after-match flag: no history, memory,
+ * tool listing, or request ran, and what steps 1 to 3 and assembly before activation stored stays
+ * (the user message included). A later round or group speaker, a preview, and a command sequence's
+ * part never stop this way.
  *
  * `throwError` with `inlayErrorResponse` writes the error into the chat as the client does; without
  * it, and always in a preview, which writes no message, the job ends with the error.
@@ -605,6 +616,9 @@ async function runSend(
                 chatAdditonalTokens: caculatedChatTokens,
                 continueSend: round.continueSend,
                 rerollMessageId: firstSpeakerRound ? rerollMessageId : undefined,
+                // Only the job's first assembly: a later round or speaker follows a reply that exists.
+                stopOverLoreBudget:
+                    firstSpeakerRound && INPUT_KINDS.has(job.kind) && job.context.stopOverLoreBudget === true,
                 ...(round.continueMessageId ? { continueMessageId: round.continueMessageId } : {}),
                 usedContinueTokens: round.usedContinueTokens,
                 baseRequest,
@@ -998,6 +1012,8 @@ async function runSpeaker(arg: {
     continueSend: boolean;
     /** Only the first speaker round regenerates this carrier. */
     rerollMessageId?: string;
+    /** Whether this round's assembly ends the send when the lore budget leaves a required entry out. */
+    stopOverLoreBudget: boolean;
     /** The message a continue extends: the reply of the round before (auto-continue), else the job's. */
     continueMessageId?: string;
     /** `usedContinueTokens`: the tokens of the replies this auto-continue chain produced so far. */
@@ -1634,7 +1650,8 @@ async function runSpeaker(arg: {
                 findCharacter: (id) => findCharacter(scope, id),
                 userName: () => scope.effectivePersona.name,
                 personaPrompt: () => scope.effectivePersona.personaPrompt,
-                activateLore: () => services.activateLore(nativeCtx),
+                activateLore: (options) =>
+                    options ? services.activateLore(nativeCtx, options) : services.activateLore(nativeCtx),
                 scripts,
                 runStartTrigger: async () => {
                     const result = await setup.runOnCopy(
@@ -1739,6 +1756,7 @@ async function runSpeaker(arg: {
                 ...(arg.continueSend && generation ? { continueMessageId: generation.messageId } : {}),
                 generationId,
                 stageTimings,
+                ...(arg.stopOverLoreBudget ? { stopOverLoreBudget: true } : {}),
             },
         ).catch((error: unknown) => {
             if (toolListFailure !== undefined && error === toolListFailure) {
@@ -1761,7 +1779,11 @@ async function runSpeaker(arg: {
             // The client's `alertError` and `return false`: the job's error, never an inlay error message.
             throw new SendError(
                 refusal?.message ?? assembled.error,
-                { stage: "assembly", ...(assembled.code !== undefined ? { code: assembled.code } : {}) },
+                {
+                    stage: "assembly",
+                    ...(assembled.code !== undefined ? { code: assembled.code } : {}),
+                    ...(assembled.lore !== undefined ? { lore: assembled.lore } : {}),
+                },
                 refusal?.status,
             );
         }

@@ -1,4 +1,5 @@
 import type { CandidateNoticeCode } from "./rerollCandidates.ts";
+import type { LoreBudgetStop } from "./contextReport.ts";
 import type { Chat, MessageGenerationInfo } from "./database.ts";
 import type { LLMModel } from "./llm.ts";
 import type { OpenAIChat } from "./openai.ts";
@@ -62,6 +63,14 @@ export type GenerationContext = {
     selectedPersonaId?: string | null;
     /** What CBS reads of the tab (`{{screenwidth}}`, `{{metadata::browserlanguage}}`). Absent: 0×0 and `en`. */
     client?: GenerationClientEnv;
+    /**
+     * End the job before any model request, as an `error` coded `loreOverBudget`, when the lore
+     * budget pass of its first assembly leaves out an activated entry without
+     * `@@ignore_on_max_context`. Honored for a `send`, `continue`, `group`, or `reroll` job only;
+     * a later round, a later group speaker, and a command sequence's parts never stop. Absent or
+     * false: the entries are left out and the reply's context report names them.
+     */
+    stopOverLoreBudget?: boolean;
 };
 
 /**
@@ -221,10 +230,12 @@ export type GenerationErrorStage = (typeof GENERATION_ERROR_STAGES)[number];
 
 /**
  * A failure a tab tells apart from the rest by code, not by text: a send whose required memory pages did
- * not fit under the preset's cap (`memoryRequiredOverCap`), which the memory health badge shows, or a
- * record-now window skipped (`memoryRecordSkipped`), whose message is a reason token the tab translates.
+ * not fit under the preset's cap (`memoryRequiredOverCap`), which the memory health badge shows, a
+ * record-now window skipped (`memoryRecordSkipped`), whose message is a reason token the tab translates,
+ * or a send that asked to stop when the lore budget left an entry out (`loreOverBudget`), whose
+ * terminal carries the budget pass's result as `lore`.
  */
-export const GENERATION_ERROR_CODES = ["memoryRequiredOverCap", "memoryRecordSkipped"] as const;
+export const GENERATION_ERROR_CODES = ["memoryRequiredOverCap", "memoryRecordSkipped", "loreOverBudget"] as const;
 
 /** A machine-readable generation failure code with specialized client handling. */
 export type GenerationErrorCode = (typeof GENERATION_ERROR_CODES)[number];
@@ -398,6 +409,12 @@ export type GenerationTerminalEvent =
           providerCode?: string;
           /** The failure's code when it has one (`GenerationErrorCode`). */
           code?: GenerationErrorCode;
+          /**
+           * Present only with the code `loreOverBudget`: the lore budget and the entries it left out
+           * (`parseLoreBudgetStop`). Its `rejected` holds lore entry names; the other failure
+           * fields are content-free.
+           */
+          lore?: LoreBudgetStop;
       };
 
 /** A command job's sequence progress, retained with its terminal. */

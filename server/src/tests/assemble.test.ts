@@ -896,6 +896,45 @@ describe("the context report", () => {
         historyDigest: historyDigest(chat.message),
     });
 
+    it("returns the lore budget alert before memory, tool listing and recount, while ordinary assembly reports rejections", async () => {
+        const { host, counts, run } = contextAssembly({ messages: [{ chatId: "u", data: "Question" }], hypaV3: true });
+        host.activateLore = async (options) => ({
+            actives: [],
+            matchLog: [],
+            budget: structuredClone(LORE_BUDGET),
+            ...(options?.stopOverBudget ? { stopped: true as const } : {}),
+        });
+        const memoryRequest = vi.spyOn(host.memory, "request");
+        const memoryWrite = vi.spyOn(host, "writeMemory");
+        const stages = vi.spyOn(host, "stage");
+        const tools = vi.fn(async () => 0);
+        host.toolSchemaTokens = tools;
+        const result = await assemblePrompt(host, {
+            chatAdditonalTokens: 3,
+            continue: false,
+            generationId: "lore-budget",
+            stageTimings: { stage1Duration: 0, stage2Duration: 0 },
+            stopOverLoreBudget: true,
+        });
+        const lore = {
+            budgetUsed: 12,
+            budget: 100,
+            rejectedCount: 9,
+            rejectedTokens: 40,
+            rejected: [
+                { name: "n".repeat(79) + "…", tokens: 32 },
+                ...Array.from({ length: 7 }, (_, i) => ({ name: `entry ${i + 1}`, tokens: 1 })),
+            ],
+        };
+        expect(result).toMatchObject({ type: "alert", code: "loreOverBudget", lore });
+        expect(memoryRequest).not.toHaveBeenCalled();
+        expect(memoryWrite).not.toHaveBeenCalled();
+        expect(stages).not.toHaveBeenCalledWith("memory");
+        expect(tools).not.toHaveBeenCalled();
+        expect(counts).not.toHaveBeenCalled();
+        expect((await run()).report.lore).toEqual({ ...lore, active: 0 });
+    });
+
     describe("structured memory selection", () => {
         /** Storage and job I/O only; the selector, card builder and report writer stay real. */
         function structuredAssembly(

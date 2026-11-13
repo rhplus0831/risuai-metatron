@@ -7,6 +7,7 @@ import {
     type ContextTrimEntry,
     eligibleHistory,
     historyDigest,
+    type LoreBudgetStop,
     reportedLoreRejections,
 } from "../../../shared/contextReport.ts";
 import type {
@@ -156,8 +157,12 @@ export type AssemblyHost = {
     /** `getUserName(chatRef)`, `getPersonaPrompt(chatRef)`. */
     userName(): string;
     personaPrompt(): string;
-    /** `loadLoreBookV3Prompt(chatRef)` of the chat as stored now. */
-    activateLore(): Promise<LoreActivation>;
+    /**
+     * `loadLoreBookV3Prompt(chatRef)` of the chat as stored now. With `stopOverBudget`, an
+     * activation whose budget pass rejects an entry without `@@ignore_on_max_context` comes back
+     * `stopped`, with no active and no flag written.
+     */
+    activateLore(options?: { stopOverBudget?: boolean }): Promise<LoreActivation>;
     scripts: ScriptProcessor;
     /** The `start` trigger on a copy of the chat, applied; its result. */
     runStartTrigger(): Promise<TriggerResult | null | undefined>;
@@ -280,6 +285,12 @@ export type AssembleInput = {
     continueMessageId?: string;
     generationId: string;
     stageTimings: { stage1Duration: number; stage2Duration: number };
+    /**
+     * End assembly right after lore activation, as an `alert` coded `loreOverBudget`, when the
+     * budget pass leaves out an entry without `@@ignore_on_max_context`. Absent: the entries are
+     * left out and the context report names them.
+     */
+    stopOverLoreBudget?: boolean;
 };
 
 export type AssembledPrompt =
@@ -307,9 +318,39 @@ export type AssembledPrompt =
     | { type: "error"; error: string }
     /**
      * `alertError(error)` and `return false` (Hanurai's): the send ends with the text, never as a chat
-     * message. `code` names the failure when a tab tells it apart by one.
+     * message. `code` names the failure when a tab tells it apart by one. `lore` comes only with the
+     * code `loreOverBudget` (`AssembleInput.stopOverLoreBudget`): the budget pass's result, which
+     * `error` words in English.
      */
-    | { type: "alert"; error: string; code?: GenerationErrorCode };
+    | { type: "alert"; error: string; code?: GenerationErrorCode; lore?: LoreBudgetStop };
+
+/** A stopped activation's budget as the `error` terminal carries it: the first rejected entries named. */
+function loreBudgetStop(budget: LoreActivation["budget"]): LoreBudgetStop {
+    return {
+        budgetUsed: budget.used,
+        budget: budget.limit,
+        rejectedCount: budget.rejectedCount,
+        rejectedTokens: budget.rejectedTokens,
+        rejected: reportedLoreRejections(budget.rejected),
+    };
+}
+
+/**
+ * The English text of a send stopped over the lore budget, for a tab that shows the job's error as
+ * it is: the limit, how many entries it left out and their tokens, and the entries `stop` names.
+ */
+function loreBudgetStopText(stop: LoreBudgetStop): string {
+    const named = stop.rejected.map(({ name, tokens }) => `${name} (${tokens})`);
+    const more = stop.rejectedCount - stop.rejected.length;
+    if (more > 0) {
+        named.push(`and ${more} more`);
+    }
+    const entries = stop.rejectedCount === 1 ? "1 entry" : `${stop.rejectedCount} entries`;
+    return (
+        `The lorebook token limit (${stop.budget}) left out ${entries} (${stop.rejectedTokens} tokens)` +
+        (named.length > 0 ? `: ${named.join(", ")}` : "")
+    );
+}
 
 /**
  * `additionalInformations` of the former `src/ts/process/embedding/addinfo.ts`: the three paragraphs of the
@@ -1297,8 +1338,15 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         }
     }
 
-    const lorepmt = await host.activateLore();
+    const lorepmt = await (input.stopOverLoreBudget === true
+        ? host.activateLore({ stopOverBudget: true })
+        : host.activateLore());
     host.fence();
+    if (lorepmt.stopped) {
+        // Before history, captions, the start trigger, memory, the tool listing, and the recount.
+        const lore = loreBudgetStop(lorepmt.budget);
+        return { type: "alert", error: loreBudgetStopText(lore), code: "loreOverBudget", lore };
+    }
 
     const positionRegex = /{{position::(.+?)}}/g;
     const replaceposition = (text: string): { text: string; replaced: boolean } => {

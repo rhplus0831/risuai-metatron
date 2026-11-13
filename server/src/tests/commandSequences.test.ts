@@ -368,6 +368,61 @@ const sequenceEvents = (events: GenerationEvent[]) => events.filter((event) => e
 const textOf = (messages: readonly Message[]) => messages.map(({ role, data }) => `${role}:${data}`);
 
 describe("server command sequences", () => {
+    it("sends command parts despite the parent's lore budget option", async () => {
+        const h = fixture();
+        const kind = h.kinds.get("characters")!;
+        const character = h.store.get(kind, "c")!;
+        h.store.put(
+            kind,
+            "c",
+            {
+                ...(character.data as Record<string, unknown>),
+                loreSettings: { tokenBudget: 0 },
+                globalLore: [
+                    {
+                        key: "",
+                        secondkey: "",
+                        content: "A",
+                        comment: "Castle",
+                        insertorder: 100,
+                        mode: "normal",
+                        alwaysActive: true,
+                        selective: false,
+                    },
+                ],
+            },
+            character.revision,
+        );
+        const response = await h.app.request("/api/generations", {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-resource-epoch": h.store.epoch() },
+            body: JSON.stringify({
+                kind: "command",
+                clientId: "owner",
+                command: { type: "manual", name: "go" },
+                context: { ...h.context(), stopOverLoreBudget: true },
+            }),
+        });
+        expect(response.status).toBe(200);
+        const { jobId } = (await response.json()) as { jobId: string };
+        h.start.resolve();
+        await h.jobs.drain();
+        expect(h.jobs.status(jobId, "owner")?.terminal).toMatchObject({
+            type: "done",
+            sequence: { total: 3, sent: 3 },
+        });
+        expect(h.providerCalls).toHaveLength(3);
+        expect(textOf(h.messages())).toEqual(["user:three", "char:reply-3"]);
+        expect(h.messages().at(-1)?.generationInfo?.context?.lore).toEqual({
+            active: 0,
+            budgetUsed: 0,
+            budget: 0,
+            rejectedCount: 1,
+            rejectedTokens: 1,
+            rejected: [{ name: "Castle", tokens: 1 }],
+        });
+    });
+
     it("runs differently cleared commands as ordinary sends under one job and records every part", async () => {
         const h = fixture();
         const id = h.create();
