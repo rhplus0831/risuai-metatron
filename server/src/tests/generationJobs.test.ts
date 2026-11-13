@@ -1,6 +1,8 @@
 // @vitest-environment node
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
+import { EventEmitter } from "node:events";
+import { Duplex } from "node:stream";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -2524,6 +2526,85 @@ describe("generation ownership handoffs", () => {
         expect(await callback).toEqual({ outcome: "answered", value: "worker answer" });
         expect(h.job.ownerAttached()).toBe(true);
         expect(h.jobs.status(h.job.id, "tab")).toMatchObject({ state: "running", handedOff: true });
+    });
+
+    it("sends an oversized whole-chat recovery on an empty queue but terminates with a backlog", async () => {
+        clock();
+        const h = setup();
+        const entered = withResolvers<RunningJob>();
+        h.run(async (job) => {
+            entered.resolve(job);
+            await aborted(job);
+        });
+        const id = h.create();
+        await entered.promise;
+        // Fake only the transport and measured frame size: exercise the upgrade and resync
+        // handler with a small real chat, without a listener or a multi-megabyte allocation.
+        const ws = Object.assign(new EventEmitter(), {
+            OPEN: WsClient.OPEN,
+            readyState: WsClient.OPEN as number,
+            bufferedAmount: 0,
+            send: vi.fn<(text: string) => void>(),
+            close: vi.fn(() => {
+                ws.readyState = WsClient.CLOSED;
+                ws.emit("close");
+            }),
+            terminate: vi.fn(() => {
+                ws.readyState = WsClient.CLOSED;
+                ws.emit("close");
+            }),
+        });
+        const transport = new Duplex({
+            read() {},
+            write(_data, _encoding, done) {
+                done();
+            },
+        });
+        const attached = withResolvers<void>();
+        const upgrade = vi
+            .spyOn(WebSocketServer.prototype, "handleUpgrade")
+            .mockImplementationOnce((_req, _socket, _head, callback) => {
+                callback(ws as unknown as WsClient, _req);
+                attached.resolve();
+            });
+        cleanups.push(() => {
+            upgrade.mockRestore();
+            ws.close();
+            transport.destroy();
+        });
+        expect(
+            h.jobs.handleUpgrade(
+                { url: `/api/generations/${id}/ws?clientId=tab&hydration=patch`, headers: {} } as Parameters<
+                    typeof h.jobs.handleUpgrade
+                >[0],
+                transport,
+                Buffer.alloc(0),
+            ),
+        ).toBe(true);
+        await attached.promise;
+        ws.send.mockClear();
+        const byteLength = Buffer.byteLength;
+        const measured = vi
+            .spyOn(Buffer, "byteLength")
+            .mockImplementation((text, encoding) =>
+                typeof text === "string" && text.includes('"kind":"chats"')
+                    ? 4 * 1024 * 1024 + 1
+                    : byteLength(text, encoding),
+            );
+        cleanups.push(() => measured.mockRestore());
+
+        ws.emit("message", JSON.stringify({ type: "resync" }));
+        expect(ws.terminate).not.toHaveBeenCalled();
+        expect(ws.readyState).toBe(WsClient.OPEN);
+        const frames = ws.send.mock.calls.map(([text]) => JSON.parse(text as string));
+        expect(frames).toEqual([expect.objectContaining({ type: "resource", kind: "chats", id: "k" })]);
+        expect(frames[0].data.message).toEqual([m("u", "hi"), m("r", "", "char")]);
+
+        ws.bufferedAmount = 1;
+        ws.emit("message", JSON.stringify({ type: "resync" }));
+        expect(ws.terminate).toHaveBeenCalledOnce();
+        expect(ws.readyState).toBe(WsClient.CLOSED);
+        expect(ws.send).toHaveBeenCalledTimes(1);
     });
 
     it("admits a frame at exactly 4 MiB and terminates the owner one UTF-8 byte over", async () => {

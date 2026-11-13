@@ -33,7 +33,7 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 - [Memory](#memory): 1
 - [Plugins](#plugins): 3
 - [Selection](#selection): 1
-- [Server generation](#server-generation): 2
+- [Server generation](#server-generation): 1
 - [Settings](#settings): 3
 
 ## Assets
@@ -185,24 +185,6 @@ its tests with no caller to need them.
 saying it is a deliberate hook.
 
 ## Server generation
-
-### A whole-chat resync of a chat over 4 MiB closes a healthy generation socket
-
-`sendSocket` terminates the socket when `ws.bufferedAmount + bytes` exceeds `MAX_BUFFERED_BYTES`, 4 MiB
-(`server/src/jobs/generationJobs.ts:1042`, added by `8367c3986`). The bound applies to the frame itself, and a whole
-chat has no size ceiling (`wholeChatEvent`, `generationJobs.ts:1330`), so the answer to `{ type: "resync" }`
-(`generationJobs.ts:2709`) for a chat that serializes past 4 MiB is refused on an empty queue, and again after every
-reconnect. Found 2026-11-14 by the wide review (cut F1a): a 5.5 MiB chat (about 700 messages of 8 KiB) over loopback
-sockets with `bufferedAmount` 0 was terminated on both attempts while the job ran. Whole-resource snapshots and an
-ended job's whole-chat attach go through the same helper.
-
-**Why it matters:** the tab asks for a whole-chat resync when it cannot apply a checkpoint
-(`src/ts/network/generationJobs.ts:1160`); with a long chat it is disconnected each time and never recovers over the
-socket. No stored data is lost.
-
-**Suggested handling:** allow one oversized frame when nothing is queued, keeping the bound on a backlog (a local
-change in `sendSocket`; it allows one frame's worth of memory). Keeping the 4 MiB limit absolute needs a whole-chat
-recovery over HTTP on both sides.
 
 ### A long unbroken run of letters stalls every request while its tokens are counted
 

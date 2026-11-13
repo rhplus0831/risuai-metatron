@@ -1033,13 +1033,13 @@ export function createGenerationJobs(options: {
     }
 
     /**
-     * Sends only when bufferedAmount plus the frame's UTF-8 bytes stays within MAX_BUFFERED_BYTES
-     * (equality is allowed); otherwise terminates the socket and returns false without queuing the frame.
+     * An empty queue can take one oversized snapshot so whole-chat recovery remains possible.
+     * Otherwise the queue plus the frame's UTF-8 bytes must stay within MAX_BUFFERED_BYTES.
      */
     function sendSocket(job: Job, ws: WebSocket, text: string, bytes = Buffer.byteLength(text)): boolean {
         try {
             if (ws.readyState === ws.OPEN) {
-                if (ws.bufferedAmount + bytes > MAX_BUFFERED_BYTES) {
+                if (ws.bufferedAmount > 0 && ws.bufferedAmount + bytes > MAX_BUFFERED_BYTES) {
                     ws.terminate();
                     return false;
                 }
