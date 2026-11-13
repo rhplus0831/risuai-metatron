@@ -29,7 +29,6 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 
 - [Assets](#assets): 1
 - [Characters](#characters): 2
-- [Memory](#memory): 1
 - [Plugins](#plugins): 3
 - [Selection](#selection): 1
 - [Server generation](#server-generation): 1
@@ -78,27 +77,6 @@ confirmed by a second reader through the real resource sync: the server record h
 
 **Suggested handling:** a function binding whose setter refuses a blank or non-finite value, so the draft stays in the
 box and never enters the record.
-
-## Memory
-
-### A send's HypaV3 checkpoint counts a summary the projection guard dropped
-
-`checkpoint` in `server/src/prompt/assemble.ts:816` returns `"committed"` as soon as `write.merge` produces a value
-inside `host.writeMemory`; it never checks that the stored `hypaV3Data` kept it. When the projection owns the field,
-the server's write guard (`refusesHypaV3Data` in `server/src/data/chatStore.ts`) drops the summary, but the send's
-HypaV3 execution counts it as saved. The detached task's `checkpointOf` in `memoryTasks.ts` confirms the write since
-the Per-Chat Memory plan's slice 2 (`15996bb5b`); the in-job path was outside that slice. Found 2026-11-12 during that
-slice. Reproduced 2026-11-14 in a running server (wide review, cut X2, and a second run): with the mode changed while
-the summary was in flight, the send's provider request carried the new summary, the stored metadata had no
-`hypaV3Data`, and the next HypaV3 send summarized the same messages again; with the mode unchanged the summary was
-kept and not requested twice.
-
-**Why it matters:** a send treats a gap as summarized while nothing was stored, and the next send pays for the same
-summary again; per-chat modes make the mode changes that lead there casual.
-
-**Suggested handling:** make the in-job checkpoint (`assemble.ts:857`) confirm the stored value as `checkpointOf`
-does and return `skipped` so the existing recovery runs, with a regression test that moves a chat to Structured
-Memory while a send's HypaV3 summary is in flight.
 
 ## Plugins
 

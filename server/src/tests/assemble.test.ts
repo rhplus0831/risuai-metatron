@@ -30,8 +30,9 @@ import type { MemoryEvent } from "../../../shared/structuredMemory.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { readMemoryRecords, type MemoryRecords } from "../prompt/memory/structured/step.ts";
-import { memoryRecords } from "./memoryFixtures.ts";
+import { memoryRecords, writeMemory as writeStructuredMemory } from "./memoryFixtures.ts";
 import type { MemoryHost } from "../prompt/memory/host.ts";
+import * as hypaV3 from "../prompt/memory/hypav3.ts";
 import {
     normalizePreset,
     PERSONA_ROOT_ALIASES,
@@ -3027,6 +3028,101 @@ describe("the context report", () => {
         // 173. The next send counts the 129 entries after it, which may grow to 220 − 44.
         expect(chat.hypaV3Data?.summaries).toHaveLength(1);
         expect(report.memory).toMatchObject({ summarized: 3, reserved: 44, summarizeIn: 220 - 44 - (181 - 52) + 1 });
+    });
+
+    it.each([
+        { mode: "structuredMemory", outcome: "skipped" },
+        { mode: "hypaV3", outcome: "committed" },
+    ] as const)("acknowledges a HypaV3 checkpoint as $outcome when storage is in $mode", async ({ mode, outcome }) => {
+        const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+        const store = createResourceStore({ file: ":memory:", kinds });
+        onTestFinished(() => store.close());
+        const editMeta = (fields: Record<string, unknown>) =>
+            store.applyChanges({
+                chats: [
+                    {
+                        characterId: "counter",
+                        chatId: "k",
+                        baseRevision: store.chatRevision("counter", "k")!,
+                        ops: [{ op: "meta", set: fields }],
+                    },
+                ],
+            });
+        const readChat = () =>
+            store.readRefs([], { chats: [{ characterId: "counter", id: "k" }] }).chats[0].data as Chat;
+        const marker = "#S#";
+        const request = vi.fn(async () => {
+            // A mode change while the summary is in flight makes the existing structured events
+            // own hypaV3Data. The metadata write still succeeds but discards the summary field.
+            editMeta({ memoryMode: mode });
+            return { type: "success" as const, result: marker };
+        });
+        const assembly = contextAssembly({
+            hypaV3: true,
+            maxContext: 220,
+            template: [{ type: "memory" }, CHAT_CARD],
+            messages: fiveMessages,
+            request,
+            memoryJob: {
+                ...selectOnlyJob,
+                preview: false,
+                input: true,
+                blockingReason: () => "requestTrigger",
+                acquireWriter: async () => ({ release() {} }),
+                readSource: () => ({ messages: readChat().message, fmIndex: -1, greeting: "Hi!" }),
+            },
+        });
+        Object.assign(assembly.host.db.hypaV3Presets[0].settings, {
+            budgetMode: "tokens",
+            memoryBudgetTokens: 80,
+            extraSummarizationTokens: 0,
+            lookaheadHeadroomTokens: 0,
+            recentMemoryRatio: 1,
+            similarMemoryRatio: 0,
+        });
+        store.applyChanges({
+            ops: [{ kind: kinds.get("characters")!, id: "counter", baseRevision: null, data: { chaId: "counter" } }],
+            chats: [
+                {
+                    characterId: "counter",
+                    chatId: "k",
+                    baseRevision: null,
+                    ops: [{ op: "create", chat: { ...assembly.chat, memoryMode: "hypaV3", memoryEnabled: true } }],
+                },
+            ],
+        });
+        writeStructuredMemory(store, "counter", "k", memoryRecords(["existing"]));
+        assembly.host.chat = readChat;
+        assembly.host.writeMemory = (build) => {
+            const fields = build(readChat());
+            if (fields) editMeta(fields);
+        };
+        const acknowledgements: ("committed" | "skipped")[] = [];
+        const execute = hypaV3.executeHypaV3Plan;
+        vi.spyOn(hypaV3, "executeHypaV3Plan").mockImplementation((host, prepared, plan, hooks) =>
+            execute(host, prepared, plan, {
+                ...hooks,
+                checkpoint: (write) => {
+                    const result = hooks!.checkpoint!(write);
+                    acknowledgements.push(result);
+                    return result;
+                },
+            }),
+        );
+        const result = await assembly.run();
+        expect(request).toHaveBeenCalledOnce();
+        expect(acknowledgements).toEqual([outcome]);
+        expect(store.chatMeta("counter", "k")!.data.memoryMode).toBe(mode);
+        const stored = store.chatMeta("counter", "k")!.data.hypaV3Data as Chat["hypaV3Data"];
+        if (outcome === "skipped") {
+            expect(stored?.summaries ?? []).toEqual([]);
+            expect(result.formated.some(({ content }) => content.includes(marker))).toBe(false);
+            expect(result.report.memory).toMatchObject({ summarized: 0, coverage: "gap" });
+        } else {
+            expect(stored?.summaries.map(({ text }) => text)).toEqual([marker]);
+            expect(result.formated.some(({ content }) => content.includes(marker))).toBe(true);
+            expect(result.report.memory).toMatchObject({ summarized: 3 });
+        }
     });
 
     it("a select-only HypaV3 step keeps the response budget free: it trims history the whole context would hold", async () => {

@@ -855,16 +855,20 @@ async function hypaV3Step(
     };
 
     const checkpoint = (write: HypaV3Checkpoint): "committed" | "skipped" => {
-        let outcome: "committed" | "skipped" = "skipped";
+        let expected: string | undefined;
         host.writeMemory((stored) => {
             const merged = write.merge(stored.hypaV3Data);
-            outcome = merged ? "committed" : "skipped";
-            if (!merged) {
-                console.warn(HYPAV3_WRITE_SKIPPED);
+            if (merged) {
+                expected = JSON.stringify(merged);
             }
             return merged ? { hypaV3Data: merged } : null;
         });
-        return outcome;
+        // A successful metadata op can still drop HypaV3 data when the projection owns it.
+        const persisted = expected !== undefined && JSON.stringify(host.chat().hypaV3Data) === expected;
+        if (!persisted) {
+            console.warn(HYPAV3_WRITE_SKIPPED);
+        }
+        return persisted ? "committed" : "skipped";
     };
     const hooks = (run: AssemblyMemoryRun | null, extra: HypaV3ExecutionHooks = {}): HypaV3ExecutionHooks => ({
         progress: (done, total) => run?.update({ done, total }),
