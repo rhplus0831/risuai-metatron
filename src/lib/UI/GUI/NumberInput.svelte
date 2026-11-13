@@ -34,6 +34,14 @@
         disabled = false,
         placeholder,
     }: Props = $props();
+
+    // A function binding's setter may refuse an entry (a cleared box, a value out of range) and keep
+    // the stored value; Svelte would then rewrite the box with it on the same keystroke, so a last
+    // digit could never be deleted. While the box is being edited it shows what was typed instead;
+    // a commit (`change`) or leaving the box shows the bound value again, as does an outside change
+    // made while the box is not being edited.
+    let editing = $state(false);
+    let typed: number | null | undefined = $state();
 </script>
 
 <input
@@ -58,8 +66,22 @@
     {max}
     {id}
     {disabled}
-    bind:value
-    onchange={onChange}
+    bind:value={
+        () => (editing ? typed : value),
+        (next) => {
+            typed = next;
+            value = next;
+        }
+    }
+    onfocus={() => {
+        typed = value;
+        editing = true;
+    }}
+    onblur={() => (editing = false)}
+    onchange={(event) => {
+        onChange(event);
+        typed = value;
+    }}
     {placeholder}
 />
 

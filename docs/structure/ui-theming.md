@@ -127,6 +127,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `src/lib/UI/GUI/SelectInput.svelte` (`risu-select`), `src/lib/UI/GUI/SliderInput.svelte`,
   `src/lib/UI/GUI/OptionalInput.svelte`, `src/lib/UI/GUI/SegmentedControl.svelte`,
   `src/lib/UI/GUI/TextAreaResizable.svelte`: each one's rules are its header.
+- `src/lib/UI/GUI/NumberInput.svelte`: while focused it shows the typed entry, so a binding setter may refuse an empty
+  or out-of-range entry without the box snapping back; `change` or blur shows the bound value again.
 - `src/lib/UI/GUI/TextAreaInput.svelte`: textarea or CBS-highlighted contenteditable that opens the popup editor
   (`popupEditor`, `popupEditorContext`). A field tied to a selected record passes its id as `popupEditorContext`;
   wrappers that forward it include `RegexList`, `TriggerList`, `PromptDataItem`, `MultiLangInput`, and

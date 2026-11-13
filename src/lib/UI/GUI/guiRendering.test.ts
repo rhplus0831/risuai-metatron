@@ -15,6 +15,7 @@ import SegmentedControl from "./SegmentedControl.svelte";
 import SelectInput from "./SelectInput.svelte";
 import SliderInput from "./SliderInput.svelte";
 import TextInput from "./TextInput.svelte";
+import { reactiveProps } from "../tests/reactiveProps.svelte";
 
 type GuiComponent = Parameters<typeof mount>[0];
 type GuiProps = Record<string, unknown>;
@@ -206,6 +207,49 @@ describe("GUI rendering without a browser session", () => {
         expect(textInput.value).toBe("changed value");
         expect(onNumberChange).toHaveBeenCalledTimes(1);
         expect(numberInput.value).toBe("7");
+    });
+
+    it("keeps a NumberInput entry its binding refuses until the box is committed or left", async () => {
+        // A function binding whose setter keeps only finite numbers, as the memory token fields do.
+        const record = reactiveProps({ stored: 39 });
+        const view = renderGui(NumberInput, {
+            id: "gui-render-refusing",
+            get value() {
+                return record.stored;
+            },
+            set value(next: number | null) {
+                if (typeof next === "number" && Number.isFinite(next)) record.stored = next;
+            },
+        });
+        const input = view.getBySelector<HTMLInputElement>("input#gui-render-refusing");
+        expect(input.value).toBe("39");
+
+        // Two backspaces: "3" is written, the empty box is refused but stays empty while focused.
+        input.focus();
+        await inputValue(input, "3");
+        expect(record.stored).toBe(3);
+        await inputValue(input, "");
+        await tick();
+        expect(record.stored).toBe(3);
+        expect(input.value).toBe("");
+
+        await inputValue(input, "5");
+        expect(record.stored).toBe(5);
+        expect(input.value).toBe("5");
+
+        // Committing a refused entry shows the stored value again.
+        await inputValue(input, "");
+        await changeValue(input, "");
+        expect(input.value).toBe("5");
+
+        // Leaving the box does too, and an outside change shows once the box is not being edited.
+        await inputValue(input, "");
+        input.blur();
+        await tick();
+        expect(input.value).toBe("5");
+        record.stored = 12;
+        await tick();
+        expect(input.value).toBe("12");
     });
 
     it("renders checkbox and optional input states without app bootstrapping", async () => {
