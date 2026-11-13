@@ -21,8 +21,8 @@ mechanism: D10's kind check moved from the route to the runner (N7). The two `un
 plan's Not In This Plan and in [found issues](../../../backlog/found-issues.md).
 
 F15 is a product question, not a wording fix: an entry marked `@@ignore_on_max_context` is rejected like any other, so
-a card that uses the decorator as meant would stop every send. The plan now carries the recommended answer as D19 (such
-an entry never causes a stop) and lists it under Open Questions until the owner answers.
+a card that uses the decorator as meant would stop every send. The plan carries the recommended answer as D19 (such
+an entry never causes a stop). The owner accepted D19 on 2026-11-13, after reading this finding.
 
 The slice 1 half held against the code as drafted. The three P2 are all on the tab side of slice 2.
 
@@ -124,7 +124,7 @@ Each is `fixed in plan`.
 - **F14.** "beside the `memoryRequiredOverCap` cases in `memoryJobs.test.ts`": every describe there is about memory.
   The job tests go to `promptRunner.test.ts`.
 - **F15.** Not addressed in the draft: `@@ignore_on_max_context` sets priority -1000 (`activation.ts:544`) and the pass
-  counts the entry as rejected (`:749`). D19, pending the owner.
+  counts the entry as rejected (`:749`). D19, which the owner accepted.
 - **F16.** The Rules' comment list was short; the module comment, `LoreActivation`'s, and the route's were added.
 - **N1.** "The call hands the stop up only when its own follow carried the mark": `followJobToEnd` returns the existing
   promise (`serverCommands.ts:347`), so the call cannot learn it afterwards. The check and the outcomes are named, and

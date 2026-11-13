@@ -4,7 +4,7 @@ Status: drafted 2026-11-13 at `fb09d2b25` from the owner's request. D1 is the ow
 to D6 the same day, as recommended. D7 to D18 are this plan's own, found against the code. Audited against `8bfc4ce83`
 on 2026-11-13 ([report](../reports/audits/plan-runner/lore-budget-send-stop-2026-11-13.md)): no P1, three P2, and
 twenty-one P3 findings, all fixed here; two claims it could not settle are under Not In This Plan. D19 comes from the
-audit and narrows D1; it waits for the owner's word (Open Questions).
+audit and narrows D1; the owner accepted it the same day.
 
 Sources: the owner's request (2026-11-13: when active lorebook entries do not fit the lorebook token limit, warn
 instead of processing the message; a checkbox on the Interaction page, on by default; the user can turn the warning off
@@ -341,7 +341,8 @@ off. `ui-theming.md` and `app-shell.md`, where they give the dialog layers' Esca
 ## Decisions
 
 D1 is the owner's request of 2026-11-13. The owner accepted D2 to D6 the same day. The rest are this plan's; D12 and
-D15 are as the audit of 2026-11-13 left them, and D19 comes from it.
+D15 are as the audit of 2026-11-13 left them. D19 comes from the audit, and the owner accepted it, with the narrowing
+of D1 it brings, the same day.
 
 - D1. A checkbox on the Interaction page, on by default. While it is on, a send whose activated lore does not fit the
   lorebook token limit warns instead of processing the message. The user can turn the warning off per chat, or stop and
@@ -414,8 +415,5 @@ D15 are as the audit of 2026-11-13 left them, and D19 comes from it.
 
 ## Open Questions
 
-- D19 waits for the owner. The audit found that an entry marked `@@ignore_on_max_context` is counted as rejected like
-  any other, so a card that uses the decorator as meant would stop every send. The plan is written for the recommended
-  answer: such an entry never causes a stop. The other answer (it counts) removes D19, the side set, and their tests.
-
-The owner accepted the stop point, the per-chat flag, the two choices, and the scope on 2026-11-13.
+None open. The owner accepted the stop point, the per-chat flag, the two choices, and the scope on 2026-11-13, and D19
+the same day after the audit: an entry marked `@@ignore_on_max_context` never causes a stop.
