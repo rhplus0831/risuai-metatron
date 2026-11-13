@@ -77,7 +77,7 @@
             "v2GetFirstMessage",
             "v2QuickSearchChat",
         ],
-        "Low Level": ["v2SendAIprompt", "v2ImgGen", "v2CheckSimilarity", "v2RunLLM"],
+        "Low Level": ["v2SendAIprompt", "v2ImgGen", "v2CheckSimilarity", "v2RunLLM", "v2SetPersonaDesc"],
         Alert: ["v2ShowAlert", "v2GetAlertInput", "v2GetAlertSelect"],
         "Lorebook V2": [
             "v2GetAllLorebooks",
@@ -105,7 +105,6 @@
             "v2GetCharacterDesc",
             "v2SetCharacterDesc",
             "v2GetPersonaDesc",
-            "v2SetPersonaDesc",
             "v2GetReplaceGlobalNote",
             "v2SetReplaceGlobalNote",
             "v2GetAuthorNote",
