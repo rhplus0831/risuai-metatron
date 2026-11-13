@@ -319,6 +319,50 @@ describe("which remote changes are merged", () => {
         expect(fake.batchCount()).toBe(1);
     });
 
+    it("does not echo an equal merge when a newer local edit catches up with the server during the conflict read", async () => {
+        const { fake, sync, mirror } = await boot({
+            prepare: (fake) =>
+                fake.set(
+                    "characters",
+                    "a",
+                    character("a", "Alice", {
+                        lastInteraction: 100,
+                        desc: "base",
+                        nested: { x: 1, y: 2 },
+                    }),
+                ),
+        });
+        const base = fake.get("characters", "a")!.revision;
+        const current = fake.data("characters", "a");
+        fake.set("characters", "a", {
+            ...Object.fromEntries(Object.entries(current).reverse()),
+            nested: { y: 2, x: 1 },
+            desc: "same",
+        });
+        server.current = {
+            fetch: async (path: string, init?: RequestInit) => {
+                const response = await fake.fetch(path, init);
+                if (path === "/api/resources/read") {
+                    mirror("a").desc = "same";
+                }
+                return response;
+            },
+        };
+        // The rejected operation differs from the server, so it cannot take the lost-answer shortcut.
+        mirror("a").desc = "earlier edit";
+        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
+        expect(mirror("a").desc).toBe("same");
+        expect(fake.batchBodies().map((batch) => batch.ops)).toEqual([
+            [{ kind: "characters", id: "a", baseRevision: base, patch: { set: { desc: "earlier edit" }, remove: [] } }],
+        ]);
+        expect(sync.heldRecordRevision("characters", "a")).toBe(fake.get("characters", "a")!.revision);
+        await sync.flushResources();
+        await vi.advanceTimersByTimeAsync(2000);
+        expect(fake.batchCount()).toBe(1);
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
     const nestedCharacter = (fake: FakeResourceServer) =>
         fake.set(
             "characters",
