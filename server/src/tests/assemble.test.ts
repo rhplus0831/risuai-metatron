@@ -625,6 +625,22 @@ describe("assemblePrompt final token recheck", () => {
         }
     });
 
+    it("includes an image inlay's caption in the prompt for a model without image input", async () => {
+        const { host, run } = assembly([{ chatId: "m", data: "Describe {{inlay::photo}}" }], "");
+        host.db.aiModel = "gpt35";
+        host.captionImage = vi.fn(async () => "A red kite above a field");
+
+        const result = await run();
+
+        expect(result.type).toBe("prompt");
+        if (result.type !== "prompt") throw new Error(JSON.stringify(result));
+        expect(result.formated).toMatchObject([
+            { role: "user", content: "Describe [A red kite above a field]", memo: "m" },
+        ]);
+        expect(result.formated[0].multimodals).toBeUndefined();
+        expect(host.captionImage).toHaveBeenCalledExactlyOnceWith("data:image/png;base64,photo");
+    });
+
     it("keeps an untrimmed image-only message even when a preceding text message is trimmed", async () => {
         const { run, tokenizer } = assembly(
             [
