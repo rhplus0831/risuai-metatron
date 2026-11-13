@@ -232,7 +232,7 @@ export async function importPreset(
         pr.NAISettings.repetitionPenaltyRange = pre.parameters.repetition_penalty_range;
         pr.NAISettings.repetitionPenaltySlope = pre.parameters.repetition_penalty_slope;
         pr.NAISettings.frequencyPenalty = pre.parameters.repetition_penalty_frequency;
-        pr.NAISettings.repostitionPenaltyPresence = pre.parameters.repetition_penalty_presence;
+        pr.NAISettings.presencePenalty = pre.parameters.repetition_penalty_presence;
         pr.PresensePenalty = pre.parameters.repetition_penalty_presence * 100;
         pr.NAISettings.cfg_scale = pre.parameters.cfg_scale;
         pr.NAISettings.mirostat_lr = pre.parameters.mirostat_lr;

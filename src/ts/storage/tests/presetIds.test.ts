@@ -695,6 +695,20 @@ describe("importPreset through addPreset", () => {
         expect(imported.NAISettings).toMatchObject({ cfg_scale: 1, mirostat_tau: 0, mirostat_lr: 1, starter: "" });
     });
 
+    it("an NAI preset imports its presence penalty into the effective setting after normalization", async () => {
+        bootWith();
+        const nai = {
+            presetVersion: 3,
+            name: "NovelAI presence penalty",
+            parameters: { temperature: 0.8, max_length: 160, repetition_penalty_presence: 0.75 },
+        };
+        const id = await importPreset({ name: "nai.json", data: new TextEncoder().encode(JSON.stringify(nai)) });
+        const imported = settings.presets.find((preset) => preset.id === id)!;
+        expect(normalizePresets([plainClone(imported)])[0].NAISettings.presencePenalty).toBe(0.75);
+        changeToPreset(imported.id);
+        expect(activePreset.NAISettings.presencePenalty).toBe(0.75);
+    });
+
     it("a JSON preset's proxyKey and model fields are ignored: no credential write, nothing on the preset, no model preset added", async () => {
         bootWith();
         llmSecretState.queue.splice(0);
