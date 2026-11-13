@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // it, the three selection indexes), `buildDatabaseSubset` (the plugin `getDatabase`: the 23 allowed
 // keys, the characters with their chats, the persona index, a hook's preset for the preset keys, an
 // own `__proto__` storage key kept as data), `buildSettingsReport` (the bug-report export: the
-// removal list the component carried before the aggregate was removed, every `llmSecrets` field,
+// removal list the component carried before the aggregate was removed, every secret section field,
 // and every key named like a credential, with `meta`), and `buildBackupInventory` (chat-free
 // character asset fields and the five settings). The model fields of the fixture live in the model
 // presets' main profiles. The oracle for the report is the removed component's own filter, written
@@ -143,6 +143,7 @@ function componentDropped(key: string): boolean {
         COMPONENT_REMOVED_KEYS.includes(key) ||
         LATER_REMOVED_KEYS.includes(key) ||
         (SECTION_FIELDS.llmSecrets as readonly string[]).includes(key) ||
+        (SECTION_FIELDS.secrets as readonly string[]).includes(key) ||
         key.toLowerCase().includes("key") ||
         key.toLowerCase().includes("proxy") ||
         key.toLowerCase().includes("hypa")
@@ -385,7 +386,49 @@ describe("buildDatabaseSubset (the plugin getDatabase)", () => {
 });
 
 describe("buildSettingsReport", () => {
-    it("is the root snapshot without the component's removal list, the llmSecrets fields, and every key named like a credential, plus meta", () => {
+    it("omits every owned secret field while keeping ordinary settings and the full settings snapshot intact", () => {
+        const secretFields = [...SECTION_FIELDS.llmSecrets, ...SECTION_FIELDS.secrets];
+        const secrets: Record<string, unknown> = {
+            ...Object.fromEntries(secretFields.map((field) => [field, "sample-token-value"])),
+            google: { accessToken: "sample-token-value", projectId: "sample-project" },
+            hordeConfig: { apiKey: "sample-token-value", model: "sample-model" },
+            novelai: { token: "sample-token-value", model: "sample-model" },
+            vertexAccessTokenExpires: 12345,
+            OaiCompAPIKeys: { provider: "sample-token-value" },
+            deeplOptions: { key: "sample-token-value", freeApi: true },
+            deeplXOptions: { url: "https://translator.test", token: "sample-token-value" },
+            hypaCustomSettings: { url: "https://embeddings.test", key: "sample-token-value", model: "sample-model" },
+            openaiCompatImage: {
+                url: "https://image.test",
+                key: "sample-token-value",
+                model: "sample-model",
+                size: "1024x1024",
+                quality: "standard",
+            },
+            wavespeedImage: {
+                key: "sample-token-value",
+                model: "sample-model",
+                loras: [],
+                reference_mode: "none",
+                reference_image: "",
+                reference_base64image: "",
+            },
+            googleSearchCredentials: { apiKey: "sample-token-value", searchEngineId: "sample-engine" },
+        };
+        installFlatDatabaseWithChats({ ...fixture(), ...secrets });
+
+        const report = buildSettingsReport();
+        expect(report.theme).toBe("dark");
+        expect(JSON.stringify(report)).not.toContain("sample-token-value");
+        const fullSettings = rootSnapshot();
+        for (const field of secretFields) {
+            expect(Object.hasOwn(report, field), field).toBe(false);
+            expect(fullSettings[field], field).toEqual(secrets[field]);
+            expect(plainClone(readSettingsRoot(field)), field).toEqual(secrets[field]);
+        }
+    });
+
+    it("is the root snapshot without the component's removal list, the secret section fields, and every key named like a credential, plus meta", () => {
         boot();
         const root = rootSnapshot();
         const report = buildSettingsReport();

@@ -92,7 +92,7 @@ export function buildDatabaseSubset(
     });
 }
 
-/** The keys the settings report leaves out, besides the `llmSecrets` fields and the credential-like names. */
+/** The keys the settings report leaves out, besides the secret fields and the credential-like names. */
 const REPORT_REMOVED_KEYS: ReadonlySet<string> = new Set([
     "characters",
     "blockedRealmCreators",
@@ -136,11 +136,12 @@ const REPORT_REMOVED_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 const llmSecretFields: ReadonlySet<string> = new Set(SECTION_FIELDS.llmSecrets as readonly string[]);
+const auxiliarySecretFields: ReadonlySet<string> = new Set(SECTION_FIELDS.secrets as readonly string[]);
 
 /**
  * The settings report for a bug report: the legacy flat settings (`rootSnapshot`) without the
- * personal and bulky keys (`REPORT_REMOVED_KEYS`), every `llmSecrets` field (its credentials are
- * `""` here anyway), and every key whose name contains `key`, `proxy`, or `hypa` (any case); then
+ * personal and bulky keys (`REPORT_REMOVED_KEYS`), every `llmSecrets` or auxiliary `secrets` field,
+ * and every key whose name contains `key`, `proxy`, or `hypa` (any case); then
  * `meta`.
  */
 export function buildSettingsReport(): Record<string, unknown> {
@@ -150,6 +151,7 @@ export function buildSettingsReport(): Record<string, unknown> {
         if (
             REPORT_REMOVED_KEYS.has(key) ||
             llmSecretFields.has(key) ||
+            auxiliarySecretFields.has(key) ||
             lower.includes("key") ||
             lower.includes("proxy") ||
             lower.includes("hypa")
