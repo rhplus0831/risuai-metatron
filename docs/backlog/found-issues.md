@@ -29,7 +29,7 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 
 - [Assets](#assets): 1
 - [Characters](#characters): 2
-- [Plugins](#plugins): 2
+- [Plugins](#plugins): 1
 - [Selection](#selection): 1
 - [Server generation](#server-generation): 1
 - [Settings](#settings): 3
@@ -79,20 +79,6 @@ confirmed by a second reader through the real resource sync: the server record h
 box and never enters the record.
 
 ## Plugins
-
-### A text-node mutation makes the plugin mutation observer throw and lose the batch
-
-The observer wraps every record's target in `SafeElement` (`src/ts/plugins/apiV3/v3.svelte.ts:657`), whose constructor
-calls `getAttribute` (`:244`). A `characterData` record's target is a text node, so the mapping throws before the
-plugin's callback and the other records of the batch are lost with it. `8657b12f2` repaired added and removed nodes
-only. Found 2026-11-14 by the wide review (cut F5) and confirmed by a second reader: observing a container with
-`subtree` and `characterData` and changing a text node delivered nothing and threw `element.getAttribute is not a
-function`.
-
-**Why it matters:** a plugin that watches streamed text through the declared API receives no notification at all.
-
-**Suggested handling:** deliver the batch, giving a non-element target as its parent element under the same wrapper or
-omitting that record.
 
 ### A cleared plain integer plugin argument is stored as null
 

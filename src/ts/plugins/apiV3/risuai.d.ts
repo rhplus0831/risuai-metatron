@@ -998,7 +998,7 @@ interface SafeClassArray<T> {
 interface SafeMutationRecord {
     /** Type of mutation */
     getType(): Promise<string>;
-    /** Target element of mutation */
+    /** Target element, or the parent element for a non-element target; parentless records are omitted. */
     getTarget(): Promise<SafeElement>;
     /** Added nodes in mutation */
     getAddedNodes(): Promise<SafeClassArray<SafeElement>>;

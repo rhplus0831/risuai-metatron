@@ -641,7 +641,10 @@ class SafeMutationObserver {
     __classType = "REMOTE_REQUIRED" as const;
     constructor(callback: SafeMutationCallback) {
         this.#observer = new MutationObserver((mutations) => {
-            const safeMutations: SafeMutationRecordObject[] = mutations.map((mutation) => {
+            const safeMutations = mutations.flatMap<SafeMutationRecordObject>((mutation) => {
+                // Text mutations belong to their containing element; raw nodes cannot cross the sandbox.
+                const target = mutation.target instanceof Element ? mutation.target : mutation.target.parentElement;
+                if (!target) return [];
                 const elementMapHelper = (nodeList: NodeList): SafeElement[] => {
                     const elements: SafeElement[] = [];
                     nodeList.forEach((node) => {
@@ -652,12 +655,14 @@ class SafeMutationObserver {
                     return elements;
                 };
 
-                return {
-                    type: mutation.type,
-                    target: new SafeElement(mutation.target as HTMLElement),
-                    addedNodes: elementMapHelper(mutation.addedNodes),
-                    removedNodes: elementMapHelper(mutation.removedNodes),
-                };
+                return [
+                    {
+                        type: mutation.type,
+                        target: new SafeElement(target as HTMLElement),
+                        addedNodes: elementMapHelper(mutation.addedNodes),
+                        removedNodes: elementMapHelper(mutation.removedNodes),
+                    },
+                ];
             });
 
             const safeClassed = new SafeClassArray<SafeMutationRecord>([]);

@@ -841,6 +841,76 @@ describe("v3 DOM listener targets and cleanup", () => {
         }
     });
 
+    it("delivers text and element mutations with safe targets while omitting parentless text records", async () => {
+        const api = await makeApi();
+        const root = await api.getRootDocument();
+        const parent = document.createElement("span");
+        parent.setAttribute("x-node", "text-parent");
+        const text = document.createTextNode("before");
+        parent.append(text);
+        const orphan = document.createTextNode("removed before delivery");
+        element.setAttribute("x-node", "element-target");
+        element.append(parent, orphan);
+        const received = vi.fn<(records: SafeClassArray<SafeMutationRecord>) => void>();
+        const NativeObserver = globalThis.MutationObserver;
+        let delivered!: () => void;
+        let failed!: (error: unknown) => void;
+        const delivery = new Promise<void>((resolve, reject) => {
+            delivered = resolve;
+            failed = reject;
+        });
+        // Keep real DOM batching, but surface a host callback exception as a test failure.
+        vi.spyOn(globalThis, "MutationObserver").mockImplementation(
+            class extends NativeObserver {
+                constructor(callback: MutationCallback) {
+                    super((records, observer) => {
+                        try {
+                            callback(records, observer);
+                            delivered();
+                        } catch (error) {
+                            failed(error);
+                        }
+                    });
+                }
+            },
+        );
+        const observer: SafeMutationObserver = api.createMutationObserver(received);
+        try {
+            await observer.observe(root.querySelector("#plugin-event-target"), {
+                subtree: true,
+                childList: true,
+                characterData: true,
+            });
+            text.data = "after";
+            orphan.data = "changed before removal";
+            orphan.remove();
+            const added = document.createElement("b");
+            added.setAttribute("x-node", "added");
+            element.append(added);
+            await delivery;
+
+            expect(received).toHaveBeenCalledTimes(1);
+            const records = received.mock.calls[0][0];
+            expect(await records.length()).toBe(3);
+            const textRecord = (await records.at(0))!;
+            expect(await textRecord.getType()).toBe("characterData");
+            const textTarget = await textRecord.getTarget();
+            expect(await textTarget.getAttribute("x-node")).toBe("text-parent");
+            expect(await textTarget.textContent()).toBe("after");
+            for (const index of [1, 2]) {
+                const record = (await records.at(index))!;
+                expect(await record.getType()).toBe("childList");
+                expect(await (await record.getTarget()).getAttribute("x-node")).toBe("element-target");
+            }
+            expect(await (await (await records.at(1))!.getRemovedNodes()).length()).toBe(0);
+            const additions = await (await records.at(2))!.getAddedNodes();
+            expect(await additions.length()).toBe(1);
+            expect(await (await additions.at(0))!.getAttribute("x-node")).toBe("added");
+        } finally {
+            await observer.disconnect();
+        }
+    });
+
     it("removes prior listener IDs through re-queried wrappers while keeping document and element targets independent", async () => {
         const api = await makeApi();
         const root = await api.getRootDocument();
