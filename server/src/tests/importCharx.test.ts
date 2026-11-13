@@ -1,11 +1,21 @@
 // @vitest-environment node
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    readdirSync,
+    rmSync,
+    statSync,
+    writeFileSync,
+    type StatsFs,
+} from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { Zip, ZipDeflate, zipSync } from "fflate";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { encodeRPack } from "../../../shared/rpack.ts";
+import { diskNeeded } from "./assetSweepFixtures.ts";
 import { createResourceTestClient, type ResourceTestClient, waitFor } from "./testSupport.ts";
 
 const route = "/api/import/charx";
@@ -123,6 +133,18 @@ function unreadBody() {
 }
 function firstAssetClock(s: ResourceTestClient) {
     vi.spyOn(performance, "now").mockImplementation(() => (assetFiles(s).length ? 200 : 0));
+}
+function diskCapacity(free: number, bsize = 1): StatsFs {
+    return {
+        bavail: free / bsize,
+        bfree: free / bsize,
+        blocks: free / bsize,
+        bsize,
+        frsize: bsize,
+        ffree: 0,
+        files: 0,
+        type: 0,
+    };
 }
 
 describe("POST /api/import/charx", () => {
@@ -306,6 +328,51 @@ describe("POST /api/import/charx", () => {
             ...emptyResult,
             assets: Object.fromEntries(Object.entries(entries).map(([name, data]) => [name, keyOf(data)])),
         });
+        expect(staged(s)).toEqual([]);
+    });
+
+    it.each([
+        { budget: "decoded bytes", bsize: 1, assetBytes: 4, headroom: 4, kept: 1, probes: 1 },
+        { budget: "filesystem blocks for tiny assets", bsize: 4096, assetBytes: 1, headroom: 4096, kept: 1, probes: 1 },
+        // Large simulated allocation units cross the 8 MiB refresh boundary with only two one-byte writes.
+        {
+            budget: "a capacity refresh after 8 MiB of allocations",
+            bsize: 4 * 1024 * 1024,
+            assetBytes: 1,
+            headroom: 12 * 1024 * 1024,
+            kept: 2,
+            probes: 2,
+        },
+    ])("stops publication at the disk reserve using $budget and accepts a fitting retry", async (test) => {
+        const s = await server();
+        const entries = Object.fromEntries(
+            Array.from({ length: 4 }, (_, i) => [`${i}.bin`, Buffer.alloc(test.assetBytes, i)]),
+        );
+        const capacity = diskCapacity(diskNeeded(test.headroom), test.bsize);
+        const probe = vi.spyOn(fs, "statfs").mockResolvedValue(capacity);
+        if (test.probes === 2) {
+            probe.mockResolvedValueOnce(capacity).mockResolvedValue(diskCapacity(0, test.bsize));
+        }
+
+        const answer = await lines(await post(s, archive(entries)));
+        expect(answer.at(-1)).toEqual({ error: "Disk is full" });
+        expect(answer.filter((line) => line.error)).toEqual([{ error: "Disk is full" }]);
+        const retained = Object.values(entries).slice(0, test.kept);
+        expect(assetFiles(s)).toEqual(retained.map((data) => path.basename(keyOf(data))).sort());
+        for (const data of retained) expect(readFileSync(path.join(s.savePath, keyOf(data)))).toEqual(data);
+        expect(staged(s)).toEqual([]);
+        expect(probe).toHaveBeenCalledTimes(test.probes);
+
+        probe.mockResolvedValue(diskCapacity(diskNeeded(4 * Math.max(test.bsize, test.assetBytes)), test.bsize));
+        expect((await lines(await post(s, archive(entries)))).at(-1)).toEqual({
+            ...emptyResult,
+            assets: Object.fromEntries(Object.entries(entries).map(([name, data]) => [name, keyOf(data)])),
+        });
+        expect(assetFiles(s)).toEqual(
+            Object.values(entries)
+                .map((data) => path.basename(keyOf(data)))
+                .sort(),
+        );
         expect(staged(s)).toEqual([]);
     });
 

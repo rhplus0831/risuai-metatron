@@ -30,7 +30,7 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 - [Assets](#assets): 1
 - [Characters](#characters): 2
 - [Chat pipeline](#chat-pipeline): 1
-- [Imports and backups](#imports-and-backups): 2
+- [Imports and backups](#imports-and-backups): 1
 - [MCP](#mcp): 3
 - [Memory](#memory): 5
 - [Plugins](#plugins): 3
@@ -103,20 +103,6 @@ reads see the flags set during the preview and none reaches the chat's metadata,
 (`server/src/jobs/jobScope.ts:660`) is reached on other paths too.
 
 ## Imports and backups
-
-### A CharX import writes its decoded assets with no check of the space left
-
-`charxLines` reads and publishes each archive entry on its own (`server/src/routes/importCharx.ts:179`, `:188`). One
-entry is capped at 50 MiB decoded and the upload at its compressed size; nothing adds up the decoded bytes or checks
-free space before `writeContentAsset`. Found 2026-11-14 by the wide review (cut E4) and confirmed by a second reader:
-an 884-byte upload stored 524,288 bytes, and with a write failure injected on the second asset the first stayed in
-`save/assets`.
-
-**Why it matters:** one imported card of highly compressible assets can fill the volume the resource database lives
-on. It needs the owner to import the file.
-
-**Suggested handling:** refuse the import when the volume's free space would fall under the reserve the server already
-keeps for the upstream import's commit, checked as bytes are published; a separate byte cap is not needed for this.
 
 ### The upstream backup import checks free space at commit, after the staging files are written
 

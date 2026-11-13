@@ -1,4 +1,4 @@
-import type { FileHandle } from "node:fs/promises";
+import fs, { type FileHandle } from "node:fs/promises";
 import { promisify } from "node:util";
 import zlib from "node:zlib";
 import type { Context, Hono, MiddlewareHandler } from "hono";
@@ -50,6 +50,7 @@ import { ndjsonLine } from "../http/spool.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 import { writeContentAsset } from "../http/contentAsset.ts";
+import { ensureFreeSpace, InsufficientStorageError, type DiskStatfs } from "../http/diskSpace.ts";
 
 export { CHARX_IMPORT_PATH };
 
@@ -57,6 +58,8 @@ export { CHARX_IMPORT_PATH };
 const PROGRESS_INTERVAL_MS = 200;
 /** The validation walk reads the local headers and data descriptors through a window this large. */
 const WALK_WINDOW_BYTES = 4096;
+/** Recheck the volume after this many asset allocation bytes, charging writes between probes. */
+const DISK_CHECK_INTERVAL_BYTES = 8 * 1024 * 1024;
 
 const inflateRaw = promisify(zlib.inflateRaw);
 
@@ -99,7 +102,7 @@ export type CharxFilePlan = { entries: CharxPlanEntry[]; total: number };
  * with `{ done, total }` lines (the asset entries to read, exact; at most every 200 ms and for the
  * last), then `{ card, moduleData, assets, excluded }` (`moduleData` is base64 or null; `assets`
  * maps entry names to stored keys); or one `{ error }` line at the first failure
- * (`Invalid character file` for a corrupt deflate stream, `Maintenance in progress`, `Import failed`),
+ * (`Invalid character file` for a corrupt deflate stream, `Maintenance in progress`, `Disk is full`, `Import failed`),
  * after which nothing more is written. An entry excluded by a declared size is never read; one that
  * decodes past `MAX_CHARX_ENTRY_BYTES` is dropped. Memory holds the central directory's entries and
  * one entry's bytes at a time.
@@ -165,6 +168,23 @@ export async function* charxLines(
         const excluded: string[] = [];
         let done = 0;
         let lastLine = performance.now();
+        let capacity: ReturnType<DiskStatfs> | undefined;
+        let allocationUnit = 1;
+        let writtenSinceCheck = 0;
+        // Cache the probe, not its spending power, so tiny entries do not each need a statfs call.
+        const statfs: DiskStatfs = async (directory) => {
+            if (!capacity || writtenSinceCheck >= DISK_CHECK_INTERVAL_BYTES) {
+                capacity = fs.statfs(directory);
+                writtenSinceCheck = 0;
+            }
+            const disk = await capacity;
+            allocationUnit = Math.max(1, Number(disk.bsize));
+            return {
+                bavail: Math.max(0, Number(disk.bavail) * Number(disk.bsize) - writtenSinceCheck),
+                bsize: 1,
+                blocks: Number(disk.blocks) * Number(disk.bsize),
+            };
+        };
         for (const entry of entries) {
             if (signal.aborted) {
                 return;
@@ -184,11 +204,13 @@ export async function* charxLines(
             } else if (entry.kind === "module") {
                 moduleData = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
             } else {
+                await ensureFreeSpace(savePath, bytes.byteLength, { statfs });
                 // The client's key (`saveAsset` with its default extension).
                 const key = await writeContentAsset(savePath, snapshots, bytes, signal);
                 if (key === null) {
                     return;
                 }
+                writtenSinceCheck += Math.ceil(Math.max(1, bytes.byteLength) / allocationUnit) * allocationUnit;
                 assets[entry.name] = key;
             }
             if (entry.kind === "asset") {
@@ -209,7 +231,10 @@ export async function* charxLines(
         await finalize();
         yield result;
     } catch (error) {
-        const known = error instanceof MaintenanceError || error instanceof CharxFileError;
+        const known =
+            error instanceof MaintenanceError ||
+            error instanceof CharxFileError ||
+            error instanceof InsufficientStorageError;
         if (!known) {
             console.error("[Server] CharX import failed:", error);
         }
@@ -219,7 +244,9 @@ export async function* charxLines(
                 ? error.message
                 : error instanceof CharxFileError
                   ? INVALID_CHARX_FILE
-                  : "Import failed";
+                  : error instanceof InsufficientStorageError
+                    ? "Disk is full"
+                    : "Import failed";
         yield ndjsonLine({ error: message } satisfies CharxImportFailure);
     } finally {
         await finalize();
