@@ -13,7 +13,14 @@ import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../../../data/kinds.
 import { messageSourceHash } from "../../../data/memoryStore.ts";
 import { createResourceStore } from "../../../data/resourceStore.ts";
 import { memoryRecords, writeMemory } from "../../../tests/memoryFixtures.ts";
-import { reconcileEvents, reconcileMessageChanges, retireRerecorded, withRetractedEvidence } from "./reconcile.ts";
+import {
+    automaticRerecords,
+    reconcileEvents,
+    reconcileMessageChanges,
+    retireRerecorded,
+    withRetractedEvidence,
+} from "./reconcile.ts";
+import { parseRestoredRecords } from "./restore.ts";
 
 beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date"] });
@@ -361,6 +368,75 @@ it("reconciles changed, missing, inserted and moved sources on a copy and recove
         expect(reconcileEvents([event], harmless)).toEqual([before]);
     }
     expect(event).toEqual(before);
+});
+
+it("marks restored speaker corrections for reads and automatic repair in live and staged records", () => {
+    for (const op of ["patchMessage", "setMessage"] as const) {
+        for (const like of ["", "v2:", "v3:"]) {
+            for (const changed of [true, false]) {
+                const label = `${op}, ${like || "v1"}, changed=${changed}`;
+                const messages: Message[] = [
+                    { chatId: "u", role: "user", data: "Will you return?" },
+                    {
+                        chatId: "a",
+                        role: "char",
+                        data: "I promise to return.",
+                        ...(changed ? { saying: "member-a" } : {}),
+                    },
+                ];
+                const store = messageStore(messages);
+                const records = memoryRecords(["cited", "unrelated"]);
+                records.events[0].sources = messages.map((message, index) => ({
+                    messageId: message.chatId!,
+                    index,
+                    hash: messageSourceHash(message, like),
+                }));
+                const restored = parseRestoredRecords(records);
+                expect(restored, label).not.toBeNull();
+                writeMemory(store, "c", "k", restored!);
+                store.memory.rebuild.begin(
+                    "c",
+                    "k",
+                    { epoch: store.epoch(), mode: "rebuild", plan: [["u", "a"]] },
+                    restored!,
+                );
+                const before = store.memory.readRecord("c", "k", "events", "cited")!.data;
+                const unrelated = store.memory.readRecord("c", "k", "events", "unrelated")!.data;
+                store.onMessagesChanged((notice) => reconcileMessageChanges(store, notice));
+                const saying = changed ? "member-b" : "";
+                store.applyChanges({
+                    chats: [
+                        {
+                            characterId: "c",
+                            chatId: "k",
+                            baseRevision: store.chatRevision("c", "k"),
+                            ops:
+                                op === "patchMessage"
+                                    ? [{ op, id: "a", set: { saying } }]
+                                    : [{ op, message: { ...messages[1], saying } }],
+                        },
+                    ],
+                });
+                const current = store.readChatSource("c", "k").data!.message;
+                for (const memory of [store.memory, store.memory.rebuild.staged]) {
+                    const saved = memory.readRecord("c", "k", "events", "cited")!.data;
+                    expect(saved, label).toEqual({
+                        ...before,
+                        ...(changed ? { rerecord: true } : {}),
+                        ...(changed && like === "" ? { status: "stale", staleReason: "changed" } : {}),
+                    });
+                    expect(reconcileEvents([saved], current)[0], label).toMatchObject(
+                        changed ? { status: "stale", staleReason: "changed" } : { status: "active" },
+                    );
+                    expect(
+                        automaticRerecords([saved], current, { cadence: "everyTurn" }).map(({ id }) => id),
+                        label,
+                    ).toEqual(changed ? ["cited"] : []);
+                    expect(memory.readRecord("c", "k", "events", "unrelated")!.data, label).toEqual(unrelated);
+                }
+            }
+        }
+    }
 });
 
 it("marks a rewritten source only when the message no longer hashes as its stored version read it", () => {

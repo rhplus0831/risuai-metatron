@@ -7,6 +7,7 @@ import {
     type MemoryThread,
     type MemoryThreadState,
     type MemoryTrustFlags,
+    memorySourceHashVersion,
     memoryThreadEnded,
     reconcileMemoryEvents,
     storedMemorySources,
@@ -475,6 +476,7 @@ function reactToMessageChanges(
     const { epoch, characterId: chaId, id: chatId } = notice;
     const retracted = new Set(notice.retracted);
     const rewritten = new Set(notice.rewritten);
+    const speakerChanged = new Set(notice.speakerChanged);
     if (retracted.size === 0 && rewritten.size === 0) {
         return;
     }
@@ -488,11 +490,19 @@ function reactToMessageChanges(
         if (!event) {
             continue;
         }
-        const cited = storedMemorySources(event.sources).map(({ messageId }) => messageId);
+        const sources = storedMemorySources(event.sources);
+        const cited = sources.map(({ messageId }) => messageId);
+        const legacySpeakerChanged = sources.some(
+            ({ messageId, hash }) =>
+                speakerChanged.has(messageId) && hash !== null && memorySourceHashVersion(hash) === 1,
+        );
         if (cited.some((messageId) => retracted.has(messageId))) {
             const repair = { kind: "event", eventId: id, repair: "retract" } as const;
             events.push(applyEventRepair<Message>(event, repair, [], messageSourceHash)!);
-        } else if (!event.rerecord && rewritesEvidence(event, rewritten, messages)) {
+        } else if (legacySpeakerChanged && event.status === "active") {
+            // A v1 hash cannot recover the former speaker; keep the explicit change visible to reads and repair.
+            events.push({ ...event, status: "stale", staleReason: "changed", rerecord: true });
+        } else if (!event.rerecord && (legacySpeakerChanged || rewritesEvidence(event, rewritten, messages))) {
             events.push({ ...event, rerecord: true });
         }
     }
@@ -510,8 +520,9 @@ function reactToMessageChanges(
  * What a chat write leaves of the records, from `notice` (`onMessagesChanged`): an event that cites a
  * `retracted` id is retracted, and an event that cites a `rewritten` id
  * whose evidence changed under its stored hash version (`rewritesEvidence`), is not retracted here, and
- * has no mark yet is marked `rerecord` and nothing else, so it stays until a re-record commits. The
- * notice reports any raw change; a version 3 source ignores display markup, so a markup-only write marks
+ * has no mark yet is marked `rerecord`, so it stays until a re-record commits. An explicit speaker change
+ * on an active v1 event also stores `stale`/`changed`, since its hash cannot explain that change to a read.
+ * The notice reports any raw change; a version 3 source ignores display markup, so a markup-only write marks
  * none of its events. A confirmed retraction rewinds eligible tail page changes before reconciling the
  * affected threads and flagging unsupported sections; a panel repair or re-record retirement never rewinds.
  * Nothing affected writes nothing. A chat's rebuild takes the same reaction on its staged records,

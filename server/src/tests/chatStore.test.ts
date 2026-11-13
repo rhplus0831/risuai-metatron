@@ -642,7 +642,14 @@ describe("memory evidence changes", () => {
 
             expect(chat(store, "k")!.data.message, op).toEqual([changed]);
             expect(notices, op).toEqual([
-                { epoch: store.epoch(), characterId: "c", id: "k", rewritten: ["b"], retracted: [] },
+                {
+                    epoch: store.epoch(),
+                    characterId: "c",
+                    id: "k",
+                    rewritten: ["b"],
+                    retracted: [],
+                    speakerChanged: ["b"],
+                },
             ]);
         }
     });

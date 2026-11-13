@@ -449,7 +449,14 @@ type PreparedMessage = { id: string; text: string };
  * or normalized group speaker (`saying`), which a current memory source's hash reads. A write of a job
  * or a generation reports nothing, nor does a change of any other field, nor an id the group inserted or removed.
  */
-export type ChatMessageChanges = { characterId: string; id: string; retracted: string[]; rewritten: string[] };
+export type ChatMessageChanges = {
+    characterId: string;
+    id: string;
+    retracted: string[];
+    rewritten: string[];
+    /** Rewritten messages whose normalized speaker changed, which a legacy memory hash cannot detect. */
+    speakerChanged?: string[];
+};
 
 export type PreparedChatGroup = {
     characterId: string;
@@ -2266,6 +2273,7 @@ export function createChatTables(
         const retractedIds = new Set<string>();
         /** The messages a person's write gave another role, data, or normalized speaker (`ChatMessageChanges`). */
         const rewrittenIds = new Set<string>();
+        const speakerChangedIds = new Set<string>();
         let reappended = false;
         let metaChanged = false;
         let applied = 0;
@@ -2562,6 +2570,7 @@ export function createChatTables(
                     let text: string;
                     /** Whether the op changes role, data, or normalized speaker in the message's memory evidence. */
                     let rewrites: boolean;
+                    let speakerChanged = false;
                     if (op.op === "setMessage") {
                         // The whole row, also on a stale revision: fields the sender has not seen are
                         // replaced (`patchMessage` changes only the fields it names).
@@ -2569,10 +2578,8 @@ export function createChatTables(
                         // older copy, or none) never replaces or removes it.
                         const stored = JSON.parse(existing!.data) as Record<string, unknown>;
                         const message = JSON.parse(op.message.text) as Record<string, unknown>;
-                        rewrites =
-                            message.role !== stored.role ||
-                            message.data !== stored.data ||
-                            memorySourceSpeaker(message) !== memorySourceSpeaker(stored);
+                        speakerChanged = memorySourceSpeaker(message) !== memorySourceSpeaker(stored);
+                        rewrites = message.role !== stored.role || message.data !== stored.data || speakerChanged;
                         if (Object.hasOwn(message, "translation") || Object.hasOwn(stored, "translation")) {
                             delete message.translation;
                             if (Object.hasOwn(stored, "translation")) {
@@ -2594,8 +2601,8 @@ export function createChatTables(
                         for (const key of Object.keys(op.set)) {
                             message[key] = op.set[key];
                         }
-                        rewrites =
-                            message.role !== role || message.data !== data || memorySourceSpeaker(message) !== speaker;
+                        speakerChanged = memorySourceSpeaker(message) !== speaker;
+                        rewrites = message.role !== role || message.data !== data || speakerChanged;
                         text = serialize(normalizeMessage(message, true)).text;
                     } else {
                         const message = JSON.parse(existing!.data) as Record<string, unknown>;
@@ -2633,6 +2640,7 @@ export function createChatTables(
                     }
                     if (rewrites && jobToken === undefined && (op.op === "patchMessage" || !op.generation)) {
                         rewrittenIds.add(id);
+                        if (speakerChanged) speakerChangedIds.add(id);
                     }
                     applied += 1;
                     break;
@@ -2950,6 +2958,7 @@ export function createChatTables(
         const rewritten = patchBase
             ? [...rewrittenIds].filter((id) => !insertedHere.has(id) && !removedIds.has(id))
             : [];
+        const speakerChanged = rewritten.filter((id) => speakerChangedIds.has(id));
         return {
             result,
             applied,
@@ -2957,7 +2966,15 @@ export function createChatTables(
             feed,
             ...(invalidated ? { invalidated } : {}),
             ...(retracted.length > 0 || rewritten.length > 0
-                ? { messageChanges: { characterId, id: chatId, retracted, rewritten } }
+                ? {
+                      messageChanges: {
+                          characterId,
+                          id: chatId,
+                          retracted,
+                          rewritten,
+                          ...(speakerChanged.length > 0 ? { speakerChanged } : {}),
+                      },
+                  }
                 : {}),
         };
     }

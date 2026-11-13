@@ -30,7 +30,7 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 - [Assets](#assets): 1
 - [Characters](#characters): 2
 - [Chat pipeline](#chat-pipeline): 1
-- [Memory](#memory): 2
+- [Memory](#memory): 1
 - [Plugins](#plugins): 3
 - [Selection](#selection): 1
 - [Server generation](#server-generation): 2
@@ -120,24 +120,6 @@ summary again; per-chat modes make the mode changes that lead there casual.
 **Suggested handling:** make the in-job checkpoint (`assemble.ts:857`) confirm the stored value as `checkpointOf`
 does and return `skipped` so the existing recovery runs, with a regression test that moves a chat to Structured
 Memory while a send's HypaV3 summary is in flight.
-
-### A speaker-only correction leaves events with version-1 anchors unmarked
-
-The rewrite reaction marks a citing event only when the message's hash under the anchor's stored version changed
-(`server/src/prompt/memory/structured/reconcile.ts:386`, since `a595dc077`). A version-1 anchor (recorded before
-`549c166a2`) hashes the role and the text only, so a write that changes only `saying` sends the rewrite notice, the
-comparison finds the hash equal, and the event gets no `rerecord` mark and reads as active. Anchors of version 2 and
-later include the speaker and are marked. Found 2026-11-14 by the wide review (cut F1b); the second reader narrowed
-it: setting the mark alone would not repair the event either, since `automaticRerecords` (`reconcile.ts:67`) takes no
-version-1 candidate.
-
-**Why it matters:** in a chat recorded before the versioned hashes (or restored from an older chat file), correcting
-which group member said a reply leaves the memory event attributed to the old speaker, with nothing to pick it up.
-Events recorded since are not affected.
-
-**Suggested handling:** carry the speaker change from the chat store through `MessagesChanged`, and let
-reconciliation store a state for the affected version-1 anchors that the read side and the automatic repair
-recognize (or upgrade only those anchors). No migration of every row.
 
 ## Plugins
 
