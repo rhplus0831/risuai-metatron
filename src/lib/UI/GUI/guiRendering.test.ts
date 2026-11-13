@@ -289,6 +289,30 @@ describe("GUI rendering without a browser session", () => {
         expect(input.value).toBe("40");
     });
 
+    it("retires a refused NumberInput draft when outside updates return to the earlier number", async () => {
+        const record = reactiveProps({ stored: 39 });
+        const view = renderGui(NumberInput, {
+            get value() {
+                return record.stored;
+            },
+            set value(next: number | null) {
+                if (typeof next === "number" && Number.isFinite(next)) record.stored = next;
+            },
+        });
+        const input = view.getBySelector<HTMLInputElement>("input");
+        input.focus();
+        await inputValue(input, "");
+        expect(record.stored).toBe(39);
+        expect(input.value).toBe("");
+
+        for (const outside of [500, 39]) {
+            record.stored = outside;
+            await tick();
+            expect(document.activeElement).toBe(input);
+            expect(input.value).toBe(String(outside));
+        }
+    });
+
     it("renders checkbox and optional input states without app bootstrapping", async () => {
         const onCheckChange = vi.fn();
 

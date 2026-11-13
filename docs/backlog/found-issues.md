@@ -30,7 +30,7 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 - [Assets](#assets): 1
 - [Selection](#selection): 1
 - [Server generation](#server-generation): 1
-- [Settings](#settings): 2
+- [Settings](#settings): 1
 
 ## Assets
 
@@ -102,13 +102,3 @@ that no longer fits at 4096 stops with the dialog and calls no provider; with th
 is the most, and one arrow key lowers a stored 8000 to 4096.
 
 **Suggested handling:** drop the `max` or raise it to a value above the default, on both inputs.
-
-### `NumberInput` shows a refused blank draft again when an outside value returns to the earlier number
-
-When a focused `NumberInput` adopts a value from outside, it keeps the draft it had refused and its comparison
-baseline (`src/lib/UI/GUI/NumberInput.svelte:74`). Found 2026-11-14 by the wide review (cut F6, P3): with 3 stored and
-the field cleared, an outside change to 7 shows 7, and an outside change back to 3 shows the blank again.
-
-**Why it matters:** the box disagrees with the stored number until it loses focus. Nothing wrong is stored.
-
-**Suggested handling:** retire the draft when an outside value is adopted.

@@ -1,4 +1,6 @@
 <script lang="ts">
+    import { untrack } from "svelte";
+
     interface Props {
         min?: number;
         max?: number;
@@ -46,6 +48,16 @@
     // value at once. A refusal leaves the bound value as it was, so it does not count. An outside
     // change to the same number is not seen: a refused entry stays shown until commit or blur.
     let seen: number | null | undefined = $state();
+
+    $effect.pre(() => {
+        const next = value;
+        untrack(() => {
+            if (!Object.is(next, seen)) {
+                typed = next;
+                seen = next;
+            }
+        });
+    });
 </script>
 
 <input
