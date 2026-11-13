@@ -21,6 +21,7 @@
     import { onDestroy, onMount } from "svelte";
     import { RISU_EFFECT_DRAG_TYPE, RISU_TRIGGER_DRAG_TYPE } from "src/ts/dragTypes";
     import { effectDisplayText, formatEffectDisplay as formatDisplay } from "./triggerEffectDisplay";
+    import { recordValueIdentity } from "src/ts/storage/records.svelte";
 
     /**
      * The v2 trigger editor's palette is `effectCategories`; `makeDefaultEditType` supplies the
@@ -37,6 +38,7 @@
     interface Props {
         value?: triggerscript[];
         lowLevelAble?: boolean;
+        popupEditorContext?: unknown;
     }
 
     const effectCategories = {
@@ -156,7 +158,9 @@
     };
 
     let lastClickTime = 0;
-    let { value = $bindable([]), lowLevelAble = false }: Props = $props();
+    let { value = $bindable([]), lowLevelAble = false, popupEditorContext = undefined }: Props = $props();
+    let destroyed = false;
+    onDestroy(() => (destroyed = true));
     let selectedIndex = $state(0);
     let selectedEffectIndex = $state(-1);
     let selectedTriggerIndices = $state<number[]>([]);
@@ -533,6 +537,8 @@
     };
 
     const importTriggers = () => {
+        const owner = popupEditorContext;
+        const list = recordValueIdentity(value);
         const input = document.createElement("input");
         input.type = "file";
         input.accept = ".json";
@@ -542,6 +548,7 @@
 
             try {
                 const text = await file.text();
+                if (destroyed || !Object.is(owner, popupEditorContext) || list !== recordValueIdentity(value)) return;
                 const importedTriggers = JSON.parse(text);
 
                 if (!Array.isArray(importedTriggers)) {
