@@ -93,8 +93,9 @@ inactive decorator. This chat write is outside the memory revision and fence.
 
 ### The import route
 
-1. `importPackage` calls `importStructuredMemoryPackage`; `packageFiles` unzips with fflate in the tab, refusing
-   `tooLarge` past `MEMORY_RESTORE_BODY_BYTES` (the server's `restoreBodyBytes` cap), and sends Markdown to
+1. `importPackage` captures the chat and contents revision before the file picker, retaining both through confirmation
+   and `importStructuredMemoryPackage`. `packageFiles` unzips with fflate in the tab, refusing `tooLarge` past
+   `MEMORY_RESTORE_BODY_BYTES` (the server's `restoreBodyBytes` cap), and sends Markdown to
    `POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/import`, so the server never sees a zip.
 2. The route calls `parseMemoryPackage`, which reads the renderers' grammar, drops `trashedAt` so every page imports
    live, and validates each record through `parseRestoredRecords` in `restore.ts`. File and event refusals return in
@@ -135,6 +136,8 @@ inactive decorator. This chat write is outside the memory revision and fence.
 - A merge writes reference changes in events, threads, and live pages in one change set, so no partial remapping is
   visible.
 - A tool or import that would not fit is refused, never cut.
+- Purge, merge, and split capture the chat before confirmation and carry it through `runTool`/`sendChange`; navigation
+  never redirects the request to another chat.
 
 ## Recipes
 

@@ -354,7 +354,7 @@
     { "match": "src/ts/storage/{assetClient,assetQueue,assetLifecycleClient}.ts", "guide": "assets" },
     { "match": "shared/assetBatch.ts", "guide": "assets" },
     { "match": "src/ts/screenshotCaptureCache.test.ts", "guide": "assets" },
-    { "match": "shared/{localNetwork,notifications}.ts", "guide": "network-jobs" },
+    { "match": "shared/{localNetwork,logRedaction,notifications}.ts", "guide": "network-jobs" },
     { "match": "src/ts/chatFold.svelte.ts", "guide": "global-api" },
     { "match": "src/ts/util.ts", "guide": "global-api" },
     { "match": "src/ts/util/**", "guide": "global-api" },

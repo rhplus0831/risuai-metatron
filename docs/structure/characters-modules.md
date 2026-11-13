@@ -105,6 +105,9 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 - `src/lib/Setting/Pages/Module/ModuleSettings.svelte` (edit and create modes, the share button,
   `clearStaleExportWait`), `src/lib/Setting/Pages/Module/ModuleMenu.svelte` (the module editor), and
   `src/lib/Setting/Pages/Module/ModuleChatMenu.svelte` (the chat's and character's module toggles).
+- Catalog export/delete captures the module id before its dialog and resolves it afterwards, cancelling if absent;
+  exporters receive detached records. `ModuleMenu` regex, lorebook, and asset imports capture backing-module identity
+  before picking and recheck after upload, cancelling on navigation, replacement, removal, or editor destruction.
 
 ### Asset pickers and lists
 
@@ -183,6 +186,10 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
   or oversized input before writing. Reader details live in `src/ts/pngChunk.ts` and `server/src/routes/importPng.ts`.
 - Card asset references are storage IDs or protocol URIs, never local filesystem paths; exporter numbering follows the
   original asset lists, not the order assets were fetched.
+- V3 JSON export refuses an asset whose compressed base64 text reaches the importer's strict 50 MiB limit, naming it
+  with `jsonExportAssetTooLarge` and directing the user to CharX; the total decoded-byte cap remains 64 MiB.
+- `exportModuleLegacy` refuses modules with an icon before encoding or writer initialization
+  (`moduleLegacyExportIconUnsupported`); CharX carries the portrait.
 - `importCharacterCardSpec` maps a well-formed `extensions.depth_prompt` to the native field. `createBaseV2` omits
   emotions and additional assets; V3 is the full-fidelity export.
 - Cards and modules with low-level access require confirmation on import. A `.risum` asks before upload, and declining a
@@ -225,6 +232,8 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
 - Old lorebook entries (below `bookVersion` 2) are converted only as they enter: a character's creation
   (`prepareNewCharacter`), a lorebook file imported into a character (`importLoreBook`), and the module import paths
   (`upgradeLorebook`, `shared/modules.ts`); later updates keep their content.
+- V2/V3 card writers carry each lore entry's `bookVersion` in `extensions.risu_bookVersion`; `convertCharbook` restores
+  numeric versions before creation's legacy text migration. Missing or nonnumeric versions retain that migration.
 - The chat lorebook writers in `lorebook.svelte.ts` (`addLorebook`/`addLorebookFolder` with a chat target,
   `importLoreBook("local")`) send the chat's whole `localLore`, so they share the
   [lore draft's fence](chat-store.md#whole-chat-writers): while this tab's send (`isLocalSend`) or a job this tab knows

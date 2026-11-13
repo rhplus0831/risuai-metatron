@@ -108,7 +108,8 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
 - `server/src/llm/openAI/shared.ts`: `getOpenAIRequestKey` and `getLocalNetworkRequestOptions`.
 - `server/src/llm/shared.ts` `applyParameters`, `applyAdditionalParameters`: server parameter application and the
   trusted custom-parameter syntax, mirrored in `src/ts/process/request/shared.ts`.
-- `server/src/llm/redact.ts`: `REDACTED`, `collectSecrets`, `createRedactor`; the secret projection.
+- `server/src/llm/redact.ts`: `collectSecrets`, `createRedactor`, and re-exported `REDACTED`/`redactHeaderText` from
+  `shared/logRedaction.ts`; the secret projection shares header redaction with the [tab log](network-jobs.md#state).
 - `server/src/llm/sseLines.ts` `SseLines`, and the stream parsers in `server/src/llm/openAI/requests.ts`,
   `server/src/llm/google.ts`, and `server/src/llm/anthropic.ts` (comments on each parser), under the snapshot contract
   in `Flows`.

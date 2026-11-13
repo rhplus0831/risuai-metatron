@@ -61,6 +61,8 @@ and the module headers.
   uses by value, so an equal re-render keeps them. See [Shared styles](#shared-styles).
 - `src/ts/parser/assetSearch.ts`: the bounded asset-name distance (`boundedDistance`) and
   `src/lib/ChatScreens/ChatBody.svelte`'s image prefix scan (`findAssetPrefix`).
+- `src/ts/parser/safeHtml.ts`: `escapeHtml` for scalar names and `sanitizeExportHtml`, the final HTML export policy
+  shared with `parseMarkdownSafe`.
 
 ### Inlays
 
@@ -240,6 +242,8 @@ inlay, whose tag stays as text. Images use `getFileSrc` ([assets](assets.md)). A
 
 - `ParseMarkdown` output must go through `trimMarkdown` before `{@html}`. `mode:'notrim'` is an intermediate result, not
   a final one.
+- HTML chat exports and rich copy escape scalar names, including headings, titles, and model labels. Export bodies pass
+  through `sanitizeExportHtml` after translation or other transformations, without parsing Markdown again.
 - An aborted render still meets `ChatBody`'s run guards and the `isCurrent` fences.
 - Keep the DOMPurify hooks intact: class prefixing, the href policy (an `http(s)` link opens in a new tab with
   `rel="noopener noreferrer"`, any other value is emptied, and a supplied `rel` is replaced), the YouTube iframe

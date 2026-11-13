@@ -9,7 +9,7 @@
 - Paths: the fetch functions and log of `src/ts/globalApi.svelte.ts`, `src/ts/network/` except
   `src/ts/network/requestHistory.ts` ([diagnostics](diagnostics.md)), `src/ts/network/eventFeed.ts` and
   `src/ts/network/socketLiveness.ts` ([live-updates](live-updates.md)); `shared/localNetwork.ts` and
-  `shared/notifications.ts`. The hydration memory in `src/ts/network/jobChannel.ts` belongs to
+  `shared/{logRedaction,notifications}.ts`. The hydration memory in `src/ts/network/jobChannel.ts` belongs to
   [chat-store](chat-store.md).
 - Not here:
   - The server job, its channel, and call dispatch → [server generation](server-generation.md#generation-channels).
@@ -127,7 +127,10 @@ The transport below retains this tab's in-memory log.
   `serverCommands.ts` owns roles and lifetime.
 - `fetchLog[]` is private, this tab's list only (the durable history is the server's). `getFetchLogs` exposes the live
   array (the popup's "This tab" and plugins' `getFetchLogs`); its identity stays fixed.
-- Every writer uses `writeFetchLog`; its comment and the `FETCH_LOG_MAX_*` constants own the in-place trimming rules.
+- Every writer uses `writeFetchLog`, which redacts copied credential headers and OAuth secret fields in form/JSON
+  request and response bodies with `shared/logRedaction.ts` before retaining them, leaving transport data unchanged. Its
+  comment and `FETCH_LOG_MAX_*` constants own in-place trimming; the server's request history shares the header
+  redactor.
 - `getFetchData` finds an entry by `chatId`, and `addFetchLog` returns 0. `appendFetchLog(entry)` adds an entry the
   server built (the `log` events of `/api/llm/request`, credentials redacted): the provider calls the server makes
   appear in the tab's request log.

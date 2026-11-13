@@ -305,9 +305,9 @@ carry them. The Translation page can clear `LLMTranslateCache` through `clearLLM
 - The `customModels` normalizer drops a legacy `key` and `credentialId`: the profile that uses a custom model binds the
   key. The `credentials` normalizer drops a `key` (and keeps `clientEmail`/`projectId` only on `vertex`); a named key's
   value exists only in `llmSecrets.credentials`.
-- `exportAsDataset` does no redaction. The settings report (`buildSettingsReport`) drops every `llmSecrets` field,
-  `REPORT_REMOVED_KEYS` (personal or bulky keys, those holding URLs, free text, or third-party names), and every key
-  whose name contains `key`, `proxy`, or `hypa`.
+- `exportAsDataset` does no redaction. The settings report (`buildSettingsReport`) drops every root in
+  `SECTION_FIELDS.llmSecrets` and `SECTION_FIELDS.secrets`, `REPORT_REMOVED_KEYS` (personal or bulky keys, those holding
+  URLs, free text, or third-party names), and every key whose name contains `key`, `proxy`, or `hypa`.
 - Compatibility rule: data in an upstream RisuAI format is owed a one-way migration into the current store: an upstream
   `.bin` backup (`database.risudat`, its cold-storage records and assets) and an older metatron backup holding
   `database.risudat`. That file is upstream's legacy MessagePack save or the block save; both import, and a live block
@@ -353,6 +353,8 @@ carry them. The Translation page can clear `LLMTranslateCache` through `clearLLM
 - Boot order repair: `src/ts/bootstrap.journalRecovery.test.ts` drives `maintainCharacters` after a recovered character
   deletion and checks its order cleanup; `src/ts/storage/tests/characterOrderRepair.test.ts` checks complete-inventory
   repair directly.
+- Settings-report secrecy: `src/ts/storage/tests/snapshots.test.ts` guards exclusion of both secret sections while
+  ordinary report fields and full settings snapshots retain their values.
 - Not tested: the records' cost beyond a loose bound: the benchmark asserts nested-write ratios under 10× and nothing
   about the lorebook drag or preset reorder; `measureRecords.mjs` and `measureCharacters.mjs` are manual.
 

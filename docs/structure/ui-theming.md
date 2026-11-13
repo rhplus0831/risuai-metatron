@@ -222,7 +222,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   - `ChatBody` sanitizes body HTML through `shownBody` and renders the fixed `LOADING_HTML` literal while translation
     loads; `BackgroundDom` and suggestions render sanitized parser output. Plugin panels render HTML sanitized with
     DOMPurify by `setChatPanel` in `src/ts/plugins/apiV3/v3.svelte.ts`.
-  - `renderGuiHtmlPart` whitelists tags and allows only `https` links.
+  - Custom GUI rendering uses `risuChatParser` with `renderMode: "gui"` to escape character/nickname, `bot`, and persona
+    name substitutions before parsing the owner's template; ordinary prompt CBS keeps raw names. `renderGuiHtmlPart`
+    whitelists tags and allows only `https` links.
   - Custom CSS is injected via `CustomCSSStore` and must stay disabled in `SafeModeStore`; so must the `customHTML`
     theme's GUI HTML (`Chat.svelte` renders the classic row instead).
 - For new lists that can change while an input has focus, key rows by entry and bind through guarded getter/setters;

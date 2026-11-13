@@ -111,8 +111,19 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
 - The cache stores final output, not compiled `RegExp` objects. An empty-string result is falsy, so never cache-hits.
 - Display and request modes silently skip effects missing from `displayAllowList`/`requestAllowList`. The editor's
   `checkSupported` reads the same lists (`shared/triggers.ts`).
-- Low-level effects are gated twice: filtered in the UI and checked at runtime via `trigger.lowLevelAccess`. Lua edit
-  hooks always run with `lowLevelAccess:false`.
+- Low-level effects are filtered in the UI and checked at runtime via `trigger.lowLevelAccess`, derived from the owning
+  character or module rather than the stored trigger's claim. Lua edit hooks always run with `lowLevelAccess:false`.
+- Without the initiating owner's grant, `v2Command` consumes `/multisend` and `/speak` without provider work while
+  ordinary piped commands still run.
+- `v2SetPersonaDesc` requires that grant to write the effective shared persona and belongs in the editor's Low Level
+  palette; `v2GetPersonaDesc` stays in Data.
+- Without the owner's grant, Lua `getTokens`, `v2Tokenize`, `/test_lorebook`, and trigger-added system-prompt slots use
+  the model's local counting fallback without changing settings. Mixed or unknown slot provenance stays local across
+  nested runs.
+- Trigger mode changes and V2 imports capture the editor owner and backing-list identity before waiting, cancelling on
+  owner/list replacement or editor destruction.
+- Regex deletion captures owner and row identity before confirmation and resolves that row again before removal; preset
+  imports parse a detached list and apply only while the captured owner/list remains current.
 - The server trigger runtime checks job cancellation during execution and enforces a 100,000-effect limit across nested
   triggers in the job. It yields after 50 ms of effect work so pending I/O and abort callbacks can run; a privileged
   recursive trigger is ended by the shared limit, not the JavaScript stack.
@@ -176,11 +187,13 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
 - Regex engine: `server/src/tests/regex.test.ts` covers parsing, mode and order rules, effects, and final-output
   caching. `server/src/tests/regexScriptsTask.test.ts` covers worker serialization, aborts, bounds, and failure fencing;
   `src/ts/translator/edittransRegex.test.ts` covers the client-only translation mode.
-- Trigger and Lua runtime: `server/src/tests/triggerRuntime.test.ts` covers v2 effects, mode allowlists, aborts, and the
-  job-wide effect limit; `server/src/tests/{luaRuntime,luaRuntimeCharge,luaBindings,luaBindingsFences}.test.ts` cover
-  the Lua engine, budget, host, and cancellation.
-  `server/src/tests/{commandExecutor,manualTriggers,commandRunner}.test.ts` cover command jobs, manual triggers, and
-  forms; `server/src/tests/generations.test.ts` pins form-command validation.
+- Trigger and Lua runtime: `server/src/tests/triggerRuntime.test.ts` covers v2 effects, mode allowlists, aborts, the
+  job-wide effect limit, and mixed/unknown prompt counting provenance;
+  `server/src/tests/{luaRuntime,luaRuntimeCharge,luaBindings,luaBindingsFences}.test.ts` cover the Lua engine, budget,
+  host, and cancellation. `server/src/tests/{commandExecutor,manualTriggers,commandRunner}.test.ts` cover command jobs,
+  manual triggers, and forms; `server/src/tests/generations.test.ts` pins form-command validation.
+- Owner grants: `server/src/tests/commandSequences.test.ts` guards provider commands, shared-persona writes, and local
+  script/lore-preview token counting.
 - Send integration: `server/src/tests/promptRunner.test.ts` covers the server send's script stages with real Lua/regex
   workers, a plugin hook, and a fake provider. The chat-pipeline guide also routes this shared send test.
 - Client job boundary: `src/ts/process/serverCommands.test.ts` covers job creation, following, and resume;
@@ -191,6 +204,8 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
   pin metadata batching, final trigger application, Lua host values, and worker limits.
 - v2 editor summaries: `src/lib/SideBars/Scripts/triggerEffectDisplay.test.ts` covers escaping, the numeric indent, and
   unchanged plain output.
+- Editor ownership: `src/lib/SideBars/Scripts/{TriggerList,RegexList}.test.ts` cover pending confirmations and imports;
+  `src/lib/SideBars/Scripts/TriggerV2List.test.ts` guards the persona setter's palette category and stored edit form.
 - Slow cases in `server/src/tests/{scriptWorker,luaRuntime,manualTriggers,triggerRuntime,promptRunner}.test.ts` require
   an explicit opt-in; see the [slow-test table](test-harness.md#slow-test-table). Run an affected file with
   `pnpm --silent test:agent --all <file>` to include its ordinary and slow cases.

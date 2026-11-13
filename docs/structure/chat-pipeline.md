@@ -108,8 +108,12 @@
   under one job id and chat slot ([generation](server-generation.md)).
   - In the input only, `/send`, `/sendas` and `/comment` take the rest of the input as their text (`|`, `=`, spacing and
     quotes kept), so they end a line; the server twin keeps the pipe rule for stored trigger commands.
-- `src/ts/process/files/multisend.ts`: file attachments (`postChatFile`).
-- `src/ts/process/group.ts`: group membership (`addGroupChar`, `rmCharFromGroup`).
+- `src/ts/process/files/multisend.ts`: file attachments (`postChatFile`); picker and paste callers pass their captured
+  chat, which the batch pins before any wait and shares across every PO file and entry. A deleted chat or replaced owner
+  cancels further PO writes and downloads.
+- `src/ts/process/group.ts`: group membership (`addGroupChar`, `rmCharFromGroup`); adding a member captures the group
+  owner and greeting chat before either dialog, then pins and loads that chat for the greeting. A replaced group, or a
+  missing destination when a greeting is requested, cancels the action before membership is added.
 - `src/ts/process/infunctions.ts`: the tab's CBS calculator adapter (`calcString`).
 - `shared/messageSearch.ts`: message-search wire contract (`MESSAGE_SEARCH_PATH`, `MessageSearchQuery`,
   `MessageSearchPage`).

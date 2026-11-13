@@ -142,9 +142,10 @@ chat.
 
 Export crosses `src/ts/characters.ts`, the memory client and the routes:
 
-1. `exportChat` calls `ensureChatLoaded`, then `readStructuredMemoryFile`, then copies the chat. A newer chat leaves a
-   turn uncovered; newer records put pages ahead of their messages. `exportAllChats` takes detached chats first, then
-   reads each chat's records serially, so its records can be newer than the chats.
+1. `exportChat` pins its captured chat before `ensureChatLoaded`, holds it through `readStructuredMemoryFile` and the
+   detached copy, and releases in `finally` on every exit. Records are read first so a newer chat can leave a turn
+   uncovered rather than records putting pages ahead of their messages; `exportAllChats` takes detached chats first,
+   then reads records serially, so its records can be newer than its chats.
 2. The client collects `/package` and `/threads` at the contents' revision. `readStructuredMemoryFile` owns retries, the
    60 s whole-read bound (`readWithDeadline`, since `authFetch` has none), and initial `chatGone` handling for
    `RefusedDataBanner`.

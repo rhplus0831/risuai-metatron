@@ -32,11 +32,77 @@ search keeps one cost: a hit in a single message of 16 MiB still takes about two
 siblings the implementers found were fixed with them (the tab's MCP client and the tab's lore preview), and the three
 confirmed claims left [known issues](known-issues.md) fixed.
 
+The twenty-fourth batch is the third and fourth waves of the same review (2026-11-14). Wave 3 swept eight
+repository-wide invariants and ran the manual checks an agent can run: 25 findings, every one confirmed by a second
+reader. Twenty-two were fixed the same day with regression tests, without passing through this file (script
+permissions on the server, destinations captured before a wait in the tab and its components, card and module format
+round trips, credentials in the settings report and the request log, names and translated text in HTML exports); the
+three that need a decision or real providers are entries below. Wave 4 broke the rules of six areas one at a time to
+see whether a test fails; the tests it found missing were written the same day.
+
 ## Contents
 
+- [Network](#network): 1
+- [Plugins](#plugins): 1
+- [Rendering](#rendering): 1
 - [Selection](#selection): 1
 - [Server generation](#server-generation): 1
 - [Test tooling](#test-tooling): 1
+
+## Network
+
+### Thirteen remote calls of the tab bypass the request wrappers and the request log
+
+Text to speech (`src/ts/process/tts.ts:260`), image generation (`src/ts/process/stableDiff.ts:624`), and translation
+(`src/ts/translator/translator.ts:555`) call `fetch` directly in thirteen places, where the other remote calls of the
+tab go through the wrappers that choose the route (the browser or the server's proxy) and write the request log. Found
+2026-11-14 by the wide review (cut I5, P2) and confirmed by a second reader, who reproduced all thirteen and narrowed
+the consequence: such a call fails for a provider the browser cannot reach directly, where a wrapped call would work,
+and the request log does not show it; no failure of a real provider was shown.
+
+**Why it matters:** the rule about who makes requests from the tab (invariant P2) has thirteen exceptions that no
+guide lists, and a failure in one of them leaves nothing in the log to look at.
+
+**Suggested handling:** convert each call to the existing buffered or byte-capable helper, keeping its method,
+headers, body, response bytes, and cancellation; the Stability multipart call must keep its boundary header. Not done
+with the other fixes of the review, since it touches providers that cannot be exercised without real keys.
+
+## Plugins
+
+### A plugin's chat panel can carry a style element that styles the whole app
+
+`setChatPanel` stores `DOMPurify.sanitize(content)` (`src/ts/plugins/apiV3/v3.svelte.ts`, the `setChatPanel` method),
+and `DefaultChatScreen.svelte` inserts the stored HTML with `{@html}`. DOMPurify keeps a nested `style` element, and
+selector scoping belongs to the chat trim step, which this path does not run. The call asks for no `mainDom` consent.
+Found 2026-11-14 by the wide review (cut I6, P1) and confirmed by a second reader: a panel of
+`<div><style>body{color:red}</style><p>panel</p></div>` put the `body` rule into the main document.
+
+**Why it matters:** a plugin without any grant can restyle or hide any part of the app, which the `mainDom` consent is
+there to gate.
+
+**Suggested handling:** the owner's decision, since either way costs compatibility: forbid `style` elements in panels
+(closes it, and breaks a plugin that styles its panel this way), or scope a panel's styles to the panel and refuse
+imports there.
+
+## Rendering
+
+### An `@import` in card or message CSS is installed without scoping
+
+`scopeCss` rewrites the rules of its own tree and blanks an `import` rule only when its target starts with `data:`
+(`src/ts/parser/parser.svelte.ts`, the `rule.type === "import"` branch). The CSS parser keeps the quotes or the
+`url(...)` wrapper, so `@import "data:text/css,…"` and `@import url(https://…)` pass the check, and `restoreStyles`
+installs them through both trim functions; the imported sheet is never parsed or scoped. Found 2026-11-14 by the wide
+review (cut I6, P1) and confirmed by a second reader: a greeting with `<style>@import
+"data:text/css,.outside%7Bcolor%3Ared%7D";</style>` kept the import in the returned stylesheet, where every other rule
+is rewritten under `.chattext`.
+
+**Why it matters:** a card, a model reply, a module's display content, or a hub page's extra HTML can style the whole
+app, not only its own message, and an `https:` import makes a request to a host of the author's choice when the chat
+opens. No plugin and no low-level grant is needed.
+
+**Suggested handling:** the owner's decision, since it costs compatibility: dropping every import closes it and also
+stops cards that load web fonts this way; allowing only known font hosts (whose sheets hold `@font-face` rules) keeps
+most of those; loading and scoping the imported sheet is a larger change.
 
 ## Selection
 

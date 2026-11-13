@@ -35,6 +35,8 @@ entrypoints.
   `allowedDbKeys`, `handlePluginInstallViaPlugin`.
 - `shared/plugins.ts`: `RisuPlugin`. Only `version: '3.0'` loads; a saved entry of another version stays listed and
   `src/lib/Setting/Pages/PluginSettings.svelte` (component contract) marks it "Unsupported API".
+- `PluginSettings.svelte` captures the plugin name before update confirmation, resolves it afterwards, and passes a
+  detached record to `updatePlugin`; a removed plugin cancels the update.
 - `src/ts/plugins/pluginHooks.ts`: the live hook registries (module header): `pluginHooks`, `clearPluginHooks`,
   `customProviderStore`.
 - `src/ts/plugins/apiV3/pluginContext.ts`: a hook's call context, a stack per loaded instance (module header):
@@ -234,16 +236,16 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   (`terminalNoticeShown`): the notice stops only bubbling.
 - A plugin character applied over the same `chaId` (`applyPluginCharacter`) keeps the stored `supaMemoryOnCount`
   whatever its copy says, and bumps it when it turns `supaMemory` on (`memory.md`).
-- The v3 `sendChat` targets the hook's chat (else the chat selected after permission resolves) and returns whether the
-  send ran. It refuses ("A chat is already in progress") without appending, checked again after the chat load:
+- The v3 `sendChat` captures the hook's chat, else the selection at API entry, and its owner before consent; it pins
+  through loading and dispatch and refuses a deleted or replaced target. It returns whether the send ran, refusing ("A
+  chat is already in progress") before appending, checked again after loading:
   - while that chat is busy (`isChatBusy`: a send of this tab, a followed job, or a lock; a generation hook's chat in a
     job channel callback always is);
   - while a job channel callback runs in this tab (`channelCallbacksRunning`: a hook or provider that waited for a new
     job of this tab would hold the lane that job's callbacks need; a cancelled callback counts until its hook settles).
-- A chat with orphaned lore overrides is refused after that, also before anything is appended: the user sees the refusal
-  alert and the call returns false.
-- `sendChat`'s local checks are per chat: with no job channel callback running, a send in idle chat B can run while chat
-  A sends in this tab; shared resource flush (`GenerationBlockedError`), binding, and server refusals still apply.
+- After those checks, orphaned lore overrides refuse before appending, with an alert and false.
+- With no job channel callback running, idle chat B can send while A sends here; shared flush
+  (`GenerationBlockedError`), binding, and server refusals still apply.
 - A plugin changes the installed plugin list only through `setDatabase({ plugins })`, which asks the user to confirm
   each new or changed plugin. `setDatabaseLite` drops `plugins` before it applies anything; the call's other keys still
   apply.

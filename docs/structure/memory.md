@@ -77,16 +77,14 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
   sections, show whatever it selects, since any chat can choose either. The page edits the open chat's existing memory
   preset in place, otherwise the default; [settings UI](settings-i18n.md#pages) owns selection and import targeting. Its
   Plugin-model warning resolves the open chat's memory connection; a deleted connection shows no such warning.
-- `src/lib/Others/HypaV3Modal.svelte` and its children in `src/lib/Others/HypaV3Modal/` edit a synced copy of the
-  current chat's `hypaV3Data`; the modal's contract holds its save, refresh, and discard rules. A send's memory data is
-  written by the job and by the background memory task. The tab's `getCurrentHypaV3Preset(chat)` reads that chat's
-  preset; `summarize` reads the preset and connection from the context's chat list entry (or the current chat when no
-  context was supplied) before awaiting. The legacy composition keeps its room's preset settings and connection across
-  awaited windows.
-- `memoryWriteFence` applies the per-chat fence ([Memory writes](#memory-writes)): `isLocalSend` and
-  `generatingChatKeys` with the `chatGenerating` notice, plus `memoryTaskFenced`
-  (`src/ts/process/memoryTasks.svelte.ts`) with the `memoryTasks.editFenced` notice. See [ui theming](ui-theming.md) for
-  fence states and [chat store](chat-store.md#server-memory-writes) for the rule.
+- `src/lib/Others/HypaV3Modal.svelte` and `src/lib/Others/HypaV3Modal/` children edit the current chat's synced
+  `hypaV3Data` copy; its contract owns save, refresh, and discard. Jobs and tasks write send memory.
+  `getCurrentHypaV3Preset(chat)` reads its chat's preset; `summarize` captures preset and connection from its context's
+  chat-list entry (else current chat) before awaiting. Legacy composition keeps its room's settings and connection
+  across waits.
+- `memoryWriteFence` checks `isLocalSend`/`generatingChatKeys` (`chatGenerating`) and `memoryTaskFenced`
+  (`src/ts/process/memoryTasks.svelte.ts`, `memoryTasks.editFenced`) per chat. See [Memory writes](#memory-writes),
+  [UI fence states](ui-theming.md), and [chat-store rules](chat-store.md#server-memory-writes).
 - Bulk resummary, in `src/lib/Others/HypaV3Modal.svelte`: `resummarizeBulkSelected` and `resolveBulkTargets`
   (`BulkResummaryState.targets`, `hypaV3Modal.bulkResummaryTargetsGone`); the modal's contract says what a replacement
   of the copy clears.
@@ -267,8 +265,9 @@ formatting still applies.
 
 ### Data and memo values
 
-- Shared shapes and merge identities live in `shared/memory.ts`: runtime summaries use message-id `Set`s, stored
-  summaries use lists, and `chatMemos` reference `Message.chatId`; rewriting chat ids orphans summaries.
+- `shared/memory.ts` owns shapes and merge identities: runtime `chatMemos` are message-id `Set`s, stored values are
+  lists referencing `Message.chatId`; changing ids orphans summaries. Server readers treat missing V3 `summaries` or
+  `chatMemos` and V2 `mainChunks` or `chunks` as empty at conversion, without rewriting stored metadata.
 - The memory card `memo` values `supaMemory` and `hypaMemory` are special-cased in `assemblePrompt`; do not rename them.
 
 ### Memory writes
@@ -280,10 +279,11 @@ formatting still applies.
   tasks prepare without cleanup.
 - V3 has one summary writer per chat. After source-window validation, job and task checkpoints return `committed` only
   if raw stored `hypaV3Data` keeps the merged value; otherwise `skipped` triggers recovery.
-- These are chat-scoped guards: a local send or `generatingChatKeys()` membership (a followed job or a server lock known
-  to this tab) fences writes to that chat. The modal also respects `memoryTaskFenced(ref)` until the mirror reaches the
-  task's terminal revision; the local lore draft has no task fence. A refused modal edit is reverted in its copy, never
-  queued to write after the fence.
+- A local send or `generatingChatKeys()` membership (a followed job or known server lock) fences that chat's writes; the
+  modal also respects `memoryTaskFenced(ref)` until its mirror reaches the task's terminal revision, while local lore
+  has no task fence. Refused modal edits revert their copy and never queue for later.
+- HypaV3 reset captures its chat before both confirmations and writes only if it remains selected when they return,
+  subject to the same fences.
 
 ### Deferred stored summaries
 

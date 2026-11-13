@@ -224,11 +224,11 @@ event, and calls [the revert route](records.md#the-revert-route). The
 
 ### Panel edits
 
-Pages and Threads send revision-bound edits through [the edit route](records.md#the-edit-route), one at a time per tab;
-their contracts hold optimistic copies and refusal recovery. Timeline rereads after either repair outcome because held
-messages decide stale status. Keep sends the held anchor state; Re-record marks then presses `memoryRecord` through
-`memoryRerecordTarget`. The server fence decides after `readOnly` disables controls. Settings writes chat overrides
-through `setChatMeta` in `src/ts/storage/chatStore.svelte.ts`.
+Pages and Threads serialize revision-bound [edits](records.md#the-edit-route) per tab; their contracts own optimistic
+copies and refusal recovery. Timeline rereads after either repair outcome: held messages decide staleness. Keep sends
+held anchors; Re-record marks then presses `memoryRecord` through `memoryRerecordTarget`. Retract captures its chat
+before confirmation for `sendRepair`. `readOnly` disables controls; the server fence decides. Settings writes overrides
+with `setChatMeta` (`src/ts/storage/chatStore.svelte.ts`).
 
 Outside the trash a section's `userCorrected` badge is a button: after `alertConfirm` it sends `sectionRelease`, the one
 control that takes the mark off.
