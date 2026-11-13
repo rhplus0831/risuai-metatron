@@ -723,6 +723,35 @@ it.each(["pages", "events"] as const)(
     },
 );
 
+it("derives stored columns and contents from the serialized page when toJSON changes its id, title and type", () => {
+    const { store, db } = fileStore();
+    seed(store);
+    const serializedPage: MemoryPage = {
+        ...records(["after"]).pages[0],
+        title: "After serialization",
+        type: "concept",
+    };
+    const page = { ...records(["before"]).pages[0], toJSON: () => serializedPage };
+    const current = write(store, contents(store).revision, { pages: [page] });
+    const text = JSON.stringify(serializedPage);
+
+    expect(db.prepare("SELECT id, title, type, data FROM memory_pages").get()).toEqual({
+        id: "after",
+        title: "After serialization",
+        type: "concept",
+        data: text,
+    });
+    expect(contents(store)).toEqual({
+        ...emptyContents(current),
+        pages: [{ id: "after", title: "After serialization", type: "concept", bytes: Buffer.byteLength(text, "utf8") }],
+    });
+    expect(store.memory.readRecord("c", "k", "pages", "after")).toEqual({
+        revision: current,
+        data: serializedPage,
+    });
+    expect(store.memory.readRecord("c", "k", "pages", "before")).toBeNull();
+});
+
 it("selects contents without body columns and reads bodies by id with the current memory token", () => {
     const { store, db } = fileStore();
     seed(store);
