@@ -95,6 +95,15 @@ beforeEach(() => {
 });
 
 describe("grants", () => {
+    it("asks for mainDom consent and returns no root document when it is denied", async () => {
+        confirm.mockResolvedValue(false);
+        const { api, plugin } = await makeApi();
+
+        expect(await api.getRootDocument()).toBeNull();
+        expect(confirm).toHaveBeenCalledExactlyOnceWith(language.mainDomAccessConsent.replace("{}", plugin.name));
+        expect(recorded).not.toHaveBeenCalled();
+    });
+
     it("answers from a stored grant for that permission only; other permissions still ask", async () => {
         const { api, plugin } = await makeApi("script-a");
         grants.add("h(script-a)_db");
