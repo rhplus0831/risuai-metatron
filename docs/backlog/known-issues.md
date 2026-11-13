@@ -41,6 +41,16 @@ Guide: [Structured Memory Records](../structure/structured-memory/records.md#kno
     full lines in `retrieve.ts`, `remappedEvent` in `pages.ts`), and the tab's readers supply them. Still open: an
     event's other parts (`summary`, `stateChanges`, `knowledge`, `relationshipShifts`, `openThreads`, `sources`) and a
     part of the wrong type are read as written, and the tab's package export (`renderMemoryTimeline`) iterates
-    `keyLines` unguarded; none was run. The server has never written such an event.
+    `keyLines` unguarded. The server has never written such an event. Run on 2026-11-14 in a running server with a
+    browser (wide review, cut X2, and a second run), 37 crafted events through `tx.restoreMemory`: all were admitted,
+    all 259 read rounds answered 200, and the panel's Timeline, Story, and Coverage rendered. Sends in the chat
+    failed during assembly, before any provider call, for a missing, null, or wrongly typed `summary`, `knowledge`,
+    or `sources`, and for `keyLines` or `participants` of the wrong type (16 of 36 cases); `stateChanges`,
+    `relationshipShifts`, `openThreads`, and `storyTime` sent in every case. The failing readers are
+    `coveredMessages` (`shared/structuredMemory.ts:1461`) and `prepareRetrieval`, `knownFacts`, and `rankEvents` in
+    `retrieve.ts`. The chat sends again with memory off; a missing `summary` is harmless while the event is recent
+    or retracted, and missing `sources` fails even when retracted. Cheapest fix: refuse wrong field types in the
+    common restore validator and normalize an already stored event before prompt selection. The package export has
+    no caller in the product.
 
   Not fixed: the byte charge, since measuring costs every round; the owner has not said whether it is a Limitation.

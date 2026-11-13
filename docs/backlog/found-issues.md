@@ -14,12 +14,36 @@ The nineteenth batch and the eight entries of the 2026-11-10 full guide audit (t
 
 The twentieth and twenty-first batches, a build entry, and one finding still in memory (eight in all) were worked on 2026-11-12 by Sol implementers and test writers in three worktrees with session verification: five fixed (the pdf.js character map URL, the Korean export line, the history jump's scroll and the refresh scan with regression tests, the eval's capture beyond titles); the on-demand timeline count tried and reverted as not worth its cost (`b29a883a5`, `bb2ede7d6`; the read guide's Limitation has the numbers); the read round's byte charge reproduced and moved to [known issues](known-issues.md#structured-memory); and the timeline heading reworded the same day by the owner's decision (`the last ones may already be in the messages below`).
 
+The twenty-second batch is the first wave of the wide review of 2026-11-14 at `05df12543` (eleven read-only reviewers
+by area, then a second reader of another model for each report with a finding): five new entries, each reproduced by
+both readers with a probe test kept with the review material outside the repository, and runtime results added to the
+preview, HypaV3 checkpoint, and lore limit entries below and to the restored-row entry in
+[known issues](known-issues.md#structured-memory). The tokenizer entry was in memory since 2026-11-12.
+
 ## Contents
 
+- [Assets](#assets): 1
 - [Chat pipeline](#chat-pipeline): 1
-- [Memory](#memory): 1
+- [Memory](#memory): 3
+- [Plugins](#plugins): 1
 - [Selection](#selection): 1
+- [Server generation](#server-generation): 2
 - [Settings](#settings): 1
+
+## Assets
+
+### The preview and sweep test passes without the preview key lock
+
+`server/src/tests/assetPreview.test.ts:182` finishes a preview before it starts a sweep, and the sweep before the next
+preview; the two never overlap. With the lock keys of the preview route emptied (`[fullPath]` to `[]` in
+`server/src/routes/assetLifecycle.ts:80`), all five preview tests still pass. The product holds the lock; only the
+test cannot tell. Found 2026-11-14 by the wide review (cut R6).
+
+**Why it matters:** the Storage Settings Page plan's D8 (a preview and thumbnail generation share the sweep's asset
+lock) has no test that fails when the lock is removed.
+
+**Suggested handling:** hold thumbnail generation at a controlled point, start the sweep, assert it waits, release,
+and check the file and cache; cover the reverse order too.
 
 ## Chat pipeline
 
@@ -30,13 +54,16 @@ bindings are not frozen, and `runSend` flushes the job's chat metadata before it
 Activation queues `__internal_ka_<id>` and `__internal_da_<id>` through `setChatVar`
 (`server/src/lua/bindings.ts:555`), so a preview may write those flags to the chat, while `rebuildLocks`' comment in
 `server/src/jobs/generationJobs.ts:352` says a preview writes nothing. Found 2026-11-13 by the Lore Budget Send Stop
-plan's audit; not settled against the write path, and not run.
+plan's audit. Reproduced 2026-11-14 in a running server with a browser (wide review, cut X1, and a second run): both
+preview kinds store the flags (`runner.ts:631`, `bindings.ts:576`), and the next real send leaves the entry out.
 
-**Why it matters:** an entry with `dont_activate_after_match` that a preview activated would stay off in the send the
+**Why it matters:** an entry with `dont_activate_after_match` that a preview activated stays off in the send the
 preview was meant to show.
 
-**Suggested handling:** read whether the job's write accepts the `meta` operation for a preview kind; if it does, run
-a preview's activation without the flag writes, with a test that a preview leaves `scriptstate` as it was.
+**Suggested handling:** give a preview's lore activation a detached variable overlay in the job bindings, so its
+reads see the flags set during the preview and none reaches the chat's metadata, with a test that a preview leaves
+`scriptstate` as it was. Removing the flush at `runner.ts:631` alone is not enough: `flushChatMetadata`
+(`server/src/jobs/jobScope.ts:660`) is reached on other paths too.
 
 ## Memory
 
@@ -47,13 +74,74 @@ inside `host.writeMemory`; it never checks that the stored `hypaV3Data` kept it.
 the server's write guard (`refusesHypaV3Data` in `server/src/data/chatStore.ts`) drops the summary, but the send's
 HypaV3 execution counts it as saved. The detached task's `checkpointOf` in `memoryTasks.ts` confirms the write since
 the Per-Chat Memory plan's slice 2 (`15996bb5b`); the in-job path was outside that slice. Found 2026-11-12 during that
-slice; unverified in a running server.
+slice. Reproduced 2026-11-14 in a running server (wide review, cut X2, and a second run): with the mode changed while
+the summary was in flight, the send's provider request carried the new summary, the stored metadata had no
+`hypaV3Data`, and the next HypaV3 send summarized the same messages again; with the mode unchanged the summary was
+kept and not requested twice.
 
-**Why it matters:** a send can treat a gap as summarized while nothing was stored; per-chat modes make the mode
-changes that lead there casual.
+**Why it matters:** a send treats a gap as summarized while nothing was stored, and the next send pays for the same
+summary again; per-chat modes make the mode changes that lead there casual.
 
-**Suggested handling:** make the in-job checkpoint confirm the stored value as `checkpointOf` does, with a regression
-test that moves a chat to Structured Memory while a send's HypaV3 summary is in flight.
+**Suggested handling:** make the in-job checkpoint (`assemble.ts:857`) confirm the stored value as `checkpointOf`
+does and return `skipped` so the existing recovery runs, with a regression test that moves a chat to Structured
+Memory while a send's HypaV3 summary is in flight.
+
+### The panel's page lookup orders events by the message index stored at recording
+
+`findStructuredMemory` sorts a page's events by `sourceIndex`, newest first, before its 200-hit cap
+(`src/ts/process/structuredMemory.svelte.ts:1369`), and the `/find` route fills that field from the anchors stored when
+the event was recorded (`firstSourceIndex(event.sources)` in `server/src/routes/structuredMemory.ts:427`). The stored
+indexes stay as they were when earlier messages are deleted, while a new recording takes the shorter chat's positions,
+so an older standing event can carry a higher index than a newer one. `PagesTab.svelte:252` keeps the first
+relationship shift per pair and labels it newest. Found 2026-11-14 by the wide review (cut R2): with the first 40
+messages deleted, an event stored at index 40 outranked a new event at index 20, and Read showed the old relationship.
+The timeline already resolves message ids to current positions (`structuredMemory.svelte.ts:2033`).
+
+**Why it matters:** after old history is deleted, Read shows an obsolete relationship as the current one, and the
+newest-five and newest-200 selections pick by the same order. The stored records are intact, and the prompt's
+retrieval is not shown to be affected.
+
+**Suggested handling:** resolve the events' source messages to their current positions in the page lookup (join
+coverage, or have `/find` return source ids) and sort before the cap. A read-path change; nothing stored changes.
+
+### A speaker-only correction leaves events with version-1 anchors unmarked
+
+The rewrite reaction marks a citing event only when the message's hash under the anchor's stored version changed
+(`server/src/prompt/memory/structured/reconcile.ts:386`, since `a595dc077`). A version-1 anchor (recorded before
+`549c166a2`) hashes the role and the text only, so a write that changes only `saying` sends the rewrite notice, the
+comparison finds the hash equal, and the event gets no `rerecord` mark and reads as active. Anchors of version 2 and
+later include the speaker and are marked. Found 2026-11-14 by the wide review (cut F1b); the second reader narrowed
+it: setting the mark alone would not repair the event either, since `automaticRerecords` (`reconcile.ts:67`) takes no
+version-1 candidate.
+
+**Why it matters:** in a chat recorded before the versioned hashes (or restored from an older chat file), correcting
+which group member said a reply leaves the memory event attributed to the old speaker, with nothing to pick it up.
+Events recorded since are not affected.
+
+**Suggested handling:** carry the speaker change from the chat store through `MessagesChanged`, and let
+reconciliation store a state for the affected version-1 anchors that the read side and the automatic repair
+recognize (or upgrade only those anchors). No migration of every row.
+
+## Plugins
+
+### A whole-database plugin write saves a stale message over an edit made during its consent dialog
+
+`setDatabase` and `setDatabaseLite` capture the scope, the target characters, and their owner tokens, then wait for
+the dbWrite consent (`src/ts/plugins/apiV3/v3.svelte.ts:2653`, `:2663`). Whether an incoming chat is an unchanged
+round trip is decided only after the wait (`pluginChatsMatch` at `:2265`), and `applyPluginCharacter` is called
+without a read baseline (`:1997`), so the baseline is captured late (`src/ts/storage/chatStore.svelte.ts:4853`). A
+chat that matched when the setter was called stops matching when another client's edit arrives while the dialog is
+open, and the plugin's old copy of the text is then written as a new edit. Found 2026-11-14 by the wide review (cut
+R5): a plugin that changed only a character's name reverted a message another client had edited and saved during the
+dialog, for both setters. The dedicated character and chat setters capture before the wait.
+
+**Why it matters:** an acknowledged message edit is lost from the stored chat without the plugin having touched a
+message. It needs a plugin that passes whole chats back through a database setter, an open consent dialog (first
+grant, reset, or the three-day reconfirmation), and a second client editing one of those chats meanwhile.
+
+**Suggested handling:** decide the unchanged chats synchronously at both setters' entry and carry that through the
+consent wait into the shared reconciliation, keeping the validation and owner checks. A local change in
+`v3.svelte.ts`; a general whole-database merge is not needed for this.
 
 ## Selection
 
@@ -70,17 +158,61 @@ its tests with no caller to need them.
 **Suggested handling:** drop the function and the tests that only exercise it, or keep it with a module comment
 saying it is a deliberate hook.
 
+## Server generation
+
+### A whole-chat resync of a chat over 4 MiB closes a healthy generation socket
+
+`sendSocket` terminates the socket when `ws.bufferedAmount + bytes` exceeds `MAX_BUFFERED_BYTES`, 4 MiB
+(`server/src/jobs/generationJobs.ts:1042`, added by `8367c3986`). The bound applies to the frame itself, and a whole
+chat has no size ceiling (`wholeChatEvent`, `generationJobs.ts:1330`), so the answer to `{ type: "resync" }`
+(`generationJobs.ts:2709`) for a chat that serializes past 4 MiB is refused on an empty queue, and again after every
+reconnect. Found 2026-11-14 by the wide review (cut F1a): a 5.5 MiB chat (about 700 messages of 8 KiB) over loopback
+sockets with `bufferedAmount` 0 was terminated on both attempts while the job ran. Whole-resource snapshots and an
+ended job's whole-chat attach go through the same helper.
+
+**Why it matters:** the tab asks for a whole-chat resync when it cannot apply a checkpoint
+(`src/ts/network/generationJobs.ts:1160`); with a long chat it is disconnected each time and never recovers over the
+socket. No stored data is lost.
+
+**Suggested handling:** allow one oversized frame when nothing is queued, keeping the bound on a backlog (a local
+change in `sendSocket`; it allows one frame's worth of memory). Keeping the 4 MiB limit absolute needs a whole-chat
+recovery over HTTP on both sides.
+
+### A long unbroken run of letters stalls every request while its tokens are counted
+
+The `o200k_base` and `cl100k_base` encoders take quadratic time on one unbroken run of letters, and the server
+encodes synchronously on the thread that serves every request (`server/src/prompt/tokenizers/index.ts:131`). The count
+route passes the caller's text with a 2 MiB body cap and no limit per string (`server/src/routes/tokens.ts:110`).
+Found 2026-11-12 while speeding up `promptRunner.test.ts`. Reproduced 2026-11-14 in a running server (wide review,
+cut X3, and a second run): a 200 KB run counted with `o200k_base` held an unrelated boot read for 17.6 s (15.2 s on
+the rerun) and `cl100k_base` for 16.6 s; the other 13 local families stayed under 0.5 s, and the same bytes with
+spaces took 84 ms. A mock model reply of 200 KB stalled the server 17.7 s; a send over a chat that already stores
+such a message took 78.7 s, a preview 32.3 s, and a memory test 39.1 s. The `server-generation` guide's Limitations
+record tokenizer calls on the main thread as accepted on 2026-11-10 (worker isolation is a separate design); that
+decision carries no numbers.
+
+**Why it matters:** one signed-in client, an imported card, or a model reply can leave an instance answering nobody
+for the length of the count.
+
+**Suggested handling:** the owner's note of 2026-11-14: "Token counting isn't always fast, so I'm considering moving
+it to a worker thread." A size refusal before encoding at the shared gateway (`tokenizers/index.ts:19`) is the cheap
+bound; it was offered and not taken, since it also refuses legitimate large text. An exact count of a large text
+needs the encode off the serving thread, which is the worker design.
+
 ## Settings
 
 ### The lorebook token limit inputs cap at 4096 under a default of 8000
 
 Both inputs of the lorebook token limit carry `max` 4096: the global one (`adv.lbToken` in
-`src/ts/setting/memorySettingsData.ts:21`) and the lorebook's own (`src/lib/SideBars/LoreBook/LoreBookSetting.svelte:148`).
+`src/ts/setting/memorySettingsData.ts:21`) and the lorebook's own (`src/lib/SideBars/LoreBook/LoreBookSetting.svelte:157`).
 The default is 8000 (`server/src/data/normalize/providers.ts:7`). `NumberInput` passes `max` to the element as an
 attribute only, so a typed value above it is stored, but the stepper stops at 4096. Found 2026-11-13 by the Lore
-Budget Send Stop plan's audit; not checked in a browser.
+Budget Send Stop plan's audit. Checked 2026-11-14 in Chromium (wide review, cut X1, and a second run), on both
+inputs: ArrowUp does nothing at 8000, one ArrowDown from 8000 stores 4096, and a typed 9000 is stored and used. The
+mouse spinners are hidden, so only keyboard stepping reaches it. With the lore budget stop on (the default), a send
+that no longer fits at 4096 stops with the dialog and calls no provider; with the stop off, the entry is left out.
 
 **Why it matters:** that plan's dialog sends a person to these inputs to raise the limit, where the box suggests 4096
-is the most.
+is the most, and one arrow key lowers a stored 8000 to 4096.
 
 **Suggested handling:** drop the `max` or raise it to a value above the default, on both inputs.
