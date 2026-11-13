@@ -252,6 +252,43 @@ describe("GUI rendering without a browser session", () => {
         expect(input.value).toBe("12");
     });
 
+    it("shows a NumberInput value changed from outside while the box has focus", async () => {
+        // A binding whose owner changes under a focused box, as a hotkey preset switch does.
+        const record = reactiveProps({ stored: 555 });
+        const view = renderGui(NumberInput, {
+            id: "gui-render-outside",
+            get value() {
+                return record.stored;
+            },
+            set value(next: number | null) {
+                if (typeof next === "number" && Number.isFinite(next)) record.stored = next;
+            },
+        });
+        const input = view.getBySelector<HTMLInputElement>("input#gui-render-outside");
+
+        input.focus();
+        await inputValue(input, "777");
+        expect(record.stored).toBe(777);
+        record.stored = 500;
+        await tick();
+        expect(input.value).toBe("500");
+
+        // The box is still being edited: a refused entry stays as typed, and an accepted one is written.
+        await inputValue(input, "");
+        await tick();
+        expect(record.stored).toBe(500);
+        expect(input.value).toBe("");
+        await inputValue(input, "6");
+        expect(record.stored).toBe(6);
+        expect(input.value).toBe("6");
+
+        // An outside change also replaces a refused entry.
+        await inputValue(input, "");
+        record.stored = 40;
+        await tick();
+        expect(input.value).toBe("40");
+    });
+
     it("renders checkbox and optional input states without app bootstrapping", async () => {
         const onCheckChange = vi.fn();
 

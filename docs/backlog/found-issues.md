@@ -19,7 +19,7 @@ The twentieth and twenty-first batches, a build entry, and one finding still in 
 - [Chat pipeline](#chat-pipeline): 2
 - [Memory](#memory): 1
 - [Selection](#selection): 1
-- [Settings](#settings): 2
+- [Settings](#settings): 1
 
 ## Chat pipeline
 
@@ -96,19 +96,3 @@ Budget Send Stop plan's audit; not checked in a browser.
 is the most.
 
 **Suggested handling:** drop the `max` or raise it to a value above the default, on both inputs.
-
-### A preset switch while a number box has focus keeps the typed value shown
-
-`e2e/presetSelection.spec.ts:60` fails: after typing 777 into Max Response Size and pressing `Control+1` with the box
-still focused, the box shows 777 where the test expects the new preset's 500 (`presetSelection.spec.ts:89`). It
-fails the same way at `7976d4449`, before the Lore Budget Send Stop plan. `fb09d2b25` made `NumberInput` show the typed
-entry while it has focus (`editing` and `typed` in `src/lib/UI/GUI/NumberInput.svelte:43`), so a bound value that
-changes underneath a focused box is not shown until blur or commit. Found 2026-11-13 by the Lore Budget Send Stop run's
-final checks; not checked in a browser beyond the spec.
-
-**Why it matters:** after a hotkey switch the box shows a value the selected preset does not hold, and the e2e suite
-has a standing failure.
-
-**Suggested handling:** leave the editing state when the bound value changes from outside (or the binding's owner
-changes), as the commit and blur do, and keep the spec's expectation; otherwise decide the spec is stale and update
-it.

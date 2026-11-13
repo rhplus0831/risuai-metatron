@@ -38,10 +38,14 @@
     // A function binding's setter may refuse an entry (a cleared box, a value out of range) and keep
     // the stored value; Svelte would then rewrite the box with it on the same keystroke, so a last
     // digit could never be deleted. While the box is being edited it shows what was typed instead;
-    // a commit (`change`) or leaving the box shows the bound value again, as does an outside change
-    // made while the box is not being edited.
+    // a commit (`change`) or leaving the box shows the bound value again.
     let editing = $state(false);
     let typed: number | null | undefined = $state();
+    // The bound value as this box last read or wrote it. A bound value that differs from it was
+    // changed from outside (a hotkey preset switch under a focused box), and the box shows that
+    // value at once. A refusal leaves the bound value as it was, so it does not count. An outside
+    // change to the same number is not seen: a refused entry stays shown until commit or blur.
+    let seen: number | null | undefined = $state();
 </script>
 
 <input
@@ -67,20 +71,23 @@
     {id}
     {disabled}
     bind:value={
-        () => (editing ? typed : value),
+        () => (editing && Object.is(value, seen) ? typed : value),
         (next) => {
             typed = next;
             value = next;
+            seen = value;
         }
     }
     onfocus={() => {
         typed = value;
+        seen = value;
         editing = true;
     }}
     onblur={() => (editing = false)}
     onchange={(event) => {
         onChange(event);
         typed = value;
+        seen = value;
     }}
     {placeholder}
 />
