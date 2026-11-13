@@ -38,6 +38,12 @@ afterEach(async () => {
 
 const previewUrl = (key: string) => `${ASSET_PREVIEW_PATH}/${hex(key)}`;
 
+function deferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => (resolve = r));
+    return { promise, resolve };
+}
+
 // The resource client helper does not expose thumbnailOptions, so use the same in-process app and signer.
 async function server(thumbnailOptions: ThumbnailOptions = {}) {
     const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "risu-asset-preview-"));
@@ -200,5 +206,82 @@ it("never leases a preview and leaves no thumbnail cache after preview and sweep
         await previewBody(await s.preview(key), 404, `${order}: swept key`);
         expect(assetLeased(file), order).toBe(false);
         await expect(fs.stat(s.cache(key)), order).rejects.toMatchObject({ code: "ENOENT" });
+    }
+});
+
+it("serializes preview generation and sweep deletion in either order", async () => {
+    const leases = await import("../http/assetLeases.ts");
+    const withAssetLocks = leases.withAssetLocks;
+    for (const order of ["preview then sweep", "sweep then preview"] as const) {
+        const previewFirst = order === "preview then sweep";
+        const held = deferred();
+        const release = deferred();
+        const requested = deferred();
+        const s = await server({
+            loadSharp: async () => {
+                if (previewFirst) {
+                    held.resolve();
+                    await release.promise;
+                }
+                return sharp;
+            },
+        });
+        const key = "assets/concurrent-sweep.png";
+        const file = await s.seed(key);
+        await s.mature();
+
+        // Keep the real lock: observe the waiter reaching it, and hold the sweep inside it in reverse order.
+        let firstLock = true;
+        const locks = vi.spyOn(leases, "withAssetLocks").mockImplementation(function <T>(
+            paths: readonly string[],
+            body: () => T | Promise<T>,
+            signal?: AbortSignal,
+        ): Promise<T> {
+            const first = firstLock;
+            firstLock = false;
+            const result = withAssetLocks(
+                paths,
+                first && !previewFirst
+                    ? async () => {
+                          held.resolve();
+                          await release.promise;
+                          return body();
+                      }
+                    : body,
+                signal,
+            );
+            if (!first) requested.resolve();
+            return result;
+        });
+        const holding = previewFirst ? s.preview(key) : s.sweep(key);
+        await held.promise;
+        const open = vi.spyOn(fs, "open");
+        let finished = false;
+        const waiting = (previewFirst ? s.sweep(key) : s.preview(key)).then((response) => {
+            finished = true;
+            return response;
+        });
+        try {
+            await requested.promise;
+            await expect.soft(fs.readFile(file), order).resolves.toEqual(large);
+            expect.soft(finished, order).toBe(false);
+            if (!previewFirst) expect.soft(open, order).not.toHaveBeenCalled();
+            await expect.soft(fs.stat(s.cache(key)), order).rejects.toMatchObject({ code: "ENOENT" });
+        } finally {
+            release.resolve();
+        }
+        const [first, second] = await Promise.all([holding, waiting]);
+        const preview = previewFirst ? first : second;
+        const swept = previewFirst ? second : first;
+        await previewBody(preview, previewFirst ? 200 : 404, order);
+        expect(swept.status, order).toBe(200);
+        expect(await swept.json(), order).toMatchObject({ deleted: [key], skipped: [], freedBytes: large.length });
+        await expect(fs.stat(file), order).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(fs.stat(s.cache(key)), order).rejects.toMatchObject({ code: "ENOENT" });
+        expect(assetLeased(file), order).toBe(false);
+        await previewBody(await s.preview(key), 404, `${order}: swept key`);
+        await expect(fs.stat(s.cache(key)), order).rejects.toMatchObject({ code: "ENOENT" });
+        open.mockRestore();
+        locks.mockRestore();
     }
 });

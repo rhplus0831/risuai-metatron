@@ -34,25 +34,9 @@ confirmed claims left [known issues](known-issues.md) fixed.
 
 ## Contents
 
-- [Assets](#assets): 1
 - [Selection](#selection): 1
 - [Server generation](#server-generation): 1
 - [Test tooling](#test-tooling): 1
-
-## Assets
-
-### The preview and sweep test passes without the preview key lock
-
-`server/src/tests/assetPreview.test.ts:182` finishes a preview before it starts a sweep, and the sweep before the next
-preview; the two never overlap. With the lock keys of the preview route emptied (`[fullPath]` to `[]` in
-`server/src/routes/assetLifecycle.ts:80`), all five preview tests still pass. The product holds the lock; only the
-test cannot tell. Found 2026-11-14 by the wide review (cut R6).
-
-**Why it matters:** the Storage Settings Page plan's D8 (a preview and thumbnail generation share the sweep's asset
-lock) has no test that fails when the lock is removed.
-
-**Suggested handling:** hold thumbnail generation at a controlled point, start the sweep, assert it waits, release,
-and check the file and cache; cover the reverse order too.
 
 ## Selection
 
