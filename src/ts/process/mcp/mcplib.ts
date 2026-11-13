@@ -1067,13 +1067,18 @@ export class MCPClient {
 
             const response = await this.request("tools/list", args, { signal });
             console.log("MCP Tools List Response", response);
-            if (response.rpc.result?.tools) {
-                tools.push(...response.rpc.result.tools);
-                if (response.rpc.result.nextCursor) {
-                    cursor = response.rpc.result.nextCursor;
-                } else {
-                    break;
-                }
+            const listed = response.rpc?.result?.tools;
+            if (
+                response.rpc?.error ||
+                response.http.status < 200 ||
+                response.http.status > 299 ||
+                !Array.isArray(listed)
+            ) {
+                throw new Error("Failed to list MCP tools");
+            }
+            tools.push(...listed);
+            if (response.rpc.result.nextCursor) {
+                cursor = response.rpc.result.nextCursor;
             } else {
                 break;
             }

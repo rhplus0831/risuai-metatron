@@ -402,6 +402,71 @@ describe("MCPClient refresh rotation", () => {
     });
 });
 
+describe("MCPClient tool listing", () => {
+    it("rejects a failed later tool-list page and retries every page before caching a complete list", async () => {
+        const failures: ((call: Call) => Reply)[] = [
+            (call) =>
+                reply({
+                    json: { jsonrpc: "2.0", id: call.body.id, error: { code: -32603, message: "listing failed" } },
+                }),
+            (call) =>
+                reply({
+                    json: {
+                        jsonrpc: "2.0",
+                        id: call.body.id,
+                        error: { code: -32603, message: "listing failed" },
+                        result: { tools: [] },
+                    },
+                }),
+            (call) => reply({ status: 503, json: { jsonrpc: "2.0", id: call.body.id, result: { tools: [] } } }),
+            (call) => rpcJson(call, {}),
+            (call) => rpcJson(call, { tools: {} }),
+        ];
+        const alpha = { name: "alpha", inputSchema: { type: "object" } };
+        const beta = { name: "beta", inputSchema: { type: "object" } };
+        for (const fail of failures) {
+            const client = await newClient();
+            let healthy = false;
+            const pages: string[] = [];
+            server.handle = (call) => {
+                if (call.body.id === undefined) return reply({ status: 202 });
+                if (call.body.method === "initialize") return rpcJson(call, INFO);
+                const cursor = call.body.params?.cursor ?? "first";
+                pages.push(cursor);
+                if (cursor === "first") return rpcJson(call, { tools: [alpha], nextCursor: "second" });
+                return healthy ? rpcJson(call, { tools: [beta] }) : fail(call);
+            };
+            try {
+                await expect(client.getToolList()).rejects.toThrow("Failed to list MCP tools");
+                expect(pages).toEqual(["first", "second"]);
+                healthy = true;
+                expect(await client.getToolList()).toEqual([alpha, beta]);
+                expect(pages).toEqual(["first", "second", "first", "second"]);
+                expect(await client.getToolList()).toEqual([alpha, beta]);
+                expect(pages).toEqual(["first", "second", "first", "second"]);
+            } finally {
+                client.destroy();
+            }
+        }
+        const client = await newClient();
+        server.handle = (call) => {
+            if (call.body.id === undefined) return reply({ status: 202 });
+            return rpcJson(call, call.body.method === "initialize" ? INFO : { tools: [] });
+        };
+        try {
+            const start = calls.length;
+            expect(await client.getToolList()).toEqual([]);
+            expect(calls.slice(start).map((call) => call.body.method)).toEqual([
+                "initialize",
+                "notifications/initialized",
+                "tools/list",
+            ]);
+        } finally {
+            client.destroy();
+        }
+    });
+});
+
 describe("MCPClient retirement (destroy) against the session reset", () => {
     const stored = { clientId: "c1", clientSecret: "s1", refreshToken: "r1", tokenUrl: "http://mcp.test/token" };
 
