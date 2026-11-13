@@ -1503,11 +1503,12 @@
         <button
             class="flex items-center hover:text-blue-500 transition-colors button-icon-copy"
             onclick={async () => {
-                // The persona this message's chat shows, read before the awaits below (the selected
-                // chat can change meanwhile).
+                // Capture the row's persona and character avatar before parsing: navigation can
+                // change the selected chat while this copy is waiting.
                 const copyChat = displayedChat;
                 const copyUserName = getUserName(copyChat);
                 const copyUserIcon = getUserIcon(copyChat);
+                const copyCharacterIcon = (copyChat ? findCharacter(copyChat.chaId) : selectedCharacter())?.image ?? "";
                 const copyText = renderRawStreaming ? displayPrePass(rawStreamingText) : msgDisplay;
                 if (window.navigator.clipboard.write) {
                     let copyStatus: alertData | null = null;
@@ -1632,7 +1633,7 @@
                         let hasValidImage = false;
 
                         try {
-                            const iconImage = (await getFileSrc(currentCharacter.image ?? "")) ?? "";
+                            const iconImage = (await getFileSrc(copyCharacterIcon)) ?? "";
 
                             if (
                                 iconImage &&
