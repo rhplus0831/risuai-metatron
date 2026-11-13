@@ -350,10 +350,13 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
 
 - Unconfirmed: a hang in the additional-asset passes has not been reproduced. The source-image test in
   `src/ts/parser/tests/assetFuzzy.test.ts` pauses and releases `getFileSrc`, but does not test a lookup that never
-  settles.
+  settles. A browser run on 2026-11-14 held the fallback asset read of three asset forms for 11 s: the rows stayed empty
+  while the read was held and rendered once it was released (`readRenderIO` checks abort only around the read). No
+  stored content was found that makes a lookup hang.
 - Unconfirmed: the reported duplicate row render after Re-render is not established as a user-visible defect.
   `e2e/serverTransform.spec.ts` observes two targets in one request: the first bypasses cache and the second reuses its
-  result.
+  result. A browser run on 2026-11-14 of three Re-render clicks (plain, randomized regex, interactive content) left one
+  row and one body replacement each.
 
 ### Limitations
 

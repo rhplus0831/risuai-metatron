@@ -218,7 +218,7 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
 
 - `LoreBookList` rows are keyed by entry and guard reads/writes against live-list membership; a remote replacement or
   removal drops the old row's write. Its tests cover focused-field removal. `CharConfig` and `ModuleMenu` asset/emotion
-  name rows remain index-addressed; see [Issues](#issues).
+  name rows remain index-addressed; see [known issues](../backlog/known-issues.md#characters-modules).
 - `LoreBookList` rebuilds its Svelte arrays after SortableJS DOM moves. Avoid `bind:list[i]` in any other unkeyed list
   that can change while a focused input is removed.
 - Old lorebook entries (below `bookVersion` 2) are converted only as they enter: a character's creation
@@ -284,12 +284,6 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
   after the lorebook filter clears (`onEnd`).
 
 ## Known Hazards
-
-### Issues
-
-- Unconfirmed: a same-length remote replacement while an emotion or asset name field is focused may let the next input
-  write to the new row at the old index. `CharConfig.renameAsset`/`renameEmotion` and `ModuleMenu.renameAsset` address
-  the live list by index; existing `ModuleMenu.assets` tests cover a reorder but not a focused input event after one.
 
 ### Limitations
 

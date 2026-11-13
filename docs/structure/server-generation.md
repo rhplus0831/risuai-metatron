@@ -317,7 +317,9 @@ Other subsystems' runtime limits live with their owners: [chat-pipeline](chat-pi
 
 - Unconfirmed: a provider callback that ends `disconnected` fails its job through `endWith` and the runner's finalize
   (`jobs/runSetup.ts`), not the registry's `abort()`, so `JOB_ABORT_GRACE_MS` does not bound that end (the
-  maximum-duration watchdog still does). The chat can stay busy longer than owner absence plus abort grace.
+  maximum-duration watchdog still does). The chat can stay busy longer than owner absence plus abort grace. Three runs
+  on 2026-11-14 with a local provider callback (never delivered, closed before a chunk, closed after a partial reply)
+  each freed the chat within the 120 s absence plus the grace and kept the partial reply.
 
 ### Limitations
 

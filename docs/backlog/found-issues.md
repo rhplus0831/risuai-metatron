@@ -20,15 +20,24 @@ both readers with a probe test kept with the review material outside the reposit
 preview, HypaV3 checkpoint, and lore limit entries below and to the restored-row entry in
 [known issues](known-issues.md#structured-memory). The tokenizer entry was in memory since 2026-11-12.
 
+The twenty-third batch is the second wave of the same review (2026-11-14, twelve reviewers: six over the server's
+routes, five re-reading the fixes made since 2026-11-05, one running the guides' unconfirmed claims; a second reader
+for each of the eleven reports with a finding): seventeen new entries below, each reproduced by both readers except
+the one marked P3, and three confirmed claims moved from the guides' Issues to [known issues](known-issues.md).
+
 ## Contents
 
 - [Assets](#assets): 1
+- [Characters](#characters): 2
 - [Chat pipeline](#chat-pipeline): 1
-- [Memory](#memory): 3
-- [Plugins](#plugins): 1
+- [Imports and backups](#imports-and-backups): 2
+- [MCP](#mcp): 3
+- [Memory](#memory): 5
+- [Plugins](#plugins): 3
 - [Selection](#selection): 1
+- [Self-host server](#self-host-server): 4
 - [Server generation](#server-generation): 2
-- [Settings](#settings): 1
+- [Settings](#settings): 3
 
 ## Assets
 
@@ -44,6 +53,35 @@ lock) has no test that fails when the lock is removed.
 
 **Suggested handling:** hold thumbnail generation at a controlled point, start the sweep, assert it waits, release,
 and check the file and cache; cover the reverse order too.
+
+## Characters
+
+### The legacy JSON card import drops a persona and greeting given as `char_persona` and `char_greeting`
+
+The import accepts a JSON card that names its fields `char_name`, `char_persona`, and `char_greeting`
+(`src/ts/characterCards.ts:278`), but `convertOffSpecCards` reads the persona and the greeting only from `description`
+and `first_mes` (`characterCards.ts:988`, `:989`); `1dc0f53a3` repaired the name alone. Found 2026-11-14 by the wide
+review (cut F3) and confirmed by a second reader: such a card imports as a success with an empty description and the
+greeting `unknown first message`.
+
+**Why it matters:** an accepted card is saved without its persona and greeting, and nothing says so. The source file
+can be imported again after a fix.
+
+**Suggested handling:** fall back to the alias when the canonical field is null or undefined, canonical first, as the
+name does.
+
+### Autosave stores a cleared VOICEVOX scale as null
+
+The four VOICEVOX scale inputs bind straight to the character record and repair a non-finite value only in `onChange`
+(`src/lib/SideBars/CharConfig.svelte:1208`, and `:1216`, `:1224`, `:1232`). A cleared field that still has focus holds
+`null`, and autosave writes it before the change event runs. Found 2026-11-14 by the wide review (cut F6) and
+confirmed by a second reader through the real resource sync: the server record held `null` while the field had focus.
+`src/ts/process/tts.ts:303` passes the scales to VOICEVOX without a fallback.
+
+**Why it matters:** an ordinary edit stores an invalid scale that other clients and a reload read.
+
+**Suggested handling:** a function binding whose setter refuses a blank or non-finite value, so the draft stays in the
+box and never enters the record.
 
 ## Chat pipeline
 
@@ -64,6 +102,80 @@ preview was meant to show.
 reads see the flags set during the preview and none reaches the chat's metadata, with a test that a preview leaves
 `scriptstate` as it was. Removing the flush at `runner.ts:631` alone is not enough: `flushChatMetadata`
 (`server/src/jobs/jobScope.ts:660`) is reached on other paths too.
+
+## Imports and backups
+
+### A CharX import writes its decoded assets with no check of the space left
+
+`charxLines` reads and publishes each archive entry on its own (`server/src/routes/importCharx.ts:179`, `:188`). One
+entry is capped at 50 MiB decoded and the upload at its compressed size; nothing adds up the decoded bytes or checks
+free space before `writeContentAsset`. Found 2026-11-14 by the wide review (cut E4) and confirmed by a second reader:
+an 884-byte upload stored 524,288 bytes, and with a write failure injected on the second asset the first stayed in
+`save/assets`.
+
+**Why it matters:** one imported card of highly compressible assets can fill the volume the resource database lives
+on. It needs the owner to import the file.
+
+**Suggested handling:** refuse the import when the volume's free space would fall under the reserve the server already
+keeps for the upstream import's commit, checked as bytes are published; a separate byte cap is not needed for this.
+
+### The upstream backup import checks free space at commit, after the staging files are written
+
+`serveFileImport` spools the whole archive (`server/src/http/fileImport.ts:198`), and the prepare worker writes the
+staged database and extracts every asset (`server/src/data/upstream/importStage.ts:128`) before any free-space check;
+the route first uses `statfs` at commit (`server/src/routes/backupsUpstream.ts:465`). Found 2026-11-14 by the wide
+review (cut E4) and confirmed by a second reader: with `statfs` reporting no free space, two prepares answered 200 and
+kept 385,112 and 516,184 staged bytes, and only the commits answered 507.
+
+**Why it matters:** choosing a backup to review can fill the volume before the review is shown. Cancel removes the
+staging; an abandoned prepare holds it for ten minutes.
+
+**Suggested handling:** admit the prepare with the same reserve: before spooling when the request gives its length,
+and before extraction once the archive index gives the asset bytes.
+
+## MCP
+
+### A remote MCP server's pings start replies with no bound that outlive the job
+
+`handleEvent` calls `answerPing` for every incoming ping, and each call starts its own POST with its own 30-second
+deadline (`server/src/mcp/client.ts:335`). Nothing counts the outstanding replies, they are not charged to the job's
+64 tool calls, and they belong to the shared client, not to the job. Found 2026-11-14 by the wide review (cut E2) and
+confirmed by a second reader, who narrowed it to a remote MCP server the owner enabled: one SSE answer of 12,690 bytes
+left 256 replies pending after the job was cancelled.
+
+**Why it matters:** one answer from a remote MCP server decides how many outbound requests and timers the instance
+holds.
+
+**Suggested handling:** a small fixed bound on outstanding ping replies per client, dropping a ping over the bound,
+with the deadline kept.
+
+### An error on a later page of an MCP tool list is cached as a complete list
+
+`getToolList` breaks out of its page loop when a page has no `tools` array, without looking at the RPC error or the
+status (`server/src/mcp/client.ts:881`), and then caches what it has (`client.ts:916`). A cached list is returned
+without asking again (`client.ts:869`) for as long as the client stays in use. Found 2026-11-14 by the wide review
+(cut E2) and confirmed by a second reader: with a 503 on the second of two pages, the next preview after the server
+recovered still listed only the first page's tool and made no listing request.
+
+**Why it matters:** tools of the later pages stay missing for the session while every job reports success;
+`jobTools.ts:298` means a failure after the handshake to fail the build.
+
+**Suggested handling:** treat an error, a failed status, or a result without `tools` on any page as a failed listing,
+and cache only after every page succeeded.
+
+### One graph-memory read makes an embedding request for every connection
+
+The shared traversal searches every term of its frontier, the frontier is every connection of every new entry with
+repeats, and names already found are searched again (`shared/mcp/graphmem.ts:160`); the server host embeds each term
+afresh (`server/src/mcp/internal.ts:391`). The job charges the whole read as one tool call. Found 2026-11-14 by the
+wide review (cut E6) and confirmed by a second reader: a card whose default variables hold 32 fully connected entries
+(7,430 bytes) made 1,026 embedding requests for one `readMemory` call, and 16 entries made 258.
+
+**Why it matters:** an imported card and one tool call by the model spend hundreds of paid embedding requests while
+the send stays busy.
+
+**Suggested handling:** drop repeated terms from the frontier and skip names already in the result; the result set
+stays the same.
 
 ## Memory
 
@@ -122,6 +234,35 @@ Events recorded since are not affected.
 reconciliation store a state for the affected version-1 anchors that the read side and the automatic repair
 recognize (or upgrade only those anchors). No migration of every row.
 
+### Unclosed comment openers make memory recording stall the server
+
+`MEMORY_SOURCE_MARKUP` (`shared/structuredMemory.ts:1503`, from `a595dc077`) tries its comment alternative at every
+`<!--` and scans to the end of the text when no `-->` follows, so a message of many unclosed openers costs quadratic
+time. `memorySourceText` runs it on the serving thread for source hashing, planning, and the writer. Found 2026-11-14
+by the wide review (cut F2) and confirmed by a second reader through the task service: a 262,144-byte message of
+`<!--` held the event loop for 11.2 s at a time during a 22 s recording, a 65,536-byte one for 0.7 s, and ordinary
+text of the same size took 78 ms in all.
+
+**Why it matters:** one stored or imported message stalls every request while memory is recorded. This is the
+pattern's own cost, apart from the tokenizer entry under Server generation.
+
+**Suggested handling:** a single-pass scan with the same output for every input, since the source hash depends on it.
+
+### Structured memory edits succeed during a restore's maintenance halt
+
+The structured memory routes receive no maintenance gate: `/edits` checks only the chat's fence before
+`store.memory.write` (`server/src/routes/structuredMemory.ts:1099`, `:1170`), and the fence in `server/src/app.ts:953`
+looks at tasks, jobs, and rebuilds. Found 2026-11-14 by the wide review (cut E6) and confirmed by a second reader:
+inside `snapshots.withMaintenance`, after the safety snapshot, an ordinary resource write answered 503 and a section
+edit answered 200; the edit was live and absent from the safety copy. The restore's replacement of the database was
+read, not run.
+
+**Why it matters:** an edit acknowledged during a restore is overwritten by it and is not in the safety snapshot
+either.
+
+**Suggested handling:** pass the gate into the route registration and refuse with 503 immediately before each
+mutation, on every mutating route.
+
 ## Plugins
 
 ### A whole-database plugin write saves a stale message over an edit made during its consent dialog
@@ -143,6 +284,33 @@ grant, reset, or the three-day reconfirmation), and a second client editing one 
 consent wait into the shared reconciliation, keeping the validation and owner checks. A local change in
 `v3.svelte.ts`; a general whole-database merge is not needed for this.
 
+### A text-node mutation makes the plugin mutation observer throw and lose the batch
+
+The observer wraps every record's target in `SafeElement` (`src/ts/plugins/apiV3/v3.svelte.ts:657`), whose constructor
+calls `getAttribute` (`:244`). A `characterData` record's target is a text node, so the mapping throws before the
+plugin's callback and the other records of the batch are lost with it. `8657b12f2` repaired added and removed nodes
+only. Found 2026-11-14 by the wide review (cut F5) and confirmed by a second reader: observing a container with
+`subtree` and `characterData` and changing a text node delivered nothing and threw `element.getAttribute is not a
+function`.
+
+**Why it matters:** a plugin that watches streamed text through the declared API receives no notification at all.
+
+**Suggested handling:** deliver the batch, giving a non-element target as its parent element under the same wrapper or
+omitting that record.
+
+### A cleared plain integer plugin argument is stored as null
+
+The integer argument's number field without radio or checkbox metadata binds straight to `realArg`
+(`src/lib/Setting/Pages/PluginSettings.svelte:309`); the radio branch got a finite setter, this one did not. Found
+2026-11-14 by the wide review (cut F6) and confirmed by a second reader: clearing and committing the field stored
+`null`, which the server's plugin normalizer keeps and `getArgument` (`v3.svelte.ts:2877`) returns unchanged.
+
+**Why it matters:** a plugin that declared an integer receives `null` after an ordinary edit, against
+`shared/plugins.ts:8`.
+
+**Suggested handling:** the finite setter of the radio branch: a blank draft stays in the box and the stored number is
+kept.
+
 ## Selection
 
 ### `onCharacterSelected` has no product listener left
@@ -157,6 +325,62 @@ its tests with no caller to need them.
 
 **Suggested handling:** drop the function and the tests that only exercise it, or keep it with a module comment
 saying it is a deliberate hook.
+
+## Self-host server
+
+### `/api/crypto` builds a buffer from a caller-chosen length without a token
+
+The handler hashes `Buffer.from(parsed.body.data, "utf-8")` without requiring a string
+(`server/src/routes/auth.ts:275`). Node takes an object with a `length` as array-like, so the 16 KiB body cap does not
+bound the allocation. The route is unauthenticated by design. Found 2026-11-14 by the wide review (cut E1) and
+confirmed by a second reader: a 28-byte body `{"data":{"length":67108864}}` allocated 64 MiB and held the event loop
+for 2.3 s, and a 27-byte one 4 MiB for 0.14 s; the auth limiter allows 2,000 requests a minute per address.
+
+**Why it matters:** anyone who can reach a public instance can stall it and spend its memory with small requests. The
+guide's Limitation about the unauthenticated routes did not weigh an input that escapes the body cap.
+
+**Suggested handling:** answer 400 unless `data` is a string.
+
+### The hub proxy forwards a `Clear-Site-Data` header under the app's origin
+
+`strippedHubResponseHeaders` (`server/src/routes/proxy.ts:46`, used at `:466`) removes the encoding headers and
+`set-cookie`; the reverse proxy's list beside it (`:40`) also removes `clear-site-data`. Found 2026-11-14 by the wide
+review (cut F3) and confirmed by a second reader, who narrowed it: the header reaches the answer of `/hub-proxy/…`
+unchanged while the cookie is stripped and the sandbox policy is set; that a browser then clears the origin's storage
+is the header's standard meaning and was not run.
+
+**Why it matters:** the configured hub, or whoever answers for it, could clear the app's browser storage: the
+registered key and local recovery drafts. Server data is not touched. The Limitation about the unauthenticated hub
+proxy weighed scripts and cookies, not this header.
+
+**Suggested handling:** add `clear-site-data` to the stripped list, for redirect and error answers too.
+
+### An overlong asset sweep key is encoded in full before its length is refused
+
+The sweep route checks only that `keys` and `inlays` are strings (`server/src/routes/assetLifecycle.ts:174`), the
+sweep resolves every key for its locks before it rejects a non-candidate (`server/src/data/assetLifecycle.ts:1279`),
+and `encodeFileName` builds the whole readable name byte by byte before the 255-byte check
+(`server/src/routes/storage.ts:127`). Found 2026-11-14 by the wide review (cut E3) and confirmed by a second reader,
+who narrowed it to a signed-in caller sending a malformed request (the settings page cannot): a 16 MiB key held the
+event loop for 2.8 s and answered 200 with the key skipped; the same size under an invalid prefix took 0.1 s.
+
+**Why it matters:** one request from a buggy client or plugin stalls the instance for seconds. Nothing is deleted.
+
+**Suggested handling:** refuse a name that cannot fit before encoding it, and bound the member length at the route.
+
+### A long near-miss query makes one message search hold the server for seconds
+
+The search tests each message with `LIKE ? ESCAPE` inside one synchronous SQLite call
+(`server/src/data/chatStore.ts:1590`; the pattern comes from `server/src/data/resourceStore.ts:2982`), and the row and
+byte budgets are checked only between rows (`chatStore.ts:3204`). Found 2026-11-14 by the wide review (cut E5) and
+confirmed by a second reader: against one stored message of 16 MiB of `A`, a query of 199 `a` and one `b` took 6.2 s
+with the event loop held, against 0.15 s for a plain miss; at 4 MiB, 1.6 s against 0.04 s.
+
+**Why it matters:** one signed-in search over a chat with a very large message stops every other request for its
+length. Data is unchanged.
+
+**Suggested handling:** try a literal match with the same ASCII folding (`instr(lower(…), lower(?))`) and measure; a
+work budget that makes search skip text costs coverage and is the owner's decision.
 
 ## Server generation
 
@@ -216,3 +440,26 @@ that no longer fits at 4096 stops with the dialog and calls no provider; with th
 is the most, and one arrow key lowers a stored 8000 to 4096.
 
 **Suggested handling:** drop the `max` or raise it to a value above the default, on both inputs.
+
+### The vibe strength selector stores a non-finite imported strength
+
+The Information Extracted selector of a vibe image writes the chosen encoding's strength without the finite check its
+upload and model-change handlers have (`src/lib/Setting/Pages/ImageGenerationSettings.svelte:562`). Found 2026-11-14
+by the wide review (cut F6) and confirmed by a second reader: a `.naiv4vibe` with one encoding at `1e400` uploads with
+the finite one selected, and choosing the other stores `Infinity`, which the server record keeps as `null`;
+`stableDiff.ts:391` then finds no encoding for it and leaves the reference image out.
+
+**Why it matters:** an imported vibe file can leave a stored strength that drops the reference image from later
+requests.
+
+**Suggested handling:** route the selector through the finite setter and leave a non-finite option out of the list.
+
+### `NumberInput` shows a refused blank draft again when an outside value returns to the earlier number
+
+When a focused `NumberInput` adopts a value from outside, it keeps the draft it had refused and its comparison
+baseline (`src/lib/UI/GUI/NumberInput.svelte:74`). Found 2026-11-14 by the wide review (cut F6, P3): with 3 stored and
+the field cleared, an outside change to 7 shows 7, and an outside change back to 3 shows the blank again.
+
+**Why it matters:** the box disagrees with the stored number until it loses focus. Nothing wrong is stored.
+
+**Suggested handling:** retire the draft when an outside value is adopted.

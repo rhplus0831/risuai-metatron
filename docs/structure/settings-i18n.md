@@ -296,12 +296,6 @@ section.
 
 ## Known Hazards
 
-### Issues
-
-- Unconfirmed: some settings controls may materialize missing values when first mounted (`bindPath` creates missing
-  containers). `e2e/settingsPages.spec.ts` checks that a second traversal writes nothing, but does not identify any
-  first-visit writes. Collapsible sections mount only when opened.
-
 ### Limitations
 
 - `PromptSettings.svelte` updates its token-count fields from template items and `tokenScopeKey` only;

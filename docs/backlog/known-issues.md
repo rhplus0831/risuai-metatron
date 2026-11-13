@@ -9,8 +9,24 @@ owner's decision, except the persistence entry below.
 
 ## Contents
 
+- [characters-modules](#characters-modules) (1)
 - [persistence](#persistence) (1)
+- [plugin-sandbox](#plugin-sandbox) (1)
+- [settings-i18n](#settings-i18n) (1)
 - [structured-memory](#structured-memory) (1)
+
+## characters-modules
+
+Guide: [Characters, Cards, Modules, Personas](../structure/characters-modules.md#known-hazards).
+
+- A remote replacement of an asset or emotion list while one of its name fields is focused lets the next key rename a
+  different entry. `CharConfig.renameAsset` and `renameEmotion` (`src/lib/SideBars/CharConfig.svelte:190`, inputs at
+  `:756` and `:990`) and `ModuleMenu.renameAsset` (`ModuleMenu.svelte:82`, `:440`) address the live list by index, and
+  the rows are reused by index. Reproduced on 2026-11-14 with two browser contexts (the wide review's run of the
+  guide's unconfirmed claim, and a second run): with `apple` focused in one, the other saved the list reversed; the
+  field stayed focused and showed `banana`, and typing `X` stored `bananaX` on `assets/banana.png`. The same happened
+  for emotions, for module assets, and when the list was shortened to the former second row, so a same-length
+  replacement is not required. A CBS reference to the renamed entry stops matching. Not fixed.
 
 ## persistence
 
@@ -21,6 +37,34 @@ Guide: [Persistence: Database, Records, Mutation Stores](../structure/persistenc
   deletion arrives the stale id renders nothing (the sidebar and pins skip absent and trashed characters) and stays
   through selection and idle refresh; the next local add, remove, restore, or reorder (`checkCharOrder`) or the next
   boot repair removes it. Not fixed: hidden order metadata only; the owner has not yet decided to keep it.
+
+## plugin-sandbox
+
+Guide: [Plugins: v3 Sandbox, Host API, Hooks, Storage, Permissions](../structure/plugin-sandbox.md#known-hazards).
+
+- Two installed plugins with the same name and a textarea argument share one popup editor context, and a popup draft
+  can be saved into the other plugin. `setPlugins` (`src/ts/storage/collectionStore.svelte.ts`) accepts duplicate
+  names (a plugin list from a backup or a whole-resource write; the install button replaces the first match);
+  `PluginSettings.svelte:257` binds an unkeyed row's textarea to `settings.plugins[i].realArg[arg]` with the context
+  `${plugin.name}\u0000${arg}`, and `TextAreaInput.svelte`'s value and context checks still match after the rows
+  change. Reproduced on 2026-11-14 with two browser contexts (the wide review's run of the guide's unconfirmed claim,
+  and a second run): with the popup open on one plugin and both arguments holding the same text, another client
+  reversing the list, or removing the edited plugin, left the popup open, and closing it stored the draft in the other
+  plugin. A distinct name or a distinct starting text makes the popup close and discard. Not fixed.
+
+## settings-i18n
+
+Guide: [Settings UI, Bot Presets, Prompt Template Editor, i18n](../structure/settings-i18n.md#known-hazards).
+
+- Opening a settings page stores `false` for every checkbox whose value is absent. `CheckInput.svelte:50` binds
+  `checked` through a function binding over an undefined `$bindable` value, and Svelte sets an undefined checked
+  binding from the native checkbox on mount, which calls the setter; `SettingCheck.svelte:17` forwards it to
+  `updateSettingValue`. Reproduced on 2026-11-14 in a browser against a fresh normalized server (the wide review's run
+  of the guide's unconfirmed claim, and a second run): Settings > Model stored `providers.useStreaming: false` without
+  a click, the other pages 31 more fields, and the collapsible groups nine more on first opening; a second visit wrote
+  nothing, and no missing container was created (`bindPath` was not the cause). Every stored value was `false` where
+  the field was absent, so no setting changes meaning; the cost is writes on navigation and records that no longer
+  show which fields were never set. `e2e/settingsPages.spec.ts` checks only the second traversal. Not fixed.
 
 ## structured-memory
 

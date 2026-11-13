@@ -391,7 +391,8 @@ lookahead starts at stored coverage and does not defer summaries.
 - Unconfirmed: `gpt2-large-conversational` is listed in `shared/llm/models.ts`, but its model files were not checked on
   the browser mirror or the server's default Transformers host. If absent, selecting it fails during model loading.
 - Unconfirmed: `HypaProcesser` keeps the original comparator `a.similarity > b.similarity ? -1 : 0` (not a total order);
-  whether a pathological input orders wrongly is not established.
+  whether a pathological input orders wrongly is not established. A run on 2026-11-14 found none: the comparator matched
+  a stable descending sort on 10,000 generated inputs (Node 24), and three sends retrieved the right top three.
 
 ### Limitations
 

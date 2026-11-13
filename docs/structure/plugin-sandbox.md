@@ -294,14 +294,6 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 
 ## Known Hazards
 
-### Issues
-
-- Unconfirmed: two installed plugins with the same name and textarea argument share one popup editor context.
-  `setPlugins` (`src/ts/storage/collectionStore.svelte.ts`) accepts duplicate names; `PluginSettings.svelte` binds an
-  unkeyed row's textarea to `settings.plugins[i].realArg[arg]` with the context `${plugin.name}\u0000${arg}`. If another
-  client swaps two such plugins with the same text while the popup is open, `TextAreaInput.svelte`'s checks still match,
-  and the draft lands on the plugin now at that index (verify by checking which stored argument changed).
-
 ### Limitations
 
 - The [deferred reload](#deferred-reload) never interrupts, so work that never ends defers it until this tab reloads or
