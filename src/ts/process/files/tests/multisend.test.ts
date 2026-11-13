@@ -21,6 +21,16 @@ import { postInlayAsset } from "../inlays";
 const requests = vi.hoisted(() => [] as { input_type: string; input: string[] | string }[]);
 const sends = vi.hoisted(() => [] as boolean[]);
 
+function gate<T>() {
+    let resolve!: (value: T) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<T>((done, fail) => {
+        resolve = done;
+        reject = fail;
+    });
+    return { promise, resolve, reject };
+}
+
 vi.mock("src/ts/globalApi.svelte", async () =>
     (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
         globalFetch: async (_url: string, arg: { body: { input: string[] | string; input_type: string } }) => {
@@ -200,6 +210,97 @@ describe("postChatFile with a PO file", () => {
         );
         selectCharacter("c");
         selectChat("c", "k");
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it.each([
+        ...(["picker", "send"] as const).flatMap((wait) =>
+            (["switch", "delete", "replace"] as const).map((change) => ({ wait, change })),
+        ),
+        { wait: "picker", change: "cancel" } as const,
+        { wait: "picker", change: "fail" } as const,
+    ])("uses only its captured PO batch destination across $wait ($change)", async ({ wait, change }) => {
+        const { postChatFile } = await import("../multisend");
+        const chatStore = await import("src/ts/storage/chatStore.svelte");
+        const { addCharacter } = await import("src/ts/storage/characterStore.svelte");
+        const emptyChat = (id: string) => ({ id, name: id, note: "", localLore: [], message: [] });
+        chatStore.createChat("c", emptyChat("other"));
+        addCharacter({ chaId: "d", name: "D", chats: [emptyChat("k")] });
+        const files = ["hello", "world"].map((text) => ({
+            name: `${text}.po`,
+            data: new TextEncoder().encode(`msgid "${text}"\nmsgstr ""\n\n`),
+        }));
+        const originalPin = chatStore.pinChat;
+        const releases: ReturnType<typeof vi.fn>[] = [];
+        vi.spyOn(chatStore, "pinChat").mockImplementation((target) => {
+            const release = vi.fn(originalPin(target));
+            releases.push(release);
+            return release;
+        });
+        const picker = gate<typeof files>();
+        vi.spyOn(util, "selectMultipleFile").mockReturnValueOnce(picker.promise);
+        const sending = gate<void>();
+        const sent = gate<boolean>();
+        if (wait === "send") {
+            vi.mocked(sendChat).mockImplementationOnce(() => {
+                sending.resolve();
+                return sent.promise;
+            });
+        }
+        const running = postChatFile("translate these files");
+        expect(util.selectMultipleFile).toHaveBeenCalledOnce();
+        if (change === "cancel" || change === "fail") {
+            if (change === "cancel") {
+                picker.resolve([]);
+                await expect(running).resolves.toEqual([]);
+            } else {
+                const error = new Error("Picker failed");
+                const failed = expect(running).rejects.toBe(error);
+                picker.reject(error);
+                await failed;
+            }
+            expect(texts()).toEqual([]);
+            expect(sendChat).not.toHaveBeenCalled();
+            expect(downloadFile).not.toHaveBeenCalled();
+            expect(releases).toHaveLength(1);
+            expect(releases[0]).toHaveBeenCalledExactlyOnceWith();
+            return;
+        }
+        if (wait === "send") {
+            picker.resolve(files);
+            await sending.promise;
+            expect(texts()).toEqual(["hello"]);
+        }
+        for (const release of releases) expect(release).not.toHaveBeenCalled();
+        selectCharacter("d");
+        if (change === "delete") chatStore.deleteChat(ref);
+        if (change === "replace") chatStore.installCharacterChats("c", [emptyChat("k")], {});
+        picker.resolve(files);
+        sent.resolve(true);
+        await running;
+
+        expect(findChat({ chaId: "d", chatId: "k" })!.message).toEqual([]);
+        if (change === "switch") {
+            expect(texts()).toEqual(["hello", "world"]);
+            expect(vi.mocked(sendChat).mock.calls).toEqual([
+                [-1, { target: ref }],
+                [-1, { target: ref }],
+            ]);
+            expect(vi.mocked(downloadFile).mock.calls.map(([name, data]) => [name, data])).toEqual([
+                ["translated.po", 'msgid "hello"\nmsgstr ""\n"hello"\n\n\n'],
+                ["translated.po", 'msgid "world"\nmsgstr ""\n"world"\n\n\n'],
+            ]);
+        } else {
+            expect(sendChat).toHaveBeenCalledTimes(wait === "send" ? 1 : 0);
+            expect(downloadFile).not.toHaveBeenCalled();
+            if (change === "delete") expect(findChat(ref)).toBeUndefined();
+            else expect(texts()).toEqual([]);
+        }
+        expect(releases).toHaveLength(1);
+        expect(releases[0]).toHaveBeenCalledExactlyOnceWith();
     });
 
     it("sends every entry in the selected chat and downloads the translation", async () => {

@@ -1,4 +1,12 @@
-import { appendMessage, currentChatRef, findChat } from "../../storage/chatStore.svelte";
+import {
+    appendMessage,
+    chatOwnerToken,
+    currentChatRef,
+    ensureChatLoaded,
+    findChat,
+    pinChat,
+    type ChatRef,
+} from "../../storage/chatStore.svelte";
 import { sendChat } from "../index.svelte";
 import { isChatBusy } from "../chatStatus.svelte";
 import { refuseOrphanedOverrides } from "../loreOverrides";
@@ -21,17 +29,19 @@ type sendFileArg = {
     query: string;
 };
 
-async function sendPofile(arg: sendFileArg) {
+async function sendPofile(arg: sendFileArg, ref: ChatRef | null, owner: string | undefined) {
     let result = "";
     let msgId = "";
     let note = "";
     let speaker = "";
     let parseMode = 0;
-    // Every line is sent in the chat selected when the file was sent. The run stops, downloading
-    // nothing, when that chat is gone, busy, or has orphaned lore overrides before an entry, or an
-    // entry's send does not run.
-    const ref = currentChatRef();
-    if (!ref) {
+    // Every file and entry shares the batch's destination, even after navigation or another file's send.
+    if (
+        !ref ||
+        chatOwnerToken(ref.chaId) !== owner ||
+        !(await ensureChatLoaded(ref)) ||
+        chatOwnerToken(ref.chaId) !== owner
+    ) {
         return;
     }
     const lines = arg.file.split("\n");
@@ -50,11 +60,16 @@ async function sendPofile(arg: sendFileArg) {
             if (note !== "") {
                 text = `Note: ${note}\n${text}`;
             }
-            if (!findChat(ref) || isChatBusy(ref) || refuseOrphanedOverrides(ref)) {
+            if (
+                chatOwnerToken(ref.chaId) !== owner ||
+                !findChat(ref) ||
+                isChatBusy(ref) ||
+                refuseOrphanedOverrides(ref)
+            ) {
                 return;
             }
             appendMessage(ref, { role: "user", data: text });
-            if (!(await sendChat(-1, { target: ref }))) {
+            if (!(await sendChat(-1, { target: ref })) || chatOwnerToken(ref.chaId) !== owner) {
                 return;
             }
             const res = findChat(ref)?.message.at(-1);
@@ -227,126 +242,137 @@ export async function postChatFile(
               name: string;
               data: Uint8Array;
           },
+    ref: ChatRef | null = currentChatRef(),
 ): Promise<postFileResult[]> {
-    const files =
-        typeof query === "string"
-            ? await selectMultipleFile([
-                  //image format
-                  "jpg",
-                  "jpeg",
-                  "png",
-                  "webp",
-                  "gif",
-                  "avif",
+    const owner = ref ? chatOwnerToken(ref.chaId) : undefined;
+    const release = ref ? pinChat(ref) : undefined;
+    try {
+        const files =
+            typeof query === "string"
+                ? await selectMultipleFile([
+                      //image format
+                      "jpg",
+                      "jpeg",
+                      "png",
+                      "webp",
+                      "gif",
+                      "avif",
 
-                  //audio format
-                  "wav",
-                  "mp3",
-                  "ogg",
-                  "flac",
+                      //audio format
+                      "wav",
+                      "mp3",
+                      "ogg",
+                      "flac",
 
-                  //video format
-                  "mp4",
-                  "webm",
+                      //video format
+                      "mp4",
+                      "webm",
 
-                  //other format
-                  "po",
-                  // 'pdf',
-                  "txt",
-              ])
-            : [query];
+                      //other format
+                      "po",
+                      // 'pdf',
+                      "txt",
+                  ])
+                : [query];
 
-    if (!files) {
-        return null;
-    }
+        if (!files) {
+            return null;
+        }
 
-    const xquery = typeof query === "string" ? query : "";
-    const results: postFileResult[] = [];
+        const xquery = typeof query === "string" ? query : "";
+        const results: postFileResult[] = [];
 
-    for (const file of files) {
-        const extention = file.name.split(".").at(-1);
-        console.log(extention);
+        for (const file of files) {
+            const extention = file.name.split(".").at(-1);
+            console.log(extention);
 
-        switch (extention) {
-            case "po": {
-                await sendPofile({
-                    file: BufferToText(file.data),
-                    query: xquery,
-                });
-                results.push({
-                    type: "void",
-                });
-                break;
-            }
-            case "pdf": {
-                results.push({
-                    type: "text",
-                    data: await sendPDFFile({
-                        file: BufferToText(file.data),
-                        query: xquery,
-                    }),
-                    name: file.name,
-                });
-                break;
-            }
-            case "xml": {
-                results.push({
-                    type: "text",
-                    data: await sendXMLFile({
-                        file: BufferToText(file.data),
-                        query: xquery,
-                    }),
-                    name: file.name,
-                });
-                break;
-            }
-
-            //image format
-            case "jpg":
-            case "jpeg":
-            case "png":
-            case "webp":
-            case "gif":
-            case "avif":
-
-            //audio format
-            case "wav":
-            case "mp3":
-            case "ogg":
-            case "flac":
-
-            //video format
-            case "mp4":
-            case "webm": {
-                let postData: string | null;
-                try {
-                    postData = await postInlayAsset(file);
-                } catch (error) {
-                    alertError(error);
-                    continue;
+            switch (extention) {
+                case "po": {
+                    await sendPofile(
+                        {
+                            file: BufferToText(file.data),
+                            query: xquery,
+                        },
+                        ref,
+                        owner,
+                    );
+                    results.push({
+                        type: "void",
+                    });
+                    break;
                 }
-                if (!postData) {
-                    continue;
+                case "pdf": {
+                    results.push({
+                        type: "text",
+                        data: await sendPDFFile({
+                            file: BufferToText(file.data),
+                            query: xquery,
+                        }),
+                        name: file.name,
+                    });
+                    break;
                 }
-                results.push({
-                    data: postData,
-                    type: "asset",
-                });
-                break;
-            }
-            case "txt": {
-                results.push({
-                    type: "text",
-                    data: await sendTxtFile({
-                        file: BufferToText(file.data),
-                        query: xquery,
-                    }),
-                    name: file.name,
-                });
-                break;
+                case "xml": {
+                    results.push({
+                        type: "text",
+                        data: await sendXMLFile({
+                            file: BufferToText(file.data),
+                            query: xquery,
+                        }),
+                        name: file.name,
+                    });
+                    break;
+                }
+
+                //image format
+                case "jpg":
+                case "jpeg":
+                case "png":
+                case "webp":
+                case "gif":
+                case "avif":
+
+                //audio format
+                case "wav":
+                case "mp3":
+                case "ogg":
+                case "flac":
+
+                //video format
+                case "mp4":
+                case "webm": {
+                    let postData: string | null;
+                    try {
+                        postData = await postInlayAsset(file);
+                    } catch (error) {
+                        alertError(error);
+                        continue;
+                    }
+                    if (!postData) {
+                        continue;
+                    }
+                    results.push({
+                        data: postData,
+                        type: "asset",
+                    });
+                    break;
+                }
+                case "txt": {
+                    results.push({
+                        type: "text",
+                        data: await sendTxtFile({
+                            file: BufferToText(file.data),
+                            query: xquery,
+                        }),
+                        name: file.name,
+                    });
+                    break;
+                }
             }
         }
-    }
 
-    return results;
+        return results;
+    } finally {
+        release?.();
+    }
 }

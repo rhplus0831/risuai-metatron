@@ -730,6 +730,43 @@ it("confirms a replacement after jobChanged and clears Stop when that job ends d
     expect(io.alertError).not.toHaveBeenCalled();
 });
 
+it.each(["picker", "paste"] as const)(
+    "forwards the composer's captured chat to a file send from %s",
+    async (source) => {
+        const { input, click, menuItem, menu } = await mountComposer();
+        const multisend = await import("src/ts/process/files/multisend");
+        const postFile = vi.spyOn(multisend, "postChatFile").mockResolvedValue([]);
+        const ref = { chaId: "c", chatId: "a" };
+        if (source === "picker") {
+            menu();
+            click(menuItem(language.postFile));
+            expect(postFile).toHaveBeenCalledExactlyOnceWith("", ref);
+        } else {
+            let reader!: FileReader;
+            vi.spyOn(FileReader.prototype, "readAsArrayBuffer").mockImplementation(function (this: FileReader) {
+                reader = this;
+            });
+            const bytes = new Uint8Array([1, 2, 3]);
+            const paste = new Event("paste", { bubbles: true, cancelable: true });
+            Object.defineProperty(paste, "clipboardData", {
+                value: {
+                    items: [{ kind: "file", type: "image/png", getAsFile: () => new File([bytes], "pasted.png") }],
+                },
+            });
+            input().dispatchEvent(paste);
+            expect(reader).toBeDefined();
+            expect(postFile).not.toHaveBeenCalled();
+            selectChat("c", "b");
+            flushSync();
+            Object.defineProperty(reader, "result", { value: bytes.buffer });
+            reader.dispatchEvent(new ProgressEvent("load"));
+            expect(postFile).toHaveBeenCalledExactlyOnceWith({ name: "pasted.png", data: bytes }, ref);
+        }
+        await tick();
+        expect(io.createJob).not.toHaveBeenCalled();
+    },
+);
+
 it("journals screen sends, restores on switch, flushes on hide, and tracks attachments", async () => {
     const { target, input, type, click, menuItem, menu, hide, journal } = await mountComposer();
 

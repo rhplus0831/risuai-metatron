@@ -1407,10 +1407,13 @@
                                         reader.onload = async (e) => {
                                             const buf = e.target?.result as ArrayBuffer;
                                             const uint8 = new Uint8Array(buf);
-                                            const results = await postChatFile({
-                                                name: file.name,
-                                                data: uint8,
-                                            });
+                                            const results = await postChatFile(
+                                                {
+                                                    name: file.name,
+                                                    data: uint8,
+                                                },
+                                                ref,
+                                            );
                                             if (!results) return;
                                             const draft = composer.at(chatKeyOf(ref));
                                             for (const res of results) {
@@ -1678,7 +1681,7 @@
                                 onclick={async () => {
                                     const ref = currentChatRef();
                                     if (!ref) return;
-                                    const results = await postChatFile(composer.at(chatKeyOf(ref)).input);
+                                    const results = await postChatFile(composer.at(chatKeyOf(ref)).input, ref);
                                     if (!results) return;
                                     const draft = composer.at(chatKeyOf(ref));
                                     for (const res of results) {
