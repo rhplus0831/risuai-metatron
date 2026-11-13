@@ -122,6 +122,7 @@ export async function exportModule(
  * It alerts its failure and, when `alertEnd` is true, its completion, except `saveData: false, alertEnd: false`
  * (caller-owned bytes, the CharX embed of `exportCharacterCard`), which aborts and rethrows. A failure aborts the
  * writer and the pending read either way.
+ * Modules with an icon require CharX, since this legacy layout has no icon payload.
  */
 export async function exportModuleLegacy(
     module: RisuModule,
@@ -137,6 +138,9 @@ export async function exportModuleLegacy(
     const controller = new AbortController();
     let missingAssets = 0;
     try {
+        if (module.icon) {
+            throw new Error(language.moduleLegacyExportIconUnsupported);
+        }
         // Capture tuples before any await: metadata and payloads must use the same order even
         // if the live module is edited while a batch is being read or written.
         const assets = (module.assets ?? []).map((asset) => [...asset] as [string, string, string]);

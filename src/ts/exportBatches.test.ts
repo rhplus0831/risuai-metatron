@@ -89,12 +89,12 @@ function character(extra: Record<string, unknown> = {}) {
     } as any;
 }
 
-function moduleFixture(keys: string[]) {
+function moduleFixture(keys: string[], icon = "") {
     return {
         id: "module-id",
         name: "Batched",
         description: "",
-        icon: "assets/portrait.png",
+        icon,
         assets: keys.map((key, i) => [`asset-${i}`, key, "png"] as [string, string, string]),
     };
 }
@@ -237,6 +237,38 @@ afterEach(() => {
 });
 
 describe("batched exports", () => {
+    it("refuses icon-bearing legacy modules for UI and programmatic callers, but exports iconless modules", async () => {
+        const h = await boot();
+        const module = moduleFixture(["assets/a.png"], "assets/portrait.png");
+        const reads = vi.spyOn(h.api, "loadAssets");
+        const portrait = vi.mocked(h.api.readImage);
+        portrait.mockClear();
+
+        expect(await h.modules.exportModuleLegacy(module)).toBeUndefined();
+        expect(alerts.error).toHaveBeenCalledExactlyOnceWith(new Error(language.moduleLegacyExportIconUnsupported));
+        expect(language.moduleLegacyExportIconUnsupported).toContain("CharX");
+        await expect(h.modules.exportModuleLegacy(module, { saveData: false, alertEnd: false })).rejects.toThrow(
+            language.moduleLegacyExportIconUnsupported,
+        );
+        expect(alerts.error).toHaveBeenCalledOnce();
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(reads).not.toHaveBeenCalled();
+        expect(portrait).not.toHaveBeenCalled();
+        expect(h.init).not.toHaveBeenCalled();
+        expect(h.download).not.toHaveBeenCalled();
+        expect(h.output()).toHaveLength(0);
+
+        h.data.set("assets/a.png", PAYLOAD);
+        const bytes = await h.modules.exportModuleLegacy({ ...module, icon: "" }, { saveData: false, alertEnd: false });
+        const imported = await h.modules.readModule(Buffer.from(bytes!));
+        expect(imported).toMatchObject({
+            name: module.name,
+            icon: "",
+            assets: [["asset-0", expect.any(String), "png"]],
+        });
+        expect(assets.saved).toEqual([PAYLOAD]);
+    });
+
     it.each(["risum", "png", "charx", "json", "v2 VITS"] as const)(
         "%s consumes a batch while the next 200-key POST is pending",
         async (format) => {
@@ -515,7 +547,7 @@ describe("batched exports", () => {
                 expect(read.assets).toHaveLength(3);
                 expect(assets.saved.map((b) => b.length)).toEqual([0, 0, 0]);
             } else if (format === "module") {
-                await h.modules.exportModule(moduleFixture(keys));
+                await h.modules.exportModule(moduleFixture(keys, "assets/portrait.png"));
             } else {
                 await h.cards.exportCharacterCard(
                     character(
@@ -699,7 +731,7 @@ describe("export failure ownership", () => {
                     alertEnd: owner === "risum",
                 });
             } else if (owner === "module") {
-                exporting = h.modules.exportModule(moduleFixture(keys));
+                exporting = h.modules.exportModule(moduleFixture(keys, "assets/portrait.png"));
             } else if (owner.startsWith("exportChar")) {
                 const id = h.characterStore.addCharacter(input);
                 alerts.cardExport.mockResolvedValue({
