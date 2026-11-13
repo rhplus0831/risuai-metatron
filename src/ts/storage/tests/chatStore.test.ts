@@ -898,6 +898,25 @@ describe("membership and selection", () => {
 });
 
 describe("generation lock", () => {
+    it("refuses deletion of a chat with a known generation until the job ends", async () => {
+        const { server, chat, ref, character, take, commit } = await boot();
+        chat.createChat("c", { id: "j", name: "J", message: [] } as any);
+        commit();
+        chat.applyServerGeneration(ref, { jobId: "J", messageId: "a", generationId: "g", text: "partial", seq: 0 });
+
+        expect(() => chat.deleteChat(ref)).toThrow(/being generated/);
+        expect(character().chats.map((entry: any) => entry.id)).toEqual(["k", "j"]);
+        expect(texts(chat.findChat(ref))).toEqual(["partial", "B", "C"]);
+        expect(take().groups).toEqual([]);
+        expect(server.order("c")!.ids).toEqual(["k", "j"]);
+
+        chat.endServerJob("J");
+        chat.deleteChat(ref);
+        commit();
+        expect(character().chats.map((entry: any) => entry.id)).toEqual(["j"]);
+        expect(server.chat("c", "k")).toBeNull();
+    });
+
     it("refuses edits, removals, and a chat replacement touching a message a server job locks, keeps the other messages editable, and keeps the lock until the job ends", async () => {
         const { server, chat, ref, take, commit } = await boot();
         chat.applyServerGeneration(ref, { jobId: "J", messageId: "a", generationId: "g1", text: "partial", seq: 0 });
