@@ -30,7 +30,7 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 - [Assets](#assets): 1
 - [Characters](#characters): 2
 - [Chat pipeline](#chat-pipeline): 1
-- [MCP](#mcp): 3
+- [MCP](#mcp): 2
 - [Memory](#memory): 5
 - [Plugins](#plugins): 3
 - [Selection](#selection): 1
@@ -102,20 +102,6 @@ reads see the flags set during the preview and none reaches the chat's metadata,
 (`server/src/jobs/jobScope.ts:660`) is reached on other paths too.
 
 ## MCP
-
-### A remote MCP server's pings start replies with no bound that outlive the job
-
-`handleEvent` calls `answerPing` for every incoming ping, and each call starts its own POST with its own 30-second
-deadline (`server/src/mcp/client.ts:335`). Nothing counts the outstanding replies, they are not charged to the job's
-64 tool calls, and they belong to the shared client, not to the job. Found 2026-11-14 by the wide review (cut E2) and
-confirmed by a second reader, who narrowed it to a remote MCP server the owner enabled: one SSE answer of 12,690 bytes
-left 256 replies pending after the job was cancelled.
-
-**Why it matters:** one answer from a remote MCP server decides how many outbound requests and timers the instance
-holds.
-
-**Suggested handling:** a small fixed bound on outstanding ping replies per client, dropping a ping over the bound,
-with the deadline kept.
 
 ### An error on a later page of an MCP tool list is cached as a complete list
 

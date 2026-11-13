@@ -41,6 +41,7 @@ export const MCP_REQUEST_TIMEOUT_MS = 5 * 60_000;
 export const MCP_OAUTH_TIMEOUT_MS = 30_000;
 /** How long the client's own answer to a server `ping` may take. */
 const MCP_PING_TIMEOUT_MS = 30_000;
+const MAX_PENDING_PING_REPLIES = 4;
 /** The longest SSE event or JSON body, in bytes. */
 export const MAX_MCP_MESSAGE_BYTES = 8 * 1024 * 1024;
 export const MAX_OAUTH_BODY_BYTES = 1024 * 1024;
@@ -179,6 +180,7 @@ export class McpClient {
     /** The handshake in progress: `aborted` when the caller that started it was aborted. */
     private handshaking: Promise<{ ok: true } | { ok: false; error: unknown; aborted: boolean }> | null = null;
     private cachedTools: ToolDescriptor[] = [];
+    private pendingPingReplies = 0;
 
     constructor(url: string, deps: McpClientDeps) {
         this.url = url;
@@ -334,10 +336,18 @@ export class McpClient {
 
     /** A server `ping` is the session's, not a job's: answered with the client's own bounded request. */
     private answerPing(id: string | number): void {
+        // Drop excess pings so a slow peer cannot accumulate outbound requests.
+        if (this.closed || this.pendingPingReplies >= MAX_PENDING_PING_REPLIES) {
+            return;
+        }
+        this.pendingPingReplies++;
         const signal = AbortSignal.any([this.closing.signal, AbortSignal.timeout(MCP_PING_TIMEOUT_MS)]);
         this.post({ jsonrpc: "2.0", id, result: {} }, signal)
             .then(discard)
-            .catch(() => {});
+            .catch(() => {})
+            .finally(() => {
+                this.pendingPingReplies--;
+            });
     }
 
     private post(body: unknown, signal: AbortSignal): Promise<Response> {

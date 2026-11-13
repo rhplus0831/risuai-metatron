@@ -285,6 +285,77 @@ afterEach(() => {
 });
 
 describe("McpClient over streamable HTTP", () => {
+    it("holds at most four ping replies per client across SSE transports and reuses settled slots", async () => {
+        for (const transport of ["streamable", "legacy"] as const) {
+            const held: { resolve(response: Response): void; reject(error: Error): void }[] = [];
+            let active = 0;
+            let peak = 0;
+            let wave = 0;
+            const remote = legacy();
+            const pings = () =>
+                Array.from({ length: 8 }, (_, i) => ({ jsonrpc: "2.0", id: `ping-${wave}-${i}`, method: "ping" }));
+            const base = streamable({
+                onCall: (call) => {
+                    const stream = sseStream(call.signal);
+                    for (const ping of pings()) stream.event(ping);
+                    stream.event({ jsonrpc: "2.0", id: call.rpc.id, result: { content: [] } });
+                    stream.close();
+                    return stream.response;
+                },
+            });
+            const server = recorder((call, index) => {
+                if (call.rpc?.id !== undefined && !call.rpc.method) {
+                    expect(call.rpc).toEqual({ jsonrpc: "2.0", id: expect.stringMatching(/^ping-/), result: {} });
+                    active++;
+                    peak = Math.max(peak, active);
+                    return new Promise<Response>((resolve, reject) => {
+                        let settled = false;
+                        held.push({
+                            resolve: (response) => {
+                                if (!settled) active--;
+                                settled = true;
+                                resolve(response);
+                            },
+                            reject: (error) => {
+                                if (!settled) active--;
+                                settled = true;
+                                reject(error);
+                            },
+                        });
+                    });
+                }
+                if (transport === "legacy") {
+                    if (call.rpc?.method === "tools/call") {
+                        for (const ping of pings()) remote.session.event(ping);
+                    }
+                    return remote.handler(call, index);
+                }
+                return base(call, index);
+            });
+            const mcp = client(server.fetchImpl);
+            try {
+                await mcp.callTool("echo", {}, ioOf());
+                // The answer follows all eight pings; none of their fetches has settled.
+                expect(held).toHaveLength(4);
+                expect(active).toBe(4);
+                held[0].resolve(accepted());
+                held[1].reject(new Error("reply failed"));
+                // Only local promise continuations run: no clock or network polling.
+                for (let i = 0; i < 20; i++) await Promise.resolve();
+                expect(held).toHaveLength(4);
+                wave++;
+                await mcp.callTool("echo", {}, ioOf());
+                expect(held).toHaveLength(6);
+                expect(active).toBe(4);
+                expect(peak).toBe(4);
+                expect(mcp.isClosed).toBe(false);
+            } finally {
+                for (const reply of held) reply.resolve(accepted());
+                mcp.destroy();
+            }
+        }
+    });
+
     it("handshakes once with the tab client's bodies and headers, lists every page, caches the list, and calls a tool over JSON, an event stream, and an RPC error", async () => {
         const server = recorder(
             streamable({
