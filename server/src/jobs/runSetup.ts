@@ -472,7 +472,7 @@ export function createRunSetup(
         templateDefaultVariables: scope.db.templateDefaultVariables,
         selectedPersonaPrompt: scope.db.personaPrompt ?? "",
         effectivePersonaId: scope.effectivePersona.id ?? null,
-        runCommand: (line) => executor.processMultiCommand(line),
+        runCommand: (line, lowLevelAccess) => executor.processMultiCommand(line, lowLevelAccess),
         effects: state.effects,
         ...(deps.effectClock ? { now: deps.effectClock } : {}),
     });

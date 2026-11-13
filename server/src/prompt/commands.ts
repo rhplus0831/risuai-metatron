@@ -92,7 +92,10 @@ const HELP_TEXT = `
 export function createCommandExecutor(host: CommandHost) {
     const { services, ctx } = host;
 
-    async function processMultiCommand(command: string): Promise<string | false | undefined> {
+    async function processMultiCommand(
+        command: string,
+        lowLevelAccess = ctx.access === "lowLevel",
+    ): Promise<string | false | undefined> {
         let pipe: string | undefined = "";
         const splited: string[] = [];
         let lastIndex = 0;
@@ -114,7 +117,7 @@ export function createCommandExecutor(host: CommandHost) {
                 // The chat went away while an earlier command waited: the line is consumed, not sent.
                 return "";
             }
-            const result = await processCommand(splited[i].trim(), pipe as string);
+            const result = await processCommand(splited[i].trim(), pipe as string, lowLevelAccess);
             if (result === false) {
                 return false;
             } else {
@@ -124,7 +127,11 @@ export function createCommandExecutor(host: CommandHost) {
         return pipe;
     }
 
-    async function processCommand(command: string, pipe: string): Promise<false | string | undefined> {
+    async function processCommand(
+        command: string,
+        pipe: string,
+        lowLevelAccess: boolean,
+    ): Promise<false | string | undefined> {
         const currentChar = host.character();
         if (!currentChar) {
             // Its character went away; `false` would mean "not a command" and send the line as text.
@@ -133,6 +140,11 @@ export function createCommandExecutor(host: CommandHost) {
         const parsed = commandParser(command, pipe);
         const { commandName, namedArg } = parsed;
         let { arg } = parsed;
+
+        // These commands reach providers; refusing them must still consume the command line.
+        if (!lowLevelAccess && (commandName === "multisend" || commandName === "speak")) {
+            return pipe;
+        }
 
         if (!arg) {
             arg = pipe;

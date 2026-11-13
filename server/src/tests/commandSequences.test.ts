@@ -367,7 +367,57 @@ function holdSecond(h: ReturnType<typeof fixture>, fail = false) {
 const sequenceEvents = (events: GenerationEvent[]) => events.filter((event) => event.type === "sequence");
 const textOf = (messages: readonly Message[]) => messages.map(({ role, data }) => `${role}:${data}`);
 
+/** Imported triggers may claim a grant; the owning character is the permission source. */
+function setTriggerOwner(h: ReturnType<typeof fixture>, lowLevelAccess: boolean | undefined, triggers: unknown[]) {
+    const kind = h.kinds.get("characters")!;
+    const row = h.store.get(kind, "c")!;
+    const data: Record<string, unknown> = { ...(row.data as Record<string, unknown>), triggerscript: triggers };
+    delete data.lowLevelAccess;
+    h.store.put(kind, "c", { ...data, ...(lowLevelAccess === undefined ? {} : { lowLevelAccess }) }, row.revision);
+}
+
 describe("server command sequences", () => {
+    it.each([undefined, false, true])(
+        "uses the trigger owner's grant (%s) for provider commands and keeps ordinary piped commands running",
+        async (lowLevelAccess) => {
+            const h = fixture();
+            setTriggerOwner(h, lowLevelAccess, [
+                {
+                    ...trigger("manual", [
+                        {
+                            type: "v2Command",
+                            indent: 0,
+                            valueType: "value",
+                            value: "/pass kept | /multisend provider prompt | /speak aloud | /send",
+                        },
+                    ]),
+                    lowLevelAccess: true,
+                },
+            ]);
+            const id = h.create();
+            const owner = await h.follow(id);
+            h.start.resolve();
+            await h.jobs.drain();
+            await owner.until((events) => events.some((event) => event.type === "done" || event.type === "error"));
+
+            expect(h.jobs.status(id, "owner")?.terminal?.type).toBe("done");
+            expect(h.providerCalls).toHaveLength(lowLevelAccess ? 1 : 0);
+            expect(owner.events.filter((event) => event.type === "notice" && event.kind === "tts")).toEqual(
+                lowLevelAccess
+                    ? [{ type: "notice", epoch: h.store.epoch(), kind: "tts", payload: { chaId: "c", text: "aloud" } }]
+                    : [],
+            );
+            expect(textOf(h.messages())).toEqual([
+                "char:keep until clear",
+                lowLevelAccess ? "user:" : "user:kept",
+                ...(lowLevelAccess ? ["user:provider prompt", "char:reply-1"] : []),
+            ]);
+            if (lowLevelAccess) {
+                expect(JSON.stringify(h.providerCalls[0].body.messages)).toContain("provider prompt");
+            }
+        },
+    );
+
     it("sends command parts despite the parent's lore budget option", async () => {
         const h = fixture();
         const kind = h.kinds.get("characters")!;

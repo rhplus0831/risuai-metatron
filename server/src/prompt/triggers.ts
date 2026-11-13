@@ -96,8 +96,8 @@ export type TriggerHost = {
     selectedPersonaPrompt: string;
     /** `v2SetPersonaDesc`: the job's effective persona (a bound persona wins). */
     effectivePersonaId: string | null;
-    /** `v2Command`: a command line on the job's chat. */
-    runCommand(line: string): Promise<unknown>;
+    /** `v2Command`: a command line on the job's chat, with the initiating trigger's grant. */
+    runCommand(line: string, lowLevelAccess: boolean): Promise<unknown>;
     /** Every effect the job ran, across nested runs and `/trigger`. */
     effects: { count: number };
     /** A monotonic clock in milliseconds for the effect loop's yield (default `performance.now`). */
@@ -960,7 +960,7 @@ export function createTriggerRuntime(host: TriggerHost) {
                         const value = operand(effect.valueType, effect.value);
                         // Its writes go to the job's chat (the client's display runs fall back to the
                         // selected chat).
-                        await host.runCommand(value);
+                        await host.runCommand(value, trigger.lowLevelAccess ?? false);
                         services.fence(ctx);
                         break;
                     }
