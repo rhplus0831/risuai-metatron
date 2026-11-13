@@ -313,6 +313,40 @@ describe("GUI rendering without a browser session", () => {
         }
     });
 
+    it("mounts absent and explicit checkbox values without setting them, and writes once per click", async () => {
+        for (const initial of [undefined, false, true]) {
+            const record = reactiveProps({ stored: initial });
+            const write = vi.fn((next: boolean) => (record.stored = next));
+            const onChange = vi.fn();
+            const view = renderGui(CheckInput, {
+                get check() {
+                    return record.stored;
+                },
+                set check(next: boolean) {
+                    write(next);
+                },
+                onChange,
+            });
+            await tick();
+            const box = view.getBySelector<HTMLInputElement>('input[type="checkbox"]');
+            expect(box.checked).toBe(initial ?? false);
+            expect(record.stored).toBe(initial);
+            expect(write).not.toHaveBeenCalled();
+            expect(onChange).not.toHaveBeenCalled();
+
+            for (const [index, expected] of [!initial, !!initial].entries()) {
+                box.click();
+                await tick();
+                expect(box.checked).toBe(expected);
+                expect(record.stored).toBe(expected);
+                expect(write).toHaveBeenCalledTimes(index + 1);
+                expect(write).toHaveBeenLastCalledWith(expected);
+                expect(onChange).toHaveBeenCalledTimes(index + 1);
+                expect(onChange).toHaveBeenLastCalledWith(expected);
+            }
+        }
+    });
+
     it("renders checkbox and optional input states without app bootstrapping", async () => {
         const onCheckChange = vi.fn();
 

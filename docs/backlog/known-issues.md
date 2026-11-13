@@ -10,7 +10,6 @@ owner's decision, except the persistence entry below.
 ## Contents
 
 - [persistence](#persistence) (1)
-- [settings-i18n](#settings-i18n) (1)
 - [structured-memory](#structured-memory) (1)
 
 ## persistence
@@ -22,20 +21,6 @@ Guide: [Persistence: Database, Records, Mutation Stores](../structure/persistenc
   deletion arrives the stale id renders nothing (the sidebar and pins skip absent and trashed characters) and stays
   through selection and idle refresh; the next local add, remove, restore, or reorder (`checkCharOrder`) or the next
   boot repair removes it. Not fixed: hidden order metadata only; the owner has not yet decided to keep it.
-
-## settings-i18n
-
-Guide: [Settings UI, Bot Presets, Prompt Template Editor, i18n](../structure/settings-i18n.md#known-hazards).
-
-- Opening a settings page stores `false` for every checkbox whose value is absent. `CheckInput.svelte:50` binds
-  `checked` through a function binding over an undefined `$bindable` value, and Svelte sets an undefined checked
-  binding from the native checkbox on mount, which calls the setter; `SettingCheck.svelte:17` forwards it to
-  `updateSettingValue`. Reproduced on 2026-11-14 in a browser against a fresh normalized server (the wide review's run
-  of the guide's unconfirmed claim, and a second run): Settings > Model stored `providers.useStreaming: false` without
-  a click, the other pages 31 more fields, and the collapsible groups nine more on first opening; a second visit wrote
-  nothing, and no missing container was created (`bindPath` was not the cause). Every stored value was `false` where
-  the field was absent, so no setting changes meaning; the cost is writes on navigation and records that no longer
-  show which fields were never set. `e2e/settingsPages.spec.ts` checks only the second traversal. Not fixed.
 
 ## structured-memory
 

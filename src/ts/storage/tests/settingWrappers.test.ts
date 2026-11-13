@@ -33,7 +33,7 @@ import type { Database } from "../database.svelte";
 import { changeToModelPreset, changeToPreset } from "../presets.svelte";
 import { llmSecretState, setMaskedSecrets } from "../llmSecrets.svelte";
 import { maskLlmSecrets } from "../../../../shared/llmSecrets.ts";
-import { recordData } from "../records.svelte";
+import { applyRaw, recordData, setRecordWriteListener } from "../records.svelte";
 import { selectModelPreset, selectPreset } from "../selection.svelte";
 import { installFlatDatabase } from "./installFlatDatabase";
 import { normalizeModelPresets, normalizeModelProfiles } from "../../../../shared/presets.ts";
@@ -259,6 +259,33 @@ describe("SettingSlider", () => {
 });
 
 describe("SettingCheck", () => {
+    it("leaves an optional checkbox absent on mount and persists and notifies once per click", () => {
+        applyRaw("ui", {});
+        const writes = vi.fn();
+        setRecordWriteListener(writes);
+        try {
+            const check = item({ type: "check", bindKey: "alwaysScrollToNewMessage" });
+            const { query } = render(SettingCheck, { item: check, ctx: ctx() });
+            const box = query<HTMLInputElement>("input[type=checkbox]");
+            expect(box.checked).toBe(false);
+            expect(recordData("ui")).not.toHaveProperty("alwaysScrollToNewMessage");
+            expect(writes).not.toHaveBeenCalled();
+            expect(check.onChange).not.toHaveBeenCalled();
+
+            for (const [index, expected] of [true, false].entries()) {
+                box.click();
+                flushSync();
+                expect(recordData("ui")).toHaveProperty("alwaysScrollToNewMessage", expected);
+                expect(box.checked).toBe(expected);
+                expect(writes).toHaveBeenCalledTimes(index + 1);
+                expect(check.onChange).toHaveBeenCalledTimes(index + 1);
+                expect(check.onChange).toHaveBeenLastCalledWith(expected, expect.anything());
+            }
+        } finally {
+            setRecordWriteListener(null);
+        }
+    });
+
     it("writes a toggle synchronously into the selected model preset's main profile and follows a switch", () => {
         const check = item({ type: "check", bindKey: "useInstructPrompt" });
         const { query } = render(SettingCheck, { item: check, ctx: ctx() });
