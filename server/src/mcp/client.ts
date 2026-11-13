@@ -888,9 +888,14 @@ export class McpClient {
                 throw new Error("The MCP server's tool list has too many pages");
             }
             const response = await this.request("tools/list", cursor ? { cursor } : {}, io.signal);
-            const listed = response.rpc.result?.tools;
-            if (!Array.isArray(listed)) {
-                break;
+            const listed = response.rpc?.result?.tools;
+            if (
+                response.rpc?.error ||
+                response.http.status < 200 ||
+                response.http.status > 299 ||
+                !Array.isArray(listed)
+            ) {
+                throw new Error("Failed to list MCP tools");
             }
             for (const entry of listed) {
                 if (!isPlainObject(entry) || typeof entry.name !== "string" || entry.name === "") {

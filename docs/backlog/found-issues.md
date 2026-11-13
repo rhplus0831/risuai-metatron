@@ -30,7 +30,7 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 - [Assets](#assets): 1
 - [Characters](#characters): 2
 - [Chat pipeline](#chat-pipeline): 1
-- [MCP](#mcp): 2
+- [MCP](#mcp): 1
 - [Memory](#memory): 5
 - [Plugins](#plugins): 3
 - [Selection](#selection): 1
@@ -102,20 +102,6 @@ reads see the flags set during the preview and none reaches the chat's metadata,
 (`server/src/jobs/jobScope.ts:660`) is reached on other paths too.
 
 ## MCP
-
-### An error on a later page of an MCP tool list is cached as a complete list
-
-`getToolList` breaks out of its page loop when a page has no `tools` array, without looking at the RPC error or the
-status (`server/src/mcp/client.ts:881`), and then caches what it has (`client.ts:916`). A cached list is returned
-without asking again (`client.ts:869`) for as long as the client stays in use. Found 2026-11-14 by the wide review
-(cut E2) and confirmed by a second reader: with a 503 on the second of two pages, the next preview after the server
-recovered still listed only the first page's tool and made no listing request.
-
-**Why it matters:** tools of the later pages stay missing for the session while every job reports success;
-`jobTools.ts:298` means a failure after the handshake to fail the build.
-
-**Suggested handling:** treat an error, a failed status, or a result without `tools` on any page as a failed listing,
-and cache only after every page succeeded.
 
 ### One graph-memory read makes an embedding request for every connection
 

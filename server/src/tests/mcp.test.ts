@@ -545,6 +545,50 @@ describe("McpClient over streamable HTTP", () => {
         expect(initializes).toBe(4);
     });
 
+    it("rejects a failed later tool-list page and retries every page before caching a complete list", async () => {
+        const failures: ((call: Call) => Response)[] = [
+            (call) => rpcAnswer(call, { error: { code: -32603, message: "listing failed" } }),
+            (call) => rpcAnswer(call, { error: { code: -32603, message: "listing failed" }, result: { tools: [] } }),
+            (call) => json({ jsonrpc: "2.0", id: call.rpc.id, result: { tools: [] } }, 503),
+            (call) => rpcAnswer(call, { result: {} }),
+            (call) => rpcAnswer(call, { result: { tools: {} } }),
+        ];
+        for (const fail of failures) {
+            let healthy = false;
+            const pages: string[] = [];
+            const server = recorder((call) => {
+                if (call.rpc?.id === undefined) return accepted();
+                if (call.rpc.method === "initialize") return rpcAnswer(call, { result: INFO });
+                const cursor = call.rpc.params?.cursor ?? "first";
+                pages.push(cursor);
+                if (cursor === "first") {
+                    return rpcAnswer(call, { result: { tools: [tool("alpha")], nextCursor: "second" } });
+                }
+                return healthy ? rpcAnswer(call, { result: { tools: [tool("beta")] } }) : fail(call);
+            });
+            const mcp = client(server.fetchImpl);
+            try {
+                await expect(mcp.getToolList(ioOf())).rejects.toThrow("Failed to list MCP tools");
+                expect(pages).toEqual(["first", "second"]);
+                healthy = true;
+                expect(await mcp.getToolList(ioOf())).toEqual([tool("alpha"), tool("beta")]);
+                expect(pages).toEqual(["first", "second", "first", "second"]);
+                expect(await mcp.getToolList(ioOf())).toEqual([tool("alpha"), tool("beta")]);
+                expect(pages).toEqual(["first", "second", "first", "second"]);
+            } finally {
+                mcp.destroy();
+            }
+        }
+        const server = recorder(streamable({ pages: [[]] }));
+        const mcp = client(server.fetchImpl);
+        try {
+            expect(await mcp.getToolList(ioOf())).toEqual([]);
+            expect(methods(server.calls)).toEqual(["initialize", "notifications/initialized", "tools/list"]);
+        } finally {
+            mcp.destroy();
+        }
+    });
+
     it("bounds the tool list: a repeated cursor, too many pages, too many tools; a malformed descriptor is left out and a server without tools offers none", async () => {
         const cases: { pages: Record<string, unknown>; error: RegExp | null; names?: string[] }[] = [
             {
