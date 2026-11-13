@@ -38,7 +38,7 @@ reader. Twenty-two were fixed the same day with regression tests, without passin
 permissions on the server, destinations captured before a wait in the tab and its components, card and module format
 round trips, credentials in the settings report and the request log, names and translated text in HTML exports); the
 three that need a decision or real providers are entries below. Wave 4 broke the rules of six areas one at a time to
-see whether a test fails; the tests it found missing were written the same day.
+see whether a test fails; the tests it found missing were written the same day. The review's method, counts, and cost are in [its report](../reports/audits/wide-review-2026-11-14.md).
 
 ## Contents
 
