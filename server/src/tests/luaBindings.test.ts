@@ -1589,6 +1589,35 @@ describe("the host-function contract through the real worker", () => {
     );
 });
 
+describe("Lua edit hooks", () => {
+    it("withholds low-level LLM access from editRequest even when the character has a grant", async () => {
+        const chaId = await seedCharacter({
+            lowLevelAccess: true,
+            codes: [
+                `listenEdit("editRequest", function(id, data)
+                    local result = LLMMain(id, '[{"role":"user","content":"edit hook probe"}]', false, ""):await()
+                    return {{role = "user", content = "edit hook grant:" .. type(result)}}
+                end)`,
+            ],
+        });
+        const beforeRequests = providerCalls.length;
+        const created = await createJob({
+            kind: "send",
+            clientId: "tab",
+            context: { ...(await context(chaId)), mode: "send" },
+            hooks: NO_GENERATION_HOOKS,
+        });
+        expect(created.status).toBe(200);
+        const { terminal } = await follow(created.body.jobId);
+
+        expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+        expect(providerCalls.slice(beforeRequests).map((call) => call.body.messages.at(-1)?.content)).toEqual([
+            "edit hook grant:nil",
+        ]);
+        expect((await readChat(chaId)).data.message.at(-1).data).toBe("mock:edit hook grant:nil");
+    });
+});
+
 describe("the command runner", () => {
     it("refuses a button in a group chat with a 400 terminal", async () => {
         const chaId = await seedCharacter({ codes: [button(`addChat(id, "char", "ran")`)], type: "group" });
