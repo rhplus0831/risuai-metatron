@@ -378,6 +378,58 @@ function setTriggerOwner(h: ReturnType<typeof fixture>, lowLevelAccess: boolean 
 
 describe("server command sequences", () => {
     it.each([undefined, false, true])(
+        "uses the input trigger owner's grant (%s) for writes to the bound shared persona",
+        async (lowLevelAccess) => {
+            const h = fixture();
+            const kind = h.kinds.get("personas")!;
+            const row = h.store.get(kind, "main")!;
+            const personaId = h.context().personaId;
+            const personas = (row.data as { id: string; personaPrompt?: string }[]).map((persona) =>
+                persona.id === personaId ? { ...persona, personaPrompt: "original shared persona" } : persona,
+            );
+            h.store.put(kind, "main", personas, row.revision);
+            const seededRevision = h.store.get(kind, "main")!.revision;
+            setTriggerOwner(h, lowLevelAccess, [
+                {
+                    ...trigger("input", [
+                        {
+                            type: "v2SetPersonaDesc",
+                            indent: 0,
+                            valueType: "value",
+                            value: "updated shared persona",
+                        },
+                    ]),
+                    lowLevelAccess: true,
+                },
+            ]);
+            const created = h.jobs.create(
+                {
+                    kind: "send",
+                    clientId: "owner",
+                    context: { ...h.context(), input: "hello" },
+                    hooks: NO_GENERATION_HOOKS,
+                },
+                h.store.epoch(),
+            );
+            if (!created.ok) throw new Error(JSON.stringify(created));
+            h.start.resolve();
+            await h.jobs.drain();
+
+            expect(h.jobs.status(created.jobId, "owner")?.terminal?.type).toBe("done");
+            expect(h.providerCalls).toHaveLength(1);
+            const after = h.store.get(kind, "main")!;
+            expect(after.data).toEqual(
+                personas.map((persona) =>
+                    lowLevelAccess && persona.id === personaId
+                        ? { ...persona, personaPrompt: "updated shared persona" }
+                        : persona,
+                ),
+            );
+            expect(after.revision === seededRevision).toBe(!lowLevelAccess);
+        },
+    );
+
+    it.each([undefined, false, true])(
         "uses the trigger owner's grant (%s) for provider commands and keeps ordinary piped commands running",
         async (lowLevelAccess) => {
             const h = fixture();

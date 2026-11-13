@@ -1270,6 +1270,9 @@ export function createTriggerRuntime(host: TriggerHost) {
                         break;
                     }
                     case "v2SetPersonaDesc": {
+                        if (!trigger.lowLevelAccess) {
+                            break;
+                        }
                         const value = operand(effect.valueType, effect.value);
                         // The job's effective persona (a bound persona wins). Never in display runs.
                         if (arg.displayMode) {
