@@ -121,7 +121,8 @@ function percentEncodeByte(byte: number): string {
  * Returns null for an empty name or one that fits neither form.
  */
 export function encodeFileName(name: string): string | null {
-    if (name === "") {
+    // UTF-8 needs at least one byte per code unit, before either filename encoding.
+    if (name === "" || name.length > MAX_FILE_NAME_BYTES) {
         return null;
     }
     const bytes = Buffer.from(name, "utf-8");

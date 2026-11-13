@@ -1203,6 +1203,21 @@ describe("storage key codec", () => {
         expect(encodeFileName("")).toBeNull();
     });
 
+    it("rejects impossible file names before UTF-8 conversion and preserves boundary encodings", () => {
+        const from = vi.spyOn(Buffer, "from");
+        try {
+            expect(encodeFileName("a".repeat(256))).toBeNull();
+            expect(encodeFileName("😀".repeat(128))).toBeNull();
+            expect(from).not.toHaveBeenCalled();
+        } finally {
+            from.mockRestore();
+        }
+
+        expect(encodeFileName("a".repeat(255))).toBe("a".repeat(255));
+        expect(encodeFileName("A".repeat(127))).toBe("~" + "41".repeat(127));
+        expect(encodeFileName("가".repeat(42))).toBe("~" + "eab080".repeat(42));
+    });
+
     it("rejects every file name that encodeFileName would not produce", () => {
         const korean = "가".repeat(29) + ".png";
         for (const fileName of [

@@ -1040,6 +1040,33 @@ it("skips a republished file and a filesystem error while deleting the other can
     expect(f.ledger().assets.map((r) => r.key)).toEqual([keys[1], keys[0]]);
 });
 
+it("rejects overlong sweep members before lifecycle work and admits the key and inlay limits", async () => {
+    const clock = sweepClock();
+    const s = await createResourceTestClient({ assetLifecycle: clock.options });
+    cleanups.push(() => s.close());
+    const sweep = vi.spyOn(s.context.assetLifecycle, "sweep");
+    const key = "assets/" + "a".repeat(255);
+    const id = "i".repeat(512);
+
+    for (const members of [{ keys: ["assets/valid", key + "a"] }, { inlays: ["valid", id + "i"] }]) {
+        const response = await s.json("/api/assets/sweep", { dryRun: true, ...members });
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({ error: "Expected dryRun and optional keys/inlays string arrays" });
+        expect(sweep).not.toHaveBeenCalled();
+    }
+
+    await matureSweep(s, clock);
+    const response = await s.json("/api/assets/sweep", { dryRun: true, keys: [key], inlays: [id] });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+        deleted: [],
+        freedBytes: 0,
+        removedInlays: [],
+        skipped: [{ key, reason: "not a candidate" }],
+        skippedInlays: [{ id, reason: "not an orphan past the grace" }],
+    });
+});
+
 it.each(["uptime", "other process", "epoch", "incomplete", "stale"])(
     "refuses sweep with 409 for %s even when files are candidates",
     async (failure) => {

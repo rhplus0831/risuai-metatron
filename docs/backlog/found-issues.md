@@ -35,7 +35,7 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 - [Memory](#memory): 5
 - [Plugins](#plugins): 3
 - [Selection](#selection): 1
-- [Self-host server](#self-host-server): 2
+- [Self-host server](#self-host-server): 1
 - [Server generation](#server-generation): 2
 - [Settings](#settings): 3
 
@@ -327,19 +327,6 @@ its tests with no caller to need them.
 saying it is a deliberate hook.
 
 ## Self-host server
-
-### An overlong asset sweep key is encoded in full before its length is refused
-
-The sweep route checks only that `keys` and `inlays` are strings (`server/src/routes/assetLifecycle.ts:174`), the
-sweep resolves every key for its locks before it rejects a non-candidate (`server/src/data/assetLifecycle.ts:1279`),
-and `encodeFileName` builds the whole readable name byte by byte before the 255-byte check
-(`server/src/routes/storage.ts:127`). Found 2026-11-14 by the wide review (cut E3) and confirmed by a second reader,
-who narrowed it to a signed-in caller sending a malformed request (the settings page cannot): a 16 MiB key held the
-event loop for 2.8 s and answered 200 with the key skipped; the same size under an invalid prefix took 0.1 s.
-
-**Why it matters:** one request from a buggy client or plugin stalls the instance for seconds. Nothing is deleted.
-
-**Suggested handling:** refuse a name that cannot fit before encoding it, and bound the member length at the route.
 
 ### A long near-miss query makes one message search hold the server for seconds
 

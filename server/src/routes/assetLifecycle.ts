@@ -171,9 +171,11 @@ export function registerAssetLifecycleRoutes(
         const parsed = await readJsonBody(c);
         if (!parsed.ok) return parsed.response;
         const { dryRun, keys, inlays } = parsed.body;
-        const list = (value: unknown) =>
-            value === undefined || (Array.isArray(value) && value.every((item) => typeof item === "string"));
-        if (typeof dryRun !== "boolean" || !list(keys) || !list(inlays)) {
+        const list = (value: unknown, maxLength: number) =>
+            value === undefined ||
+            (Array.isArray(value) && value.every((item) => typeof item === "string" && item.length <= maxLength));
+        // Keys have the assets/ prefix and at most 255 name units; inlays follow the resource id cap.
+        if (typeof dryRun !== "boolean" || !list(keys, "assets/".length + 255) || !list(inlays, 512)) {
             return c.json({ error: "Expected dryRun and optional keys/inlays string arrays" }, 400);
         }
         try {
