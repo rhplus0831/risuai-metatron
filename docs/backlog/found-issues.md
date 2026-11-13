@@ -16,7 +16,7 @@ The twentieth and twenty-first batches, a build entry, and one finding still in 
 
 ## Contents
 
-- [Chat pipeline](#chat-pipeline): 2
+- [Chat pipeline](#chat-pipeline): 1
 - [Memory](#memory): 1
 - [Selection](#selection): 1
 - [Settings](#settings): 1
@@ -37,33 +37,6 @@ preview was meant to show.
 
 **Suggested handling:** read whether the job's write accepts the `meta` operation for a preview kind; if it does, run
 a preview's activation without the flag writes, with a test that a preview leaves `scriptstate` as it was.
-
-### A followed job's feed-only generation can stay locked after its end
-
-`endServerJob` and `settleJobHydration` retire only the generations in `serverGenerations`
-(`src/ts/storage/chatStore.svelte.ts`), so the feed lock of a generation that never got an entry there outlives the
-job's terminal until the feed's release list, a current `hello`, or an eligible whole read removes it; `isChatBusy`
-is still true right after the terminal when that frame is late. Two ways to have no entry, both reproduced at the
-store with the real server store and lock on 2026-11-13 by the review of the feed lock retirement fix (not seen in a
-browser):
-
-- The job's early chat copy is refused for unsaved local work (an edit of an older message after admission, or a
-  background plugin's `setChatToIndex`), so the new reply is not in the mirror when its `accepted` and chunks come.
-  The final copy, with an empty `streaming` list, then installs the whole reply without creating or retiring an entry.
-- The job socket attaches after the reply finished (a very short reply, or a reconnect): an ended job sends its chat
-  whole and its terminal, and no event names the generation. No local work is needed.
-
-The reproductions and their logs are under `/home/codex/review-reports/feed-lock-retire-2026-11-13/scratch/`
-(`feedOnlyRetire.review`, `pluginFeedOnly.reverify`, `lateAttachFeedOnly.reverify`; `report.md` has the sequences).
-
-**Why it matters:** the refusal the retirement fix removed (auto mode ending with `chatGenerating`, a send right at a
-reply's end refused) is still possible in these cases. The lock clears when the feed catches up, but a loop that
-already ended does not start again.
-
-**Suggested handling:** let the job's terminal name the generations the job ever locked (the server knows them), and
-retire those in the tab at the terminal; that covers both cases. Remembering the generations a job announced in the
-tab covers only the first. Do not clear every feed lock of the chat at a terminal, and keep `detachServerJob` from
-retiring: another job's generation may be live.
 
 ## Memory
 

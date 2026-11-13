@@ -317,6 +317,12 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   2026-11-08).
 - The own-save echo of an unloaded chat's list field asks for a summary-list read. Decision: Found Issues Decisions
   (owner, 2026-11-08).
+- A followed job's generation that never got a `serverGenerations` entry keeps its feed lock past the job's terminal
+  until the feed catches up: its early job copy was refused for local work (an edit, a background plugin's
+  `setChatToIndex`), or the job socket attached after the reply ended. A send made right at that end (auto mode,
+  multisend, a command, a plugin) is refused with `chatGenerating`. A fix would have the terminal name the job's
+  generations. Decision: owner, 2026-11-13 (rare, no data lost; reproduced in
+  `/home/codex/review-reports/feed-lock-retire-2026-11-13`).
 
 ### Gotchas
 
