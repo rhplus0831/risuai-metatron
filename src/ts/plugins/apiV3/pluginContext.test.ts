@@ -1167,6 +1167,53 @@ describe("sendChat inside a hook", () => {
     });
 });
 
+describe("sendChat across consent", () => {
+    it.each(["switch", "delete", "replace"] as const)(
+        "uses only its captured destination when consent waits (%s)",
+        async (change) => {
+            const ref = { chaId: "a", chatId: "a0" };
+            const api = await makeApi();
+            const originalPin = chatStore.pinChat;
+            const releases: ReturnType<typeof vi.fn>[] = [];
+            vi.spyOn(chatStore, "pinChat").mockImplementation((target) => {
+                const release = vi.fn(originalPin(target));
+                releases.push(release);
+                return release;
+            });
+            grants.value = false;
+            const prompts = heldPrompts(1);
+            const running = api.sendChat("sent before navigation");
+            // Attach the rejection handler before consent can resume the send.
+            const result = running.then(
+                (value: boolean) => ({ value }),
+                (error: unknown) => ({ error }),
+            );
+            const consent = await prompts.shown(0, running);
+            selectCharacterAt(1);
+            if (change === "delete") chatStore.deleteChat(ref);
+            if (change === "replace") {
+                chatStore.installCharacterChats("a", [chat("a0")] as any, {});
+            }
+            consent(true);
+
+            if (change === "switch") {
+                expect(await result).toEqual({ value: true });
+                expect(texts(ref)).toEqual(["hello from a0", "sent before navigation"]);
+                expect(sends).toEqual([{ index: -1, arg: { target: ref } }]);
+            } else {
+                expect(await result).toEqual({ error: expect.any(PluginTargetGoneError) });
+                expect(sends).toEqual([]);
+                if (change === "delete") expect(chatStore.findChat(ref)).toBeUndefined();
+                else expect(texts(ref)).toEqual(["hello from a0"]);
+            }
+            expect(texts({ chaId: "b", chatId: "b0" })).toEqual(["hello from b0"]);
+            expect(prompts.asked()).toBe(1);
+            expect(releases).toHaveLength(1);
+            expect(releases[0]).toHaveBeenCalledExactlyOnceWith();
+        },
+    );
+});
+
 describe("sendChat admission", () => {
     const refA0 = { chaId: "a", chatId: "a0" };
     const busy = "A chat is already in progress";

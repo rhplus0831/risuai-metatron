@@ -3590,13 +3590,13 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
         sendChat: async (message: string) => {
             if (refuseTransformWrite("sendChat")) return false;
             const context = currentContext(contextOwner);
+            // Consent must not move a context-free send to a chat opened while the dialog waits.
+            const ref = context ? context.chatRef : currentChatRef();
+            const owner = ref ? chatOwnerToken(ref.chaId) : undefined;
             const conf = await getPluginPermission(identity, "sendChat");
             if (!conf) {
                 return false;
             }
-
-            // Inside a hook, the send goes to the hook's chat, else to the selection after permission.
-            const ref = context ? context.chatRef : currentChatRef();
 
             if (typeof message !== "string") {
                 throw new Error("Message must be a string");
@@ -3623,52 +3623,60 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             };
             refuseBusy();
 
-            // Loaded first, the target found again after the load.
-            if (ref) {
-                // The same chat after the load: deleted or replaced meanwhile (even under the same
-                // ids) refuses the call.
-                const owner = chatOwnerToken(ref.chaId);
-                if (!(await ensureChatLoaded(ref)) || chatOwnerToken(ref.chaId) !== owner) {
-                    throw new PluginTargetGoneError("chat");
+            const release = ref ? pinChat(ref) : undefined;
+            try {
+                // Loaded first, the target found again after the load.
+                if (ref) {
+                    // The same chat after the load: deleted or replaced meanwhile (even under the same
+                    // ids) refuses the call.
+                    if (
+                        chatOwnerToken(ref.chaId) !== owner ||
+                        !(await ensureChatLoaded(ref)) ||
+                        chatOwnerToken(ref.chaId) !== owner
+                    ) {
+                        throw new PluginTargetGoneError("chat");
+                    }
                 }
-            }
-            const target = context ? contextTarget(context) : undefined;
-            const char = target
-                ? target.character
-                : ref
-                  ? characterList().find((entry) => entry?.chaId === ref.chaId)
-                  : selectedCharacter();
-            if (!char) {
-                throw new Error("No character selected");
-            }
+                const target = context ? contextTarget(context) : undefined;
+                const char = target
+                    ? target.character
+                    : ref
+                      ? characterList().find((entry) => entry?.chaId === ref.chaId)
+                      : selectedCharacter();
+                if (!char) {
+                    throw new Error("No character selected");
+                }
 
-            const chat = target ? target.chat : ref ? findChat(ref) : undefined;
-            if (!chat) {
-                throw new Error("No active chat found");
-            }
+                const chat = target ? target.chat : ref ? findChat(ref) : undefined;
+                if (!chat) {
+                    throw new Error("No active chat found");
+                }
 
-            // Again after the load: from here to the send's registry entry nothing awaits.
-            refuseBusy();
+                // Again after the load: from here to the send's registry entry nothing awaits.
+                refuseBusy();
 
-            // The chat captured before the load (the hook's, else the selection after permission).
-            const sendTarget = { chaId: char.chaId, chatId: chat.id };
-            // Orphaned lore overrides refuse it before the message is appended, as the server would
-            // after: the alert names them, and the answer is false like a refused send.
-            if (refuseOrphanedOverrides(sendTarget)) {
-                return false;
-            }
+                // The hook's chat, else the selection captured before consent.
+                const sendTarget = { chaId: char.chaId, chatId: chat.id };
+                // Orphaned lore overrides refuse it before the message is appended, as the server would
+                // after: the alert names them, and the answer is false like a refused send.
+                if (refuseOrphanedOverrides(sendTarget)) {
+                    return false;
+                }
 
-            if (message && chat.id) {
-                appendMessage(
-                    { chaId: char.chaId, chatId: chat.id },
-                    { role: "user", data: message, time: Date.now() },
+                if (message && chat.id) {
+                    appendMessage(
+                        { chaId: char.chaId, chatId: chat.id },
+                        { role: "user", data: message, time: Date.now() },
+                    );
+                }
+
+                return await processSendChat(
+                    -1,
+                    context ? { target: context.chatRef, pluginContext: context } : { target: sendTarget },
                 );
+            } finally {
+                release?.();
             }
-
-            return await processSendChat(
-                -1,
-                context ? { target: context.chatRef, pluginContext: context } : { target: sendTarget },
-            );
         },
         addPluginChannelListener: (channelName: string, callback: Function) => {
             if (refuseRegistration("addPluginChannelListener")) return;
