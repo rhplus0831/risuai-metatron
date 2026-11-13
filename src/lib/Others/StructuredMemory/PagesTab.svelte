@@ -734,11 +734,11 @@
         applied: MemoryPage,
         keep: (answer: T) => boolean,
         refusedText?: (error: string) => string,
+        ref = chatRef,
     ) {
         if (sending || readOnly || !copy) {
             return;
         }
-        const ref = chatRef;
         const before = copy;
         sending = true;
         // A read on its way may have been answered from before this edit.
@@ -867,7 +867,7 @@
      * Sends `tool` over the copy. The answer names the page to show next, which is selected, or none after
      * a purge; the contents are read again either way, since a tool moves pages between the lists.
      */
-    function runTool(tool: StructuredMemoryPageTool) {
+    function runTool(tool: StructuredMemoryPageTool, ref = chatRef) {
         if (!copy) {
             return;
         }
@@ -890,6 +890,7 @@
                 return true;
             },
             toolText.refused,
+            ref,
         );
     }
 
@@ -1018,8 +1019,9 @@
             return;
         }
         const { id, title } = copy.data;
+        const ref = chatRef;
         if (await alertConfirm(toolText.purgeConfirm(title))) {
-            void runTool({ kind: "purge", pageId: id });
+            void runTool({ kind: "purge", pageId: id }, ref);
         }
     }
 
@@ -1029,8 +1031,9 @@
             return;
         }
         const { id, title } = copy.data;
+        const ref = chatRef;
         if (await alertConfirm(toolText.mergeConfirm(title, target.title))) {
-            void runTool({ kind: "merge", sourceId: id, targetId: target.id });
+            void runTool({ kind: "merge", sourceId: id, targetId: target.id }, ref);
         }
     }
 
@@ -1046,6 +1049,7 @@
         if (!copy || !splitFits || controlsOff) {
             return;
         }
+        const ref = chatRef;
         const tool: StructuredMemoryPageTool = {
             kind: "split",
             pageId: copy.data.id,
@@ -1054,7 +1058,7 @@
             aliases: splitAliases,
         };
         if (await alertConfirm(toolText.splitConfirm(tool.title, tool.headings.length))) {
-            void runTool(tool);
+            void runTool(tool, ref);
         }
     }
 
@@ -1100,12 +1104,12 @@
         if (controlsOff || !contents) {
             return;
         }
+        const ref = chatRef;
+        const { revision } = contents;
         const file = await selectSingleFileHandle(["zip"]);
         if (!file || sending) {
             return;
         }
-        const ref = chatRef;
-        const { revision } = contents;
         const bytes = new Uint8Array(await file.arrayBuffer());
         if (!(await alertConfirm(toolText.importConfirm))) {
             return;

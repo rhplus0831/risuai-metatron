@@ -11,6 +11,8 @@ import { language } from "src/lang";
 import { characterList } from "src/ts/storage/characterStore.svelte";
 import {
     findChat,
+    applyRemoteCollection,
+    currentChatRef,
     hydrateChat,
     loadChat,
     seedChats,
@@ -3481,6 +3483,149 @@ it("imports only into an empty Pages tab and displays every refused file", async
     expect(query('[data-memory-import-refusal="new.md"]')?.textContent).toContain(
         language.structuredMemory.pages.tools.importReasons.newerVersion,
     );
+});
+
+it.each(["retract", "purge", "merge", "split"] as const)(
+    "keeps a pending %s request on the confirmed chat after the panel switches chats",
+    async (action) => {
+        if (action === "retract") {
+            serveAnchoredEvent();
+            setMessageText(ref, "a0", "Edited after recording");
+        } else {
+            const state = servePageTools();
+            state.trash = [{ ...editablePage(), id: "trashed", trashedAt: 1 }];
+            state.pages[0].sections.push({ ...state.pages[0].sections[0], heading: "Access", body: "By boat" });
+        }
+        const fetch = io.authFetch.getMockImplementation()!;
+        io.authFetch.mockImplementation(async (url, init, options) => {
+            if (init?.method === "POST")
+                return Response.json({ error: "Memory changed", reason: "revisionConflict" }, { status: 409 });
+            if (url === "/api/memory/structured/c/other")
+                return Response.json({
+                    revision: "other-revision",
+                    pages: [],
+                    trash: [],
+                    events: [],
+                    threads: [],
+                    runs: [],
+                });
+            return fetch(url, init, options);
+        });
+        await open();
+        if (action === "retract") {
+            await chooseTab("timeline");
+            click('[data-memory-event="e"] > button');
+        } else {
+            await chooseTab("pages");
+            click(action === "purge" ? '[data-memory-trash-page="trashed"]' : '[data-memory-page="p"]');
+        }
+        await settle();
+        if (action === "merge" || action === "split") await choosePageView("manage");
+        if (action === "merge") {
+            const select = target.querySelector<HTMLSelectElement>("[data-memory-merge-target]")!;
+            const querySelector = select.querySelector.bind(select);
+            // happy-dom does not implement :checked for a select's selected option.
+            const selected = vi
+                .spyOn(select, "querySelector")
+                .mockImplementation((selector) =>
+                    selector === ":checked" ? (select.options[select.selectedIndex] ?? null) : querySelector(selector),
+                );
+            changeSelect("[data-memory-merge-target]", "target");
+            selected.mockRestore();
+        }
+        if (action === "split") {
+            press("[data-memory-split-open]");
+            click('[data-memory-split-heading="Access"] input');
+            typePageField("[data-memory-split-title] input", "New note");
+        }
+        const answer = deferred<boolean>();
+        vi.mocked(alertConfirm).mockReturnValueOnce(answer.promise);
+        press(action === "retract" ? '[data-memory-repair="retract"]' : `[data-memory-${action}]`);
+        expect(alertConfirm).toHaveBeenCalled();
+        expect(io.authFetch.mock.calls.filter(([, init]) => init?.method === "POST")).toEqual([]);
+        const other = { ...ref, chatId: "other" };
+        const before = JSON.parse(JSON.stringify(findChat(other)));
+        selectChat("c", "other");
+        await settle();
+        answer.resolve(true);
+        await settle();
+        const writes = io.authFetch.mock.calls.filter(([, init]) => init?.method === "POST");
+        expect(writes.map(([url]) => url)).toEqual([
+            `/api/memory/structured/c/k/${action === "retract" ? "edits" : "page-tools"}`,
+        ]);
+        const body = JSON.parse(writes[0][1]!.body as string);
+        expect(action === "retract" ? body.edit : body.tool).toEqual(
+            action === "retract"
+                ? { kind: "event", eventId: "e", repair: "retract" }
+                : action === "purge"
+                  ? { kind: "purge", pageId: "trashed" }
+                  : action === "merge"
+                    ? { kind: "merge", sourceId: "p", targetId: "target" }
+                    : { kind: "split", pageId: "p", headings: ["Access"], aliases: [], title: "New note" },
+        );
+        expect(findChat(other)).toEqual(before);
+        expect(currentChatRef()).toEqual(other);
+    },
+);
+
+it("keeps a package import on its saved chat and revision when remote deletion selects a fallback during the picker", async () => {
+    const state = servePageTools();
+    state.pages = [];
+    seedChats(
+        ["k", "other"].map((id) => ({ characterId: "c", id, revision: revision(1) })),
+        [{ characterId: "c", revision: revision(1), ids: ["k", "other"] }],
+    );
+    const other = { ...ref, chatId: "other" };
+    const before = JSON.parse(JSON.stringify(findChat(other)));
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.endsWith("/import")) return Response.json({ error: "Deleted chat" }, { status: 404 });
+        if (url === "/api/memory/structured/c/other")
+            return Response.json({
+                revision: "fallback-revision",
+                pages: [],
+                trash: [],
+                events: [],
+                threads: [],
+                runs: [],
+            });
+        return fetch(url, init, options);
+    });
+    await open();
+    await chooseTab("pages");
+    const picker = deferred<File>();
+    io.selectSingleFileHandle.mockReturnValueOnce(picker.promise);
+    vi.mocked(alertConfirm).mockResolvedValueOnce(true);
+    press("[data-memory-import]");
+    expect(io.selectSingleFileHandle).toHaveBeenLastCalledWith(["zip"]);
+    // The fixture's chat defaults have been saved, as in an idle persisted chat receiving a live update.
+    const pending = takeChatWork(new Set());
+    ackChatWork(
+        pending,
+        pending.groups.map(({ characterId, chatId }) => ({ characterId, id: chatId, revision: revision(1) })),
+        [],
+    );
+    expect(hasChatWork()).toBe(false);
+    expect(
+        applyRemoteCollection({
+            characterId: "c",
+            order: { characterId: "c", revision: revision(2), ids: ["other"] },
+            chats: [{ characterId: "c", id: "other", revision: revision(1), data: before }],
+        }),
+    ).toBe(true);
+    await settle();
+    expect(currentChatRef()).toEqual(other);
+    picker.resolve(new File([zipSync({ "pages/location/p.md": strToU8("page text") })], "memory.zip"));
+    await settle();
+    const writes = io.authFetch.mock.calls.filter(([, init]) => init?.method === "POST");
+    expect(writes.map(([url]) => url)).toEqual(["/api/memory/structured/c/k/import"]);
+    expect(JSON.parse(writes[0][1]!.body as string)).toEqual({
+        revision: "before-tool",
+        files: [{ path: "pages/location/p.md", text: "page text" }],
+    });
+    expect(findChat(ref)).toBeUndefined();
+    expect(findChat(other)).toEqual(before);
+    expect(currentChatRef()).toEqual(other);
 });
 
 it("sends only selected headings and aliases from the split form and opens the new page", async () => {

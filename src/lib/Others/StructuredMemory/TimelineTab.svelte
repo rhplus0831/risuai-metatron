@@ -268,11 +268,10 @@
      * way the facts are read again: the status a row shows comes from the held messages joined with
      * them, so the answer's record alone says nothing, and the next repair needs their revision.
      */
-    async function sendRepair(edit: Extract<StructuredMemoryEdit, { kind: "event" }>): Promise<boolean> {
+    async function sendRepair(edit: Extract<StructuredMemoryEdit, { kind: "event" }>, ref = chatRef): Promise<boolean> {
         if (!facts) {
             return false;
         }
-        const ref = chatRef;
         const result = await editStructuredMemory(ref, facts.revision, edit);
         if (result.outcome === "failed" || (result.outcome === "refused" && result.reason !== "epoch")) {
             alertError(memoryReadFailureText(result));
@@ -366,9 +365,10 @@
 
     /** Asks first, because no control takes it back. */
     function retract({ id }: StructuredMemoryCoverageEvent) {
+        const ref = chatRef;
         return repairing(async () => {
             if (await alertConfirm(repairText.retractConfirm)) {
-                await sendRepair({ kind: "event", eventId: id, repair: "retract" });
+                await sendRepair({ kind: "event", eventId: id, repair: "retract" }, ref);
             }
         });
     }

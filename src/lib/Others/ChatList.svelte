@@ -100,7 +100,6 @@
                                     return;
                                 }
                                 deleteChat(ref);
-                                changeChatTo(0);
                             }
                         }}
                         onkeydown={() => {}}
