@@ -559,12 +559,20 @@
             </SelectInput>
 
             <span class="text-textcolor">Information Extracted</span>
-            <SelectInput className="mb-2" bind:value={settings.memoryTranslateMedia.NAIImgConfig.InfoExtracted}>
+            <SelectInput
+                className="mb-2"
+                bind:value={
+                    () => settings.memoryTranslateMedia.NAIImgConfig.InfoExtracted,
+                    (value) => setVibeInfoExtracted(value)
+                }
+            >
                 {#if settings.memoryTranslateMedia.NAIImgConfig.vibe_model_selection && settings.memoryTranslateMedia.NAIImgConfig.vibe_data.encodings[settings.memoryTranslateMedia.NAIImgConfig.vibe_model_selection]}
                     {#each Object.entries(settings.memoryTranslateMedia.NAIImgConfig.vibe_data.encodings[settings.memoryTranslateMedia.NAIImgConfig.vibe_model_selection]) as [key, value]}
-                        <OptionInput value={value.params.information_extracted}
-                            >{value.params.information_extracted}</OptionInput
-                        >
+                        {#if Number.isFinite(value.params.information_extracted)}
+                            <OptionInput value={value.params.information_extracted}
+                                >{value.params.information_extracted}</OptionInput
+                            >
+                        {/if}
                     {/each}
                 {/if}
             </SelectInput>

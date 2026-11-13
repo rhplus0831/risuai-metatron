@@ -30,7 +30,7 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 - [Assets](#assets): 1
 - [Selection](#selection): 1
 - [Server generation](#server-generation): 1
-- [Settings](#settings): 3
+- [Settings](#settings): 2
 
 ## Assets
 
@@ -102,19 +102,6 @@ that no longer fits at 4096 stops with the dialog and calls no provider; with th
 is the most, and one arrow key lowers a stored 8000 to 4096.
 
 **Suggested handling:** drop the `max` or raise it to a value above the default, on both inputs.
-
-### The vibe strength selector stores a non-finite imported strength
-
-The Information Extracted selector of a vibe image writes the chosen encoding's strength without the finite check its
-upload and model-change handlers have (`src/lib/Setting/Pages/ImageGenerationSettings.svelte:562`). Found 2026-11-14
-by the wide review (cut F6) and confirmed by a second reader: a `.naiv4vibe` with one encoding at `1e400` uploads with
-the finite one selected, and choosing the other stores `Infinity`, which the server record keeps as `null`;
-`stableDiff.ts:391` then finds no encoding for it and leaves the reference image out.
-
-**Why it matters:** an imported vibe file can leave a stored strength that drops the reference image from later
-requests.
-
-**Suggested handling:** route the selector through the finite setter and leave a non-finite option out of the list.
 
 ### `NumberInput` shows a refused blank draft again when an outside value returns to the earlier number
 

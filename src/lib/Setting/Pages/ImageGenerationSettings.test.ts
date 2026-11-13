@@ -216,6 +216,70 @@ it.each(["upload", "model change"] as const)(
     },
 );
 
+it("offers only finite uploaded vibe strengths and refuses an injected invalid selection", async () => {
+    installFlatDatabase({
+        characters: [],
+        sdProvider: "novelai",
+        NAIImgModel: "nai-diffusion-4-full",
+        NAIImgConfig: { reference_mode: "vibe", InfoExtracted: 0.65, reference_strength_multiple: [0.7] },
+    });
+    const target = document.createElement("div");
+    document.body.append(target);
+    mounted.push(mount(ImageGenerationSettings, { target }));
+    flushSync();
+    const vibe = {
+        version: 1,
+        identifier: "novelai-vibe-transfer",
+        thumbnail: "data:image/png;base64,AA==",
+        encodings: {
+            v4full: {
+                first: { params: { information_extracted: 0.25 }, encoding: "first" },
+                overflow: { params: { information_extracted: "overflow" }, encoding: "retained" },
+                second: { params: { information_extracted: 0.5 }, encoding: "second" },
+            },
+        },
+    };
+    vi.spyOn(util, "selectSingleFile").mockResolvedValueOnce({
+        name: "reference.naiv4vibe",
+        data: new TextEncoder().encode(JSON.stringify(vibe).replace('"overflow"}', "1e400}")),
+    });
+    [...target.querySelectorAll("button")].find((button) => button.textContent?.includes("Upload"))!.click();
+    await tick();
+    flushSync();
+    const config = settings.memoryTranslateMedia.NAIImgConfig;
+    const select = [...target.querySelectorAll("select")].find((node) =>
+        [...node.options].some((option) => option.value === "0.25"),
+    )!;
+    expect(config.InfoExtracted).toBe(0.25);
+    expect(select.value).toBe("0.25");
+    expect.soft([...select.options].map((option) => option.value)).toEqual(["0.25", "0.5"]);
+    expect(Object.keys(config.vibe_data.encodings.v4full)).toEqual(["first", "overflow", "second"]);
+    expect(config.vibe_data.encodings.v4full.overflow.encoding).toBe("retained");
+    expect(config.vibe_data.encodings.v4full.overflow.params.information_extracted).toBe(Infinity);
+
+    function choose(value: string) {
+        select.value = value;
+        // Match the native selected option for Svelte's binding in happy-dom.
+        const querySelector = select.querySelector.bind(select);
+        (select as { querySelector: unknown }).querySelector = (selector: string) =>
+            selector === ":checked" ? select.options[select.selectedIndex] : querySelector(selector);
+        try {
+            select.dispatchEvent(new Event("change", { bubbles: true }));
+        } finally {
+            delete (select as { querySelector?: unknown }).querySelector;
+        }
+        flushSync();
+    }
+    choose("0.5");
+    expect(config.InfoExtracted).toBe(0.5);
+    const invalid = document.createElement("option");
+    invalid.value = "Infinity";
+    select.append(invalid);
+    choose("Infinity");
+    expect(config.InfoExtracted).toBe(0.5);
+    expect(JSON.parse(JSON.stringify(config)).InfoExtracted).toBe(0.5);
+});
+
 describe("WaveSpeed LoRA editing", () => {
     it("two clean editors follow alternating remote records without saving on mount or adoption", async () => {
         const first = await render();
