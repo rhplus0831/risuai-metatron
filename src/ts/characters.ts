@@ -52,6 +52,7 @@ import {
     ensureChatLoaded,
     findChat,
     isCharacterGenerating,
+    pinChat,
     validateChatInput,
 } from "./storage/chatStore.svelte";
 import { importedChatBinding } from "./storage/chatBinding.svelte";
@@ -295,27 +296,33 @@ export async function exportChat(chatId: string) {
             mode === "2" || mode === "3"
                 ? (await alertSelect([language.includePersonaName, language.hidePersonaName])) === "1"
                 : false;
-        if (chaId !== undefined) {
-            await ensureChatLoaded({ chaId, chatId });
-        }
-        // Read before the copy below: a chat newer than its records leaves a turn uncovered, while records
-        // newer than the chat would put pages ahead of their messages.
-        const memory =
-            chaId !== undefined && (mode === "0" || mode === "2")
-                ? await readStructuredMemoryFile({ chaId, chatId })
-                : undefined;
-        // Found again after the load: the chat as it is now.
-        const char = chaId === undefined ? undefined : characterRecord(chaId);
-        const found = char ? findChat({ chaId: char.chaId, chatId }) : undefined;
-        if (!char || !found) {
+        if (chaId === undefined) {
             return;
         }
-        // A copy: the chat can change while the export translates.
-        const chat = JSON.parse(JSON.stringify(found)) as Chat;
+        const ref = { chaId, chatId };
+        const release = pinChat(ref);
+        let char: ReturnType<typeof characterRecord>;
+        let chat: Chat;
+        let memory: Awaited<ReturnType<typeof readStructuredMemoryFile>> | undefined;
+        try {
+            await ensureChatLoaded(ref);
+            // Read before the copy below: a chat newer than its records leaves a turn uncovered, while records
+            // newer than the chat would put pages ahead of their messages.
+            memory = mode === "0" || mode === "2" ? await readStructuredMemoryFile(ref) : undefined;
+            // Found again after the load: the chat as it is now.
+            char = characterRecord(chaId);
+            const found = char ? findChat(ref) : undefined;
+            if (!char || !found) {
+                return;
+            }
+            // A copy: the chat can change while the export translates.
+            chat = JSON.parse(JSON.stringify(found)) as Chat;
+        } finally {
+            release();
+        }
         const fileMemory = memory && exportChatMemory(chat, memory);
         // The exported chat's persona name and render context, read now: it need not be the selected
         // chat, and the selection can change during the awaits below.
-        const ref = { chaId: char.chaId, chatId };
         const userName = getUserName(ref);
         const transform = doTranslate ? captureTransform(-1, { chatRef: ref }) : null;
         const date = new Date().toJSON();

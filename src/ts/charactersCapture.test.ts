@@ -301,6 +301,50 @@ describe("handlers that await keep their target", () => {
         expect(alerts.error).not.toHaveBeenCalled();
     });
 
+    it("exportChat survives cache trimming during its memory read and releases the chat after copying", async () => {
+        const { characters, characterStore, chat, downloads, sync } = await boot();
+        const ref = { chaId: "c", chatId: "k" };
+        characterStore.selectCharacter(ref.chaId);
+        chat.selectChat(ref.chaId, ref.chatId);
+        const ids = Array.from({ length: chat.MAX_LOADED_CHATS + 1 }, (_, i) => `extra-${i}`);
+        for (const id of ids) {
+            chat.createChat(ref.chaId, { id, name: id, note: "", localLore: [], message: [] });
+        }
+        await sync.flushResources();
+        const reading = gate<void>();
+        const memory = gate<Response>();
+        const { fetch } = server.current;
+        server.current.fetch = (path: string, init?: RequestInit) => {
+            if (path.startsWith("/api/memory/structured/")) {
+                reading.resolve();
+                return memory.promise;
+            }
+            return fetch(path, init);
+        };
+        alerts.select.mockResolvedValueOnce("0");
+        const exporting = characters.exportChat(ref.chatId);
+        await reading.promise;
+        expect(chat.findChat({ chaId: "c", chatId: "j" })).toBeDefined();
+        // Visit saved chats and run the scheduled idle trims while the memory request waits.
+        for (const id of ids) {
+            chat.selectChat(ref.chaId, id);
+            await chat.ensureChatLoaded({ chaId: ref.chaId, chatId: id });
+            await vi.advanceTimersByTimeAsync(0);
+        }
+        expect(chat.findChat({ chaId: "c", chatId: "j" })).toBeUndefined();
+        memory.resolve(Response.json({ revision: "memory", pages: [], events: [], threads: [], runs: [] }));
+        await exporting;
+
+        expect(alerts.error).not.toHaveBeenCalled();
+        expect(downloads).toHaveLength(1);
+        const exported = JSON.parse(downloads[0].data);
+        expect(exported.data.id).toBe(ref.chatId);
+        expect(exported.data.message.map((message: { data: string }) => message.data)).toEqual(["A", "B", "C"]);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(chat.findChat(ref)).toBeUndefined();
+        expect(chat.chatEntry(ref)?.id).toBe(ref.chatId);
+    });
+
     it.each(["2", "3"])("HTML export mode %s keeps names literal and sanitizes translated formatting", async (mode) => {
         const { characters, characterStore, chat, character, settings, downloads } = await boot();
         const parser = await import("./parser/parser.svelte");
