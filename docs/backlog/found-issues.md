@@ -28,7 +28,7 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 ## Contents
 
 - [Assets](#assets): 1
-- [Characters](#characters): 2
+- [Characters](#characters): 1
 - [Selection](#selection): 1
 - [Server generation](#server-generation): 1
 - [Settings](#settings): 3
@@ -49,20 +49,6 @@ lock) has no test that fails when the lock is removed.
 and check the file and cache; cover the reverse order too.
 
 ## Characters
-
-### The legacy JSON card import drops a persona and greeting given as `char_persona` and `char_greeting`
-
-The import accepts a JSON card that names its fields `char_name`, `char_persona`, and `char_greeting`
-(`src/ts/characterCards.ts:278`), but `convertOffSpecCards` reads the persona and the greeting only from `description`
-and `first_mes` (`characterCards.ts:988`, `:989`); `1dc0f53a3` repaired the name alone. Found 2026-11-14 by the wide
-review (cut F3) and confirmed by a second reader: such a card imports as a success with an empty description and the
-greeting `unknown first message`.
-
-**Why it matters:** an accepted card is saved without its persona and greeting, and nothing says so. The source file
-can be imported again after a fix.
-
-**Suggested handling:** fall back to the alias when the canonical field is null or undefined, canonical first, as the
-name does.
 
 ### Autosave stores a cleared VOICEVOX scale as null
 

@@ -237,6 +237,33 @@ describe("importCharacterProcess creates the character through addCharacter", ()
         expect(alerts.error).not.toHaveBeenCalled();
     });
 
+    it("retains legacy JSON card aliases, falling back only for nullish canonical content", async () => {
+        const { cards, ids, added } = await boot();
+        const aliases = { char_name: "Keeper", char_persona: "Keeps the lighthouse", char_greeting: "Come inside" };
+        for (const [canonical, expected] of [
+            [{}, { name: "Keeper", desc: "Keeps the lighthouse", firstMessage: "Come inside" }],
+            [
+                { name: null, description: null, first_mes: null },
+                { name: "Keeper", desc: "Keeps the lighthouse", firstMessage: "Come inside" },
+            ],
+            [
+                { name: "Captain", description: "Sails the coast", first_mes: "Welcome aboard" },
+                { name: "Captain", desc: "Sails the coast", firstMessage: "Welcome aboard" },
+            ],
+            [
+                { name: "", description: "", first_mes: "" },
+                { name: "", desc: "", firstMessage: "" },
+            ],
+        ] as const) {
+            const before = ids();
+            await cards.importCharacterProcess({ name: "legacy.json", data: encode({ ...aliases, ...canonical }) });
+            const { character, record } = await added(before);
+            expect(character).toMatchObject(expected);
+            expect(record).toMatchObject(expected);
+        }
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
     it.each([
         ["V2", cardV2],
         ["V3", cardV3],

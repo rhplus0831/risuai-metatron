@@ -960,7 +960,7 @@ export async function characterURLImport() {
     }
 }
 
-/** Off-spec cards may supply `char_name` instead of `name`; an explicit name takes precedence. */
+/** Off-spec cards may use legacy aliases; explicit canonical fields take precedence. */
 function convertOffSpecCards(
     charaData: OldTavernChar | CharacterCardV2Risu,
     imgp: string | undefined = undefined,
@@ -985,8 +985,9 @@ function convertOffSpecCards(
 
     return {
         name: data.name ?? ("char_name" in data ? data.char_name : undefined) ?? "unknown name",
-        firstMessage: data.first_mes ?? "unknown first message",
-        desc: data.description ?? "",
+        firstMessage:
+            data.first_mes ?? ("char_greeting" in data ? data.char_greeting : undefined) ?? "unknown first message",
+        desc: data.description ?? ("char_persona" in data ? data.char_persona : undefined) ?? "",
         notes: "",
         chats: [
             {
@@ -2535,6 +2536,8 @@ interface OldTavernChar {
     mes_example: string;
     name?: string;
     char_name?: string;
+    char_persona?: string;
+    char_greeting?: string;
     personality: string;
     scenario: string;
     talkativeness: "0.5";
