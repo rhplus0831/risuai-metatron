@@ -67,13 +67,14 @@ const entry = (id: string, body = "", header = "", response = "") => ({
 const fetchMock = vi.fn();
 const writers = ["addFetchLog", "appendFetchLog", "globalFetch"] as const;
 type Writer = (typeof writers)[number];
+type LogPayload = { body: unknown; headers: Record<string, string>; response: unknown };
 const payload = (text = "x") => ({ body: { text }, headers: { text }, response: { text } });
-const serialized = (data: ReturnType<typeof payload>) => ({
+const serialized = (data: LogPayload) => ({
     body: JSON.stringify(data.body, null, 2),
     header: JSON.stringify(data.headers, null, 2),
     response: JSON.stringify(data.response, null, 2),
 });
-async function write(writer: Writer, id: string, data = payload()) {
+async function write(writer: Writer, id: string, data: LogPayload = payload()) {
     if (writer === "appendFetchLog") {
         appendFetchLog({ ...entry(id), ...serialized(data) });
     } else if (writer === "addFetchLog") {
@@ -293,6 +294,108 @@ afterEach(() => {
 });
 
 describe("tab request log retention", () => {
+    it("redacts sign-in headers, form and JSON credentials through every writer while preserving ordinary bodies", async () => {
+        const credentials = {
+            access_token: "sample-access-token-value",
+            refresh_token: "sample-refresh-token-value",
+            id_token: "sample-id-token-value",
+            client_secret: "sample-client-secret-value",
+            code_verifier: "sample-verifier-value",
+            token: "sample-token-value",
+            code: "sample-authorization-code-value",
+        };
+        const masked = {
+            access_token: "[redacted]",
+            refresh_token: "[redacted]",
+            id_token: "[redacted]",
+            client_secret: "[redacted]",
+            code_verifier: "[redacted]",
+            token: "[redacted]",
+            code: "[redacted]",
+        };
+        const exchange = { grant_type: "authorization_code", client_id: "sample-client", ...credentials };
+        const credentialHeaders = {
+            Authorization: "Bearer sample-header-token-value",
+            "Proxy-Authorization": "Bearer sample-header-token-value",
+            "X-API-Key": "sample-header-token-value",
+            "X-Goog-Api-Key": "sample-header-token-value",
+            "Api-Key": "sample-header-token-value",
+            ApiKey: "sample-header-token-value",
+            "Xi-Api-Key": "sample-header-token-value",
+            Cookie: "session=sample-header-token-value",
+            "Set-Cookie": "session=sample-header-token-value",
+        };
+        const headers = {
+            ...credentialHeaders,
+            "Content-Type": "application/json",
+            "X-Request-Id": "sample-request",
+            "x-empty": "",
+        };
+        const expectedHeaders = {
+            ...Object.fromEntries(Object.keys(credentialHeaders).map((name) => [name, "[redacted]"])),
+            "Content-Type": "application/json",
+            "X-Request-Id": "sample-request",
+            "x-empty": "",
+        };
+        const response = { ...credentials, grant_type: "authorization_code", token_type: "Bearer", expires_in: 3600 };
+
+        for (const writer of writers) {
+            for (const encoding of ["form", "JSON"] as const) {
+                const data: LogPayload = {
+                    headers,
+                    body:
+                        encoding === "form"
+                            ? new URLSearchParams(exchange).toString() + "&refresh%5ftoken=sample-repeated-token-value"
+                            : { ...exchange, nested: [{ ...credentials, grant_type: "authorization_code" }] },
+                    response,
+                };
+                const original = structuredClone(data);
+                await write(writer, `${writer}-${encoding}`, data);
+                const stored = logs[0];
+                expect(JSON.parse(stored.header), `${writer} headers`).toEqual(expectedHeaders);
+                expect(JSON.parse(stored.response), `${writer} response`).toEqual({
+                    ...masked,
+                    grant_type: "authorization_code",
+                    token_type: "Bearer",
+                    expires_in: 3600,
+                });
+                if (encoding === "form") {
+                    const text = writer === "addFetchLog" ? stored.body : JSON.parse(stored.body);
+                    const form = new URLSearchParams(text);
+                    expect(Object.fromEntries(form), writer).toEqual({
+                        grant_type: "authorization_code",
+                        client_id: "sample-client",
+                        ...masked,
+                    });
+                    expect(form.getAll("refresh_token"), writer).toEqual(["[redacted]", "[redacted]"]);
+                } else {
+                    expect(JSON.parse(stored.body), writer).toEqual({
+                        grant_type: "authorization_code",
+                        client_id: "sample-client",
+                        ...masked,
+                        nested: [{ ...masked, grant_type: "authorization_code" }],
+                    });
+                }
+                for (const value of [
+                    ...Object.values(credentials),
+                    "sample-header-token-value",
+                    "sample-repeated-token-value",
+                ]) {
+                    expect(JSON.stringify(stored), `${writer} ${encoding}`).not.toContain(value);
+                }
+                expect(data, `${writer} input`).toEqual(original);
+            }
+
+            const ordinary = {
+                body: { model: "sample-model", messages: [{ role: "user", content: "hello" }], code: "ordinary-code" },
+                headers: { "Content-Type": "application/json" },
+                response: { message: "ordinary response", code: "ordinary-code" },
+            };
+            await write(writer, "ordinary", ordinary);
+            expect(logs[0], writer).toMatchObject(serialized(ordinary));
+        }
+    });
+
     it("keeps the newest 20 through every writer and mixed writes, preserving the array and chat lookup", async () => {
         for (const sequence of [
             ...writers.map((writer) => Array<Writer>(25).fill(writer)),

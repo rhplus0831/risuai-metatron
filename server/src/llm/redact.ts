@@ -1,4 +1,7 @@
 import type { RequestDb } from "./settings.ts";
+import { REDACTED, SECRET_HEADERS } from "../../../shared/logRedaction.ts";
+
+export { REDACTED, redactHeaderText } from "../../../shared/logRedaction.ts";
 
 /**
  * The secret-free projection of what a request sends back to the client: logs, notices, errors,
@@ -12,8 +15,8 @@ import type { RequestDb } from "./settings.ts";
  *   replaced by `[redacted]` wherever it occurs in a string, also in its JSON-escaped and
  *   URL-encoded forms; every non-empty value, however short. The readable siblings (`google.projectId`,
  *   `hordeConfig.model`, `hordeConfig.softPrompt`, `novelai.model`, `vertexClientEmail`) are not credentials.
- * - By name: the values of the `authorization`, `x-api-key`, `x-goog-api-key`, `api-key`, and `apikey`
- *   headers in a log entry's headers, and the `key`, `api_key`, and `token` query parameters of any URL-looking string.
+ * - By name: the credential headers listed in `shared/logRedaction.ts`, and the `key`, `api_key`, and `token`
+ *   query parameters of any URL-looking string.
  *
  * A free-form `header::` value in `additionalParams` or a custom model's `params` that is not a
  * stored credential is user configuration, outside this guarantee.
@@ -26,10 +29,6 @@ import type { RequestDb } from "./settings.ts";
  * captures after full-value redaction.
  */
 
-/** Replacement text for a masked credential or named secret field. */
-export const REDACTED = "[redacted]";
-
-const SECRET_HEADERS = new Set(["authorization", "x-api-key", "x-goog-api-key", "api-key", "apikey"]);
 const SECRET_QUERY = /([?&](?:key|api_key|token)=)[^&#\s"'\\]*/gi;
 
 const STRING_SECRET_FIELDS = [
@@ -232,27 +231,4 @@ export function createRedactor(initial: string[]): Redactor {
         carries,
         trimPartial,
     };
-}
-
-/**
- * A log entry's `header` is the JSON text of the request headers: the named headers are masked
- * inside it before the value redaction runs.
- */
-export function redactHeaderText(header: string): string {
-    try {
-        const parsed = JSON.parse(header);
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-            return header;
-        }
-        let changed = false;
-        for (const name of Object.keys(parsed)) {
-            if (SECRET_HEADERS.has(name.toLowerCase()) && typeof parsed[name] === "string" && parsed[name] !== "") {
-                parsed[name] = REDACTED;
-                changed = true;
-            }
-        }
-        return changed ? JSON.stringify(parsed, null, 2) : header;
-    } catch {
-        return header;
-    }
 }

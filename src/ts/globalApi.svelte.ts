@@ -41,6 +41,7 @@ import { moduleUpdate } from "./process/modules";
 import { isLocalNetworkUrl } from "./network/localNetwork";
 import { getNodeServerProxyAuth } from "./storage/serverAuth";
 import { aiDisclosureEnabled } from "./platform";
+import { redactBodyText, redactHeaderText } from "../../shared/logRedaction.ts";
 
 /**
  * Client facade for asset bytes and URLs, remote fetches and tab request logs, downloads and
@@ -83,9 +84,14 @@ const FETCH_LOG_MAX_CHARS = 16 * 1024 * 1024;
 /** This tab's live request-log array; readers keep its identity, so writers must trim in place. */
 const fetchLog: fetchLog[] = [];
 
-/** Keeps the newest entries within both budgets, always retaining the newest entry whole. */
+/** Redacts credentials before retention, then keeps the newest entries within both budgets. */
 function writeFetchLog(entry: fetchLog): void {
-    fetchLog.unshift(entry);
+    fetchLog.unshift({
+        ...entry,
+        body: redactBodyText(entry.body),
+        header: redactHeaderText(entry.header),
+        response: redactBodyText(entry.response),
+    });
     let retainedChars = 0;
     let length = Math.min(fetchLog.length, FETCH_LOG_MAX_ENTRIES);
     for (let i = 0; i < length; i++) {

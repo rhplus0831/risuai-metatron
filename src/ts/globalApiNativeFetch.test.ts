@@ -31,11 +31,12 @@ vi.mock("./gui/guisize", () => ({}));
 vi.mock("./process/modules", () => ({}));
 vi.mock("./storage/serverAuth", () => ({ getNodeServerProxyAuth: async () => "" }));
 
-import { fetchNative } from "./globalApi.svelte";
+import { fetchNative, getFetchLogs } from "./globalApi.svelte";
 const fetchStub = vi.fn<typeof fetch>();
 const url = "https://example.test/internal";
 const sent = () => fetchStub.mock.calls.at(-1)![1]!;
 beforeEach(() => {
+    getFetchLogs().length = 0;
     fetchStub.mockReset().mockResolvedValue(new Response("ok"));
     vi.stubGlobal("fetch", fetchStub);
     vi.stubGlobal("userScriptFetch", undefined);
@@ -206,6 +207,53 @@ describe.each(["direct fetch", "userscript", "/proxy2"] as const)("fetchNative v
 });
 
 describe("internal fetchNative body contract", () => {
+    it("sends sign-in credentials unchanged and returns the original response while retaining only redacted request data", async () => {
+        const exchange = {
+            grant_type: "authorization_code",
+            code: "sample-code-value",
+            code_verifier: "sample-verifier-value",
+            refresh_token: "sample-refresh-token-value",
+            client_secret: "sample-client-secret-value",
+            client_id: "sample-client",
+        };
+        for (const encoding of ["form", "JSON"] as const) {
+            const body = encoding === "form" ? new URLSearchParams(exchange).toString() : JSON.stringify(exchange);
+            const headers = {
+                Authorization: "Bearer sample-token-value",
+                "X-API-Key": "sample-api-key-value",
+                "Content-Type": encoding === "form" ? "application/x-www-form-urlencoded" : "application/json",
+            };
+            const tokens = { access_token: "sample-access-token-value", refresh_token: "sample-response-token-value" };
+            fetchStub.mockResolvedValueOnce(Response.json(tokens));
+            const originalHeaders = { ...headers };
+
+            const response = await fetchNative(url, { method: "POST", body, headers });
+            expect(sent().headers).toEqual(originalHeaders);
+            expect(new TextDecoder().decode(sent().body as Uint8Array)).toBe(body);
+            expect(headers).toEqual(originalHeaders);
+            await expect(response.json()).resolves.toEqual(tokens);
+
+            const stored = getFetchLogs()[0];
+            expect(JSON.parse(stored.header)).toEqual({
+                Authorization: "[redacted]",
+                "X-API-Key": "[redacted]",
+                "Content-Type": headers["Content-Type"],
+            });
+            const expectedBody = {
+                grant_type: "authorization_code",
+                code: "[redacted]",
+                code_verifier: "[redacted]",
+                refresh_token: "[redacted]",
+                client_secret: "[redacted]",
+                client_id: "sample-client",
+            };
+            expect(
+                encoding === "form" ? Object.fromEntries(new URLSearchParams(stored.body)) : JSON.parse(stored.body),
+            ).toEqual(expectedBody);
+            expect(stored.response).toBe("Streamed Fetch");
+        }
+    });
+
     it("keeps POST as its default for internal callers", async () => {
         await fetchNative(url);
         expect(sent().method).toBe("POST");
