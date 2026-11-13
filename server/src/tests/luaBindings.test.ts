@@ -16,7 +16,7 @@ import { createResourceStore } from "../data/resourceStore.ts";
 import { createSnapshotManager } from "../data/snapshots.ts";
 import { assetLeased, withAssetLocks } from "../http/assetLeases.ts";
 import type { RunningJob } from "../jobs/generationJobs.ts";
-import { loadJobScope, type JobScope } from "../jobs/jobScope.ts";
+import { flushChatMetadata, loadJobScope, type JobScope } from "../jobs/jobScope.ts";
 import { createLuaBindings } from "../lua/bindings.ts";
 import { resolveStorageKey } from "../routes/storage.ts";
 import type { HostContext } from "../scripts/workerPool.ts";
@@ -484,6 +484,166 @@ describe("the job's Lua budget", () => {
 });
 
 describe("the lore reader binding", () => {
+    it("keeps both preview kinds' activation flags local and lets the following send activate and store them", async () => {
+        const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+        const store = createResourceStore({ file: ":memory:", kinds });
+        const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+        try {
+            const first = (name: string) => (store.get(kinds.get(name)!, "main")!.data as { id: string }[])[0].id;
+            const binding = {
+                presetId: first("presets"),
+                modelPresetId: first("modelPresets"),
+                personaId: first("personas"),
+            };
+            const entry = (id: string, decorator: string): loreBook => ({
+                id,
+                key: "dragon",
+                secondkey: "",
+                comment: id,
+                content: `@@${decorator}\n${id}`,
+                insertorder: 100,
+                mode: "normal",
+                alwaysActive: false,
+                selective: false,
+            });
+            store.put(
+                kinds.get("characters")!,
+                "c",
+                {
+                    chaId: "c",
+                    type: "character",
+                    name: "C",
+                    globalLore: [
+                        entry("once", "dont_activate_after_match"),
+                        entry("keep", "keep_activate_after_match"),
+                    ],
+                },
+                null,
+            );
+            const before = { $unrelated: "preserve", $__internal_ka_existing: "true", $__internal_da_spent: "true" };
+            for (const kind of ["preview", "previewPrompt"] as const) {
+                const chatId = kind;
+                store.applyChanges({
+                    chats: [
+                        {
+                            characterId: "c",
+                            chatId,
+                            baseRevision: null,
+                            ops: [
+                                {
+                                    op: "create",
+                                    chat: {
+                                        name: kind,
+                                        fmIndex: -1,
+                                        message: [{ chatId: "u", role: "user", data: "dragon" }],
+                                        promptPresetId: binding.presetId,
+                                        modelPresetId: binding.modelPresetId,
+                                        bindedPersona: binding.personaId,
+                                        scriptstate: before,
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                });
+                const open = (jobKind: typeof kind | "send") => {
+                    const context = {
+                        characterId: "c",
+                        chatId,
+                        ...binding,
+                        mode: "normal" as const,
+                        input: "",
+                        chatRevision: store.chatRevision("c", chatId)!,
+                    };
+                    const signal = new AbortController().signal;
+                    const job: RunningJob = {
+                        id: jobKind,
+                        kind: jobKind,
+                        command: null,
+                        context,
+                        signal,
+                        epoch: store.epoch(),
+                        hooks: NO_GENERATION_HOOKS,
+                        channel: {
+                            notice() {},
+                            ask: async () => ({ outcome: "aborted" }),
+                            callback: async () => ({ outcome: "aborted" }),
+                        },
+                        ownerAttached: () => true,
+                        emit() {},
+                        emitRecords: () => [],
+                        onClientMessage: () => () => {},
+                        write: (build) => store.applyChanges(build() as never, { epoch: store.epoch(), changes: true }),
+                    };
+                    const bindings = createLuaBindings({
+                        job,
+                        scope: loadJobScope(store, kinds, context),
+                        store,
+                        kinds,
+                        rootDir: REPO_ROOT,
+                        savePath: rootDir,
+                        llm: {} as never,
+                        tokens: { count: async (text: string) => text.length } as never,
+                        runCharacterId: "c",
+                        engineCharacterId: "c",
+                    });
+                    const ctx: HostContext = {
+                        identity: context,
+                        access: "safe",
+                        signal,
+                        regex: async () => ({ value: false }),
+                    };
+                    return {
+                        job,
+                        activate: async () =>
+                            (await bindings.services.activateLore(ctx)).actives.map(({ source }) => source).sort(),
+                    };
+                };
+                const preview = open(kind);
+                expect(await preview.activate()).toEqual(["keep", "once"]);
+                // Subsequent activations in this preview see their own one-shot and keep flags.
+                store.applyChanges({
+                    chats: [
+                        {
+                            characterId: "c",
+                            chatId,
+                            baseRevision: store.chatRevision("c", chatId)!,
+                            ops: [{ op: "setText", id: "u", text: "nothing" }],
+                        },
+                    ],
+                });
+                expect(await preview.activate()).toEqual(["keep"]);
+                flushChatMetadata(preview.job);
+                expect(store.chatMeta("c", chatId)!.data.scriptstate).toEqual(before);
+
+                store.applyChanges({
+                    chats: [
+                        {
+                            characterId: "c",
+                            chatId,
+                            baseRevision: store.chatRevision("c", chatId)!,
+                            ops: [{ op: "setText", id: "u", text: "dragon" }],
+                        },
+                    ],
+                });
+                const send = open("send");
+                expect(await send.activate()).toEqual(["keep", "once"]);
+                flushChatMetadata(send.job);
+                expect(store.chatMeta("c", chatId)!.data.scriptstate).toEqual({
+                    ...before,
+                    $__internal_da_once: "true",
+                    $__internal_ka_keep: "true",
+                });
+                const nextSend = open("send");
+                expect(await nextSend.activate()).toEqual(["keep"]);
+                flushChatMetadata(nextSend.job);
+            }
+        } finally {
+            clock.mockRestore();
+            store.close();
+        }
+    });
+
     it("getLoreBooksMain searches local, merged owner, and module lore by comment and parses their content", () => {
         const entry = (id: string, content: string, comment = "matching"): loreBook => ({
             id,

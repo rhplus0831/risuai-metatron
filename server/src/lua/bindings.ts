@@ -384,6 +384,8 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     const { job, scope, store, kinds } = deps;
     const metadata = deps.frozen ? null : chatMetadataFor(job, store, scope);
+    // Repeated preview activations see their own flags without consuming lore in the next send.
+    const previewLoreVars = job.kind === "preview" || job.kind === "previewPrompt" ? new Map<string, string>() : null;
     const kindOf = (name: string): ResourceKind => {
         const kind = kinds.get(name);
         if (!kind) {
@@ -1309,9 +1311,14 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             {
                 clone: (value) => structuredClone(value),
                 findCharacterName: (id) => cbsHost.findCharacterById(id)?.name,
-                getChatVar: (key) => cbsHost.getChatVar(key, ref),
+                getChatVar: (key) => previewLoreVars?.get(key) ?? cbsHost.getChatVar(key, ref),
                 setChatVar: (key, value) => {
-                    setChatVar(key, value, ctx);
+                    if (previewLoreVars) {
+                        fence(ctx);
+                        previewLoreVars.set(key, value);
+                    } else {
+                        setChatVar(key, value, ctx);
+                    }
                 },
                 pickHashRand,
                 parseCBS: (text) => evaluator.risuChatParser(text, { chara: selectedChar, chatRef: ref }),

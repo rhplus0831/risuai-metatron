@@ -29,7 +29,6 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 
 - [Assets](#assets): 1
 - [Characters](#characters): 2
-- [Chat pipeline](#chat-pipeline): 1
 - [Memory](#memory): 1
 - [Plugins](#plugins): 3
 - [Selection](#selection): 1
@@ -79,26 +78,6 @@ confirmed by a second reader through the real resource sync: the server record h
 
 **Suggested handling:** a function binding whose setter refuses a blank or non-finite value, so the draft stays in the
 box and never enters the record.
-
-## Chat pipeline
-
-### A preview may store lore activation flags
-
-A `preview` or `previewPrompt` job runs the same `activateLore` as a send (`server/src/prompt/runner.ts:1626`), its
-bindings are not frozen, and `runSend` flushes the job's chat metadata before it returns the preview (`runner.ts:616`).
-Activation queues `__internal_ka_<id>` and `__internal_da_<id>` through `setChatVar`
-(`server/src/lua/bindings.ts:555`), so a preview may write those flags to the chat, while `rebuildLocks`' comment in
-`server/src/jobs/generationJobs.ts:352` says a preview writes nothing. Found 2026-11-13 by the Lore Budget Send Stop
-plan's audit. Reproduced 2026-11-14 in a running server with a browser (wide review, cut X1, and a second run): both
-preview kinds store the flags (`runner.ts:631`, `bindings.ts:576`), and the next real send leaves the entry out.
-
-**Why it matters:** an entry with `dont_activate_after_match` that a preview activated stays off in the send the
-preview was meant to show.
-
-**Suggested handling:** give a preview's lore activation a detached variable overlay in the job bindings, so its
-reads see the flags set during the preview and none reaches the chat's metadata, with a test that a preview leaves
-`scriptstate` as it was. Removing the flush at `runner.ts:631` alone is not enough: `flushChatMetadata`
-(`server/src/jobs/jobScope.ts:660`) is reached on other paths too.
 
 ## Memory
 
