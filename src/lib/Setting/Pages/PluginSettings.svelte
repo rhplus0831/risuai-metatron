@@ -23,6 +23,8 @@
     import { resetPluginPermissions } from "src/ts/plugins/apiV3/v3.svelte";
     import PluginDataSettings from "./PluginDataSettings.svelte";
     import { deleteOwnedPluginStorage } from "src/ts/storage/pluginStorageStore.svelte";
+    import { recordValueIdentity } from "src/ts/storage/records.svelte";
+    import type { RisuPlugin } from "src/ts/plugins/plugins.svelte";
 
     /**
      * Edits the persisted plugin list and arguments. Legacy entries stay visible with the
@@ -34,6 +36,19 @@
     let showParams = $state([]);
     let showPluginData = $state(false);
     let changingPermissions = $state(false);
+
+    const popupEditorContexts = new Map<string, { row: symbol }>();
+    function pluginArgumentContext(plugin: RisuPlugin, index: number, arg: string) {
+        const key = `${index}\u0000${plugin.name}\u0000${arg}`;
+        const row = recordValueIdentity(plugin);
+        let context = popupEditorContexts.get(key);
+        // Record wrappers retain their path when an outside update replaces the plugin at that index.
+        if (context?.row !== row) {
+            context = { row };
+            popupEditorContexts.set(key, context);
+        }
+        return context;
+    }
 </script>
 
 <h2 class="mb-2 text-2xl font-bold mt-2">{language.plugin}</h2>
@@ -255,7 +270,7 @@
                                 {#if plugin?.argMeta?.[arg]?.textarea}
                                     <TextAreaInput
                                         bind:value={settings.plugins[i].realArg[arg] as string}
-                                        popupEditorContext={`${plugin.name}\u0000${arg}`}
+                                        popupEditorContext={pluginArgumentContext(plugin, i, arg)}
                                         placeholder={plugin?.argMeta?.[arg]?.placeholder}
                                     />
                                 {:else if plugin?.argMeta?.[arg]?.radio}

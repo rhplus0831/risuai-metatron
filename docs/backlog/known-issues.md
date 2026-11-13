@@ -11,7 +11,6 @@ owner's decision, except the persistence entry below.
 
 - [characters-modules](#characters-modules) (1)
 - [persistence](#persistence) (1)
-- [plugin-sandbox](#plugin-sandbox) (1)
 - [settings-i18n](#settings-i18n) (1)
 - [structured-memory](#structured-memory) (1)
 
@@ -37,20 +36,6 @@ Guide: [Persistence: Database, Records, Mutation Stores](../structure/persistenc
   deletion arrives the stale id renders nothing (the sidebar and pins skip absent and trashed characters) and stays
   through selection and idle refresh; the next local add, remove, restore, or reorder (`checkCharOrder`) or the next
   boot repair removes it. Not fixed: hidden order metadata only; the owner has not yet decided to keep it.
-
-## plugin-sandbox
-
-Guide: [Plugins: v3 Sandbox, Host API, Hooks, Storage, Permissions](../structure/plugin-sandbox.md#known-hazards).
-
-- Two installed plugins with the same name and a textarea argument share one popup editor context, and a popup draft
-  can be saved into the other plugin. `setPlugins` (`src/ts/storage/collectionStore.svelte.ts`) accepts duplicate
-  names (a plugin list from a backup or a whole-resource write; the install button replaces the first match);
-  `PluginSettings.svelte:257` binds an unkeyed row's textarea to `settings.plugins[i].realArg[arg]` with the context
-  `${plugin.name}\u0000${arg}`, and `TextAreaInput.svelte`'s value and context checks still match after the rows
-  change. Reproduced on 2026-11-14 with two browser contexts (the wide review's run of the guide's unconfirmed claim,
-  and a second run): with the popup open on one plugin and both arguments holding the same text, another client
-  reversing the list, or removing the edited plugin, left the popup open, and closing it stored the draft in the other
-  plugin. A distinct name or a distinct starting text makes the popup close and discard. Not fixed.
 
 ## settings-i18n
 
