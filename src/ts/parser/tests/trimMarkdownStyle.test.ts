@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import type { Window as HappyDOMWindow } from "happy-dom";
 import { applyMarkdownToNode, ParseMarkdown, trimMarkdown, trimMarkdownSharingStyles } from "../parser.svelte";
 
 //#region module mocks
@@ -112,6 +113,28 @@ describe("sanitized links", () => {
             ["https://example.com/before", "_blank", "noopener noreferrer"],
             ["https://example.com/after", "_blank", "noopener noreferrer"],
         ]);
+    });
+});
+
+describe("sanitized embeds", () => {
+    it("keeps only YouTube embed iframes in both trim paths", () => {
+        const browserSettings = (window as unknown as HappyDOMWindow).happyDOM.settings;
+        const previous = browserSettings.disableIframePageLoading;
+        // The sanitizer parses iframe elements; these URL examples must stay inert.
+        browserSettings.disableIframePageLoading = true;
+        try {
+            const input = `<iframe src="https://www.youtube.com/embed/example"></iframe>
+                <iframe src="https://player.vimeo.com/video/1"></iframe>`;
+            for (const html of [trimMarkdown(input), trimMarkdownSharingStyles(input).html]) {
+                const body = parse(html);
+
+                expect([...body.querySelectorAll("iframe")].map((frame) => frame.getAttribute("src"))).toEqual([
+                    "https://www.youtube.com/embed/example",
+                ]);
+            }
+        } finally {
+            browserSettings.disableIframePageLoading = previous;
+        }
     });
 });
 
