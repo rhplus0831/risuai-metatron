@@ -186,6 +186,28 @@ describe("applyTriggerChat", () => {
         expect(s.scope.chatRevision).toBe(s.read().revision);
     });
 
+    it("merges a trigger edit by message id after another writer inserts a preceding message", () => {
+        const s = setup();
+        const base = s.baseline();
+        const result = structuredClone(base.chat);
+        result.message[1] = { ...result.message[1], data: "edited by trigger" };
+        s.external([
+            { op: "append", messages: [m("inserted", "inserted meanwhile")], anchor: { after: "m1" } },
+            { op: "setMessage", message: m("m2", "hi there", "user", { name: "external name" }) },
+        ]);
+
+        s.apply(base, result);
+
+        expect(s.ids()).toEqual(["m1", "inserted", "m2", "m3"]);
+        expect(s.texts()).toEqual([
+            "char:greeting",
+            "user:inserted meanwhile",
+            "user:edited by trigger",
+            "char:and more",
+        ]);
+        expect(s.stored().message[2]).toMatchObject({ chatId: "m2", data: "edited by trigger", name: "external name" });
+    });
+
     it("removes the messages the trigger dropped in one op, skipping one already gone", () => {
         const s = setup();
         const base = s.baseline();
