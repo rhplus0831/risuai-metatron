@@ -1574,6 +1574,8 @@ function convertCharbook(arg: {
             loreCache: book.extensions?.risu_loreCache ?? null,
             useRegex: book.use_regex ?? false,
             folder: book.folder,
+            // Keep current lore out of the legacy text migration when the character is created.
+            bookVersion: typeof extensions.risu_bookVersion === "number" ? extensions.risu_bookVersion : undefined,
         });
     }
 
@@ -1595,6 +1597,7 @@ function createBaseV2(char: ClientCharacter) {
         let ext: {
             risu_case_sensitive?: boolean;
             risu_activationPercent?: number;
+            risu_bookVersion?: number;
             risu_loreCache?: {
                 key: string;
                 data: string[];
@@ -1604,6 +1607,7 @@ function createBaseV2(char: ClientCharacter) {
         let caseSensitive = ext.risu_case_sensitive ?? false;
         ext.risu_activationPercent = lore.activationPercent;
         ext.risu_loreCache = lore.loreCache;
+        ext.risu_bookVersion = lore.bookVersion;
 
         charBook.push({
             keys: lore.key.split(",").map((r) => r.trim()),
@@ -2118,6 +2122,7 @@ export function createBaseV3(char: ClientCharacter) {
         let ext: {
             risu_case_sensitive?: boolean;
             risu_activationPercent?: number;
+            risu_bookVersion?: number;
             risu_loreCache?: {
                 key: string;
                 data: string[];
@@ -2127,6 +2132,7 @@ export function createBaseV3(char: ClientCharacter) {
         let caseSensitive = ext.risu_case_sensitive ?? false;
         ext.risu_activationPercent = lore.activationPercent;
         ext.risu_loreCache = lore.loreCache;
+        ext.risu_bookVersion = lore.bookVersion;
 
         charBook.push({
             ...({
