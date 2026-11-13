@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -246,6 +246,34 @@ it("stages and installs source revisions, order, fences and exact checkpoint byt
         ]);
     } finally {
         store.close();
+    }
+});
+
+it("refuses an existing staging output without changing its bytes", async () => {
+    const { source, output } = fixture();
+    const existing = "an output owned by another staging attempt";
+    writeFileSync(output, existing);
+
+    await expect(stageValidatedSnapshot(source, output, kinds)).rejects.toMatchObject({ code: "EEXIST" });
+    expect(readFileSync(output, "utf8")).toBe(existing);
+});
+
+it("closes the staged SQLite writer before returning its file report", async () => {
+    const { source, output } = fixture();
+    const exec = DatabaseSync.prototype.exec;
+    let writer: DatabaseSync | undefined;
+    // Capture the real I/O handle by its file, without replacing the writer or its close.
+    vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (this: DatabaseSync, sql) {
+        if (this.location() === output) writer = this;
+        return exec.call(this, sql);
+    });
+    try {
+        await stageValidatedSnapshot(source, output, kinds);
+        expect(writer).toBeDefined();
+        expect(writer!.isOpen).toBe(false);
+    } finally {
+        // Also release the handle when testing a regression that leaves it open.
+        if (writer?.isOpen) writer.close();
     }
 });
 
