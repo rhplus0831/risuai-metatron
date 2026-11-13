@@ -4113,6 +4113,60 @@ describe("structured memory job hand-offs", () => {
         }
     });
 
+    it("sends with unreadable stored event fields without rewriting their rows", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        const store = createResourceStore({
+            file: path.join(rootDir, "save", "data", "resources.sqlite"),
+            kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS),
+        });
+        const saved = new DatabaseSync(path.join(rootDir, "save", "data", "resources.sqlite"), { readOnly: true });
+        try {
+            await patchHypaV3({
+                structured: {
+                    cadence: "manual",
+                    windowTurns: 1,
+                    laneSplit: "manual",
+                    laneTargets: { flow: 1000, pages: 0, events: 1000, evidence: 1000, threads: 0 },
+                },
+            });
+            const chaId = await seedCharacter({ messages });
+            const events = [
+                { field: "summary", value: null },
+                { field: "knowledge", value: {} },
+                { field: "sources", value: 7 },
+                { field: "keyLines", value: null },
+                { field: "participants", value: {} },
+            ].map(({ field, value }) => ({
+                ...memoryRecords([`${chaId}-${field}`], "Unreadable stored event").events[0],
+                sources: messages.slice(0, 2).map((message, index) => ({
+                    messageId: message.chatId,
+                    index,
+                    hash: messageSourceHash(message as Message),
+                })),
+                [field]: value,
+            }));
+            writeMemory(store, chaId, "k", { events });
+            const rows = () =>
+                saved
+                    .prepare("SELECT data FROM memory_events WHERE id IN (SELECT value FROM json_each(?)) ORDER BY seq")
+                    .all(JSON.stringify(events.map(({ id }) => id)));
+            const before = rows();
+            expect(before).toHaveLength(5);
+            const result = await job("send", chaId, { input: "Continue", userMessageId: "u3" });
+            expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+            expect(mains()).toHaveLength(1);
+            expect(summaries()).toEqual([]);
+            expect(questions(result.events)).toEqual([]);
+            expect(JSON.stringify(mains()[0].body.messages)).not.toContain("Unreadable stored event");
+            expect((await readChat(chaId)).data.message.at(-1).data).toBe("Main reply.");
+            expect(rows()).toEqual(before);
+        } finally {
+            saved.close();
+            store.close();
+            vi.useRealTimers();
+        }
+    });
+
     it("hands off due input jobs and pending manual starts, but no idle, preview or service-free job", async () => {
         for (const row of [
             { kind: "send", cadence: "everyTurn", manual: false, count: 1 },

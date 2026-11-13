@@ -15,6 +15,7 @@ import {
     type MemoryPage,
     type MemoryReceipt,
     type MemoryThread,
+    memoryEventHasReadableFields,
     memoryThreadEnded,
     normalizeStructuredMemorySettings,
 } from "../../../../../shared/structuredMemory.ts";
@@ -173,7 +174,9 @@ export function readMemoryRecords(
         ({ id }) => store.memory.readRecord(chaId, chatId, "pages", id)?.data ?? [],
     );
     return {
-        events: events.flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "events", id)?.data ?? []),
+        events: events
+            .flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "events", id)?.data ?? [])
+            .filter(memoryEventHasReadableFields),
         threads: threads.flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "threads", id)?.data ?? []),
         pages,
         stage: pages.find(({ type }) => type === "scene")?.participants ?? [],

@@ -7,6 +7,7 @@ import type { Message } from "../../../../../shared/database.ts";
 import { createHypaV3Preset } from "../../../../../shared/hypaV3Presets.ts";
 import type { OpenAIChat } from "../../../../../shared/openai.ts";
 import {
+    coveredMessages,
     normalizeStructuredMemorySettings,
     type MemoryEvent,
     type MemoryKnowledge,
@@ -23,12 +24,14 @@ import { buildMemoryCard } from "./card.ts";
 import type { ReadEntry } from "./lanes.ts";
 import {
     eventVectorTexts,
+    recordVectorTexts,
     readsAsPast,
     RETRIEVAL_LIMITS,
     retrieveLanes,
     shareRecordEmbeddingAllowance,
 } from "./retrieve.ts";
 import { readEntries, selectMemory, type MemorySelectionInput } from "./step.ts";
+import { recordedMessages } from "./window.ts";
 
 const event = (id: string, sources = ["old"], fields: Partial<MemoryEvent> = {}): MemoryEvent => ({
     ...memoryRecords([id], id).events[0],
@@ -570,6 +573,52 @@ describe("selectMemory evidence from trimmed history", () => {
 });
 
 describe("structured memory retrieval", () => {
+    it("skips unreadable event fields in coverage, recording, warming and retrieval while keeping legacy fields optional", async () => {
+        const h = harness();
+        const malformed: MemoryEvent[] = [];
+        for (const field of ["summary", "knowledge", "sources", "keyLines", "participants"]) {
+            for (const [variant, value] of Object.entries({ missing: undefined, null: null, object: {}, scalar: 7 })) {
+                if (value === undefined && (field === "keyLines" || field === "participants")) continue;
+                malformed.push({ ...event(`${field}-${variant}`), [field]: value });
+            }
+        }
+        const before = structuredClone(malformed);
+        expect([...coveredMessages(malformed)]).toEqual([]);
+        expect([...recordedMessages(malformed)]).toEqual([]);
+        expect(recordVectorTexts({ events: malformed, pages: [] }, { events: true, pages: true })).toEqual({
+            events: [],
+            pages: [],
+        });
+        const retrieved = await retrieveLanes(h.host, input({ events: malformed }));
+        expect(retrieved.lanes.flatMap(({ items }) => items)).toEqual([]);
+        expect(h.calls).toEqual([]);
+        expect(malformed).toEqual(before);
+
+        const legacy: Partial<MemoryEvent> = event("legacy", ["legacy-source"]);
+        delete legacy.keyLines;
+        delete legacy.participants;
+        delete legacy.storyTime;
+        const readable = [
+            legacy as MemoryEvent,
+            event("stale", ["stale-source"], { status: "stale" }),
+            event("retracted", ["retracted-source"], { status: "retracted" }),
+        ];
+        expect([...coveredMessages(readable)]).toEqual(["legacy-source"]);
+        expect([...recordedMessages(readable)]).toEqual(["legacy-source", "stale-source", "retracted-source"]);
+        expect(recordVectorTexts({ events: readable, pages: [] }, { events: true, pages: true })).toEqual({
+            events: ["legacy"],
+            pages: [],
+        });
+        const valid = await retrieveLanes(
+            h.host,
+            input({
+                events: readable,
+                entries: [entry("legacy-source"), entry("query", "Continue.", "user"), entry("reply")],
+            }),
+        );
+        expect(items(valid, "events").map(({ id }) => id)).toEqual(["legacy"]);
+    });
+
     it("uses input lane targets even when stored counts disagree, keeping the required cap separate", async () => {
         const h = harness();
         const targets = { flow: 400, pages: 300, events: 150, evidence: 100, threads: 50 };

@@ -5,6 +5,7 @@ import type { HypaV3Settings } from "../../../../../shared/memory.ts";
 import {
     type MemoryAnchoredSource,
     type MemoryEvent,
+    memoryEventHasReadableFields,
     memoryRerecordTarget,
     memoryScreenReason,
     memoryWriterReads,
@@ -115,13 +116,18 @@ export function writerCeiling(messages: readonly Message[], continueMessageId?: 
 }
 
 /**
- * The ids cited by any of `events`, retracted and stale ones included, so nothing automatically brings
+ * The ids cited by readable `events`, retracted and stale ones included, so nothing automatically brings
  * back what the user retracted. A failed run writes no event, so its window stays open and is retried.
  */
-export function recordedMessages(events: readonly Pick<MemoryEvent, "sources">[]): Set<string> {
+export function recordedMessages(
+    events: readonly Pick<MemoryEvent, "sources" | "summary" | "knowledge" | "keyLines" | "participants">[],
+): Set<string> {
     const recorded = new Set<string>();
-    for (const { sources } of events) {
-        for (const source of sources) {
+    for (const event of events) {
+        if (!memoryEventHasReadableFields(event)) {
+            continue;
+        }
+        for (const source of storedMemorySources(event.sources)) {
             recorded.add(source.messageId);
         }
     }

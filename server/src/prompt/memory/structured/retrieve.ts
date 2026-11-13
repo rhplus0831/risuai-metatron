@@ -4,6 +4,7 @@ import {
     MEMORY_STALE_REASONS,
     type MemoryEvent,
     memoryEventCovers,
+    memoryEventHasReadableFields,
     type MemoryKnowledge,
     type MemoryPage,
     type MemorySection,
@@ -717,7 +718,15 @@ export function recordVectorTexts(
     const priority = (page: MemoryPage) => PAGE_MATCHES.indexOf(found.get(page.id) ?? "similarity");
     sections.sort((a, b) => priority(a.page) - priority(b.page) || b.section.updatedAt - a.section.updatedAt);
     return {
-        events: lanes.events ? [...new Set(records.events.filter(memoryEventCovers).flatMap(eventVectorTexts))] : [],
+        events: lanes.events
+            ? [
+                  ...new Set(
+                      records.events
+                          .filter((event) => memoryEventHasReadableFields(event) && memoryEventCovers(event))
+                          .flatMap(eventVectorTexts),
+                  ),
+              ]
+            : [],
         pages: [...new Set(sections.map(({ page, section }) => sectionVectorText(page, section)))],
     };
 }
@@ -932,7 +941,9 @@ async function relatedPages(
  * false denial of it.
  */
 export async function prepareRetrieval(input: RetrievalInput) {
-    const { events, pages, entries, window, settings, targets } = input;
+    const { pages, entries, window, settings, targets } = input;
+    // Older restores admitted malformed fields; leave those events out without changing stored rows.
+    const events = input.events.filter(memoryEventHasReadableFields);
     const stage = new Set(input.stage);
     const positions = new Map<string, number>();
     entries.forEach(({ messageId }, index) => {

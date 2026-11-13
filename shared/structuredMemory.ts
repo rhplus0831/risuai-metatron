@@ -1451,6 +1451,18 @@ export function memoryEventCovers({ status, suppressed }: Pick<MemoryEvent, "sta
     return status === "active" && !suppressed;
 }
 
+/** The event fields prompt selection needs; older records may omit key lines and participants. */
+export function memoryEventHasReadableFields(event: unknown): boolean {
+    return (
+        isPlainObject(event) &&
+        typeof event.summary === "string" &&
+        Array.isArray(event.knowledge) &&
+        Array.isArray(event.sources) &&
+        (event.keyLines === undefined || Array.isArray(event.keyLines)) &&
+        (event.participants === undefined || Array.isArray(event.participants))
+    );
+}
+
 /**
  * The ids of the messages that may leave the prompt: cited by an event that is active and not
  * suppressed, so a retracted or stale event never stands in for its messages.
@@ -1458,7 +1470,7 @@ export function memoryEventCovers({ status, suppressed }: Pick<MemoryEvent, "sta
 export function coveredMessages(events: readonly MemoryEvent[]): Set<string> {
     const covered = new Set<string>();
     for (const event of events) {
-        if (memoryEventCovers(event)) {
+        if (memoryEventHasReadableFields(event) && memoryEventCovers(event)) {
             for (const source of event.sources) {
                 covered.add(source.messageId);
             }
