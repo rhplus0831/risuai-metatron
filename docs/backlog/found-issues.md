@@ -28,7 +28,6 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 ## Contents
 
 - [Assets](#assets): 1
-- [Characters](#characters): 1
 - [Selection](#selection): 1
 - [Server generation](#server-generation): 1
 - [Settings](#settings): 3
@@ -47,21 +46,6 @@ lock) has no test that fails when the lock is removed.
 
 **Suggested handling:** hold thumbnail generation at a controlled point, start the sweep, assert it waits, release,
 and check the file and cache; cover the reverse order too.
-
-## Characters
-
-### Autosave stores a cleared VOICEVOX scale as null
-
-The four VOICEVOX scale inputs bind straight to the character record and repair a non-finite value only in `onChange`
-(`src/lib/SideBars/CharConfig.svelte:1208`, and `:1216`, `:1224`, `:1232`). A cleared field that still has focus holds
-`null`, and autosave writes it before the change event runs. Found 2026-11-14 by the wide review (cut F6) and
-confirmed by a second reader through the real resource sync: the server record held `null` while the field had focus.
-`src/ts/process/tts.ts:303` passes the scales to VOICEVOX without a fallback.
-
-**Why it matters:** an ordinary edit stores an invalid scale that other clients and a reload read.
-
-**Suggested handling:** a function binding whose setter refuses a blank or non-finite value, so the draft stays in the
-box and never enters the record.
 
 ## Selection
 

@@ -1,7 +1,17 @@
 // @vitest-environment happy-dom
 
 import { flushSync, mount, unmount } from "svelte";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+
+const io = vi.hoisted(() => ({ server: null as any }));
+vi.mock("src/ts/storage/serverAuth", async () =>
+    (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock({
+        authFetch: async (path, init, options) => {
+            options?.beforeDispatch?.();
+            return io.server.fetch(path, init);
+        },
+    }),
+);
 
 vi.mock("src/ts/globalApi.svelte", async () =>
     (await import("src/ts/tests/globalApiMock")).createGlobalApiMock({
@@ -26,11 +36,15 @@ vi.mock("src/lib/SideBars/Toggles.svelte", () => ({ default: () => {} }));
 import { CharConfigSubMenu } from "src/ts/stores.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
 import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
+import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import { bootMutations, warmMutationGraph } from "src/ts/storage/tests/mutationStoresHarness";
 import CharConfig from "./CharConfig.svelte";
 
 let target: HTMLDivElement;
 let instance: ReturnType<typeof mount>;
+
+beforeAll(() => warmMutationGraph());
 
 beforeEach(() => {
     vi.useFakeTimers();
@@ -92,5 +106,55 @@ it.each([
         expect(config[key]).toBe(expected);
         expect(JSON.parse(JSON.stringify(config))[key]).toBe(expected);
         expect(input.value).toBe(String(expected));
+    }
+});
+
+it("keeps every focused blank VOICEVOX scale out of persisted records until change restores its default", async () => {
+    await unmount(instance);
+    const { fake, sync, characterStore, record } = await bootMutations((server) => (io.server = server));
+    try {
+        settings.memoryTranslateMedia.voicevoxUrl = "http://voicevox.test";
+        characterStore.updateCharacter("c", {
+            ttsMode: "VOICEVOX",
+            voicevoxConfig: { SPEED_SCALE: 1, PITCH_SCALE: 0, VOLUME_SCALE: 1, INTONATION_SCALE: 1 },
+        });
+        selectCharacter("c");
+        CharConfigSubMenu.set(5);
+        instance = mount(CharConfig, { target });
+        flushSync();
+
+        for (const [label, key, fallback, finite] of [
+            ["Speed scale", "SPEED_SCALE", 1, 1.4],
+            ["Pitch scale", "PITCH_SCALE", 0, -0.25],
+            ["Volume scale", "VOLUME_SCALE", 1, 0.6],
+            ["Intonation scale", "INTONATION_SCALE", 1, 1.2],
+        ] as const) {
+            const caption = [...target.querySelectorAll("span")].find((node) => node.textContent === label)!;
+            const input = caption.nextElementSibling as HTMLInputElement;
+            input.focus();
+            input.value = String(finite);
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            flushSync();
+            await sync.flushResources();
+            expect(record("characters", "c").voicevoxConfig[key], label).toBe(finite);
+
+            input.value = "";
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            flushSync();
+            await sync.flushResources();
+            expect(document.activeElement).toBe(input);
+            expect(input.value, label).toBe("");
+            expect(selectedCharacter()!.voicevoxConfig[key], label).toBe(finite);
+            expect(record("characters", "c").voicevoxConfig[key], label).toBe(finite);
+
+            input.dispatchEvent(new Event("change", { bubbles: true }));
+            flushSync();
+            await sync.flushResources();
+            expect(input.value, label).toBe(String(fallback));
+            expect(record("characters", "c").voicevoxConfig[key], label).toBe(fallback);
+        }
+    } finally {
+        sync.stopResourceSync();
+        fake.close();
     }
 });

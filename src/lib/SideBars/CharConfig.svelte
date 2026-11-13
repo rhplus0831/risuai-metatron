@@ -102,10 +102,13 @@
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
 
-    function resetNonFiniteVoicevoxScale(key: keyof typeof VOICEVOX_CONFIG_DEFAULTS) {
-        const config = currentCharacter.voicevoxConfig;
-        if (!Number.isFinite(config[key])) {
-            config[key] = VOICEVOX_CONFIG_DEFAULTS[key];
+    function setVoicevoxScale(key: keyof typeof VOICEVOX_CONFIG_DEFAULTS, value: number) {
+        if (Number.isFinite(value)) currentCharacter.voicevoxConfig[key] = value;
+    }
+
+    function resetNonFiniteVoicevoxScale(key: keyof typeof VOICEVOX_CONFIG_DEFAULTS, value: number) {
+        if (!Number.isFinite(value)) {
+            currentCharacter.voicevoxConfig[key] = VOICEVOX_CONFIG_DEFAULTS[key];
         }
     }
 
@@ -1205,32 +1208,46 @@
             <NumberInput
                 size={"sm"}
                 marginBottom
-                bind:value={currentCharacter.voicevoxConfig.SPEED_SCALE}
-                onChange={() => resetNonFiniteVoicevoxScale("SPEED_SCALE")}
+                bind:value={
+                    () => currentCharacter.voicevoxConfig.SPEED_SCALE, (value) => setVoicevoxScale("SPEED_SCALE", value)
+                }
+                onChange={({ currentTarget }) =>
+                    resetNonFiniteVoicevoxScale("SPEED_SCALE", currentTarget.valueAsNumber)}
             />
 
             <span class="text-textcolor">Pitch scale</span>
             <NumberInput
                 size={"sm"}
                 marginBottom
-                bind:value={currentCharacter.voicevoxConfig.PITCH_SCALE}
-                onChange={() => resetNonFiniteVoicevoxScale("PITCH_SCALE")}
+                bind:value={
+                    () => currentCharacter.voicevoxConfig.PITCH_SCALE, (value) => setVoicevoxScale("PITCH_SCALE", value)
+                }
+                onChange={({ currentTarget }) =>
+                    resetNonFiniteVoicevoxScale("PITCH_SCALE", currentTarget.valueAsNumber)}
             />
 
             <span class="text-textcolor">Volume scale</span>
             <NumberInput
                 size={"sm"}
                 marginBottom
-                bind:value={currentCharacter.voicevoxConfig.VOLUME_SCALE}
-                onChange={() => resetNonFiniteVoicevoxScale("VOLUME_SCALE")}
+                bind:value={
+                    () => currentCharacter.voicevoxConfig.VOLUME_SCALE,
+                    (value) => setVoicevoxScale("VOLUME_SCALE", value)
+                }
+                onChange={({ currentTarget }) =>
+                    resetNonFiniteVoicevoxScale("VOLUME_SCALE", currentTarget.valueAsNumber)}
             />
 
             <span class="text-textcolor">Intonation scale</span>
             <NumberInput
                 size={"sm"}
                 marginBottom
-                bind:value={currentCharacter.voicevoxConfig.INTONATION_SCALE}
-                onChange={() => resetNonFiniteVoicevoxScale("INTONATION_SCALE")}
+                bind:value={
+                    () => currentCharacter.voicevoxConfig.INTONATION_SCALE,
+                    (value) => setVoicevoxScale("INTONATION_SCALE", value)
+                }
+                onChange={({ currentTarget }) =>
+                    resetNonFiniteVoicevoxScale("INTONATION_SCALE", currentTarget.valueAsNumber)}
             />
             <span class="text-sm mb-2 text-textcolor2"
                 >To use VOICEVOX, you need to run a colab and put the localtunnel URL in "Settings → Voice & Emotion".
