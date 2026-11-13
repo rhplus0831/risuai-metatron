@@ -30,7 +30,7 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 - [Assets](#assets): 1
 - [Characters](#characters): 2
 - [Chat pipeline](#chat-pipeline): 1
-- [Memory](#memory): 4
+- [Memory](#memory): 3
 - [Plugins](#plugins): 3
 - [Selection](#selection): 1
 - [Server generation](#server-generation): 2
@@ -156,21 +156,6 @@ Events recorded since are not affected.
 **Suggested handling:** carry the speaker change from the chat store through `MessagesChanged`, and let
 reconciliation store a state for the affected version-1 anchors that the read side and the automatic repair
 recognize (or upgrade only those anchors). No migration of every row.
-
-### Structured memory edits succeed during a restore's maintenance halt
-
-The structured memory routes receive no maintenance gate: `/edits` checks only the chat's fence before
-`store.memory.write` (`server/src/routes/structuredMemory.ts:1099`, `:1170`), and the fence in `server/src/app.ts:953`
-looks at tasks, jobs, and rebuilds. Found 2026-11-14 by the wide review (cut E6) and confirmed by a second reader:
-inside `snapshots.withMaintenance`, after the safety snapshot, an ordinary resource write answered 503 and a section
-edit answered 200; the edit was live and absent from the safety copy. The restore's replacement of the database was
-read, not run.
-
-**Why it matters:** an edit acknowledged during a restore is overwritten by it and is not in the safety snapshot
-either.
-
-**Suggested handling:** pass the gate into the route registration and refuse with 503 immediately before each
-mutation, on every mutating route.
 
 ## Plugins
 

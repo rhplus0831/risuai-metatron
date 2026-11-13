@@ -4214,3 +4214,79 @@ it("lists live unsupported pages in contents order and answers none when health 
         spy.mockRestore();
     }
 });
+
+it.each([
+    ["edits", { edit: { kind: "section", pageId: "p", heading: "Facts", body: "Changed" } }],
+    ["revert", { pageId: "p", historyId: "writer-change" }],
+    ["inherit", { sourceChatId: "other" }],
+    ["restore", { pages: [page("restored")], events: [], threads: [] }],
+    ["page-tools", { tool: { kind: "trash", pageId: "p" } }],
+    ["import", { files: [importPageFile] }],
+    ["adopt", {}],
+    ["decline", {}],
+    ["reset-summaries", {}],
+    ["rebuild/abandon", {}],
+])("refuses %s during restore maintenance while keeping reads available", async (route, body) => {
+    const s = await server();
+    s.write({ pages: [page("p")], events: [event("e")] });
+    const before = memorySnapshot(s, chatId);
+    const chatBefore = s.store.readChatSource(characterId, chatId);
+    const ui = await answer(await s.get("ui", "main"));
+    await s.context.snapshots.withMaintenance(async () => {
+        const resource = await s.put("ui", "main", { baseRevision: ui.revision, data: ui.data });
+        expect(resource.status).toBe(503);
+        const response = await s.json(`${base}/${route}`, { revision: before.contents.revision, ...body });
+        expect(response.status).toBe(503);
+        expect(response.headers.get("retry-after")).toBe(resource.headers.get("retry-after"));
+        expect(response.headers.get("retry-after")).toBe("5");
+        expect(await response.json()).toEqual(await resource.json());
+        expect((await answer(await s.request(`${base}/records/pages/p`))).data).toEqual(page("p"));
+        expect((await answer(await s.request(base))).revision).toBe(before.contents.revision);
+        expect(memorySnapshot(s, chatId)).toEqual(before);
+        expect(s.store.readChatSource(characterId, chatId)).toEqual(chatBefore);
+    });
+});
+
+it("refuses an edit whose body finishes after restore maintenance begins", async () => {
+    const s = await server();
+    s.write({ pages: [page("p")] });
+    const before = memorySnapshot(s, chatId);
+    const entered = deferred();
+    const release = deferred();
+    const response = s.app.request(`${base}/edits`, {
+        method: "POST",
+        headers: await s.headers({ "content-type": "application/json" }),
+        body: new ReadableStream<Uint8Array>(
+            {
+                async pull(controller) {
+                    entered.resolve();
+                    await release.promise;
+                    controller.enqueue(
+                        Buffer.from(
+                            JSON.stringify({
+                                revision: before.contents.revision,
+                                edit: { kind: "section", pageId: "p", heading: "Facts", body: "Changed" },
+                            }),
+                        ),
+                    );
+                    controller.close();
+                },
+            },
+            { highWaterMark: 0 },
+        ),
+        duplex: "half",
+    } as RequestInit);
+    await entered.promise;
+    await s.context.snapshots.withMaintenance(async () => {
+        release.resolve();
+        expect(await answer(await response, 503)).toEqual({ error: "Maintenance in progress" });
+        expect(memorySnapshot(s, chatId)).toEqual(before);
+    });
+    const edited = await answer(
+        await s.json(`${base}/edits`, {
+            revision: before.contents.revision,
+            edit: { kind: "section", pageId: "p", heading: "Facts", body: "Changed" },
+        }),
+    );
+    expect(edited.data.sections[0].body).toBe("Changed");
+});

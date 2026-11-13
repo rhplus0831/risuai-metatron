@@ -942,6 +942,7 @@ export function createServerContext(options: {
         generationJobs.chatBusy(characterId, chatId) || generationLock.chatHolders(characterId, chatId).size > 0;
     registerStructuredMemoryRoutes(app, {
         store: resources,
+        maintenance: snapshots.gate,
         kinds: resourceKinds,
         auth,
         limiter: authenticatedRouteLimiter.middleware,

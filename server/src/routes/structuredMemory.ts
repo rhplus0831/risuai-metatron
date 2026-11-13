@@ -62,6 +62,7 @@ import { isPlainObject } from "../../../shared/valueKinds.ts";
 import type { ResourceKindRegistry } from "../data/kinds.ts";
 import { messageSourceHash, type MemoryChatRef, type MemoryContents } from "../data/memoryStore.ts";
 import { isValidResourceId, type ResourceStore } from "../data/resourceStore.ts";
+import type { MaintenanceGate } from "../data/snapshots.ts";
 import { readJsonBody } from "../http/body.ts";
 import { compressedJson } from "../http/compressedJson.ts";
 import { readChatBindingLookup } from "../jobs/chatBinding.ts";
@@ -669,6 +670,7 @@ export function registerStructuredMemoryRoutes(
     app: Hono<AppEnv>,
     arg: {
         store: ResourceStore;
+        maintenance: MaintenanceGate;
         kinds: ResourceKindRegistry;
         auth: AuthStore;
         limiter: MiddlewareHandler<AppEnv>;
@@ -687,7 +689,18 @@ export function registerStructuredMemoryRoutes(
         cancelTask: (characterId: string, chatId: string) => void;
     },
 ) {
-    const { store, kinds, auth, limiter, packageRoundBytes, restoreBodyBytes, fenced, chatHeld, cancelTask } = arg;
+    const {
+        store,
+        maintenance,
+        kinds,
+        auth,
+        limiter,
+        packageRoundBytes,
+        restoreBodyBytes,
+        fenced,
+        chatHeld,
+        cancelTask,
+    } = arg;
     const limitBody = limitedBody(MAX_EDIT_BODY_BYTES);
     const limitRevisionsBody = limitedBody(MAX_REVISIONS_BODY_BYTES);
     const limitRestoreBody = limitedBody(restoreBodyBytes);
@@ -1105,6 +1118,7 @@ export function registerStructuredMemoryRoutes(
         };
         const options = { epoch, baseRevision: revision };
         try {
+            maintenance.assertOpen();
             if (edit.kind === "thread") {
                 const stored = store.memory.readRecord(characterId, chatId, "threads", edit.threadId);
                 if (!stored) {
@@ -1217,6 +1231,7 @@ export function registerStructuredMemoryRoutes(
         };
         const options = { epoch, baseRevision: revision };
         try {
+            maintenance.assertOpen();
             const contents = store.memory.readContents(characterId, chatId);
             const stored = store.memory.readRecord(characterId, chatId, "pages", pageId);
             if (!contents || !stored) {
@@ -1278,6 +1293,7 @@ export function registerStructuredMemoryRoutes(
         }
         const gone = () => c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
         try {
+            maintenance.assertOpen();
             const contents = store.memory.readContents(characterId, chatId);
             if (!contents) {
                 return gone();
@@ -1349,6 +1365,7 @@ export function registerStructuredMemoryRoutes(
                 return c.json({ error: REFUSAL_TEXT.fenced, reason: "fenced" }, 409);
             }
             try {
+                maintenance.assertOpen();
                 const contents = store.memory.readContents(characterId, chatId);
                 if (!contents) {
                     return c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
@@ -1407,6 +1424,7 @@ export function registerStructuredMemoryRoutes(
                 return c.json({ error: REFUSAL_TEXT[reason], reason }, 404);
             };
             try {
+                maintenance.assertOpen();
                 const contents = store.memory.readContents(characterId, chatId);
                 if (!contents) {
                     return gone();
@@ -1490,6 +1508,7 @@ export function registerStructuredMemoryRoutes(
                 return c.json({ error: REFUSAL_TEXT.fenced, reason: "fenced" }, 409);
             }
             try {
+                maintenance.assertOpen();
                 const contents = store.memory.readContents(characterId, chatId);
                 if (!contents) {
                     return c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
@@ -1532,6 +1551,7 @@ export function registerStructuredMemoryRoutes(
         }
         const gone = () => c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
         try {
+            maintenance.assertOpen();
             const contents = store.memory.readContents(characterId, chatId);
             if (!contents) {
                 return gone();
@@ -1581,6 +1601,7 @@ export function registerStructuredMemoryRoutes(
             return c.json({ error: REFUSAL_TEXT.fenced, reason: "fenced" }, 409);
         }
         try {
+            maintenance.assertOpen();
             const contents = store.memory.readContents(characterId, chatId);
             if (!contents) {
                 return c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
@@ -1618,6 +1639,7 @@ export function registerStructuredMemoryRoutes(
                 return c.json({ error: REFUSAL_TEXT.fenced, reason: "fenced" }, 409);
             }
             try {
+                maintenance.assertOpen();
                 const contents = store.memory.readContents(characterId, chatId);
                 const chatRevision = store.chatRevision(characterId, chatId);
                 if (!contents || chatRevision === null) {
@@ -1701,6 +1723,7 @@ export function registerStructuredMemoryRoutes(
                 return c.json({ error: REFUSAL_TEXT.fenced, reason: "fenced" }, 409);
             }
             try {
+                maintenance.assertOpen();
                 const contents = store.memory.readContents(characterId, chatId);
                 if (!contents) {
                     return c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
