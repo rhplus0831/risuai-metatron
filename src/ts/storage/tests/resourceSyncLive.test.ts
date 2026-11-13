@@ -733,6 +733,42 @@ describe("records another writer committed", () => {
 });
 
 describe("characters another writer created or deleted", () => {
+    it("preserves an unsaved local character when a same-ID live read arrives, until its create conflicts", async () => {
+        const { fake, sync, character, chatIds, texts, intercept } = await boot();
+        intercept.hold = (path) => path === "/api/resources/read";
+        fake.store.applyChanges({
+            ops: [{ kind: characterKind(fake), id: "n", baseRevision: null, data: { chaId: "n", name: "Remote" } }],
+            chats: [create("n", "remote-chat")],
+        });
+        await vi.advanceTimersByTimeAsync(100);
+        expect(intercept.release).not.toBeNull();
+
+        const characterStore = await import("../characterStore.svelte");
+        characterStore.addCharacter({
+            chaId: "n",
+            name: "Unsaved import",
+            desc: "Local content",
+            type: "character",
+            chats: [chat("imported", [m("imported-message", "Local history")])],
+        });
+        await tick();
+        intercept.release!();
+        await vi.dynamicImportSettled();
+
+        expect(character("n")).toMatchObject({ name: "Unsaved import", desc: "Local content" });
+        expect(chatIds("n")).toEqual(["imported"]);
+        expect(texts("n", "imported")).toEqual(["Local history"]);
+        expect(fake.batchCount()).toBe(0);
+        noNotice();
+
+        expect(await sync.flushResources()).toEqual({ discarded: ["characters/n"], refused: [] });
+        await settle(fake);
+        expect(character("n").name).toBe("Remote");
+        expect(chatIds("n")).toEqual(["remote-chat"]);
+        expect(fake.chat("n", "imported")).toBeNull();
+        expect(alerts.normal).toHaveBeenCalledWith("reloaded");
+    });
+
     it("inserts a new character with its chats, without a write", async () => {
         const { fake, chat, character, chatIds, texts } = await boot();
         fake.store.applyChanges({
