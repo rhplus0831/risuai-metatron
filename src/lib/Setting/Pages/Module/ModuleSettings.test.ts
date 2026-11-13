@@ -1,10 +1,15 @@
 // @vitest-environment happy-dom
-import { flushSync, mount, unmount } from "svelte";
-import { afterEach, expect, it } from "vitest";
+import { flushSync, mount, tick, unmount } from "svelte";
+import { afterEach, expect, it, vi } from "vitest";
+
+vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
+import { alertConfirm, alertSelect } from "src/ts/alert";
 import { language } from "src/lang";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { settings } from "src/ts/storage/settingsViews.svelte";
+import { applyRaw } from "src/ts/storage/records.svelte";
 import ModuleSettings from "./ModuleSettings.svelte";
+import * as modules from "src/ts/process/modules";
 
 let instance: ReturnType<typeof mount> | null = null;
 let target: HTMLDivElement;
@@ -13,6 +18,7 @@ afterEach(async () => {
     if (instance) await unmount(instance);
     instance = null;
     target.remove();
+    vi.restoreAllMocks();
 });
 
 it("renders modules with a missing name and sorts that name as an empty string", () => {
@@ -35,6 +41,41 @@ it("renders modules with a missing name and sorts that name as an empty string",
     expect(rows).toHaveLength(3);
     expect(rows.slice(1).map((row) => row.textContent)).toEqual(["alpha", "Zulu"]);
 });
+
+it.each(["delete", "CharX export", "RisuM export"])(
+    "cancels %s if its module disappears during the dialog, preserving the surviving module",
+    async (action) => {
+        const alpha = { id: "alpha", name: "Alpha", description: "original" };
+        const beta = { id: "beta", name: "Beta", description: "keep beta" };
+        installFlatDatabase({ modules: [alpha, beta], enabledModules: ["beta"] });
+        target = document.createElement("div");
+        document.body.append(target);
+        instance = mount(ModuleSettings, { target });
+        flushSync();
+        let answer!: (value: boolean | string) => void;
+        const pending = new Promise<boolean | string>((resolve) => (answer = resolve));
+        if (action === "delete") vi.mocked(alertConfirm).mockReturnValueOnce(pending as Promise<boolean>);
+        else vi.mocked(alertSelect).mockReturnValueOnce(pending as Promise<string>);
+        const exportModule = vi.spyOn(modules, "exportModule").mockResolvedValue(undefined);
+        const exportModuleLegacy = vi.spyOn(modules, "exportModuleLegacy").mockResolvedValue(undefined);
+        const row = [...target.querySelectorAll("span.text-lg")].find(
+            (span) => span.textContent === "Alpha",
+        )!.parentElement!;
+        row.querySelector<HTMLButtonElement>(
+            action === "delete" ? "button:has(.lucide-trash)" : "button:has(.lucide-share-2)",
+        )!.click();
+        expect(action === "delete" ? alertConfirm : alertSelect).toHaveBeenCalled();
+        applyRaw("modules", [beta]);
+        flushSync();
+        answer(action === "delete" ? true : action === "CharX export" ? "0" : "1");
+        await tick();
+        flushSync();
+        expect(settings.modules).toEqual([beta]);
+        expect(settings.enabledModules).toEqual(["beta"]);
+        expect(exportModule).not.toHaveBeenCalled();
+        expect(exportModuleLegacy).not.toHaveBeenCalled();
+    },
+);
 
 function openCreateMode() {
     installFlatDatabase({ enabledModules: [], modules: [] });

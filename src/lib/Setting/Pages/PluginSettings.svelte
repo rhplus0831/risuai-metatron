@@ -127,9 +127,11 @@
                             <button
                                 class="text-green-400 hover:gray-200 cursor-pointer"
                                 onclick={async () => {
+                                    const name = plugin.name;
                                     const v = await alertConfirm(language.pluginUpdateFoundInstallIt);
                                     if (v) {
-                                        updatePlugin(plugin);
+                                        const current = settings.plugins?.find((entry) => entry.name === name);
+                                        if (current) updatePlugin($state.snapshot(current));
                                     }
                                 }}
                             >

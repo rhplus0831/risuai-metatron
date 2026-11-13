@@ -147,16 +147,19 @@
                                     use:tooltip={language.download}
                                     onclick={async (e) => {
                                         e.stopPropagation();
+                                        const moduleId = rmodule.id;
                                         const sel = parseInt(
                                             await alertSelect([`CharX (${language.recommended})`, `RisuM (Legacy)`]),
                                         );
+                                        const module = settings.modules.find((entry) => entry.id === moduleId);
+                                        if (!module) return;
                                         let exportStatus: alertData | null = null;
                                         const onInstall = (status: alertData) => (exportStatus = status);
                                         try {
                                             if (sel === 0) {
-                                                await exportModule(rmodule, { onInstall });
+                                                await exportModule($state.snapshot(module), { onInstall });
                                             } else {
-                                                await exportModuleLegacy(rmodule, { onInstall });
+                                                await exportModuleLegacy($state.snapshot(module), { onInstall });
                                             }
                                         } catch (error) {
                                             // Both exporters alert their own failure; add no second alert.
@@ -192,16 +195,18 @@
                                 use:tooltip={language.remove}
                                 onclick={async (e) => {
                                     e.stopPropagation();
+                                    const moduleId = rmodule.id;
                                     const d = await alertConfirm(`${language.removeConfirm}` + rmodule.name);
                                     if (d) {
-                                        if (settings.enabledModules.includes(rmodule.id)) {
+                                        const index = settings.modules.findIndex((v) => v.id === moduleId);
+                                        if (index < 0) return;
+                                        if (settings.enabledModules.includes(moduleId)) {
                                             settings.enabledModules.splice(
-                                                settings.enabledModules.indexOf(rmodule.id),
+                                                settings.enabledModules.indexOf(moduleId),
                                                 1,
                                             );
                                             settings.enabledModules = settings.enabledModules;
                                         }
-                                        const index = settings.modules.findIndex((v) => v.id === rmodule.id);
                                         settings.modules.splice(index, 1);
                                         settings.modules = settings.modules;
                                     }
