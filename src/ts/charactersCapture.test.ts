@@ -301,6 +301,71 @@ describe("handlers that await keep their target", () => {
         expect(alerts.error).not.toHaveBeenCalled();
     });
 
+    it.each(["2", "3"])("HTML export mode %s keeps names literal and sanitizes translated formatting", async (mode) => {
+        const { characters, characterStore, chat, character, settings, downloads } = await boot();
+        const parser = await import("./parser/parser.svelte");
+        const actualParser = await vi.importActual<typeof parser>("./parser/parser.svelte");
+        vi.mocked(parser.parseMarkdownSafe).mockImplementation(actualParser.parseMarkdownSafe);
+        const { translateHTML } = await import("./translator/translator");
+        vi.mocked(translateHTML).mockResolvedValue(
+            '<p class="sample" style="color:red"><strong>translated</strong> **literal**</p>',
+        );
+        const { fetch } = server.current;
+        server.current.fetch = async (path: string, init?: RequestInit) =>
+            path.startsWith("/api/memory/structured/")
+                ? Response.json({ revision: "memory", pages: [], events: [], threads: [], runs: [] })
+                : fetch(path, init);
+        const write = vi.spyOn(navigator.clipboard, "write").mockResolvedValue();
+        characterStore.selectCharacter("c");
+        chat.selectChat("c", "k");
+        character("c").firstMessage = "**original**";
+        chat.setChatMeta({ chaId: "c", chatId: "k" }, { fmIndex: -1 });
+        chat.replaceChat(
+            { chaId: "c", chatId: "k" },
+            {
+                ...plain(chat.findChat({ chaId: "c", chatId: "k" })),
+                message: [
+                    { role: "char", data: "**original**", chatId: "reply" },
+                    { role: "user", data: "**original**", chatId: "user" },
+                    { role: "char", saying: "d", data: "**original**", chatId: "speaker" },
+                ],
+            },
+        );
+
+        for (const literalNames of [false, true]) {
+            const names = literalNames
+                ? ["A <b>B</b> & C", "P <em>Q</em> & R", "S <i>T</i> & U"]
+                : ["Alice", "Pat", "Sam"];
+            character("c").name = names[0];
+            character("d").name = names[2];
+            settings.personas = [{ id: "export-persona", name: names[1], personaPrompt: "", icon: "" }];
+            chat.setChatMeta({ chaId: "c", chatId: "k" }, { personaId: "export-persona" });
+            alerts.select
+                .mockResolvedValueOnce(mode)
+                .mockResolvedValueOnce(literalNames ? "0" : "1")
+                .mockResolvedValueOnce("0");
+            await characters.exportChat("k");
+            expect(alerts.error).not.toHaveBeenCalled();
+            const html =
+                mode === "2"
+                    ? downloads.at(-1)!.data
+                    : await (await write.mock.calls.at(-1)![0][0].getType("text/html")).text();
+            const doc = new DOMParser().parseFromString(html, "text/html");
+            const headings = [...doc.querySelectorAll(mode === "2" ? "h2" : "td:first-child")];
+            expect.soft(headings.map((heading) => heading.textContent)).toEqual([names[0], ...names]);
+            expect.soft(headings.every((heading) => heading.children.length === 0)).toBe(true);
+            if (mode === "2") expect(doc.title).toBe(`${names[0]} Chat`);
+            const paragraphs = [...doc.querySelectorAll("p")].filter((p) => p.querySelector("strong"));
+            expect(paragraphs.map((p) => p.outerHTML)).toEqual(
+                Array(4).fill(
+                    literalNames
+                        ? "<p><strong>translated</strong> **literal**</p>"
+                        : "<p><strong>original</strong></p>",
+                ),
+            );
+        }
+    });
+
     it("addGroupChar adds the member to the group it was opened for, and stops when the group is deleted meanwhile", async () => {
         const { characters, characterStore, group, character, sync, record } = await boot();
         const g = characters.createNewGroup();

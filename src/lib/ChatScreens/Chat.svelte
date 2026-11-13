@@ -44,6 +44,7 @@
         XIcon,
     } from "@lucide/svelte";
     import { type CapturedTransform, rerenderMessage } from "src/ts/parser/transformClient";
+    import { escapeHtml } from "src/ts/parser/safeHtml";
     import {
         displayTransformMessageKey,
         displayTransformRetryRound,
@@ -1758,8 +1759,8 @@
 <div style="padding: 20px;">
 <div style="display: flex; flex-direction: column; align-items: center; margin-bottom: 1rem; text-align: center;">
     ${finalHasValidImage ? `<img style="width: 80px; height: 80px; border-radius: 50%; border: 3px solid ${root.style.getPropertyValue("--risu-theme-darkborderc")}; margin-bottom: 0.75rem; object-fit: cover;" src="${finalIconDataUrl}" alt="profile">` : ""}
-    <h3 style="color: ${root.style.getPropertyValue("--risu-theme-textcolor")}; font-weight: 600; font-size: 1.5rem; margin: 0 0 0.5rem 0;">${displayName}</h3>
-    ${!isUserMessage ? `<span style="display: inline-block; border-radius: 16px; font-size: 0.8rem; padding: 0.25rem 0.75rem; background: ${root.style.getPropertyValue("--risu-theme-darkbg")}; color: ${root.style.getPropertyValue("--risu-theme-textcolor")}; border: 1px solid ${root.style.getPropertyValue("--risu-theme-darkborderc")};">${modelInfo}</span>` : ""}
+    <h3 style="color: ${root.style.getPropertyValue("--risu-theme-textcolor")}; font-weight: 600; font-size: 1.5rem; margin: 0 0 0.5rem 0;">${escapeHtml(displayName)}</h3>
+    ${!isUserMessage ? `<span style="display: inline-block; border-radius: 16px; font-size: 0.8rem; padding: 0.25rem 0.75rem; background: ${root.style.getPropertyValue("--risu-theme-darkbg")}; color: ${root.style.getPropertyValue("--risu-theme-textcolor")}; border: 1px solid ${root.style.getPropertyValue("--risu-theme-darkborderc")};">${escapeHtml(modelInfo)}</span>` : ""}
 </div>
 <div style="border-top: 1px solid ${root.style.getPropertyValue("--risu-theme-darkborderc")}; padding-top: 1rem;">
     ${doc.body.innerHTML}

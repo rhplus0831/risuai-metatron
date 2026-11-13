@@ -43,6 +43,7 @@ import {
     recoverDirectAssetElement,
 } from "./globalApi.svelte";
 import { parseMarkdownSafe } from "./parser/parser.svelte";
+import { escapeHtml, sanitizeExportHtml } from "./parser/safeHtml";
 import { translateHTML } from "./translator/translator";
 import { captureTransform } from "./parser/transformClient";
 import {
@@ -332,7 +333,7 @@ export async function exportChat(chatId: string) {
                 v = v.replace(new RegExp(`${excapedName}`, "gi"), "×××");
             }
 
-            return v;
+            return sanitizeExportHtml(v);
         };
 
         if (mode === "0") {
@@ -366,7 +367,7 @@ export async function exportChat(chatId: string) {
                         ? "×××"
                         : userName;
                 chatContentHTML += `<div class="chat">
-                    <h2>${name}</h2>
+                    <h2>${escapeHtml(name)}</h2>
                     <div>${await htmlChatParse(v.data)}</div>
                 </div>`;
             }
@@ -375,7 +376,7 @@ export async function exportChat(chatId: string) {
                 <!DOCTYPE html>
                 <html>
                     <head>
-                        <title>${char.name} Chat</title>
+                        <title>${escapeHtml(char.name)} Chat</title>
                         <style>
                             body{
                                 font-family: Arial, sans-serif;
@@ -412,7 +413,7 @@ export async function exportChat(chatId: string) {
                     <body>
                         <div class="container">
                             <div class="chat">
-                                <h2>${char.name}</h2>
+                                <h2>${escapeHtml(char.name)}</h2>
                                 <div>${await htmlChatParse(
                                     chat.fmIndex === -1
                                         ? char.firstMessage
@@ -444,7 +445,7 @@ export async function exportChat(chatId: string) {
                         ? "×××"
                         : userName;
                 chatContentHTML += `<tr>
-                    <td>${name}</td>
+                    <td>${escapeHtml(name)}</td>
                     <td>${await htmlChatParse(v.data)}</td>
                 </tr>`;
             }
@@ -456,7 +457,7 @@ export async function exportChat(chatId: string) {
                         <th>Message</th>
                     </tr>
                     <tr>
-                        <td>${char.name}</td>
+                        <td>${escapeHtml(char.name)}</td>
                         <td>${await htmlChatParse(char.firstMessage)}</td>
                     </tr>
                     ${chatContentHTML}

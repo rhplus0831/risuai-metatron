@@ -1,5 +1,6 @@
 import { boundedDistance } from "./assetSearch";
 import type { ChatStyle } from "./chatStyles";
+import { sanitizeExportHtml } from "./safeHtml";
 import { untrack } from "svelte";
 import { type AnyClientCharacter, characterList, selectedCharacter } from "../storage/characterStore.svelte";
 import { currentChatRef, withCompatChats } from "../storage/chatStore.svelte";
@@ -1318,10 +1319,7 @@ export function parseMarkdownSafe(
         forbidTags?: string[];
     } = {},
 ) {
-    return DOMPurify.sanitize(renderMarkdown(md, data), {
-        FORBID_TAGS: ["a", "style", ...(arg.forbidTags || [])],
-        FORBID_ATTR: ["style", "href", "class"],
-    });
+    return sanitizeExportHtml(renderMarkdown(md, data), arg);
 }
 
 const styleRegex = /<style(\s(?:[^>"']|"[^"]*"|'[^']*')*)?>(.*?)<\/style\s*>/gis;

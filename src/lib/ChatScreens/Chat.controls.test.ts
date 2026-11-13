@@ -213,6 +213,22 @@ it.each(["own wait", "newer wait", "newer progress"] as const)(
     },
 );
 
+it("rich copy keeps the sender name literal while preserving template formatting", async () => {
+    const name = "A <b>B</b> & C";
+    await render("off", { name });
+    const write = vi.spyOn(navigator.clipboard, "write").mockResolvedValue();
+    target.querySelector<HTMLButtonElement>(".button-icon-copy")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(write).toHaveBeenCalledOnce();
+    const html = await (await write.mock.calls[0][0][0].getType("text/html")).text();
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const heading = doc.querySelector("h3")!;
+    expect(heading.textContent).toBe(name);
+    expect(heading.children).toHaveLength(0);
+    expect(heading.style.fontWeight).toBe("600");
+    expect(doc.querySelector("p")?.textContent).toBe(message);
+});
+
 it("shows a read candidate's counter between active arrows with swipe off and hides the counter for a single reply", async () => {
     settings.ui.swipe = false;
     const current = JSON.parse(JSON.stringify(findChat(ref)!));
