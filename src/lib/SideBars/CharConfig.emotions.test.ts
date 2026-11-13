@@ -52,7 +52,12 @@ import { CharConfigSubMenu, hypaV3ModalOpen } from "src/ts/stores.svelte";
 import { activeMainProfile, settings } from "src/ts/storage/settingsViews.svelte";
 import { characterList } from "src/ts/storage/characterStore.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
-import { isRecordWrapper, setCharacterWriteListener, setRecordWriteListener } from "src/ts/storage/records.svelte";
+import {
+    applyRawCharacter,
+    isRecordWrapper,
+    setCharacterWriteListener,
+    setRecordWriteListener,
+} from "src/ts/storage/records.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 
 type Emotion = [string, string];
@@ -285,6 +290,65 @@ it("mounts without an error when the selected character's chat is not loaded", a
         expect(text).toEqual(expect.any(String));
     }
 });
+
+it.each(["emotionImages", "additionalAssets"] as const)(
+    "%s names keep focus and the caret on local renames, and blur on outside row replacement",
+    (field) => {
+        installCharacters(
+            [
+                ["apple", "p0"],
+                ["banana", "p1"],
+            ],
+            [],
+            [
+                ["apple", "p0", "png"],
+                ["banana", "p1", "png"],
+            ],
+        );
+        selectCharacter("c1");
+        if (field === "emotionImages") render();
+        else {
+            instance = mount(CharConfig, { target });
+            flushSync();
+            CharConfigSubMenu.set(1);
+            flushSync();
+            button(language.additionalAssets)!.click();
+            flushSync();
+        }
+        const nameInputs = () =>
+            field === "emotionImages"
+                ? rows().map((row) => row.name)
+                : [...target.querySelectorAll<HTMLInputElement>('table input[placeholder="..."]')];
+        const name = nameInputs()[0];
+        name.focus();
+        name.setSelectionRange(2, 2);
+        for (const [expected, caret] of [
+            ["apXple", 3],
+            ["apXYple", 4],
+        ] as const) {
+            name.value = expected;
+            name.setSelectionRange(caret, caret);
+            name.dispatchEvent(new Event("input", { bubbles: true }));
+            flushSync();
+            expect(nameInputs()[0]).toBe(name);
+            expect(document.activeElement).toBe(name);
+            expect([name.selectionStart, name.selectionEnd]).toEqual([caret, caret]);
+            expect(record("c1")[field][0][0]).toBe(expected);
+        }
+
+        const renamed = JSON.parse(JSON.stringify(record("c1")));
+        for (const replacement of [[...renamed[field]].reverse(), [renamed[field][0]]]) {
+            nameInputs()[0].focus();
+            applyRawCharacter("c1", { ...renamed, [field]: structuredClone(replacement) });
+            flushSync();
+            // Index zero stays mounted, so the guard must explicitly release its typing focus.
+            expect(nameInputs()[0]).toBe(name);
+            expect(document.activeElement).not.toBe(name);
+            expect(nameInputs().map((node) => node.value)).toEqual(replacement.map((row) => row[0]));
+            expect(JSON.parse(JSON.stringify(record("c1")[field]))).toEqual(replacement);
+        }
+    },
+);
 
 describe("CharConfig emotion images", () => {
     it("pages rows by ASSET_LIST_PAGE with Load More and resets the page per character", () => {

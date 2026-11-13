@@ -190,6 +190,19 @@
         return indices;
     });
 
+    // A local rename copies its tuple; any other replacement must release the old row's typing focus.
+    function guardNameFocus(node: HTMLElement, context: { owner: unknown; row: unknown; local: () => boolean }) {
+        return {
+            update(next: typeof context) {
+                if (context.owner !== next.owner || (context.row !== next.row && !next.local())) {
+                    const input = node.querySelector("input");
+                    if (input === document.activeElement) input?.blur();
+                }
+                context = next;
+            },
+        };
+    }
+
     function renameAsset(index: number, name: string) {
         if (currentCharacter.type !== "character") return;
         const list = currentCharacter.additionalAssets;
@@ -204,6 +217,8 @@
         renamedList = untrack(() => (currentCharacter as character).additionalAssets);
     }
 
+    let renamedEmotionList: unknown = null;
+
     function renameEmotion(index: number, name: string) {
         const list = currentCharacter.emotionImages;
         if (!list?.[index]) return;
@@ -213,6 +228,7 @@
             renamed[0] = name;
             return renamed;
         });
+        renamedEmotionList = untrack(() => currentCharacter.emotionImages);
     }
     const assetCount = $derived(
         matchedAssets?.length ??
@@ -751,7 +767,14 @@
                                             </LazyFileSrc>
                                         {/if}
                                     </td>
-                                    <td class="font-medium truncate w-1/2">
+                                    <td
+                                        class="font-medium truncate w-1/2"
+                                        use:guardNameFocus={{
+                                            owner: assetsOwnerId,
+                                            row: currentCharacter.emotionImages[index],
+                                            local: () => currentCharacter.emotionImages === renamedEmotionList,
+                                        }}
+                                    >
                                         <TextInput
                                             marginBottom
                                             size="lg"
@@ -967,7 +990,14 @@
                             {@const assets = currentCharacter.additionalAssets[index]}
                             {@const extension = assetExtension(assets)}
                             <tr>
-                                <td class="font-medium truncate">
+                                <td
+                                    class="font-medium truncate"
+                                    use:guardNameFocus={{
+                                        owner: assetsOwnerId,
+                                        row: assets,
+                                        local: () => currentCharacter.additionalAssets === renamedList,
+                                    }}
+                                >
                                     {#if settings.ui.useAdditionalAssetsPreview && ["mp4", "mp3", "png", "webp", "jpeg", "jpg", "gif"].includes(extension)}
                                         <LazyFileSrc path={assets[1]}>
                                             {#snippet children(src)}

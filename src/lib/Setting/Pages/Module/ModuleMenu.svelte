@@ -79,6 +79,19 @@
         return indices;
     });
 
+    // A local rename copies its tuple; any other replacement must release the old row's typing focus.
+    function guardNameFocus(node: HTMLElement, context: { owner: unknown; row: unknown; local: () => boolean }) {
+        return {
+            update(next: typeof context) {
+                if (context.owner !== next.owner || (context.row !== next.row && !next.local())) {
+                    const input = node.querySelector("input");
+                    if (input === document.activeElement) input?.blur();
+                }
+                context = next;
+            },
+        };
+    }
+
     function renameAsset(index: number, name: string) {
         const list = currentModule.assets;
         if (!list?.[index]) return;
@@ -413,7 +426,14 @@
                         {@const assets = currentModule.assets[index]}
                         {@const extension = assetExtension(assets)}
                         <tr>
-                            <td class="font-medium truncate">
+                            <td
+                                class="font-medium truncate"
+                                use:guardNameFocus={{
+                                    owner: assetsOwnerId,
+                                    row: assets,
+                                    local: () => currentModule.assets === renamedList,
+                                }}
+                            >
                                 {#if settings.ui.useAdditionalAssetsPreview}
                                     <LazyFileSrc path={assets[1]}>
                                         {#snippet children(src)}

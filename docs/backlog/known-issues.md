@@ -9,23 +9,9 @@ owner's decision, except the persistence entry below.
 
 ## Contents
 
-- [characters-modules](#characters-modules) (1)
 - [persistence](#persistence) (1)
 - [settings-i18n](#settings-i18n) (1)
 - [structured-memory](#structured-memory) (1)
-
-## characters-modules
-
-Guide: [Characters, Cards, Modules, Personas](../structure/characters-modules.md#known-hazards).
-
-- A remote replacement of an asset or emotion list while one of its name fields is focused lets the next key rename a
-  different entry. `CharConfig.renameAsset` and `renameEmotion` (`src/lib/SideBars/CharConfig.svelte:190`, inputs at
-  `:756` and `:990`) and `ModuleMenu.renameAsset` (`ModuleMenu.svelte:82`, `:440`) address the live list by index, and
-  the rows are reused by index. Reproduced on 2026-11-14 with two browser contexts (the wide review's run of the
-  guide's unconfirmed claim, and a second run): with `apple` focused in one, the other saved the list reversed; the
-  field stayed focused and showed `banana`, and typing `X` stored `bananaX` on `assets/banana.png`. The same happened
-  for emotions, for module assets, and when the list was shortened to the former second row, so a same-length
-  replacement is not required. A CBS reference to the renamed entry stops matching. Not fixed.
 
 ## persistence
 

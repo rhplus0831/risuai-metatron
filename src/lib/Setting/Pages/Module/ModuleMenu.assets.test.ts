@@ -35,6 +35,7 @@ import { language } from "src/lang";
 import type { RisuModule } from "src/ts/process/modules";
 import type { ClientCharacter } from "src/ts/storage/characterStore.svelte";
 import {
+    applyRaw,
     initializeRecords,
     isRecordWrapper,
     recordData,
@@ -114,6 +115,41 @@ function render(kind: ListKind, assets: Asset[], otherAssets: Asset[] = assets) 
 }
 
 describe("paged asset lists", () => {
+    it("module names keep focus and the caret on local renames, and blur on outside row replacement", () => {
+        const { module } = render("module", [
+            ["apple", "p0", "png"],
+            ["banana", "p1", "png"],
+        ]);
+        const name = nameInputs()[0];
+        name.focus();
+        name.setSelectionRange(2, 2);
+        for (const [expected, caret] of [
+            ["apXple", 3],
+            ["apXYple", 4],
+        ] as const) {
+            name.value = expected;
+            name.setSelectionRange(caret, caret);
+            name.dispatchEvent(new Event("input", { bubbles: true }));
+            flushSync();
+            expect(nameInputs()[0]).toBe(name);
+            expect(document.activeElement).toBe(name);
+            expect([name.selectionStart, name.selectionEnd]).toEqual([caret, caret]);
+            expect(module.assets![0][0]).toBe(expected);
+        }
+
+        const modules = JSON.parse(JSON.stringify(recordData("modules"))) as RisuModule[];
+        const renamed = modules[0].assets!;
+        for (const replacement of [[...renamed].reverse(), [renamed[0]]]) {
+            nameInputs()[0].focus();
+            applyRaw("modules", [{ ...modules[0], assets: structuredClone(replacement) }, modules[1]]);
+            flushSync();
+            expect(nameInputs()[0]).toBe(name);
+            expect(document.activeElement).not.toBe(name);
+            expect(rowNames("module")).toEqual(replacement.map((row) => row[0]));
+            expect(JSON.parse(JSON.stringify(module.assets))).toEqual(replacement);
+        }
+    });
+
     it.each<ListKind>(["module", "sticker"])(
         "%s pages matching names, resets query/page, and reports no matches",
         (kind) => {
