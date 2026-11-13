@@ -197,6 +197,11 @@ Work that finished plans named and left: features put off, a plan's Later list, 
 - Not planned (the plan's Not In This Plan list): a source that records that its text was not read, so that an edit of an unread user message marks nothing for a re-record; filtering the chat that CBS reads in the writer's instructions and custom frames; citing the leftover user messages at adoption time; showing user messages to the writer as context only, or a per-chat override of the switch; leaving user messages out of the evidence lane or the projection; any change to HypaV3's `doNotSummarizeUserMessage`.
 - Left by the run: a character's `request` trigger or a plugin's `beforeRequest` hook can still put user messages into a writer request (writer.md Limitations).
 
+## Lore Budget Send Stop
+
+- Not planned (the plan's Not In This Plan list): a place to turn a chat's warning back on while the context meter is off; a "send once anyway" button and a notice in the message bubble; stopping a later round, a later group speaker, or a plugin, auto mode, multisend, command, or DevTool send; checking the budget in the tab before the message is stored; a localized text for the alerts of a stop (a follow without a waiting caller, a draft that was put back, a reroll whose replies could not be put back); a limit the terminal's parser refuses, such as a negative one, which gets the alert and never the dialog; any change to how the budget pass picks entries or to the token limit's default. What a preview's activation stores and the 4096 `max` on both token limit inputs are in [found issues](found-issues.md).
+- Left by the run: the `presetSelection` e2e failure (from before the plan) and a `perChatSends` e2e flake under the full run, both in [found issues](found-issues.md).
+
 ## Dependency Upgrades
 
 Not a plan: the upgrade rounds of 2026-10-30 left these behind on purpose. Versions were read from `package.json` on 2026-11-11.

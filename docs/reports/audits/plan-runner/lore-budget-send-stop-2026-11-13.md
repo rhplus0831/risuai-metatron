@@ -1,6 +1,6 @@
 # Lore Budget Send Stop Plan audit, 2026-11-13
 
-- Plan: `docs/plan/lore-budget-send-stop.md`
+- Plan: `docs/plan/lore-budget-send-stop.md`, archived: `git show 85494cb19:docs/plan/lore-budget-send-stop.md`
 - Commit audited: `8bfc4ce83` (`dev`); the corrected plan is committed with this report
 - Mode: `full`
 - Model: Claude Fable 5.2, a read-only sub-agent with no part in the drafting, in place of the usual Sol session at the
