@@ -60,6 +60,10 @@ Module headers and export comments hold the contracts; these lists give lookup i
 
 ### Locks and streaming
 
+- A generation this tab's job events retire (`retireGeneration`: its job's end, its job's chat copy no longer listing
+  it, another generation taking its message) releases the feed lock that names it, and a later feed list, `hello`, or
+  read snapshot does not lock it again: the feed's own release comes on another socket and may arrive after the job's
+  end. `detachServerJob` (lost participation) retires nothing, so the feed lock stays.
 - The lock readers count this tab's job locks and the [feed's](live-updates.md#feed-locks); `isCharacterStreamedHere`
   counts this tab's only, so the list read recovery of `hydrate` (`refreshCharacter` in `resourceSync.svelte.ts`) waits
   on it without blocking an observing tab, and a flush depending on that read rejects with `GenerationBlockedError`. A

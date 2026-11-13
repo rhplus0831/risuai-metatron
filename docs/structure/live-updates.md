@@ -68,8 +68,10 @@ Identifiers the flows below name are not repeated here.
 ### Feed locks
 
 - A `change` frame's lock lists reach `noteRemoteStreaming` after its refs (`eventFeed.ts` header). Each listed chat's
-  list replaces its `feedLocks`. Deletion/forget paths (`removeRemoteChat`, `dropChatRevision`, `forgetCharacter`) clear
-  locks without retiring the generation; its next job write can lock again.
+  list replaces its `feedLocks`, leaving out generations this tab's job events retired
+  ([locks](chat-store.md#locks-and-streaming)); a `hello` and a read's snapshot are filtered the same way.
+  Deletion/forget paths (`removeRemoteChat`, `dropChatRevision`, `forgetCharacter`) clear locks without retiring the
+  generation; its next job write can lock again.
 - `onRemoteStreaming` listeners receive a frame's named chats after their locks are replaced, empty lists included:
   `chatStatus.svelte.ts` looks there for another client's job that holds no lock yet ([State](chat-pipeline.md#state)).
 - Whole reads carry `ChatReadRecord.streaming`, sampled with the read, never on summaries. The adapter stamps issue with
@@ -104,7 +106,8 @@ Identifiers the flows below name are not repeated here.
 
 - The advertised map: the last revision the feed advertised per record, independent of the held records. `remoteRecords`
   holds the entries waiting for a read, and each cycle and refresh pass retries the patches that could not apply.
-- Per chat, `feedLocks`: the message ids a frame or a whole read last listed as locked, replaced list for list.
+- Per chat, `feedLocks`: the message ids a frame or a whole read last listed as locked, replaced list for list, without
+  the generations this tab retired.
 - The connection's `generation`: one connection is current; late results do nothing except an older listing's
   epoch-mismatch error, which still resets the advertised map and memory tasks.
 - The translator and HypaV3 `selectedId` are shared across tabs; preset and persona selections stay per tab.

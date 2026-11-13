@@ -1531,7 +1531,7 @@ describe("the feed's generation locks", () => {
                 text: "last checkpoint",
             }),
         ).toBe(true);
-        b.chat.endServerJob("J");
+        b.chat.detachServerJob("J");
         b.live.paused = true;
         jobEnd(b); // The job ends without writing, and its release frame is missed too.
         b.fake.streamingForChat = () => [];
@@ -1656,15 +1656,18 @@ describe("the feed's generation locks", () => {
             expect(b.chat.chatList("c").map((entry) => entry.id)).toEqual(owner === "feed" ? ["k"] : ["k", "j"]);
             expect(b.chat.isCharacterGenerating("c")).toBe(true);
 
+            // The server ends the job; its release frame is still on the way (the feed is paused).
+            jobEnd(b);
             b.chat.endServerJob("J");
-            // Ending this tab's follow does not release the independent feed lock.
-            expect(b.chat.isCharacterGenerating("c")).toBe(true);
+            // The end of this tab's job releases the feed lock of its generation with its own; a job
+            // this tab does not follow keeps its feed lock until the feed releases it.
+            expect(b.chat.isCharacterGenerating("c")).toBe(owner === "feed");
             expect(await b.sync.flushResources()).toEqual({ discarded: [], refused: [] });
             await vi.advanceTimersByTimeAsync(1000);
             expect(recoveryReads()).toHaveLength(1);
             expect(b.chat.chatList("c").map((entry) => entry.id)).toEqual(["k"]);
             b.live.paused = false;
-            jobEnd(b);
+            b.flushFeed();
             expect(b.chat.isCharacterGenerating("c")).toBe(false);
         },
     );
@@ -1750,8 +1753,8 @@ describe("the feed's generation locks", () => {
             b.chat.applyServerGeneration(refK, { jobId: "J", messageId: "b", generationId: "g", seq: 1, text: "one" }),
         ).toBe(true);
         expect(locked(b)).toBe(true);
-        // The follow ends `lost` (`releaseGenerationJob` → `endServerJob`) while the server job goes on.
-        b.chat.endServerJob("J");
+        // The follow ends `lost` (`detachGenerationJob` → `detachServerJob`) while the server job goes on.
+        b.chat.detachServerJob("J");
         expect(locked(b)).toBe(true);
         expect(b.chat.isChatGenerating(refK)).toBe(true);
         expect(() => b.chat.setMessageText(refK, "b", "mine")).toThrow(/being generated/);
@@ -1769,7 +1772,7 @@ describe("the feed's generation locks", () => {
         expect(b.chat.hasUnsavedChatWork()).toBe(false);
     });
 
-    it("the owner's job events of a generation the feed already released still apply: the two locks are independent", async () => {
+    it("the feed's release does not retire the generation: the owner's later job events still apply", async () => {
         const b = await boot();
         jobLock(b);
         jobWrite(b, [setText("setText", "b", "one")], [lockOf("b", "g", 1)]);

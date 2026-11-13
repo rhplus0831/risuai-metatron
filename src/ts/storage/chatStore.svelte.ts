@@ -98,7 +98,8 @@ import {
  *   its index).
  * - A server generation job locks the message it writes: nothing but the job may rewrite or
  *   remove it. `applyServerGeneration` writes the streamed text into the mirror without queuing
- *   anything, and the job's end releases its locks. A chat `resource` event replaces the chat through
+ *   anything, and the job's end releases its locks, the feed's lock of the same generation
+ *   included (`retireGeneration`). A chat `resource` event replaces the chat through
  *   `hydrateChat` (never an outgoing write). Work the server refused for a generating message
  *   (`reason: "generating"`) is kept and retried after `JOB_RETRY_MS`, except its edits of the locked
  *   messages the refusal names, which are dropped with the reload notice and read back with the chat
@@ -476,7 +477,10 @@ const serverWatermarks = new Map<string, { generationId: string; seq: number }>(
  * Entries exist only while their message has a held generation.
  */
 const storedGenerationText = new Map<string, { generationId: string; seq: number | undefined; text: string }>();
-/** Server generations that ended or were replaced: their late events are dropped. */
+/**
+ * Server generations this tab's job events said are over (`retireGeneration`): their late events are
+ * dropped, and so is a feed lock that names one.
+ */
 const retiredGenerations = new Set<string>();
 /**
  * Messages (`messageKeyOf`) the change feed announced as locked by a generation job of any tab or
@@ -484,11 +488,31 @@ const retiredGenerations = new Set<string>();
  * frame or snapshot that announced it (null: none), and whether an announcement of that generation
  * said its stored text holds a streamed chunk (`seq` above 0). A lock only: no stream text, no watermark, no
  * retirement, and it never holds the save loop's reads, patches, or reloads (`isChatStreamedHere`).
- * Independent of this tab's job events: losing a follow does not release the feed lock.
+ * Losing a follow does not release the feed lock. A generation this tab's job events retired does
+ * (`retireGeneration`): the feed's own release travels on another socket and may come after the
+ * job's end, and a list, `hello`, or read snapshot that still names the generation is older than its end.
  * Whole-read snapshots replace a chat's locks only when issued after its latest feed list, the
  * latest `hello`, and its last honored read. Reads without a stamped snapshot use revisions.
  */
 const feedLocks = new Map<string, { generationId: string; revision: string | null; streamed: boolean }>();
+
+/**
+ * Retires a generation the server's job events said is over: its job ended or is gone, its job's
+ * chat copy no longer lists it, or another generation took its message. Never for lost
+ * participation in a running job (`detachServerJob`). Releases a feed lock that names it; the
+ * caller bumps `lockState` when this returns true.
+ */
+function retireGeneration(generationId: string): boolean {
+    retiredGenerations.add(generationId);
+    let moved = false;
+    for (const [messageKey, lock] of feedLocks) {
+        if (lock.generationId === generationId) {
+            feedLocks.delete(messageKey);
+            moved = true;
+        }
+    }
+    return moved;
+}
 /** One local issue order for feed lists, `hello`, and whole-chat reads; revisions do not order locks. */
 let feedLockOrder = 0;
 let feedHelloOrder = 0;
@@ -2091,7 +2115,9 @@ export function applyServerGeneration(
     const existing = serverGenerations.get(messageKey);
     if (existing && existing.generationId !== update.generationId) {
         // A new generation of the message (a continue): the previous one's late events are dropped.
-        retiredGenerations.add(existing.generationId);
+        if (retireGeneration(existing.generationId)) {
+            lockState.version += 1;
+        }
         storedGenerationText.delete(messageKey);
     } else if (existing && update.seq <= existing.seq) {
         return false;
@@ -2175,7 +2201,8 @@ export function applyServerGenerationChunk(ref: ChatRef, jobId: string, chunk: G
 }
 
 /**
- * Releases and retires every generation a job still holds after its terminal or a lost follow.
+ * Releases and retires every generation a job still holds after its terminal, or once the server
+ * no longer knows the job.
  * The terminal's chat hydration normally released them already; one still locked here may hold
  * streamed text instead of the stored final, so its chat is marked for an idle refresh. Losing
  * participation in a running job uses `detachServerJob` so the same generation can be followed again.
@@ -2188,7 +2215,7 @@ export function endServerJob(jobId: string) {
             serverGenerations.delete(messageKey);
             serverWatermarks.delete(messageKey);
             storedGenerationText.delete(messageKey);
-            retiredGenerations.add(entry.generationId);
+            retireGeneration(entry.generationId);
             releaseStreaming(entry.generationId);
             const [chaId, chatId] = messageKey.split("\u0000");
             if (chatRevisions.has(keyOf(chaId, chatId))) {
@@ -2276,7 +2303,8 @@ export function onRemoteStreaming(listener: (streaming: readonly ChatStreaming[]
  * and regenerate are off (`isMessageLocked`), and `assertUnlocked` refuses its edits. Each chat's
  * list replaces that chat's feed locks: a message no longer listed, or listed with another
  * generation, is released. The feed socket delivers these full lists in order, independently of
- * this tab's job events. The lock is by message id, so a message or chat the mirror does not hold
+ * this tab's job events, so a list can still name a generation those events already retired: it is
+ * not locked again (`retireGeneration`). The lock is by message id, so a message or chat the mirror does not hold
  * yet is locked when it arrives. `changes`: the frame's refs, whose revision
  * of the chat is the lock's for reads without snapshots (`dropFeedLocksOf`); none: null. Each named
  * chat advances its feed order even for an empty list, fencing snapshots of already-issued reads.
@@ -2301,10 +2329,17 @@ export function noteRemoteStreaming(streaming: readonly ChatStreaming[], changes
     }
 }
 
-/** Replaces one chat's locks by id, preserving streamed status only within the same generation. */
+/**
+ * Replaces one chat's locks by id, preserving streamed status only within the same generation. A
+ * retired generation is not locked again (`retireGeneration`).
+ */
 function replaceChatFeedLocks(key: string, revision: string | null, streaming: readonly StreamingMessage[]): boolean {
     const prefix = `${key}\u0000`;
-    const listed = new Map(streaming.map((entry) => [entry.messageId, entry]));
+    const listed = new Map(
+        streaming
+            .filter((entry) => !retiredGenerations.has(entry.generationId))
+            .map((entry) => [entry.messageId, entry]),
+    );
     let moved = false;
     for (const [messageKey, lock] of feedLocks) {
         if (
@@ -2333,7 +2368,7 @@ function replaceChatFeedLocks(key: string, revision: string | null, streaming: r
 
 /**
  * Replaces the feed's whole lock set with a `hello` snapshot, including chats the mirror does not
- * hold. Every call fences snapshots of already-issued reads, including an empty `hello`. Sampled
+ * hold, leaving out generations this tab retired. Every call fences snapshots of already-issued reads, including an empty `hello`. Sampled
  * revisions serve only reads without stamped snapshots. This tab's job stream state is independent.
  */
 export function replaceFeedLocks(snapshot: readonly ChatStreamingSnapshot[]) {
@@ -2344,6 +2379,9 @@ export function replaceFeedLocks(snapshot: readonly ChatStreamingSnapshot[]) {
     const desired = new Map<string, { generationId: string; revision: string | null; streamed: boolean }>();
     for (const chat of snapshot) {
         for (const { messageId, generationId, seq } of chat.streaming) {
+            if (retiredGenerations.has(generationId)) {
+                continue;
+            }
             const messageKey = messageKeyOf({ chaId: chat.characterId, chatId: chat.id }, messageId);
             const current = feedLocks.get(messageKey);
             desired.set(messageKey, {
@@ -2628,7 +2666,7 @@ function settleJobHydration(
                 serverGenerations.delete(messageKey);
                 serverWatermarks.delete(messageKey);
                 storedGenerationText.delete(messageKey);
-                retiredGenerations.add(entry.generationId);
+                retireGeneration(entry.generationId);
                 releaseStreaming(entry.generationId);
                 released = true;
             }
@@ -2640,7 +2678,7 @@ function settleJobHydration(
                 // The server says this generation owns the message now: an older owner is gone.
                 serverGenerations.delete(messageKey);
                 storedGenerationText.delete(messageKey);
-                retiredGenerations.add(holder.generationId);
+                retireGeneration(holder.generationId);
                 releaseStreaming(holder.generationId);
                 released = true;
             }
