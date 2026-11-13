@@ -897,6 +897,43 @@ describe("auth routes", () => {
         expect(ok.status).toBe(200);
     });
 
+    it("rejects non-string crypto data before buffer conversion and still hashes strings without authentication", async () => {
+        const { app } = freshServer({ password: "pw" });
+        const oversized = { length: 67_108_864 };
+        const originalFrom = Buffer.from;
+        const from = vi.spyOn(Buffer, "from").mockImplementation((value, ...args) => {
+            // Refuse the allocation if validation regresses, keeping the failing test cheap too.
+            if (value && typeof value === "object" && "length" in value && value.length === oversized.length) {
+                throw new Error("Unexpected array-like buffer conversion");
+            }
+            return Reflect.apply(originalFrom, Buffer, [value, ...args]);
+        });
+        try {
+            for (const body of [
+                { data: oversized },
+                {},
+                { data: null },
+                { data: 42 },
+                { data: true },
+                { data: [] },
+                { data: {} },
+            ]) {
+                const response = await app.request("/api/crypto", json(body));
+                expect(response.status, JSON.stringify(body)).toBe(400);
+                expect(await response.json()).toEqual({ error: "Data must be a string" });
+            }
+            expect(from).not.toHaveBeenCalledWith(expect.objectContaining(oversized), "utf-8");
+
+            for (const data of ["", "abc", "한글 😀"]) {
+                const response = await app.request("/api/crypto", json({ data }));
+                expect(response.status).toBe(200);
+                expect(await response.text()).toBe(createHash("sha256").update(data).digest("hex"));
+            }
+        } finally {
+            from.mockRestore();
+        }
+    });
+
     it("rejects malformed, whitespace-only, and primitive JSON with 400 and leaves the password unset", async () => {
         const { app } = freshServer();
         for (const body of ["{bad", "   ", '"str"', "42"]) {
@@ -919,8 +956,8 @@ describe("auth routes", () => {
         expect(plain.status).toBe(400);
         expect(await plain.json()).toEqual({ error: "Password not set" });
         const empty = await app.request("/api/crypto", { method: "POST" });
-        expect(empty.status).toBe(500);
-        expect(await empty.json()).toEqual({ error: "Crypto operation failed" });
+        expect(empty.status).toBe(400);
+        expect(await empty.json()).toEqual({ error: "Data must be a string" });
     });
 
     it("limits /api/login to 10 attempts per window with draft-6 RateLimit headers", async () => {

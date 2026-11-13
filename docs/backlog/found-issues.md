@@ -35,7 +35,7 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 - [Memory](#memory): 5
 - [Plugins](#plugins): 3
 - [Selection](#selection): 1
-- [Self-host server](#self-host-server): 4
+- [Self-host server](#self-host-server): 3
 - [Server generation](#server-generation): 2
 - [Settings](#settings): 3
 
@@ -327,19 +327,6 @@ its tests with no caller to need them.
 saying it is a deliberate hook.
 
 ## Self-host server
-
-### `/api/crypto` builds a buffer from a caller-chosen length without a token
-
-The handler hashes `Buffer.from(parsed.body.data, "utf-8")` without requiring a string
-(`server/src/routes/auth.ts:275`). Node takes an object with a `length` as array-like, so the 16 KiB body cap does not
-bound the allocation. The route is unauthenticated by design. Found 2026-11-14 by the wide review (cut E1) and
-confirmed by a second reader: a 28-byte body `{"data":{"length":67108864}}` allocated 64 MiB and held the event loop
-for 2.3 s, and a 27-byte one 4 MiB for 0.14 s; the auth limiter allows 2,000 requests a minute per address.
-
-**Why it matters:** anyone who can reach a public instance can stall it and spend its memory with small requests. The
-guide's Limitation about the unauthenticated routes did not weigh an input that escapes the body cap.
-
-**Suggested handling:** answer 400 unless `data` is a string.
 
 ### The hub proxy forwards a `Clear-Site-Data` header under the app's origin
 

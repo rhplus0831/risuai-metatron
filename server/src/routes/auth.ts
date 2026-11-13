@@ -271,6 +271,9 @@ export function createAuthStore(
             if (!parsed.ok) {
                 return parsed.response;
             }
+            if (typeof parsed.body.data !== "string") {
+                return c.json({ error: "Data must be a string" }, 400);
+            }
             try {
                 return c.text(createHash("sha256").update(Buffer.from(parsed.body.data, "utf-8")).digest("hex"));
             } catch {
