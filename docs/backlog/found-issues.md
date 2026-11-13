@@ -16,8 +16,27 @@ The twentieth and twenty-first batches, a build entry, and one finding still in 
 
 ## Contents
 
+- [Chat pipeline](#chat-pipeline): 1
 - [Memory](#memory): 1
 - [Selection](#selection): 1
+- [Settings](#settings): 1
+
+## Chat pipeline
+
+### A preview may store lore activation flags
+
+A `preview` or `previewPrompt` job runs the same `activateLore` as a send (`server/src/prompt/runner.ts:1626`), its
+bindings are not frozen, and `runSend` flushes the job's chat metadata before it returns the preview (`runner.ts:616`).
+Activation queues `__internal_ka_<id>` and `__internal_da_<id>` through `setChatVar`
+(`server/src/lua/bindings.ts:555`), so a preview may write those flags to the chat, while `rebuildLocks`' comment in
+`server/src/jobs/generationJobs.ts:352` says a preview writes nothing. Found 2026-11-13 by the Lore Budget Send Stop
+plan's audit; not settled against the write path, and not run.
+
+**Why it matters:** an entry with `dont_activate_after_match` that a preview activated would stay off in the send the
+preview was meant to show.
+
+**Suggested handling:** read whether the job's write accepts the `meta` operation for a preview kind; if it does, run
+a preview's activation without the flag writes, with a test that a preview leaves `scriptstate` as it was.
 
 ## Memory
 
@@ -50,3 +69,18 @@ its tests with no caller to need them.
 
 **Suggested handling:** drop the function and the tests that only exercise it, or keep it with a module comment
 saying it is a deliberate hook.
+
+## Settings
+
+### The lorebook token limit inputs cap at 4096 under a default of 8000
+
+Both inputs of the lorebook token limit carry `max` 4096: the global one (`adv.lbToken` in
+`src/ts/setting/memorySettingsData.ts:21`) and the lorebook's own (`src/lib/SideBars/LoreBook/LoreBookSetting.svelte:148`).
+The default is 8000 (`server/src/data/normalize/providers.ts:7`). `NumberInput` passes `max` to the element as an
+attribute only, so a typed value above it is stored, but the stepper stops at 4096. Found 2026-11-13 by the Lore
+Budget Send Stop plan's audit; not checked in a browser.
+
+**Why it matters:** that plan's dialog sends a person to these inputs to raise the limit, where the box suggests 4096
+is the most.
+
+**Suggested handling:** drop the `max` or raise it to a value above the default, on both inputs.
