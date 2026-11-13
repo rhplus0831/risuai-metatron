@@ -1499,21 +1499,53 @@ export function memorySourceSpeaker(message: { saying?: unknown }): string | nul
     return typeof message.saying === "string" && message.saying !== "" ? message.saying : null;
 }
 
-/** An HTML comment, or a tag: `<` then a letter, `/` or `!`, up to the next `>` with no `<` between. */
-const MEMORY_SOURCE_MARKUP = /<!--[\s\S]*?-->|<[A-Za-z/!][^<>]*>/g;
-
 /**
  * A message's `data` as memory reads it: HTML tags and comments removed with their inner text kept,
  * runs of blank lines collapsed to one, and the ends trimmed, so display markup a plugin adds (an
  * illustration block) neither changes a source's hash nor reaches the writer's prompt. A `<` not
- * followed by a letter, `/` or `!`, or with no `>` after it, stays (`a < b`). One regular expression,
- * so it is deterministic and linear in practice; it does not parse HTML: text shaped like a tag, such
+ * followed by a letter, `/` or `!`, or with no `>` after it, stays (`a < b`). The scan is linear
+ * and does not parse HTML: text shaped like a tag, such
  * as `<Name>`, is removed too, `<br>` joins its lines, and a `>` inside a quoted attribute ends the tag
  * early. Entities and CBS outside tags stay as written.
  */
 export function memorySourceText(data: string): string {
-    return data
-        .replace(MEMORY_SOURCE_MARKUP, "")
+    const parts: string[] = [];
+    let copied = 0;
+    let cursor = 0;
+    let commentsExhausted = false;
+    while ((cursor = data.indexOf("<", cursor)) !== -1) {
+        let end = -1;
+        if (!commentsExhausted && data.startsWith("<!--", cursor)) {
+            const close = data.indexOf("-->", cursor + 4);
+            if (close !== -1) {
+                end = close + 3;
+            } else {
+                // No later opener can close either; searching each suffix would be quadratic.
+                commentsExhausted = true;
+            }
+        }
+        if (end === -1 && /[A-Za-z/!]/.test(data.charAt(cursor + 1))) {
+            let next = cursor + 2;
+            while (next < data.length && data[next] !== "<" && data[next] !== ">") {
+                next++;
+            }
+            if (data[next] === ">") {
+                end = next + 1;
+            } else {
+                cursor = next;
+                continue;
+            }
+        }
+        if (end === -1) {
+            cursor++;
+        } else {
+            parts.push(data.slice(copied, cursor));
+            copied = cursor = end;
+        }
+    }
+    parts.push(data.slice(copied));
+    return parts
+        .join("")
         .replace(/\n(?:[ \t\r]*\n){2,}/g, "\n\n")
         .trim();
 }

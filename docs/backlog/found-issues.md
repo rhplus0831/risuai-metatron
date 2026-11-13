@@ -30,7 +30,7 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 - [Assets](#assets): 1
 - [Characters](#characters): 2
 - [Chat pipeline](#chat-pipeline): 1
-- [Memory](#memory): 5
+- [Memory](#memory): 4
 - [Plugins](#plugins): 3
 - [Selection](#selection): 1
 - [Server generation](#server-generation): 2
@@ -156,20 +156,6 @@ Events recorded since are not affected.
 **Suggested handling:** carry the speaker change from the chat store through `MessagesChanged`, and let
 reconciliation store a state for the affected version-1 anchors that the read side and the automatic repair
 recognize (or upgrade only those anchors). No migration of every row.
-
-### Unclosed comment openers make memory recording stall the server
-
-`MEMORY_SOURCE_MARKUP` (`shared/structuredMemory.ts:1503`, from `a595dc077`) tries its comment alternative at every
-`<!--` and scans to the end of the text when no `-->` follows, so a message of many unclosed openers costs quadratic
-time. `memorySourceText` runs it on the serving thread for source hashing, planning, and the writer. Found 2026-11-14
-by the wide review (cut F2) and confirmed by a second reader through the task service: a 262,144-byte message of
-`<!--` held the event loop for 11.2 s at a time during a 22 s recording, a 65,536-byte one for 0.7 s, and ordinary
-text of the same size took 78 ms in all.
-
-**Why it matters:** one stored or imported message stalls every request while memory is recorded. This is the
-pattern's own cost, apart from the tokenizer entry under Server generation.
-
-**Suggested handling:** a single-pass scan with the same output for every input, since the source hash depends on it.
 
 ### Structured memory edits succeed during a restore's maintenance halt
 

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Message } from "./database.ts";
 import {
     type MemoryEvent,
@@ -272,6 +272,47 @@ describe("memorySourceText", () => {
         '<div class="am-illustration-projection" data-am-message-id="m" data-am-slot-index="12">' +
         '<span class="am-image" style="display: block"><img class="am-image__media" ' +
         'src="{{raw::한민재.__am__.chat.e6470a96}}" width="832" height="1216" alt="" loading="lazy"></span></div>';
+
+    it("preserves the legacy markup replacement and searches an unclosed comment suffix only once", () => {
+        const shapes = [
+            "",
+            "plain text &amp; {{user}}",
+            "<!--",
+            "<!-->",
+            "before <!-- unclosed after",
+            "before <!-->after",
+            "<!-- a > b -->kept<!-- second -->",
+            "<!-- unclosed <b>kept</b>",
+            "<!-- <!-- -->tail<!--",
+            "<<b>inner</b>>",
+            "<a <b>text</a>",
+            "<!><!DOCTYPE html></><br/>",
+            '<tag attr="a > b">text</tag>',
+            "a < b, 3<4, <3, <=, <Name>, <tag without end",
+            "한글 😀 <é>kept</é>",
+            "  <p>A</p>\n\n \t\n\r\nB  ",
+        ];
+        for (const data of shapes) {
+            const legacy = data
+                .replace(/<!--[\s\S]*?-->|<[A-Za-z/!][^<>]*>/g, "")
+                .replace(/\n(?:[ \t\r]*\n){2,}/g, "\n\n")
+                .trim();
+            expect(memorySourceText(data), data).toBe(legacy);
+        }
+
+        const unclosed = "<!--".repeat(512);
+        const searches = vi.spyOn(String.prototype, "indexOf");
+        let terminatorSearches: number;
+        let normalized: string;
+        try {
+            normalized = memorySourceText(unclosed);
+            terminatorSearches = searches.mock.calls.filter(([needle]) => needle === "-->").length;
+        } finally {
+            searches.mockRestore();
+        }
+        expect(normalized).toBe(unclosed);
+        expect(terminatorSearches).toBe(1);
+    });
 
     it("removes tags and comments but keeps their inner text", () => {
         expect(memorySourceText('<p class="x">She <b>waits</b>.</p><!-- note: a > b --><br/>')).toBe("She waits.");
