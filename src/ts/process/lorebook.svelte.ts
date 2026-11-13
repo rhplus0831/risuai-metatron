@@ -1,6 +1,6 @@
 import { selectedCharacter, characterList } from "../storage/characterStore.svelte";
 import { settings } from "../storage/settingsViews.svelte";
-import { getChatVar, getChatVarOf, setChatVar, setChatVarOf } from "../parser/chatVar.svelte";
+import { getChatVarOf } from "../parser/chatVar.svelte";
 import { type Message, type loreBook } from "../storage/database.svelte";
 import { tokenize } from "../tokenizer";
 import { chatDisplayIds } from "../storage/chatBinding.svelte";
@@ -127,7 +127,7 @@ export function addLorebookFolder(type: number) {
 
 /**
  * The active lore of `chatRef`'s chat (default: the selected character's selected chat): the
- * shared activation (`shared/lore/activation.ts`) with the client's state.
+ * shared activation (`shared/lore/activation.ts`) with the client's state and detached preview flags.
  */
 export async function loadLoreBookV3Prompt(chatRef?: ChatRef | null) {
     const ref = chatRef ?? currentChatRef();
@@ -159,6 +159,8 @@ async function activatePinnedLore(ref: ChatRef | null) {
             throw new Error("The chat changed during the lore activation");
         }
     };
+    // Lore inspections must not consume entries before a real server send can activate them.
+    const previewVars = new Map<string, string>();
     const result = await activateLore(
         {
             character: char,
@@ -173,11 +175,11 @@ async function activatePinnedLore(ref: ChatRef | null) {
             findCharacterName: (id) => findCharacterbyId(id)?.name,
             getChatVar: (key) => {
                 same();
-                return getChatVarOf(ref, key);
+                return previewVars.get(key) ?? getChatVarOf(ref, key);
             },
             setChatVar: (key, value) => {
                 same();
-                return setChatVarOf(ref, key, value);
+                previewVars.set(key, value);
             },
             pickHashRand,
             parseCBS: (text) => {
