@@ -286,6 +286,17 @@ describe("the plugin setDatabase host setter", () => {
         expect(settings.plugins).toEqual([plugin]);
     });
 
+    it("setDatabaseLite ignores a plugin list while applying ordinary settings", async () => {
+        await captured.api!.setDatabaseLite({
+            plugins: [{ name: "ignored-by-lite", script: "", version: "3.0" }],
+            theme: "from-lite",
+        });
+
+        expect(settings.ui.theme).toBe("from-lite");
+        expect(settings.plugins).toEqual([]);
+        expect(captured.confirm).toEqual([]);
+    });
+
     it("setDatabaseLite writes to the presets selected at call start after chat loading and a selection change", async () => {
         vi.useFakeTimers();
         const chat = { id: "chat", name: "Chat", message: [], note: "", localLore: [], fmIndex: -1 };
