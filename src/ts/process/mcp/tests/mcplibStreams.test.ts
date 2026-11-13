@@ -191,6 +191,83 @@ afterEach(async () => {
 });
 
 describe("MCP streamable response lifetime", () => {
+    it("holds at most four ping replies per client across SSE transports and reuses settled slots", async () => {
+        for (const transport of ["streamable", "legacy"] as const) {
+            const client = newClient();
+            const held: { resolve(response: Reply): void; reject(error: Error): void }[] = [];
+            const streams: ReturnType<typeof streamOf>[] = [];
+            const session = streamOf([endpoint], { open: true });
+            let active = 0;
+            let peak = 0;
+            let wave = 0;
+            server.handle = (call) => {
+                if (call.body?.id !== undefined && !call.body.method) {
+                    expect(call.body).toEqual({ jsonrpc: "2.0", id: expect.stringMatching(/^ping-/), result: {} });
+                    active++;
+                    peak = Math.max(peak, active);
+                    return new Promise<Reply>((resolve, reject) => {
+                        let settled = false;
+                        held.push({
+                            resolve: (response) => {
+                                if (!settled) active--;
+                                settled = true;
+                                resolve(response);
+                            },
+                            reject: (error) => {
+                                if (!settled) active--;
+                                settled = true;
+                                reject(error);
+                            },
+                        });
+                    });
+                }
+                if (transport === "legacy") {
+                    if (call.method === "GET") return reply({ stream: session.stream });
+                    if (call.url.endsWith("/mcp")) return reply({ status: 404 });
+                    if (call.body.method === "initialize") send(session, call, INFO);
+                } else if (call.body.method === "initialize") return rpcJson(call, INFO);
+                if (call.body.method === "tools/call") {
+                    const pings = Array.from(
+                        { length: 8 },
+                        (_, i) =>
+                            `data:${JSON.stringify({ jsonrpc: "2.0", id: `ping-${wave}-${i}`, method: "ping" })}\n\n`,
+                    );
+                    if (transport === "legacy") {
+                        session.state.controller!.enqueue(enc.encode(pings.join("")));
+                        send(session, call, { content: [] });
+                    } else {
+                        const stream = streamOf([...pings, event(call.body.id, { content: [] })]);
+                        streams.push(stream);
+                        return reply({ stream: stream.stream });
+                    }
+                }
+                return reply({ status: 202 });
+            };
+            try {
+                expect(await result(observe(client.callTool("echo", {})))).toEqual([]);
+                // The answer follows the entire burst; its reader must finish with the replies still held.
+                if (transport === "streamable") await clean(client, streams);
+                expect(held).toHaveLength(4);
+                expect(active).toBe(4);
+                held[0].resolve(reply({ status: 202 }));
+                held[1].reject(new Error("reply failed"));
+                for (let i = 0; i < 40; i++) await Promise.resolve();
+                expect(held).toHaveLength(4);
+                wave++;
+                expect(await result(observe(client.callTool("echo", {})))).toEqual([]);
+                expect(held).toHaveLength(6);
+                expect(active).toBe(4);
+                expect(peak).toBe(4);
+                expect(client.initialized).toBe(true);
+            } finally {
+                for (const post of held) post.resolve(reply({ status: 202 }));
+                client.destroy();
+                await clean(client, transport === "legacy" ? [session] : streams);
+            }
+        }
+        noListeners();
+    });
+
     it("aborts only the caller's pending SSE answer and removes its reader and listeners", async () => {
         const client = newClient();
         const streams = [streamOf([], { open: true }), streamOf([], { open: true })];

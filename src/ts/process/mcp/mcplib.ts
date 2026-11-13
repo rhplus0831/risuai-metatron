@@ -15,6 +15,7 @@ import type { PluginCallContext } from "../../plugins/apiV3/pluginContext";
 
 /** Mirrors `server/src/mcp/client.ts` MCP_REQUEST_TIMEOUT_MS. */
 const MCP_REQUEST_TIMEOUT_MS = 5 * 60_000;
+const MAX_PENDING_PING_REPLIES = 4;
 
 /** A caller may leave while the client's OAuth prompt is still open. */
 function waitWithSignal<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -133,6 +134,7 @@ export class MCPClient {
      * `The MCP client was closed`; a settled waiter is checked too. `reset` does not set this flag.
      */
     private closed = false;
+    private pendingPingReplies = 0;
     /** Only the current legacy GET stream may reset the session when it ends. */
     private legacy: AbortController | null = null;
     /** Pending answers, including the legacy handshake's `"connected"` event. */
@@ -320,6 +322,11 @@ export class MCPClient {
 
             //@ts-expect-error JsonRPC type doesn't have method property, but JsonPing does
             if (jsonData.method === "ping") {
+                // Drop excess pings so a slow peer cannot accumulate outbound requests.
+                if (this.closed || this.pendingPingReplies >= MAX_PENDING_PING_REPLIES) {
+                    return;
+                }
+                this.pendingPingReplies++;
                 // Do not await the ping reply: this reader must still observe EOF or failure while its POST is out.
                 void this.request(
                     "response",
@@ -329,10 +336,14 @@ export class MCPClient {
                         initMethod: "none",
                         id: jsonData.id,
                     },
-                ).then(
-                    () => this.sseIdDone.add(jsonData.id),
-                    () => {},
-                );
+                )
+                    .then(
+                        () => this.sseIdDone.add(jsonData.id),
+                        () => {},
+                    )
+                    .finally(() => {
+                        this.pendingPingReplies--;
+                    });
                 return;
             }
 
