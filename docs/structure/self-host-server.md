@@ -103,8 +103,8 @@ Route lookup order:
   usual JWT failure. Auxiliary operations: `server/src/llm/auxOps.ts` ([LLM requests](llm-requests.md)).
 - `GET /hub-proxy/*`: configured hub (default `https://sv.risuai.xyz`), unauthenticated. `hubHeaders` puts
   `UNTRUSTED_CONTENT_CSP` (`server/src/http/securityHeaders.ts`, shared with `assetHeaders`) and `nosniff` on every
-  answer, the limiter's 429 and the route's 502 included, and the hub's `Set-Cookie` is dropped, so a hub document
-  opened through this origin gets an opaque origin and runs no script.
+  answer, the limiter's 429 and the route's 502 included, so a hub document gets an opaque origin and runs no script.
+  Hub responses strip `Set-Cookie` and `Clear-Site-Data` on success, errors, and redirects.
 
 ### Push routes
 

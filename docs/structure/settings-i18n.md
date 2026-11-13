@@ -82,6 +82,8 @@ Each module's rules are in its header or on its exports, and each component's in
   `bind:value={() => getSettingValue(...), (v) => updateSettingValue(...)}`, with no local copy, so an edit lands in the
   binding's record as selected at that moment. Only `SettingSelect` and `SettingSegmented` also write from an effect,
   their reset ([Invariants](#invariants)).
+- `CheckInput` reads absent booleans as false without persisting them, so ordinary and collapsed settings-group mounts
+  leave optional fields absent; user changes still write through `SettingCheck`.
 - `src/ts/setting/credentialLinks.ts`: `CREDENTIAL_OWNERS` (a shared credential's one editing place),
   `openCredentialOwner`, `takeCredentialRequest`, `scrollToCredential`. `src/lib/Setting/CredentialStatusLink.svelte` is
   the status and "Edit in …" link elsewhere.

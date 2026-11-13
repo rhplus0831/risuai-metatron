@@ -134,7 +134,10 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   `src/lib/UI/GUI/TextAreaResizable.svelte`: each one's rules are its header.
 - `src/lib/UI/GUI/NumberInput.svelte`: while focused it shows the typed entry, so a binding setter may refuse an empty
   or out-of-range entry without the box snapping back; `change`, blur, or a bound value changed from outside (`seen`)
-  shows the bound value again.
+  shows the bound value again. Adopting an outside value retires the refused draft and advances its comparison baseline,
+  so returning to an earlier number cannot revive that draft.
+- `src/lib/UI/GUI/CheckInput.svelte` reads an absent value as false without writing through its setter on mount; user
+  changes still write and notify once per change.
 - `src/lib/UI/GUI/TextAreaInput.svelte`: textarea or CBS-highlighted contenteditable that opens the popup editor
   (`popupEditor`, `popupEditorContext`). A field tied to a selected record passes its id as `popupEditorContext`;
   wrappers that forward it include `RegexList`, `TriggerList`, `PromptDataItem`, `MultiLangInput`, and
@@ -224,9 +227,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
     theme's GUI HTML (`Chat.svelte` renders the classic row instead).
 - For new lists that can change while an input has focus, key rows by entry and bind through guarded getter/setters;
   never bind `list[i]` in an unkeyed `#each`. Chrome fires `change` on a focused, edited control while removing it, and
-  an index binding then resolves the new row at that index. Existing exceptions: `LoreBookList` keys entry wrappers,
-  with a remote-replacement limitation, while `CharConfig.svelte` emotion and additional-asset tables remain unkeyed and
-  use index-checked rename helpers. See [characters and modules](characters-modules.md#lorebook-rows-and-writers).
+  an index binding then resolves the new row at that index. Existing `CharConfig` and `ModuleMenu` index-addressed name
+  rows release focus on owner or outside row replacement; `LoreBookList` guards keyed rows by live-list membership. See
+  [characters and modules](characters-modules.md#lorebook-rows-and-writers).
 - Runes and legacy stores are mixed: `$state`/`$derived`/`$props`/`$bindable`/snippets alongside `writable` stores,
   `.subscribe`, `createEventDispatcher`, and `on:save`. Match the local component.
 - Primitive prop convention: an `interface Props`, destructured with `$props()`, `$bindable()` for mutable values,

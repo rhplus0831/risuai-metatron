@@ -226,8 +226,9 @@ way (`staging.signal`). A version-2 import admitted before shutdown finishes, an
 
 - Upstream `.bin` import and export use prepare/commit or prepare/download flows. Conversion runs in a worker with a
   heap cap; staged work expires after ten minutes. `RISU_MAX_UPSTREAM_DB_BYTES` caps the decoded database.
-- The prepare's worker stages from its build store with `stageValidatedSnapshot`, on the default kinds
-  (`importStage.ts`).
+- Import prepare checks the disk reserve before spooling declared uploads and before worker extraction of indexed assets
+  (507 on shortage); commit rechecks installation space.
+- Import prepare's worker uses `stageValidatedSnapshot` on its build store and default kinds (`importStage.ts`).
 - Import reports changes for review; the commit's recheck, its 412 and `409 changedSinceReview`, and when the import is
   handed back are the comment above the commit route.
 - Export reads the snapshot without checkpoint tables, so upstream saves hold no named checkpoint history. A failed
@@ -235,9 +236,10 @@ way (`staging.signal`). A version-2 import admitted before shutdown finishes, an
 
 ### File imports
 
-`.risum`, CharX, and Realm imports validate before publishing assets. Module and CharX uploads spool to disk; once their
-NDJSON response starts, failures are returned as a final error line. Realm import stages card contents before the tab
-commits its assets, and shares one import slot with module and CharX imports.
+`.risum`, CharX, and Realm validate before asset publication. Module/CharX uploads spool to disk and report failures
+after NDJSON starts as terminal errors; Realm stages contents before asset commit and shares their import slot. CharX,
+including Realm's reader, checks the disk reserve before each decoded asset; shortages end with `Disk is full`,
+retaining published assets for sweep. CharX admits declared uploads before spooling (507 `Disk is full` on shortage).
 
 ### Maintenance
 

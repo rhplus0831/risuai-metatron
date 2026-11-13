@@ -174,7 +174,8 @@ client (a participant's `DELETE` too) is attributed; `stop`'s comment holds the 
 - A job re-sending a failed provider request reports `{ type: "retry" }` (`JobEventInput`); the registry counts the
   reports since the stage last changed and sends the `retry` event with the count, then `retry: null` after a changed
   stage's event. The snapshot replays a count only, as it does the stage.
-- `sendSocket` terminates a socket (owner or viewer) whose queue plus a frame passes 4 MiB, leaving as on a drop.
+- `sendSocket` allows one oversized frame on an empty queue for whole-chat recovery; with queued bytes, it terminates an
+  owner or viewer whose queue plus the next frame exceeds 4 MiB, leaving as on a drop.
 - `provider` callbacks offer `chunks: "append"`: `handleMessage` joins appends for `onChunk`, asks `chunkResync` on gaps
   and holds success for the final `seq`.
 - Owner absence bounds only questions and callbacks; no job-wide absence abort. Callback-free sequence parts and

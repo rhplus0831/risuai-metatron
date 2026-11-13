@@ -264,6 +264,11 @@ matched-entry identities. The budget pass runs before those flags are written, s
 `@@ignore_on_max_context` entry is tracked by its decorator, never by its priority, and is counted in `budget` but never
 stops it.
 
+Server `preview` and `previewPrompt` jobs keep lore activation flags in a detached bindings-local overlay; repeated
+activations read those flags without writing chat metadata. The tab's `loadLoreBookV3Prompt` uses a fresh overlay per
+activation for DevTool and `/test_lorebook`, so previews preserve stored flags and real sends can still consume one-shot
+lore.
+
 ## Recipes
 
 - Add a prompt card type: `shared/prompt.ts` (`PromptItem`), both template switches in `server/src/prompt/assemble.ts`,

@@ -76,10 +76,10 @@ With `memoryJob.structuredMemory`, previews and service-free sends read as sends
 no memory report. Budget and lane settings come from the chat's memory preset applied by `loadJobScope`; missing,
 malformed, or deleted ids fall back to the Settings default through `chatHypaV3Preset`.
 
-1. The step reads records and calls `selectMemory`, which reconciles events against stored messages before
+1. The step drops unreadable events, then `selectMemory` reconciles events against stored messages before
    `retrieveLanes` and `buildMemoryCard` run ([reconciliation](lifecycle.md#reconciliation-and-repairs)).
    `coveredMessages` decides what history may leave from active, unsuppressed events; `recordedMessages` separately
-   prevents the writer repeating any stored event. `retrieve.ts`'s header owns lane eligibility and scoring.
+   prevents the writer repeating readable stored events. `retrieve.ts`'s header owns lane eligibility and scoring.
 2. The card enters history as `memo: "supaMemory"`. With `volatileBeforeLastUser`, its volatile part bypasses history so
    it survives chat ranges; assembly places it after formatting by provenance before the latest user, else after the
    last memory entry, else at the end.
@@ -185,20 +185,17 @@ An empty read or failure has its own line; `more` says the list was cut at `MEMO
 rerun on `refresh`; older answers from another chat, input, read, or refresh cannot replace them. Evidence missing has
 no search.
 
-One page lookup (`/find?page=...`) per selection and `refresh` answers what the chat's events and threads say of the
-page. `read` asks for it on selection and shows four blocks under the sections, each only when it has rows: what the
-page knows or believes (each fact over one line holding its believed and secret marks and its event's link), the newest
-relationship shift per other page and direction, the threads naming it with their states (running ones first), and the
-events naming it. `manage` shows the events alone behind a closed disclosure and asks when it opens; an answer serves
-both views until the selection or `refresh` moves, and a refresh's reread keeps the rows it replaces until it settles.
-The page's own `knowledge` and `relationships` sections are the writer's digest, which its rules keep short, so these
-blocks are where a fact recorded only on an event shows.
+One page lookup (`/find?page=...`) per selection and `refresh` reads its events and threads. `read` fetches on selection
+and shows only nonempty blocks below the sections: knowledge (one fact per line with believed/secret marks and its event
+link), the newest relationship shift per other page and direction, threads with their states (running first), and
+events. `manage` fetches when its closed event disclosure opens; both views share the answer until selection or
+`refresh` changes, retaining old rows during a refresh. The page's own `knowledge` and `relationships` sections are the
+writer's digest, which its rules keep short, so these blocks are where a fact recorded only on an event shows.
 
-The event list is newest first, unknown positions last, each row with its story time and an Important mark from
-`importantEventGrade`. It shows the newest `RECENT_EVENTS` (5) and every important event until Show all is pressed, so a
-page every event names stays short. Event links open Timeline. Empty, failure, and truncated reads have their own lines.
-Selection, chat, refresh, and read-number guards discard old answers; search-hit and event-link buttons are disabled
-while a page edit is pending.
+The event list sorts by current source positions, unknowns last, before the 200-event cap; rows show story time and an
+Important mark from `importantEventGrade`. It shows the newest `RECENT_EVENTS` (5) and all important events until Show
+all. Event links open Timeline. Empty, failure, and truncated reads have their own lines. Selection, chat, refresh, and
+read-number guards discard old answers; search-hit and event-link buttons are disabled while a page edit is pending.
 
 An opened Timeline event shows what it changed under its key lines: state changes, knowledge, relationship shifts, and
 thread changes, through `MemoryEventFacts`, the component the Log renders a run's extraction with. Timeline passes the
@@ -358,7 +355,8 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
 ## Tests
 
 - `structured/lanes.test.ts` and `card.test.ts` drive the read rules with plain values and a fake tokenizer.
-  `structured/retrieve.test.ts` runs real embeddings over a vector cache with a scripted provider.
+  `structured/retrieve.test.ts` runs real embeddings over a vector cache with a scripted provider and checks unreadable
+  events contribute no coverage, retrieval, or warming.
 - The read step: `assemble.test.ts` drives `assemblePrompt` with a faked `memoryJob.structuredMemory` for the window,
   trim, placement, gap question, and report; `memoryJobs.test.ts` drives the gap run on a real stack;
   `contextReport.test.ts` the parser. Focused:
@@ -376,9 +374,10 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
   `structuredMemory.test.ts` for `memoryReceiptView`; `MemoryReceiptLine.svelte.test.ts` and
   `Chat.interactions.svelte.test.ts` for the line and its gate.
 - The panel: `structuredMemoryRoutes.test.ts` poisons a run's stored `data` through a second connection, so a read that
-  should not happen fails the request. `structuredMemory.test.ts` drives the join and the restarts.
-  `StructuredMemoryPanel.test.ts` mounts the real panel and `App.svelte` on fake timers with `authFetch` scripted, edits
-  and refusals included; the two openers are in `DefaultChatScreen.drafts.test.ts` and `CharConfig.emotions.test.ts`.
+  should not happen fails the request, and checks current-position page ordering before the five/200 limits.
+  `structuredMemory.test.ts` drives the join and the restarts. `StructuredMemoryPanel.test.ts` mounts the real panel and
+  `App.svelte` on fake timers with `authFetch` scripted, edits and refusals included; the two openers are in
+  `DefaultChatScreen.drafts.test.ts` and `CharConfig.emotions.test.ts`.
 - Selection and the meter: `MemorySettings.structuredMemory.test.ts` compares the page's editable controls with the list
   it may expose, so a new control fails it until something reads the field. `Toggles.test.ts` holds the toggle and
   `alwaysToggleOn`, `ContextMeter.svelte.test.ts` the line and the popover's one read.

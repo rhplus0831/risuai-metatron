@@ -25,6 +25,13 @@ routes, five re-reading the fixes made since 2026-11-05, one running the guides'
 for each of the eleven reports with a finding): seventeen new entries below, each reproduced by both readers except
 the one marked P3, and three confirmed claims moved from the guides' Issues to [known issues](known-issues.md).
 
+The twenty-second and twenty-third batches were worked on 2026-11-14 by implementers and test writers in seven
+worktrees with session verification (each new test was run against its fix reverted, then the whole suite on the
+merged branch): every entry of the two batches was fixed with a regression test except the three below. The message
+search keeps one cost: a hit in a single message of 16 MiB still takes about two seconds to build its snippet. Two
+siblings the implementers found were fixed with them (the tab's MCP client and the tab's lore preview), and the three
+confirmed claims left [known issues](known-issues.md) fixed.
+
 ## Contents
 
 - [Assets](#assets): 1

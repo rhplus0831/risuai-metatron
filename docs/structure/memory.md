@@ -278,8 +278,8 @@ formatting still applies.
 - Job and task writes merge against the chat as stored when each write occurs. `shared/memory.ts` owns V2/V3 identities;
   the [chat store](chat-store.md#server-memory-writes) owns the persistence boundary. Jobs remove orphaned V3 summaries;
   tasks prepare without cleanup.
-- V3 has one summary writer per chat. Writers checkpoint accepted summaries only after validating their source window;
-  details are in the server V3 and task contracts.
+- V3 has one summary writer per chat. After source-window validation, job and task checkpoints return `committed` only
+  if raw stored `hypaV3Data` keeps the merged value; otherwise `skipped` triggers recovery.
 - These are chat-scoped guards: a local send or `generatingChatKeys()` membership (a followed job or a server lock known
   to this tab) fences writes to that chat. The modal also respects `memoryTaskFenced(ref)` until the mirror reaches the
   task's terminal revision; the local lore draft has no task fence. A refused modal edit is reverted in its copy, never

@@ -82,12 +82,13 @@ persisted repair fields.
 ### Retraction and edits
 
 `applyGroup` classifies confirmed removals as `retracted`, and edits to `role`, raw `data` or the normalized group
-speaker (`saying`) as `rewritten`; the reaction marks a citing event only when the message no longer hashes as its
-stored source version read it, so a markup-only write leaves a version 3 event unmarked and marks a version 1 or 2 one;
-`onMessagesChanged` delivers the notice after the chat transaction commits. `app.ts` wires it to
+speaker (`saying`) as `rewritten`; hash comparisons use the stored source version, so a markup-only write leaves a
+version 3 event unmarked and marks a version 1 or 2 one. Speaker-change ids also travel in the notice: an active event
+citing a v1 anchor stores `stale`/`changed` and `rerecord`, so reads and automatic repair recognize what its hash
+cannot. `onMessagesChanged` delivers the notice after the chat transaction commits. `app.ts` wires it to
 `reconcileMessageChanges`, whose header owns the record reaction and thread/section effects. Memory reconciliation is a
-separate write: a crash between the chat commit and its notice leaves the event readable as `missing` or `changed` for a
-later repair.
+separate write: after a crash between the chat commit and its notice, hash-detectable changes still read as `missing` or
+`changed` for later repair.
 
 For a user-confirmed delete in a chat whose own algorithm is Structured Memory, `removeAfterAsking` checks coverage and
 asks before carrying `retract` through the save; in another chat `removeMessages` removes at once; the chat store guide
@@ -259,6 +260,7 @@ takes over.
 
 - `structured/reconcile.test.ts` and `shared/structuredMemory.test.ts` drive reconciliation with plain records, and
   `src/ts/process/structuredMemory.test.ts` pins the tab's hash to a literal from `messageSourceHash`.
+  `structured/reconcile.test.ts` also checks legacy speaker edits on live and staged records in a real store.
 - Retraction runs on real stores: `structuredMemoryRoutes.test.ts` through the batch and edit routes,
   `memoryStore.test.ts` the notice, `memoryTasks.test.ts` and `memoryJobs.test.ts` the re-records. `chatStore.test.ts`,
   `command.test.ts`, and `RecoveryDrafts.test.ts` drive the question and the mark in the tab.

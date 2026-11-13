@@ -97,9 +97,9 @@ comparison ties rounds together.
     200 hits: `more` means hits were dropped or a round remains unread; exactly 200 with no round left is not truncated.
     The client drops unknown hit kinds or non-string ids and normalizes display fields before
     [Pages shows them](read.md#pages-timeline-and-threads).
-  - A page lookup reads every round, because rounds come in storage order and a cap that stopped reading would keep the
-    oldest events: it answers the newest 200 events by `sourceIndex`, newest first with unknown positions last, then the
-    newest 200 threads, and `more` means events were dropped.
+  - A page lookup resolves source message ids to current positions each round, while text search keeps stored positions.
+    It reads every round in storage order, sorts events by `sourceIndex`, unknown positions last, then keeps the newest
+    200 events and newest 200 threads; `more` means events were dropped.
 - Package and [chat-file](lifecycle.md#chat-files) reads collect `/package` and `/threads` at one revision. A round
   reads the revision alone and lists only its kinds: `/runs` and `/threads` by `seq` cursor (`readKindPage`), the others
   by position. The byte budget comes from `RouteLimits.memoryPackageRoundBytes` in `server/src/app.ts`, default
@@ -116,6 +116,9 @@ comparison ties rounds together.
 The panel calls `editStructuredMemory` with the revision of its read and one `StructuredMemoryEdit`. The route header
 defines the request, body cap and refusals; `parseMemoryEdit`, `applyPageEdit`, `applyThreadEdit`, `applyEventText`, and
 `applyEventRelease` own admission and the changes to stored records.
+
+Every structured-memory mutation checks the restore maintenance gate after body reads, in the same synchronous step as
+the mutation, and refuses with the resource routes' 503 and `Retry-After` while maintenance is active.
 
 1. The route checks ids, body and edit shape, then the epoch, then the fence. From the epoch check through
    `store.memory.write` there is no await. `server/src/app.ts` supplies the fence: a queued/running task, a job or
@@ -283,7 +286,7 @@ group: no walk reads them.
 - A `MemoryAnchoredSource` hash reads role, `saying` and `data` as `memorySourceText` (tags and comments removed, blank
   lines collapsed), never `generationInfo`, so display markup a plugin adds keeps it; a stored `v2:` or bare hash
   compares under its own version, which reads raw `data` (`messageSourceHash`). The chat store's `rewritten` notice
-  stays raw, and the [memory reaction](lifecycle.md#retraction-and-edits) filters it by that stored version.
+  stays raw; the [memory reaction](lifecycle.md#retraction-and-edits) applies stored-version and speaker-change rules.
 - A `MemoryUnanchoredSource` means the anchor was never known: an adopted summary whose message was already gone. It
   forces its event `stale` until a person keeps it. A source whose message disappears later keeps its original hash and
   index. A run's window holds only anchored sources.
@@ -322,7 +325,8 @@ group: no walk reads them.
   the tab's rendered files through that parser. It cannot use `testSupport.ts`: a `src/` test puts its imports under the
   root `tsconfig.json`, where the server routes do not type-check.
 - `structured/edits.test.ts` drives the edit rules with plain records. `structuredMemoryRoutes.test.ts` drives the real
-  fence on a real app, holding a task on a tokenizer read and a job on its runner.
+  fence on a real app, holding a task on a tokenizer read and a job on its runner, and the maintenance gate on every
+  mutation, including after a delayed body read.
 - The adoption choice: `memoryStore.test.ts` for the decline and a real two-column table opened in place,
   `restoreStage.test.ts` for two-column snapshots, the column's values, and a checkpoint,
   `structuredMemoryRoutes.test.ts` for the routes and the feed, `memoryTasks.test.ts` and `memoryJobs.test.ts` for the
@@ -359,4 +363,6 @@ group: no walk reads them.
   `gradeMax`, `importantEventGrade`, and `dedupeSimilarity` are design numbers.
 - A loaded event can lack `storyTime`, `keyLines`, or `participants`, since `checkMemoryRow` checks a row's columns
   only. The server's readers take them as empty (`eventBody`, `eventVectorTexts`, `remappedEvent`); a new reader must
-  too.
+  too. An event whose `summary`, `knowledge`, `sources`, `keyLines`, or `participants` has the wrong type is skipped by
+  prompt selection, coverage, retrieval, vector warming, and recording (`memoryEventHasReadableFields`) and stays
+  stored.

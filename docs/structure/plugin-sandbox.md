@@ -335,6 +335,10 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 
 ### Gotchas
 
+- Plugin argument popups include backing-row identity, position, name, and argument in their context; an outside row
+  replacement or move discards the draft even when names and text match.
+- `SafeMutationObserver` wraps a non-element mutation target's parent element in `SafeElement`; parentless records are
+  omitted without dropping the other records in the batch.
 - `PluginSettings.svelte` uses one `alertConfirmWithCheckbox` for removal; "Also delete its stored data" controls
   `deleteOwnedPluginStorage`, which runs after `loadPlugins`, so removing a plugin alone retains its stored data.
 - Full character reads use `withChatsCopy`; records hold no chats. Outside hooks, `getDatabase` and `getChats` use
@@ -352,9 +356,10 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   `src/ts/storage/chatStore.svelte.ts`); every plugin character setter strips `chatSummaries`.
 - `getChatFromIndex`, `setChatToIndex`, `parseRisuChat`, and `sendChat` capture their chat by id first and await
   `ensureChatLoaded`; the two index accessors take only a nonnegative integer index and read one member
-  (`chatMemberPage`). `setDatabase`/`setDatabaseLite` skip loading omitted chats and exact round trips, rechecked before
-  applying, else load (`applyPluginDatabaseWithChats` JSDoc). Other character setters capture targets, pin and load,
-  then apply synchronously.
+  (`chatMemberPage`). Other character setters capture targets, pin and load, then apply synchronously.
+- `setDatabase` and `setDatabaseLite` capture exact chat round trips at entry and preserve them across consent and
+  installation prompts; omitted chats also skip loading and reconciliation. Other supplied chats follow
+  `applyPluginDatabaseWithChats`'s match recheck or load before applying.
 - Plugins hand back whole objects, but [chats are saved as changes](chat-store.md#whole-chat-writers).
   `applyPluginCharacter`/`applyPluginCharacters` JSDoc holds reconciliation rules (`reconcileCharacterChats`,
   `applyChatResult`); a chat left out is deleted, never the last one. New characters append in one batch after the

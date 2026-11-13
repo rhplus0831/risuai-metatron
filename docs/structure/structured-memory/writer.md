@@ -245,9 +245,9 @@ Compaction changes no event, and a warning does not fail the run.
   Memory, so a change to them never marks another algorithm's queued task stale. The stored mode itself is not digested:
   a mode change that resolves to the same algorithm keeps a queued task. Its preset is the scope's chat preset, so
   changing another preset leaves that task current.
-- A message is recorded when any stored event cites it, in any status, retracted and stale included: that only stops the
-  writer recording it again automatically, so nothing brings back what the user retracted. It is not coverage: dropping
-  raw history asks whether an active event covers it, and never reads this set.
+- A message is recorded when a readable stored event cites it, in any status, retracted and stale included: that stops
+  the writer recording it again automatically, so nothing brings back what the user retracted. It is not coverage:
+  dropping raw history asks whether an active event covers it, and never reads this set.
 - `confirmedBefore` is captured in the job's step. An automatic task never derives its ceiling from the chat as it
   stands later: an output trigger's `v2Impersonate` can append a user message after the reply, and that must not confirm
   the reply. A manual task does derive it, because the person's start is the confirmation; the writer's `input` keeps
@@ -272,7 +272,7 @@ Compaction changes no event, and a warning does not fail the run.
   upstream export leaves out.
 - `structured/window.test.ts` drives the window rules as a table over plain messages with a fake tokenizer, repair
   windows included. `structured/reconcile.test.ts` drives the swap, and `memoryTasks.test.ts` a repair through the real
-  writer.
+  writer. `structured/retrieve.test.ts` checks that unreadable events contribute no recorded-message ids.
 - `server/src/tests/memoryTasks.test.ts` drives the task kind on `createMemoryTasks` over a real store: its windows with
   an injected `structuredWriter`, the writer itself with none, through the scripted provider and read back from
   `store.memory`. `memoryJobs.test.ts` drives the hand-off with `createFakeMemoryTasks`, `assemble.test.ts` the
