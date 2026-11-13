@@ -344,6 +344,76 @@ describe("handlers that await keep their target", () => {
         expect(alerts.error).not.toHaveBeenCalled();
     });
 
+    it.each(
+        (["pick", "confirm"] as const).flatMap((wait) =>
+            (["switch", "delete", "replace"] as const).map((change) => ({ wait, change })),
+        ),
+    )("addGroupChar uses only its captured greeting destination across $wait ($change)", async ({ wait, change }) => {
+        alerts.selectChar.mockReset();
+        alerts.confirm.mockReset();
+        const { characters, characterStore, chat, group, character } = await boot();
+        characterStore.updateCharacter("d", { firstMessage: "Welcome from D" });
+        const groupId = characters.createNewGroup();
+        characterStore.selectCharacter(groupId);
+        const ref = { chaId: groupId, chatId: chat.selectedChatId(groupId)! };
+        const other = chat.createChat(groupId, { name: "Other", note: "", localLore: [], message: [] });
+        const originalPin = chat.pinChat;
+        const releases: ReturnType<typeof vi.fn>[] = [];
+        vi.spyOn(chat, "pinChat").mockImplementation((target) => {
+            const release = vi.fn(originalPin(target));
+            releases.push(release);
+            return release;
+        });
+        const pick = gate<string>();
+        const confirm = gate<boolean>();
+        const confirming = gate<void>();
+        alerts.selectChar.mockReturnValueOnce(pick.promise);
+        alerts.confirm.mockImplementationOnce(() => {
+            confirming.resolve();
+            return confirm.promise;
+        });
+        const running = group.addGroupChar();
+        expect(alerts.selectChar).toHaveBeenCalledOnce();
+        if (wait === "confirm") {
+            pick.resolve("d");
+            await confirming.promise;
+        }
+        chat.selectChat(groupId, other.id!);
+        if (change === "delete") chat.deleteChat(ref);
+        if (change === "replace") {
+            chat.installCharacterChats(
+                groupId,
+                [
+                    { id: ref.chatId, name: "Replacement", note: "", localLore: [], message: [] },
+                    { id: other.id, name: "Other", note: "", localLore: [], message: [] },
+                ],
+                {},
+            );
+        }
+        pick.resolve("d");
+        confirm.resolve(true);
+        await expect(running).resolves.toBeUndefined();
+
+        expect(chat.findChat({ chaId: groupId, chatId: other.id! })!.message).toEqual([]);
+        if (change === "switch") {
+            expect(chat.findChat(ref)!.message).toEqual([
+                expect.objectContaining({ role: "char", data: "Welcome from D", saying: "d" }),
+            ]);
+            expect(plain(character(groupId).characters)).toEqual(["d"]);
+            expect(plain(character(groupId).characterTalks)).toEqual([(1 / 6) * 4]);
+            expect(plain(character(groupId).characterActive)).toEqual([true]);
+        } else {
+            if (change === "delete") expect(chat.findChat(ref)).toBeUndefined();
+            else expect(chat.findChat(ref)!.message).toEqual([]);
+            expect(plain(character(groupId).characters)).toEqual([]);
+            expect(plain(character(groupId).characterTalks)).toEqual([]);
+            expect(plain(character(groupId).characterActive)).toEqual([]);
+        }
+        expect(alerts.error).not.toHaveBeenCalled();
+        expect(releases).toHaveLength(wait === "pick" && change === "replace" ? 0 : 1);
+        for (const release of releases) expect(release).toHaveBeenCalledExactlyOnceWith();
+    });
+
     it("applyModule applies to the character selected when its dialog opened, and to none once that one is deleted", async () => {
         const { characterStore, collectionStore, modules, character, sync, record } = await boot();
         const lore = { key: "m", comment: "from module", content: "module lore", mode: "normal", insertorder: 100 };
