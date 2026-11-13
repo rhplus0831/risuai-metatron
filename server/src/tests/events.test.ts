@@ -1,8 +1,10 @@
 // @vitest-environment node
+import { EventEmitter } from "node:events";
 import http from "node:http";
+import { Duplex } from "node:stream";
 import { serve } from "@hono/node-server";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { WebSocket as WsClient } from "ws";
+import { WebSocket as WsClient, WebSocketServer } from "ws";
 import type { EventFeedFrame, MemoryTaskEntry } from "../../../shared/events.ts";
 import { revisionDigest, type ResourceRevisionListing } from "../../../shared/resources.ts";
 import { DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
@@ -1039,6 +1041,88 @@ describe("createEventSockets", () => {
             client.ws.terminate();
         }
         sockets.close();
+    });
+
+    it("sends an accepted feed frame larger than 64 KiB as one complete JSON message", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        const feed = createChangeFeed();
+        const sockets = createEventSockets({
+            feed,
+            epoch: () => "E",
+            authorize: async () => true,
+            streaming: () => [],
+            memoryTasks: () => [],
+        });
+        const ws = Object.assign(new EventEmitter(), {
+            OPEN: WsClient.OPEN,
+            readyState: WsClient.OPEN as number,
+            bufferedAmount: 0,
+            send: vi.fn<(text: string) => void>(),
+            close: vi.fn(() => {
+                ws.readyState = WsClient.CLOSED;
+                ws.emit("close");
+            }),
+            terminate: vi.fn(),
+        });
+        const transport = new Duplex({
+            read() {},
+            write(_data, _encoding, done) {
+                done();
+            },
+        });
+        const attached = withResolvers<void>();
+        const upgrade = vi
+            .spyOn(WebSocketServer.prototype, "handleUpgrade")
+            .mockImplementationOnce((req, _socket, _head, callback) => {
+                callback(ws as unknown as WsClient, req);
+                attached.resolve();
+            });
+        const frame: ChangeFeedEvent = {
+            type: "change",
+            epoch: "E",
+            changes: {
+                resources: [
+                    {
+                        kind: "notes",
+                        id: "n",
+                        revision: "r2",
+                        patch: { baseRevision: "r1", set: { text: "€한😀" }, remove: [] },
+                    },
+                ],
+                chats: [],
+                chatOrders: [],
+            },
+        };
+        const text = JSON.stringify(frame);
+        const byteLength = Buffer.byteLength;
+        // Control the measured size and transport, keeping real publication and serialization.
+        // This crosses the chunking threshold while remaining below socket admission, without a large allocation.
+        const measured = vi
+            .spyOn(Buffer, "byteLength")
+            .mockImplementation((data, encoding) => (data === text ? 64 * 1024 + 1 : byteLength(data, encoding)));
+        try {
+            expect(
+                sockets.handleUpgrade(
+                    { url: "/api/events/ws?risu-auth=t", headers: {} } as http.IncomingMessage,
+                    transport,
+                    Buffer.alloc(0),
+                ),
+            ).toBe(true);
+            await attached.promise;
+            ws.send.mockClear();
+
+            feed.publish(frame);
+
+            expect(ws.send.mock.calls.map(([sent]) => sent)).toEqual([text]);
+            expect(JSON.parse(ws.send.mock.calls[0][0])).toEqual(frame);
+            expect(ws.terminate).not.toHaveBeenCalled();
+            expect(ws.readyState).toBe(WsClient.OPEN);
+        } finally {
+            measured.mockRestore();
+            upgrade.mockRestore();
+            sockets.close();
+            transport.destroy();
+        }
     });
 
     it("admits non-hello frames by UTF-8 bytes, including exactly 4 MiB, without queuing rejected frames", async () => {
