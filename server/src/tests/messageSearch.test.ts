@@ -721,6 +721,48 @@ describe("POST /api/chats/search refusals", () => {
 });
 
 describe("POST /api/chats/search with malformed stored text", () => {
+    it("keeps literal ASCII search results and stops matching at a stored NUL", async () => {
+        const s = await createSearchServer();
+        await s.batch({ ops: [character("c")] });
+        await s.batch({
+            chats: [
+                createChat("c", "k", [
+                    m("ascii", "MiXeD"),
+                    m("upper", "ÄÖ"),
+                    m("lower", "äö"),
+                    m("percent", "100%"),
+                    m("underscore", "a_b"),
+                    m("backslash", "c\\d"),
+                    m("wildcards", "100x aXb cXd"),
+                    m("after-nul", "\u0000MiXeD ÄÖ äö 100% a_b c\\d tail"),
+                    m("before-nul", "MiXeD ÄÖ 100% a_b c\\d\u0000tail"),
+                    m("repeated-prefix", "A".repeat(512)),
+                ]),
+            ],
+        });
+
+        const scope = { characterId: "c", chatId: "k" };
+        for (const [query, expected] of [
+            ["mIXeD", ["k/before-nul", "k/ascii"]],
+            ["ÄÖ", ["k/before-nul", "k/upper"]],
+            ["äö", ["k/lower"]],
+            ["0%", ["k/before-nul", "k/percent"]],
+            ["a_b", ["k/before-nul", "k/underscore"]],
+            ["c\\d", ["k/before-nul", "k/backslash"]],
+            ["tail", []],
+        ] as const) {
+            const page = await s.page({ ...scope, query });
+            expect(refs(page), query).toEqual(expected);
+            expect(page.next, query).toBeNull();
+        }
+
+        const miss = await s.page({ ...scope, query: "absent" });
+        expect(miss.hits).toEqual([]);
+        expect(miss.next).toBeNull();
+        const nearMiss = await s.page({ ...scope, query: "a".repeat(199) + "b" });
+        expect(nearMiss).toEqual(miss);
+    });
+
     it("does not report a stored lone surrogate as a hit for the replacement character", async () => {
         const s = await createSearchServer();
         await s.batch({ ops: [character("c")] });

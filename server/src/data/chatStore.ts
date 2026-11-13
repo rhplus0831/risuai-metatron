@@ -1585,9 +1585,10 @@ export function createChatTables(
     const searchChatName = db.prepare("SELECT json_extract(meta, '$.name') AS name FROM chats WHERE seq = ?");
     const searchAnchor = db.prepare("SELECT position FROM messages WHERE chatSeq = ? AND id = ?");
     // `octet_length` is the stored text's UTF-8 size (`length` on TEXT counts characters).
+    // `substr(text, 1)` preserves LIKE's stop at the first NUL; SQLite's lower folds ASCII only.
     const searchMessages = db.prepare(
         "SELECT id, position, octet_length(data) AS bytes, " +
-            "CASE WHEN json_extract(data, '$.data') LIKE ? ESCAPE '\\' THEN data END AS hit " +
+            "CASE WHEN instr(lower(substr(json_extract(data, '$.data'), 1)), lower(?)) > 0 THEN data END AS hit " +
             "FROM messages WHERE chatSeq = ? AND position < ? ORDER BY position DESC LIMIT ?",
     );
     // A budgeted read's charges: stored sizes only, so no row text leaves SQLite for an entry left out.
@@ -3103,7 +3104,7 @@ export function createChatTables(
         /**
          * One synchronous batch of a message search: the scope's chats by `seq` descending, each
          * chat's messages by `position` descending, every message charged and handed to `visit` (with
-         * its JSON only when its text matches the `LIKE` pattern), until `visit` ends the request
+         * its JSON only when its text matches the literal query), until `visit` ends the request
          * (`stopped`), the batch is full, or the scope is exhausted (`end`). A batch is full at
          * `maxRows` units (one per message row and one per chat looked at, so empty or skipped chats
          * cannot keep it running) or `maxBytes` (the messages' UTF-8 bytes plus what `scope.eligible`
@@ -3590,8 +3591,8 @@ function sliceWhole(text: string, start: number, end: number): { text: string; s
 
 /**
  * A search hit's snippet: up to 60 code units before the first match of `query` in `text` and 120
- * after it, found with the ASCII-only case folding `LIKE` used (not `toLowerCase`, which folds more
- * than `LIKE` matched). `matchStart` and `matchLength` are UTF-16 offsets into the snippet. When the
+ * after it, found with SQLite's ASCII-only case folding (not `toLowerCase`, which folds more
+ * than SQLite matched). `matchStart` and `matchLength` are UTF-16 offsets into the snippet. When the
  * match cannot be found again (the text changed meaning between SQLite and JavaScript), returns null.
  */
 export function messageSearchSnippet(

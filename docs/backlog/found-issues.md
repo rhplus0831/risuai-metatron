@@ -35,7 +35,6 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 - [Memory](#memory): 5
 - [Plugins](#plugins): 3
 - [Selection](#selection): 1
-- [Self-host server](#self-host-server): 1
 - [Server generation](#server-generation): 2
 - [Settings](#settings): 3
 
@@ -325,22 +324,6 @@ its tests with no caller to need them.
 
 **Suggested handling:** drop the function and the tests that only exercise it, or keep it with a module comment
 saying it is a deliberate hook.
-
-## Self-host server
-
-### A long near-miss query makes one message search hold the server for seconds
-
-The search tests each message with `LIKE ? ESCAPE` inside one synchronous SQLite call
-(`server/src/data/chatStore.ts:1590`; the pattern comes from `server/src/data/resourceStore.ts:2982`), and the row and
-byte budgets are checked only between rows (`chatStore.ts:3204`). Found 2026-11-14 by the wide review (cut E5) and
-confirmed by a second reader: against one stored message of 16 MiB of `A`, a query of 199 `a` and one `b` took 6.2 s
-with the event loop held, against 0.15 s for a plain miss; at 4 MiB, 1.6 s against 0.04 s.
-
-**Why it matters:** one signed-in search over a chat with a very large message stops every other request for its
-length. Data is unchanged.
-
-**Suggested handling:** try a literal match with the same ASCII folding (`instr(lower(…), lower(?))`) and measure; a
-work budget that makes search skip text costs coverage and is the owner's decision.
 
 ## Server generation
 

@@ -2904,7 +2904,7 @@ export function createResourceStore(options: {
         },
 
         /**
-         * One page of a message search (`shared/messageSearch.ts`): `LIKE` over each message's text
+         * One page of a message search (`shared/messageSearch.ts`): literal matching over each message's text
          * (`$.data`), chats by `seq` descending and messages by position descending, in synchronous
          * batches (`chatTables.searchBatch`) with `yieldTurn` between them, on this store's one
          * connection. Without ids it scans every character except trashed ones (`trashTime`) and the
@@ -2978,8 +2978,6 @@ export function createResourceStore(options: {
                     scope = { kind: "chat", seq };
                 }
             }
-            // Escaped, so `\`, `%` and `_` in the query match themselves.
-            const pattern = `%${request.query.replace(/[\\%_]/g, "\\$&")}%`;
             const hits: MessageSearchHit[] = [];
             const chatNames = new Map<number, string>();
             let scannedBytes = 0;
@@ -3021,7 +3019,7 @@ export function createResourceStore(options: {
             for (;;) {
                 const batch = chatTables.searchBatch({
                     scope,
-                    pattern,
+                    pattern: request.query,
                     from: resume,
                     maxRows: options.batchRows,
                     maxBytes: options.batchBytes,
