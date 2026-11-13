@@ -2495,10 +2495,12 @@ function toHypaV3Data(serialData: SerializableHypaV3Data): HypaV3Data {
 
     return {
         ...restData,
-        summaries: serialData.summaries.map((summary) => ({
+        summaries: (serialData.summaries ?? []).map((summary) => ({
             ...summary,
             // Convert null back to undefined (JSON serialization converts undefined to null)
-            chatMemos: new Set(summary.chatMemos.map((memo) => (memo === null ? undefined : memo))) as Set<string>,
+            chatMemos: new Set(
+                (summary.chatMemos ?? []).map((memo) => (memo === null ? undefined : memo)),
+            ) as Set<string>,
         })),
     };
 }

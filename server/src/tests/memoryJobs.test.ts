@@ -702,6 +702,32 @@ afterEach(async () => {
     await patchSettings(defaultMemorySettings);
 });
 
+it.each([
+    { v2: false, field: "hypaV3Data", data: {}, missing: "V3 summaries" },
+    {
+        v2: false,
+        field: "hypaV3Data",
+        data: { summaries: [{ text: "A past event", isImportant: false }] },
+        missing: "V3 chatMemos",
+    },
+    { v2: true, field: "hypaV2Data", data: {}, missing: "V2 both chunk lists" },
+    { v2: true, field: "hypaV2Data", data: { chunks: [], lastMainChunkID: 0 }, missing: "V2 mainChunks" },
+    { v2: true, field: "hypaV2Data", data: { mainChunks: [], lastMainChunkID: 0 }, missing: "V2 chunks" },
+])("completes a memory-enabled send over stored metadata missing $missing", async ({ v2, field, data }) => {
+    await patchSettings({ hypav2: v2, hypaV3: !v2, hypaModel: "MiniLM", hypaAllocatedTokens: 0 });
+    const chaId = await seedCharacter({ messages: [{ role: "user", data: "Hello", chatId: "u1" }] });
+    await setChatMeta(chaId, { memoryEnabled: true, [field]: data });
+    expect((await readChat(chaId)).data[field]).toStrictEqual(data);
+
+    const { terminal } = await job("send", chaId);
+
+    expect(terminal, JSON.stringify(terminal)).toMatchObject({ type: "done" });
+    expect(mains()).toHaveLength(1);
+    expect(summaries()).toHaveLength(0);
+    expect((await readChat(chaId)).data.message.at(-1)).toMatchObject({ role: "char", data: "Main reply." });
+    if (!v2) expect((await readChat(chaId)).data[field]).toStrictEqual(data);
+});
+
 describe("HypaV3", () => {
     it(
         "requests the summaries without streaming, stores them before the main request, puts the memory card in the prompt, and reuses the vectors on the next send",

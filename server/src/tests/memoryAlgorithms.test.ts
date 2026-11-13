@@ -5,7 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Database } from "../../../shared/database.ts";
 import { createHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
+import { chatMemoryAlgorithm, chatMemoryEnabled } from "../../../shared/chatMemory.ts";
+import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
+import { createResourceStore } from "../data/resourceStore.ts";
 import type { CachedVector, VectorCache } from "../data/vectorCache.ts";
+import { loadJobScope, scopeChat } from "../jobs/jobScope.ts";
 import type { requestDataResponse } from "../llm/request.ts";
 import { createEmbeddings } from "../prompt/embeddings.ts";
 import { hanuraiMemory } from "../prompt/memory/hanurai.ts";
@@ -284,6 +288,112 @@ describe("the server ports against the browser fixture", () => {
 });
 
 describe("what the server adds to the algorithms", () => {
+    it.each([
+        { algorithm: "v3", field: "hypaV3Data", data: {}, missing: "summaries" },
+        {
+            algorithm: "v3",
+            field: "hypaV3Data",
+            data: { summaries: [{ text: "A past event", isImportant: false }] },
+            missing: "chatMemos",
+        },
+        { algorithm: "v2", field: "hypaV2Data", data: {}, missing: "both chunk lists" },
+        { algorithm: "v2", field: "hypaV2Data", data: { chunks: [], lastMainChunkID: 0 }, missing: "mainChunks" },
+        { algorithm: "v2", field: "hypaV2Data", data: { mainChunks: [], lastMainChunkID: 0 }, missing: "chunks" },
+    ] as const)(
+        "reads stored $algorithm metadata missing $missing without rewriting it",
+        async ({ algorithm, field, data }) => {
+            const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+            const store = createResourceStore({ file: ":memory:", kinds });
+            try {
+                const first = (kind: string) => (store.get(kinds.get(kind)!, "main")!.data as { id: string }[])[0].id;
+                const binding = {
+                    presetId: first("presets"),
+                    modelPresetId: first("modelPresets"),
+                    personaId: first("personas"),
+                };
+                const memoryKind = kinds.get("memoryTranslateMedia")!;
+                const memory = store.get(memoryKind, "main")!;
+                store.put(
+                    memoryKind,
+                    "main",
+                    { ...(memory.data as object), hypav2: algorithm === "v2" },
+                    memory.revision,
+                );
+                store.put(
+                    kinds.get("characters")!,
+                    "c",
+                    { chaId: "c", name: "Mira", type: "character", firstMessage: "Hello" },
+                    null,
+                );
+                store.applyChanges({
+                    chats: [
+                        {
+                            characterId: "c",
+                            chatId: "k",
+                            baseRevision: null,
+                            ops: [
+                                {
+                                    op: "create",
+                                    chat: {
+                                        id: "k",
+                                        memoryEnabled: true,
+                                        ...(algorithm === "v3" ? { memoryMode: "hypaV3" as const } : {}),
+                                        promptPresetId: binding.presetId,
+                                        modelPresetId: binding.modelPresetId,
+                                        bindedPersona: binding.personaId,
+                                        message: [{ chatId: "u1", role: "user", data: "Hello" }],
+                                        [field]: data,
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                });
+                const stored = store.readChatSource("c", "k");
+                const scope = loadJobScope(store, kinds, {
+                    characterId: "c",
+                    chatId: "k",
+                    ...binding,
+                    mode: "normal",
+                    input: "",
+                    chatRevision: store.chatRevision("c", "k")!,
+                });
+                const room = scopeChat(scope)!;
+                const character = scope.db.characters[0];
+                expect(room[field]).toStrictEqual(data);
+                expect(chatMemoryEnabled(room, character, scope.db)).toBe(true);
+                expect(chatMemoryAlgorithm(scope.db, room)).toBe(algorithm === "v3" ? "hypaMemoryV3" : "hypaMemoryV2");
+                const scenario: Scenario = {
+                    name: "missing stored lists",
+                    algorithm,
+                    room: {},
+                    char: { type: "character", name: "Mira" },
+                    chats: [{ role: "user", content: "Hello", memo: "u1" }],
+                    maxContextTokens: 4096,
+                    settings: { hypaModel: "MiniLM" },
+                };
+                const world = createWorld(scenario);
+                const host = hostOf(scenario, world);
+                const result = await (algorithm === "v3" ? hypaMemoryV3 : hypaMemoryV2)(
+                    host,
+                    structuredClone(scenario.chats),
+                    100,
+                    4096,
+                    room,
+                    character,
+                    { tokenizeChat },
+                );
+                expect(result.error).toBeUndefined();
+                expect(result.chats).toContainEqual({ role: "user", content: "Hello", memo: "u1" });
+                expect(room[field]).toStrictEqual(data);
+                expect(store.readChatSource("c", "k")).toStrictEqual(stored);
+                expect(world.snapshot(result).requests).toEqual([]);
+            } finally {
+                store.close();
+            }
+        },
+    );
+
     describe("contextual summary vectors", () => {
         const shared = "Shared paragraph.";
         const cases = [

@@ -268,8 +268,9 @@ function toSerializableHypaV2Data(data: HypaV2Data): SerializableHypaV2Data {
 }
 
 function toHypaV2Data(data: SerializableHypaV2Data): HypaV2Data {
+    const mainChunks = data.mainChunks ?? [];
     // Handle corrupted data due to invalid json serialization
-    data.mainChunks.forEach((mainChunk) => {
+    mainChunks.forEach((mainChunk) => {
         if (!Array.isArray(mainChunk.chatMemos)) {
             mainChunk.chatMemos = [];
         }
@@ -277,7 +278,8 @@ function toHypaV2Data(data: SerializableHypaV2Data): HypaV2Data {
 
     return {
         ...data,
-        mainChunks: data.mainChunks.map((mainChunk) => ({
+        chunks: data.chunks ?? [],
+        mainChunks: mainChunks.map((mainChunk) => ({
             ...mainChunk,
             chatMemos: new Set(mainChunk.chatMemos),
         })),
