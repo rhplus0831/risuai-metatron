@@ -188,6 +188,30 @@ beforeEach(() => {
     follow(null);
 });
 
+it.each([1, 2])("cancels reset after a chat switch during confirmation %i", async (confirmation) => {
+    setChatMeta(withoutData, {
+        hypaV3Data: { summaries: [{ text: "other chat", chatMemos: [], isImportant: false }], categories: [] },
+    });
+    const { target } = open(withData);
+    let answer!: (value: boolean) => void;
+    const pending = new Promise<boolean>((resolve) => (answer = resolve));
+    if (confirmation === 2) mocks.alertConfirm.mockResolvedValueOnce(true);
+    mocks.alertConfirm.mockReturnValueOnce(pending);
+    target.querySelector<HTMLButtonElement>("button:has(.lucide-ellipsis-vertical)")!.click();
+    flushSync();
+    target.querySelector<HTMLButtonElement>("button:has(.lucide-trash-2)")!.click();
+    await tick();
+    expect(mocks.alertConfirm).toHaveBeenCalledTimes(confirmation);
+    selectChat(withoutData.chaId, withoutData.chatId);
+    flushSync();
+    answer(true);
+    await tick();
+    await tick();
+    flushSync();
+    expect(storedSummaries(withData)).toEqual(["one", "two"]);
+    expect(storedSummaries(withoutData)).toEqual(["other chat"]);
+});
+
 describe("HypaV3Modal's summary identity after deletion", () => {
     const four = () => [
         ...summaries(),

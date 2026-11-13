@@ -164,11 +164,10 @@
     });
 
     /**
-     * Writes new memory data to the selected chat (the copy follows). False when nothing was written:
+     * Writes new memory data to the supplied chat, or the selected chat (the copy follows). False when nothing was written:
      * no chat, or it is fenced (`memoryWriteFence`; with the notice, unless `quiet`).
      */
-    function writeHypaV3Data(data: SerializableHypaV3Data, quiet = false): boolean {
-        const ref = currentChatRef();
+    function writeHypaV3Data(data: SerializableHypaV3Data, quiet = false, ref = currentChatRef()): boolean {
         if (!ref) {
             return false;
         }
@@ -703,15 +702,17 @@
     }
 
     async function handleResetData() {
+        const ref = currentChatRef();
+        if (!ref) return;
         if (
             await alertConfirmTwice(
                 language.hypaV3Modal.resetConfirmMessage,
                 language.hypaV3Modal.resetConfirmSecondMessage,
             )
         ) {
-            writeHypaV3Data({
-                summaries: [],
-            });
+            const current = currentChatRef();
+            if (current?.chaId !== ref.chaId || current?.chatId !== ref.chatId) return;
+            writeHypaV3Data({ summaries: [] }, false, ref);
         }
     }
 
