@@ -899,8 +899,8 @@ describe("internal:graphmem on the server", () => {
         ];
         const cold = JSON.parse(s.text(await s.tool("readMemory", { query: ["who"] })));
         expect(cold).toEqual([{ queryTerm: "who", entries }]);
-        // The names as documents once, then the query; the connection `Bob` is searched at depth 2.
-        expect(embeddings.embedded).toEqual([["Alice", "Bob"], ["who"], ["Bob"]]);
+        // The query finds both names, so the connection `Bob` needs no further embedding.
+        expect(embeddings.embedded).toEqual([["Alice", "Bob"], ["who"]]);
 
         embeddings.embedded.length = 0;
         const warm = JSON.parse(s.text(await s.tool("readMemory", { query: ["tea"], search_depth: 1 })));
@@ -999,6 +999,45 @@ describe("graph memory's read loop (shared/mcp/graphmem.ts)", () => {
         };
         return counter;
     }
+
+    it("searches a dense repeated frontier once per unknown term and preserves entries at each chain depth", async () => {
+        const names = ["a", "b", "c", "d"];
+        const dense = names.map((name) => ({
+            name,
+            summary: `memory ${name}`,
+            connections: [...names, ...names, "missing", "missing"],
+        }));
+        const chain = names.map((name, i) => ({
+            name,
+            summary: `memory ${name}`,
+            connections: names.slice(i + 1, i + 2),
+        }));
+        const searched: string[] = [];
+        const read = async (entries: typeof dense, answers: Record<string, string[]>, depth: number) => {
+            searched.length = 0;
+            const host = {
+                getVar: () => JSON.stringify(entries),
+                setVar: vi.fn(),
+                search: async () => async (term: string) => {
+                    searched.push(term);
+                    return answers[term] ?? [];
+                },
+            };
+            const result = await callGraphMemTool(host, "readMemory", { query: ["q"], search_depth: depth });
+            expect(host.setVar).not.toHaveBeenCalled();
+            return JSON.parse((result[0] as { text: string }).text);
+        };
+        // All four entries are already found; only the shared, unknown connection needs a search.
+        expect(await read(dense, { q: names }, 1e12)).toEqual([{ queryTerm: "q", entries: dense }]);
+        expect(searched).toEqual(["q", "missing"]);
+
+        // A search that finds one new entry at a time still expands exactly one edge per depth.
+        const answers = { q: ["a"], b: ["b"], c: ["c"], d: ["d"] };
+        for (const depth of [0, 1, 2, 3, 4, 5, 1e12]) {
+            expect(await read(chain, answers, depth)).toEqual([{ queryTerm: "q", entries: chain.slice(0, depth) }]);
+            expect(searched).toEqual(["q", "b", "c", "d"].slice(0, depth));
+        }
+    });
 
     it("stops when its frontier is empty whatever search_depth is, with the same result", async () => {
         const searched: string[] = [];

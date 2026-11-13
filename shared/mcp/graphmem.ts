@@ -159,21 +159,26 @@ async function readMemory(host: GraphMemHost, args: any): Promise<RPCToolCallCon
     }[] = [];
     for (let i = 0; i < query.length; i++) {
         let currentEntries: GraphIndex[] = [];
+        const foundNames = new Set<string>();
         let toSearch: string[] = [query[i]];
         // Stops once nothing new was found: a later depth would search nothing (a huge depth is no loop).
         for (let depth = 0; depth < search_depth && toSearch.length > 0; depth++) {
             const newEntries: GraphIndex[] = [];
             for (const searchTerm of toSearch) {
+                if (foundNames.has(searchTerm)) {
+                    continue;
+                }
                 const searched = await search(searchTerm);
                 for (const entry of searched) {
                     const found = graph.find((g) => g.name === entry);
-                    if (found && !currentEntries.includes(found)) {
+                    if (found && !foundNames.has(found.name)) {
+                        foundNames.add(found.name);
                         newEntries.push(found);
                     }
                 }
             }
             currentEntries = currentEntries.concat(newEntries);
-            toSearch = newEntries.flatMap((e) => e.connections);
+            toSearch = [...new Set(newEntries.flatMap((e) => e.connections))];
         }
 
         results.push({ queryTerm: query[i], entries: currentEntries });

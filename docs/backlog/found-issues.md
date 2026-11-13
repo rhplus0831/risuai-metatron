@@ -30,7 +30,6 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 - [Assets](#assets): 1
 - [Characters](#characters): 2
 - [Chat pipeline](#chat-pipeline): 1
-- [MCP](#mcp): 1
 - [Memory](#memory): 5
 - [Plugins](#plugins): 3
 - [Selection](#selection): 1
@@ -100,22 +99,6 @@ preview was meant to show.
 reads see the flags set during the preview and none reaches the chat's metadata, with a test that a preview leaves
 `scriptstate` as it was. Removing the flush at `runner.ts:631` alone is not enough: `flushChatMetadata`
 (`server/src/jobs/jobScope.ts:660`) is reached on other paths too.
-
-## MCP
-
-### One graph-memory read makes an embedding request for every connection
-
-The shared traversal searches every term of its frontier, the frontier is every connection of every new entry with
-repeats, and names already found are searched again (`shared/mcp/graphmem.ts:160`); the server host embeds each term
-afresh (`server/src/mcp/internal.ts:391`). The job charges the whole read as one tool call. Found 2026-11-14 by the
-wide review (cut E6) and confirmed by a second reader: a card whose default variables hold 32 fully connected entries
-(7,430 bytes) made 1,026 embedding requests for one `readMemory` call, and 16 entries made 258.
-
-**Why it matters:** an imported card and one tool call by the model spend hundreds of paid embedding requests while
-the send stays busy.
-
-**Suggested handling:** drop repeated terms from the frontier and skip names already in the result; the result set
-stays the same.
 
 ## Memory
 
