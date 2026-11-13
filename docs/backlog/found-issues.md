@@ -30,7 +30,7 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 - [Assets](#assets): 1
 - [Characters](#characters): 2
 - [Chat pipeline](#chat-pipeline): 1
-- [Memory](#memory): 3
+- [Memory](#memory): 2
 - [Plugins](#plugins): 3
 - [Selection](#selection): 1
 - [Server generation](#server-generation): 2
@@ -120,24 +120,6 @@ summary again; per-chat modes make the mode changes that lead there casual.
 **Suggested handling:** make the in-job checkpoint (`assemble.ts:857`) confirm the stored value as `checkpointOf`
 does and return `skipped` so the existing recovery runs, with a regression test that moves a chat to Structured
 Memory while a send's HypaV3 summary is in flight.
-
-### The panel's page lookup orders events by the message index stored at recording
-
-`findStructuredMemory` sorts a page's events by `sourceIndex`, newest first, before its 200-hit cap
-(`src/ts/process/structuredMemory.svelte.ts:1369`), and the `/find` route fills that field from the anchors stored when
-the event was recorded (`firstSourceIndex(event.sources)` in `server/src/routes/structuredMemory.ts:427`). The stored
-indexes stay as they were when earlier messages are deleted, while a new recording takes the shorter chat's positions,
-so an older standing event can carry a higher index than a newer one. `PagesTab.svelte:252` keeps the first
-relationship shift per pair and labels it newest. Found 2026-11-14 by the wide review (cut R2): with the first 40
-messages deleted, an event stored at index 40 outranked a new event at index 20, and Read showed the old relationship.
-The timeline already resolves message ids to current positions (`structuredMemory.svelte.ts:2033`).
-
-**Why it matters:** after old history is deleted, Read shows an obsolete relationship as the current one, and the
-newest-five and newest-200 selections pick by the same order. The stored records are intact, and the prompt's
-retrieval is not shown to be affected.
-
-**Suggested handling:** resolve the events' source messages to their current positions in the page lookup (join
-coverage, or have `/find` return source ids) and sort before the cap. A read-path change; nothing stored changes.
 
 ### A speaker-only correction leaves events with version-1 anchors unmarked
 

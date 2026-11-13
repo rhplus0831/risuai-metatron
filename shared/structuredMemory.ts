@@ -960,6 +960,7 @@ export type StructuredMemoryFindHit =
           kind: "event";
           id: string;
           title: string;
+          /** Current first source position for a page lookup; stored position for text search. */
           sourceIndex: number | null;
           excerpt: string;
           mention?: StructuredMemoryPageMention;

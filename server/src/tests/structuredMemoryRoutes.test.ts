@@ -21,6 +21,7 @@ import {
     MEMORY_REVISION_CHATS_MAX,
     STRUCTURED_MEMORY_LIMITS,
     normalizeStructuredMemorySettings,
+    type StructuredMemoryFindHit,
 } from "../../../shared/structuredMemory.ts";
 import { defaultPrompts, analysisSlots, patchSlots } from "../prompt/memory/structured/prompts.ts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -43,6 +44,17 @@ import { retrieveLanes } from "../prompt/memory/structured/retrieve.ts";
 import { changeSection, type PageChanges } from "../prompt/memory/structured/pages.ts";
 import { memoryKinds, projectionHistory, writeMemory } from "./memoryFixtures.ts";
 import { allowListenerOrigin, createResourceTestClient, type TestServerOptions } from "./testSupport.ts";
+
+const { pageLookupFetch } = vi.hoisted(() => ({
+    pageLookupFetch: vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(),
+}));
+vi.mock("../../../src/ts/storage/serverAuth.ts", async () => {
+    // Computed imports keep the browser module graph out of the server's NodeNext type check.
+    const factoryPath = "../../../src/ts/storage/tests/serverAuthMock.ts";
+    return (await import(/* @vite-ignore */ factoryPath)).createServerAuthMock({
+        authFetch: pageLookupFetch,
+    });
+});
 
 const cleanups: (() => void | Promise<void>)[] = [];
 beforeEach(() => {
@@ -1056,7 +1068,7 @@ it("finds each event and thread naming a page, with what the event says of that 
                 kind: "event",
                 id,
                 title: `Event ${id}`,
-                sourceIndex: id === "participant" ? 2 : null,
+                sourceIndex: null,
                 excerpt: "",
                 mention: said,
             })),
@@ -1070,6 +1082,100 @@ it("finds each event and thread naming a page, with what the event says of that 
     const body = await answer(await s.request(`${base}/find?${new URLSearchParams({ q: "Event body" })}`));
     expect(body.hits).toHaveLength(7);
     expect(body.hits.every((hit: object) => !("mention" in hit))).toBe(true);
+});
+
+it("keeps the newest page relationships after prefix deletion before applying the five and 200 event limits", async () => {
+    const tabPath = "../../../src/ts/process/structuredMemory.svelte.ts";
+    const epochPath = "../../../src/ts/storage/resourceClient.ts";
+    const { findStructuredMemory } = (await import(/* @vite-ignore */ tabPath)) as {
+        findStructuredMemory: (
+            ref: { chaId: string; chatId: string },
+            query: { page: string },
+        ) => Promise<{ outcome: string; value: { hits: StructuredMemoryFindHit[]; more: boolean } }>;
+    };
+    const { setResourceEpoch } = (await import(/* @vite-ignore */ epochPath)) as {
+        setResourceEpoch: (epoch: string) => void;
+    };
+    const s = await server({ routeLimits: { memoryPackageRoundBytes: 40_000 } });
+    const prefix: Message[] = Array.from({ length: 201 }, (_, index) => ({
+        chatId: `prefix-${index}`,
+        role: "user",
+        data: "Earlier history",
+    }));
+    const old: Message = { chatId: "old", role: "char", data: "They are enemies." };
+    const change = (ops: ChatOp[]) =>
+        s.store.applyChanges({
+            chats: [
+                {
+                    characterId,
+                    chatId,
+                    baseRevision: s.store.chatRevision(characterId, chatId),
+                    ops,
+                },
+            ],
+        });
+    change([{ op: "append", anchor: { end: true }, messages: [...prefix, old] }]);
+    s.write({
+        pages: [page("p")],
+        events: [
+            {
+                ...event("old"),
+                participants: ["p"],
+                sources: [{ messageId: "old", hash: messageSourceHash(old), index: prefix.length }],
+                relationshipShifts: [{ from: "p", to: "other", direction: "hostile", note: "Old hostility" }],
+            },
+            {
+                ...event("missing"),
+                participants: ["p"],
+                sources: [{ messageId: "deleted", hash: "old-hash", index: 10_000 }],
+            },
+        ],
+    });
+    change([{ op: "remove", ids: prefix.map(({ chatId }) => chatId!), retract: true }]);
+    const newer: Message[] = Array.from({ length: 200 }, (_, index) => ({
+        chatId: `new-${index}`,
+        role: "char",
+        data: `Friendship ${index}`,
+    }));
+    change([{ op: "append", anchor: { end: true }, messages: newer }]);
+    s.write({
+        events: newer.map((message, index) => ({
+            ...event(message.chatId!),
+            participants: ["p"],
+            sources: [{ messageId: message.chatId!, hash: messageSourceHash(message), index: index + 1 }],
+            relationshipShifts: [{ from: "p", to: "other", direction: "friendly", note: "New friendship" }],
+        })),
+    });
+    const before = memorySnapshot(s, chatId);
+    const roundHits: { id: string; sourceIndex: number | null }[] = [];
+    pageLookupFetch.mockImplementation(async (url) => {
+        const response = await s.request(url);
+        roundHits.push(...(await answer(response.clone())).hits);
+        return response;
+    });
+    setResourceEpoch(s.epoch);
+    try {
+        const result = await findStructuredMemory({ chaId: characterId, chatId }, { page: "p" });
+        if (result.outcome !== "ok") throw new Error(JSON.stringify(result));
+        expect(roundHits.find(({ id }) => id === "old")!.sourceIndex).toBe(0);
+        expect(roundHits.find(({ id }) => id === "missing")!.sourceIndex).toBeNull();
+        expect(pageLookupFetch.mock.calls.length).toBeGreaterThan(1);
+        expect(result.value.more).toBe(true);
+        expect(result.value.hits.map(({ id }) => id)).toEqual(newer.map(({ chatId }) => chatId).reverse());
+        expect(result.value.hits.slice(0, 5).map(({ id }) => id)).toEqual([
+            "new-199",
+            "new-198",
+            "new-197",
+            "new-196",
+            "new-195",
+        ]);
+        const newest = result.value.hits[0];
+        expect(newest.kind === "event" && newest.mention?.shifts[0].direction).toBe("friendly");
+        expect(memorySnapshot(s, chatId)).toEqual(before);
+    } finally {
+        setResourceEpoch("");
+        pageLookupFetch.mockReset();
+    }
 });
 
 it.each([

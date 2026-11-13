@@ -234,11 +234,15 @@ function sourceIds(sources: unknown): string[] {
     return storedMemorySources(sources).map(({ messageId }) => messageId);
 }
 
-/** The smallest anchored position of a stored source list, which the store does not check the shape of. */
-function firstSourceIndex(sources: unknown): number | null {
+/** The first source position, resolved against current messages when `positions` is supplied. */
+function firstSourceIndex(sources: unknown, positions?: ReadonlyMap<string, number>): number | null {
     let first: number | null = null;
     for (const source of Array.isArray(sources) ? sources : []) {
-        const index: unknown = isPlainObject(source) ? source.index : null;
+        const index: unknown = isPlainObject(source)
+            ? positions
+                ? positions.get(source.messageId as string)
+                : source.index
+            : null;
         if (Number.isSafeInteger(index) && (first === null || (index as number) < first)) {
             first = index as number;
         }
@@ -395,7 +399,12 @@ function findThreadHits(id: string, thread: unknown, pageId: string): Structured
  * One hit per event; text excerpts prefer summary, then key lines, then the already displayed title. A
  * page lookup's hit carries what the event says of that page.
  */
-function findEventHits(id: string, event: unknown, query: { q: string } | { page: string }): StructuredMemoryFindHit[] {
+function findEventHits(
+    id: string,
+    event: unknown,
+    query: { q: string } | { page: string },
+    positions?: ReadonlyMap<string, number>,
+): StructuredMemoryFindHit[] {
     if (!isPlainObject(event)) {
         return [];
     }
@@ -425,7 +434,7 @@ function findEventHits(id: string, event: unknown, query: { q: string } | { page
                   kind: "event",
                   id,
                   title: findTextWindow(event.title),
-                  sourceIndex: firstSourceIndex(event.sources),
+                  sourceIndex: firstSourceIndex(event.sources, positions),
                   excerpt,
                   ...(mention ? { mention } : {}),
               },
@@ -949,6 +958,14 @@ export function registerStructuredMemoryRoutes(
                     .map(({ id, bytes }) => ({ kind: "events", id, bytes }) as const),
                 ...contents.threads.map(({ id, bytes }) => ({ kind: "threads", id, bytes }) as const),
             ];
+            // Recording indexes survive prefix deletions; page recency follows the messages still here.
+            const positions = "page" in query ? new Map<string, number>() : undefined;
+            if (positions) {
+                const chat = store.readChatSource(characterId, chatId).data as Chat;
+                chat.message.forEach(({ chatId: messageId }, index) => {
+                    if (messageId !== undefined) positions.set(messageId, index);
+                });
+            }
             const round = roundOf(listed, cursor, packageRoundBytes);
             let next = round.next;
             const hits: StructuredMemoryFindHit[] = [];
@@ -962,7 +979,7 @@ export function registerStructuredMemoryRoutes(
                             : []
                         : kind === "pages" && "q" in query
                           ? findPageHits(id, record, query.q)
-                          : findEventHits(id, record, query)),
+                          : findEventHits(id, record, query, positions)),
                 );
                 if (hits.length >= MEMORY_FIND_HITS_MAX) {
                     const following = cursor + index + 1;
