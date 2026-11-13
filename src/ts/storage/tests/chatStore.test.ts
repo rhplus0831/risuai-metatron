@@ -3075,6 +3075,65 @@ describe("deleting cited messages", () => {
         return { promise, resolve };
     }
 
+    it("removes cited messages from the captured chat after selection changes during the coverage read", async () => {
+        const { server, chat, ref, selection, take, commit } = await boot();
+        const branch = { chaId: "c", chatId: "j" };
+        chat.createChat("c", { ...clone(chat.findChat(ref)), id: "j", name: "Branch" });
+        commit();
+        selection.selectCharacter("c");
+        chat.selectChat("c", "k");
+        const { settings } = await import("../settingsViews.svelte");
+        settings.ui.memoryAlgorithmType = "structuredMemory";
+
+        const reading = deferred<void>();
+        const coverage = deferred<Response>();
+        const question = deferred<void>();
+        const decision = deferred<boolean>();
+        const { alertConfirm } = await import("../../alert");
+        vi.mocked(alertConfirm)
+            .mockReset()
+            .mockImplementation(() => {
+                question.resolve();
+                return decision.promise;
+            });
+        const fetch = server.fetch.bind(server);
+        vi.spyOn(server, "fetch").mockImplementation((path, init) => {
+            if (path.includes("/coverage")) {
+                reading.resolve();
+                return coverage.promise;
+            }
+            return fetch(path, init);
+        });
+
+        chat.removeMessages(ref, ["a"]);
+        await reading.promise;
+        chat.selectChat("c", "j");
+        coverage.resolve(
+            Response.json({
+                revision: "memory-revision",
+                next: null,
+                runs: [],
+                events: [{ id: "e", status: "active", messageIds: ["a"] }],
+            }),
+        );
+        await question.promise;
+        expect(ids(chat.findChat(ref))).toEqual(["a", "b", "c"]);
+        expect(ids(chat.findChat(branch))).toEqual(["a", "b", "c"]);
+        expect(take().groups).toEqual([]);
+        decision.resolve(true);
+        await vi.dynamicImportSettled();
+
+        expect(ids(chat.findChat(ref))).toEqual(["b", "c"]);
+        expect(ids(chat.findChat(branch))).toEqual(["a", "b", "c"]);
+        const { work } = commit();
+        expect(work.groups.map(({ characterId, chatId, ops }) => ({ characterId, chatId, ops }))).toEqual([
+            { characterId: "c", chatId: "k", ops: [{ op: "remove", ids: ["a"], retract: true }] },
+        ]);
+        expect(server.texts("c", "k")).toEqual(["B", "C"]);
+        expect(server.texts("c", "j")).toEqual(["A", "B", "C"]);
+        server.close();
+    });
+
     it("asks before deleting cited messages, preserves a declined delete, and deletes unmarked when coverage fails", async () => {
         for (const answer of ["confirmed", "declined", "failed read"] as const) {
             const { server, chat, ref, take } = await boot();
