@@ -1281,7 +1281,7 @@ async function importCharacterCardSpec<T extends boolean = false>(
                 } else if (uri.startsWith("data:")) {
                     //data uri
                     const b64 = uri.split(",")[1];
-                    if (b64.length < 50 * 1024 * 1024) {
+                    if (b64.length < CARD_DATA_URI_BASE64_LIMIT) {
                         sources.push({ kind: "saved", item: items.length });
                         items.push({ load: () => Buffer.from(b64, "base64") });
                     } else {
@@ -1698,6 +1698,9 @@ function createBaseV2(char: ClientCharacter) {
  */
 export const JSON_EXPORT_ASSET_LIMIT = 64 * 1024 * 1024;
 
+// The importer limits encoded text and excludes the limit itself.
+const CARD_DATA_URI_BASE64_LIMIT = 50 * 1024 * 1024;
+
 /**
  * Writes `char` as a card file. PNG and CharX go to a download or to the supplied `writer`; a JSON card always goes
  * to a download (`downloadFile`, its writer a `BlankWriter`), while a supplied writer still suppresses the alerts and
@@ -1893,6 +1896,11 @@ export async function exportCharacterCard(
                             await writer.write("chara-ext-asset_:" + assetIndex, b64encoded);
                         } else if (type === "json") {
                             const b64encoded = Buffer.from(await compressImage(rData)).toString("base64");
+                            if (b64encoded.length >= CARD_DATA_URI_BASE64_LIMIT) {
+                                throw new Error(
+                                    language.jsonExportAssetTooLarge.replace("{name}", card.data.assets[i].name),
+                                );
+                            }
                             card.data.assets[i].uri = `data:application/octet-stream;base64,${b64encoded}`;
                         } else if (writer instanceof CharXWriter) {
                             let type = "other";

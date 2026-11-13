@@ -916,6 +916,7 @@ export const languageEnglish = {
     successExport: "Successfuly exported and downloaded to your download directory",
     exportMissingAssets: "Export finished, but {count} assets were missing or empty and were written as empty assets.",
     jsonExportTooLarge: "The assets total more than 64 MiB, too large for a JSON card. Export it as CharX instead.",
+    jsonExportAssetTooLarge: 'Asset "{name}" is too large to import from a JSON card. Export it as CharX instead.',
     onnxSaving: "Saving the model files...",
     onnxFilesSkipped:
         "Model imported, but {count} files in the zip are too large to upload (the limit is just under 100 MiB) and were skipped: {names}",

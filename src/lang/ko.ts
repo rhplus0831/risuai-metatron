@@ -855,6 +855,8 @@ export const languageKorean = {
     exportMissingAssets: "내보내기는 완료되었지만, 누락되거나 비어 있는 에셋 {count}개는 빈 에셋으로 저장되었습니다.",
     jsonExportTooLarge:
         "에셋 전체 크기가 64 MiB를 초과하여 JSON 카드로 내보낼 수 없습니다. 대신 CharX 형식으로 내보내 주세요.",
+    jsonExportAssetTooLarge:
+        '에셋 "{name}"의 크기가 JSON 카드 가져오기 한도를 초과합니다. 대신 CharX 형식으로 내보내 주세요.',
     onnxSaving: "모델 파일을 저장하는 중...",
     onnxFilesSkipped:
         "모델을 가져왔지만, 압축 파일 내 {count}개 파일이 업로드 한도(약 100 MiB)를 초과하여 제외되었습니다: {names}",
