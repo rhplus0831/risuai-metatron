@@ -898,6 +898,64 @@ it.each(["setDatabase", "setDatabaseLite"] as const)(
     },
 );
 
+it.each(["setDatabase", "setDatabaseLite"] as const)(
+    "%s preserves unchanged chats edited during consent and still saves plugin-edited chats",
+    async (setter) => {
+        const b = await boot(await fixture({ c: [chatData("held")], d: [chatData("d")] }));
+        // Consent writes its grant through the single-record route, outside the batched save adapter.
+        const transport = boundary.fetch!;
+        boundary.fetch = async (path, init) => {
+            if (path === "/api/resources/pluginPermissions/main" && init?.method === "PUT") {
+                const { baseRevision, data } = JSON.parse(String(init.body));
+                const saved = b.fake.store.put(b.fake.kind("pluginPermissions"), "main", data, baseRevision);
+                return Response.json({ epoch: b.fake.store.epoch(), ...saved });
+            }
+            return transport(path, init);
+        };
+        await b.chat.ensureChatLoaded(held);
+        const incoming = structuredClone(await b.api.getDatabase(["characters"]));
+        returnedCharacter(incoming, "c").name = "Renamed by plugin";
+        returnedCharacter(incoming, "d").chats[0].message[0].data = "Changed by plugin";
+
+        const shown = deferred();
+        const consent = deferred();
+        const { alertConfirm } = await import("src/ts/alert");
+        vi.mocked(alertConfirm).mockImplementationOnce(async () => {
+            shown.resolve();
+            await consent.promise;
+            return true;
+        });
+        const pending = b.api[setter](incoming);
+        await shown.promise;
+
+        const before = b.fake.chat("c", "held")!;
+        b.fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "held",
+                baseRevision: before.revision,
+                ops: [{ op: "setText", id: "message", text: "Edited by another client" }],
+            },
+        ]);
+        const remote = b.fake.chat("c", "held")!;
+        // Deliver the server's edit through the same chat-store entry point as a live update.
+        b.chat.noteRemoteChat(held, remote.revision, {
+            baseRevision: before.revision,
+            messages: [{ after: null, message: remote.data.message[0] }],
+            count: 1,
+        });
+        expect(b.chat.findChat(held)!.message[0].data).toBe("Edited by another client");
+
+        consent.resolve();
+        await pending;
+        await b.sync.flushResources();
+
+        expect(b.fake.record("characters", "c")!.data.name).toBe("Renamed by plugin");
+        expect(b.fake.texts("c", "held")).toEqual(["Edited by another client"]);
+        expect(b.fake.texts("d", "d")).toEqual(["Changed by plugin"]);
+    },
+);
+
 it("loads the whole unloaded character and saves a changed chat", async () => {
     boundary.liveFeedCurrent.mockReturnValue(true);
     const b = await boot(await fixture());

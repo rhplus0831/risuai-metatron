@@ -2238,8 +2238,22 @@ function pluginChatsMatch(
     }
 }
 
+/** Chats unchanged at entry must stay untouched even if a live edit arrives during consent. */
+function captureUnchangedPluginChats(newDb: Record<string, unknown>, owners: ReadonlyMap<string, string>) {
+    const unchanged = new Set<string>();
+    for (const char of Array.isArray(newDb?.characters) ? newDb.characters : []) {
+        if (!char || !owners.has(char.chaId)) continue;
+        if (pluginChatsMatch(char.chaId, char.chats, new Map())) {
+            unchanged.add(char.chaId);
+        } else {
+            unchanged.delete(char.chaId);
+        }
+    }
+    return unchanged;
+}
+
 /**
- * Both database setters skip loading and reconciling omitted chats and exact chat round trips. Loaded matches stay
+ * Both database setters skip chats unchanged at entry, omitted chats and exact chat round trips. Loaded matches stay
  * pinned while other characters load; targets and owners captured before consent are required.
  * All matches and original owners are checked synchronously
  * before applying. A changed match falls back once to loading targets that supply chats before any key applies.
@@ -2250,11 +2264,13 @@ async function applyPluginDatabaseWithChats(
     scope: PresetScope,
     targets: readonly string[],
     owners: ReadonlyMap<string, string>,
+    unchangedChats: ReadonlySet<string>,
 ) {
     const matches = new Map<string, { chats: unknown; hits: Map<string, DetachedChatCacheHit> }>();
-    const omitted = new Set<string>();
+    const omitted = new Set(unchangedChats);
     for (const char of Array.isArray(newDb?.characters) ? newDb.characters : []) {
         if (!char || !owners.has(char.chaId)) continue;
+        if (unchangedChats.has(char.chaId)) continue;
         if (char.chats === undefined) {
             omitted.add(char.chaId);
             matches.delete(char.chaId);
@@ -2318,12 +2334,13 @@ const setPluginDatabaseLite = async (
     scope: PresetScope,
     targets: readonly string[],
     owners: ReadonlyMap<string, string>,
+    unchangedChats: ReadonlySet<string>,
 ) => {
     if (newDb && typeof newDb === "object" && Object.hasOwn(newDb, "plugins")) {
         newDb = { ...newDb };
         delete newDb.plugins;
     }
-    await applyPluginDatabaseWithChats(newDb, context, scope, targets, owners);
+    await applyPluginDatabaseWithChats(newDb, context, scope, targets, owners, unchangedChats);
 };
 
 /**
@@ -2341,6 +2358,7 @@ const setPluginDatabase = async (
     scope: PresetScope,
     targets: readonly string[],
     owners: ReadonlyMap<string, string>,
+    unchangedChats: ReadonlySet<string>,
 ) => {
     if (Object.hasOwn(newDb, "plugins")) {
         console.warn(
@@ -2358,7 +2376,7 @@ const setPluginDatabase = async (
         newDb = { ...newDb, plugins: await handlePluginInstallViaPlugin(plugins) };
     }
     // After chats load, no await: preflight the captured scope and apply every key synchronously.
-    await applyPluginDatabaseWithChats(newDb, context, scope, targets, owners);
+    await applyPluginDatabaseWithChats(newDb, context, scope, targets, owners, unchangedChats);
 };
 
 const readAssetImage = (path: string) => {
@@ -2650,8 +2668,9 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             const scope = context ?? settingsWriteScope();
             const targets = charactersReconciled(newDb);
             const owners = new Map(targets.map((chaId) => [chaId, chatOwnerToken(chaId)]));
+            const unchangedChats = captureUnchangedPluginChats(newDb, owners);
             if (await refuseDbWrite("setDatabaseLite")) return;
-            return setPluginDatabaseLite(newDb, context, scope, targets, owners);
+            return setPluginDatabaseLite(newDb, context, scope, targets, owners, unchangedChats);
         },
         /** Captures all targets before dbWrite consent and the install prompts in `setPluginDatabase`. */
         setDatabase: async (newDb: any) => {
@@ -2660,8 +2679,9 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             const scope = context ?? settingsWriteScope();
             const targets = charactersReconciled(newDb);
             const owners = new Map(targets.map((chaId) => [chaId, chatOwnerToken(chaId)]));
+            const unchangedChats = captureUnchangedPluginChats(newDb, owners);
             if (await refuseDbWrite("setDatabase")) return;
-            return setPluginDatabase(newDb, context, scope, targets, owners);
+            return setPluginDatabase(newDb, context, scope, targets, owners, unchangedChats);
         },
         loadPlugins: loadPlugins,
         readImage: readAssetImage,

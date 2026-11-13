@@ -29,7 +29,7 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 
 - [Assets](#assets): 1
 - [Characters](#characters): 2
-- [Plugins](#plugins): 3
+- [Plugins](#plugins): 2
 - [Selection](#selection): 1
 - [Server generation](#server-generation): 1
 - [Settings](#settings): 3
@@ -79,25 +79,6 @@ confirmed by a second reader through the real resource sync: the server record h
 box and never enters the record.
 
 ## Plugins
-
-### A whole-database plugin write saves a stale message over an edit made during its consent dialog
-
-`setDatabase` and `setDatabaseLite` capture the scope, the target characters, and their owner tokens, then wait for
-the dbWrite consent (`src/ts/plugins/apiV3/v3.svelte.ts:2653`, `:2663`). Whether an incoming chat is an unchanged
-round trip is decided only after the wait (`pluginChatsMatch` at `:2265`), and `applyPluginCharacter` is called
-without a read baseline (`:1997`), so the baseline is captured late (`src/ts/storage/chatStore.svelte.ts:4853`). A
-chat that matched when the setter was called stops matching when another client's edit arrives while the dialog is
-open, and the plugin's old copy of the text is then written as a new edit. Found 2026-11-14 by the wide review (cut
-R5): a plugin that changed only a character's name reverted a message another client had edited and saved during the
-dialog, for both setters. The dedicated character and chat setters capture before the wait.
-
-**Why it matters:** an acknowledged message edit is lost from the stored chat without the plugin having touched a
-message. It needs a plugin that passes whole chats back through a database setter, an open consent dialog (first
-grant, reset, or the three-day reconfirmation), and a second client editing one of those chats meanwhile.
-
-**Suggested handling:** decide the unchanged chats synchronously at both setters' entry and carry that through the
-consent wait into the shared reconciliation, keeping the validation and owner checks. A local change in
-`v3.svelte.ts`; a general whole-database merge is not needed for this.
 
 ### A text-node mutation makes the plugin mutation observer throw and lose the batch
 
