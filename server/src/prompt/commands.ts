@@ -324,7 +324,7 @@ export function createCommandExecutor(host: CommandHost) {
                 return pipe;
             }
             case "test_lorebook": {
-                const p = await services.activateLore(ctx);
+                const p = await services.activateLore(lowLevelAccess ? ctx : { ...ctx, access: "safe" });
                 services.fence(ctx);
                 console.log(p);
                 services.notice({

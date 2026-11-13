@@ -233,7 +233,8 @@ export type LuaBindingServices = {
         ctx: HostContext,
         options?: { timeoutMs?: number; skipDisconnected?: boolean; orientation?: ImageOrientation },
     ): Promise<string | null>;
-    tokenize(text: string): Promise<number>;
+    /** Scripts pass their grant (false counts locally); non-script jobs keep the configured counter. */
+    tokenize(text: string, lowLevelAccess?: boolean): Promise<number>;
     /**
      * `loadLoreBookV3Prompt` of the job's chat (the live chat and the chat owner). With
      * `stopOverBudget`, an activation whose budget pass rejects an entry without
@@ -707,6 +708,13 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     const isSafe = (ctx: HostContext) => ctx.access === "safe" || ctx.access === "lowLevel";
     const isSafeOrEdit = (ctx: HostContext) => isSafe(ctx) || ctx.access === "editDisplay";
     const isLow = (ctx: HostContext) => ctx.access === "lowLevel";
+    const tokenize = (text: string, lowLevelAccess = true) => {
+        const tokenScope = tokenScopeFor(scope.request.db);
+        if (!lowLevelAccess) {
+            tokenScope.googleClaudeTokenizing = false;
+        }
+        return deps.tokens.count(text, tokenScope);
+    };
     const messages = () => engineChat().message;
     const project = (message: Message | undefined) =>
         message ? { role: message.role, data: message.data, time: message.time ?? 0 } : null;
@@ -1322,7 +1330,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                 },
                 pickHashRand,
                 parseCBS: (text) => evaluator.risuChatParser(text, { chara: selectedChar, chatRef: ref }),
-                tokenize: (text) => deps.tokens.count(text, tokenScopeFor(scope.request.db)),
+                tokenize: (text) => tokenize(text, isLow(ctx)),
                 testRegex: async (pattern, flags, text) => {
                     const result = await ctx.regex({ op: "test", pattern, flags, input: text });
                     if ("error" in result) {
@@ -1753,7 +1761,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             if (!isSafe(ctx)) {
                 return undefined;
             }
-            return await deps.tokens.count(value as string, tokenScopeFor(scope.request.db));
+            return await tokenize(value as string, isLow(ctx));
         },
         similarityMain: async ([, source, value], ctx) => {
             if (!isLow(ctx)) {
@@ -1905,7 +1913,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         request,
         collectStreamText,
         generateImageInlay,
-        tokenize: (text) => deps.tokens.count(text, tokenScopeFor(scope.request.db)),
+        tokenize,
         activateLore: (ctx, options) => activateJobLore(engineCharacter() as character, ctx, options),
         parse: (text, chara) =>
             evaluator.risuChatParser(text, { chara: (chara ?? undefined) as character, chatRef: ref }),

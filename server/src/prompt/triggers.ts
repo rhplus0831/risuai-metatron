@@ -312,6 +312,8 @@ export function hasRequestTriggers(owner: character | groupChat | undefined, mod
 
 export function createTriggerRuntime(host: TriggerHost) {
     const { services, ctx } = host;
+    // Nested runs share these prompt objects; every contributor to a slot must permit remote counting.
+    const promptAccess = new WeakMap<AdditionalSysPrompt, Record<keyof AdditionalSysPrompt, boolean>>();
     const now = host.now ?? (() => performance.now());
     let lastEffectYieldAt = now();
     /**
@@ -351,9 +353,9 @@ export function createTriggerRuntime(host: TriggerHost) {
         return result;
     };
     /** The job's counter, fenced on both sides: an abort during a count starts no other one. */
-    const tokenize = async (text: string) => {
+    const tokenize = async (text: string, lowLevelAccess: boolean) => {
         services.fence(ctx);
-        const tokens = await services.tokenize(text);
+        const tokens = await services.tokenize(text, lowLevelAccess);
         services.fence(ctx);
         return tokens;
     };
@@ -443,6 +445,13 @@ export function createTriggerRuntime(host: TriggerHost) {
             historyend: "",
             promptend: "",
         };
+        // Pre-existing text without provenance stays local even if this run's triggers are granted.
+        const additionalPromptAccess = promptAccess.get(additonalSysPrompt) ?? {
+            start: !additonalSysPrompt.start,
+            historyend: !additonalSysPrompt.historyend,
+            promptend: !additonalSysPrompt.promptend,
+        };
+        promptAccess.set(additonalSysPrompt, additionalPromptAccess);
         const triggers: triggerscript[] = (char.triggerscript ?? [])
             .map((v) => {
                 v.lowLevelAccess = CharacterlowLevelAccess;
@@ -944,6 +953,7 @@ export function createTriggerRuntime(host: TriggerHost) {
                     }
                     case "v2SystemPrompt": {
                         const value = operand(effect.valueType, effect.value);
+                        additionalPromptAccess[effect.location] &&= trigger.lowLevelAccess ?? false;
                         additonalSysPrompt[effect.location] += value + "\n\n";
                         break;
                     }
@@ -1650,7 +1660,7 @@ export function createTriggerRuntime(host: TriggerHost) {
                         const value = operand(effect.valueType, effect.value);
                         // The client resolves the output name before it awaits the count.
                         const outputKey = parse(effect.outputVar);
-                        const tokens = await tokenize(value);
+                        const tokens = await tokenize(value, trigger.lowLevelAccess ?? false);
                         setVar(outputKey, tokens.toString());
                         break;
                     }
@@ -2031,13 +2041,13 @@ export function createTriggerRuntime(host: TriggerHost) {
 
         let caculatedTokens = 0;
         if (additonalSysPrompt.start) {
-            caculatedTokens += await tokenize(additonalSysPrompt.start);
+            caculatedTokens += await tokenize(additonalSysPrompt.start, additionalPromptAccess.start);
         }
         if (additonalSysPrompt.historyend) {
-            caculatedTokens += await tokenize(additonalSysPrompt.historyend);
+            caculatedTokens += await tokenize(additonalSysPrompt.historyend, additionalPromptAccess.historyend);
         }
         if (additonalSysPrompt.promptend) {
-            caculatedTokens += await tokenize(additonalSysPrompt.promptend);
+            caculatedTokens += await tokenize(additonalSysPrompt.promptend, additionalPromptAccess.promptend);
         }
         if (varChanged) {
             services.notice({ kind: "updateGUI", payload: {} });
