@@ -1048,7 +1048,7 @@
         try {
             const parser = new DOMParser();
             const doc = parser.parseFromString(
-                risuChatParser(html ?? "", { cbsConditions: getCbsCondition() }),
+                risuChatParser(html ?? "", { cbsConditions: getCbsCondition(), renderMode: "gui" }),
                 "text/html",
             );
             return doc.body;

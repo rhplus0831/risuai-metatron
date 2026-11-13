@@ -99,6 +99,8 @@ export type CBSRegisterArg = {
     }) => void | Promise<void>;
     getDatabase: () => CbsDatabase;
     getUserName: (chatRef?: matcherArg["chatRef"]) => string;
+    /** GUI hosts escape scalar names before inserting them into owner-authored HTML. */
+    formatName?: (name: string) => string;
     getPersonaPrompt: (chatRef?: matcherArg["chatRef"]) => string;
     risuChatParser: (text: string, arg: matcherArg) => string;
     makeArray: (arr: unknown[]) => string;

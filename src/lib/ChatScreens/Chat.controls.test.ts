@@ -16,7 +16,8 @@ vi.mock("src/ts/storage/serverAuth", async () =>
 );
 
 import { language } from "src/lang";
-import { characterList } from "src/ts/storage/characterStore.svelte";
+import { risuChatParser } from "src/ts/parser/parser.svelte";
+import { characterList, updateCharacter } from "src/ts/storage/characterStore.svelte";
 import {
     acceptRemoteChat,
     findChat,
@@ -32,11 +33,13 @@ import { settings } from "src/ts/storage/settingsViews.svelte";
 
 const ref = { chaId: "owner", chatId: "chat" };
 const message = "A complete sentence.";
+const clone = globalThis.safeStructuredClone;
 let target: HTMLDivElement;
 let instance: ReturnType<typeof mount>;
 
 beforeEach(() => {
     vi.useFakeTimers();
+    vi.stubGlobal("safeStructuredClone", clone);
     installFlatDatabaseWithChats({
         characters: [
             {
@@ -228,6 +231,33 @@ it("rich copy keeps the sender name literal while preserving template formatting
     expect(heading.style.fontWeight).toBe("600");
     expect(doc.querySelector("p")?.textContent).toBe(message);
 });
+
+it.each(["name", "nickname"] as const)(
+    "custom GUI keeps the character %s, bot alias, and persona as text while prompt CBS keeps raw names",
+    async (source) => {
+        const name = "A <b>B</b> & C";
+        const persona = "P <i>Q</i> & R";
+        updateCharacter(ref.chaId, {
+            name: source === "name" ? name : "Owner",
+            nickname: source === "nickname" ? name : "",
+        });
+        settings.personas = [{ id: "gui-persona", name: persona, personaPrompt: "", icon: "" }];
+        setChatMeta(ref, { personaId: "gui-persona" });
+        settings.ui.theme = "customHTML";
+        settings.ui.guiHTML =
+            '<div class="owner-template"><strong>Sender</strong><span class="names">{{char}}|{{bot}}|{{user}}</span></div>';
+        const cbs = "{{char}}|{{bot}}|{{user}}";
+        const expected = `${name}|${name}|${persona}`;
+        expect(risuChatParser(cbs, { chatRef: ref })).toBe(expected);
+
+        await render();
+        const names = target.querySelector(".owner-template .names")!;
+        expect(names.textContent).toBe(expected);
+        expect(names.children).toHaveLength(0);
+        expect(target.querySelector(".owner-template > strong")?.textContent).toBe("Sender");
+        expect(risuChatParser(cbs, { chatRef: ref })).toBe(expected);
+    },
+);
 
 it("shows a read candidate's counter between active arrows with swipe off and hides the counter for a single reply", async () => {
     settings.ui.swipe = false;

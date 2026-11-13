@@ -93,6 +93,7 @@ export function registerCBS(arg: CBSRegisterArg) {
         registerFunction,
         getDatabase,
         getUserName,
+        formatName = (name: string) => name,
         getPersonaPrompt,
         risuChatParser,
         makeArray,
@@ -152,16 +153,16 @@ export function registerCBS(arg: CBSRegisterArg) {
             const db = getDatabase();
             let currentChar = contextChar(matcherArg);
             if (currentChar && currentChar.type !== "group") {
-                return currentChar.nickname || currentChar.name;
+                return formatName(currentChar.nickname || currentChar.name);
             }
             if (matcherArg.chara) {
                 if (typeof matcherArg.chara === "string") {
-                    return matcherArg.chara;
+                    return formatName(matcherArg.chara);
                 } else {
-                    return matcherArg.chara.name;
+                    return formatName(matcherArg.chara.name);
                 }
             }
-            return currentChar.nickname || currentChar.name;
+            return formatName(currentChar.nickname || currentChar.name);
         },
         alias: ["bot"],
         description:
@@ -174,7 +175,7 @@ export function registerCBS(arg: CBSRegisterArg) {
             if (matcherArg.consistantChar) {
                 return "username";
             }
-            return getUserName(matcherArg.chatRef);
+            return formatName(getUserName(matcherArg.chatRef));
         },
         alias: [],
         description:

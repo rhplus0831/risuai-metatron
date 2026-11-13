@@ -1,6 +1,6 @@
 import { boundedDistance } from "./assetSearch";
 import type { ChatStyle } from "./chatStyles";
-import { sanitizeExportHtml } from "./safeHtml";
+import { escapeHtml, sanitizeExportHtml } from "./safeHtml";
 import { untrack } from "svelte";
 import { type AnyClientCharacter, characterList, selectedCharacter } from "../storage/characterStore.svelte";
 import { currentChatRef, withCompatChats } from "../storage/chatStore.svelte";
@@ -1447,8 +1447,13 @@ export type { CbsConditions };
 // The evaluator and the registry live in `shared/cbs/`, so the server runs the same code; the
 // client supplies its host here.
 let cbsEvaluator: CbsEvaluator | null = null;
+let guiCbsEvaluator: CbsEvaluator | null = null;
 
-function clientCbsEvaluator(): CbsEvaluator {
+function clientCbsEvaluator(renderMode?: "gui"): CbsEvaluator {
+    if (renderMode === "gui") {
+        guiCbsEvaluator ??= createCbsEvaluator(clientCbsHost(renderMode));
+        return guiCbsEvaluator;
+    }
     cbsEvaluator ??= createCbsEvaluator(clientCbsHost());
     return cbsEvaluator;
 }
@@ -1505,11 +1510,12 @@ const tabCbsDatabase = cbsDatabase();
 // Allow 2 s of UI-thread time per top-level parse (each row's pre-pass is one); the budget resets for each.
 const CLIENT_CBS_LIMITS: CbsLimits = { maxWork: DEFAULT_CBS_MAX_WORK, maxMs: 2_000 };
 
-function clientCbsHost(): CbsHost {
+function clientCbsHost(renderMode?: "gui"): CbsHost {
     return {
         limits: CLIENT_CBS_LIMITS,
         getDatabase: () => tabCbsDatabase,
         getUserName: getUserName,
+        formatName: renderMode === "gui" ? escapeHtml : undefined,
         getPersonaPrompt: getPersonaPrompt,
         safeStructuredClone: safeStructuredClone,
         // A parse with a `chatRef` reads and writes that chat's variables, not the selected chat's.
@@ -1545,6 +1551,8 @@ function clientCbsHost(): CbsHost {
 /** `CbsParseArg` as the client passes it: `chara` may be a chat-free client character. */
 export type ClientCbsParseArg = Omit<CbsParseArg, "chara"> & {
     chara?: CbsParseArg["chara"] | AnyClientCharacter | null;
+    /** Keeps scalar names as text while preserving the owner's GUI template markup. */
+    renderMode?: "gui";
 };
 
 /** The argument the shared evaluator gets: a character in the legacy shape it reads (`withCompatChats`). */
@@ -1568,7 +1576,7 @@ export function risuChatParser(da: string, arg: ClientCbsParseArg = {}): string 
             return risuChatParserScoped(da, arg, ids);
         }
     }
-    return clientCbsEvaluator().risuChatParser(da, sharedParseArg(arg));
+    return clientCbsEvaluator(arg.renderMode).risuChatParser(da, sharedParseArg(arg));
 }
 
 /**
@@ -1605,10 +1613,10 @@ export function risuChatParserScoped(
     scope: { presetId: string; modelPresetId: string; personaId: string },
 ): string {
     // Every captured id is part of the key: the cached evaluator closes over its scope.
-    const key = JSON.stringify([scope.presetId, scope.modelPresetId, scope.personaId]);
+    const key = JSON.stringify([scope.presetId, scope.modelPresetId, scope.personaId, arg.renderMode]);
     let evaluator = scopedEvaluators.get(key);
     if (!evaluator) {
-        const base = clientCbsHost();
+        const base = clientCbsHost(arg.renderMode);
         const personaOf = () => {
             const persona = settings.personas?.find((entry) => entry?.id === scope.personaId);
             if (!persona) {
