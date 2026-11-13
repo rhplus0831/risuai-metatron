@@ -12,6 +12,7 @@
     import OptionInput from "../../UI/GUI/OptionInput.svelte";
     import Accordion from "src/lib/UI/Accordion.svelte";
     import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
+    import { onDestroy } from "svelte";
 
     /**
      * Edits one regex script, offering `editinput`, `editoutput`, `editprocess`, `editdisplay`,
@@ -23,7 +24,7 @@
 
     interface Props {
         value: customscript;
-        onRemove?: () => void;
+        onRemove?: (row: symbol) => void;
         onClose?: () => void;
         onOpen?: () => void;
         idx: number;
@@ -38,6 +39,8 @@
         idx,
         popupEditorContext = undefined,
     }: Props = $props();
+    let destroyed = false;
+    onDestroy(() => (destroyed = true));
 
     // The owner alone cannot distinguish same-text scripts after a remote reorder.
     let cachedPopupEditorContext: { owner: unknown; row: symbol } | undefined;
@@ -127,12 +130,13 @@
         <button
             class="valuer"
             onclick={async () => {
+                const context = rowPopupEditorContext;
                 const d = await alertConfirm(language.removeConfirm + value.comment);
-                if (d) {
+                if (d && !destroyed && context === rowPopupEditorContext) {
                     if (!open) {
                         onClose();
                     }
-                    onRemove();
+                    onRemove(context.row);
                 }
             }}
         >
