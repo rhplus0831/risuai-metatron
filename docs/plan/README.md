@@ -6,7 +6,7 @@ their last commit and path, and the [backlog](../README.md) holds what they left
 
 - [Lore Budget Send Stop](lore-budget-send-stop.md): a chat-screen send stops before the model request when the
   lorebook token limit leaves an activated entry out, and a dialog offers to turn the warning off for the chat or to
-  change the limit. Drafted and audited 2026-11-13; slice 1 landed.
+  change the limit. Drafted and audited 2026-11-13; slices 1 and 2 landed.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive, following the archive's procedure for the plan's open items. Use `None`

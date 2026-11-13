@@ -4,7 +4,7 @@ Status: drafted 2026-11-13 at `fb09d2b25` from the owner's request. D1 is the ow
 to D6 the same day, as recommended. D7 to D18 are this plan's own, found against the code. Audited against `8bfc4ce83`
 on 2026-11-13 ([report](../reports/audits/plan-runner/lore-budget-send-stop-2026-11-13.md)): no P1, three P2, and
 twenty-one P3 findings, all fixed here; two claims it could not settle are under Not In This Plan. D19 comes from the
-audit and narrows D1; the owner accepted it the same day. Landed: 1 (`2936260af`).
+audit and narrows D1; the owner accepted it the same day. Landed: 1 (`2936260af`), 2 (`f8e1e2328`).
 
 Sources: the owner's request (2026-11-13: when active lorebook entries do not fit the lorebook token limit, warn
 instead of processing the message; a checkbox on the Interaction page, on by default; the user can turn the warning off
