@@ -321,7 +321,12 @@
                                     {/each}
                                 {:else}
                                     <NumberInput
-                                        bind:value={settings.plugins[i].realArg[arg] as number}
+                                        bind:value={
+                                            () => settings.plugins[i].realArg[arg] as number,
+                                            (value) => {
+                                                if (Number.isFinite(value)) settings.plugins[i].realArg[arg] = value;
+                                            }
+                                        }
                                         placeholder={plugin?.argMeta?.[arg]?.placeholder}
                                     />
                                 {/if}

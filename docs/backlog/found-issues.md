@@ -29,7 +29,6 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 
 - [Assets](#assets): 1
 - [Characters](#characters): 2
-- [Plugins](#plugins): 1
 - [Selection](#selection): 1
 - [Server generation](#server-generation): 1
 - [Settings](#settings): 3
@@ -77,21 +76,6 @@ confirmed by a second reader through the real resource sync: the server record h
 
 **Suggested handling:** a function binding whose setter refuses a blank or non-finite value, so the draft stays in the
 box and never enters the record.
-
-## Plugins
-
-### A cleared plain integer plugin argument is stored as null
-
-The integer argument's number field without radio or checkbox metadata binds straight to `realArg`
-(`src/lib/Setting/Pages/PluginSettings.svelte:309`); the radio branch got a finite setter, this one did not. Found
-2026-11-14 by the wide review (cut F6) and confirmed by a second reader: clearing and committing the field stored
-`null`, which the server's plugin normalizer keeps and `getArgument` (`v3.svelte.ts:2877`) returns unchanged.
-
-**Why it matters:** a plugin that declared an integer receives `null` after an ordinary edit, against
-`shared/plugins.ts:8`.
-
-**Suggested handling:** the finite setter of the radio branch: a blank draft stays in the box and the stored number is
-kept.
 
 ## Selection
 

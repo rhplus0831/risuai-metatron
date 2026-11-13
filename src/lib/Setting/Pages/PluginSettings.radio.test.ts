@@ -1,16 +1,32 @@
 // @vitest-environment happy-dom
 
-import { flushSync, mount, unmount } from "svelte";
+import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { RisuPlugin } from "src/ts/plugins/plugins.svelte";
 
+const boundary = vi.hoisted(() => ({
+    fetch: null as null | ((path: string, init?: RequestInit) => Promise<Response>),
+}));
+vi.mock("src/ts/storage/serverAuth", async () =>
+    (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock({
+        authFetch: (path, init, options) => {
+            options?.beforeDispatch?.();
+            return boundary.fetch!(path, init);
+        },
+    }),
+);
 vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
 import { language } from "src/lang";
+import { RESOURCE_KIND } from "../../../../shared/resources.ts";
+import { installBootRecords } from "src/ts/bootstrap";
 import { applyRaw } from "src/ts/storage/records.svelte";
+import { readKinds } from "src/ts/storage/resourceClient";
+import { flushResources, seedResources, startResourceSync, stopResourceSync } from "src/ts/storage/resourceSync.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
+import { StoreBackedServer } from "src/ts/storage/tests/storeBackedServer";
 import { closePopupEditorSession, popUpEditorStore } from "src/ts/stores.svelte";
 import PluginSettings from "./PluginSettings.svelte";
 
@@ -61,6 +77,52 @@ it("stores a finite int radio value or default 0 for a malformed suffix, and che
         expect(settings.plugins[0].realArg.mode).toBe(expected);
         expect(JSON.parse(JSON.stringify(settings.plugins[0].realArg))).toEqual({ mode: expected });
         expect([finite.checked, malformed.checked]).toEqual(checked);
+    }
+});
+
+it("keeps the last finite plain int through a blank draft and save, then saves a later number", async () => {
+    settings.plugins[0].argMeta.mode = {};
+    const fake = await StoreBackedServer.create();
+    boundary.fetch = fake.fetch;
+    try {
+        fake.set("plugins", "main", JSON.parse(JSON.stringify(settings.plugins)));
+        const snapshot = await readKinds(Object.values(RESOURCE_KIND));
+        seedResources(snapshot);
+        installBootRecords(snapshot);
+        startResourceSync();
+        flushSync();
+        const input = target.querySelector<HTMLInputElement>('input[type="number"]')!;
+        const type = (value: string) => {
+            input.value = value;
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            flushSync();
+        };
+        input.focus();
+        type("7");
+        expect(settings.plugins[0].realArg.mode).toBe(7);
+        type("");
+        expect(input.value).toBe("");
+        expect(settings.plugins[0].realArg.mode).toBe(7);
+
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        input.blur();
+        flushSync();
+        expect(input.value).toBe("7");
+        await tick();
+        await flushResources();
+        expect(fake.record("plugins", "main")!.data[0].realArg).toEqual({ mode: 7 });
+
+        input.focus();
+        type("12");
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        input.blur();
+        await tick();
+        await flushResources();
+        expect(fake.record("plugins", "main")!.data[0].realArg).toEqual({ mode: 12 });
+    } finally {
+        stopResourceSync();
+        boundary.fetch = null;
+        fake.close();
     }
 });
 
