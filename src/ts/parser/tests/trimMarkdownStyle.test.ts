@@ -68,6 +68,17 @@ describe("applyMarkdownToNode", () => {
 });
 
 describe("sanitized links", () => {
+    it("empties non-HTTP hrefs in both trim paths while keeping the link text", () => {
+        const input = '<a href="mailto:someone@example.test">contact</a>';
+        for (const html of [trimMarkdown(input), trimMarkdownSharingStyles(input).html]) {
+            const body = parse(html);
+
+            expect(
+                [...body.querySelectorAll("a")].map((link) => [link.textContent, link.getAttribute("href")]),
+            ).toEqual([["contact", ""]]);
+        }
+    });
+
     it("opens HTTP and HTTPS Markdown links in a new tab with noopener noreferrer", async () => {
         const body = parse(
             await ParseMarkdown("[HTTP](http://example.com/plain) [HTTPS](https://example.com/secure)", null),
