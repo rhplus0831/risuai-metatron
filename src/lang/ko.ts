@@ -254,6 +254,8 @@ export const languageKorean = {
             "프롬프트 예산(최대 컨텍스트에서 응답 예약분을 뺀 크기) 중 고정 영역(시스템 프롬프트, 캐릭터 설명, 페르소나, 로어북, 작가의 노트 등)이 차지하는 비율의 경고 기준(10%~95%)입니다. 이 기준을 넘으면 대화 기록이 들어갈 자리가 부족해져 미터가 빨간색으로 표시됩니다.",
         contextMeterLookahead:
             "하이파 V3 백그라운드 요약 사용 시, 다음 전송에서 백그라운드 사전 요약이 시작되는 지점을 미터 막대에 점선으로 표시합니다. 이 지점은 한계 도달로 인해 반드시 요약해야 하는 시점보다 앞쪽에 위치합니다.",
+        loreBudgetStop:
+            "로어북 토큰 한도 때문에 활성화된 항목이 제외되면, 채팅 화면에서 시작한 전송·이어쓰기·리롤을 모델 호출 전에 멈추고 어떻게 할지 묻습니다. 플러그인, 자동 모드, 멀티센드, 명령어로 시작한 전송은 멈추지 않으며, 전송 후 컨텍스트 미터가 경고합니다. `@@ignore_on_max_context`가 지정된 항목은 전송을 멈추지 않습니다. 채팅별로 끌 수 있습니다.",
         comfyWorkflow:
             "ComfyUI의 API 워크플로우 JSON을 입력하세요. ComfyUI에서 'Workflow > Export (API)' 버튼을 눌러 내보낼 수 있습니다. 워크플로우 안에 반드시 `{{risu_prompt}}`를 포함해야 하며, 실행 시 Risu가 생성한 이미지 프롬프트로 치환됩니다.",
         automaticCachePoint: "채팅이 끝난 뒤 캐시 포인트가 없으면 자동으로 새 캐시 포인트를 생성합니다.",
@@ -1255,6 +1257,19 @@ export const languageKorean = {
     contextMeterTurnUnitMessage: "모든 메시지",
     contextMeterFixedWarn: "고정 영역 경고 기준",
     contextMeterLookahead: "백그라운드 사전 요약 지점 표시",
+    loreBudgetStop: "로어북 항목이 제외되면 전송 중단",
+    loreBudgetStopDialog: {
+        title: "로어북 항목이 제외되었습니다",
+        notCalled: "모델은 호출되지 않았습니다.",
+        messageKept: "보낸 메시지는 채팅에 남아 있습니다.",
+        limitOwnCharacter: "이 한도는 캐릭터 자체 설정이며, 캐릭터의 로어북 설정에서 바꿀 수 있습니다.",
+        limitOwnGroup: "이 한도는 그룹 자체 설정이며, 그룹의 로어북 설정에서 바꿀 수 있습니다.",
+        limitGlobal: "전역 로어북 토큰 한도이며, 메모리 설정에서 바꿀 수 있습니다.",
+        warnOffAndSend: "이 채팅에서 경고를 끄고 전송",
+        changeLimit: "토큰 한도 변경",
+        manageLorebook: "로어북 관리",
+        close: "닫기",
+    },
     contextUsage: {
         title: "컨텍스트 사용량",
         close: "닫기",
@@ -1343,9 +1358,9 @@ export const languageKorean = {
         loreBudgetHelp: "주입 전 활성화된 로어 항목들의 원본 토큰 합계입니다(최종 전송 토큰 수와 다를 수 있음).",
         loreRejected: (count: number, tokens: string) => `예산 초과로 로어북 ${count}개 제외됨 (${tokens} 토큰)`,
         loreRejectedMore: (count: number) => `외 ${count}개`,
-        loreWarnOff: "이 채팅에서 경고 끄기",
-        loreWarnOn: "이 채팅에서 다시 경고 켜기",
-        loreWarnOffNote: "이 채팅에서는 로어북 제외 경고를 표시하지 않습니다.",
+        loreWarnOff: "이 채팅에서 경고 및 전송 중단 끄기",
+        loreWarnOn: "이 채팅에서 경고 및 전송 중단 다시 켜기",
+        loreWarnOffNote: "이 채팅에서는 로어북 제외를 경고하지 않으며, 그 때문에 전송을 멈추지도 않습니다.",
         memoryKinds: {
             hypaV3: "하이파 V3",
             hypaV2: "하이파 V2",

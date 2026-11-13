@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
 
+import { get } from "svelte/store";
+import { loreBudgetStopFixture, loreBudgetTerminal } from "src/ts/process/tests/loreBudgetStopFixture";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, expect, it, vi } from "vitest";
 import { createFakeLockManager } from "src/ts/storage/tests/fakeLockManager";
@@ -92,6 +94,8 @@ async function until(check: () => boolean) {
 }
 
 afterEach(async () => {
+    const { loreBudgetStopDialog } = await import("src/ts/stores.svelte");
+    while (get(loreBudgetStopDialog)) get(loreBudgetStopDialog)!.resolve("close");
     if (screen) await unmount(screen);
     screen = undefined;
     await drive(pageDraftJournal().close());
@@ -110,10 +114,12 @@ afterEach(async () => {
 async function mountComposer({
     reload = false,
     configureChat,
+    configureCharacter,
     chatLoadInitialPages,
 }: {
     reload?: boolean;
     configureChat?: (chat: Chat) => void;
+    configureCharacter?: (character: Record<string, unknown>) => void;
     chatLoadInitialPages?: number;
 } = {}) {
     // Clearing the old page's timers also resets the fake clock; retain its time across reload.
@@ -148,6 +154,7 @@ async function mountComposer({
         Object.defineProperty(navigator, "locks", { value: createFakeLockManager(), configurable: true });
         sessionStorage.clear();
         io.server = new FakeResourceServer();
+        io.server.epoch = "11111111-2222-4333-8444-555555555555";
     }
     // The fixture, UI and Svelte runtime must all belong to the newly imported module graph.
     ({ flushSync, mount, tick, unmount } = await import("svelte"));
@@ -186,6 +193,7 @@ async function mountComposer({
         customscript: [],
     };
     configureChat?.(chats[0]);
+    configureCharacter?.(character);
     installFlatDatabaseWithChats({
         characters: [{ ...character, chats }],
         botPresets: [{ id: "preset", name: "Preset" }],
@@ -867,6 +875,265 @@ function endedReplay(terminal: Record<string, unknown>) {
         },
     });
 }
+
+/** Real send/follow pipeline with controllable job transport and acknowledgements for chat writes. */
+async function loreJobs() {
+    await useHttpCreation();
+    const chat = await import("src/ts/storage/chatStore.svelte");
+    const transport = await import("src/ts/network/generationJobs");
+    const { createFollowStub } = await import("src/ts/network/tests/generationJobsMock");
+    const { settings } = await import("src/ts/storage/settingsViews.svelte");
+    const { loreBudgetStopDialog } = await import("src/ts/stores.svelte");
+    settings.ui.loreBudgetStop = true;
+    // Job hydration compares parsed revision tuples; the older composer cases only need opaque ids.
+    chat.seedChats(
+        ["a", "b"].map((id) => ({
+            characterId: "c",
+            id,
+            revision: `${io.server!.epoch}:1:1`,
+            data: JSON.parse(JSON.stringify(chat.findChat({ chaId: "c", chatId: id }))),
+        })),
+        [{ characterId: "c", revision: `${io.server!.epoch}:1:1`, ids: ["a", "b"] }],
+    );
+    let revision = 1;
+    const fetch = io.server!.fetch;
+    vi.spyOn(io.server!, "fetch").mockImplementation(async (path, init) => {
+        const response = await fetch(path, init);
+        if (path !== "/api/resources/batch" || !response.ok) return response;
+        const body = JSON.parse(String(init?.body)) as { chats?: ChatGroup[] };
+        return Response.json({
+            ...(await response.json()),
+            chats: (body.chats ?? []).map(({ characterId, chatId }) => ({
+                characterId,
+                id: chatId,
+                revision: `${io.server!.epoch}:1:${++revision}`,
+            })),
+        });
+    });
+    const follows: {
+        stub: ReturnType<typeof createFollowStub>;
+        event: Parameters<typeof transport.followGenerationJob>[1];
+    }[] = [];
+    vi.spyOn(transport, "followGenerationJob").mockImplementation((id, event) => {
+        const stub = createFollowStub(id);
+        follows.push({ stub, event });
+        return stub.follow;
+    });
+    io.generationFetch.mockImplementation(async () => Response.json({ jobId: `job-${createPosts().length}` }));
+    const post = (index: number) =>
+        createPosts()[index] as {
+            requestId: string;
+            kind: string;
+            context: {
+                characterId: string;
+                chatId: string;
+                input: string;
+                userMessageId?: string;
+                rerollMessageId?: string;
+                speakerChaId?: string;
+                stopOverLoreBudget?: boolean;
+            };
+        };
+    async function finish(index: number, { stop = true, landInput = true } = {}) {
+        await until(() => follows.length > index);
+        const { context } = post(index);
+        const ref = { chaId: context.characterId, chatId: context.chatId };
+        const data = JSON.parse(JSON.stringify(chat.findChat(ref))) as Chat;
+        if (landInput && context.input && !data.message.some((message) => message.chatId === context.userMessageId)) {
+            data.message.push({ role: "user", data: context.input, chatId: context.userMessageId });
+        }
+        const follow = follows[index];
+        follow.event({
+            type: "resource",
+            kind: "chats",
+            epoch: io.server!.epoch,
+            characterId: ref.chaId,
+            id: ref.chatId,
+            revision: `${io.server!.epoch}:1:${++revision}`,
+            data,
+        });
+        const terminal = stop
+            ? loreBudgetTerminal(io.server!.epoch)
+            : { type: "done" as const, epoch: io.server!.epoch, revision: null };
+        follow.event(terminal);
+        follow.stub.end(terminal);
+        const { isChatBusy } = await import("src/ts/process/chatStatus.svelte");
+        await until(() => !isChatBusy(ref));
+        await vi.advanceTimersByTimeAsync(0);
+        flushSync();
+    }
+    async function dialog() {
+        await until(() => get(loreBudgetStopDialog) !== null);
+        return get(loreBudgetStopDialog)!;
+    }
+    return { chat, settings, post, finish, dialog, shown: () => get(loreBudgetStopDialog) };
+}
+
+it.each(["send", "continue", "empty continue"])(
+    "repeats a stopped %s with its original input and message id under a new request id",
+    async (action) => {
+        const { target, input, type, click, menu, menuItem } = await mountComposer();
+        const jobs = await loreJobs();
+        const text = action === "empty continue" ? "" : "Keep this exact input";
+        type(text);
+        if (action === "send") click(target.querySelector(".button-icon-send"));
+        else {
+            menu();
+            click(menuItem(language.continueResponse));
+        }
+        await jobs.finish(0);
+        const first = jobs.post(0);
+        expect(first.context.stopOverLoreBudget).toBe(true);
+        expect(first.kind).toBe(action === "send" ? "send" : "continue");
+        const dialog = await jobs.dialog();
+        expect(dialog.ref).toEqual({ chaId: "c", chatId: "a" });
+        expect(dialog.stop).toEqual(loreBudgetStopFixture);
+        expect(dialog.messageKept).toBe(text !== "");
+        expect(input().value).toBe("");
+        expect(io.alertError).not.toHaveBeenCalled();
+        // Text entered while the dialog is open must not replace the stopped request's input.
+        type("Next message");
+        dialog.resolve("warnOffAndSend");
+        await until(() => createPosts().length === 2);
+        const repeated = jobs.post(1);
+        expect(jobs.chat.findChat({ chaId: "c", chatId: "a" })?.loreBudgetWarnOff).toBe(true);
+        expect(repeated.kind).toBe(first.kind);
+        expect(repeated.context.input).toBe(text);
+        if (text) {
+            expect(first.context.userMessageId).toEqual(expect.any(String));
+            expect(repeated.context.userMessageId).toBe(first.context.userMessageId);
+        } else expect(repeated.context).not.toHaveProperty("userMessageId");
+        expect(repeated.requestId).toEqual(expect.any(String));
+        expect(repeated.requestId).not.toBe(first.requestId);
+        expect(repeated.context).not.toHaveProperty("stopOverLoreBudget");
+        await jobs.finish(1, { stop: false });
+        expect(input().value).toBe("Next message");
+    },
+);
+
+it("closes a stopped send without another request or a chat opt-out", async () => {
+    const { target, type, click } = await mountComposer();
+    const jobs = await loreJobs();
+    type("Keep the message, close the warning");
+    click(target.querySelector(".button-icon-send"));
+    await jobs.finish(0);
+    (await jobs.dialog()).resolve("close");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(createPosts()).toHaveLength(1);
+    expect(jobs.chat.findChat({ chaId: "c", chatId: "a" })?.loreBudgetWarnOff).not.toBe(true);
+    expect(jobs.shown()).toBeNull();
+    expect(io.alertError).not.toHaveBeenCalled();
+});
+
+it("alerts instead of opening a lore dialog when the unlanded input returns to the composer", async () => {
+    const { target, input, type, click } = await mountComposer();
+    const jobs = await loreJobs();
+    type("This input did not land");
+    click(target.querySelector(".button-icon-send"));
+    await jobs.finish(0, { landInput: false });
+    expect(input().value).toBe("This input did not land");
+    expect(jobs.shown()).toBeNull();
+    expect(io.alertError).toHaveBeenCalledExactlyOnceWith("Activated lorebook entries exceeded the token limit.");
+    expect(createPosts()).toHaveLength(1);
+});
+
+it("repeats a stopped in-place reroll with the same reply and speaker", async () => {
+    const { target, click } = await mountComposer({
+        configureChat: (chat) => {
+            chat.message[1].saying = "speaker";
+        },
+    });
+    const jobs = await loreJobs();
+    vi.spyOn(await import("src/ts/network/eventFeed"), "serverRerollsInPlace").mockReturnValue(true);
+    click(target.querySelector(".button-icon-reroll"));
+    await jobs.finish(0);
+    expect(jobs.post(0)).toMatchObject({
+        kind: "reroll",
+        context: { stopOverLoreBudget: true, rerollMessageId: "a-answer", speakerChaId: "speaker" },
+    });
+    (await jobs.dialog()).resolve("warnOffAndSend");
+    await until(() => createPosts().length === 2);
+    expect(jobs.post(1)).toMatchObject({
+        kind: "reroll",
+        context: { rerollMessageId: "a-answer", speakerChaId: "speaker" },
+    });
+    expect(jobs.post(1).context).not.toHaveProperty("stopOverLoreBudget");
+    expect(jobs.post(1).requestId).not.toBe(jobs.post(0).requestId);
+    expect(jobs.chat.findChat({ chaId: "c", chatId: "a" })?.loreBudgetWarnOff).toBe(true);
+    await jobs.finish(1, { stop: false });
+});
+
+it.each(["user", "reply"])(
+    "offers a removal reroll ending in a %s and repeats only on the stopped chat after switching",
+    async (tail) => {
+        const { target, click } = await mountComposer({
+            configureChat: (chat) => {
+                if (tail === "user") chat.message.pop();
+            },
+        });
+        const jobs = await loreJobs();
+        const stopped = { chaId: "c", chatId: "a" };
+        const other = { chaId: "c", chatId: "b" };
+        const otherBefore = JSON.parse(JSON.stringify(jobs.chat.findChat(other)));
+        click(target.querySelector(".button-icon-reroll"));
+        await jobs.finish(0);
+        expect(jobs.post(0)).toMatchObject({ kind: "send", context: { stopOverLoreBudget: true } });
+        const dialog = await jobs.dialog();
+        expect(jobs.chat.findChat(stopped)?.message.map((message) => message.chatId)).toEqual(
+            tail === "user" ? ["a-user"] : ["a-user", "a-answer"],
+        );
+        if (tail === "user")
+            jobs.chat.appendMessage(stopped, {
+                role: "char",
+                data: "Reply arrived while deciding",
+                chatId: "late-answer",
+            });
+        selectChat("c", "b");
+        flushSync();
+        dialog.resolve("warnOffAndSend");
+        await until(() => createPosts().length === 2);
+        expect(jobs.post(1).context).toMatchObject({ characterId: "c", chatId: "a", input: "" });
+        expect(jobs.post(1).context).not.toHaveProperty("stopOverLoreBudget");
+        expect(jobs.post(1).requestId).not.toBe(jobs.post(0).requestId);
+        expect(jobs.chat.findChat(stopped)?.message.map((message) => message.chatId)).toEqual(["a-user"]);
+        expect(jobs.chat.findChat(stopped)?.loreBudgetWarnOff).toBe(true);
+        expect(jobs.chat.findChat(other)).toEqual(otherBefore);
+        await jobs.finish(1, { stop: false });
+    },
+);
+
+it("never requests a lore budget stop in auto mode", async () => {
+    const { menu, menuItem, click } = await mountComposer({
+        configureCharacter: (character) => {
+            Object.assign(character, { type: "group", characters: [], characterTalks: [], characterActive: [] });
+        },
+    });
+    const jobs = await loreJobs();
+    menu();
+    click(menuItem(language.autoMode));
+    await until(() => createPosts().length === 1);
+    expect(jobs.post(0).context).not.toHaveProperty("stopOverLoreBudget");
+    selectChat("c", "b");
+    flushSync();
+    await jobs.finish(0, { stop: false });
+    expect(jobs.shown()).toBeNull();
+    expect(createPosts()).toHaveLength(1);
+});
+
+it.each(["setting off", "chat opted out"])("omits the lore budget request field (%s)", async (reason) => {
+    const { target, click } = await mountComposer({
+        configureChat: (chat) => {
+            if (reason === "chat opted out") chat.loreBudgetWarnOff = true;
+        },
+    });
+    const jobs = await loreJobs();
+    if (reason === "setting off") jobs.settings.ui.loreBudgetStop = false;
+    click(target.querySelector(".button-icon-send"));
+    await until(() => createPosts().length === 1);
+    expect(jobs.post(0).context).not.toHaveProperty("stopOverLoreBudget");
+    await jobs.finish(0, { stop: false });
+    expect(jobs.shown()).toBeNull();
+});
 
 it("posts the same request id after an unknown send and fresh ids after error, stopped, abort and refusal without losing the message id", async () => {
     const { target, input, type, click } = await mountComposer();

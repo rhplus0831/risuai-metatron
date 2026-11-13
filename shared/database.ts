@@ -599,6 +599,12 @@ export interface Database {
     contextMeterFixedWarn: number;
     /** Whether the meter marks where HypaV3 asks for a background summary. */
     contextMeterLookahead: boolean;
+    /**
+     * Whether a send, continue, or reroll from the chat screen asks its job to stop before the model
+     * request when the lore budget leaves an activated entry out. A chat's `loreBudgetWarnOff` turns
+     * it off for that chat; both are read through `wantsLoreBudgetStop`.
+     */
+    loreBudgetStop: boolean;
 }
 
 /** Parameter fields retained in saved `seperateParameters` records and preset files. */
@@ -1297,8 +1303,10 @@ export interface Chat {
     /** Named connection for memory-host requests; an absent or empty id uses the model preset's memory slot. */
     memoryProfileId?: string;
     /**
-     * The context meter's chip does not warn of lore entries dropped by the lore budget in this chat
-     * (its popover still lists them). Present only while set (unset to warn again, never false).
+     * This chat accepts lore entries being left out by the lore budget: the context meter's chip does
+     * not warn of them (its popover still lists them), and a send from the chat screen does not ask
+     * to stop over them (`wantsLoreBudgetStop`). Present only while set (unset to warn again, never
+     * false).
      */
     loreBudgetWarnOff?: boolean;
     /**

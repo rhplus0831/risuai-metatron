@@ -47,6 +47,8 @@
   `foreignJobs`.
   - `isChatBusy` is a per-chat preflight; the resource flush and server admission still apply.
 - `src/ts/process/sendAborts.svelte.ts`: the screen's Stop controllers by chat (`createSendAborts`).
+- `src/ts/process/loreBudgetStop.ts`: whether a screen send asks for the lore budget stop (`wantsLoreBudgetStop`) and
+  the dialog's queue (`askLoreBudgetStop`); `src/ts/process/jobLoreStop.ts` reads a stop from a terminal.
 
 ### Prompt and templates
 
@@ -137,6 +139,19 @@ In `DefaultChatScreen.svelte`: `send`/`sendContinue` → `sendMain` → `sendCha
   and server admission can still refuse it afterward. The generation-create refusal list is below.
 - A nonempty input carries its `userMessageId`; retries of the same draft preserve it. The server job runs input
   processing and appends the message; Stop targets the captured chat's controller and followed jobs.
+- Lore budget stop: with the Interaction setting `loreBudgetStop` on and the chat's `loreBudgetWarnOff` unset
+  (`wantsLoreBudgetStop`, their one reader), Send, Continue, and both rerolls ask the job to stop before the model
+  request (`context.stopOverLoreBudget`, [server generation](server-generation.md#prompt-job-execution)). Auto mode and
+  the other `sendChat` callers never ask. The creating call's own follow raises no alert for the stop (`reportEnd`);
+  `sendChatMain` returns it as `loreStop`.
+  - After its own failure handling, the call site opens `LoreBudgetStopDialog.svelte`: one at a time, in the order
+    asked. A send whose text went back to the composer, or a removal reroll whose replies did not come back, shows the
+    job's English message as an alert instead, as does a follow with no waiting call (the boot resume, a follow that
+    already existed).
+  - "Don't warn in this chat and send" sets `loreBudgetWarnOff`, then repeats the site's own request on that chat with a
+    fresh `requestId`: the same input and `userMessageId`, the same in-place target, or the removal reroll again
+    (`rerollByRemoval`, which reads the chat by ref). It is dropped when the chat left the list or its owner's chats
+    were replaced (`chatOwnerToken`).
 
 ### Reroll
 
@@ -162,6 +177,8 @@ in [network jobs](network-jobs.md#job-recovery).
   `admissionRefused`; the server admission codes are listed in [generation](server-generation.md#generation-admission).
 - The ordinary composer's request id survives only while the create or follow outcome is uncertain. Draft and message-id
   recovery rules live in `composerDrafts.svelte.ts` and [draft recovery](draft-recovery.md).
+- A lore budget stop is a job's `error` terminal (`loreOverBudget`), not a create refusal. Its repeat takes a fresh
+  `requestId`, since the stopped one replays the stop.
 
 ### Reply and recovery
 

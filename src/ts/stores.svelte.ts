@@ -3,6 +3,7 @@ import { selectedChat, type ChatRef } from "./storage/chatStore.svelte";
 import { settings, activePreset } from "./storage/settingsViews.svelte";
 import { writable } from "svelte/store";
 import type { MemoryChatRef, MemoryProgress } from "../../shared/jobs.ts";
+import type { LoreBudgetStop } from "../../shared/contextReport.ts";
 import { type simpleCharacterArgument } from "./parser/parser.svelte";
 import { createAlertQueue } from "./alertQueue";
 import { moduleUpdate } from "./process/modules";
@@ -73,6 +74,29 @@ export const openModelPresetList = writable<PickerListState>(false);
 export const openPersonaList = writable<PickerListState>(false);
 /** The chat whose binding dialog is open (`ChatBindingDialog.svelte`), or null. */
 export const chatBindingDialog = writable<ChatRef | null>(null);
+/** What the user chose in the lore budget stop dialog; Escape and a dialog that goes away answer `close`. */
+export type LoreBudgetStopChoice = "warnOffAndSend" | "changeLimit" | "manageLorebook" | "close";
+/**
+ * A send of `ref` that stopped over the lore budget and waits for the user's choice
+ * (`askLoreBudgetStop`, `src/ts/process/loreBudgetStop.ts`).
+ */
+export type LoreBudgetStopRequest = {
+    ref: ChatRef;
+    stop: LoreBudgetStop;
+    /** The stopped send appended a user message, which is in the chat. */
+    messageKept: boolean;
+    /**
+     * Answers this request's caller. Only the first call counts; answering the shown request shows
+     * the next waiting one.
+     */
+    resolve: (choice: LoreBudgetStopChoice) => void;
+};
+/**
+ * The lore budget stop whose dialog is open (`LoreBudgetStopDialog.svelte`), or null. Stops that
+ * arrive meanwhile wait their turn; close the dialog through the request's `resolve`, never by
+ * setting this store.
+ */
+export const loreBudgetStopDialog = writable<LoreBudgetStopRequest | null>(null);
 /**
  * The settings page (`src/ts/settingsMenu.ts` names some; `src/ts/router/routes.ts` `SETTINGS_PAGES` gives each a
  * slug for `/settings/:page`). -1 is the settings list, which the router normalizes to the model page on a wide
@@ -126,6 +150,16 @@ export const CustomCSSStore = writable("");
  */
 export const SafeModeStore = writable(false);
 export const CharConfigSubMenu = writable(0);
+/**
+ * A request that the sidebar leave its DevTool view, which shows in place of the chat and character
+ * tabs (`botMakerMode`). `Sidebar.svelte` takes it: it clears the request once it has left the view.
+ */
+export const sidebarLeaveDevTool = writable(false);
+/**
+ * The submenu the character editor's lorebook tab is asked to show (0 character, 1 chat, 2 settings),
+ * or null. `LoreBookSetting.svelte` takes it, mounted already or at its next mount, and clears it.
+ */
+export const loreBookSubmenuRequest = writable<number | null>(null);
 /** The alert slot: one status and a queue of dialogs, each answering its own caller (`alertQueue.ts`). */
 export const alertStore = createAlertQueue({ type: "none", msg: "n" });
 /**

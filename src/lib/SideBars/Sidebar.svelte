@@ -19,6 +19,7 @@
         settingsOpen,
         sideBarClosing,
         sideBarStore,
+        sidebarLeaveDevTool,
         OpenRealmStore,
         PlaygroundStore,
         additionalHamburgerMenu,
@@ -127,6 +128,14 @@
     let editMode = $state(false);
     let menuMode = $state(0);
     let devTool = $state(false);
+    // The DevTool view shows in place of the chat and character tabs: a request for one of them
+    // (`sidebarLeaveDevTool`) leaves it, mounted already or at the next mount, and is cleared.
+    $effect(() => {
+        if ($sidebarLeaveDevTool) {
+            devTool = false;
+            sidebarLeaveDevTool.set(false);
+        }
+    });
 
     function reseter() {
         menuMode = 0;

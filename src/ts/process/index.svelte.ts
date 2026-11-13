@@ -27,7 +27,9 @@ type SendChatArg = ServerSendArg & {
     /**
      * Called when the send ended without throwing: `settled` when nothing of it writes to the chat any
      * more (it did not run, or its job ended; not after a create without an answer or a lost follow),
-     * with the chats a flush refused for a generation waited on.
+     * with the chats a flush refused for a generation waited on. `loreStop` is present when the job
+     * stopped over the lore budget as `stopOverLoreBudget` asked and the caller is to show it
+     * (`ServerSendResult.loreStop`).
      */
     onEnd?: (end: {
         settled: boolean;
@@ -35,6 +37,7 @@ type SendChatArg = ServerSendArg & {
         outcome: ServerSendResult["outcome"];
         requestUncertain: boolean;
         reconciled?: boolean;
+        loreStop?: ServerSendResult["loreStop"];
     }) => void;
 };
 
@@ -129,7 +132,7 @@ async function runSend(arg: SendChatArg): Promise<{ ok: boolean; result?: unknow
         return { ok: false };
     }
     try {
-        const { ok, result, refusal, settled, blockedChats, outcome, requestUncertain, reconciled } =
+        const { ok, result, refusal, settled, blockedChats, outcome, requestUncertain, reconciled, loreStop } =
             await sendChatOnServer(target ? { ...arg, target } : arg);
         if (refusal) {
             arg.onServerRefused?.(refusal === "ambiguous");
@@ -140,6 +143,7 @@ async function runSend(arg: SendChatArg): Promise<{ ok: boolean; result?: unknow
             outcome,
             requestUncertain: requestUncertain ?? !settled,
             ...(reconciled !== undefined ? { reconciled } : {}),
+            ...(loreStop ? { loreStop } : {}),
         });
         return { ok, result };
     } finally {

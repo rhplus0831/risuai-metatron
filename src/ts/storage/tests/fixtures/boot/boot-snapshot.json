@@ -690,6 +690,7 @@
   "contextMeterTurnUnit": "user",
   "contextMeterFixedWarn": 60,
   "contextMeterLookahead": true,
+  "loreBudgetStop": true,
   "formatversion": 5,
   "characterOrder": []
 }

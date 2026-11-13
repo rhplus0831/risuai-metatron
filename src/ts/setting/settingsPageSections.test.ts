@@ -268,6 +268,13 @@ describe("settings page sections", () => {
         expect(ids[ids.indexOf("display.showMemoryLimit") + 1]).toBe("display.memoryLimitThickness");
     });
 
+    it("offers the lore budget checkbox in Interaction input independently of the context meter", () => {
+        const section = interactionSettingsSections.find((entry) => entry.id === "interaction.input")!;
+        const item = section.items.find((entry) => entry.id === "interaction.loreBudgetStop");
+        expect(item).toMatchObject({ type: "check", bindKey: "loreBudgetStop" });
+        expect(item?.condition).toBeUndefined();
+    });
+
     it("puts the context meter's settings in their own Interaction section, the basis settings shown only while the meter is on", () => {
         const section = interactionSettingsSections.find((entry) => entry.id === "interaction.contextMeter")!;
         expect(section.collapsible).toBeFalsy();

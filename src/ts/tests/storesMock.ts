@@ -2,7 +2,7 @@ import { writable } from "svelte/store";
 import { vi } from "vitest";
 import { createAlertQueue } from "../alertQueue";
 import * as settingsMenu from "../settingsMenu";
-import type { PickerListState, MemoryProgressState } from "../stores.svelte";
+import type { LoreBudgetStopRequest, PickerListState, MemoryProgressState } from "../stores.svelte";
 import type { ChatRef } from "../storage/chatStore.svelte";
 
 type StoresModule = typeof import("../stores.svelte");
@@ -33,6 +33,7 @@ export function createStoresMock(overrides: StoresMockOverrides = {}): StoresMod
         openModelPresetList: writable<PickerListState>(false),
         openPersonaList: writable<PickerListState>(false),
         chatBindingDialog: writable<ChatRef | null>(null),
+        loreBudgetStopDialog: writable<LoreBudgetStopRequest | null>(null),
         bookmarkListOpen: writable(false),
         SettingsMenuIndex: writable(-1),
         ReloadGUIPointer: writable(0),
@@ -46,6 +47,8 @@ export function createStoresMock(overrides: StoresMockOverrides = {}): StoresMod
         CustomCSSStore: writable(""),
         SafeModeStore: writable(false),
         CharConfigSubMenu: writable(0),
+        sidebarLeaveDevTool: writable(false),
+        loreBookSubmenuRequest: writable<number | null>(null),
         alertStore: createAlertQueue({ type: "none", msg: "n" }),
         hypaV3ModalOpen: writable(false),
         hypaV3ProgressStore: writable({ open: false, miniMsg: "", msg: "", subMsg: "" }),

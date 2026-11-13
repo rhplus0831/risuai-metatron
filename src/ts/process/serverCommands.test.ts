@@ -1,5 +1,6 @@
 import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { loreBudgetTerminal } from "./tests/loreBudgetStopFixture";
 import type { GenerationEvent, GenerationStatus, GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import type { createFollowStub } from "../network/tests/generationJobsMock";
 import { ResourceEpochMismatchError, ResourceRequestError } from "../storage/resourceClient";
@@ -914,6 +915,81 @@ describe("runServerJob", () => {
         options: Parameters<Module["runServerJob"]>[3] = {},
         kind = "send" as const,
     ) => commands.runServerJob(char, ref, { kind, label: "send", context }, options);
+
+    it.each(["started", "replayed"] as const)(
+        "hands a lore budget end to the waiting caller of a %s job without an ordinary alert",
+        async (outcome) => {
+            const terminal = loreBudgetTerminal(EPOCH);
+            stubs.create.mockResolvedValueOnce(
+                outcome === "started"
+                    ? { outcome: "created" as const, jobId: "j" }
+                    : {
+                          outcome: "replayed",
+                          jobId: "j",
+                          owned: true,
+                          status,
+                      },
+            );
+            const run = send({ stopOverLoreBudget: true });
+            await whenAttached(1);
+            endWith(follows()[0], terminal);
+            expect(await run).toMatchObject({ outcome, terminal, loreStopFollow: true });
+            expect(stubs.alertJobError).not.toHaveBeenCalled();
+            expect(stubs.alertError).not.toHaveBeenCalled();
+        },
+    );
+
+    it("alerts for a lore budget end resumed at boot without a waiting caller", async () => {
+        const terminal = loreBudgetTerminal(EPOCH);
+        stubs.saved.mockReturnValue(["j"]);
+        stubs.read.mockResolvedValue(status);
+        const boot = commands.resumeServerJobs();
+        await whenAttached(1);
+        endWith(follows()[0], terminal);
+        await boot;
+        expect(stubs.alertJobError).toHaveBeenCalledExactlyOnceWith("j", terminal);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+    });
+
+    it("keeps an existing follow's ordinary alert when a requesting call joins it", async () => {
+        const terminal = loreBudgetTerminal(EPOCH);
+        const existing = commands.followJobToEnd("j", ref);
+        await whenAttached(1);
+        stubs.create.mockResolvedValueOnce({ outcome: "created", jobId: "j" });
+        const run = send({ stopOverLoreBudget: true });
+        await drainContinuations();
+        endWith(follows()[0], terminal);
+        expect(await existing).toEqual(terminal);
+        expect(await run).not.toHaveProperty("loreStopFollow");
+        expect(stubs.alertJobError).toHaveBeenCalledExactlyOnceWith("j", terminal);
+    });
+
+    it("alerts for another action's followed job and returns no lore stop ownership", async () => {
+        const terminal = loreBudgetTerminal(EPOCH);
+        stubs.create.mockRejectedValueOnce(new BusyError("j"));
+        stubs.read.mockResolvedValueOnce(status);
+        const run = send({ stopOverLoreBudget: true });
+        await whenAttached(1);
+        endWith(follows()[0], terminal);
+        const result = await run;
+        expect(result).toMatchObject({ outcome: "followed", terminal });
+        expect(result).not.toHaveProperty("loreStopFollow");
+        expect(stubs.alertJobError).toHaveBeenCalledExactlyOnceWith("j", terminal);
+    });
+
+    it("alerts for an unparseable lore payload even when its caller asked for a stop", async () => {
+        const terminal = {
+            ...loreBudgetTerminal(EPOCH),
+            lore: { budget: "invalid" },
+        } as unknown as GenerationTerminalEvent;
+        stubs.create.mockResolvedValueOnce({ outcome: "created", jobId: "j" });
+        const run = send({ stopOverLoreBudget: true });
+        await whenAttached(1);
+        endWith(follows()[0], terminal);
+        const result = await run;
+        expect(result.terminal).toEqual(terminal);
+        expect(stubs.alertJobError).toHaveBeenCalledExactlyOnceWith("j", terminal);
+    });
 
     it.each([
         { refusal: "maintenance", message: "The server is not accepting generations now" },

@@ -128,6 +128,7 @@ const METATRON_ONLY_SETTINGS = [
     "googleSearchCredentials",
     "irisDialogue",
     "llmTranslationTarget",
+    "loreBudgetStop",
     "newChatBinding",
     "requestHistoryContent",
     "requestHistoryLimit",

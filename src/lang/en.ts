@@ -309,6 +309,8 @@ export const languageEnglish = {
             "The fixed share is the part of the prompt budget (the context size minus the reserved response) taken by everything but the chat history and memory: the prompt, description, persona, lorebook, author's note, and the like. Above this level the meter turns red, because the fixed part leaves little room for history. 10% to 95%.",
         contextMeterLookahead:
             "With HypaV3 summarizing in the background, the meter's bar marks with a dashed line where the next send asks for a background summary, ahead of the point where it must summarize.",
+        loreBudgetStop:
+            "When the lorebook token limit leaves out an activated entry, a send, continue, or reroll from the chat screen stops before the model is called and asks what to do. Sends from plugins, auto mode, multisend, and commands are not stopped; the context meter warns after them. Entries marked `@@ignore_on_max_context` never cause a stop. A chat can turn this off.",
         legacyMediaFindings:
             "If enabled, it will use the old method to find media assets, without using the additional search algorithm.",
         comfyWorkflow:
@@ -1867,6 +1869,19 @@ export const languageEnglish = {
     contextMeterTurnUnitMessage: "All Messages",
     contextMeterFixedWarn: "Fixed Share Warning",
     contextMeterLookahead: "Mark the Background Summary Point",
+    loreBudgetStop: "Stop a send when lorebook entries are left out",
+    loreBudgetStopDialog: {
+        title: "Lorebook entries were left out",
+        notCalled: "The model was not called.",
+        messageKept: "Your message is in the chat.",
+        limitOwnCharacter: "This limit is the character's own, set in its lorebook settings.",
+        limitOwnGroup: "This limit is the group's own, set in its lorebook settings.",
+        limitGlobal: "This is the global lorebook token limit, set in the Memory settings.",
+        warnOffAndSend: "Don't warn in this chat and send",
+        changeLimit: "Change the token limit",
+        manageLorebook: "Manage lorebook",
+        close: "Close",
+    },
     contextUsage: {
         title: "Context usage",
         close: "Close",
@@ -1961,9 +1976,9 @@ export const languageEnglish = {
         loreRejected: (count: number, tokens: string) =>
             `${count === 1 ? "1 entry" : `${count} entries`} left out by the budget (${tokens} tokens).`,
         loreRejectedMore: (count: number) => `and ${count === 1 ? "1 more entry" : `${count} more entries`}`,
-        loreWarnOff: "Don't warn in this chat",
-        loreWarnOn: "Warn in this chat again",
-        loreWarnOffNote: "The meter does not warn of left-out lore in this chat.",
+        loreWarnOff: "Don't warn or stop sends in this chat",
+        loreWarnOn: "Warn and stop sends in this chat again",
+        loreWarnOffNote: "This chat neither warns of left-out lore nor stops a send over it.",
         memoryKinds: {
             hypaV3: "HypaV3",
             hypaV2: "HypaV2",

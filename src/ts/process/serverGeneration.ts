@@ -1,8 +1,10 @@
 import type { GenerationKind } from "../../../shared/jobs.ts";
+import type { LoreBudgetStop } from "../../../shared/contextReport.ts";
 import type { PluginCallContext } from "../plugins/apiV3/pluginContext";
 import { type ChatRef, chatEntry, currentChatRef, pinChat } from "../storage/chatStore.svelte";
 import { incrementStatic } from "../storage/collectionStore.svelte";
 import { characterList } from "../storage/characterStore.svelte";
+import { jobLoreStop } from "./jobLoreStop";
 import { runServerJob, type ServerCommandOutcome } from "./serverCommands";
 
 /**
@@ -32,6 +34,11 @@ export type ServerSendArg = {
     requestUncertain?: boolean;
     /** A plugin call's context: the job takes its preset and effective persona, not the tab's selection now. */
     pluginContext?: PluginCallContext;
+    /**
+     * Ask the job to end before any model request when the lore budget leaves an activated entry out
+     * (`context.stopOverLoreBudget`). Only a caller that shows `ServerSendResult.loreStop` sets it.
+     */
+    stopOverLoreBudget?: boolean;
 };
 
 /**
@@ -57,6 +64,12 @@ export type ServerSendResult = {
     result?: unknown;
     refusal?: ServerSendRefusal;
     blockedChats?: readonly ChatRef[];
+    /**
+     * The job stopped over the lore budget, as this send asked, and no alert was raised for it: the
+     * caller shows it. Present only when this call's own follow of the job was the one waiting for
+     * the stop, with the entries left out and the terminal's English message.
+     */
+    loreStop?: { lore: LoreBudgetStop; message: string };
 };
 
 /**
@@ -108,7 +121,7 @@ async function sendPinned(
                 ? "continue"
                 : "send";
     const input = kind === "preview" || kind === "previewPrompt" || kind === "reroll" ? "" : (arg.input ?? "");
-    const { outcome, terminal, blockedChats, requestUncertain, reconciled } = await runServerJob(
+    const { outcome, terminal, blockedChats, requestUncertain, reconciled, loreStopFollow } = await runServerJob(
         char,
         ref,
         {
@@ -126,6 +139,7 @@ async function sendPinned(
                     : {}),
                 ...(input !== "" && arg.userMessageId ? { userMessageId: arg.userMessageId } : {}),
                 ...(kind === "continue" && arg.continueMessageId ? { continueMessageId: arg.continueMessageId } : {}),
+                ...(arg.stopOverLoreBudget === true ? { stopOverLoreBudget: true } : {}),
             },
         },
         {
@@ -159,12 +173,14 @@ async function sendPinned(
         return { ok: false, outcome, settled: false, refusal: "ambiguous", requestUncertain: true };
     }
     if (!terminal || terminal === "lost" || terminal.type !== "done") {
+        const loreStop = loreStopFollow ? jobLoreStop(terminal) : null;
         return {
             ok: false,
             outcome,
             settled: terminal !== "lost" && !requestUncertain,
             requestUncertain: terminal === "lost" || requestUncertain === true,
             ...(reconciled !== undefined ? { reconciled } : {}),
+            ...(loreStop ? { loreStop } : {}),
         };
     }
     return { ok: !terminal.stopped, outcome, settled: true, result: terminal.result };

@@ -105,6 +105,7 @@ import {
 import { incrementStatic } from "../storage/collectionStore.svelte";
 import { dropJobStage } from "./jobStages";
 import { chatLoreOverrideRefusalText } from "./loreOverrides";
+import { jobLoreStop } from "./jobLoreStop";
 
 /**
  * How many attaches a follow whose socket closed before the job's end may spend on a server it
@@ -152,6 +153,11 @@ type FollowLifecycle = {
     ticket?: string;
     ref?: ChatRef;
     creator: boolean;
+    /**
+     * The call that created this lifecycle asked its job to stop over the lore budget and waits for
+     * the end, so it shows such a stop itself (`reportEnd` stays silent for it). Set at creation only.
+     */
+    loreStopCaller: boolean;
     everOwner: boolean;
     attemptOwner: boolean;
     role: GenerationFollow["role"];
@@ -336,12 +342,16 @@ export async function stopChatJob(ref: ChatRef): Promise<void> {
  * Roles come from events, not creator identity; creator viewers retain Stop, stream and device notices. A
  * worker is listed in followedJobs only as owner. Plugin holds bridge ticket delivery through the
  * first attach; status lines clear on role loss/end. A worker never saves the job for boot resume.
+ *
+ * `loreStopCaller` marks the lifecycle this call creates: its caller shows a lore budget stop
+ * (`jobLoreStop`) itself, so the end report raises no alert for one. A lifecycle that already exists
+ * keeps what it was created with, so a caller that needs the mark checks `following` before calling.
  */
 export function followJobToEnd(
     jobId: string,
     ref?: ChatRef,
     initialStatus?: GenerationStatus,
-    options: { ticket?: string } = {},
+    options: { ticket?: string; loreStopCaller?: boolean } = {},
 ): Promise<GenerationTerminalEvent | "lost"> {
     if (initialStatus?.state === "ended" && initialStatus.terminal) replayedStatuses.set(jobId, initialStatus);
     const existing = following.get(jobId);
@@ -361,6 +371,7 @@ export function followJobToEnd(
     const lifecycle: FollowLifecycle = {
         promise: undefined!,
         creator: !options.ticket,
+        loreStopCaller: options.loreStopCaller === true,
         everOwner: false,
         attemptOwner: false,
         role: null,
@@ -456,7 +467,7 @@ export function followJobToEnd(
             if (typeof result !== "string" && target !== "lost") clearForeignJob(target, jobId);
             if (!lifecycle.creator && !lifecycle.everOwner) return end;
             if (result !== "gone") {
-                reportEnd(end, jobId, lifecycle.creator);
+                reportEnd(end, jobId, lifecycle.creator, lifecycle.loreStopCaller);
             }
             if (target !== "lost") {
                 if (end === "lost") {
@@ -920,8 +931,13 @@ async function followOnce(
  * while the tab was away names the ones that changed nothing then (`serverJob.hooksSkipped`); the
  * skipped listeners run late instead (`replaySkippedListeners`). Missed listeners never replay;
  * only the creator gets their warning, combined with skipped-hook text in one toast.
+ *
+ * A lore budget stop (`jobLoreStop`) raises nothing here when `loreStopCaller` says the call that
+ * created the follow is waiting to show it. Without that mark (the boot resume, a follow that was
+ * already running, a call that did not ask for the stop) it is an error like any other, and so is a
+ * coded end whose `lore` does not parse.
  */
-function reportEnd(end: GenerationTerminalEvent | "lost", jobId: string, creator: boolean) {
+function reportEnd(end: GenerationTerminalEvent | "lost", jobId: string, creator: boolean, loreStopCaller: boolean) {
     if (end === "lost") {
         alertError(language.serverJob.lost);
         recordClientEvent({ kind: "notice", notice: "serverJobLost" });
@@ -935,6 +951,8 @@ function reportEnd(end: GenerationTerminalEvent | "lost", jobId: string, creator
                 (_, key: "sent" | "total" | "reason") => String({ sent, total, reason }[key]),
             ),
         );
+    } else if (loreStopCaller && jobLoreStop(end)) {
+        // Shown by the waiting call, as its dialog or its own alert.
     } else if (end.type === "error" && end.reason === "maintenance") {
         // The debug info's time is the end's, not the alert's (the restore watch may take minutes).
         const at = Date.now();
@@ -991,7 +1009,12 @@ export type ServerJobRequest = {
     command?: GenerationCommand;
     /** What did not run, for the refusal alert (`language.serverJob.discarded`). */
     label: ServerJobLabel;
-    context?: Partial<Pick<GenerationContext, "mode" | "input" | "userMessageId" | "continueMessageId" | "triggerId">>;
+    context?: Partial<
+        Pick<
+            GenerationContext,
+            "mode" | "input" | "userMessageId" | "continueMessageId" | "triggerId" | "stopOverLoreBudget"
+        >
+    >;
 };
 
 /**
@@ -1033,6 +1056,11 @@ type ServerJobResult = {
     outcome: ServerCommandOutcome;
     terminal: GenerationTerminalEvent | "lost" | null;
     blockedChats?: readonly ChatRef[];
+    /**
+     * This call created the job's follow lifecycle marked as waiting for a lore budget stop, so a
+     * stop in `terminal` (`jobLoreStop`) raised no alert and is the caller's to show.
+     */
+    loreStopFollow?: boolean;
 };
 
 type ServerJobOptions = {
@@ -1298,8 +1326,19 @@ async function runPinnedServerJob(
                 throw error;
             }
         }
-        const terminal = await followJobToEnd(jobId, ref, initialStatus);
-        return { outcome, terminal, requestUncertain: outcome !== "followed" && terminal === "lost" };
+        // Only this call's own job (created, or found again by its request id) can end with the
+        // stop it asked for. The mark belongs to the lifecycle this call creates: one that already
+        // follows the job reports its end as it was created to, so it is checked before following
+        // (a lifecycle removes itself before its promise resolves).
+        const loreStopFollow =
+            request.context?.stopOverLoreBudget === true && outcome !== "followed" && !following.has(jobId);
+        const terminal = await followJobToEnd(jobId, ref, initialStatus, { loreStopCaller: loreStopFollow });
+        return {
+            outcome,
+            terminal,
+            requestUncertain: outcome !== "followed" && terminal === "lost",
+            ...(loreStopFollow ? { loreStopFollow: true } : {}),
+        };
     } finally {
         options.signal?.removeEventListener("abort", onAbort);
     }

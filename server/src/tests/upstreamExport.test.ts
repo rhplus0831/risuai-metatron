@@ -631,6 +631,14 @@ describe("buildUpstreamDatabase: settings", () => {
         expect(excluded(report, "plugin-storage")).toMatchObject({ count: 5 });
     });
 
+    it("omits the lore budget send warning from upstream exports even when disabled", async () => {
+        const snapshot = await snapshotOf((writer) => {
+            seedLibrary(writer);
+            writer.put(SECTION_KIND.ui, "main", { loreBudgetStop: false });
+        });
+        expect(exportOf(snapshot).db).not.toHaveProperty("loreBudgetStop");
+    });
+
     it("writes formatversion 5, keeps upstream shapes, and strips metatron-only settings with a report", async () => {
         const { db, report } = exportOf(await snapshotOf());
         expect(db.formatversion).toBe(5);

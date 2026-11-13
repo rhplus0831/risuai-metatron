@@ -175,8 +175,9 @@ Escape priority is below; the global `initHotkey` handler also applies its termi
 
 1. An alert ([Alert dialog keys](#alert-dialog-keys) has where Escape stops while a dialog is shown or queued).
 2. The prompt comparison (`PromptDiffModal`, a capture listener).
-3. A picker list (persona, model preset, prompt preset), the Checkpoints dialog, or the chat binding dialog
-   (`src/ts/gui/dialogLayers.ts` `topBindingLayer`, handled in `hotkey.ts`; also from a focused text field).
+3. The lore budget stop dialog, then a picker list (persona, model preset, prompt preset), the Checkpoints dialog, or
+   the chat binding dialog (`src/ts/gui/dialogLayers.ts` `topBindingLayer`, handled in `hotkey.ts`; also from a focused
+   text field). A held Escape's repeats do not answer the next waiting lore budget stop.
 4. The message search panel (`MessageSearch.svelte`) or the bookmark list (`BookmarkList.svelte`), each a capture
    listener that yields to those layers.
 5. Settings.

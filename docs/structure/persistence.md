@@ -209,9 +209,9 @@ carry them. The Translation page can clear `LLMTranslateCache` through `clearLLM
   (`assertLoreOverrides`) and keeps only the first override per `entry.id`, the one the merge applies. The upstream
   import drops a refused value and keeps the chat. Checkpoints capture it, the transform cache key includes it, the
   upstream export strips it.
-- `loreBudgetWarnOff?: true` silences the context meter's left-out lore warning ([UI theming](ui-theming.md)); present
-  only while set, not a summary field. Copies and chat imports keep it, checkpoints keep the current value, the upstream
-  export strips it.
+- `loreBudgetWarnOff?: true` silences the context meter's left-out lore warning ([UI theming](ui-theming.md)) and turns
+  off the screen's lore budget send stop ([chat pipeline](chat-pipeline.md#send)); present only while set, not a summary
+  field. Copies and chat imports keep it, checkpoints keep the current value, the upstream export strips it.
 - `isStreaming`/`activeStreamingDisplayOptimizationMode` remain in the type for old data, never stored; a chat's
   streaming message is its `streamingEntry`.
 

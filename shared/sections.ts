@@ -301,6 +301,7 @@ export const SECTION_FIELDS = {
         "contextMeterTurnUnit",
         "contextMeterFixedWarn",
         "contextMeterLookahead",
+        "loreBudgetStop",
     ],
 } as const satisfies Record<SectionKind, readonly (keyof Database)[]>;
 

@@ -37,6 +37,8 @@
     } from "../../ts/stores.svelte";
     import { chatBinding } from "../../ts/storage/chatBinding.svelte";
     import { refuseOrphanedOverrides } from "src/ts/process/loreOverrides";
+    import { askLoreBudgetStop, wantsLoreBudgetStop } from "src/ts/process/loreBudgetStop";
+    import type { ServerSendResult } from "src/ts/process/serverGeneration";
     import { onDestroy, tick, untrack } from "svelte";
     import Chat from "./Chat.svelte";
     import {
@@ -53,11 +55,13 @@
     import { type Message } from "../../ts/storage/database.svelte";
     import {
         appendMessage,
+        chatEntry,
         chatOwnerToken,
         type ChatRef,
         currentChatRef,
         ensureChatLoaded,
         findChat,
+        pinChat,
         retrySelectedChatLoad,
         setChatMeta,
         selectedChat,
@@ -542,6 +546,11 @@
      * `{{inlayed::id}}` tags; an empty one (Continue included) appends "*says nothing*" only with
      * `useSayNothing` on, outside a group, and when the last message is not the user's. Consuming the
      * input clears the chat's bundle history, and nothing awaits between it and the send's admission.
+     *
+     * The send asks to stop over the lore budget (`sendChatMain`'s `askLoreStop`). A stop opens the dialog
+     * (`offerLoreStop`) when the chat holds the send's user message or there was no input; a stop whose
+     * text went back to the composer shows the job's message as an alert instead. The repeat sends the same
+     * input under the same `userMessageId` and a new request id, and never reads the composer again.
      */
     async function sendMain(continueResponse: boolean) {
         // The chat this send writes to, captured before any await; everything after an await
@@ -616,7 +625,71 @@
         rerollHistory.clear(ref);
         // The send is admitted without another await after the input is consumed.
         void sleep(10).then(updateInputSizeAll);
-        await sendChatMain(continueResponse, ref, serverInput);
+        const end = await sendChatMain(continueResponse, ref, serverInput, undefined, { askLoreStop: true });
+        if (!end.loreStop) {
+            return;
+        }
+        const owner = chatOwnerToken(ref.chaId);
+        const release = pinChat(ref);
+        try {
+            if (serverInput && !holdsUserMessage(ref, serverInput.userMessageId)) {
+                // The text is back in the composer (or kept for it): sending it again asks again.
+                alertError(end.loreStop.message);
+                return;
+            }
+            // The user message is in the chat and its draft is gone, so the repeat names both ids itself:
+            // the server skips an input the chat already holds under that id. The stopped request's id
+            // would replay its stop.
+            const repeated: SendDraft | null = serverInput && {
+                input: serverInput.input,
+                userMessageId: serverInput.userMessageId,
+                requestId: v4(),
+            };
+            await offerLoreStop(ref, owner, end.loreStop, serverInput !== null, () =>
+                sendChatMain(continueResponse, ref, repeated),
+            );
+        } finally {
+            release();
+        }
+    }
+
+    type LoreStop = NonNullable<ServerSendResult["loreStop"]>;
+
+    /** Whether the loaded chat holds the user message a send appends under `userMessageId`. */
+    function holdsUserMessage(ref: ChatRef, userMessageId: string): boolean {
+        return (
+            findChat(ref)?.message.some((message) => message.chatId === userMessageId && message.role === "user") ??
+            false
+        );
+    }
+
+    /**
+     * Asks what to do about a send of `ref` that stopped over the lore budget, once the caller has put the chat
+     * back as its failed send leaves it. On "Don't warn in this chat and send" it sets the chat's
+     * `loreBudgetWarnOff` and runs `resend`, the caller's own request again (which asks for no stop); any other
+     * choice sends nothing. The dialog is awaited, so nothing here reads the selected chat. `owner` is the
+     * `chatOwnerToken` the caller took when it saw the stop: the choice is dropped when the character's chats
+     * were replaced since, or the chat left the list. The caller keeps `ref` pinned from the stop until this
+     * returns, since the flag can be set only on a loaded chat.
+     */
+    async function offerLoreStop(
+        ref: ChatRef,
+        owner: string,
+        stop: LoreStop,
+        messageKept: boolean,
+        resend: () => Promise<unknown>,
+    ) {
+        const choice = await askLoreBudgetStop(ref, stop.lore, { messageKept });
+        if (choice !== "warnOffAndSend" || chatOwnerToken(ref.chaId) !== owner || !chatEntry(ref)) {
+            return;
+        }
+        try {
+            setChatMeta(ref, { loreBudgetWarnOff: true });
+        } catch (error) {
+            alertError(error);
+            return;
+        }
+        await resend();
     }
 
     // A swiped reply reads from its start, like a new one, while the reader follows the newest
@@ -639,7 +712,9 @@
     /**
      * Refused while the selected chat is busy. Tries the carrier's next candidate, then bundle history.
      * A new reroll checks lore overrides and regenerates a single reply in place when the connection
-     * supports it. Other tails use removal, a send, and the bundle history's guarded restoration.
+     * supports it. Other tails use removal, a send, and the bundle history's guarded restoration
+     * (`rerollByRemoval`). Both ask to stop over the lore budget; an in-place reroll that stopped always
+     * opens the dialog (`offerLoreStop`) and repeats with the same message id and speaker.
      */
     async function reroll() {
         const ref = currentChatRef();
@@ -676,17 +751,60 @@
         }
         if (carrier && serverRerollsInPlace()) {
             openMenu = false;
-            await sendChatMain(false, ref, null, {
+            const rerollTarget = {
                 rerollMessageId: carrier.chatId,
                 ...(carrier.saying ? { speakerChaId: carrier.saying } : {}),
-            });
+            };
+            const end = await sendChatMain(false, ref, null, rerollTarget, { askLoreStop: true });
+            if (!end.loreStop) {
+                return;
+            }
+            const owner = chatOwnerToken(ref.chaId);
+            const release = pinChat(ref);
+            try {
+                await offerLoreStop(ref, owner, end.loreStop, false, () =>
+                    sendChatMain(false, ref, null, rerollTarget),
+                );
+            } finally {
+                release();
+            }
             return;
         }
-        let cha = safeStructuredClone(currentChat.message) as Message[];
-        if (cha.length === 0) {
+        if (currentChat.message.length === 0) {
             return;
         }
         openMenu = false;
+        await rerollByRemoval(ref, true);
+    }
+
+    /**
+     * The reroll of a tail that is not regenerated in place: removes `ref`'s replies after its last user
+     * message and sends again; a send that brought no reply puts them back (`rerollHistory.restore`). It reads
+     * the chat by `ref`, never the selected one, and makes the reroll's checks itself before it removes
+     * anything (the chat busy, orphaned lore overrides), because it also runs as the repeat after a lore
+     * budget stop, when another chat may be selected.
+     *
+     * `askLoreStop`: the send asks to stop over the lore budget. A stop opens the dialog (`offerLoreStop`) once
+     * the removed replies are back, or when there were none to remove; its repeat is this function again
+     * without the ask. A stop whose replies could not be put back shows the job's message as an alert instead
+     * (and the unsafe-restoration alert after it).
+     */
+    async function rerollByRemoval(ref: ChatRef, askLoreStop: boolean) {
+        if (isChatBusy(ref)) {
+            alertError(language.chatGenerating);
+            return;
+        }
+        if (refuseOrphanedOverrides(ref)) {
+            return;
+        }
+        const chat = findChat(ref);
+        if (!chat) {
+            return;
+        }
+        let cha = safeStructuredClone(chat.message) as Message[];
+        if (cha.length === 0) {
+            return;
+        }
         const saying = cha[cha.length - 1].saying;
         let sayingQu = 2;
         const removed: Message[] = [];
@@ -709,13 +827,30 @@
         // The replies after the last user message go, then the send runs again.
         const owner = chatOwnerToken(ref.chaId);
         const kept = new Set(cha.map((message) => message.chatId));
-        editChatSync(ref, (chat) => {
-            chat.message = chat.message.filter((message) => kept.has(message.chatId));
+        editChatSync(ref, (draft) => {
+            draft.message = draft.message.filter((message) => kept.has(message.chatId));
         });
         // A send that brought no reply (refused, failed, or stopped before one) puts the replies back.
-        const end = await sendChatMain(false, ref);
-        if ((await rerollHistory.restore(ref, owner, anchor, removed, end)) === "unsafe") {
-            alertError(language.rerollRepliesNotRestored);
+        const end = await sendChatMain(false, ref, null, undefined, { askLoreStop });
+        const stop = end.loreStop;
+        // From the stop on the chat stays loaded (the dialog's first choice sets a chat flag), and the
+        // choice is checked against the owner the chat has now.
+        const stopOwner = chatOwnerToken(ref.chaId);
+        const release = stop ? pinChat(ref) : null;
+        try {
+            const restored = await rerollHistory.restore(ref, owner, anchor, removed, end);
+            if (stop && (restored === "restored" || removed.length === 0)) {
+                await offerLoreStop(ref, stopOwner, stop, false, () => rerollByRemoval(ref, false));
+                return;
+            }
+            if (stop) {
+                alertError(stop.message);
+            }
+            if (restored === "unsafe") {
+                alertError(language.rerollRepliesNotRestored);
+            }
+        } finally {
+            release?.();
         }
     }
 
@@ -790,20 +925,40 @@
      * neither landed nor succeeded keeps its text and `userMessageId` (`sendDrafts.settle`), and the text
      * goes back only to an empty main input for its chat: at once when that chat is selected, else when
      * it is shown next (`takeUnplaced`). Auto mode is `runAutoMode`.
+     *
+     * `options.askLoreStop`: the send asks its job to stop before the model request when the lore budget
+     * leaves an activated entry out, while the setting is on and the chat has not turned the warning off
+     * (`wantsLoreBudgetStop`, read right before the send). Only the send and continue, the in-place reroll,
+     * and the reroll by removal pass it; auto mode and the repeat after a stop do not.
+     * `loreStop`: the job stopped that way and no alert was raised for it (`sendChat`'s `onEnd`): the entries
+     * left out and the job's English message, for the caller to show (`offerLoreStop`) after its own
+     * failure handling.
      */
     async function sendChatMain(
         continued: boolean = false,
         target: ChatRef | null = currentChatRef(),
         serverInput: SendDraft | null = null,
         rerollTarget?: { rerollMessageId: string; speakerChaId?: string },
-    ): Promise<{ ran: boolean; ok: boolean; settled: boolean; blockedChats: readonly ChatRef[] }> {
+        options: { askLoreStop?: boolean } = {},
+    ): Promise<{
+        ran: boolean;
+        ok: boolean;
+        settled: boolean;
+        blockedChats: readonly ChatRef[];
+        loreStop?: LoreStop;
+    }> {
         if (!target) {
             return { ran: false, ok: false, settled: true, blockedChats: [] };
         }
         const anchor = serverInput ? serverInput.userMessageId : (findChat(target)?.message.at(-1)?.chatId ?? null);
         let ok = false;
         let ran = true;
-        let end: { settled: boolean; blockedChats: readonly ChatRef[]; requestUncertain?: boolean } = {
+        let end: {
+            settled: boolean;
+            blockedChats: readonly ChatRef[];
+            requestUncertain?: boolean;
+            loreStop?: LoreStop;
+        } = {
             settled: false,
             blockedChats: [],
         };
@@ -828,6 +983,7 @@
                 continue: continued,
                 ...serverInput,
                 ...rerollTarget,
+                ...(options.askLoreStop && wantsLoreBudgetStop(target) ? { stopOverLoreBudget: true } : {}),
                 onServerRefused: () => {
                     ran = false;
                 },
@@ -850,10 +1006,7 @@
         } finally {
             releaseAbort?.();
             if (serverInput) {
-                const landed =
-                    findChat(target)?.message.some(
-                        (message) => message.chatId === serverInput.userMessageId && message.role === "user",
-                    ) ?? false;
+                const landed = holdsUserMessage(target, serverInput.userMessageId);
                 const selected = currentChatRef();
                 const result = sendDrafts.settle(target, serverInput, {
                     landed,
@@ -914,7 +1067,8 @@
     /**
      * Auto mode: rounds of `sendChatMain` in the chat it started in, one after another. It ends on Stop
      * (`abortChat`), an unsuccessful round (`ok` false: refused, failed, lost, or stopped), toggling it
-     * again, leaving or closing that chat (the `autoRun` effect), or the screen's destruction.
+     * again, leaving or closing that chat (the `autoRun` effect), or the screen's destruction. Its rounds
+     * never ask to stop over the lore budget: nobody is asked between them.
      */
     async function runAutoMode() {
         const ref = currentChatRef();

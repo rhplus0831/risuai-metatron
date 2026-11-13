@@ -16,6 +16,7 @@
         openModelPresetList,
         openPersonaList,
         chatBindingDialog,
+        loreBudgetStopDialog,
         loadedStore,
         alertStore,
         LoadingStatusState,
@@ -43,6 +44,7 @@
     import Botpreset from "./lib/Setting/botpreset.svelte";
     import ListedPersona from "./lib/Setting/listedPersona.svelte";
     import ChatBindingDialog from "./lib/Others/ChatBindingDialog.svelte";
+    import LoreBudgetStopDialog from "./lib/Others/LoreBudgetStopDialog.svelte";
     import ChatCheckpointsDialog from "./lib/Others/ChatCheckpointsDialog.svelte";
     import { chatCheckpointsDialog } from "./ts/checkpoints/chatCheckpoints.svelte";
     import { ArrowUpIcon, GlobeIcon, PlusIcon } from "@lucide/svelte";
@@ -327,6 +329,13 @@
                 $openPersonaList = false;
             }}
         />
+    {/if}
+    <!-- After the picker lists: a stop can arrive while one is open, and its dialog paints on top. Keyed: one
+         instance per request. -->
+    {#if $loreBudgetStopDialog}
+        {#key $loreBudgetStopDialog}
+            <LoreBudgetStopDialog request={$loreBudgetStopDialog} />
+        {/key}
     {/if}
     {#if $bookmarkListOpen}
         <BookmarkList />

@@ -17,6 +17,7 @@ import {
     alertStore,
     chatBindingDialog,
     gridOpenStore,
+    loreBudgetStopDialog,
     openModelPresetList,
     openPersonaList,
     openPresetList,
@@ -55,8 +56,9 @@ import { isImeComposing } from "./ime";
  *   the dialog;
  * - while a checkpoint load runs with no dialog, swallows every key;
  * - with no alert up, closes the topmost picker list or chat dialog on Escape (`topBindingLayer`,
- *   `src/ts/gui/dialogLayers.ts`), also from a text field; any other Escape from a text field (except the input
- *   dialog's own field) returns before the dialog, settings, and grid handling;
+ *   `src/ts/gui/dialogLayers.ts`), also from a text field, except that an auto-repeated Escape does not answer
+ *   the lore budget stop dialog; any other Escape from a text field (except the input dialog's own field)
+ *   returns before the dialog, settings, and grid handling;
  * - otherwise on Escape answers the shown dialog (when the key gate accepts the stroke), then, with no dialog and no
  *   binding layer left, closes settings, else the grid: an Escape that answers the last dialog also closes settings,
  *   but that stroke never closes the grid;
@@ -95,7 +97,11 @@ export function initHotkey() {
         // rename, or the composer that kept the focus); an alert above it closes first (below).
         const bindingLayer = ev.key === "Escape" && !doingAlert() ? topBindingLayer() : null;
         if (bindingLayer) {
-            closeBindingLayer(bindingLayer);
+            // Lore budget stops open one after another: a held Escape answers only the one it was
+            // pressed on, and its repeats still go no further than this layer.
+            if (!(bindingLayer === "loreBudgetStopDialog" && ev.repeat)) {
+                closeBindingLayer(bindingLayer);
+            }
             ev.preventDefault();
             return;
         }
@@ -547,6 +553,10 @@ function focusQuery(query: string) {
 
 function closeBindingLayer(layer: BindingLayer) {
     switch (layer) {
+        case "loreBudgetStopDialog":
+            // Answered as Close through the request, which shows the next waiting stop.
+            get(loreBudgetStopDialog)?.resolve("close");
+            break;
         case "personaList":
             openPersonaList.set(false);
             break;

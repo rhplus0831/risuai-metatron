@@ -1,9 +1,10 @@
 /**
  * Interaction Settings Data
  *
- * Data-driven definition for the InteractionSettings page: how the chat input sends, how messages are
- * edited and removed, how the menus and chat list behave, and the chat's context usage meter. Moved
- * from Accessibility (the `acc.` items) and Advanced (the `adv.` items), keeping their ids.
+ * Data-driven definition for the InteractionSettings page: how the chat input sends (and whether a send
+ * stops over the lore budget), how messages are edited and removed, how the menus and chat list behave,
+ * and the chat's context usage meter. Moved from Accessibility (the `acc.` items) and Advanced (the
+ * `adv.` items), keeping their ids.
  */
 
 import type { SettingItem, SettingSection } from "./types";
@@ -24,6 +25,14 @@ export const interactionSettingsItems: SettingItem[] = [
         labelKey: "sendWithEnter",
         bindKey: "sendWithEnter",
         keywords: ["send", "enter", "keyboard", "submit"],
+    },
+    {
+        id: "interaction.loreBudgetStop",
+        type: "check",
+        labelKey: "loreBudgetStop",
+        helpKey: "loreBudgetStop",
+        bindKey: "loreBudgetStop",
+        keywords: ["lorebook", "lore", "budget", "token", "limit", "stop", "send", "warn"],
     },
     {
         id: "acc.clickToEdit",
@@ -204,7 +213,7 @@ export const interactionSettingsSections: SettingSection[] = [
     {
         id: "interaction.input",
         labelKey: "settingsSectionInput",
-        items: itemsById(interactionSettingsItems, ["acc.sendWithEnter"]),
+        items: itemsById(interactionSettingsItems, ["acc.sendWithEnter", "interaction.loreBudgetStop"]),
     },
     {
         id: "interaction.messageEditing",

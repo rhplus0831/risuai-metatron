@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { loreBudgetStopFixture, loreBudgetTerminal } from "./tests/loreBudgetStopFixture";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 
 // `sendChatOnServer`, the flag branch's adapter over `runServerJob`: the job kind from the send
@@ -23,6 +24,7 @@ const stubs = vi.hoisted(() => ({
             blockedChats?: unknown;
             requestUncertain?: boolean;
             reconciled?: boolean;
+            loreStopFollow?: boolean;
         }>
     >(),
     findChat: vi.fn<() => unknown>(),
@@ -98,6 +100,27 @@ const seededCharacters = () => [
 ];
 
 describe("sendChatOnServer", () => {
+    it("passes the requested lore budget guard to the job and returns a stop only for its marked follow", async () => {
+        const terminal = loreBudgetTerminal(EPOCH);
+        for (const [marked, valid] of [
+            [true, true],
+            [false, true],
+            [true, false],
+        ]) {
+            stubs.run.mockResolvedValueOnce({
+                outcome: "started",
+                terminal: valid ? terminal : { ...terminal, lore: { budget: "invalid" } },
+                ...(marked ? { loreStopFollow: true } : {}),
+            });
+            const result = await send({ target: ref, input: "hello", userMessageId: "u1", stopOverLoreBudget: true });
+            expect(lastRequest().context).toEqual({ input: "hello", userMessageId: "u1", stopOverLoreBudget: true });
+            expect(result).toMatchObject({ ok: false, settled: true });
+            if (marked && valid)
+                expect(result.loreStop).toEqual({ lore: loreBudgetStopFixture, message: terminal.message });
+            else expect(result).not.toHaveProperty("loreStop");
+        }
+    });
+
     it("returns the result of this send's owned ended replay", async () => {
         const result = ["the preview already completed"];
         stubs.run.mockResolvedValueOnce({ outcome: "replayed", terminal: done({ result }), requestUncertain: false });

@@ -84,7 +84,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `src/lib/ChatScreens/ContextMeter.svelte`: the composer's context line and popover (header), over
   `generationInfo.context` (`shared/contextReport.ts`, [chat pipeline](chat-pipeline.md)); `estimateBasis`,
   `displacement`, `position`, `loreBudgetWarnOff`. Task wording follows `MemoryTaskStatus.kind`; [memory](memory.md)
-  owns outcomes and forecasts.
+  owns outcomes and forecasts. The popover's `loreBudgetWarnOff` toggle also turns the chat's lore budget send stop off
+  and on ([chat pipeline](chat-pipeline.md#send)).
 
 ### Sidebar
 
@@ -107,6 +108,10 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `src/lib/UI/GUI/Portal.svelte` mounts to `document.body` or a target while keeping caller contexts. `ChatScreen`'s
   `isolate` keeps local content below app popups and alerts; use a portal or `App` mount when the popup must escape that
   stack.
+- `src/lib/Others/LoreBudgetStopDialog.svelte` is mounted after the picker lists, one instance per shown request
+  (`loreBudgetStopDialog`); its own buttons, Escape, its teardown, and its chat leaving the list answer the request. Its
+  navigation buttons reach the sidebar's local views through one-shot stores (`sidebarLeaveDevTool`,
+  `loreBookSubmenuRequest`) that the panels take and clear.
 - `src/ts/gui/dialogLayers.ts` `topBindingLayer` follows the pickers and dialogs' mount order in `App`; see
   [app shell](app-shell.md#escape-order) for the full Escape order. Components own their z-index classes and local
   dismissal behavior.

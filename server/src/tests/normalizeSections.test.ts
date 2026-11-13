@@ -69,6 +69,11 @@ function expectIdempotent(normalize: Normalizer, input: unknown) {
 }
 
 describe("every section normalizer", () => {
+    it("defaults the lore budget send warning on and preserves an explicit opt-out", () => {
+        expect(normalizeUi(undefined).loreBudgetStop).toBe(true);
+        expect(normalizeUi({ loreBudgetStop: false }).loreBudgetStop).toBe(false);
+    });
+
     it("materializes `undefined`, and fills `{}`, as the fresh-boot values of its fields, in SECTION_FIELDS order, and nothing else", () => {
         for (const section of sections) {
             const expected = bootDefaults(section);
