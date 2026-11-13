@@ -37,6 +37,7 @@ confirmed claims left [known issues](known-issues.md) fixed.
 - [Assets](#assets): 1
 - [Selection](#selection): 1
 - [Server generation](#server-generation): 1
+- [Test tooling](#test-tooling): 1
 
 ## Assets
 
@@ -90,3 +91,18 @@ for the length of the count.
 it to a worker thread." A size refusal before encoding at the shared gateway (`tokenizers/index.ts:19`) is the cheap
 bound; it was offered and not taken, since it also refuses legitimate large text. An exact count of a large text
 needs the encode off the serving thread, which is the worker design.
+
+## Test tooling
+
+### The job handoff driver's fixture is never given the database write consent its listener needs
+
+`util/playwright/checkJobHandoff.mjs:312` seeds only the `replacer` grant for its fixture plugin, whose `chatOutput`
+listener calls `risuai.setChatToIndex` (`:80`); that call needs the periodic `dbWrite` consent
+(`src/ts/plugins/apiV3/v3.svelte.ts`), which the driver neither grants nor answers. Found 2026-11-14 by the wide
+review (cut X5, P3) while running the manual checks: on a fresh save the prefer case timed out with the consent dialog
+open (0 of 10 cases), and passed once the run answered the dialog. The handoff itself worked.
+
+**Why it matters:** the driver fails on a fresh save for a reason that has nothing to do with the handoff it checks.
+
+**Suggested handling:** seed the `dbWrite` grant with the `replacer` grant in the fixture, or have the driver answer
+the dialog.

@@ -118,25 +118,13 @@ Two tabs, two browsers, or a dropped connection:
 - [ ] **Upstream `.bin` Compatibility (S1, S5)**: the Docker image was not rebuilt after the msgpackr pin, so the native `msgpackr-extract` in the image is unverified. The Combined Run's later `docker build` and container smoke may cover this.
 - [ ] **Asset Lifecycle**: a Docker volume on a nearly full disk: the 507 answers of the restore, the backup import, the upstream commit, the upstream export prepare, and the manual snapshot; the snapshot tick logging once and skipping.
 - [ ] **Static Audit Fixes (SA12)**: durable writes on Windows, macOS, and network mounts, and under real power loss.
-- [ ] **Sidebar Chat Status**: the recovery badge with the server killed mid-stream.
-- [ ] **Reroll Candidates (D8)**: a server process death or an abort past the grace mid-reroll: the previous reply stays selected, with no partial text. Only a manual kill shows it.
-- [ ] **Open Bug Fixes (S2)**: a real `@hono/node-server` socket abort mid-download.
 - [ ] **Boot Resource Cache**: the reporting user comparing DevTools Timing on their own server before and after.
 
 ## Scripts, specs, and measurements nobody ran
 
 An agent can run these without a device.
 
-- [ ] **Per-Chat Send**: `util/playwright/checkServerJobMatrix.mjs`, `checkMcpFixes.mjs`, and `checkStreamingModes.mjs` were not run after the plan.
-- [ ] **Boot Bytes**: `checkServerJobMatrix.mjs` was not re-run after the server stopped stamping characters on a send; "Last chatted" ordering on the home screen and the mobile character list is derived from the chats now and has not been checked in a browser.
-- [ ] **Per-Chat Toggles and Toggle Presets**: record the dedicated `e2e/0-idleReload.spec.ts` result.
-- [ ] **Settings UI Reorganization**: `e2e/settingsPages.spec.ts` was updated in each slice but never run by the plan. Later plans list the spec among their passed e2e runs.
-- [ ] **RisuNest Small Wins (A1)**: `e2e/terminalNotice.spec.ts` was not re-run.
 - [ ] **Sidebar Chat Status**: the browser check's `--base` production mode was implemented but not exercised.
-- [ ] **Found Issues Decisions (A3)**: the optional `checkJobHandoff.mjs` `prefer` check.
 - [ ] **Found Issues Clearance (Q16)**: a real-browser `measureHeap.mjs` run after a module delete, if a heap plan returns.
-- [ ] **Audit Findings and Performance Leftovers (Phase 5)**: the load-only flakes (`cbsLimitsHost.test.ts` "does not yield between quick effects", `checkServerJobMatrix.mjs` setup) were not checked by a dedicated session.
-- [ ] **Static Audit Fixes (SA9)**: the export worker's effect on a large store was not re-measured.
-- [ ] **Upstream `.bin` Compatibility**: the export prepare's synchronous work was measured on a small store only (server-resources Known Hazards).
 - [ ] **Search (4b)**: the message search was not measured on a real large database (the real saves on the machine were 352 KB).
 - [ ] **Heap Memory Reduction**: the user's own style and real font files were not measured.

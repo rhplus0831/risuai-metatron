@@ -150,7 +150,7 @@ Work that finished plans named and left: features put off, a plan's Later list, 
 
 ## Reroll Candidates
 
-- Not planned (the plan's Later list): a single-candidate delete control; a boot sweep writing back the previous candidate after a process death; pruning older messages' candidates at the commit boundary.
+- Not planned (the plan's Later list): a single-candidate delete control; a boot sweep writing back the previous candidate after a process death; pruning older messages' candidates at the commit boundary. The missing boot sweep was seen in a run on 2026-11-14 (the wide review's manual checks): a server killed mid-reroll before a checkpoint leaves the new candidate selected with blank text, and after a checkpoint with its partial text, also after a reload; the previous arrow brings the old candidate back, and an ordinary Stop restores it.
 
 ## Implementation Audit Fixes
 
