@@ -302,6 +302,54 @@ describe("/hub-proxy", () => {
         }
     });
 
+    it("strips Clear-Site-Data from success, errors, and returned or followed redirects", async () => {
+        const hubURL = "https://hub.invalid";
+        const fetching = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+            const url = new URL(String(input));
+            const headers = new Headers({
+                "Clear-Site-Data": '"storage", "cache", "cookies"',
+                "set-cookie": "session=hub; Path=/",
+                "content-security-policy": "default-src * 'unsafe-inline'",
+                "content-type": "text/html",
+            });
+            let status = url.pathname === "/error" ? 503 : 200;
+            if (url.pathname === "/external" || url.pathname.startsWith("/follow-")) {
+                status = 302;
+                headers.set(
+                    "location",
+                    url.pathname === "/external" ? "https://docs.example/guide" : url.pathname.replace("/follow-", "/"),
+                );
+            }
+            return new Response(`hub ${url.pathname}`, { status, headers });
+        });
+        onTestFinished(() => fetching.mockRestore());
+        server = createTestServer({ password: "pw", realm: { hubURL } });
+
+        for (const [path, status, finalPath, location] of [
+            ["/success", 200, "/success", null],
+            ["/error", 503, "/error", null],
+            ["/external", 302, "/external", "https://docs.example/guide"],
+            ["/follow-success", 200, "/success", null],
+            ["/follow-error", 503, "/error", null],
+        ] as const) {
+            const response = await server.app.request(`/hub-proxy${path}`);
+            expect(response.status, path).toBe(status);
+            expect.soft(response.headers.get("clear-site-data"), path).toBeNull();
+            expect(response.headers.get("location"), path).toBe(location);
+            expect(await response.text(), path).toBe(`hub ${finalPath}`);
+            await expectSandboxHeaders(response);
+        }
+        expect(fetching.mock.calls.map(([url]) => String(url))).toEqual([
+            `${hubURL}/success`,
+            `${hubURL}/error`,
+            `${hubURL}/external`,
+            `${hubURL}/follow-success`,
+            `${hubURL}/success`,
+            `${hubURL}/follow-error`,
+            `${hubURL}/error`,
+        ]);
+    });
+
     it("reaches only the hub (never x-risu-node-path), strips risu-auth, and follows one redirect within the hub's origin", async () => {
         server = createTestServer({ password: "pw", realm: { hubURL: upstream.url } });
         const res = await server.app.request("/hub-proxy/echo?viahub=1", {

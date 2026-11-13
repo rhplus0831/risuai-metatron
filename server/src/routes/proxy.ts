@@ -25,7 +25,7 @@ import type { AuthStore } from "./auth.ts";
  * GET /hub-proxy/* uses no auth and only the configured hub (default https://sv.risuai.xyz), forwarding
  * its suffix/query with the hub Origin and allowlisted content and x-risuai-info headers. It follows at most one same-origin
  * redirect, passing external redirects back to the browser. Its responses strip obsolete
- * encoding/framing headers and all Set-Cookie fields, replace the hub's CSP with the asset sandbox
+ * encoding/framing headers, Clear-Site-Data and all Set-Cookie fields, replace the hub's CSP with the asset sandbox
  * policy, and set nosniff. The sandbox and nosniff also cover the limiter's 429 and request failures'
  * 502; stream failures close the body. Content-Type is passed through only when the hub sends it.
  */
@@ -43,7 +43,13 @@ const strippedProxyResponseHeaders = [
     "content-length",
     "transfer-encoding",
 ];
-const strippedHubResponseHeaders = ["content-encoding", "content-length", "transfer-encoding", "set-cookie"];
+const strippedHubResponseHeaders = [
+    "content-encoding",
+    "content-length",
+    "transfer-encoding",
+    "set-cookie",
+    "clear-site-data",
+];
 // Hop-by-hop or recomputed by fetch(); `risu-auth` must never leave this server.
 const strippedProxyRequestHeaders = [
     "host",

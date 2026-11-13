@@ -35,7 +35,7 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 - [Memory](#memory): 5
 - [Plugins](#plugins): 3
 - [Selection](#selection): 1
-- [Self-host server](#self-host-server): 3
+- [Self-host server](#self-host-server): 2
 - [Server generation](#server-generation): 2
 - [Settings](#settings): 3
 
@@ -327,20 +327,6 @@ its tests with no caller to need them.
 saying it is a deliberate hook.
 
 ## Self-host server
-
-### The hub proxy forwards a `Clear-Site-Data` header under the app's origin
-
-`strippedHubResponseHeaders` (`server/src/routes/proxy.ts:46`, used at `:466`) removes the encoding headers and
-`set-cookie`; the reverse proxy's list beside it (`:40`) also removes `clear-site-data`. Found 2026-11-14 by the wide
-review (cut F3) and confirmed by a second reader, who narrowed it: the header reaches the answer of `/hub-proxy/…`
-unchanged while the cookie is stripped and the sandbox policy is set; that a browser then clears the origin's storage
-is the header's standard meaning and was not run.
-
-**Why it matters:** the configured hub, or whoever answers for it, could clear the app's browser storage: the
-registered key and local recovery drafts. Server data is not touched. The Limitation about the unauthenticated hub
-proxy weighed scripts and cookies, not this header.
-
-**Suggested handling:** add `clear-site-data` to the stripped list, for redirect and error answers too.
 
 ### An overlong asset sweep key is encoded in full before its length is refused
 
