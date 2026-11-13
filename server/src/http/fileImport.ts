@@ -115,6 +115,8 @@ export type FileImportRoute<Plan, Meta = undefined> = {
      * request (the body unread); null admits it.
      */
     preflight?(c: Context<AppEnv>): Response | null;
+    /** Async admission with the slot held, before staging or reading the body; throws to `refusal`. */
+    beforeSpool?(c: Context<AppEnv>): Promise<void>;
     /** Aborts the admitted import as the request's own abort does (the upstream import's shutdown). */
     abort?: AbortSignal;
     /**
@@ -177,6 +179,7 @@ export async function serveFileImport<Plan, Meta = undefined>(
     let plan: Plan;
     let stagingFolder: string;
     try {
+        await route.beforeSpool?.(c);
         stagingFolder = await makeStaging(path.join(savePath, ".tmp"), route.stagingPrefix);
         lifetime.staging = stagingFolder;
         let body: ReadableStream<Uint8Array>;

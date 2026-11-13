@@ -11,6 +11,7 @@ import {
     type StatsFs,
 } from "node:fs";
 import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
 import { Zip, ZipDeflate, zipSync } from "fflate";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -33,6 +34,7 @@ const emptyResult = { card, moduleData: null, assets: {}, excluded: [] };
 afterEach(async () => {
     await Promise.all(responses.splice(0).map((res) => res.body?.cancel().catch(() => {})));
     vi.restoreAllMocks();
+    syncBuiltinESMExports();
     await Promise.all(servers.splice(0).map((s) => s.close()));
 });
 
@@ -373,6 +375,31 @@ describe("POST /api/import/charx", () => {
                 .map((data) => path.basename(keyOf(data)))
                 .sort(),
         );
+        expect(staged(s)).toEqual([]);
+    });
+
+    it("refuses a declared upload that would consume the disk reserve before reading and accepts a fitting retry", async () => {
+        const s = await server();
+        const payload = bytes("fits");
+        const zip = archive({ "fits.bin": payload });
+        const headers = { "content-length": String(zip.byteLength) };
+        const probe = vi.spyOn(fs, "statfs").mockResolvedValue(diskCapacity(diskNeeded(zip.byteLength) - 1));
+        // The pre-spool helper imports statfs by name; charxLines reads it from the default fs object.
+        syncBuiltinESMExports();
+        const input = unreadBody();
+        await refused(await post(s, input.body, { headers }), 507, "Disk is full");
+        expect(input.reads()).toBe(0);
+        expect(probe).toHaveBeenCalledTimes(1);
+        expect(assetFiles(s)).toEqual([]);
+        expect(staged(s)).toEqual([]);
+
+        probe.mockResolvedValue(diskCapacity(diskNeeded(zip.byteLength)));
+        expect((await lines(await post(s, zip, { headers }))).at(-1)).toEqual({
+            ...emptyResult,
+            assets: { "fits.bin": keyOf(payload) },
+        });
+        expect(assetFiles(s)).toEqual([path.basename(keyOf(payload))]);
+        expect(readFileSync(path.join(s.savePath, keyOf(payload)))).toEqual(payload);
         expect(staged(s)).toEqual([]);
     });
 

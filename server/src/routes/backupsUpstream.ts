@@ -174,8 +174,9 @@ export function createUpstreamImportStaging(options: { ttlMs?: number } = {}) {
  * the body is read, the epoch (412) and a prepared import already waiting (409
  * `UPSTREAM_TOO_MANY_STAGED`). The body is spooled to `save/.tmp/upstream-<uuid>/archive.bin` and
  * classified on this thread (`planUpstreamArchive`: the index and the names only), so a refused
- * archive (a Risu Account backup, a version-2 archive, no database) is a 400. The rest runs in a
- * worker (`importRunner.ts`, a heap-capped `worker_threads` thread; the event loop stays free): the
+ * archive (a Risu Account backup, a version-2 archive, no database) is a 400. Disk admission checks
+ * the declared upload before spooling and indexed asset bytes before the worker starts (507).
+ * The rest runs in a worker (`importRunner.ts`, a heap-capped `worker_threads` thread; the event loop stays free): the
  * decode, the cold-storage reads, the conversion, the staged store and its validation, and the asset
  * extraction. The answer is NDJSON: `{ phase, done, total }` lines (coalesced to the latest while the
  * client reads), then `{ token, report, selection }`, or one `{ error }` line for a backup the worker refused or
@@ -275,8 +276,19 @@ export function registerUpstreamImportRoutes(
                 return staging.full ? c.json({ error: UPSTREAM_TOO_MANY_STAGED }, 409) : null;
             },
             abort: staging.signal,
+            beforeSpool: async (c) => {
+                const declaredLength = c.req.header("content-length");
+                if (declaredLength !== undefined) {
+                    await ensureFreeSpace(savePath, Number(declaredLength), { statfs: arg.statfs });
+                }
+            },
             prepare: async (handle, _meta, signal) => {
                 const plan = await planUpstreamArchive(handle, savePath, signal);
+                await ensureFreeSpace(
+                    savePath,
+                    plan.assets.reduce((bytes, asset) => bytes + asset.record.length, 0),
+                    { statfs: arg.statfs },
+                );
                 signal.throwIfAborted();
                 return plan;
             },
@@ -284,7 +296,8 @@ export function registerUpstreamImportRoutes(
                 if (
                     error instanceof ArchiveRejectedError ||
                     error instanceof ResourceValidationError ||
-                    error instanceof ResourceEpochError
+                    error instanceof ResourceEpochError ||
+                    error instanceof InsufficientStorageError
                 ) {
                     return backupErrorResponse(c, error);
                 }

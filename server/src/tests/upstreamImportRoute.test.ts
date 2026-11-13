@@ -451,6 +451,62 @@ describe("POST /api/backups/import-upstream/prepare and /commit", () => {
         expect(s.context.upstreamStaging.full).toBe(false);
     });
 
+    it.each(["declared upload", "undeclared indexed assets", "space lost after spooling"])(
+        "refuses prepare for insufficient disk space at %s, then imports a fitting retry",
+        async (admission) => {
+            vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+            const bytes = upstreamArchive();
+            const declared = admission !== "undeclared indexed assets";
+            const beforeSpool = admission === "declared upload";
+            const estimate = beforeSpool ? bytes.byteLength : PROFILE.byteLength + JOY.byteLength;
+            const free = diskNeeded(estimate) - 1;
+            const disk = vi.fn(async () => diskWithFree(free));
+            const runner = vi.fn(inProcess);
+            const s = await server({ assetLifecycle: { statfs: disk }, upstreamImport: { runner } });
+            const epoch = s.epoch;
+            disk.mockClear();
+            if (admission === "space lost after spooling") {
+                disk.mockResolvedValueOnce(diskWithFree(diskNeeded(bytes.byteLength)));
+            }
+            const input = beforeSpool ? unreadBody() : null;
+            const response = await prepareRequest(s, input?.body ?? bytes, {
+                headers: declared ? { "content-length": String(bytes.byteLength) } : {},
+            });
+            expect(response.status).toBe(507);
+            expect(await response.json()).toEqual({
+                error: "Insufficient Storage",
+                needed: diskNeeded(estimate),
+                free,
+            });
+            if (input) expect(input.reads()).toBe(0);
+            expect(runner).not.toHaveBeenCalled();
+            expect(disk).toHaveBeenCalledTimes(admission === "space lost after spooling" ? 2 : 1);
+            expect(s.context.upstreamStaging.size).toBe(0);
+            expect(staged(s)).toEqual([]);
+            expect(assetFiles(s)).toEqual([]);
+            expect(await listBackups(s)).toEqual([]);
+            expect(await s.readEpoch()).toBe(epoch);
+            expect((await s.get("characters", FIXTURE_CHARACTER)).status).toBe(404);
+
+            disk.mockResolvedValue(diskWithFree(Number.MAX_SAFE_INTEGER));
+            const prepared = (
+                await lines(await prepareRequest(s, bytes, { headers: { "content-length": String(bytes.byteLength) } }))
+            ).at(-1);
+            expect(prepared.token).toMatch(TOKEN);
+            expect(runner).toHaveBeenCalledTimes(1);
+            const committed = await commitRequest(s, { token: prepared.token });
+            expect(committed.status).toBe(200);
+            expect(await committed.json()).toMatchObject({ assetsWritten: 2, assetsSkipped: 0 });
+            await s.readEpoch();
+            expect((await s.get("characters", FIXTURE_CHARACTER)).status).toBe(200);
+            expect(assetFiles(s)).toEqual(["3f2a9c.png", "joy.png"]);
+            expect(readFileSync(path.join(assetDir(s), "3f2a9c.png"))).toEqual(PROFILE);
+            expect(readFileSync(path.join(assetDir(s), "joy.png"))).toEqual(JOY);
+            expect(s.context.upstreamStaging.size).toBe(0);
+            expect(staged(s)).toEqual([]);
+        },
+    );
+
     it("refuses a Risu Account backup, a version-2 archive, a damaged archive, no body, and a stale epoch before anything streams, writing nothing", async () => {
         const s = await server();
         const epoch = s.epoch;

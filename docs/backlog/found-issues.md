@@ -30,7 +30,6 @@ the one marked P3, and three confirmed claims moved from the guides' Issues to [
 - [Assets](#assets): 1
 - [Characters](#characters): 2
 - [Chat pipeline](#chat-pipeline): 1
-- [Imports and backups](#imports-and-backups): 1
 - [MCP](#mcp): 3
 - [Memory](#memory): 5
 - [Plugins](#plugins): 3
@@ -101,22 +100,6 @@ preview was meant to show.
 reads see the flags set during the preview and none reaches the chat's metadata, with a test that a preview leaves
 `scriptstate` as it was. Removing the flush at `runner.ts:631` alone is not enough: `flushChatMetadata`
 (`server/src/jobs/jobScope.ts:660`) is reached on other paths too.
-
-## Imports and backups
-
-### The upstream backup import checks free space at commit, after the staging files are written
-
-`serveFileImport` spools the whole archive (`server/src/http/fileImport.ts:198`), and the prepare worker writes the
-staged database and extracts every asset (`server/src/data/upstream/importStage.ts:128`) before any free-space check;
-the route first uses `statfs` at commit (`server/src/routes/backupsUpstream.ts:465`). Found 2026-11-14 by the wide
-review (cut E4) and confirmed by a second reader: with `statfs` reporting no free space, two prepares answered 200 and
-kept 385,112 and 516,184 staged bytes, and only the commits answered 507.
-
-**Why it matters:** choosing a backup to review can fill the volume before the review is shown. Cancel removes the
-staging; an abandoned prepare holds it for ten minutes.
-
-**Suggested handling:** admit the prepare with the same reserve: before spooling when the request gives its length,
-and before extraction once the archive index gives the asset bytes.
 
 ## MCP
 

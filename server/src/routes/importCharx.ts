@@ -132,6 +132,12 @@ export function registerCharxImportRoutes(
             stagingPrefix: "charx",
             fileName: "file.charx",
             missingBody: "CharX body required",
+            beforeSpool: async (c) => {
+                const declaredLength = c.req.header("content-length");
+                if (declaredLength !== undefined) {
+                    await ensureFreeSpace(savePath, Number(declaredLength));
+                }
+            },
             prepare: (handle) => planCharxFile(handle, maxEntryBytes),
             refusal,
             lines: (plan, stream) => charxLines({ savePath, snapshots, diagnostics }, plan, stream, { maxEntryBytes }),
@@ -465,6 +471,9 @@ function readAt(handle: FileHandle, buffer: Uint8Array, position: number): Promi
 
 /** The route's refusal before the stream started (maintenance and any other error are `serveFileImport`'s). */
 function refusal(c: Context<AppEnv>, error: unknown): Response | null {
+    if (error instanceof InsufficientStorageError) {
+        return c.json({ error: "Disk is full" }, 507);
+    }
     if (error instanceof CharxFileError) {
         return c.json({ error: INVALID_CHARX_FILE }, 400);
     }
