@@ -1739,6 +1739,48 @@ describe("chat, character, persona, and UI effects", () => {
         expect(h.trace.filter((entry) => entry.startsWith("tokens:"))).toEqual(["tokens:S\n\n", "tokens:PE\n\n"]);
     });
 
+    it.each([
+        { name: "granted contributors", parentAccess: true, childAccess: true, prefix: "", remoteAccess: true },
+        { name: "ungranted child", parentAccess: true, childAccess: false, prefix: "", remoteAccess: false },
+        { name: "ungranted parent", parentAccess: false, childAccess: true, prefix: "", remoteAccess: false },
+        { name: "unknown origin", parentAccess: true, childAccess: true, prefix: "outside\n\n", remoteAccess: false },
+    ])(
+        "keeps mixed or unknown system-prompt provenance local across nested runs ($name)",
+        async ({ parentAccess, childAccess, prefix, remoteAccess }) => {
+            const h = harness({
+                char: { lowLevelAccess: parentAccess },
+                triggers: [
+                    trig([
+                        ef("v2SystemPrompt", { location: "start", ...v("parent") }),
+                        ef("v2RunTrigger", { target: "child" }),
+                        ef("v2SystemPrompt", { location: "promptend", ...v("separate") }),
+                    ]),
+                ],
+                moduleTriggers: [
+                    trig([ef("v2SystemPrompt", { location: "start", ...v("child") })], {
+                        comment: "child",
+                        lowLevelAccess: childAccess,
+                    }),
+                ],
+            });
+            const counts = vi.spyOn(h.services, "tokenize");
+            const result = await h.run("manual", {
+                additonalSysPrompt: { start: prefix, historyend: "", promptend: "" },
+            });
+
+            const start = `${prefix}parent\n\nchild\n\n`;
+            expect(result?.additonalSysPrompt).toEqual({ start, historyend: "", promptend: "separate\n\n" });
+            expect(result?.tokens).toBe(start.length + "separate\n\n".length);
+            // Both the nested and outer counts must retain every contributor's permission.
+            expect(counts.mock.calls.filter(([text]) => text === start)).toEqual([
+                [start, remoteAccess],
+                [start, remoteAccess],
+            ]);
+            expect(counts).toHaveBeenCalledWith("separate\n\n", parentAccess);
+            expect(counts).toHaveBeenCalledTimes(3);
+        },
+    );
+
     it("runs v2Command with the CBS'd line through the job's executor and v2Wait as an abortable sleep", async () => {
         const h = harness({
             triggers: [

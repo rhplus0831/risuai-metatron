@@ -32,7 +32,8 @@ import { createTransformers } from "../prompt/transformers.ts";
 import { createAuthStore } from "../routes/auth.ts";
 import { registerGenerationRoutes } from "../routes/generations.ts";
 import type { AppEnv } from "../types.ts";
-import type { TokenCounter } from "../prompt/tokens.ts";
+import { createTokenizers } from "../prompt/tokenizers/index.ts";
+import { createTokenCounter, type TokenCounter } from "../prompt/tokens.ts";
 import { createScriptWorkerPool } from "../scripts/workerPool.ts";
 import { allowListenerOrigin } from "./testSupport.ts";
 import { UNHURRIED_CBS, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
@@ -62,7 +63,9 @@ const sep = "{{u::7b}}{{u::7b}}u::7c}}".repeat(3);
 const commands = ["/multisend one", `/multisend clear ${sep}two${sep}three`];
 const trigger = (type: string, effect: unknown[]) => ({ comment: "go", type, conditions: [], effect });
 
-function fixture(options: { hooks?: GenerationHooks; stopSend?: boolean; modelId?: string } = {}) {
+function fixture(
+    options: { hooks?: GenerationHooks; stopSend?: boolean; modelId?: string; tokens?: TokenCounter } = {},
+) {
     const dir = mkdtempSync(path.join(os.tmpdir(), "risu-command-sequence-"));
     cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
     const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
@@ -163,7 +166,7 @@ function fixture(options: { hooks?: GenerationHooks; stopSend?: boolean; modelId
             JSON.stringify({ choices: [{ message: { role: "assistant", content: `reply-${_index + 1}` } }] }),
             { headers: { "content-type": "application/json" } },
         );
-    const tokens: TokenCounter = { count: async () => 1, encode: async () => [1] };
+    const tokens: TokenCounter = options.tokens ?? { count: async () => 1, encode: async () => [1] };
     const observer = createClaudeObserver({ now: clock });
     cleanups.push(() => observer.dispose());
     const llm = createLlmRequests({
@@ -377,6 +380,114 @@ function setTriggerOwner(h: ReturnType<typeof fixture>, lowLevelAccess: boolean 
 }
 
 describe("server command sequences", () => {
+    it.each([undefined, false, true])(
+        "uses local script token counts unless the trigger owner grants access (%s), keeping Google settings intact",
+        async (lowLevelAccess) => {
+            const tokenizers = createTokenizers({ rootDir: path.resolve(import.meta.dirname, "../../..") });
+            cleanups.push(() => tokenizers.dispose());
+            const local = vi.spyOn(tokenizers, "encode").mockResolvedValue([1, 2, 3, 4, 5]);
+            const remote = vi.fn<typeof fetch>(
+                async () =>
+                    new Response(JSON.stringify({ totalTokens: 7 }), {
+                        headers: { "content-type": "application/json" },
+                    }),
+            );
+            const h = fixture({
+                modelId: "gemini-2.5-flash",
+                tokens: createTokenCounter({ tokenizers, fetchImpl: remote }),
+            });
+            for (const [name, patch] of [
+                ["providers", { googleClaudeTokenizing: true, useTokenizerCaching: false }],
+                ["llmSecrets", { google: { accessToken: "test-google-key" } }],
+            ] as const) {
+                const kind = h.kinds.get(name)!;
+                const row = h.store.get(kind, "main")!;
+                h.store.put(kind, "main", { ...(row.data as Record<string, unknown>), ...patch }, row.revision);
+            }
+            const providerSettings = h.store.get(h.kinds.get("providers")!, "main")!;
+            setTriggerOwner(h, lowLevelAccess, [
+                {
+                    ...trigger("manual", [
+                        {
+                            type: "v2Tokenize",
+                            indent: 0,
+                            valueType: "value",
+                            value: "native count",
+                            outputVar: "nativeTokens",
+                        },
+                        {
+                            type: "v2SystemPrompt",
+                            indent: 0,
+                            valueType: "value",
+                            value: "system count",
+                            location: "promptend",
+                        },
+                        {
+                            type: "triggerlua",
+                            code: 'go = async(function(id) local n = getTokens(id, "lua count"):await() setChatVar(id, "luaTokens", n) end)',
+                        },
+                        { type: "v2Command", indent: 0, valueType: "value", value: "/test_lorebook" },
+                    ]),
+                    lowLevelAccess: true,
+                },
+            ]);
+            const kind = h.kinds.get("characters")!;
+            const row = h.store.get(kind, "c")!;
+            h.store.put(
+                kind,
+                "c",
+                {
+                    ...(row.data as Record<string, unknown>),
+                    globalLore: [
+                        {
+                            key: "",
+                            secondkey: "",
+                            content: "lore count",
+                            comment: "Lore",
+                            insertorder: 100,
+                            mode: "normal",
+                            alwaysActive: true,
+                            selective: false,
+                        },
+                    ],
+                },
+                row.revision,
+            );
+            const id = h.create();
+            const owner = await h.follow(id);
+            h.start.resolve();
+            await h.jobs.drain();
+            await owner.until((events) => events.some((event) => event.type === "done" || event.type === "error"));
+
+            expect(h.jobs.status(id, "owner")?.terminal?.type).toBe("done");
+            expect(h.providerCalls).toHaveLength(0);
+            const texts = ["native count", "lua count", "system count\n\n", "lore count"];
+            expect(remote).toHaveBeenCalledTimes(lowLevelAccess ? texts.length : 0);
+            expect(local.mock.calls).toEqual(
+                lowLevelAccess ? [] : expect.arrayContaining(texts.map((text) => ["gemma", text])),
+            );
+            expect(local).toHaveBeenCalledTimes(lowLevelAccess ? 0 : texts.length);
+            expect((h.read().data as Chat).scriptstate).toMatchObject({
+                $nativeTokens: lowLevelAccess ? "7" : "5",
+                $luaTokens: lowLevelAccess ? 7 : 5,
+            });
+            if (lowLevelAccess) {
+                expect(
+                    remote.mock.calls.map(([, init]) => JSON.parse(String(init?.body)).contents[0].parts[0].text),
+                ).toEqual(expect.arrayContaining(texts));
+                for (const [url] of remote.mock.calls) {
+                    expect(String(url)).toBe(
+                        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:countTokens?key=test-google-key",
+                    );
+                }
+            }
+            expect(owner.events.filter((event) => event.type === "notice" && event.kind === "alertNormal")).toEqual([
+                { type: "notice", epoch: h.store.epoch(), kind: "alertNormal", payload: { message: "lore count" } },
+            ]);
+            expect(h.store.get(h.kinds.get("providers")!, "main")).toEqual(providerSettings);
+        },
+    );
+
     it.each([undefined, false, true])(
         "uses the input trigger owner's grant (%s) for writes to the bound shared persona",
         async (lowLevelAccess) => {
