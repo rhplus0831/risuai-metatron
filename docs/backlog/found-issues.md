@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, seven more plan-leftover collections from memory the same day, the seventeenth (the Found Issues Decisions run) on 2026-11-09, the nineteenth (the Upstream Intake 2 run) on 2026-11-10, the twentieth (the Memory Panel Readability run) on 2026-11-11, the twenty-first (the Structured Memory Recent Timeline run) the same day, and the twenty-second (the Per-Chat Memory run) on 2026-11-13; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, seven more plan-leftover collections from memory the same day, the seventeenth (the Found Issues Decisions run) on 2026-11-09, the nineteenth (the Upstream Intake 2 run) on 2026-11-10, the twentieth (the Memory Panel Readability run) on 2026-11-11, the twenty-first (the Structured Memory Recent Timeline run) the same day, the twenty-second (the Per-Chat Memory run) on 2026-11-13, and the twenty-third (the Lore Budget Send Stop run) the same day; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. An entry is a `###` heading under its area section, a paragraph saying what and where (`file:line`), then a **Why it matters:** line and a **Suggested handling:** line; the Contents list at the top counts each area's entries. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's section of [known issues](known-issues.md) (or to the guide's Known Hazards `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -16,10 +16,10 @@ The twentieth and twenty-first batches, a build entry, and one finding still in 
 
 ## Contents
 
-- [Chat pipeline](#chat-pipeline): 1
+- [Chat pipeline](#chat-pipeline): 2
 - [Memory](#memory): 1
 - [Selection](#selection): 1
-- [Settings](#settings): 1
+- [Settings](#settings): 2
 
 ## Chat pipeline
 
@@ -37,6 +37,18 @@ preview was meant to show.
 
 **Suggested handling:** read whether the job's write accepts the `meta` operation for a preview kind; if it does, run
 a preview's activation without the flag writes, with a test that a preview leaves `scriptstate` as it was.
+
+### The per-chat sends e2e spec failed once under the full e2e run
+
+`e2e/perChatSends.spec.ts:412` ("two chats of one tab send at once: per-chat Stop, replies, suggestions, and auto
+mode") failed once in a full `pnpm test:agent --e2e` run at `85494cb19` and passed when the spec was run again
+alone right after. The failure output was not kept. Found 2026-11-13 by the Lore Budget Send Stop run's final checks;
+that run's slice 2 changed `sendChatMain` in `src/lib/ChatScreens/DefaultChatScreen.svelte`, which this spec drives.
+
+**Why it matters:** a flake in the spec that covers concurrent sends hides a real regression of them.
+
+**Suggested handling:** run the spec several times under the full e2e run, keep the trace of a failure, and compare
+it with a run at `7976d4449` (before that plan).
 
 ## Memory
 
@@ -84,3 +96,19 @@ Budget Send Stop plan's audit; not checked in a browser.
 is the most.
 
 **Suggested handling:** drop the `max` or raise it to a value above the default, on both inputs.
+
+### A preset switch while a number box has focus keeps the typed value shown
+
+`e2e/presetSelection.spec.ts:60` fails: after typing 777 into Max Response Size and pressing `Control+1` with the box
+still focused, the box shows 777 where the test expects the new preset's 500 (`presetSelection.spec.ts:89`). It
+fails the same way at `7976d4449`, before the Lore Budget Send Stop plan. `fb09d2b25` made `NumberInput` show the typed
+entry while it has focus (`editing` and `typed` in `src/lib/UI/GUI/NumberInput.svelte:43`), so a bound value that
+changes underneath a focused box is not shown until blur or commit. Found 2026-11-13 by the Lore Budget Send Stop run's
+final checks; not checked in a browser beyond the spec.
+
+**Why it matters:** after a hotkey switch the box shows a value the selected preset does not hold, and the e2e suite
+has a standing failure.
+
+**Suggested handling:** leave the editing state when the bound value changes from outside (or the binding's owner
+changes), as the commit and blur do, and keep the spec's expectation; otherwise decide the spec is stale and update
+it.
