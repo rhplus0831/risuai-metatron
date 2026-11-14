@@ -1,5 +1,12 @@
 <script lang="ts">
-    import { BookAlertIcon, ChevronUpIcon, GaugeIcon, LoaderCircleIcon, SettingsIcon } from "@lucide/svelte";
+    import {
+        BookAlertIcon,
+        ChevronUpIcon,
+        CircleAlertIcon,
+        GaugeIcon,
+        LoaderCircleIcon,
+        SettingsIcon,
+    } from "@lucide/svelte";
     import { onDestroy, tick, untrack } from "svelte";
     import { language } from "src/lang";
     import { doingAlert, terminalNotice } from "src/ts/alert";
@@ -13,10 +20,11 @@
     } from "src/ts/process/structuredMemory.svelte";
     import { openSetting } from "src/ts/setting/settingJump.svelte";
     import { INTERACTION_SETTINGS_MENU } from "src/ts/settingsMenu";
+    import { findCharacter } from "src/ts/storage/characterStore.svelte";
     import { chatBinding } from "src/ts/storage/chatBinding.svelte";
     import { chatEntry, findChat, setChatMeta, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { readSettingsRoot, settings } from "src/ts/storage/settingsViews.svelte";
-    import { settingsOpen, SettingsMenuIndex, MEMORY_SETTINGS_MENU } from "src/ts/stores.svelte";
+    import { hypaV3ModalOpen, settingsOpen, SettingsMenuIndex, MEMORY_SETTINGS_MENU } from "src/ts/stores.svelte";
     import { createTokenCountField } from "src/ts/tokenCountField";
     import { countTokensInScope, jobTokenScope, tokenScopeKey } from "src/ts/tokenizer";
     import { get } from "svelte/store";
@@ -29,8 +37,9 @@
         type ContextReport,
     } from "../../../shared/contextReport.ts";
     import { maxContextOverrideOf } from "../../../shared/sections.ts";
-    import { chatMemoryAlgorithm } from "../../../shared/chatMemory.ts";
-    import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
+    import { supaMemoryOnCount } from "../../../shared/characters.ts";
+    import { chatMemoryAlgorithm, chatMemoryEnabled } from "../../../shared/chatMemory.ts";
+    import { chatMemorySettings, setChatMemoryEnabled } from "src/ts/storage/chatMemory.svelte";
     import type { TabTokenScope } from "../../../shared/tokenizerChoice.ts";
     import MemoryManifest from "../Others/StructuredMemory/MemoryManifest.svelte";
     import Portal from "../UI/GUI/Portal.svelte";
@@ -41,6 +50,11 @@
      * so the line shows the history window kept and the share of the prompt budget (`maxContext - maxResponse`)
      * used; the popover breaks the last request down. While the user types, the line estimates how many older
      * messages the send would push out (`displacement`).
+     *
+     * The memory word is the chat's memory as the next send resolves it (`memoryNow`), not the last reply's:
+     * a chat with memory set up shows the line before its first reply, and the last reply's coverage is the
+     * word only while the same memory is still on. The popover's memory block states it, says how the last
+     * reply differed, and holds the chat's switch and the ways to the memory panel and settings.
      *
      * `DefaultChatScreen.svelte` mounts it above the composer row, keyed by the open chat; it is hidden in group
      * chats and with `settings.ui.contextMeter` off. A lore budget rejection replaces the gauge icon (unless the
@@ -140,6 +154,53 @@
     // The memory's token budget was reduced to fit the last request's max context, as the server reported it.
     const budgetReduced = $derived(report?.memory?.budgetReduced ?? []);
 
+    type MemoryKind = NonNullable<ContextReport["memory"]>["kind"];
+
+    /** The report's name for a memory algorithm; null for none. */
+    function memoryKindOf(algorithm: ReturnType<typeof chatMemoryAlgorithm>): MemoryKind | null {
+        switch (algorithm) {
+            case "structuredMemory":
+                return "structuredMemory";
+            case "hypaMemoryV3":
+                return "hypaV3";
+            case "hypaMemoryV2":
+                return "hypaV2";
+            case "hanuraiMemory":
+                return "hanurai";
+            case "supaMemory":
+                return "supa";
+            default:
+                return null;
+        }
+    }
+
+    // The chat's memory as the next send resolves it (`assemblePrompt`'s `memoryConfigured` and
+    // `chatMemoryEnabled`), from the chat's list entry and the settings: null with no memory set up.
+    // Unlike the report it follows the chat's switch and mode at once.
+    const memoryNow: { on: boolean; kind: MemoryKind } | null = $derived.by(() => {
+        const entry = visible ? chatEntry(chatRef) : undefined;
+        if (!entry) {
+            return null;
+        }
+        const memorySettings = chatMemorySettings();
+        const kind = memoryKindOf(chatMemoryAlgorithm(memorySettings, entry));
+        return kind ? { on: chatMemoryEnabled(entry, findCharacter(chatRef.chaId), memorySettings), kind } : null;
+    });
+    const memoryNowName = $derived(memoryNow ? language.contextUsage.memoryKinds[memoryNow.kind] : "");
+    /** The last reply's memory is the one that is on now: its coverage still describes the chat. */
+    const reportedNow = $derived(
+        memoryNow?.on === true && report?.memory?.kind === memoryNow.kind ? report.memory : null,
+    );
+    const leftOut = $derived(report ? Math.max(0, report.history.total - report.history.kept) : 0);
+    // Memory is off and the last request left history out: nothing summarizes it. The server asks about
+    // that trim once per send unless the chat answered "don't ask again" (`memoryTrimAck`, valid while it
+    // equals the owner's count), and the line keeps quiet then too.
+    const memoryOffWarn = $derived(
+        memoryNow?.on === false &&
+            leftOut > 0 &&
+            chatEntry(chatRef)?.memoryTrimAck !== supaMemoryOnCount(findCharacter(chatRef.chaId)),
+    );
+
     // The chat's background memory task (`memoryTasks.svelte.ts`): HypaV3 summaries or the Structured
     // Memory writer. Unlike the report it is live: the line shows queued or running tasks, and the
     // popover says how they ended.
@@ -182,6 +243,7 @@
                   liveNote: s.taskLiveNote,
                   done: s.taskDone,
                   failed: s.taskFailed,
+                  failedMark: s.taskFailedMark,
               };
     });
     const taskView: { tone: "live" | "done" | "failed"; text?: string; error?: string } | null = $derived.by(() => {
@@ -420,91 +482,143 @@
     }
 
     /**
-     * The line's parts, the percentage always the first after the memory word. `superseded` marks a
-     * Structured Memory word a live writer task replaces: the task says more than "pending" or "recorded".
+     * The line: what the last reply kept, the memory word, then the percentage and a fixed share over its
+     * warning. `word` is a Structured Memory writer word a task mark can stand in for: a live task says
+     * more than "pending" or "recorded", and a failed one repeats "failed".
      */
-    type Chip = { parts: string[]; summary: string; superseded?: boolean };
+    type Chip = {
+        lead: string[];
+        memory: { text: string; warn: boolean; word?: string } | null;
+        tail: string[];
+        summary: string;
+    };
 
-    const chip: (Chip & { percentAt: number }) | null = $derived.by(() => {
+    const chip: Chip | null = $derived.by(() => {
+        const s = language.contextUsage;
+        // The switch's state, for a line whose last reply does not describe it.
+        const stated = memoryNow ? { text: memoryNow.on ? s.memoryOn : s.memoryOff, warn: memoryOffWarn } : null;
+        const statedSummary = memoryNow
+            ? (memoryNow.on ? s.memoryNowOnSummary : s.memoryNowOffSummary)(memoryNowName)
+            : null;
+        const withStated = (summary: string) => (statedSummary ? `${summary}; ${statedSummary}` : summary);
         if (!source) {
-            return null;
+            return stated && statedSummary ? { lead: [], memory: stated, tail: [], summary: statedSummary } : null;
         }
         if (source.kind === "legacy") {
             const percent = percentOf(source.input, source.maxContext);
-            return { parts: [`${percent}%`], summary: language.contextUsage.legacySummary(percent), percentAt: 0 };
+            return {
+                lead: [],
+                memory: stated,
+                tail: [`${percent}%`],
+                summary: withStated(s.legacySummary(percent)),
+            };
         }
         const r = source.report;
         const kept = turnCount(r, unit).kept;
-        const keptText = unit === "user" ? language.contextUsage.turns(kept) : language.contextUsage.messages(kept);
+        const keptText = unit === "user" ? s.turns(kept) : s.messages(kept);
         const percent = percentOf(occupied, promptBudget);
-        let result: Chip;
-        if (r.memory?.kind === "structuredMemory") {
-            const tokens = language.contextUsage.tokens(fmt(r.memory.tokens));
-            const status = memoryStatusText(r.memory);
-            const word = memoryStatusWord(r.memory);
-            result = {
-                parts: [keptText, tokens, status, `${percent}%`],
-                summary: language.contextUsage.memorySummary(keptText, memoryName, `${tokens}, ${status}`),
-                superseded: word === "pending" || word === "recorded",
-            };
-        } else if (r.memory) {
+        const result: Chip = { lead: [keptText], memory: stated, tail: [`${percent}%`], summary: "" };
+        if (reportedNow?.kind === "structuredMemory") {
+            const tokens = s.tokens(fmt(reportedNow.tokens));
+            const status = memoryStatusText(reportedNow);
+            const word = memoryStatusWord(reportedNow);
+            result.lead.push(tokens);
+            result.memory = { text: status, warn: word === "gap", word };
+            result.summary = s.memorySummary(keptText, memoryNowName, `${tokens}, ${status}`);
+        } else if (reportedNow) {
             // "covered" only says nothing left out is unsummarized: with nothing left out, no summary is behind it.
-            const omitted = r.history.kept < r.history.total;
             const coverage =
-                r.memory.coverage === "covered" && omitted
-                    ? language.contextUsage.summarized
-                    : r.memory.coverage === "gap"
-                      ? language.contextUsage.gap
-                      : language.contextUsage.memoryOn;
-            result = {
-                parts: [keptText, coverage, `${percent}%`],
-                summary: language.contextUsage.memorySummary(keptText, memoryName, coverage),
-            };
-        } else if (r.history.kept >= r.history.total) {
-            result = { parts: [keptText, `${percent}%`], summary: language.contextUsage.fullSummary(percent) };
+                reportedNow.coverage === "covered" && leftOut > 0
+                    ? s.summarized
+                    : reportedNow.coverage === "gap"
+                      ? s.gap
+                      : s.memoryOn;
+            result.memory = { text: coverage, warn: reportedNow.coverage === "gap" };
+            result.summary = s.memorySummary(keptText, memoryNowName, coverage);
         } else {
-            result = { parts: [keptText, `${percent}%`], summary: language.contextUsage.trimmedSummary(keptText) };
+            result.summary = withStated(leftOut > 0 ? s.trimmedSummary(keptText) : s.fullSummary(percent));
         }
-        const percentAt = result.parts.length - 1;
         if (fixedOver) {
-            result.parts.push(language.contextUsage.fixedPart(Math.round(fixed)));
-            result.summary += `; ${language.contextUsage.fixedWarnSummary}`;
+            result.tail.push(s.fixedPart(Math.round(fixed)));
+            result.summary += `; ${s.fixedWarnSummary}`;
         }
         if (loreWarn) {
-            result.summary += `; ${language.contextUsage.loreWarnSummary(r.lore.rejectedCount)}`;
+            result.summary += `; ${s.loreWarnSummary(r.lore.rejectedCount)}`;
         }
         if (budgetReduced.length > 0) {
-            result.summary += `; ${language.contextUsage.memoryReducedSummary}`;
+            result.summary += `; ${s.memoryReducedSummary}`;
         }
-        return { ...result, percentAt };
+        return result;
     });
 
     /**
-     * The line split around a live task's mark, which sits where the memory word ends: in place of a
-     * superseded word, else after it, so the line still opens with what the last reply kept.
+     * The line with a task's mark, which sits where the memory word ends: in place of a word it stands in
+     * for, else after it, so the line still opens with what the last reply kept. A failed task marks the
+     * line too, since nothing else on it says the summaries or records stopped.
      */
     const chipLine = $derived.by(() => {
         if (!chip) {
             return null;
         }
-        const liveText = taskView?.tone === "live" ? (taskView.text ?? null) : null;
-        const leadEnd = liveText !== null && chip.superseded ? chip.percentAt - 1 : chip.percentAt;
+        const mark =
+            taskView?.tone === "live" && taskView.text
+                ? { tone: "live" as const, text: taskView.text }
+                : taskView?.tone === "failed"
+                  ? { tone: "failed" as const, text: taskStrings.failedMark }
+                  : null;
+        const word = chip.memory?.word;
+        const replaced =
+            mark?.tone === "live"
+                ? word === "pending" || word === "recorded"
+                : mark?.tone === "failed" && word === "failed";
         return {
-            lead: chip.parts.slice(0, leadEnd).join(" · "),
-            task: liveText,
-            tail: chip.parts.slice(chip.percentAt).join(" · "),
+            lead: chip.lead.join(" · "),
+            memory: replaced ? null : chip.memory,
+            mark,
+            tail: chip.tail.join(" · "),
         };
     });
 
-    const chipTitle = $derived(
-        chip
-            ? language.contextUsage.chipLabel(
-                  chip.summary +
-                      (taskView?.tone === "live" && taskView.text
-                          ? `; ${language.contextUsage.taskSummary(taskView.text)}`
-                          : ""),
-              ) + (estimate ? ` ${language.contextUsage.estimateTitle}: ${estimate.line}` : "")
-            : "",
+    const chipTitle = $derived.by(() => {
+        if (!chip) {
+            return "";
+        }
+        const s = language.contextUsage;
+        const summary = chip.summary + (chipLine?.mark ? `; ${s.taskSummary(chipLine.mark.text)}` : "");
+        return (
+            (source ? s.chipLabel(summary) : s.chipLabelNoReply(summary)) +
+            (estimate ? ` ${s.estimateTitle}: ${estimate.line}` : "")
+        );
+    });
+
+    // What the popover's memory block says of the last reply: that nothing summarizes the history it left
+    // out, and that its memory is not the one stated above the breakdown.
+    const memoryNotes = $derived.by(() => {
+        const s = language.contextUsage;
+        const notes: { key: "leftOut" | "last"; text: string; warn: boolean }[] = [];
+        if (!memoryNow?.on && leftOut > 0) {
+            notes.push({
+                key: "leftOut",
+                text: (memoryNow ? s.memoryOffLeftOut : s.memoryNoneLeftOut)(leftOut),
+                warn: memoryOffWarn,
+            });
+        }
+        if (report && !reportedNow && (report.memory || memoryNow?.on)) {
+            notes.push({
+                key: "last",
+                text: report.memory ? s.memoryLastUsed(memoryName) : s.memoryLastWithout,
+                warn: false,
+            });
+        }
+        return notes;
+    });
+    // The memory panel the chat menu's row opens; HypaV2's editor is an alert and stays in the menu.
+    const memoryPanelLabel = $derived(
+        memoryNow?.kind === "structuredMemory"
+            ? language.structuredMemory.panel.title
+            : memoryNow?.kind === "hypaV3"
+              ? language.hypaMemoryV3Modal
+              : null,
     );
 
     // Sections with tokens, largest first; ties keep the report's order. Dots identify their group.
@@ -567,13 +681,16 @@
     const pointAt = (tokens: number) => (runwayScale > 0 ? widthOf(historyTokens + tokens, runwayScale) : 100);
     /** The history and memory block's lines for the left-out history. */
     const omitted = $derived.by(() => {
-        if (!report || report.history.total <= report.history.kept) {
+        if (!report || leftOut === 0) {
             return null;
         }
-        const count = report.history.total - report.history.kept;
+        const count = leftOut;
         // Without a split the report does not say why each one is left out (a trim, a chat range,
-        // formatting): no tag.
+        // formatting): no tag, except that a send without memory summarized none of them.
         const tags: { text: string; tone: "memory" | "warn" }[] = [];
+        if (!report.memory) {
+            tags.push({ text: language.contextUsage.omittedNoMemory, tone: "warn" });
+        }
         const summarized = report.memory?.summarized;
         if (summarized !== undefined) {
             if (summarized > 0) {
@@ -659,10 +776,10 @@
         }
     }
 
-    // A meter turned off, a group, or a chat whose reports are gone closes it, so it never reopens on
-    // its own when they come back.
+    // A meter turned off, a group, or a chat whose line is gone (no report and no memory set up) closes
+    // it, so it never reopens on its own when they come back.
     $effect(() => {
-        if (!source) {
+        if (!chip) {
             untrack(() => (open = false));
         }
     });
@@ -742,6 +859,18 @@
         $settingsOpen = true;
         $SettingsMenuIndex = MEMORY_SETTINGS_MENU;
     }
+
+    function openMemoryPanel() {
+        close(false);
+        $hypaV3ModalOpen = true;
+    }
+
+    /** The sidebar's memory switch: turning it on also drops the chat's trim acknowledgement. */
+    function setMemoryOn(on: boolean) {
+        if (chatEntry(chatRef)) {
+            setChatMemoryEnabled(chatRef, on);
+        }
+    }
 </script>
 
 <svelte:window
@@ -756,6 +885,10 @@
         if (open) position();
     }}
 />
+
+{#snippet dot()}
+    <span class="shrink-0" aria-hidden="true">·</span>
+{/snippet}
 
 {#if chip}
     <!-- Right-aligned with the menu button, on the line above the composer row it shares with the health badge. -->
@@ -795,16 +928,44 @@
             {/if}
             {#if chipLine?.lead}
                 <span class="min-w-0 truncate">{chipLine.lead}</span>
-                <span class="shrink-0" aria-hidden="true">·</span>
             {/if}
-            {#if chipLine?.task}
-                <span class="flex shrink-0 items-center gap-0.5 text-secondary-500" data-context-meter-task-mark>
-                    <LoaderCircleIcon size={11} class="animate-spin motion-reduce:animate-none" aria-hidden="true" />
-                    <span class="tabular-nums">{chipLine.task}</span>
-                </span>
-                <span class="shrink-0" aria-hidden="true">·</span>
+            {#if chipLine?.memory}
+                {#if chipLine.lead}
+                    {@render dot()}
+                {/if}
+                <span
+                    class="shrink-0"
+                    class:text-danger-500={chipLine.memory.warn}
+                    data-context-meter-memory-word
+                    data-tone={chipLine.memory.warn ? "warn" : "plain"}>{chipLine.memory.text}</span
+                >
             {/if}
-            <span class="shrink-0">{chipLine?.tail}</span>
+            {#if chipLine?.mark}
+                {#if chipLine.lead || chipLine.memory}
+                    {@render dot()}
+                {/if}
+                {#if chipLine.mark.tone === "live"}
+                    <span class="flex shrink-0 items-center gap-0.5 text-secondary-500" data-context-meter-task-mark>
+                        <LoaderCircleIcon
+                            size={11}
+                            class="animate-spin motion-reduce:animate-none"
+                            aria-hidden="true"
+                        />
+                        <span class="tabular-nums">{chipLine.mark.text}</span>
+                    </span>
+                {:else}
+                    <span class="flex shrink-0 items-center gap-0.5 text-danger-500" data-context-meter-task-failed>
+                        <CircleAlertIcon size={11} aria-hidden="true" />
+                        <span>{chipLine.mark.text}</span>
+                    </span>
+                {/if}
+            {/if}
+            {#if chipLine?.tail}
+                {#if chipLine.lead || chipLine.memory || chipLine.mark}
+                    {@render dot()}
+                {/if}
+                <span class="shrink-0">{chipLine.tail}</span>
+            {/if}
             {#if estimate?.suffix}
                 <span class="shrink-0">· {language.contextUsage.estimateLead}</span>
                 <span class="shrink-0 tabular-nums" data-context-meter-estimate>{estimate.suffix}</span>
@@ -816,7 +977,7 @@
     </div>
 {/if}
 
-{#if open && source}
+{#if open && chip}
     <Portal>
         <div
             bind:this={panel}
@@ -835,7 +996,9 @@
             <div class="flex items-start justify-between gap-2">
                 <div class="flex flex-col">
                     <h2 id="{panelId}-title" class="text-base font-semibold">{language.contextUsage.title}</h2>
-                    <span class="text-xs text-textcolor2">{language.contextUsage.asOfLastReply}</span>
+                    <span class="text-xs text-textcolor2"
+                        >{source ? language.contextUsage.asOfLastReply : language.contextUsage.noReplyYet}</span
+                    >
                 </div>
                 <div class="flex items-center gap-1">
                     <button
@@ -899,7 +1062,57 @@
                 </div>
             {/if}
 
-            {#if source.kind === "legacy"}
+            <div
+                class="flex flex-col gap-1 rounded-md bg-darkbutton p-2 text-xs"
+                data-context-meter-memory-now={memoryNow ? (memoryNow.on ? "on" : "off") : "none"}
+            >
+                <div class="flex justify-between gap-2">
+                    <span class="font-semibold">{language.contextUsage.memoryNowTitle}</span>
+                    <span class="text-right" class:text-secondary-500={memoryNow?.on === true}>
+                        {memoryNow
+                            ? (memoryNow.on ? language.contextUsage.memoryNowOn : language.contextUsage.memoryNowOff)(
+                                  memoryNowName,
+                              )
+                            : language.contextUsage.memoryNowNone}
+                    </span>
+                </div>
+                {#each memoryNotes as note (note.key)}
+                    <span
+                        class:text-textcolor2={!note.warn}
+                        class:text-danger-500={note.warn}
+                        data-context-meter-memory-note={note.key}>{note.text}</span
+                    >
+                {/each}
+                <div class="flex flex-wrap gap-x-3 gap-y-0.5">
+                    {#if memoryNow}
+                        <button
+                            type="button"
+                            class="text-textcolor underline hover:text-primary-500"
+                            data-context-meter-memory-toggle
+                            onclick={() => setMemoryOn(!memoryNow.on)}
+                            >{memoryNow.on
+                                ? language.contextUsage.memoryTurnOff
+                                : language.contextUsage.memoryTurnOn}</button
+                        >
+                    {/if}
+                    {#if memoryPanelLabel}
+                        <button
+                            type="button"
+                            class="text-textcolor underline hover:text-primary-500"
+                            data-context-meter-memory-panel
+                            onclick={openMemoryPanel}>{memoryPanelLabel}</button
+                        >
+                    {/if}
+                    <button
+                        type="button"
+                        class="text-textcolor underline hover:text-primary-500"
+                        data-context-meter-memory-now-settings
+                        onclick={openMemorySettings}>{language.contextUsage.memorySettings}</button
+                    >
+                </div>
+            </div>
+
+            {#if source?.kind === "legacy"}
                 <span>{language.contextUsage.input(fmt(source.input), fmt(source.maxContext))}</span>
                 <span class="text-textcolor2">{language.contextUsage.legacyNote}</span>
             {:else if report}
