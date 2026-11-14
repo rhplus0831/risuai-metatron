@@ -4,7 +4,7 @@ Status: drafted 2026-11-14 at `2ab7071fb` from the owner's request. D1 is the ow
 D6, and D9 the same day, as recommended, and chose D5 (a changed greeting is shown, not acted on). The rest are this
 plan's own, found against the code. D11 is the owner's request of the same day. Audited against `97ad18125` on
 2026-11-14 ([report](../reports/audits/plan-runner/structured-memory-greeting-source-2026-11-14.md)): eighteen
-findings, all fixed here. Landed: 1 (`ff4089306`).
+findings, all fixed here. Landed: 1 (`ff4089306`), 2 (`5fe5d2253`).
 
 Sources: the owner's report (2026-11-14: the request log shows the first message in every request); `assemblePrompt`'s
 greeting entry and `hypaV3Sources` in `server/src/prompt/assemble.ts`; `HypaV3EntrySource`, `hypaV3SourceHash`, and
