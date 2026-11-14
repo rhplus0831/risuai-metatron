@@ -53,7 +53,7 @@ are the Plugins entry below.
 
 ## Contents
 
-- [Chat store](#chat-store): 1
+- [Chat store](#chat-store): 2
 - [Plugins](#plugins): 1
 - [Rendering](#rendering): 1
 - [Selection](#selection): 1
@@ -62,6 +62,21 @@ are the Plugins entry below.
 - [Test tooling](#test-tooling): 2
 
 ## Chat store
+
+### A whole-chat replacement may drop a chat's Draft hook choice
+
+The Input Hooks plan says an older tab never writes `draftHookId` and leaves a stored one alone, because a `meta` op
+names its fields. That holds for ordinary `meta` ops, but `replaceChat` (`src/ts/storage/chatStore.svelte.ts:4613`)
+replaces the whole chat, and the field reconciliation after it (`chatStore.svelte.ts:4787`) unsets every key the next
+chat lacks. A writer that builds the next chat from a partial field list, without the chat's unknown metadata, would
+drop the field; the chat copy, the branch, and the import carry it. Found by the challenger of the Input Hooks run's
+slice 1 and confirmed in part by reading; no caller that builds such a partial chat was named.
+
+**Why it matters:** a user's Draft hook choice could vanish silently after such a replacement, and the persistence
+guide may repeat the plan's absolute claim.
+
+**Suggested handling:** list the callers of `replaceChat` and of the reconciliation that build the next chat from a
+partial field list before treating this as a bug; if one exists, carry unknown metadata through it.
 
 ### Two devices asking in a full OOC log at once can block the chat's other saves
 
