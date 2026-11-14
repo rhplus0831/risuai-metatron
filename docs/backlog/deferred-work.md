@@ -211,6 +211,11 @@ Work that finished plans named and left: features put off, a plan's Later list, 
 - Not planned (the plan's Not In This Plan list): an `ooc` job kind with server-side streaming and storage, so an answer survives a reload and shows on another device while it streams; asking while the chat generates (a job outside the chat slot, or a prompt assembled without a job); reopening an earlier segment; a per-message "ask about this message" entry, a `/ooc` command, and a hotkey; group chats; sending an exchange back to the chat (one-shot steering of the next reply, or adding to the author's note); tools in an OOC answer, Structured Memory's page tools included; a summary of a segment made by an auxiliary model at refresh; excluding OOC-marked messages inside the chat from memory (RisuBard's separate feature). Plan: `git show 4699d470e:docs/plan/ooc-session.md`.
 - Left by the run: a provider that appends a midway error to its stream text has it stored as the answer, and an OOC answer that was streaming when the page reloaded is lost (chat-pipeline.md, OOC Session limitations); a model's tool call can still run with `tools: []`, and two devices asking in a full OOC log at once can block the chat's other saves (both in [found issues](found-issues.md)).
 
+## Structured Memory Greeting Source
+
+- Not planned (the plan's Not In This Plan list): a memory hook on character card writes or `fmIndex` changes, and any automatic reaction to a changed greeting (D5); a greeting citation in a page section (D7); recording an existing chat's greeting automatically as a window of its own (D2); the greeting in HypaV3, SupaMemory, or Hanurai beyond the projection's `null` memo; showing the greeting in Coverage with the processed text a send uses. Plan: `git show 036f3ffb6:docs/plan/structured-memory-greeting-source.md`.
+- Left by the run: until a re-record or a rebuild, a changed greeting keeps the old greeting's facts in memory and leaves the new one out of the prompt (D5, shown as "changed"); a rebuild that finds the chat's greeting emptied keeps an event citing the old greeting and messages beside its replacement (in [found issues](found-issues.md)).
+
 ## Dependency Upgrades
 
 Not a plan: the upgrade rounds of 2026-10-30 left these behind on purpose. Versions were read from `package.json` on 2026-11-11.

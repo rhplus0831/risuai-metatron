@@ -1,6 +1,7 @@
 # Structured Memory Greeting Source Plan audit, 2026-11-14
 
-- Plan: `docs/plan/structured-memory-greeting-source.md`
+- Plan: `docs/plan/structured-memory-greeting-source.md`, archived:
+  `git show 036f3ffb6:docs/plan/structured-memory-greeting-source.md`
 - Commit audited: `97ad18125` (`claude/greeting-structured-memory-69dc76`, from `dev` at `2ab7071fb`); the corrected
   plan is committed with this report
 - Mode: `full`
