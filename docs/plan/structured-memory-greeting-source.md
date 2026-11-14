@@ -1,8 +1,8 @@
 # Structured Memory Greeting Source Plan
 
 Status: drafted 2026-11-14 at `2ab7071fb` from the owner's request. D1 is the owner's request; the owner accepted D2,
-D6, and D9 the same day, as recommended. D5 waits for the owner (see Open Questions); the rest are this plan's own,
-found against the code. Not audited yet.
+D6, and D9 the same day, as recommended, and chose D5 (a changed greeting is shown, not acted on). The rest are this
+plan's own, found against the code. Not audited yet.
 
 Sources: the owner's report (2026-11-14: the request log shows the first message in every request); `assemblePrompt`'s
 greeting entry and `hypaV3Sources` in `server/src/prompt/assemble.ts`; `HypaV3EntrySource`, `hypaV3SourceHash`, and
@@ -32,8 +32,10 @@ Under Structured Memory the chat's greeting stops being sent forever.
 
 - **The writer records the greeting.** In a new chat, the first window the writer records also reads the greeting,
   and its event cites it.
-- **A recorded greeting leaves the prompt.** When an active event cites the greeting as it stands now and the greeting
-  is outside the raw window, the send leaves it out, as it leaves out a covered message.
+- **A recorded greeting leaves the prompt.** When an active event cites the greeting and the greeting is outside the
+  raw window, the send leaves it out, as it leaves out a covered message.
+- **A changed greeting is shown, not acted on.** When the card's greeting or the chat's choice of greeting changes
+  after it was recorded, the panel says so and the person decides whether to re-record.
 - **Existing chats can catch up.** A rebuild, a backfill, a re-record of the first event, and an adoption of HypaV3
   summaries can each give the greeting a citation.
 
@@ -85,7 +87,7 @@ One slice is one session and one commit. Workflow per slice: `opus-workflow` (ea
 - **One reader.** The stored field is read only through one exported normalizer in `shared/structuredMemory.ts`
   (suggested: `storedMemoryGreeting(stored)`, null for anything that is not the shape), and whether it matches the
   chat's greeting only through one predicate (suggested: `greetingCited(source, current)`), shared by the server and
-  the tab.
+  the tab. The predicate decides what a window records and what the panel shows; it never decides coverage (D5).
 - **Absent means today.** An event, run, chat, or package without the field reads and behaves exactly as at
   `2ab7071fb`. A group chat, and a chat whose history starts after a reset marker, never get or use one (D8).
 - **A tab loaded before a slice.** It keeps the field as an unknown one on records it rewrites, and shows nothing for
@@ -178,10 +180,9 @@ writer's request (request log) shows the greeting first with the names expanded,
 - `assemble.ts` passes the greeting's source (`fmIndex` and the stored-text hash, from `greetingSource`) to
   `structuredMemoryStep`; `readEntries` marks the greeting entry with it (suggested: `ReadEntry.greeting`).
 - `shared/structuredMemory.ts`: coverage also answers whether the greeting is covered: an active, unsuppressed event
-  whose `greeting` is `greetingCited` against the current one (suggested: `coveredMessages` returns
-  `{ messages, greeting }`). `rawWindow` drops the greeting entry when it is before `start` and covered. The greeting
-  does not count as a `char` turn. A greeting that no longer matches is simply not covered: the event stays active for
-  its messages (D5).
+  has a `greeting` (suggested: `coveredMessages` returns `{ messages, greeting }`). Whether that citation still matches
+  the chat's greeting does not matter here (D5). `rawWindow` drops the greeting entry when it is before `start` and
+  covered. The greeting does not count as a `char` turn.
 - `step.ts`: the dropped greeting comes off the count like a dropped message; the trim and its gap count it as today
   when it is still there. A continue never targets it.
 - `retrieve.ts`: `prepareRetrieval` and `knownFacts` place a greeting citation at the greeting entry. The evidence lane
@@ -195,30 +196,38 @@ writer's request (request log) shows the greeting first with the names expanded,
     (D9).
   - Timeline and Pages show an event's greeting citation as a "Greeting" source, never as `messageGone`; its button
     jumps to the top of the chat.
+  - A citation that `greetingCited` does not match the chat's greeting shows a "changed" label on that source and on
+    the Coverage row, with a help line: the event was recorded from an earlier greeting, the prompt still leaves the
+    greeting out, and a re-record of the event or a rebuild reads the current one (D5). Nothing else changes: the
+    event keeps its status, and no re-record is marked or started.
 - The coverage route sends the event's `greeting` beside `messageIds`.
-- Strings: the greeting source label and the Coverage role, in English and Korean. `coverage.estimate`'s sentence
+- Strings: the greeting source label, the Coverage role, and the "changed" label with its help line, in English and
+  Korean. `coverage.estimate`'s sentence
   about the greeting changes to say it is counted.
 
 **Test.**
 
 - `shared` tests: `rawWindow` drops a covered greeting outside the window; keeps it inside the window, uncovered, or
-  covered only by a stale, retracted, or suppressed event; keeps it after an `fmIndex` change and after a text change.
+  covered only by a stale, retracted, or suppressed event; still drops it after an `fmIndex` change and after a text
+  change, with the event still active.
 - `step` tests through `selectMemory`: the dropped greeting's tokens come off the count; an uncovered greeting trimmed
   for context still counts as a gap.
 - `retrieve.test.ts`: an event citing only the greeting has a place; the evidence lane's excerpt for a dropped
   greeting.
 - `projectHypaV3Data` test: `null` first in `chatMemos`, the event ordered first.
 - `src/ts/process/structuredMemory.test.ts`: the Coverage join's greeting row; the panel tests: the "Greeting" source
-  in Timeline and Pages.
+  in Timeline and Pages, and the "changed" label after an `fmIndex` change and a text change, absent for a markup-only
+  change.
 - An assembly test (`assemble` or the generation harness): a chat whose first event cites the greeting sends no
-  greeting once the window has moved past it; the same chat after a greeting swipe sends the new greeting.
+  greeting once the window has moved past it; the same chat after a greeting swipe still sends none.
 
 **Guide.** `read.md`: The read path's drop rule (replace, do not add), the Limitations entry about Coverage reading
 stored text. `records.md`: coverage of the greeting. `projection.md`: the `null` memo.
 
 **Manual checks.** In a long chat started after slice 1: the request log stops showing the greeting once the window
 has passed it; Coverage shows the greeting row as leaving; the Timeline shows "Greeting" on the first event and its
-button opens the top of the chat. Swipe the greeting: the next request shows the new greeting again. In English and
+button opens the top of the chat. Swipe the greeting: the next request still has no greeting, the Timeline and Coverage
+show "changed", and a re-record of the first event clears it and its new record reads the new greeting. In English and
 Korean.
 
 ## Slice 3. Existing chats (_hard_, `structured-memory/rebuild.md`, `structured-memory/lifecycle.md`)
@@ -237,9 +246,9 @@ Korean.
 - `adopt.ts`: `adoptedEvents` takes the chat's current greeting. The first summary whose `chatMemos` holds `null`
   becomes an event with `greeting` anchored to the greeting as it stands now, as adoption anchors a held message as it
   stands now. The comment about dropping the `null` is replaced.
-- `inherit.ts`: a copied or branched event keeps its `greeting` when the target chat's greeting matches it
-  (`greetingCited`), and loses it otherwise. The route passes both chats' greetings.
-- The chat file import restores `greeting` as stored; coverage then decides by `greetingCited`.
+- `inherit.ts`: a copied or branched event keeps its `greeting` as it is: the copy shares the past it records (D5).
+  The panel shows "changed" when the target chat's greeting differs.
+- The chat file import restores `greeting` as stored, with the same label when it differs.
 - A person's re-record of the first event (slice 1's `rerecordWindows` rule) is the cheapest path for one chat:
   `lifecycle.md` says so.
 
@@ -252,7 +261,7 @@ Korean.
   and swaps; a greeting changed during the run refuses that window.
 - `adopt.test.ts`: the `null` memo becomes `greeting` on the first summary's event; a group drops it as today (the
   existing case changes).
-- `inherit.test.ts`: a branch keeps `greeting`; a copy to a chat with another `fmIndex` drops it.
+- `inherit.test.ts`: a branch and a copy keep `greeting`, also when the target's `fmIndex` differs.
 
 **Guide.** `rebuild.md`: The plan and Backfill. `lifecycle.md`: adoption and copies and branches.
 
@@ -262,8 +271,8 @@ shows "Greeting".
 
 ## Decisions
 
-D1 is the owner's request of 2026-11-14. The owner accepted D2, D6, and D9 the same day, as recommended. D5 is a
-recommendation waiting for the owner. The rest are this plan's.
+D1 is the owner's request of 2026-11-14. The owner accepted D2, D6, and D9 the same day, as recommended. The owner chose D5 the same
+day, in place of the plan's first recommendation. The rest are this plan's.
 
 - D1. The greeting becomes something Structured Memory records and can leave out of the prompt, like a message. Today
   it is sent with every request for as long as the chat fits.
@@ -277,11 +286,15 @@ recommendation waiting for the owner. The rest are this plan's.
 - D4. The greeting's hash is over its stored text, as `memorySourceText` reads it, with `fmIndex` stored beside it,
   as HypaV3 does. Both must match. A markup-only change of the card (a style block, a tag) leaves the citation valid,
   as it does for a message under hash version 3.
-- D5. A greeting that no longer matches (the card was edited, or the picker swiped to another greeting) only stops
-  being covered: the current greeting goes back into the prompt, and the event stays active for its messages. Staling
-  the event would bring every message it covers back into the prompt for a card edit that does not change what
-  happened in this chat. No hook watches card writes: the check runs where coverage is read, as HypaV3's does. The
-  event keeps the old greeting's facts until a person re-records it.
+- D5. A recorded greeting is settled history. When the chat's greeting later stops matching the citation (the card
+  was edited, or the picker swiped to another greeting), nothing changes on its own: the event stays active, the
+  greeting stays out of the prompt, and no re-record is marked or started. The panel labels the citation "changed",
+  and the person decides whether to re-record the event or rebuild. A card edit does not change what happened in this
+  chat, it can reach every chat of the character at once, and a mid-chat swipe is rare. Two rejected choices: putting
+  the new greeting back into the prompt (the plan's first recommendation) would act without the person; staling the
+  event would bring every message it covers back for one card edit. No hook watches card writes: the label is computed
+  where the panel reads coverage. Until a re-record the model sees the old greeting's facts in memory and not the new
+  greeting.
 - D6. The writer reads the greeting with CBS expanded by the job's `parse`, without the `editprocess` scripts, so
   `{{user}}` and `{{char}}` read as names. Messages reach the writer without scripts too. The hash stays over the
   stored text, so a CBS value that changes per send (a random pick, the time) does not unsettle the citation.
@@ -297,7 +310,8 @@ recommendation waiting for the owner. The rest are this plan's.
 
 ## Not In This Plan
 
-- A memory hook on character card writes or `fmIndex` changes (D5).
+- A memory hook on character card writes or `fmIndex` changes, and any automatic reaction to a changed greeting
+  (D5).
 - A greeting citation in a page section (D7).
 - Recording the greeting of an existing chat automatically (D2).
 - The greeting in HypaV3, SupaMemory, or Hanurai beyond the projection's `null` memo.
@@ -305,8 +319,5 @@ recommendation waiting for the owner. The rest are this plan's.
 
 ## Open Questions
 
-The owner decides this before the plan-runner audit; it has a recommendation above. Q2 (D2), Q3 (D6), and Q4 (D9)
-were settled on 2026-11-14 as recommended.
-
-- Q1 (D5). A greeting that changes after it was recorded: only the greeting returns to the prompt (recommended), or
-  the citing event goes stale and its messages return too.
+None open. On 2026-11-14 the owner settled Q2 (D2), Q3 (D6), and Q4 (D9) as recommended, and Q1 (D5) with a "changed"
+label and the person's choice instead of an automatic reaction.
