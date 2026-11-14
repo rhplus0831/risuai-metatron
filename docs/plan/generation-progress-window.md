@@ -1,7 +1,10 @@
 # Generation Progress Window Plan
 
 Status: drafted 2026-11-14 at `d2d1a76a7` from the owner's request. D1 is the owner's request; the owner accepted D2
-to D5 the same day, as recommended. D6 to D24 are this plan's own, found against the code. Not audited yet.
+to D5 the same day, as recommended. D6 to D24 are this plan's own, found against the code. Audited 2026-11-14 at
+`31a39b8ad`, before any plan-runner run: [audit](../reports/audits/plan-runner/generation-progress-window-2026-11-14.md)
+(1 P1, 4 P2, 6 P3, all fixed in plan; no P1 open). D25 and D26 come from the audit and await the owner's acceptance
+(Open Questions).
 
 Sources: the owner's request (2026-11-14: a send shows only a circle, and a send running on another client shows no
 progress on the circle; a floating window at the top right with the seconds elapsed and, while streaming, the tokens
@@ -32,9 +35,11 @@ Every tab shows what the server is generating, for how long, and how fast.
 - **Every client.** A job another tab or device started appears the same way, from its admission to its end. The
   chat's Stop-other spinner appears with the job and takes the stage color the owner's spinner has.
 - **Half Streaming.** A setting for users who keep Response Streaming off: the provider is asked to stream, the reply
-  text stays hidden until it is complete, and the window shows the token count and the speed meanwhile.
+  text stays hidden until it is complete, and the window shows the token count and the speed meanwhile. A reply the
+  provider then streams is a streamed reply in everything but its visible partial text (D25).
 - **Everything else is as today.** The job socket, who may attach to it, the reply text another client sees (the
-  3-second checkpoints), and the composer's Stop button do not change.
+  3-second checkpoints), and the composer's Stop button do not change. With Half Streaming off, no reply is requested
+  or processed differently.
 
 Not goals: live reply text on another client (D3); a per-profile Half Streaming switch (D4); exact token counts or
 stored final statistics (D5); stopping a job from the window (D17).
@@ -60,20 +65,45 @@ stored final statistics (D5); stopping a job from the window (D17).
   it into `arg.forceStreaming ? true : db.useStreaming && arg.useStreaming`. For a `streaming` answer the runner
   appends the empty reply with its `begin` lock, emits `accepted`, and calls `readReply`: each read's first value
   (trimmed by `removeIncompleteResponse`) becomes a `chunk`, and a timer writes a raw checkpoint (`raw: true`). After
-  the stream `coverSeq = stream.seq` and the tail runs. An abort or a read failure writes the text so far
-  (`finalize(stream.text, stream.seq)`). A buffered answer takes the other branch: no reply row exists until the reply
-  is written, and an abort leaves no text.
-- **Chunks are snapshots.** A provider stream yields cumulative text, and the request layer keeps at most one pending
-  snapshot, so a slow reader sees fewer, larger steps.
+  the stream `coverSeq = stream.seq` and the tail runs. An abort or a read failure finalizes with the text so far
+  (`finalize(stream.text, stream.seq)`): a new reply keeps it, a continue keeps its prefix and it, and an in-place
+  reroll restores its previous candidate instead. A buffered answer takes the other branch: no reply row exists until
+  the reply is written, and an abort leaves no text.
+- **A streamed reply is processed differently.** `requestChatDataOuter` (`server/src/llm/outer.ts`) runs the
+  after-request hook (`deps.afterRequest`, the plugins' `replacerafterRequest`) and the banned-character-set check and
+  retry only on a buffered `success`. The buffered branch of the runner runs output scripts, punctuation trimming, and
+  inlays on every alternative sample; the streaming branch takes the samples from the last chunk as they are. Claude's
+  buffered JSON extraction has no counterpart in its streaming parser.
+- **Chunks are snapshots.** An adapter's stream yields the reply so far as a keyed map whose first value is the reply
+  text. A snapshot usually extends the one before, but an adapter may rewrite it (OpenAI rebuilds its `<Thoughts>`
+  wrapper and applies extraction before each emission). The plugin bridge keeps at most one pending snapshot, so a
+  slow reader sees fewer, larger steps there; other adapters' reads are forwarded one by one. `readReply` trims each
+  snapshot (`removeIncompleteResponse`) and then prepends a continue's prefix.
+- **One adapter streams strings.** `requestOobaLegacy` (`LLMFormat.OobaLegacy`, the `mancer` model) enqueues its
+  cumulative text as a string, not a map (`StreamResponseChunk`'s comment in `shared/llm/request.ts` says so).
+  `readReply` indexes the value's first key, so it reads the first character and the tail stores the rest as
+  one-character samples. This happens today with Response Streaming on.
+- **Who decides to stream.** `forceStreaming` is a request preference. `escape` clears it. Claude with tools and
+  Gemini audio or image output answer buffered, as do the formats with no streaming branch (NovelAI, Ooba, Kobold,
+  NovelList, Cohere, Horde, Echo, OpenAI legacy instruct, and a job's WebLLM model, which runs as the server's local
+  generation). A plugin provider is called with the prompt and sampling parameters only and decides itself whether to
+  return a stream, with Response Streaming on or off.
 - **Token counting.** `createTokenCounter`'s `encode` picks the tokenizer for a scope, caches by text when
   `useTokenizerCaching` is on, and calls Google's count endpoint for a `googleCloud` choice (falling back to
   `gemmaSentencePiece`).
 - **The feed's process-local frames.** `memoryTask` and `handoff` frames describe process-local transitions, each with
   a `hello` snapshot that replaces the tab's whole set (`memoryTasks`, `handoffs`). The registry publishes offers
   through its `publishHandoff` option and answers `handoffSnapshot()`; `server/src/app.ts` wires both. A tab's `receive`
-  ignores a frame type it does not know.
-- **The top right.** `HypaV3Progress.svelte` is `fixed top-4 right-4 z-40`, shown for the selected chat's memory run.
-  `HandoffStatus.svelte` is at the bottom right.
+  ignores a frame type it does not know and a `hello` field it does not read. A frame of another epoch is ignored; a
+  `hello` or `epoch` frame of another epoch resets the tab's feed state. `retire()` in `eventFeed.ts` is the one place
+  every ended connection passes (close, abandonment, replacement, a failed start, stop).
+- **The registry's memory.** An epoch change clears the kept outcomes and the request index, not the `jobs` map: an
+  ended job of the old epoch stays through its grace.
+- **The top right.** `HypaV3Progress.svelte` has two layouts: its collapsed button is `fixed top-4 right-4 z-40`, and
+  its expanded branch is a full-size absolute container with a centered panel. It is shown for the selected chat's
+  memory run. `HandoffStatus.svelte` is at the bottom right.
+- **Opening a chat.** The sidebar's rows call `changeChatTo`, which selects a chat of the selected character.
+  `openPinnedChat(ref)` in `src/ts/globalApi.svelte.ts` selects a chat of any character.
 - **The settings' neighbors.** `useStreaming` is a boolean of the `providers` section (`shared/database.ts`,
   `shared/sections.ts`, `server/src/data/normalize/providers.ts`), bound in `ModelSettings.svelte` and
   `ModelProfileEditor.svelte`. `contextMeterLookahead` and `loreBudgetStop` are the nearest boolean `ui` settings on
@@ -115,8 +145,10 @@ One slice is one session and one commit. Workflow per slice: `opus-workflow` for
 Serial: 1 → 2 → 3 → 4. Slice 2 fills a field of slice 1's entry. Slice 3 reads the entry and the field. Slice 4 uses
 slice 2's meter, and slices 2 and 4 both edit `readReply` and its caller.
 
-If the run stops after slice 1 or 2, nothing a user can reach changes: the server publishes frames no tab reads. After
-slice 3 the window works for every send, with token counts only while Response Streaming is on.
+If the run stops after slice 1 or 2, no control, window, or reply behavior changes: the server publishes frames no
+tab reads and, after slice 2, counts the tokens of streamed replies. After slice 3 the window works for every send,
+with token counts whenever the reply is streamed (Response Streaming on, a plugin provider that streams, or a Claude
+batch, which returns a stream whatever the setting).
 
 ## Slice 1. Job progress on the feed (_hard_, `server-generation.md`, `live-update-feed.md`)
 
@@ -137,11 +169,15 @@ slice 3 the window works for every send, with token counts only while Response S
 - `server/src/jobs/generationJobs.ts`:
   - An option beside `publishHandoff` (suggested: `publishGeneration`) and a snapshot beside `handoffSnapshot`
     (suggested: `generationSnapshot`), wired in `server/src/app.ts` the same way.
-  - The registry publishes a `running` entry when a job is admitted (the step that sets `startedAt`), when `job.stage`,
-    `job.retry`, or `job.sequence` changes (where it sends the job socket's `stage`, `retry`, and `sequence` events),
-    and an `ended` entry where it sets `job.endedAt`.
-  - Every kind is published, a preview included (D13). A job of another epoch is never in a snapshot: an epoch change
-    clears the registry's memory.
+  - The registry publishes a `running` entry once a job is registered (after admission succeeded, before its runner
+    starts; `startedAt` is the value admission sampled), and an `ended` entry where it sets `job.endedAt`.
+  - It publishes a `running` entry again when `job.stage` or `job.retry` changes: one publication per stage report,
+    made after the retry count that report clears is cleared, and one per retry report.
+  - It publishes when the job's sequence progress changes (`sequence.progress` in `generationJobs.ts`, whose first
+    value comes from `commandRunner.ts`), once per change.
+  - Every kind is published, a preview included (D13). The snapshot lists a job only while it has not ended and its
+    epoch is the store's current one, and nothing is published for a job of another epoch: an epoch change does not
+    remove such a job from the registry.
   - A publication that throws is caught and logged (`logEvent`), and the job goes on.
 - No file under `src/` changes beyond what the type check needs.
 
@@ -150,8 +186,8 @@ slice 3 the window works for every send, with token counts only while Response S
 - `server/src/tests/generationJobs.test.ts`: an admitted job publishes `running` with its ids, `kind`, `clientId`, and
   `startedAt` from the registry's clock; a stage report publishes the stage once (a repeated stage publishes nothing);
   a retry report and the stage after it publish the count and then no count; a sequence part publishes `sent`; the
-  terminal publishes `ended`; the snapshot lists a running job and not an ended one; a throwing publisher leaves the job
-  running and its terminal unchanged.
+  terminal publishes `ended`; the snapshot lists a running job and neither an ended one nor one of an earlier epoch; a
+  throwing publisher leaves the job running and its terminal unchanged.
 - `server/src/tests/events.test.ts`: the `hello` carries `generations` from the sampler, a published event reaches a
   socket as the `generation` frame, and a frame too large for a socket's budget closes it like any other.
 
@@ -173,13 +209,14 @@ memory.
 - A meter beside the runner (suggested: `createOutputMeter` in `outputMeter.ts` under `server/src/prompt/`):
   - `note(raw)` keeps the newest raw text. A count starts when none is in flight and `OUTPUT_COUNT_INTERVAL_MS` (500)
     has passed since the last one started.
-  - A count takes the text the last count did not cover when the newest text starts with the counted text, and the
-    whole text otherwise (a provider that rewrote its answer). It adds to, or replaces, the total and reports
-    `{ tokens, since, at }`.
+  - A count captures the newest text when it starts. It takes the part the last count did not cover when that text
+    starts with the counted text, and the whole text otherwise (an adapter that rewrote its snapshot). When it
+    succeeds it adds to, or replaces, the total, moves the counted text forward, and reports `{ tokens, since, at }`.
   - `stop()` ends it; a count still in flight reports nothing after it. A failed count is logged once per meter and
     the meter stops counting.
-- `readReply` gains an option (suggested: `onRaw`) called with each read's first value before
-  `removeIncompleteResponse` trims it, because the trimmed text can shrink (D10). The streaming branch of
+- `readReply` gains an option (suggested: `onRaw`) called with each read's first value, before
+  `removeIncompleteResponse` trims it and before a continue's prefix is added, so the count covers what the model
+  generated in this request and nothing else (D10). The streaming branch of
   `runPromptSend` creates one meter per stream with the reply request's token scope (`tokenScopeFor`), passes
   `onRaw: meter.note`, and stops it when `readReply` returns.
 - `JobEventInput` gains a registry-only report (suggested: `{ type: "output"; tokens; since; at }`), like
@@ -219,9 +256,12 @@ throttle). `llm-requests.md`: Tokenizer selection and server counting, for the l
   - Per job, the `output` samples of the last 5 s by their own `at`.
   - Two pure exported functions: the elapsed time of an entry, and the tokens per second of a sample list (the first to
     the last sample of the window; with one sample, the count over the time since `output.since`).
-- `src/ts/network/eventFeed.ts` `receive`: a `hello` of the loaded epoch replaces the set with `generations` (absent:
-  empty); a `generation` frame of the loaded epoch upserts or removes one job; an epoch mismatch and a closed socket
-  clear the set, so a stale job never keeps counting (D12).
+- `src/ts/network/eventFeed.ts`: in `receive`, a `hello` of the loaded epoch replaces the set with `generations`
+  (absent: empty), a `generation` frame of the loaded epoch upserts or removes one job, and one of another epoch is
+  ignored. The set is cleared at every place the memory tasks are reset for another epoch (`resetMemoryTasks`: the
+  `hello` and `epoch` frames of another epoch, and the `ResourceEpochMismatchError` catch in `reconcile`, which leaves
+  the socket open and also runs for a replaced connection's late read), and in `retire()`, so a connection that ended
+  without a `close` event cannot leave a job counting (D12).
 - The window (suggested: `GenerationProgressWindow.svelte` under `src/lib/Others/`), mounted in `src/App.svelte`:
   - Shown while the setting is on and at least one entry is listed. `preview` and `previewPrompt` jobs are not listed
     (D13).
@@ -229,19 +269,24 @@ throttle). `llm-requests.md`: Tokenizer selection and server counting, for the l
     data (a generic label when the tab does not hold them), the stage's label, the elapsed time ticking once a second,
     the retry count and `sent/total` when present, a mark with the client's name from `connectedClients` when
     `clientId` is not this tab's, and, with `output`, the count with "≈" and the tokens per second.
-  - A row opens its chat through the navigation the sidebar's chat rows use. The window has no Stop button (D17).
+  - A row opens its chat with both of the entry's ids, through `openPinnedChat` or what it does: the job may belong
+    to another character than the selected one. A chat the tab has no entry for opens nothing; an entry whose transcript is not loaded yet
+    still opens. The window has no Stop button (D17).
   - It can be collapsed to a pill (the job count and the first row's elapsed time). It starts collapsed on a
     phone-width screen. The collapsed state lives in the tab's memory only.
   - It is non-modal and takes pointer events only on itself.
-- The top right: the window and `HypaV3Progress` never overlap (D16). Suggested: one fixed top-right column in
-  `src/App.svelte` that holds both, with `HypaV3Progress` giving up its own `fixed top-4 right-4`.
-- `DefaultChatScreen.svelte`: `foreignStoppable` is also true while the store lists a running job for the chat whose
-  `clientId` is not this tab's, and the Stop-other ring takes `chat-process-stage-<stage>` from that entry. The
+- The top right: the window and `HypaV3Progress`'s collapsed button never overlap (D16). Suggested: one fixed
+  top-right column in `src/App.svelte` that holds the window and that button. `HypaV3Progress`'s expanded branch keeps
+  its own full-size container: it is not moved into the column.
+- `DefaultChatScreen.svelte`: `foreignStoppable` is also true, still only while `stoppable` is false, while the store
+  lists a running job for the chat whose `clientId` is not this tab's (`generationClientId()`), and the Stop-other
+  ring takes `chat-process-stage-<stage>` from that entry. The
   button's handler is unchanged: it reads the chat's slot again and confirms before stopping. `foreignJobs`, its
   discovery, and `isChatBusy` do not change (D18).
 - The setting `generationProgressWindow: boolean` in the `ui` section, default true, following `loreBudgetStop` through
   its files: `shared/database.ts`, `shared/sections.ts`, `server/src/data/normalize/ui.ts`, an item in
-  `interactionSettingsData.ts`, the strings, the boot snapshot fixture, and `METATRON_ONLY_SETTINGS` in
+  `interactionSettingsData.ts` and its id in that section's `itemsById` list (the search index reads the section), the
+  strings, the boot snapshot fixture (`boot-snapshot.json`), and `METATRON_ONLY_SETTINGS` in
   `server/src/data/upstream/exportDatabase.ts`. Suggested English: label "Show the generation progress window"; help
   "A small window at the top right lists every reply being generated on the server, with its stage, the time elapsed,
   and, while the model streams, the tokens generated and the speed."
@@ -251,10 +296,12 @@ throttle). `llm-requests.md`: Tokenizer selection and server counting, for the l
 - A unit test of the store: a `hello` replaces the set; a `running` frame upserts and an `ended` frame removes; a
   frame of another epoch and a malformed frame change nothing; a closed socket clears the set; the elapsed time uses
   the server offset; the speed of a sample window, of one sample, and of none.
-- `src/ts/network/eventFeed.test.ts`: the three `receive` paths reach the store.
+- `src/ts/network/eventFeed.test.ts`: the three `receive` paths reach the store, and an epoch mismatch found by a
+  reconciliation read clears the set while the socket stays open.
 - A component test of the window: hidden with no entry and with the setting off; a preview is not listed; the selected
   chat's row is first; a row without `output` shows no count; the "≈" count and speed with `output`; another client's
-  mark; a row click selects its chat; the collapsed pill.
+  mark, and a generic one when that client is not in `connectedClients`; a row click opens a chat of another character
+  than the selected one; the collapsed pill.
 - A `DefaultChatScreen` test beside `DefaultChatScreen.drafts.test.ts`, or `src/ts/process/chatStatus.test.ts` if the
   rule moves into `chatStatus.svelte.ts`: a listed job of another client shows the
   button with the stage class; this tab's own job does not; the entry's removal hides it.
@@ -269,11 +316,13 @@ window, its place beside `HypaV3Progress`, and the Stop-other spinner's stage co
 
 - A send with Response Streaming on: the window appears at once, the seconds tick, the stage label follows the ring's
   color, and the count and speed appear with the first text and look plausible against the reply's length.
-- A send with Response Streaming off: the window shows the stage and the seconds, with no count.
+- A send whose provider answers buffered (Response Streaming off, an ordinary model): the window shows the stage and
+  the seconds, with no count.
 - A second browser or device on the same server: the window lists the first one's job from its start, with that
   client's name; opening the chat shows the Stop-other spinner in the stage color; the row disappears at the end.
 - Two chats generating at once: two rows, the selected chat's first; a row click opens its chat.
-- A memory run on the selected chat while a reply generates: the two indicators do not overlap.
+- A memory run on the selected chat while a reply generates: the two indicators do not overlap, and the memory
+  indicator still expands and collapses as before, also on a phone-width screen.
 - A reload mid-reply: the window comes back with the right elapsed time.
 - A phone-width screen: the pill, expanding it, and that it does not cover the chat's header buttons.
 - The setting off hides the window; English and Korean.
@@ -283,22 +332,29 @@ window, its place beside `HypaV3Progress`, and the Stop-other spinner's stage co
 **Change.**
 
 - The setting `halfStreaming: boolean` in the `providers` section, default false, following `useStreaming` through its
-  files, with the strings and `METATRON_ONLY_SETTINGS`. Its checkbox sits under Response Streaming wherever that is
-  bound (`ModelSettings.svelte`, `ModelProfileEditor.svelte`) and is shown only while Response Streaming is off (D19).
-  Suggested English: label "Half Streaming"; help "With Response Streaming off, still ask the model to stream so the
-  progress window can show the tokens generated and the speed. The reply appears when it is complete."
-- `runPromptSend`: a send is quiet when `db.useStreaming` is off, `db.halfStreaming` is on, and the job is not a
-  `previewPrompt`. A quiet send passes `forceStreaming: true` with the reply request. No other request of the job
-  changes (D22).
+  files, with the strings, the boot snapshot fixture, and `METATRON_ONLY_SETTINGS`. Its checkbox sits under Response
+  Streaming in the two components that bind it by hand (`ModelSettings.svelte`, `ModelProfileEditor.svelte`) and is
+  shown only while Response Streaming is off (D19). Suggested English: label "Half Streaming"; help "With Response
+  Streaming off, still ask models that support it to stream, so the progress window can show the tokens generated and
+  the speed. A streamed reply appears when it is complete and is handled like one with Response Streaming on:
+  plugins' after-request replacers and the banned-script retry do not run for it. A model that answers without
+  streaming is handled as usual."
+- `runPromptSend`: a send is quiet when `db.useStreaming` is off, `db.halfStreaming` is on, the job is not a
+  `previewPrompt`, and the reply's model (`resolveJobRequestModel`) is not of `LLMFormat.OobaLegacy` (D26). A quiet
+  send passes `forceStreaming: true` with the reply request. No other request of the job changes its arguments (D22).
 - The streaming branch for a quiet send:
-  - The reply row, its `begin` lock, and `accepted` (empty text) are as for any stream.
-  - `readReply` gains an option (suggested: `quiet`): it calls neither `emitChunk` nor `checkpoint` and reports
-    sequence 0, so no `chunk` event, no raw checkpoint, and no chunk sequence a tab was never sent (D21). `onRaw` and
-    the meter run as in slice 2.
-  - The tail is the stream's own: `writeReplyText(stream.text)` and what follows. An abort or a read failure writes
-    the text so far, as for any stream (D23).
+  - The reply row, its `begin` lock, and `accepted` are as for any stream: empty text for a new reply, the stored text
+    for a continue.
+  - `readReply` gains an option (suggested: `quiet`) that suppresses only the two publications: it calls neither
+    `emitChunk` nor `checkpoint` and reports sequence 0, so there is no `chunk` event, no raw checkpoint, and no chunk
+    sequence a tab was never sent (D21). Everything else in the read stays: `removeIncompleteResponse`, the prefix,
+    and the returned `text`, `result`, and `lastChunk`. `onRaw` and the meter run as in slice 2.
+  - The tail is the stream's own: `coverSeq`, `writeReplyText(stream.text)`, and what follows. An abort or a read
+    failure finalizes as for any stream (D23).
 - When the request answers buffered although the send is quiet (the cases under D22), the buffered branch runs as
   today.
+- A stream that arrives while the send is not quiet (Response Streaming on, or a plugin provider that streams with
+  both settings off) is read as today, with chunks and checkpoints.
 
 **Test.**
 
@@ -306,33 +362,43 @@ window, its place beside `HypaV3Progress`, and the Stop-other spinner's stage co
   - A quiet send: the request carries `forceStreaming`; `accepted` is emitted with empty text; no `chunk` event and no
     checkpoint write happen during the stream; `output` reports arrive; the final write holds the whole reply and
     `done` names it.
-  - A quiet send aborted mid-stream stores the text so far.
+  - A quiet new reply aborted mid-stream stores the text so far; a quiet continue keeps its prefix and the text so
+    far; a quiet in-place reroll restores the previous candidate.
+  - A quiet send with `removeIncompleteResponse` stores the trimmed text.
   - Response Streaming on with `halfStreaming` on is an ordinary stream (chunks and checkpoints).
-  - Both off: no `forceStreaming`, the buffered branch.
-  - A `previewPrompt` job never sets `forceStreaming`.
+  - Both off: no `forceStreaming`; a provider that answers buffered takes the buffered branch, and one that streams
+    on its own (a plugin provider's stream) is read with chunks and checkpoints.
+  - A quiet send whose request answers buffered (a Claude model with a tool offered) takes the buffered branch.
+  - A `previewPrompt` job and a reply on an `OobaLegacy` model never set `forceStreaming`.
 - `src/ts/storage/tests/chatStore.test.ts`, beside the `applyServerGeneration` cases: a tab holding an `accepted` with empty
   text and sequence 0 shows the stored reply once the job's final chat event arrives, with no resync request.
-- `server/src/tests/normalizeSections.test.ts`, `src/ts/setting/settingsPageSections.test.ts`, and
-  `server/src/tests/upstreamExport.test.ts`: the default, the checkbox and its condition, and the export.
+- `server/src/tests/normalizeSections.test.ts` and `server/src/tests/upstreamExport.test.ts`: the default and the
+  export. A component test of `ModelSettings.svelte` (the checkbox is hand-written there, so
+  `settingsPageSections.test.ts` does not reach it): shown with Response Streaming off, hidden with it on.
 
-**Guide.** `server-generation.md`: Prompt job execution (the quiet stream) and Limitations (a restart during a quiet
-stream, D23). `llm-requests.md`: Server request layer (the streaming decision) and Settings pages. `persistence.md` and `settings-i18n.md`: the setting.
+**Guide.** `server-generation.md`: Prompt job execution (the quiet stream and what a streamed reply skips, D25) and
+Limitations (a process lost during a quiet stream, D23). `llm-requests.md`: Server request layer (the streaming decision) and Settings pages. `persistence.md` and `settings-i18n.md`: the setting.
 
 **Manual checks.**
 
-- Response Streaming off, Half Streaming on: the reply bubble appears empty with its generating state, the window
-  counts tokens and shows a speed, and the whole reply appears at the end, processed as a streamed reply is (display
-  scripts, inlays).
-- Stop mid-reply keeps the text generated so far.
+- Response Streaming off, Half Streaming on: the reply bubble is blank and locked while the window counts tokens and
+  shows a speed, and the whole reply appears at the end, processed as a streamed reply is (display scripts, inlays).
+  Judge whether the blank bubble needs an indicator of its own (Not In This Plan).
+- Stop mid-reply keeps the text generated so far; stopping a continue keeps the earlier text and the new part;
+  stopping a reroll brings the previous reply back.
 - A second device shows no partial text during the reply and the whole reply at the end.
 - A model with tools enabled, an image-output model, and a character with output escaping: the send completes, with
   no count when the provider answered buffered.
-- A plugin provider and a WebLLM model with Half Streaming on.
+- A plugin provider with Half Streaming on: a provider that streams is hidden and counted, one that does not is as
+  today. A WebLLM model and a `mancer` model reply as today, with no count.
+- A plugin with an after-request replacer, and a banned script set: for a reply that Half Streaming streamed neither
+  runs, as with Response Streaming on; for a model that answered buffered (tools on a Claude model) both run as usual.
 - The checkbox disappears when Response Streaming is turned on; English and Korean.
 
 ## Decisions
 
-D1 is the owner's request of 2026-11-14. The owner accepted D2 to D5 the same day. The rest are this plan's.
+D1 is the owner's request of 2026-11-14. The owner accepted D2 to D5 the same day. The rest are this plan's; D25 and
+D26 were added by its audit and await the owner's acceptance.
 
 - D1. A floating window at the top right shows how many seconds a send has run and, while the model streams, the
   tokens generated and the speed. A send another client started shows its progress too. Half Streaming provides the
@@ -356,21 +422,24 @@ D1 is the owner's request of 2026-11-14. The owner accepted D2 to D5 the same da
   for output counts. A frame is a few hundred bytes to every socket; one second is the window's own tick.
 - D10. The count is the local tokenizer's, on the part of the raw text the last count did not cover, without the
   encode cache and without a remote endpoint. A cumulative count would tokenize the whole reply at every step; the
-  cache would fill with fragments nothing reads again; Google's endpoint would add a request per step. The raw text is
-  counted because the text trimmed by `removeIncompleteResponse` is not monotonic. Counting fragments misjudges a token
-  that spans two of them, which D5 allows.
+  cache would fill with fragments nothing reads again; Google's endpoint would add a request per step. The text is
+  counted before trimming and before a continue's prefix, so the count is of what this request generated. A snapshot
+  that does not extend the counted one (a rewritten reasoning wrapper, extraction) is counted whole. Counting
+  fragments misjudges a token that spans two of them, and the count is of the reply text's first value, not the
+  provider's billed usage; D5 allows both.
 - D11. Progress is telemetry. A failed publication or count is logged and dropped, and no reply write waits for a
   count, so the final count of a reply may be missing from the last frame before the job ends.
 - D12. A tab clears its set when the feed socket closes and takes the next `hello`'s snapshot. A missed `ended` frame
   therefore cannot leave a row counting.
 - D13. The registry publishes every kind and the window hides previews. What to show is the window's decision, and a
-  preview's entry costs two frames.
+  preview's entry costs a handful of small frames.
 - D14. An entry names the creating client (`clientId`), the one `GenerationCurrent.owned` compares. After a handoff
   the tab that took the job over follows it, and its own Stop button outranks the Stop-other one.
 - D15. `output` describes the reply being generated now. A new `accepted` (a group's next speaker, an auto-continue)
   starts from none.
 - D16. The window and the memory progress pill share the top right and must not overlap. One container that holds
-  both is suggested; the slice may choose another layout that keeps the rule.
+  both is suggested; the slice may choose another layout that keeps the rule. The memory indicator's expanded overlay
+  keeps its containing block and size.
 - D17. The window shows and navigates; it does not stop a job. Stopping another client's job already asks for
   confirmation on the chat screen, and a list of Stop buttons over every chat invites a wrong click.
 - D18. The Stop-other button reads the store beside `foreignJobs`; the marks and their discovery stay. A mark is
@@ -384,15 +453,35 @@ D1 is the owner's request of 2026-11-14. The owner accepted D2 to D5 the same da
   row reference, which a tab rebuilds from chunks it holds; and a claimed sequence above 0 would tell a tab its stored
   text includes chunks it was never sent. This was read in `generationJobs.ts` and `chatStore.svelte.ts`, not run:
   slice 4's chat-store test is the proof.
-- D22. Only the reply request of `runPromptSend` is forced to stream. Auxiliary requests keep passing
-  `useStreaming: false`. Where the request layer or an adapter answers buffered anyway (`escape`, which clears
-  `forceStreaming` in `server/src/llm/outer.ts`; an adapter that overrides streaming, such as a Claude request with
-  tools or Gemini audio or image output), the send completes on the buffered branch with no count.
-- D23. A stop during a quiet stream keeps the text so far, as a stream does. A server restart during one leaves the
-  empty reply row and loses the text: without checkpoints nothing was stored. A checkpoint would show the hidden text
-  on every client through the feed, which is what the setting turns off.
+- D22. Only the reply request of `runPromptSend` is forced to stream. Every other request of the job keeps the
+  arguments it has (memory and translation pass `useStreaming: false`; a Lua or trigger request may ask for a stream
+  itself). `forceStreaming` is a preference: where the request layer or an adapter answers buffered anyway (`escape`,
+  which clears it in `server/src/llm/outer.ts`; Claude with tools; Gemini audio or image output; a format with no
+  streaming branch; a job's WebLLM model), the send completes on the buffered branch with no count. A plugin provider
+  never sees the flag and streams or not as it does today; its stream is hidden and counted when the send is quiet.
+- D23. A stop or a read failure during a quiet stream ends as it does for any stream: a new reply keeps the text so
+  far, a continue keeps its prefix and the text so far, and an in-place reroll restores its previous candidate. A
+  graceful shutdown aborts the job and finalizes the same way inside its grace. A process lost without that grace (a
+  crash or a kill) leaves the row as last stored, empty for a new reply and the prefix for a continue, and the text
+  generated since is lost: without checkpoints nothing was stored. A checkpoint would show the hidden text on every
+  client through the feed, which is what the setting turns off.
 - D24. The window's setting is in the `ui` section and on the Interaction page, because only the tab reads it. Half
   Streaming is in `providers` beside `useStreaming`, because the server's runner reads it.
+- D25. A reply that Half Streaming gets as a stream is a streamed reply in everything but its visible partial text;
+  a reply that comes back buffered (D22) is processed as today. What Response Streaming changes about a reply today
+  therefore changes with Half Streaming too. Plugins' after-request replacers and the banned-character-set check and
+  retry run only on a buffered reply. A failure after the stream was returned does not restart the request, and some
+  adapters put a stream's error into the reply text. The primary text is trimmed before the output scripts instead of
+  after, and a continue is processed once as the combined text. Alternative samples are stored without the output
+  scripts, trimming, and inlays the buffered branch gives them. Claude's buffered JSON extraction does not run, and
+  reasoning text is wrapped as the streaming parsers wrap it. The setting's help text names the two a user set up
+  deliberately (the replacers and the banned-script retry). Reproducing the buffered steps at the end of a quiet
+  stream would be a second reply path to keep in step with the first. Found by the plan's audit (AUD-2, AUD-10); this
+  narrows "everything else is as today" for users who turn the setting on, and awaits the owner's acceptance.
+- D26. A reply on an `LLMFormat.OobaLegacy` model is never forced to stream. That adapter streams strings, which
+  `readReply` misreads (the first character becomes the reply), so forcing it would lose replies for users who keep
+  Response Streaming off. The existing defect with Response Streaming on is not this plan's to fix and is filed as a
+  found issue. Found by the plan's audit (AUD-1); awaits the owner's acceptance.
 
 ## Not In This Plan
 
@@ -406,8 +495,17 @@ D1 is the owner's request of 2026-11-14. The owner accepted D2 to D5 the same da
 - A Stop button in the window (D17), dragging the window, and remembering its collapsed state across reloads.
 - Any change to the owner's ring, the job socket's events, or who may attach to it.
 - Checkpoints for a quiet stream (D23).
+- The buffered reply steps at the end of a quiet stream (D25).
+- Reading `OobaLegacy`'s string stream correctly (D26); Half Streaming for that format follows that fix.
+- An indicator inside the blank reply bubble of a quiet stream. The composer's ring and the window show the progress.
+- Passing the streaming preference to a plugin provider (D22).
 
 ## Open Questions
 
-None open. The owner accepted the window's scope, statistics-only for other clients, the global Half Streaming switch,
-and approximate counts on 2026-11-14.
+The owner accepted the window's scope, statistics-only for other clients, the global Half Streaming switch, and
+approximate counts on 2026-11-14.
+
+- Q1. D25: is it acceptable that a reply Half Streaming streams is handled as a streamed reply (no after-request
+  replacers, no banned-script retry, and the other differences D25 lists), as it would be with Response Streaming on?
+- Q2. D26: is it acceptable that Half Streaming does nothing for `OobaLegacy` (`mancer`) models until their stream is
+  read correctly?
