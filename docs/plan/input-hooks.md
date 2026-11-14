@@ -4,7 +4,7 @@ Status: drafted 2026-11-15 at `a089c1a16` from the owner's request to bring the 
 fork here, then audited against the code at `86ca13331` ([report](../reports/audits/plan-runner/input-hooks-2026-11-15.md))
 and corrected in the same commit as the report. D1 to D3 are the owner's answers of 2026-11-15; D4 on are this plan's
 own. D6 and D14 took their present form from the audit, as did the row format of slice 4; the owner accepted those
-three on 2026-11-15, after the audit. Landed: 1 (`28984cf0a`), 3 (`219230a39`).
+three on 2026-11-15, after the audit. Landed: 1 (`28984cf0a`), 3 (`219230a39`), 2 (`3af25f8ba`).
 
 Sources: the fork's implementation, read at its `1df024db5` (`runInputHook`, the input hook activity store, the draft
 hook translation, the hook settings page, the hook picker dialog, the chat's draft hook selector, the draft and BTW
