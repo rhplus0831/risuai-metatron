@@ -4,7 +4,10 @@ Plans live here while work is in progress. Current architecture guides describe
 shipped behavior; [the archive](../archived-plan/README.md) indexes completed plans with
 their last commit and path, and the [backlog](../README.md) holds what they left open.
 
-None.
+- [Generation Progress Window](generation-progress-window.md): a top-right window lists every generation job running
+  on the server with its stage, elapsed time, and, while the model streams, the tokens generated and the speed, on
+  every client; Half Streaming gives the count with Response Streaming off. Drafted 2026-11-14; not audited, no slice
+  landed.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive, following the archive's procedure for the plan's open items. Use `None`
