@@ -32,8 +32,12 @@ export function useOwnOocToggles(ref: ChatRef, enabled: boolean): void {
     }
 }
 
-/** Returns only the first checkbox match, and only when the effective map forces no values. */
+/**
+ * Returns only the first checkbox match when the effective map forces no values.
+ * A chat's own plain-object map, even an empty one, replaces the preset and suppresses its suggestion.
+ */
 export function oocToggleSuggestion(definitionsText: string, chatMap: unknown, presetMap: unknown) {
+    if (isPlainObject(chatMap)) return undefined;
     if (Object.keys(oocToggleValues(chatMap, presetMap)).length) return undefined;
     const toggle = valueToggles(parseToggleSyntax(definitionsText)).find(
         (toggle) => toggleKindOf(toggle) === "checkbox" && /ooc/i.test(`${toggle.key}\n${toggle.value}`),

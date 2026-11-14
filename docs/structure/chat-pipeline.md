@@ -132,7 +132,8 @@
 - `src/ts/ooc/oocToggleSettings.svelte.ts`: the OOC toggle settings the panel edits. The preset is the chat's display
   preset (`chatDisplayIds`). `useOwnOocToggles` copies its `oocToggles` into the chat's own (on) or unsets the chat's
   field (off). `oocToggleSuggestion` and `answerOocToggleOffer` make the one offer per preset to force an `ooc` checkbox
-  toggle on; the offered preset ids are kept in this browser's `localStorage`, not in settings.
+  toggle on, never for a chat with its own map (even an empty one), which ignores the preset's; the offered preset ids
+  are kept in this browser's `localStorage`, not in settings.
 - The stored shapes, limits, and pure helpers both runtimes use are in `shared/ooc.ts` ([persistence](persistence.md)).
 
 ### Inlays

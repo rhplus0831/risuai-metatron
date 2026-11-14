@@ -411,7 +411,7 @@ it("hides toggle settings and suggestions for group chats", () => {
     expect(suggestion()).toBeNull();
 });
 
-it("offers only a matching checkbox when the effective forced map is empty", () => {
+it("offers only a matching checkbox when nothing is forced and the chat has no own map", () => {
     fixture.definitionsText = "mood=Mood";
     render();
     expect(suggestion()).toBeNull();
@@ -436,24 +436,25 @@ it("offers only a matching checkbox when the effective forced map is empty", () 
     flushSync();
     expect(suggestion()).toBeNull();
 
-    // An own empty map replaces the preset map, as oocToggleValues specifies.
-    writePresetField(displayScope, "oocToggles", { other: "1" });
+    // A chat with its own map, even an empty one, ignores the preset's map, so the offer would change nothing.
     fixture.chat.oocToggles = {};
     flushSync();
+    expect(suggestion()).toBeNull();
+    delete fixture.chat.oocToggles;
+    flushSync();
     expect(suggestion()?.textContent).toContain("Talk OoC");
-    expect(presetMap()).toEqual({ other: "1" });
+    expect(presetMap()).toEqual({});
     expect(mocks.setChatMeta).not.toHaveBeenCalled();
 });
 
 it.each(["Force it on", "Not now"] as const)(
     "%s remembers the answer locally for that preset and only acceptance writes its map",
     async (answer) => {
-        writePresetField(displayScope, "oocToggles", { keep: "saved" });
-        fixture.chat.oocToggles = {};
+        writePresetField(displayScope, "oocToggles", {});
         fixture.definitionsText = "meta=OOC mode";
         render();
         expect(suggestion()).not.toBeNull();
-        expect(presetMap()).toEqual({ keep: "saved" });
+        expect(presetMap()).toEqual({});
         expect(localStorage.length).toBe(0);
         expect(mocks.setChatMeta).not.toHaveBeenCalled();
         const button = [...suggestion()!.querySelectorAll("button")].find(
@@ -461,8 +462,8 @@ it.each(["Force it on", "Not now"] as const)(
         )!;
         button.click();
         flushSync();
-        expect(presetMap()).toEqual(answer === "Force it on" ? { keep: "saved", meta: "1" } : { keep: "saved" });
-        expect(fixture.chat.oocToggles).toEqual({});
+        expect(presetMap()).toEqual(answer === "Force it on" ? { meta: "1" } : {});
+        expect(fixture.chat.oocToggles).toBeUndefined();
         expect(suggestion()).toBeNull();
 
         // Reopening with no forced values must still remember this preset's answer.
