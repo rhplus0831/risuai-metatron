@@ -407,6 +407,7 @@
   "textAreaTextSize": 0,
   "combineTranslation": false,
   "customPromptTemplateToggle": "",
+  "oocToggles": {},
   "globalChatVariables": {},
   "templateDefaultVariables": "",
   "moduleIntergration": "",

@@ -158,8 +158,8 @@
      * event. A Lua button, a trigger, or a form reloads its row only when its job started (or replayed), so a
      * refused one keeps the values typed beside it.
      *
-     * Branching (the branch button) copies the chat up to this message without `pinned`. With
-     * `createFolderOnBranch`, a source chat that `chatFolderOf` lists under no folder (none, or a dangling
+     * Branching (the branch button) copies the chat up to this message without `pinned`, `oocLog`, or `oocSegment`.
+     * With `createFolderOnBranch`, a source chat that `chatFolderOf` lists under no folder (none, or a dangling
      * `folderId`) first goes into a new "Branches of" folder, which the branch inherits.
      */
 
@@ -2013,6 +2013,8 @@
                 message: [...source.message.slice(0, branchIndex + 1), branchComment],
             };
             delete newChat.pinned;
+            delete newChat.oocLog;
+            delete newChat.oocSegment;
 
             // Selected by id in its own character (the selection of another character is not changed),
             // unless that character's selection changed while the branch was made.

@@ -67,6 +67,8 @@ retrievable at `154711858` through [the archive](../../../../../../docs/archived
 added `"togglePresets": []` by hand.
 The chat message editor's auto popup (2026-10-27) added the `ui` default `disableAutoPopupMessageEditor`
 `false` by hand.
+The OOC session's forced toggles (2026-11-14) added the prompt preset default `oocToggles` `{}` to the root by hand
+(a forwarded prompt field, like the context size override; the `.risup` fixtures predate it, so an import adds it).
 
 The original capture driver was removed after its flat `Database` API became obsolete. Fresh captures
 would replace random ids and change `.risup` bytes even when the decoded presets are equal; preserve the

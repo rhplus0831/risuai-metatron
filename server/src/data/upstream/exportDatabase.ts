@@ -157,7 +157,7 @@ const settingDefaults: ReadonlyMap<string, string | undefined> = (() => {
 })();
 
 /** Prompt preset fields upstream has no place for (the context size goes into `maxContext`). */
-const PROMPT_ONLY_FIELDS = new Set<string>(["maxContextOverride", "maxContextOverrideSize"]);
+const PROMPT_ONLY_FIELDS = new Set<string>(["maxContextOverride", "maxContextOverrideSize", "oocToggles"]);
 
 /**
  * Profile options upstream keeps only at the root (U `setPreset` never reads them from a preset; the
@@ -197,6 +197,9 @@ const METATRON_CHAT_FIELDS = [
     "structuredMemoryHighlight",
     "bindingReview",
     "toolCalls",
+    "oocLog",
+    "oocSegment",
+    "oocToggles",
     "loreOverrides",
     "togglePresetId",
     "promptPresetId",
@@ -529,8 +532,8 @@ function chosenSlotProfiles(
 /**
  * One upstream preset: the prompt preset's fields under their stored names, the model preset's slot
  * model ids, the main profile's options except the root-only ones, and `maxContext` from the prompt
- * override or main profile. Stored prompt order is preserved; `id`, `archived`, and override fields
- * have no upstream counterpart and are omitted. Differing sub/aux options are reported by
+ * override or main profile. Stored prompt order is preserved; `id`, `archived`, OOC toggles, and override
+ * fields have no upstream counterpart and are omitted. Differing sub/aux options are reported by
  * `buildUpstreamDatabase`, excluding root-only options and the separately projected context size.
  */
 function upstreamPreset(

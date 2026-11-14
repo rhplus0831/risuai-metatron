@@ -177,6 +177,10 @@ section.
   record, so async handlers capture its id before awaiting. See [selection rules](persistence.md#settings-records).
 - `maxContextOverride` / `maxContextOverrideSize` (zero means unset) replace the main profile's `maxContext` for the
   server request and tab CBS roots; plugin roots and the settings root still expose the profile value.
+- `oocToggles` (prompt preset, default `{}`, bare toggle keys) holds the toggle values an OOC question forces; a chat's
+  own `oocToggles` replaces it whole. `normalizePreset` checks only that it is an object, and its reader
+  (`oocToggleValues` in `shared/ooc.ts`) ignores non-string values. It travels in `.risup` files; the upstream export
+  omits it.
 - `language` is replaced on switch; a component that captures it at module initialization keeps stale strings.
 - UI stores used here: `settingsOpen`, `SettingsMenuIndex`, `openPresetList`, and `openModelPresetList` (`true` or
   `{ chatRef }` for a picker bound to one chat).

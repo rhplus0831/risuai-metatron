@@ -222,6 +222,9 @@ const kept = {
     structuredMemoryLanguage: "language-old",
     structuredMemoryHighlight: "none",
     modules: ["module-old"],
+    oocLog: { old: { id: "old", segment: "segment-old", anchorMessageId: "past", question: "Why?", time: 1 } },
+    oocSegment: { id: "segment-old", anchorMessageId: "past" },
+    oocToggles: { mode: "old" },
 } satisfies Partial<Chat>;
 const storyVariables = { bonus: "5", toggle: "story", Toggle_upper: "story too" };
 function fullChat(): Required<Chat> {
@@ -252,6 +255,42 @@ function fullChat(): Required<Chat> {
 }
 
 describe("chat checkpoints", () => {
+    it("keeps the current OOC log, segment, and toggles when loading a checkpoint", () => {
+        const { store } = fileStore();
+        seed(store, {
+            name: "K",
+            note: "Saved note",
+            localLore: [],
+            message: [m("a")],
+            oocLog: {
+                old: { id: "old", segment: "old-segment", anchorMessageId: "a", question: "Old?", time: 1 },
+            },
+            oocSegment: { id: "old-segment", anchorMessageId: "a" },
+            oocToggles: { mode: "old" },
+        });
+        const saved = save(store);
+        const currentOoc = {
+            oocLog: {
+                current: {
+                    id: "current",
+                    segment: "current-segment",
+                    anchorMessageId: "a",
+                    question: "Current?",
+                    answer: "Yes.",
+                    time: 2,
+                },
+            },
+            oocSegment: { id: "current-segment", anchorMessageId: "a" },
+            oocToggles: { mode: "current" },
+        };
+        edit(store, [{ op: "meta", set: { note: "Current note", ...currentOoc } }]);
+
+        expect(loadCheckpoint(store, saved.id).status).toBe(200);
+        const loaded = store.readRefs([], { chats: [{ characterId: "c", id: "k" }] }).chats[0].data;
+        expect(loaded).toMatchObject({ note: "Saved note", ...currentOoc });
+        expect(loaded?.oocLog).toEqual(currentOoc.oocLog);
+    });
+
     it("loads every memory kind in storage order with exact row text and restores pre-load memory from safety", () => {
         const { store, db, file } = fileStore();
         seed(store, { name: "K", note: "note", localLore: [], message: [m("saved")] });
@@ -896,6 +935,9 @@ describe("chat checkpoints", () => {
             structuredMemoryLanguage: "language-new",
             structuredMemoryHighlight: "all",
             modules: ["module-new"],
+            oocLog: { new: { id: "new", segment: "segment-new", anchorMessageId: "past", question: "How?", time: 2 } },
+            oocSegment: { id: "segment-new", anchorMessageId: "past" },
+            oocToggles: { mode: "new" },
         } satisfies Partial<Chat>;
         edit(store, [
             {

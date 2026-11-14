@@ -32,6 +32,8 @@ callers:
 - `shared/presets.ts`, `shared/characters.ts`, `shared/personas.ts`, `shared/translatorPresets.ts`,
   `shared/togglePresets.ts`: record schemas and normalizers.
 - `shared/recordPatch.ts`, `shared/mutationValidation.ts`: patch validation/application and mutation errors.
+- `shared/ooc.ts`: the OOC session's stored shapes, limits, validators, and pure readers (`oocTail`, `oocToggleValues`,
+  `oocPrune`).
 - `shared/chatCheckpoints.ts`, `shared/jobs.ts`, `shared/chatBinding.ts`, `shared/chatLoadPages.ts`, `shared/ids.ts`:
   checkpoint, job, binding, chat load-count, and id helpers; their domain guides own semantics.
 
@@ -212,6 +214,11 @@ carry them. The Translation page can clear `LLMTranslateCache` through `clearLLM
 - `loreBudgetWarnOff?: true` silences the context meter's left-out lore warning ([UI theming](ui-theming.md)) and turns
   off the screen's lore budget send stop ([chat pipeline](chat-pipeline.md#send)); present only while set, not a summary
   field. Copies and chat imports keep it, checkpoints keep the current value, the upstream export strips it.
+- OOC session (`shared/ooc.ts`): `oocLog?` (exchanges by id, a merge key), `oocSegment?` (current segment and anchor
+  message id), `oocToggles?` (the chat's forced toggle values, replacing the preset's whole). `normalizeChatMeta`
+  refuses a malformed value, an exchange over `MAX_OOC_EXCHANGE_BYTES`, and a log over `MAX_OOC_EXCHANGES`. Not summary
+  fields. Checkpoints keep all three (the log is not story state), copies and imports keep them, a branch drops `oocLog`
+  and `oocSegment`, the upstream export strips them.
 - `isStreaming`/`activeStreamingDisplayOptimizationMode` remain in the type for old data, never stored; a chat's
   streaming message is its `streamingEntry`.
 

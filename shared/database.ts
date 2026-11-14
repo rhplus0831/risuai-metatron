@@ -10,6 +10,7 @@ import type {
 } from "./memory.ts";
 import type { ToolCallRecord } from "./llm/request.ts";
 import type { RisuModule } from "./modules.ts";
+import type { OocLog, OocSegment } from "./ooc.ts";
 import type { DeepReadonly } from "./readonly.ts";
 import type { OpenAIChat } from "./openai.ts";
 import type { RisuPlugin } from "./plugins.ts";
@@ -376,6 +377,7 @@ export interface Database {
     dynamicAssets: boolean;
     dynamicAssetsEditDisplay: boolean;
     customPromptTemplateToggle: string;
+    oocToggles: Record<string, string>;
     globalChatVariables: { [key: string]: string };
     templateDefaultVariables: string;
     hypaAllocatedTokens: number;
@@ -1012,6 +1014,7 @@ export interface botPreset {
     };
     useInstructPrompt?: boolean;
     customPromptTemplateToggle?: string;
+    oocToggles?: Record<string, string>;
     templateDefaultVariables?: string;
     moduleIntergration?: string;
     top_k?: number;
@@ -1368,6 +1371,12 @@ export interface Chat {
      * chat.
      */
     toolCalls?: { [id: string]: ToolCallRecord };
+    /** The chat's OOC exchanges, stored separately from its story messages. */
+    oocLog?: OocLog;
+    /** The current OOC segment and its stored message anchor. */
+    oocSegment?: OocSegment;
+    /** Forced OOC toggle values with bare keys, replacing the preset's whole map when present. */
+    oocToggles?: Record<string, string>;
 }
 
 /** A character-owned chat-list folder; `Chat.folderId` links a chat to its `id`. */

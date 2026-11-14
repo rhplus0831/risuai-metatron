@@ -111,8 +111,9 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 
 - `mergeChatMeta` and `applyChatResult` send map fields (`CHAT_META_MERGE_KEYS`) entry by entry, as do the
   single-variable writers `setChatVar`/`setChatVarOf` for one `scriptstate` entry; the server applies `merge` and
-  `mergeUnset` onto its stored map, validates `chat.toolCalls` entries wherever a chat is written, and stores the whole
-  map again with no eviction ([server resources](server-resources.md)).
+  `mergeUnset` onto its stored map, validates `chat.toolCalls` and `chat.oocLog` entries wherever a chat is written (an
+  `oocLog` merge past its entry limit is refused, so its writer prunes first), and stores the whole map again with no
+  eviction ([server resources](server-resources.md)).
 
 ### Stored translations
 

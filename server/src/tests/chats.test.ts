@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { CHAT_META_FORBIDDEN_KEYS, MAX_TOOL_CALL_RECORD_BYTES } from "../../../shared/chats.ts";
+import { MAX_OOC_EXCHANGE_BYTES, MAX_OOC_EXCHANGES } from "../../../shared/ooc.ts";
 import { assertPatchableMetaKeys, normalizeChatMeta, normalizeMessage, normalizeMessageList } from "../data/chats.ts";
 import {
     countChatOperations,
@@ -18,6 +19,31 @@ const rejects = (fn: () => unknown, error: string, label = error) => {
 };
 
 describe("normalizeChatMeta", () => {
+    const oocExchange = { id: "q", segment: "s", anchorMessageId: null, question: "Why?", time: 1 };
+
+    it.each([
+        ["a malformed OOC exchange", { oocLog: { q: { ...oocExchange, question: 1 } } }],
+        [
+            "an OOC exchange whose serialized UTF-8 bytes exceed the limit",
+            { oocLog: { q: { ...oocExchange, question: "한".repeat(Math.floor(MAX_OOC_EXCHANGE_BYTES / 3)) } } },
+        ],
+        [
+            "an OOC log above the exchange count limit",
+            {
+                oocLog: Object.fromEntries(
+                    Array.from({ length: MAX_OOC_EXCHANGES + 1 }, (_, index) => {
+                        const id = `q-${index}`;
+                        return [id, { ...oocExchange, id }];
+                    }),
+                ),
+            },
+        ],
+        ["a malformed OOC segment", { oocSegment: { id: "s", anchorMessageId: 1 } }],
+        ["a non-string OOC toggle value", { oocToggles: { mode: 1 } }],
+    ])("refuses %s", (_label, meta) => {
+        expect(() => normalizeChatMeta(meta, "k")).toThrow(ResourceValidationError);
+    });
+
     it("keeps its key order when normalized again, so a write back of the same values stores the same string", () => {
         for (const input of [{}, { name: "K" }, { id: "k", note: "n", localLore: [] }, { fmIndex: 1, id: "k" }]) {
             const stored = JSON.stringify(normalizeChatMeta(input, "k"));
@@ -612,27 +638,27 @@ describe("chat.toolCalls", () => {
             rejects(() => prepareChatGroups([group([op])]), `chats[0].ops[0]: ${error}`);
         groupRejects(
             { op: "meta", merge: { note: { a: 1 } } },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames, oocLog",
         );
         groupRejects(
             { op: "meta", merge: { toolCalls: "x" } },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames, oocLog",
         );
         groupRejects(
             { op: "meta", merge: { toolCalls: [] } },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames, oocLog",
         );
         groupRejects(
             { op: "meta", merge: { toolCalls: null } },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames, oocLog",
         );
         groupRejects(
             { op: "meta", merge: 5 },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames, oocLog",
         );
         groupRejects(
             { op: "meta", merge: [] },
-            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames",
+            "meta.merge takes entries for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames, oocLog",
         );
         groupRejects(
             { op: "meta", merge: { toolCalls: {} }, set: { toolCalls: {} } },
@@ -773,7 +799,8 @@ describe("patchMessage and meta.mergeUnset", () => {
             merge: { scriptstate: { $x: "1" } },
             mergeUnset: {},
         });
-        const shape = "meta.mergeUnset takes entry ids for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames";
+        const shape =
+            "meta.mergeUnset takes entry ids for toolCalls, GLGlobalVariables, scriptstate, bookmarkNames, oocLog";
         for (const mergeUnset of [
             null,
             [],

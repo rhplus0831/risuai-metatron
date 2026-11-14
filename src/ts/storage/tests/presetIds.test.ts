@@ -63,6 +63,7 @@ import { installFlatDatabase } from "./installFlatDatabase";
 import {
     normalizeModelPresets,
     normalizeModelProfiles,
+    normalizePreset,
     normalizePresets,
     normalizePromptTemplate,
     plainClone,
@@ -119,12 +120,18 @@ function promptOnly(value: Record<string, unknown>): Record<string, unknown> {
 
 /**
  * The stored preset an import of a file from before the context size override gives: the file's
- * prompt fields, the override off (only a file's own `maxContextOverride: true` turns it on), and
+ * prompt fields, the override off (only a file's own `maxContextOverride: true` turns it on),
  * `maxContextOverrideSize` seeded from the file's upstream `maxContext` (the file has no size of its
- * own). The two fields are the only additions the normalizer and the importer make.
+ * own), and the default empty `oocToggles` (the file predates it too). These three fields are the only
+ * additions the normalizer and the importer make.
  */
 function storedOf(fixture: Record<string, unknown>): Record<string, unknown> {
-    return { ...promptOnly(fixture), maxContextOverride: false, maxContextOverrideSize: fixture.maxContext };
+    return {
+        ...promptOnly(fixture),
+        maxContextOverride: false,
+        maxContextOverrideSize: fixture.maxContext,
+        oocToggles: {},
+    };
 }
 
 /**
@@ -244,6 +251,19 @@ describe("the selected preset over a normalized list", () => {
 });
 
 describe("copyPreset and importPreset", () => {
+    it("preserves non-empty OOC toggles through normalizePreset and a .risup export/import", async () => {
+        const oocToggles = { mode: "ooc", detail: "0" };
+        const source = { id: "ooc-source", name: "OOC preset", oocToggles };
+        expect(normalizePreset(source).oocToggles).toEqual(oocToggles);
+        bootWith({ botPresets: [source] });
+        const exported = await downloadPreset(source.id, "return");
+        expect((await decodeRisup(exported.buf as Uint8Array)).oocToggles).toEqual(oocToggles);
+
+        bootWith();
+        const importedId = await importPreset({ name: "ooc.risup", data: exported.buf as Uint8Array });
+        expect(settings.presets.find(({ id }) => id === importedId)?.oocToggles).toEqual(oocToggles);
+    });
+
     beforeEach(() => {
         // The selection store is module state: an empty id makes the installation select the first preset.
         selectPreset("");
@@ -425,8 +445,8 @@ describe(".risup round trip against the captured fixtures", () => {
             // The import itself, apart from the id, is the fixture preset's prompt fields: the
             // normalizer changed nothing the legacy reader wrote (no explicit value replaced), and
             // the record carries no model field (not the file's `maxContext`) and no credential. The
-            // only additions are the two override fields the fixture predates: the flag off, the size
-            // seeded from the file's `maxContext`.
+            // only additions are the fields the fixture predates: the override flag off, its size
+            // seeded from the file's `maxContext`, and the empty `oocToggles`.
             const { id, ...importedWithoutId } = imported as botPreset & Record<string, unknown>;
             expect(id).toMatch(UUID_V4);
             expect(Object.hasOwn(importedWithoutId, "proxyKey")).toBe(false);
@@ -515,7 +535,7 @@ describe(".risup compatibility with the legacy reader", () => {
             // The legacy reader stores the same prompt fields from the new export as from the
             // fixture: in particular `promptPreprocess` stays `undefined` (its working value kept),
             // not the template's `false` an absent key would have given it. The two override fields
-            // are the one addition (that reader's template has neither). The model fields the
+            // and `oocToggles` are the additions (that reader's template has none of them). The model fields the
             // export no longer carries come from that reader's template (the upstream contract),
             // except `maxContext`, which the export carries so that upstream's `setPreset` applies
             // the size the preset was used with.
@@ -524,6 +544,7 @@ describe(".risup compatibility with the legacy reader", () => {
                 ...promptOnly(legacyImportPreset(fixture)),
                 maxContextOverride: false,
                 maxContextOverrideSize: fixture.maxContext,
+                oocToggles: {},
             });
             for (const key of ["aiModel", "subModel", "forceReplaceUrl"]) {
                 expect(fromExport[key], key).toStrictEqual((presetTemplate as Record<string, unknown>)[key]);
