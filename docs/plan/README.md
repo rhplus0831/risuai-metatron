@@ -7,7 +7,7 @@ their last commit and path, and the [backlog](../README.md) holds what they left
 - [Input Hooks](input-hooks.md): prompts an auxiliary model runs over the composer's text, brought from the
   `risuai-fastify` fork: a Draft hook a chat chooses (Send converts, Send Draft sends), on-demand BTW hooks, and a
   translation mode that keeps the typed text as the sent message's translation. Drafted and
-  [audited](../reports/audits/plan-runner/input-hooks-2026-11-15.md) on 2026-11-15; slices 1 to 3 have landed.
+  [audited](../reports/audits/plan-runner/input-hooks-2026-11-15.md) on 2026-11-15; slices 1 to 4 have landed.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive, following the archive's procedure for the plan's open items. Use `None`
