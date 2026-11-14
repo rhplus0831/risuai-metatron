@@ -38,6 +38,7 @@
     import GridChars from "./lib/Others/GridCatalog.svelte";
     import BookmarkList from "./lib/Others/BookmarkList.svelte";
     import MessageSearch from "./lib/Others/MessageSearch.svelte";
+    import OocPanel from "./lib/Others/OocPanel.svelte";
     import Settings from "./lib/Setting/Settings.svelte";
     import { showRealmInfoStore, importDroppedFile } from "./ts/characterCards";
     import SavePopupIconComp from "./lib/Others/SavePopupIcon.svelte";
@@ -342,6 +343,7 @@
     {/if}
     <!-- Always mounted: it keeps its query and results across a close (it renders only while open). -->
     {#if $loadedStore}
+        <OocPanel />
         <MessageSearch />
     {/if}
     <!-- The selected chat's memory: shown once that chat is loaded. -->

@@ -126,6 +126,9 @@
 - `src/ts/ooc/oocSession.svelte.ts`: every OOC action of the tab and its per-chat in-memory state (`askOoc`, `retryOoc`,
   `stopOoc`, `refreshOoc`, `deleteOocExchange`, `clearOocLog`, `toggleOocAttachment`; readers `readOocState`,
   `readOocSegments`, `oocAnchorExists`, `oocMessagesAfterAnchor`). The flow is under [OOC question](#ooc-question).
+- `src/lib/Others/OocPanel.svelte` and its open flag `src/ts/ooc/oocPanel.svelte.ts` (`openOocPanel`, `closeOocPanel`):
+  the screen over the module ([ui theming](ui-theming.md#dialogs-popovers-and-portals)). Its one entry is the composer
+  menu item of `DefaultChatScreen.svelte`, beside the memory item and hidden for a group chat.
 - The stored shapes, limits, and pure helpers both runtimes use are in `shared/ooc.ts` ([persistence](persistence.md)).
 
 ### Inlays
@@ -206,7 +209,8 @@ in [network jobs](network-jobs.md#job-recovery).
 ### OOC question
 
 An OOC question asks the model about the chat without adding a message: its exchanges live in the chat's metadata
-(`oocLog`, a merge key, and `oocSegment`), and `oocSession.svelte.ts` owns every step. No screen calls it yet.
+(`oocLog`, a merge key, and `oocSegment`), and `oocSession.svelte.ts` owns every step. The OOC panel (`OocPanel.svelte`,
+opened from the composer menu) calls it.
 
 - Guards, shared by `askOoc` and `retryOoc`: not a group chat; no local send or followed job (`isChatBusy`); no OOC
   question in flight for the chat (reserved before the first await); a complete binding and no orphaned lore overrides

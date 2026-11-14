@@ -128,6 +128,11 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `src/lib/Others/RecoveryDrafts.svelte` ([draft recovery](draft-recovery.md#recovery-drafts)),
   `src/lib/Others/ChatCheckpointsDialog.svelte` ([chat store](chat-store.md#chat-checkpoints)),
   `src/lib/Others/MessageSearch.svelte` (search state belongs to [chat pipeline](chat-pipeline.md)).
+- `src/lib/Others/OocPanel.svelte`: the selected chat's OOC session, `App`-mounted before `MessageSearch` with its
+  lifecycle (open flag in `src/ts/ooc/oocPanel.svelte.ts`). Wide (`lg:`): a right-edge column without a backdrop, the
+  chat usable beside it; narrow: the full viewport. Rows render through `ChatBody` with `idx={-1}`, not `Chat.svelte`; a
+  streaming answer is parsed as a stored one. Escape closes it only from inside it or the page body. Actions:
+  [chat pipeline](chat-pipeline.md#ooc-session).
 - `src/lib/Others/PopupEditor.svelte`, `src/ts/popupEditorSession.svelte.ts` (`openPopupEditorSession`,
   `closePopupEditorSession`, `popUpEditorStore`), `src/ts/gui/popupEditorMode.ts` (per-device Monaco/textarea).
 - HypaV3 modal/progress UI is chat-specific; its data and task fences belong to [memory](memory.md).
@@ -273,6 +278,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   `requestAnimationFrame`.
 - `ContextMeter.svelte.test.ts` stubs the chip's rectangle (happy-dom has no layout) and the count route: each count is
   one request the test answers when it chooses, so fake timers and deferred answers drive the debounce and the races.
+- `OocPanel.test.ts` mocks the OOC module and stands in for `ChatBody` with `tests/OocChatBodyStub.svelte`; the panel's
+  wide and narrow layout and a real streamed answer's display scripts need a browser check.
 - `ChatBody.svelte.test.ts` mocks `ParseMarkdown` as deferred parses (`hoisted.parses`) the test settles by text.
 - `DefaultChatScreen.drafts.test.ts` mounts the screen with its children mocked; `tests/ChatsStub.svelte` stands in for
   `Chats` (`followsLatest`, `scrollToLatestMessage`, bindable `holding`, the props it got) for the notification reveal,

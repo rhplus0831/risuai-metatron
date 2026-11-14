@@ -7,6 +7,33 @@ const memoryCostText = (calls: number, tokens: number) =>
 
 /** Complete UI string catalog and source type; other `src/lang/` locales supply `DeepPartial` overrides. */
 export const languageEnglish = {
+    oocPanel: {
+        title: "OOC session",
+        close: "Close OOC session",
+        refresh: "Refresh",
+        clearEarlier: "Clear earlier segments",
+        clearConfirm: "Delete all earlier OOC session segments, including picked attachments?",
+        noChat: "Select a loaded chat to view its OOC session.",
+        currentSegment: "Current segment",
+        earlierSegment: (count: number) => `Earlier segment · ${count} ${count === 1 ? "exchange" : "exchanges"}`,
+        newMessages: (count: number) => `${count} new ${count === 1 ? "message" : "messages"} since this segment began`,
+        anchorGone: "This segment's anchor message is gone. Refresh the OOC session to continue.",
+        memoryAhead: "The chat's memory has moved past this segment. Refresh the OOC session to continue.",
+        question: "Question",
+        answer: "Answer",
+        noAnswer: "No answer saved.",
+        retry: "Retry",
+        copyAnswer: "Copy answer",
+        delete: "Delete",
+        attach: "Attach",
+        removeAttachment: (question: string) => `Remove attachment: ${question}`,
+        placeholder: "Ask an out-of-character question about this chat…",
+        send: "Send",
+        stop: "Stop",
+        asking: "An OOC question is in progress.",
+        chatBusy: "Wait for the chat to finish generating.",
+        emptyQuestion: "Enter a question to send.",
+    },
     ooc: {
         group: "OOC sessions are not available for group chats.",
         busy: "Wait for this chat to finish generating before asking in the OOC session.",

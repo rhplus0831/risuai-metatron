@@ -12,6 +12,7 @@
         LanguagesIcon,
         Laugh,
         MenuIcon,
+        MessageCircleQuestionIcon,
         MicOffIcon,
         PackageIcon,
         PinIcon,
@@ -78,6 +79,7 @@
         memoryHealthStates,
     } from "src/ts/process/chatStatus.svelte";
     import { isLocalSend, localSends } from "src/ts/process/localSends";
+    import { openOocPanel } from "src/ts/ooc/oocPanel.svelte";
     import { createSendAborts } from "src/ts/process/sendAborts.svelte";
     import { followedJobs, followedJobsOf, loadingJobChats, stopChatJob } from "src/ts/process/serverCommands";
     import HandoffControls from "./HandoffControls.svelte";
@@ -1647,6 +1649,19 @@
                                               ? language.hypaMemoryV2Modal
                                               : language.hypaMemoryV3Modal}
                                     </span>
+                                </div>
+                            {/if}
+
+                            {#if currentCharacter?.type !== "group"}
+                                <div
+                                    class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                                    onclick={() => {
+                                        openOocPanel();
+                                        openMenu = false;
+                                    }}
+                                >
+                                    <MessageCircleQuestionIcon />
+                                    <span class="ml-2">{language.oocPanel.title}</span>
                                 </div>
                             {/if}
 

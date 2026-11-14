@@ -4,6 +4,33 @@ const memoryCostText = (calls: number, tokens: number) =>
 
 /** Korean `DeepPartial` overrides of `src/lang/en.ts`; missing strings inherit English. */
 export const languageKorean = {
+    oocPanel: {
+        title: "OOC 세션",
+        close: "OOC 세션 닫기",
+        refresh: "최신화",
+        clearEarlier: "이전 구간 지우기",
+        clearConfirm: "첨부로 선택한 문답을 포함하여 OOC 세션의 이전 구간을 모두 삭제할까요?",
+        noChat: "불러온 채팅을 선택하면 OOC 세션을 볼 수 있습니다.",
+        currentSegment: "현재 구간",
+        earlierSegment: (count: number) => `이전 구간 · 문답 ${count}개`,
+        newMessages: (count: number) => `이 구간을 시작한 뒤 새 메시지 ${count}개`,
+        anchorGone: "이 구간의 기준 메시지가 사라졌습니다. OOC 세션을 최신화한 뒤 계속해 주세요.",
+        memoryAhead: "채팅의 메모리가 이 구간보다 앞서 있습니다. OOC 세션을 최신화한 뒤 계속해 주세요.",
+        question: "질문",
+        answer: "답변",
+        noAnswer: "저장된 답변이 없습니다.",
+        retry: "재시도",
+        copyAnswer: "답변 복사",
+        delete: "삭제",
+        attach: "첨부",
+        removeAttachment: (question: string) => `첨부 해제: ${question}`,
+        placeholder: "이 채팅에 관해 캐릭터 밖에서 질문해 보세요…",
+        send: "보내기",
+        stop: "중지",
+        asking: "OOC 질문이 진행 중입니다.",
+        chatBusy: "채팅 생성이 끝날 때까지 기다려 주세요.",
+        emptyQuestion: "보낼 질문을 입력해 주세요.",
+    },
     ooc: {
         group: "그룹 채팅에서는 OOC 세션을 사용할 수 없습니다.",
         busy: "채팅 생성이 끝난 뒤 OOC 세션에서 질문해 주세요.",
