@@ -3,7 +3,7 @@
 Status: drafted 2026-11-14 at `d2d1a76a7` from the owner's brainstorm, then audited against the code at `05b4378da`
 ([report](../reports/audits/plan-runner/ooc-session-2026-11-14.md)) and corrected in the same commit as the report. D1
 to D7 are the owner's answers of that day. D8 on are this plan's own; D14, D16, and D24 took their present form from
-the audit. The owner accepted D24 and the plugin limit in D14 on 2026-11-14, after the audit. Landed: 1 (`7ce3f9bd0`), 2 (`c2d0a97a8`).
+the audit. The owner accepted D24 and the plugin limit in D14 on 2026-11-14, after the audit. Landed: 1 (`7ce3f9bd0`), 2 (`c2d0a97a8`), 3 (`006913ac5`).
 
 Sources: the owner's brainstorm (2026-11-14: bring the BTW side thread of
 [HaejeokRisuai A7](../reports/surveys/haejeok-feature-survey.md) here as an "OOC session"; its own toggle override; the

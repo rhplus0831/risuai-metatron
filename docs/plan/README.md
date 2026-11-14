@@ -10,7 +10,7 @@ their last commit and path, and the [backlog](../README.md) holds what they left
   landed.
 - [OOC Session](ooc-session.md): a side thread for out-of-character questions about a chat, with its own toggle
   values, a refresh, and attachable earlier exchanges. Drafted and
-  [audited](../reports/audits/plan-runner/ooc-session-2026-11-14.md) on 2026-11-14; slices 1 and 2 landed.
+  [audited](../reports/audits/plan-runner/ooc-session-2026-11-14.md) on 2026-11-14; slices 1 to 3 landed.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive, following the archive's procedure for the plan's open items. Use `None`
