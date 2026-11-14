@@ -4,6 +4,7 @@
     import { openModelPresetList } from "src/ts/stores.svelte";
     import { getModelInfoForMode, LLMFlags, LLMProvider } from "src/ts/model/modellist";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
+    import Help from "src/lib/Others/Help.svelte";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
     import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
@@ -63,6 +64,12 @@
 <div class="py-2 flex flex-col gap-2 mb-4">
     {#if models.some((model) => model.flags.includes(LLMFlags.hasStreaming))}
         <Check bind:check={settings.providers.useStreaming} name={language.modelProfiles.responseStreaming} />
+        {#if !settings.providers.useStreaming}
+            <div class="flex items-center">
+                <Check bind:check={settings.providers.halfStreaming} name={language.modelProfiles.halfStreaming} />
+                <Help key="halfStreaming" name={language.modelProfiles.halfStreaming} />
+            </div>
+        {/if}
         {#if settings.providers.useStreaming && models.some((model) => model.flags.includes(LLMFlags.geminiThinking))}
             <Check
                 bind:check={settings.providers.streamGeminiThoughts}

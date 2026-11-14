@@ -18,9 +18,9 @@
   [frame admission](#frame-admission). WS upgrade `/api/events/ws` (`EVENT_FEED_PATH`), dispatched by `attachWebSocket`
   in `server/src/app.ts` outside the HTTP app, so no HTTP limiter; JWT in the `risu-auth` query or header, never the
   password; `proto` logged, never enforced.
-- `shared/events.ts`: the frames (`EventFeedFrame`: `hello`, `change`, `memoryTask`, `handoff`, `clients`, `epoch`,
-  `ping`), the one client message (`EventFeedClientMessage`), `ChatStreaming`, `ChatStreamingSnapshot`,
-  `MemoryTaskEntry`.
+- `shared/events.ts`: the frames (`EventFeedFrame`: `hello`, `change`, `memoryTask`, `handoff`, `generation`, `clients`,
+  `epoch`, `ping`), the one client message (`EventFeedClientMessage`), `ChatStreaming`, `ChatStreamingSnapshot`,
+  `MemoryTaskEntry`, `GenerationProgressEntry`.
 - `shared/resources.ts`: what a `change` frame carries (`ChangeSet`, `ChatDeltaBody`, `ChatRowDeltaBody`) and its sizes
   (`MAX_FEED_PATCH_BYTES`, `SMALL_FEED_PATCH_BYTES`, `MAX_FEED_PUBLICATION_PATCH_BYTES`).
 - `server/src/data/chatStore.ts`, feed parts: a by-id group's [entry](#feed-chat-entries) and the writer's own change
@@ -34,10 +34,10 @@
 ### Live-update hello
 
 `createEventSockets` samples epoch, locks (`streaming`), memory statuses (`memoryTasks`), open handoff offers
-(`handoffs`), registered clients (`clients`), optional `hello.digest` (`revisionDigest`) and `hello.cursor`
-(`resources.cursor()`) synchronously before registration; `server/src/app.ts` wires the samplers. Failed digest/cursor
-samples omit that field; other failures close. [Reconciliation](live-updates.md#feed-connection) uses the map, bounded
-replay, or whole listing.
+(`handoffs`), running jobs' progress (`generations`, `generationSnapshot`), registered clients (`clients`), optional
+`hello.digest` (`revisionDigest`) and `hello.cursor` (`resources.cursor()`) synchronously before registration;
+`server/src/app.ts` wires the samplers. Failed digest/cursor samples omit that field; other failures close.
+[Reconciliation](live-updates.md#feed-connection) uses the map, bounded replay, or whole listing.
 
 - `hello.rerollInPlace` advertises [in-place rerolls](server-generation.md#reroll-in-place); `eventFeed.ts`
   `serverRerollsInPlace` consumes it for the screen's [Reroll](chat-pipeline.md#reroll) decision.
@@ -114,8 +114,10 @@ row ids, removals, count, changed metadata field names).
 ## Invariants
 
 - Resource, chat, and order refs in `change` frames describe only committed store writes
-  ([Invariants](server-resources.md#invariants)); `publishStreaming` can publish locks without a write, and `memoryTask`
-  and `handoff` frames describe process-local transitions (`shared/events.ts`).
+  ([Invariants](server-resources.md#invariants)); `publishStreaming` can publish locks without a write, and
+  `memoryTask`, `handoff`, and `generation` frames describe process-local transitions (`shared/events.ts`). A
+  `generation` frame and `hello.generations` carry ids, times, the kind, the stage, and counts, never text, names, or a
+  model.
 - A frame is never split ([Publication budget](#publication-budget)); a frame a socket cannot take closes that socket
   ([Frame admission](#frame-admission)).
 

@@ -61,6 +61,7 @@ import {
     type RunningJob,
 } from "../jobs/generationJobs.ts";
 import { logEvent } from "../diagnostics/log.ts";
+import { createOutputMeter } from "./outputMeter.ts";
 import { isValidResourceId } from "../data/resourceStore.ts";
 import {
     admitProviderModels,
@@ -334,9 +335,13 @@ function reportStage(job: RunningJob, stage: GenerationStage): void {
  *    (`assemblePrompt`); `preview` ends with the messages and their context report, `previewPrompt`
  *    with the provider body. An OOC preview skips the start trigger, makes memory requests without
  *    tools, and applies assembly and editRequest chat edits only to its copy; character writes fail.
- *    Otherwise the request runs, and the reply is appended (or the continued message extended) and
- *    streamed: `chunk` per provider chunk, a raw checkpoint every 3 s, and the final raw write at the
- *    end, after an abort (inside the grace), or after a read failure.
+ *    Otherwise the request runs, and the reply is appended (or the continued message extended).
+ *    A streamed reply emits `chunk` per provider chunk and detached local `output` counts for registry
+ *    progress, with a raw checkpoint every 3 s and the final raw write at the end, after an abort
+ *    (inside the grace), or after a read failure. With Response Streaming off, Half Streaming asks
+ *    only this reply request to stream (except OobaLegacy). A stream received this way keeps the same
+ *    counts, final writes, and tail, but emits no chunks or checkpoints and claims chunk sequence 0.
+ *    A buffered answer keeps the buffered path.
  * 6. The tail of a completed reply, in the tab's order on each path: `editoutput` once on
  *    the completed text, the output trigger, inlays, the `chatOutput` listeners, TTS; the
  *    auto-continue decision, `igp`, a trigger's resend, the notification, the emotion modes or the
@@ -1865,12 +1870,20 @@ async function runSpeaker(arg: {
         if (job.kind !== "previewPrompt") {
             reportStage(job, "generating");
         }
+        const replyModel = resolveJobRequestModel(requestDb, "model");
+        const quiet =
+            !requestDb.useStreaming &&
+            requestDb.halfStreaming === true &&
+            job.kind !== "previewPrompt" &&
+            replyModel.kind === "resolved" &&
+            replyModel.modelInfo.format !== LLMFormat.OobaLegacy;
         const req = await services.request(
             {
                 formated,
                 biasString: biases,
                 currentChar,
                 useStreaming: true,
+                ...(quiet ? { forceStreaming: true } : {}),
                 isGroupChat: owner.type === "group",
                 bias: {},
                 continue: arg.continueSend,
@@ -2078,25 +2091,38 @@ async function runSpeaker(arg: {
                     text: "",
                 });
             }
-            const stream = await readReply(job, req.result, {
-                prefix,
-                removeIncompleteResponse: !!db.removeIncompleteResponse,
-                emitChunk: (text, seq) => job.emit({ type: "chunk", messageId, generationId, text, seq }),
-                checkpoint: (text, seq) => {
-                    generation!.seq += 1;
-                    writeOwn(
-                        [
-                            {
-                                op: "setText",
-                                id: messageId,
-                                text,
-                                generation: { id: generationId, seq: generation!.seq },
-                            },
-                        ],
-                        [{ messageId, generationId, seq, raw: true }],
-                    );
-                },
+            const meter = createOutputMeter({
+                count: (text) => deps.tokens.countLocal(text, tokenScopeFor(requestDb)),
+                report: (output) => job.emit({ type: "output", ...output }),
+                now: Date.now,
+                log: (error) => logEvent("generation.outputCount", { job: job.id }, error, deps.diagnostics),
             });
+            let stream: Awaited<ReturnType<typeof readReply>>;
+            try {
+                stream = await readReply(job, req.result, {
+                    prefix,
+                    ...(quiet ? { quiet: true } : {}),
+                    removeIncompleteResponse: !!db.removeIncompleteResponse,
+                    onRaw: meter.note,
+                    emitChunk: (text, seq) => job.emit({ type: "chunk", messageId, generationId, text, seq }),
+                    checkpoint: (text, seq) => {
+                        generation!.seq += 1;
+                        writeOwn(
+                            [
+                                {
+                                    op: "setText",
+                                    id: messageId,
+                                    text,
+                                    generation: { id: generationId, seq: generation!.seq },
+                                },
+                            ],
+                            [{ messageId, generationId, seq, raw: true }],
+                        );
+                    },
+                });
+            } finally {
+                meter.stop();
+            }
             if (stream.error !== undefined || job.signal.aborted) {
                 // An abort or a read failure: the final write carries the text so far; nothing after
                 // the stream runs.
@@ -2471,19 +2497,23 @@ async function runSpeaker(arg: {
 }
 
 /**
- * Reads a streaming reply to its end, an abort, or a read failure: each chunk's first value
- * (`trimUntilPunctuation` with `removeIncompleteResponse`) after `prefix`, trimmed, is sent as a
- * `chunk`. Text not yet stored is checkpointed `CHECKPOINT_INTERVAL_MS` after the last checkpoint
- * (a timer, so a provider that stalls after a chunk does not hold it back). Returns the text, the
- * newest chunk's sequence, the last chunk, and the read failure (an abort, or a checkpoint that
- * failed, is one).
+ * Reads a streaming reply to its end, an abort, or a read failure: each chunk's first value is passed
+ * to `onRaw` before trimming or adding the continue's prefix. With `removeIncompleteResponse` it is
+ * trimmed by `trimUntilPunctuation`, then combined with `prefix` and trimmed. Unless `quiet`, the text
+ * is sent as a `chunk` and text not yet stored is checkpointed `CHECKPOINT_INTERVAL_MS` after the last
+ * checkpoint (a timer, so a provider that stalls after a chunk does not hold it back). A quiet read
+ * calls neither publication callback, starts no checkpoint timer, and keeps sequence 0; `onRaw` and
+ * the returned text are unchanged. Returns the text, the newest published chunk's sequence, the last
+ * chunk, and the read failure (an abort, or a checkpoint that failed, is one).
  */
 async function readReply(
     job: RunningJob,
     stream: ReadableStream<StreamResponseChunk>,
     options: {
         prefix: string;
+        quiet?: boolean;
         removeIncompleteResponse: boolean;
+        onRaw?: (raw: string) => void;
         emitChunk: (text: string, seq: number) => void;
         checkpoint: (text: string, seq: number) => void;
     },
@@ -2509,38 +2539,43 @@ async function readReply(
         void reader.cancel().catch(() => {});
     };
     job.signal.addEventListener("abort", onAbort, { once: true });
-    const timer = setInterval(
-        () => {
-            if (job.signal.aborted || checkpointError !== null || checkpointed >= seq) {
-                return;
-            }
-            if (Date.now() - lastCheckpoint < CHECKPOINT_INTERVAL_MS) {
-                return;
-            }
-            lastCheckpoint = Date.now();
-            checkpointed = seq;
-            try {
-                options.checkpoint(text, seq);
-            } catch (error) {
-                checkpointError = error;
-                void reader.cancel().catch(() => {});
-            }
-        },
-        Math.min(250, CHECKPOINT_INTERVAL_MS),
-    );
+    const timer = options.quiet
+        ? undefined
+        : setInterval(
+              () => {
+                  if (job.signal.aborted || checkpointError !== null || checkpointed >= seq) {
+                      return;
+                  }
+                  if (Date.now() - lastCheckpoint < CHECKPOINT_INTERVAL_MS) {
+                      return;
+                  }
+                  lastCheckpoint = Date.now();
+                  checkpointed = seq;
+                  try {
+                      options.checkpoint(text, seq);
+                  } catch (error) {
+                      checkpointError = error;
+                      void reader.cancel().catch(() => {});
+                  }
+              },
+              Math.min(250, CHECKPOINT_INTERVAL_MS),
+          );
     try {
         while (!job.signal.aborted && checkpointError === null) {
             const read = await reader.read();
             if (read.value) {
                 lastChunk = read.value;
                 let result = lastChunk[Object.keys(lastChunk)[0]] ?? "";
+                options.onRaw?.(result);
                 if (options.removeIncompleteResponse) {
                     result = trimUntilPunctuation(result);
                 }
                 chunkResult = result;
                 text = (options.prefix + result).trim();
-                seq += 1;
-                options.emitChunk(text, seq);
+                if (!options.quiet) {
+                    seq += 1;
+                    options.emitChunk(text, seq);
+                }
             }
             if (read.done) {
                 break;
@@ -2568,7 +2603,9 @@ async function readReply(
             failure,
         };
     } finally {
-        clearInterval(timer);
+        if (timer !== undefined) {
+            clearInterval(timer);
+        }
         job.signal.removeEventListener("abort", onAbort);
         void reader.cancel().catch(() => {});
     }

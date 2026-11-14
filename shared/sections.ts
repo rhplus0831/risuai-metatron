@@ -49,6 +49,7 @@ export const SECTION_FIELDS = {
         "descriptionPrefix",
         "requestRetrys",
         "useStreaming",
+        "halfStreaming",
         "usePlainFetch",
         "openrouterMiddleOut",
         "openrouterFallback",
@@ -302,6 +303,7 @@ export const SECTION_FIELDS = {
         "contextMeterFixedWarn",
         "contextMeterLookahead",
         "loreBudgetStop",
+        "generationProgressWindow",
     ],
 } as const satisfies Record<SectionKind, readonly (keyof Database)[]>;
 

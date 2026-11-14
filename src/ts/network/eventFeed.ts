@@ -6,6 +6,7 @@ import {
     replaceConnectedClients,
     replaceHandoffOffers,
 } from "./handoff";
+import { noteGenerationFrame, replaceGenerations, resetGenerationProgress } from "../process/generationProgress.svelte";
 import { generationClientId } from "./generationJobs";
 import { EVENT_FEED_PATH, type EventFeedFrame } from "../../../shared/events.ts";
 import { revisionDigest, type ChangeSet, type ResourceRevisionListing } from "../../../shared/resources.ts";
@@ -45,7 +46,7 @@ import {
  * revisions independently of held records and overlays changes received during either read, after
  * the hello-time listing has reached reconciliation and memory fences. Every connection signs a
  * fresh JWT (they live five minutes). A `hello` or `epoch` frame of another epoch means a restore replaced the data: the
- * save loop halts and the page reloads; `change`, `handoff`, and `memoryTask` frames of another epoch are
+ * save loop halts and the page reloads; `change`, `handoff`, `generation`, and `memoryTask` frames of another epoch are
  * ignored. A `change` frame's refs are dispatched before its generation locks (`streaming`) go to
  * `src/ts/storage/chatStore.svelte.ts` (`noteRemoteStreaming`), so a fitting `begin` patch puts the
  * row in the mirror before its lock. For a chat the mirror lacks, an unloaded chat, or a patch that
@@ -69,6 +70,9 @@ import {
  * `hello`'s snapshot as the whole status set, and the fetched, replayed, or digest-matched revision
  * listing (before reconciliation) for the chats whose fences wait for it. A mismatching `hello`/`epoch`
  * or read epoch error resets them and the advertised map.
+ * Generation progress goes to `src/ts/process/generationProgress.svelte.ts`: hello replaces the
+ * running set and `generation` frames update it. An epoch mismatch or retiring a connection clears
+ * that process-local progress, its output samples, and its server clock offset.
  */
 
 const MAX_BACKOFF_MS = 30_000;
@@ -86,7 +90,7 @@ let stopped = false;
  * `close` act only while it is current: a new connection, an abandoned one, an ended attempt (its
  * close, a failed authentication), and the stop each move it on, so every late result of an older
  * connection does nothing, except that an epoch-mismatch error of an older connection's read
- * still resets the memory tasks and advertised map (the data was replaced, whichever connection read it).
+ * still resets memory tasks, generation progress, and the advertised map (the data was replaced, whichever connection read it).
  */
 let generation = 0;
 let reconciledGeneration = -1;
@@ -225,7 +229,7 @@ export function serverRerollsInPlace(): boolean {
 
 /**
  * Ends the current connection's attempt without closing anything: its late results do nothing,
- * except that an epoch-mismatch error of its read still resets the memory tasks and advertised map.
+ * except that an epoch-mismatch error of its read still resets memory tasks, generation progress, and the advertised map.
  */
 function retire() {
     rerollInPlace = false;
@@ -234,6 +238,7 @@ function retire() {
     liveness?.stop();
     liveness = null;
     socket = null;
+    resetGenerationProgress();
     replaceConnectedClients([]);
 }
 
@@ -376,6 +381,7 @@ async function reconcile(
         if (error instanceof ResourceEpochMismatchError) {
             clearAdvertised();
             resetMemoryTasks();
+            resetGenerationProgress();
             return;
         }
         if (gen !== generation) {
@@ -399,6 +405,7 @@ function receive(gen: number, ws: WebSocket, frame: EventFeedFrame, connectAttem
             if (frame.epoch !== loaded) {
                 clearAdvertised();
                 resetMemoryTasks();
+                resetGenerationProgress();
                 epochMismatch(frame.epoch);
                 return;
             }
@@ -406,6 +413,7 @@ function receive(gen: number, ws: WebSocket, frame: EventFeedFrame, connectAttem
             replaceFeedLocks(Array.isArray(frame.streaming) ? frame.streaming : []);
             replaceHandoffOffers(frame.handoffs ?? []);
             replaceConnectedClients(frame.clients ?? []);
+            replaceGenerations(frame.generations);
             const hello = noteMemoryTaskHello(frame.memoryTasks);
             if (connectedSocket !== ws) {
                 connectedSocket = ws;
@@ -435,6 +443,9 @@ function receive(gen: number, ws: WebSocket, frame: EventFeedFrame, connectAttem
         case "handoff":
             if (frame.epoch === loaded) receiveHandoffOffer(frame);
             return;
+        case "generation":
+            if (frame.epoch === loaded) noteGenerationFrame(frame);
+            return;
         case "memoryTask":
             if (frame.epoch === loaded) {
                 noteMemoryTaskFrame(frame);
@@ -444,6 +455,7 @@ function receive(gen: number, ws: WebSocket, frame: EventFeedFrame, connectAttem
             if (frame.epoch !== loaded) {
                 clearAdvertised();
                 resetMemoryTasks();
+                resetGenerationProgress();
                 epochMismatch(frame.epoch);
             }
             return;

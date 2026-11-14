@@ -5,7 +5,7 @@ import { Duplex } from "node:stream";
 import { serve } from "@hono/node-server";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { WebSocket as WsClient, WebSocketServer } from "ws";
-import type { EventFeedFrame, MemoryTaskEntry } from "../../../shared/events.ts";
+import type { EventFeedFrame, GenerationProgressEntry, MemoryTaskEntry } from "../../../shared/events.ts";
 import { revisionDigest, type ResourceRevisionListing } from "../../../shared/resources.ts";
 import { DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
@@ -245,6 +245,126 @@ describe("the live-update socket on the server", () => {
             expect((await request(`/api/resources/revisions?${query}`)).status, query).toBe(400);
     });
 
+    it("publishes a preview's progress through the app feed and samples it for reconnecting sockets", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        vi.setSystemTime(1_000);
+        const entered = withResolvers<import("../jobs/generationJobs.ts").RunningJob>();
+        const finish = withResolvers<void>();
+        await listen({
+            generationRunner: async (job) => {
+                entered.resolve(job);
+                await finish.promise;
+            },
+        });
+        try {
+            const epoch = await epochOf();
+            const first = async (kind: string) =>
+                ((await (await request(`/api/resources/${kind}/main`)).json()) as { data: { id: string }[] }).data[0]
+                    .id;
+            const bound = {
+                presetId: await first("presets"),
+                modelPresetId: await first("modelPresets"),
+                personaId: await first("personas"),
+            };
+            const seeded = await request(
+                "/api/resources/batch",
+                json(
+                    {
+                        ops: [{ kind: "characters", id: "c", baseRevision: null, data: { chaId: "c", name: "C" } }],
+                        chats: [
+                            {
+                                characterId: "c",
+                                chatId: "k",
+                                baseRevision: null,
+                                ops: [
+                                    {
+                                        op: "create",
+                                        chat: {
+                                            id: "k",
+                                            name: "K",
+                                            message: [],
+                                            modelPresetId: bound.modelPresetId,
+                                            promptPresetId: bound.presetId,
+                                            bindedPersona: bound.personaId,
+                                        },
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                    { "x-resource-epoch": epoch },
+                ),
+            );
+            expect(seeded.status).toBe(200);
+            const read = await request("/api/resources/read", json({ chats: [{ characterId: "c", id: "k" }] }));
+            const chatRevision = ((await read.json()) as { chats: { revision: string }[] }).chats[0].revision;
+            const observer = await open();
+            expect(await frameAt(observer, 0)).toMatchObject({ type: "hello", generations: [] });
+            const created = server.context.generationJobs.create(
+                {
+                    kind: "preview",
+                    clientId: "creator",
+                    context: {
+                        ...bound,
+                        characterId: "c",
+                        chatId: "k",
+                        mode: "normal",
+                        input: "private prompt",
+                        chatRevision,
+                    },
+                },
+                epoch,
+            );
+            if (!created.ok) throw new Error(JSON.stringify(created));
+            const job = await entered.promise;
+            const entry = {
+                jobId: created.jobId,
+                characterId: "c",
+                chatId: "k",
+                kind: "preview",
+                clientId: "creator",
+                startedAt: 1_000,
+                at: 1_000,
+            };
+            await delivered(observer);
+            expect(observer.frames.filter((frame) => frame.type === "generation")).toEqual([
+                { type: "generation", epoch, state: "running", ...entry },
+            ]);
+            vi.setSystemTime(1_010);
+            job.emit({ type: "stage", stage: "preparing" });
+            await delivered(observer);
+            expect(observer.frames.filter((frame) => frame.type === "generation").at(-1)).toEqual({
+                type: "generation",
+                epoch,
+                state: "running",
+                ...entry,
+                at: 1_010,
+                stage: "preparing",
+            });
+            vi.setSystemTime(1_020);
+            const reconnect = await open();
+            expect(await frameAt(reconnect, 0)).toMatchObject({
+                type: "hello",
+                generations: [{ ...entry, at: 1_020, stage: "preparing" }],
+            });
+            job.emit({ type: "done", revision: chatRevision, result: { text: "private preview" } });
+            for (const client of [observer, reconnect]) {
+                await delivered(client);
+                expect(client.frames.filter((frame) => frame.type === "generation").at(-1)).toEqual({
+                    type: "generation",
+                    epoch,
+                    state: "ended",
+                    jobId: created.jobId,
+                    characterId: "c",
+                    chatId: "k",
+                });
+            }
+            expect(await frameAt(await open(), 0)).toMatchObject({ type: "hello", generations: [] });
+        } finally {
+            finish.resolve();
+        }
+    });
+
     it("publishes handoff offers at admission and request, lists them in hello, and closes them at takeover or job end", async () => {
         vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
         const entered = withResolvers<import("../jobs/generationJobs.ts").RunningJob>();
@@ -359,6 +479,7 @@ describe("the live-update socket on the server", () => {
             streaming: [],
             memoryTasks: [],
             handoffs: [],
+            generations: [],
             clients: [],
             digest: expect.stringMatching(/^[0-9a-f]{32}$/),
             cursor: 0,
@@ -373,6 +494,7 @@ describe("the live-update socket on the server", () => {
             streaming: [],
             memoryTasks: [],
             handoffs: [],
+            generations: [],
             clients: [],
             digest: expect.stringMatching(/^[0-9a-f]{32}$/),
             cursor: 0,
@@ -425,6 +547,7 @@ describe("the live-update socket on the server", () => {
             streaming: [],
             memoryTasks: [],
             handoffs: [],
+            generations: [],
             clients: [],
             digest: revisionDigest(listing),
             cursor: expect.any(Number),
@@ -754,6 +877,7 @@ describe("createEventSockets", () => {
         memoryTasks: () => MemoryTaskEntry[] = () => [],
         digest?: () => string,
         cursor?: () => number,
+        generations?: () => GenerationProgressEntry[],
     ) {
         const feed = createChangeFeed();
         const sockets = createEventSockets({
@@ -764,6 +888,7 @@ describe("createEventSockets", () => {
             memoryTasks,
             digest,
             cursor,
+            generations,
         });
         const node = http.createServer((_req, res) => res.end());
         node.on("upgrade", (req, socket, head) => {
@@ -777,6 +902,82 @@ describe("createEventSockets", () => {
         const { port } = node.address() as { port: number };
         return { feed, sockets, url: `ws://127.0.0.1:${port}/api/events/ws?risu-auth=t` };
     }
+
+    it("samples running generations in every hello and delivers published progress and ends to every socket", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+        const entry: GenerationProgressEntry = {
+            jobId: "job",
+            characterId: "c",
+            chatId: "k",
+            kind: "command",
+            clientId: "creator",
+            startedAt: 100,
+            at: 110,
+            stage: "generating",
+            retry: 2,
+            sequence: { total: 3, sent: 1 },
+        };
+        let generations = [entry];
+        const { feed, sockets, url } = await host(
+            async () => true,
+            () => [],
+            undefined,
+            undefined,
+            () => generations,
+        );
+        const clients: Client[] = [];
+        const hello = (generations: GenerationProgressEntry[]) => ({
+            type: "hello",
+            rerollInPlace: true,
+            epoch: "E",
+            streaming: [],
+            memoryTasks: [],
+            clients: [],
+            generations,
+        });
+        try {
+            const first = connect(url);
+            clients.push(first);
+            expect(await frameAt(first, 0)).toEqual(hello([entry]));
+            const next: GenerationProgressEntry = {
+                jobId: "job",
+                characterId: "c",
+                chatId: "k",
+                kind: "command",
+                clientId: "creator",
+                startedAt: 100,
+                at: 120,
+                stage: "finishing",
+                sequence: { total: 3, sent: 2 },
+            };
+            generations = [next];
+            const second = connect(url);
+            clients.push(second);
+            expect(await frameAt(second, 0)).toEqual(hello([next]));
+            const progress = { type: "generation", epoch: "E", state: "running", ...next } satisfies ChangeFeedEvent;
+            const ended = {
+                type: "generation",
+                epoch: "E",
+                state: "ended",
+                jobId: "job",
+                characterId: "c",
+                chatId: "k",
+            } satisfies ChangeFeedEvent;
+            feed.publish(progress);
+            feed.publish(ended);
+            for (const client of clients) {
+                expect(await frameAt(client, 1)).toEqual(progress);
+                expect(await frameAt(client, 2)).toEqual(ended);
+            }
+            generations = [];
+            const later = connect(url);
+            clients.push(later);
+            expect(await frameAt(later, 0)).toEqual(hello([]));
+        } finally {
+            sockets.close();
+            await Promise.all(clients.map((client) => client.closed));
+        }
+    });
 
     it("serves the same hello and changes with a known, invalid or absent protocol number", async () => {
         vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
@@ -1152,6 +1353,19 @@ describe("createEventSockets", () => {
                 status: { taskId: "t", state: "queued", done: 0, total: 0 },
             },
             { type: "epoch", epoch: "새 epoch" },
+            {
+                type: "generation",
+                epoch: "E",
+                state: "running",
+                jobId: "job",
+                characterId: "한",
+                chatId: "k",
+                kind: "command",
+                clientId: "creator",
+                startedAt: 100,
+                at: 120,
+                sequence: { total: 2, sent: 1 },
+            },
             { type: "ping", ts: 15_000 },
         ];
         for (const frame of frames) {

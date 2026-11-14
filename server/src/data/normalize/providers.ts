@@ -9,6 +9,7 @@ const spec: SectionSpec<"providers"> = {
     descriptionPrefix: ["string", "description of {{char}}: "],
     requestRetrys: ["number", 2],
     useStreaming: ["boolean"],
+    halfStreaming: ["boolean", false],
     usePlainFetch: ["boolean"],
     openrouterMiddleOut: ["boolean", false],
     openrouterFallback: ["boolean", true],

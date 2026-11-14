@@ -69,6 +69,13 @@ function expectIdempotent(normalize: Normalizer, input: unknown) {
 }
 
 describe("every section normalizer", () => {
+    it("defaults Half Streaming off and preserves an explicit provider preference", () => {
+        expect(normalizeProviders(undefined).halfStreaming).toBe(false);
+        expect(normalizeProviders({}).halfStreaming).toBe(false);
+        expect(normalizeProviders({ halfStreaming: true }).halfStreaming).toBe(true);
+        expect(normalizeProviders({ halfStreaming: false }).halfStreaming).toBe(false);
+    });
+
     it("defaults the lore budget send warning on and preserves an explicit opt-out", () => {
         expect(normalizeUi(undefined).loreBudgetStop).toBe(true);
         expect(normalizeUi({ loreBudgetStop: false }).loreBudgetStop).toBe(false);

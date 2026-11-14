@@ -216,6 +216,7 @@ export interface Database {
     showMemoryLimit: boolean;
     roundIcons: boolean;
     useStreaming: boolean;
+    halfStreaming: boolean;
     supaMemoryKey: string;
     hypaMemoryKey: string;
     voyageApiKey: string;
@@ -607,6 +608,8 @@ export interface Database {
      * it off for that chat; both are read through `wantsLoreBudgetStop`.
      */
     loreBudgetStop: boolean;
+    /** Whether the top-right window lists running server replies and their generation progress. */
+    generationProgressWindow: boolean;
 }
 
 /** Parameter fields retained in saved `seperateParameters` records and preset files. */

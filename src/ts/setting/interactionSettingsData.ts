@@ -35,6 +35,14 @@ export const interactionSettingsItems: SettingItem[] = [
         keywords: ["lorebook", "lore", "budget", "token", "limit", "stop", "send", "warn"],
     },
     {
+        id: "interaction.generationProgressWindow",
+        type: "check",
+        labelKey: "generationProgressWindow",
+        helpKey: "generationProgressWindow",
+        bindKey: "generationProgressWindow",
+        keywords: ["generation", "progress", "window", "server", "tokens", "speed"],
+    },
+    {
         id: "acc.clickToEdit",
         type: "check",
         labelKey: "clickToEdit",
@@ -213,7 +221,11 @@ export const interactionSettingsSections: SettingSection[] = [
     {
         id: "interaction.input",
         labelKey: "settingsSectionInput",
-        items: itemsById(interactionSettingsItems, ["acc.sendWithEnter", "interaction.loreBudgetStop"]),
+        items: itemsById(interactionSettingsItems, [
+            "acc.sendWithEnter",
+            "interaction.loreBudgetStop",
+            "interaction.generationProgressWindow",
+        ]),
     },
     {
         id: "interaction.messageEditing",

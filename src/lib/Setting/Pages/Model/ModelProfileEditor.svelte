@@ -196,6 +196,12 @@
         <div class="mt-2">
             <CheckInput bind:check={settings.providers.useStreaming} name={`Response ${language.streaming}`} />
         </div>
+        {#if !settings.providers.useStreaming}
+            <div class="mt-2 flex items-center">
+                <CheckInput bind:check={settings.providers.halfStreaming} name={language.modelProfiles.halfStreaming} />
+                <Help key="halfStreaming" name={language.modelProfiles.halfStreaming} />
+            </div>
+        {/if}
     {/if}
 
     {#if usesOllamaLocal}

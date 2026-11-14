@@ -96,6 +96,60 @@ async function started() {
     return FakeSocket.instances.at(-1)!;
 }
 
+describe("generation progress on the live feed", () => {
+    const entry = {
+        jobId: "job",
+        characterId: "c",
+        chatId: "k",
+        clientId: "other-tab",
+        kind: "send",
+        startedAt: 1000,
+        at: 2000,
+    };
+
+    it("replaces progress from same-epoch hellos, routes running and ended frames, and ignores another epoch", async () => {
+        const progress = await import("../process/generationProgress.svelte");
+        const ws = await started();
+        ws.frame({ type: "hello", epoch: "E1", generations: [entry] });
+        expect(progress.runningGenerations()).toEqual([entry]);
+        ws.frame({ type: "hello", epoch: "E1" });
+        expect(progress.runningGenerations()).toEqual([]);
+        ws.frame({ type: "generation", epoch: "E1", state: "running", ...entry });
+        expect(progress.runningGenerations()).toEqual([entry]);
+        ws.frame({ type: "generation", epoch: "E2", state: "running", ...entry, jobId: "wrong-epoch" });
+        ws.frame({ type: "generation", epoch: "E2", state: "ended", ...entry });
+        expect(progress.runningGenerations()).toEqual([entry]);
+        ws.frame({ type: "generation", epoch: "E1", state: "ended", ...entry });
+        expect(progress.runningGenerations()).toEqual([]);
+    });
+
+    it("clears progress when the socket closes before an ended frame arrives", async () => {
+        const progress = await import("../process/generationProgress.svelte");
+        const ws = await started();
+        ws.frame({ type: "hello", epoch: "E1", generations: [entry] });
+        expect(progress.runningGenerations()).toEqual([entry]);
+        ws.close();
+        expect(progress.runningGenerations()).toEqual([]);
+    });
+
+    it("clears progress on a reconnect reconciliation epoch mismatch while leaving that socket open", async () => {
+        const progress = await import("../process/generationProgress.svelte");
+        const ws = await started();
+        ws.frame({ type: "hello", epoch: "E1", generations: [entry] });
+        await vi.advanceTimersByTimeAsync(0);
+        ws.close();
+        await vi.advanceTimersByTimeAsync(1000);
+        const next = FakeSocket.instances.at(-1)!;
+        expect(next).not.toBe(ws);
+        mocks.listRevisions.mockRejectedValueOnce(new ResourceEpochMismatchError("restored"));
+        next.frame({ type: "hello", epoch: "E1", generations: [entry] });
+        expect(progress.runningGenerations()).toEqual([entry]);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(progress.runningGenerations()).toEqual([]);
+        expect(next.closed).toBe(false);
+    });
+});
+
 describe("the live-update socket client", () => {
     it("reports the live feed current only after hello reconciliation finishes", async () => {
         vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");

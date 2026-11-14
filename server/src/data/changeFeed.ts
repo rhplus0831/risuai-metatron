@@ -1,17 +1,18 @@
-import type { ChatStreaming, HandoffOffer, MemoryTaskEntry } from "../../../shared/events.ts";
+import type { ChatStreaming, EventFeedFrame, HandoffOffer, MemoryTaskEntry } from "../../../shared/events.ts";
 import type { ChangeSet } from "../../../shared/resources.ts";
 
 /**
  * The live updates: what the resource store publishes after a commit, a write's refs and revisions
  * (`change`, with the generation locks of the chats a job's write touched or a job's end released:
  * `streaming`) or a new database epoch after a restore or import (`epoch`), and a chat's memory task
- * status change (`memoryTask`) or content-free generation handoff offer (`handoff`), each in the
- * epoch of its transition.
+ * status change (`memoryTask`), content-free generation handoff offer (`handoff`), or content-free
+ * running job progress or end (`generation`), each in the epoch of its transition.
  */
 export type ChangeFeedEvent =
     | { type: "change"; epoch: string; changes: ChangeSet; streaming?: ChatStreaming[]; cursor?: number }
     | ({ type: "memoryTask"; epoch: string } & MemoryTaskEntry)
     | ({ type: "handoff" } & HandoffOffer)
+    | Extract<EventFeedFrame, { type: "generation" }>
     | { type: "epoch"; epoch: string };
 
 export type ChangeFeedListener = (event: ChangeFeedEvent) => void;

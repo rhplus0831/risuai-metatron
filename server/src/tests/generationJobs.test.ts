@@ -23,6 +23,7 @@ import {
     failureOf,
     GenerationJobEndedError,
     GenerationRunnerError,
+    GENERATION_PROGRESS_INTERVAL_MS,
     type GenerationRunner,
     JOB_ABORT_GRACE_MS,
     JOB_DONE_GRACE_MS,
@@ -99,6 +100,7 @@ function setup(
         feed?: boolean;
         failCommitted?: { current: boolean };
         now?: () => number;
+        publishGeneration?: Parameters<typeof createGenerationJobs>[0]["publishGeneration"];
         receipts?: boolean;
         clientName?: (clientId: string) => string | undefined;
     } = {},
@@ -150,6 +152,7 @@ function setup(
         hub: createChannelHub({ now: options.now }),
         receipts,
         publishHandoff: (event) => handoffs.push(event),
+        publishGeneration: options.publishGeneration,
         clientName: options.clientName,
     });
     cleanups.push(async () => {
@@ -499,6 +502,367 @@ describe("job chat checkpoints", () => {
                 streaming: [{ messageId: "second", generationId: "g2", seq: 0 }],
             }),
         ]);
+    });
+});
+
+describe("generation progress on the live-update feed", () => {
+    type Progress = Extract<ChangeFeedEvent, { type: "generation" }>;
+    const clock = () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        vi.setSystemTime(100);
+    };
+    function holdRunner(s: ReturnType<typeof setup>) {
+        const started = withResolvers<RunningJob>();
+        const finish = withResolvers<void>();
+        const completed = s.run(async (job) => {
+            started.resolve(job);
+            await Promise.race([finish.promise, aborted(job)]);
+        });
+        cleanups.push(() => finish.resolve());
+        return { started: started.promise, finish: finish.resolve, completed };
+    }
+
+    it("publishes only the newest output each second per job, keeps snapshots current and sends no output to job sockets", async () => {
+        clock();
+        expect(GENERATION_PROGRESS_INTERVAL_MS).toBe(1000);
+        const published: Progress[] = [];
+        const s = setup({ publishGeneration: (event) => published.push(event) });
+        const held = holdRunner(s);
+        const jobId = s.create();
+        const job = await held.started;
+        const owner = await s.follow(jobId);
+        expect(s.jobs.handoff(jobId, { clientId: "tab", target: "worker" }, s.store.epoch()).ok).toBe(true);
+        const takeover = s.jobs.takeover(jobId, { clientId: "worker" }, s.store.epoch());
+        if (!takeover.ok) throw new Error(JSON.stringify(takeover));
+        const worker = await s.follow(jobId, "worker", `&ticket=${takeover.body.ticket}`);
+        const running = published[0];
+        await vi.advanceTimersByTimeAsync(100);
+        job.emit({ type: "output", tokens: 2, since: 200, at: 200 });
+        await vi.advanceTimersByTimeAsync(300);
+        const newest = { tokens: 7, since: 200, at: 500 };
+        job.emit({ type: "output", ...newest });
+        expect(s.jobs.generationSnapshot()).toEqual([
+            { jobId, ...ref, kind: "send", clientId: "tab", startedAt: 100, at: 500, output: newest },
+        ]);
+        await vi.advanceTimersByTimeAsync(599);
+        expect(published).toEqual([running]);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(published).toEqual([running, { ...running, at: 1100, output: newest }]);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(published).toHaveLength(2);
+        // A second job's admission must not reset the first job's publication window.
+        const other = holdRunner(s);
+        const admitted = s.jobs.create(
+            {
+                kind: "send",
+                clientId: "tab",
+                context: {
+                    ...s.context(),
+                    chatId: "j",
+                    chatRevision: s.store.chatRevision("c", "j")!,
+                },
+            },
+            s.store.epoch(),
+        );
+        if (!admitted.ok) throw new Error(JSON.stringify(admitted));
+        const otherJob = await other.started;
+        otherJob.emit({ type: "output", tokens: 1, since: 2100, at: 2100 });
+        const immediate = { tokens: 11, since: 200, at: 2100 };
+        job.emit({ type: "output", ...immediate });
+        expect(published.at(-1)).toEqual({ ...running, at: 2100, output: immediate });
+        expect(published.filter((event) => event.jobId === admitted.jobId)).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(published.filter((event) => event.jobId === admitted.jobId)).toHaveLength(2);
+        expect(published.at(-1)).toMatchObject({
+            jobId: admitted.jobId,
+            at: 3100,
+            output: { tokens: 1, since: 2100, at: 2100 },
+        });
+        for (const socket of [owner, worker]) {
+            await socket.fence();
+            expect(socket.events.some((event) => (event as { type: string }).type === "output")).toBe(false);
+        }
+    });
+
+    it("publishes stages, retries and sequence progress immediately with the newest output and cancels its pending publication", async () => {
+        clock();
+        const published: Progress[] = [];
+        const s = setup({ publishGeneration: (event) => published.push(event) });
+        const held = holdRunner(s);
+        s.create("", "command");
+        const job = await held.started;
+        const running = published[0];
+        await vi.advanceTimersByTimeAsync(100);
+        job.emit({ type: "output", tokens: 2, since: 200, at: 200 });
+        await vi.advanceTimersByTimeAsync(100);
+        const output = { tokens: 5, since: 200, at: 300 };
+        job.emit({ type: "output", ...output });
+        job.emit({ type: "stage", stage: "finishing" });
+        expect(published).toEqual([running, { ...running, at: 300, stage: "finishing", output }]);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(published).toHaveLength(2);
+        for (const change of ["retry", "sequence"] as const) {
+            job.emit({ type: "stage", stage: change === "retry" ? "generating" : "finishing" });
+            const before = published.length;
+            await vi.advanceTimersByTimeAsync(100);
+            const next = { tokens: change === "retry" ? 8 : 13, since: 200, at: Date.now() };
+            job.emit({ type: "output", ...next });
+            if (change === "retry") job.emit({ type: "retry" });
+            else job.sequence!.progress({ total: 2, sent: 1 });
+            expect(published).toHaveLength(before + 1);
+            expect(published.at(-1)).toMatchObject({
+                at: Date.now(),
+                output: next,
+                ...(change === "retry" ? { retry: 1 } : { sequence: { total: 2, sent: 1 } }),
+            });
+            await vi.advanceTimersByTimeAsync(1000);
+            expect(published).toHaveLength(before + 1);
+        }
+    });
+
+    it("clears the previous reply's output when another reply is accepted", async () => {
+        clock();
+        const published: Progress[] = [];
+        const s = setup({ publishGeneration: (event) => published.push(event) });
+        const held = holdRunner(s);
+        s.create();
+        const job = await held.started;
+        job.emit({ type: "output", tokens: 9, since: 100, at: 100 });
+        expect(s.jobs.generationSnapshot()[0].output).toEqual({ tokens: 9, since: 100, at: 100 });
+        job.write(() => ({ chats: [group(s.revision(), [begin("r", "g1")])] }));
+        job.emit({
+            type: "accepted",
+            jobId: job.id,
+            messageId: "r",
+            generationId: "g1",
+            revision: s.revision(),
+            text: "",
+        });
+        expect(s.jobs.generationSnapshot()[0]).not.toHaveProperty("output");
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(published.at(-1)).not.toHaveProperty("output");
+    });
+
+    it("clears output when preparing the next reply even without another accepted event", async () => {
+        clock();
+        const published: Progress[] = [];
+        const s = setup({ publishGeneration: (event) => published.push(event) });
+        const held = holdRunner(s);
+        s.create();
+        const job = await held.started;
+        job.emit({ type: "stage", stage: "generating" });
+        job.emit({ type: "output", tokens: 9, since: 100, at: 100 });
+        expect(s.jobs.generationSnapshot()[0].output).toEqual({ tokens: 9, since: 100, at: 100 });
+        await vi.advanceTimersByTimeAsync(100);
+        job.emit({ type: "stage", stage: "preparing" });
+        expect(published.at(-1)).toMatchObject({ state: "running", stage: "preparing", at: 200 });
+        expect(published.at(-1)).not.toHaveProperty("output");
+        expect(s.jobs.generationSnapshot()[0]).not.toHaveProperty("output");
+        const before = [...published];
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(published).toEqual(before);
+    });
+
+    it("drops pending and late output after the terminal without throwing or publishing running again", async () => {
+        clock();
+        const published: Progress[] = [];
+        const s = setup({ publishGeneration: (event) => published.push(event) });
+        const held = holdRunner(s);
+        const jobId = s.create();
+        const job = await held.started;
+        job.emit({ type: "output", tokens: 9, since: 100, at: 100 });
+        job.emit({ type: "done", revision: s.revision() });
+        const ended = { type: "generation", state: "ended", epoch: s.store.epoch(), jobId, ...ref };
+        expect(published).toEqual([expect.objectContaining({ state: "running" }), ended]);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(() => job.emit({ type: "output", tokens: 12, since: 100, at: 1100 })).not.toThrow();
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(published).toEqual([expect.objectContaining({ state: "running" }), ended]);
+        expect(s.jobs.generationSnapshot()).toEqual([]);
+        held.finish();
+        await held.completed;
+    });
+
+    it("publishes every admitted kind before its runner starts and removes it from the snapshot when it ends", async () => {
+        clock();
+        let now = 1_000;
+        const published: Progress[] = [];
+        const s = setup({ now: () => now, publishGeneration: (event) => published.push(event) });
+        const epoch = s.store.epoch();
+        for (const kind of GENERATION_KINDS) {
+            published.length = 0;
+            let atRunnerStart: Progress[] | undefined;
+            const started = withResolvers<RunningJob>();
+            const finish = withResolvers<void>();
+            const completed = s.run(async (job) => {
+                atRunnerStart = structuredClone(published);
+                started.resolve(job);
+                await Promise.race([finish.promise, aborted(job)]);
+            });
+            cleanups.push(() => finish.resolve());
+            const body =
+                kind === "command"
+                    ? {
+                          kind,
+                          context: s.context("private input"),
+                          clientId: "tab",
+                          command: { type: "button" as const, data: "private command" },
+                      }
+                    : { kind, context: s.context("private input"), clientId: "tab" };
+            const result = s.jobs.create(body, epoch);
+            if (!result.ok) throw new Error(JSON.stringify(result));
+            const entry = { jobId: result.jobId, ...ref, kind, clientId: "tab", startedAt: now, at: now };
+            const running = { type: "generation", epoch, state: "running", ...entry };
+            expect(atRunnerStart).toBeUndefined();
+            expect(published, kind).toEqual([running]);
+            // A refused admission has no progress of its own.
+            expect(s.jobs.create(body, epoch)).toMatchObject({ ok: false, body: { error: "chatBusy" } });
+            expect(published).toEqual([running]);
+            const job = await started.promise;
+            expect(atRunnerStart).toEqual([running]);
+            now += 10;
+            expect(s.jobs.generationSnapshot()).toEqual([{ ...entry, at: now }]);
+            job.emit({ type: "done", revision: s.revision(), result: { text: "private result" } });
+            expect(published).toEqual([
+                running,
+                { type: "generation", epoch, state: "ended", jobId: result.jobId, ...ref },
+            ]);
+            expect(s.jobs.status(result.jobId, "tab")?.state).toBe("ended");
+            expect(s.jobs.generationSnapshot()).toEqual([]);
+            finish.resolve();
+            await completed;
+        }
+    });
+
+    it("publishes changed stages, every retry and changed command progress with the creating client", async () => {
+        clock();
+        const published: Progress[] = [];
+        const s = setup({ publishGeneration: (event) => published.push(event) });
+        const held = holdRunner(s);
+        const jobId = s.create("private input", "command");
+        const job = await held.started;
+        const epoch = s.store.epoch();
+        expect(s.jobs.handoff(jobId, { clientId: "tab", target: "worker" }, epoch).ok).toBe(true);
+        const takeover = s.jobs.takeover(jobId, { clientId: "worker" }, epoch);
+        if (!takeover.ok) throw new Error(JSON.stringify(takeover));
+        const worker = await s.follow(jobId, "worker", `&ticket=${takeover.body.ticket}`);
+        await worker.fence();
+        expect(s.jobs.current("c", "k", "tab")).toMatchObject({ owned: true, handedOff: true });
+        expect(s.jobs.current("c", "k", "worker")).toMatchObject({ owned: false });
+
+        vi.setSystemTime(110);
+        job.emit({ type: "stage", stage: "generating" });
+        job.emit({ type: "stage", stage: "generating" });
+        vi.setSystemTime(120);
+        job.emit({ type: "retry" });
+        job.emit({ type: "stage", stage: "generating" });
+        vi.setSystemTime(130);
+        job.emit({ type: "retry" });
+        vi.setSystemTime(140);
+        job.emit({ type: "stage", stage: "finishing" });
+        job.emit({ type: "stage", stage: "finishing" });
+        vi.setSystemTime(150);
+        job.sequence!.progress({ total: 2, sent: 0 });
+        job.sequence!.progress({ total: 2, sent: 0 });
+        vi.setSystemTime(160);
+        job.sequence!.progress({ total: 2, sent: 1 });
+        job.sequence!.progress({ total: 2, sent: 1 });
+        vi.setSystemTime(170);
+        job.sequence!.progress({ total: 3, sent: 1 });
+        vi.setSystemTime(180);
+        job.emit({ type: "retry" });
+
+        const entry = { jobId, ...ref, kind: "command", clientId: "tab", startedAt: 100, at: 100 };
+        const running = { type: "generation", epoch, state: "running", ...entry };
+        expect(published).toEqual([
+            running,
+            { ...running, at: 110, stage: "generating" },
+            { ...running, at: 120, stage: "generating", retry: 1 },
+            { ...running, at: 130, stage: "generating", retry: 2 },
+            { ...running, at: 140, stage: "finishing" },
+            { ...running, at: 150, stage: "finishing", sequence: { total: 2, sent: 0 } },
+            { ...running, at: 160, stage: "finishing", sequence: { total: 2, sent: 1 } },
+            { ...running, at: 170, stage: "finishing", sequence: { total: 3, sent: 1 } },
+            { ...running, at: 180, stage: "finishing", retry: 1, sequence: { total: 3, sent: 1 } },
+        ]);
+        vi.setSystemTime(190);
+        expect(s.jobs.generationSnapshot()).toEqual([
+            { ...entry, at: 190, stage: "finishing", retry: 1, sequence: { total: 3, sent: 1 } },
+        ]);
+    });
+
+    it("omits a running job of an earlier epoch from snapshots and publishes neither its progress nor its end", async () => {
+        clock();
+        const published: Progress[] = [];
+        const s = setup({ publishGeneration: (event) => published.push(event) });
+        const held = holdRunner(s);
+        const jobId = s.create("", "command");
+        const job = await held.started;
+        const epoch = s.store.epoch();
+        const snapshot = path.join(s.dir, "snapshot.sqlite");
+        await s.store.backupTo(snapshot);
+        await installSnapshot(s.store, snapshot, kinds);
+        expect(s.store.epoch()).not.toBe(epoch);
+        expect(s.jobs.status(jobId, "tab")).toMatchObject({ state: "running", epoch });
+        expect(s.jobs.generationSnapshot()).toEqual([]);
+        published.length = 0;
+        job.emit({ type: "stage", stage: "generating" });
+        job.emit({ type: "retry" });
+        job.sequence!.progress({ total: 2, sent: 1 });
+        job.emit({ type: "done", revision: s.revision() });
+        expect(s.jobs.status(jobId, "tab")?.state).toBe("ended");
+        expect(published).toEqual([]);
+        expect(s.jobs.generationSnapshot()).toEqual([]);
+        held.finish();
+        await held.completed;
+    });
+
+    it("logs publication failures while the job keeps running and preserves its terminal", async () => {
+        clock();
+        const log = vi.spyOn(console, "error").mockImplementation(() => {});
+        const publishGeneration = vi.fn(() => {
+            throw new Error("publisher failed");
+        });
+        const s = setup({ publishGeneration });
+        const held = holdRunner(s);
+        try {
+            const jobId = s.create("", "command");
+            const job = await held.started;
+            job.emit({ type: "stage", stage: "generating" });
+            job.emit({ type: "retry" });
+            job.sequence!.progress({ total: 2, sent: 1 });
+            expect(s.jobs.status(jobId, "tab")).toEqual({
+                jobId,
+                ...ref,
+                kind: "command",
+                epoch: s.store.epoch(),
+                state: "running",
+            });
+            const terminal = {
+                type: "done" as const,
+                revision: s.revision(),
+                result: { text: "private result" },
+                sequence: { total: 2, sent: 1 },
+            };
+            job.emit(terminal);
+            held.finish();
+            await held.completed;
+            expect(s.jobs.status(jobId, "tab")).toEqual({
+                jobId,
+                ...ref,
+                kind: "command",
+                epoch: s.store.epoch(),
+                state: "ended",
+                terminal: { ...terminal, epoch: s.store.epoch() },
+            });
+            expect(publishGeneration).toHaveBeenCalledTimes(5);
+            const failures = log.mock.calls.filter(([line]) =>
+                String(line).includes(`[Generation] progressPublish job=${jobId}`),
+            );
+            expect(failures).toHaveLength(5);
+        } finally {
+            log.mockRestore();
+        }
     });
 });
 

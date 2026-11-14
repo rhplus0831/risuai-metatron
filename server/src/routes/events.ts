@@ -8,6 +8,7 @@ import {
     type ChatStreamingSnapshot,
     type EventFeedFrame,
     type FeedClient,
+    type GenerationProgressEntry,
     type HandoffOffer,
     type MemoryTaskEntry,
 } from "../../../shared/events.ts";
@@ -35,8 +36,9 @@ export type EventSockets = ReturnType<typeof createEventSockets>;
  * non-negative integer recorded per socket and logged without content (absent or invalid: none);
  * the number never changes admission or behavior. On connect the socket sends
  * `hello` with the epoch, current generation locks (`streaming`), and every chat's memory task
- * status (`memoryTasks`), open handoff offers (`handoffs`), registered clients (`clients`), and an
- * optional revision-listing `digest`, all sampled synchronously before adding the socket and sending hello.
+ * status (`memoryTasks`), open handoff offers (`handoffs`), running job progress (`generations`),
+ * registered clients (`clients`), and an optional revision-listing `digest`, all sampled synchronously
+ * before adding the socket and sending hello.
  * A text `register` message sets this socket's presence. The newest registration per client id wins;
  * names use at most 64 UTF-16 units and the list keeps the newest 64 clients. Join, leave and change
  * publish the list through the same queue as feed events. Unregistered sockets still receive everything.
@@ -67,6 +69,8 @@ export function createEventSockets(options: {
     cursor?: () => number;
     /** Open handoff offers, sampled with the other hello snapshots. */
     handoffs?: () => HandoffOffer[];
+    /** Content-free running job progress, sampled synchronously with the other hello snapshots. */
+    generations?: () => GenerationProgressEntry[];
 }) {
     const { feed, epoch, authorize, streaming, memoryTasks, digest } = options;
     const wsServer = new WebSocketServer({ noServer: true, maxPayload: 4096 });
@@ -118,6 +122,7 @@ export function createEventSockets(options: {
                     status: event.status,
                 };
             case "handoff":
+            case "generation":
                 return { ...event };
             case "epoch":
                 return { type: "epoch", epoch: event.epoch };
@@ -208,6 +213,7 @@ export function createEventSockets(options: {
                 memoryTasks: memoryTasks(),
                 clients,
                 ...(options.handoffs ? { handoffs: options.handoffs() } : {}),
+                ...(options.generations ? { generations: options.generations() } : {}),
             };
             try {
                 if (digest) frame.digest = digest();

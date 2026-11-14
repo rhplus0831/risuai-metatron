@@ -275,6 +275,14 @@ describe("settings page sections", () => {
         expect(ids[ids.indexOf("display.showMemoryLimit") + 1]).toBe("display.memoryLimitThickness");
     });
 
+    it("offers an unconditional generation progress window checkbox on the Interaction page", () => {
+        const item = interactionSettingsSections
+            .flatMap((section) => section.items)
+            .find((entry) => entry.id === "interaction.generationProgressWindow");
+        expect(item).toMatchObject({ type: "check", bindKey: "generationProgressWindow" });
+        expect(item?.condition).toBeUndefined();
+    });
+
     it("offers the lore budget checkbox in Interaction input independently of the context meter", () => {
         const section = interactionSettingsSections.find((entry) => entry.id === "interaction.input")!;
         const item = section.items.find((entry) => entry.id === "interaction.loreBudgetStop");

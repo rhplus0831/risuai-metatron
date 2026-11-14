@@ -52,7 +52,13 @@ import {
     MAX_KEPT_OUTCOMES,
     type GenerationReceipts,
 } from "../data/generationReceipts.ts";
-import type { ChatStreaming, ChatStreamingSnapshot, HandoffOffer } from "../../../shared/events.ts";
+import type {
+    ChatStreaming,
+    ChatStreamingSnapshot,
+    EventFeedFrame,
+    GenerationProgressEntry,
+    HandoffOffer,
+} from "../../../shared/events.ts";
 import {
     type AppliedChanges,
     CommittedWriteError,
@@ -87,6 +93,8 @@ export const HANDOFF_OFFER_DELAY_MS = 10_000;
 export const HANDOFF_TICKET_MS = 10_000;
 /** An ended job stays readable (status, reconnect) this long. */
 export const JOB_DONE_GRACE_MS = 60_000;
+/** Minimum time since a running publication before output alone publishes progress again. */
+export const GENERATION_PROGRESS_INTERVAL_MS = 1000;
 /**
  * After that, its outcome (`GenerationStatus.kept`) stays readable this long, at most
  * `MAX_KEPT_OUTCOMES` of them (the oldest goes first), so an owner that comes back late still learns
@@ -215,10 +223,14 @@ export type JobChanges = {
 export type JobWriteResult = AppliedChanges & { written?: WrittenChanges };
 
 type Distribute<T> = T extends unknown ? Omit<T, "epoch"> : never;
-/** The registry computes chunk deltas and retry counts from runner reports, and adds the epoch. */
+/**
+ * The registry computes chunk deltas and retry counts from runner reports, and adds the epoch.
+ * `retry` and `output` are registry-only inputs; output counts go only to live-update progress.
+ */
 export type JobEventInput =
     | Distribute<Exclude<GenerationEvent, { type: "ping" | "chatPatch" | "chunk" | "retry" }>>
     | { type: "retry" }
+    | { type: "output"; tokens: number; since: number; at: number }
     | Omit<GenerationChunkEvent, "epoch" | "base" | "keep">;
 type TerminalInput = Distribute<GenerationTerminalEvent>;
 
@@ -244,10 +256,12 @@ export type RunningJob = {
     readonly signal: AbortSignal;
     /**
      * Sends an event to the owner. `accepted` is preceded by the job chat's hydration; `done` and
-     * `error` end the job (the chat's hydration and the terminal event go out, and every later
-     * call throws `GenerationJobEndedError`). A `resource` of a hidden kind throws.
+     * `error` end the job (the chat's hydration and the terminal event go out, and later calls other
+     * than `output` throw `GenerationJobEndedError`). A `resource` of a hidden kind throws.
      * A `stage` equal to the job's current one is not sent; the registry keeps the latest and
-     * replays it on attach while the job runs.
+     * replays it on attach while the job runs. `retry` is a report the registry turns into a count.
+     * `output` only updates live-update progress, without flushing pending writes or sending to job
+     * sockets; reports after the job ends or its epoch changes are silently dropped, and never throw.
      */
     emit(event: JobEventInput): void;
     /**
@@ -523,6 +537,10 @@ type Job = {
     stage: GenerationStage | null;
     /** Re-sent provider requests since the last stage change, also retained for jobs without a stage. */
     retry: number | null;
+    /** Local count of the current reply, cleared before preparing or accepting another reply. */
+    output?: GenerationProgressEntry["output"];
+    lastProgressAt: number;
+    outputTimer: ReturnType<typeof setTimeout> | null;
     /** What the job's callbacks act on (each send can pick a preset: `setCallbackPreset`). */
     targets: CallbackTargets;
     /** Records the job sent (`kind\0id`, or `chats\0characterId\0id`), re-sent fresh on attach. */
@@ -885,6 +903,8 @@ export function createGenerationJobs(options: {
     handoffTicketMs?: number;
     /** Publishes content-free open/closed offers to the live-update feed. */
     publishHandoff?: (event: { type: "handoff" } & HandoffOffer) => void;
+    /** Publishes content-free running/ended job progress to the live-update feed. */
+    publishGeneration?: (event: Extract<EventFeedFrame, { type: "generation" }>) => void;
     /** Synchronous current-owner name lookup for role events; missing, empty or throwing lookups omit the name. */
     clientName?: (clientId: string) => string | undefined;
     /** Clock for job timestamps, owner liveness, channel deadlines and identity retention (defaults to Date.now). */
@@ -1097,6 +1117,73 @@ export function createGenerationJobs(options: {
             options.publishHandoff?.({ type: "handoff", ...offer });
         } catch (error) {
             logEvent("generation.handoffPublish", { job: offer.jobId }, error, diagnostics);
+        }
+    }
+
+    function progressEntry(job: Job): GenerationProgressEntry {
+        return {
+            jobId: job.id,
+            characterId: job.context.characterId,
+            chatId: job.context.chatId,
+            kind: job.kind,
+            clientId: job.clientId,
+            startedAt: job.startedAt,
+            at: clock(),
+            ...(job.stage !== null ? { stage: job.stage } : {}),
+            ...(job.retry !== null ? { retry: job.retry } : {}),
+            ...(job.sequence ? { sequence: { total: job.sequence.total, sent: job.sequence.sent } } : {}),
+            ...(job.output ? { output: job.output } : {}),
+        };
+    }
+
+    function clearOutputTimer(job: Job) {
+        const timer = job.outputTimer;
+        job.outputTimer = null;
+        try {
+            if (timer !== null) clearTimeout(timer);
+        } catch (error) {
+            logEvent("generation.progressPublish", { job: job.id }, error, diagnostics);
+        }
+    }
+
+    function publishProgress(job: Job, state: "running" | "ended" = "running") {
+        try {
+            if (job.epoch !== store.epoch() || (state === "running" && job.ended)) return;
+            clearOutputTimer(job);
+            if (state === "running") job.lastProgressAt = clock();
+            options.publishGeneration?.(
+                state === "running"
+                    ? { type: "generation", epoch: job.epoch, state, ...progressEntry(job) }
+                    : {
+                          type: "generation",
+                          epoch: job.epoch,
+                          state,
+                          jobId: job.id,
+                          characterId: job.context.characterId,
+                          chatId: job.context.chatId,
+                      },
+            );
+        } catch (error) {
+            logEvent("generation.progressPublish", { job: job.id }, error, diagnostics);
+        }
+    }
+
+    /** Output never flushes a job write; a single timer publishes the latest state after the interval. */
+    function publishOutputProgress(job: Job) {
+        try {
+            if (job.ended || job.epoch !== store.epoch()) return;
+            const delay = GENERATION_PROGRESS_INTERVAL_MS - (clock() - job.lastProgressAt);
+            if (delay <= 0) {
+                publishProgress(job);
+            } else if (job.outputTimer === null) {
+                job.outputTimer = setTimeout(() => {
+                    job.outputTimer = null;
+                    publishOutputProgress(job);
+                }, delay);
+                job.outputTimer.unref?.();
+            }
+        } catch (error) {
+            logEvent("generation.progressPublish", { job: job.id }, error, diagnostics);
         }
     }
 
@@ -1675,6 +1762,8 @@ export function createGenerationJobs(options: {
         job.stage = null;
         job.retry = null;
         job.endedAt = clock();
+        clearOutputTimer(job);
+        publishProgress(job, "ended");
         job.terminal = terminal as GenerationTerminalEvent;
         job.memoryControl = null;
         try {
@@ -1970,6 +2059,16 @@ export function createGenerationJobs(options: {
             epoch: job.epoch,
             signal: job.controller.signal,
             emit(input) {
+                if (input.type === "output") {
+                    try {
+                        if (job.ended || job.epoch !== store.epoch()) return;
+                        job.output = { tokens: input.tokens, since: input.since, at: input.at };
+                        publishOutputProgress(job);
+                    } catch (error) {
+                        logEvent("generation.progressPublish", { job: job.id }, error, diagnostics);
+                    }
+                    return;
+                }
                 job.pendingFlush?.();
                 assertLive(job);
                 if (input.type === "done" || input.type === "error") {
@@ -1982,11 +2081,13 @@ export function createGenerationJobs(options: {
                 if (input.type === "retry") {
                     job.retry = (job.retry ?? 0) + 1;
                     send(job, { type: "retry", epoch: job.epoch, retry: job.retry });
+                    publishProgress(job);
                     return;
                 }
                 const event = { ...input, epoch: job.epoch };
                 switch (event.type) {
                     case "accepted":
+                        job.output = undefined;
                         // The reply (and the user message) must exist in the client's mirror first.
                         sendChat(job);
                         // Always sequenced, so the client orders it against chunks.
@@ -2034,11 +2135,13 @@ export function createGenerationJobs(options: {
                             return;
                         }
                         job.stage = event.stage;
+                        if (event.stage === "preparing") job.output = undefined;
                         send(job, event);
                         if (job.retry !== null) {
                             job.retry = null;
                             send(job, { type: "retry", epoch: job.epoch, retry: null });
                         }
+                        publishProgress(job);
                         return;
                     case "resource":
                         track(
@@ -2128,12 +2231,14 @@ export function createGenerationJobs(options: {
                 },
                 progress(value) {
                     assertLive(job);
+                    const changed = job.sequence?.total !== value.total || job.sequence?.sent !== value.sent;
                     job.sequence = { total: value.total, sent: value.sent };
                     try {
                         receipts?.progress(job.id, job.sequence);
                     } catch (error) {
                         logEvent("generation.endDelivery", { job: job.id }, error, diagnostics);
                     }
+                    if (changed) publishProgress(job);
                 },
                 releaseRemovedReplies() {
                     assertLive(job);
@@ -2333,6 +2438,8 @@ export function createGenerationJobs(options: {
             preset: null,
             stage: null,
             retry: null,
+            lastProgressAt: startedAt,
+            outputTimer: null,
             targets: {
                 chatRef: { chaId: characterId, chatId },
                 presetId: body.context.presetId ?? "",
@@ -2393,6 +2500,7 @@ export function createGenerationJobs(options: {
             requestId: job.requestId,
             fingerprint: job.fingerprint,
         });
+        publishProgress(job);
         record({ kind: "job", phase: "accepted", jobId: job.id, jobKind: job.kind });
         if (body.handoff === "prefer") openOffer(job, "preferred");
         armOffer(job);
@@ -2952,6 +3060,11 @@ export function createGenerationJobs(options: {
             }
             return [...jobs.values()].flatMap((job) => (job.offer && canHandoff(job) ? [{ ...job.offer }] : []));
         },
+        /** Content-free progress for every running job in the current epoch, sampled synchronously. */
+        generationSnapshot(): GenerationProgressEntry[] {
+            const epoch = store.epoch();
+            return [...jobs.values()].filter((job) => !job.ended && job.epoch === epoch).map(progressEntry);
+        },
         cancel,
         current,
         stop,
@@ -3138,6 +3251,7 @@ export function createGenerationJobs(options: {
             disposed = true;
             for (const job of jobs.values()) {
                 clearHandoff(job);
+                clearOutputTimer(job);
                 for (const ws of allSockets(job)) {
                     const live = liveness.get(ws);
                     if (live?.timer) clearTimeout(live.timer);
