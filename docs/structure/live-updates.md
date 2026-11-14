@@ -24,6 +24,9 @@ Identifiers the flows below name are not repeated here.
   `remoteCollections`, `patchedRecord`, `canApplyRemote`, `REMOTE_DELAY_MS`, `MAX_REMOTE_READS`, `beforeRestoreReload`.
 - `src/ts/storage/chatStore.svelte.ts`: chat updates and feed locks, owned by [chat-store](chat-store.md);
   `stagedMetaFields`, `feedLocks`, `canRefreshChat`, `finishIdleChatRefresh`.
+- `src/ts/process/generationProgress.svelte.ts`: the server's running generation jobs as the feed reports them;
+  `replaceGenerations`, `noteGenerationFrame`, `resetGenerationProgress`, `runningGenerations`, `foreignGeneration`,
+  `generationTokensPerSecond`, `OUTPUT_SAMPLE_WINDOW_MS`.
 
 ## Flows
 
@@ -35,6 +38,12 @@ Identifiers the flows below name are not repeated here.
 - A same-epoch `hello` replaces feed locks before `reconcileRemote`; a different epoch [halts](#restore-halt). Refs
   reach the resource adapter, with chat bodies and summaries following [Chat live updates](#chat-live-updates). Handoff
   offers and presence go to `src/ts/network/handoff.ts`; socket resume/liveness is in `socketLiveness.ts`.
+- Running generation jobs: a same-epoch `hello`'s `generations` replaces the set (absent: empty), and a `generation`
+  frame of the loaded epoch upserts or removes one job. The offset is the newest entry's `at` against the tab's clock;
+  speed uses the samples' own `at`. Readers: the [progress window and the Stop-other ring](ui-theming.md#chat-screen).
+- `retire()` and every place memory tasks are reset for another epoch (including a reconciliation read's epoch mismatch,
+  which keeps the socket open) clear the running jobs, their output samples, and the clock offset, so a missed `ended`
+  frame cannot leave a job listed.
 - `hello.rerollInPlace` feeds `serverRerollsInPlace`; its connection-scoped contract is on the export in `eventFeed.ts`,
   and its screen consumer is [Reroll](chat-pipeline.md#reroll).
 
@@ -109,7 +118,9 @@ Identifiers the flows below name are not repeated here.
 - Per chat, `feedLocks`: the message ids a frame or a whole read last listed as locked, replaced list for list, without
   the generations this tab retired.
 - The connection's `generation`: one connection is current; late results do nothing except an older listing's
-  epoch-mismatch error, which still resets the advertised map and memory tasks.
+  epoch-mismatch error, which still resets the advertised map, memory tasks, and running generation jobs.
+- The running generation jobs by `jobId`, with each job's `output` samples of the last 5 s and one server clock offset;
+  held for the current connection only.
 - The translator and HypaV3 `selectedId` are shared across tabs; preset and persona selections stay per tab.
 
 ## Coupling
@@ -132,8 +143,8 @@ Identifiers the flows below name are not repeated here.
   read decides, and one written locally but unsaved is not adopted. The one discard is a remote character deletion,
   which discards its chats' unsent work with the reload notice.
 - A feed lock is a lock only: it holds no text, retires nothing, and never holds the save loop.
-- A `hello` or `epoch` frame of another epoch halts; different-epoch `change` and `memoryTask` frames are ignored. After
-  the halt every write is refused until the page reloads.
+- A `hello` or `epoch` frame of another epoch halts; different-epoch `change`, `memoryTask`, and `generation` frames are
+  ignored. After the halt every write is refused until the page reloads.
 - One connection is current: a late answer of an older connection applies nothing, except its replay or listing's
   epoch-mismatch error.
 
@@ -146,7 +157,7 @@ Identifiers the flows below name are not repeated here.
 ## Tests
 
 - Focused:
-  `pnpm --silent test:agent src/ts/network/{eventFeed,socketLiveness}.test.ts src/ts/storage/tests/resourceSync{Live,FeedPatches,Patches,Notices,Refresh,Chats}.test.ts`.
+  `pnpm --silent test:agent src/ts/network/{eventFeed,socketLiveness}.test.ts src/ts/process/generationProgress.test.ts src/ts/storage/tests/resourceSync{Live,FeedPatches,Patches,Notices,Refresh,Chats}.test.ts`.
   `slow`: none of its own. `e2e`: `e2e/terminalNotice.spec.ts`, restore halt; `e2e/multiClientGeneration.spec.ts`, feed
   locks.
 - The adapter tests and fakes are [resource-sync](resource-sync.md#tests)'s: `FakeResourceServer`, and

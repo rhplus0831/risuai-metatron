@@ -257,6 +257,7 @@
     { "match": "src/ts/checkpoints/**", "guide": "chat-store" },
     { "match": "src/ts/storage/{resourceClient,bootCache,recordMerge,readDeadline}.ts", "guide": "resource-sync" },
     { "match": "src/ts/network/{eventFeed,socketLiveness}.ts", "guide": "live-updates" },
+    { "match": "src/ts/process/generationProgress.{svelte.ts,test.ts}", "guide": "live-updates" },
     {
       "match": "src/ts/storage/{draftJournal,journalEligibility,journalRecovery,recoveryDrafts.svelte}.ts",
       "guide": "draft-recovery"
@@ -265,6 +266,7 @@
     { "match": "src/ts/chatLoadPages.ts", "guide": "persistence" },
     { "match": "shared/{chatCheckpoints,togglePresets}.ts", "guide": "persistence" },
     { "match": "src/ts/messageSearch.svelte.ts", "guide": "chat-pipeline" },
+    { "match": "src/ts/ooc/**", "guide": "chat-pipeline" },
     { "match": "shared/{messageSearch,contextReport,eligibleHistory}.ts", "guide": "chat-pipeline" },
     { "match": "shared/lore/**", "guide": "chat-pipeline" },
     { "match": "shared/cbs/**", "guide": "cbs-rendering" },

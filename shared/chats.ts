@@ -14,9 +14,9 @@ export const CHAT_META_FORBIDDEN_KEYS = ["id", "message", "isStreaming", "active
 /**
  * The chat fields a `meta` op may `merge` entries into (and remove entries from with `mergeUnset`):
  * every stored chat field that is a map keyed by an id, so a writer that changes one entry never
- * replaces another writer's entries (`bookmarkNames` is keyed by message id).
+ * replaces another writer's entries (`bookmarkNames` uses message ids; `oocLog` uses exchange ids).
  */
-export const CHAT_META_MERGE_KEYS = ["toolCalls", "GLGlobalVariables", "scriptstate", "bookmarkNames"];
+export const CHAT_META_MERGE_KEYS = ["toolCalls", "GLGlobalVariables", "scriptstate", "bookmarkNames", "oocLog"];
 
 /** The largest remembered tool call (`toolCalls[id]`), as serialized JSON, in UTF-8 bytes. */
 export const MAX_TOOL_CALL_RECORD_BYTES = 1024 * 1024;

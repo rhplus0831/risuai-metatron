@@ -28,10 +28,11 @@
 - `server/src/jobs/{jobScope,chatBinding,loreOverrides,generationLock,cbsHost,chatResult}.ts`: scoped reads
   (`loadJobScope`), the binding check (`checkChatBinding`), orphaned overrides (`readOrphanedOverrideEntries`), reply
   locks (`createGenerationLock`), the CBS host (`createJobCbsHost`), trigger chat results (`applyTriggerChat`).
-- `server/src/prompt/runner.ts` `runPromptJob`, `runPromptSend`, `createJobMemoryHost`; `server/src/prompt/assemble.ts`
-  `assemblePrompt`, `AssemblyHost`; `server/src/prompt/{commands,scripts,triggers,postProcess,thoughts}.ts`
-  (`createCommandExecutor`, `createScriptProcessor`, `runLuaEdit`, `createTriggerRuntime`, `runEmotionMode`,
-  `stripThoughtsBlock`).
+- `server/src/prompt/runner.ts` `runPromptJob`, `runPromptSend`, `createJobMemoryHost`;
+  `server/src/prompt/outputMeter.ts` `createOutputMeter` (a streamed reply's token count);
+  `server/src/prompt/assemble.ts` `assemblePrompt`, `AssemblyHost`;
+  `server/src/prompt/{commands,scripts,triggers,postProcess,thoughts}.ts` (`createCommandExecutor`,
+  `createScriptProcessor`, `runLuaEdit`, `createTriggerRuntime`, `runEmotionMode`, `stripThoughtsBlock`).
 - `server/src/prompt/transform.ts` `createTransformService`, `partitionKnownResults`;
   `server/src/prompt/transformCache.ts`, `server/src/prompt/displayScope.ts` `createDisplayScopeLoader`,
   `server/src/prompt/displayKinds.ts`; wire shapes in `shared/transform.ts`.
@@ -131,7 +132,39 @@ refusal the memory step recovered from or outlived replaces no later error.
   ([Lore](chat-pipeline.md#lore)): `assemblePrompt` returns an `alert` coded `loreOverBudget` before history, and the
   `error` terminal carries `lore` (`parseLoreBudgetStop`). What ran before activation stays; no reply request is made.
   Later rounds and speakers, previews, and command-sequence parts (the part view drops the field) never stop.
+- `context.oocExchangeId` (kept by `parseCreateBody` for a `preview` only, refused for other kinds; in
+  `requestFingerprint` only when present) makes an OOC preview. After the `presetChain` pick, `runSend` reads the
+  exchange from the stored `oocLog` and sets `scope.detached`: the job's chat is its own copy, cut after the exchange's
+  anchor, with the `oocTail` rows appended under fresh message ids and `oocToggleValues` over its `GLGlobalVariables`.
+  The result carries `ooc: true`.
+- A detached scope: `refreshChat` and the metadata queue leave the copy alone, `writeChat` applies its ops to it
+  (`reduceChatOps` in `server/src/jobs/chatOpsReducer.ts`), and character, persona, and `risuAccess` resource writes
+  refuse. Media is stored as in any preview. No start trigger runs and memory requests list no tools. The registry's
+  `sentChat` and hydration stay on the stored chat.
+- OOC failure codes: `oocExchangeGone`, `oocAnchorGone`, and `oocMemoryAhead` (SupaMemory or legacy Hypa finds no cursor
+  in the cut history). A group chat is refused with a plain error.
 - After final chat writes, `runPromptSend` hands off translations and due memory input, detached, before returning.
+- A streamed reply is metered (`createOutputMeter`, `server/src/prompt/outputMeter.ts`): `readReply`'s `onRaw` hands it
+  each chunk's raw first value, before `removeIncompleteResponse` and the continue's prefix, so the count covers what
+  this request generated. A buffered answer has no meter.
+- A count starts at most every `OUTPUT_COUNT_INTERVAL_MS` (500) with none in flight and counts the part the last count
+  did not cover (a rewritten snapshot is counted whole and replaces the total) with the reply scope's `countLocal`; it
+  reports `{ type: "output", tokens, since, at }` through `job.emit`. No write or event waits for it. A failed count is
+  logged once (`generation.outputCount`) and stops the meter, which also stops when `readReply` returns. The tokenizer
+  runs on the server thread for the new part, or a whole rewritten snapshot.
+- Half Streaming (`providers.halfStreaming`, read only here, from the request db): with Response Streaming off, a send
+  is quiet unless it is a `previewPrompt` or its reply model is `LLMFormat.OobaLegacy` (whose string stream `readReply`
+  misreads). Only its reply request gets `forceStreaming`; memory, translation, and Lua or trigger requests keep their
+  arguments. An answer that comes back buffered takes the buffered path.
+- A quiet stream takes the streamed path (reply row, `begin`, `accepted`, meter, tail, and the final write on a stop or
+  read failure), but `readReply`'s `quiet` emits no `chunk`, writes no raw checkpoint, and keeps chunk sequence 0, so no
+  tab sees partial text. A stream on a send that is not quiet (Response Streaming on, or a plugin provider that streams
+  on its own) is read with chunks and checkpoints.
+- A streamed reply, quiet or not, skips what only a buffered `success` gets (`requestChatDataOuter`): the plugins'
+  after-request replacers and the banned-character-set check and retry; a failure after the stream returned does not
+  restart the request. The primary text is trimmed before the output scripts, a continue is processed once as the
+  combined text, alternative samples are stored as the last chunk holds them, and Claude's buffered JSON extraction does
+  not run. The Half Streaming help text names the replacers and the retry.
 
 ### Reroll in place
 
@@ -174,6 +207,16 @@ client (a participant's `DELETE` too) is attributed; `stop`'s comment holds the 
 - A job re-sending a failed provider request reports `{ type: "retry" }` (`JobEventInput`); the registry counts the
   reports since the stage last changed and sends the `retry` event with the count, then `retry: null` after a changed
   stage's event. The snapshot replays a count only, as it does the stage.
+- The registry publishes each job's progress to the live-update feed (`publishGeneration`, a `generation` frame): a
+  `running` entry once the job is admitted, before its runner starts, and again on each changed stage (after the retry
+  count it clears), each retry report, and each changed sequence part; an `ended` entry where `finalize` sets `endedAt`.
+  Every kind is published, previews included; a job of another epoch publishes nothing. `clientId` is the creator, as
+  `current`'s `owned` compares. A publisher's throw is logged (`generation.progressPublish`) and dropped.
+- An `output` report (registry-only, never on a job socket) becomes the entry's `output`, the reply being generated now:
+  `accepted` and a change to `preparing` clear it, and a report after the job ended or of another epoch is dropped
+  without throwing (it does not flush pending writes). Output alone publishes at once when
+  `GENERATION_PROGRESS_INTERVAL_MS` (1 s) has passed since the job's last `running` entry, else once by a timer with the
+  newest count; any other `running` entry carries the newest count and cancels the timer, and `finalize` clears it.
 - `sendSocket` allows one oversized frame on an empty queue for whole-chat recovery; with queued bytes, it terminates an
   owner or viewer whose queue plus the next frame exceeds 4 MiB, leaving as on a drop.
 - `provider` callbacks offer `chunks: "append"`: `handleMessage` joins appends for `onChunk`, asks `chunkResync` on gaps
@@ -258,7 +301,9 @@ mode); like the request history, in no snapshot or archive.
 - Generation registry, chat slots, sockets, handoff offers and tickets, lock, and request-id index are process-local and
   lost on restart. An ended job is readable for 60 s (`JOB_DONE_GRACE_MS`), then its trimmed outcome stays in memory for
   24 h/up to 500 entries (`KEPT_OUTCOME_MS`, `MAX_KEPT_OUTCOMES`); status falls back to the [receipt](#job-receipts)
-  after restart. Epoch changes clear memory.
+  after restart. Epoch changes clear the kept outcomes and the request index; an ended job of the old epoch stays
+  through its grace, and `generationSnapshot` lists only the current epoch's running jobs, each with its newest output
+  count.
 - Request identity moves from live job through grace to the kept entry, then disk. Cancellation tombstones are kept in
   memory 72 h/up to 10,000 entries; epoch changes clear both.
 - The transform service: its result LRU, pending two-call snapshots and pins, plus `createDisplayScopeLoader` (raw
@@ -302,7 +347,7 @@ In-process harness, slow table: [shell's Tests](self-host-server.md#tests).
 - Browser checks: `util/playwright/checkJobProtocol.mjs`, `checkJobHandoff.mjs`, and `checkServerRestartRaces.mjs`
   ([test-harness](test-harness.md)); `e2e`: `e2e/multiClientGeneration.spec.ts`, two-client lock.
 - Jobs:
-  `pnpm --silent test:agent server/src/tests/{generationJobs,generationReceipts,generationDeltaChunks,generations,commandSequences,generationBarrier,jobChannel,promptRunner}.test.ts`.
+  `pnpm --silent test:agent server/src/tests/{generationJobs,generationReceipts,generationDeltaChunks,generations,commandSequences,generationBarrier,jobChannel,promptRunner,outputMeter}.test.ts`.
 - Transform and translation: `pnpm --silent test:agent server/src/tests/{transform,transformService,translate}.test.ts`.
 - LLM and tokens: `pnpm --silent test:agent server/src/tests/{llmRoutes,llmRequests,tokenRoutes,tokens}.test.ts`.
 - Job modules and CBS: `pnpm --silent test:agent server/src/tests/{jobModules,dynamicAssets,cbs}.test.ts`.
@@ -336,6 +381,9 @@ Other subsystems' runtime limits live with their owners: [chat-pipeline](chat-pi
   only logged. Decision: Incremental Chat Transport D3, D4, archive.
 - Restart ends a running job as `shutdown`; reply text since its last checkpoint (3 s target, `CHECKPOINT_INTERVAL_MS`)
   is lost, and its message fence stays open until an ordinary write. Decision: Job Protocol D1, D8, and Q3, archive.
+- A quiet (Half Streaming) stream writes no checkpoint: a graceful shutdown finalizes the text so far inside its grace,
+  but a process lost without it (a crash, a kill) leaves the reply as last stored, empty for a new reply and the prefix
+  for a continue. A checkpoint would show the hidden text on every client. Decision: Generation Progress Window D23.
 - If receipt storage degrades, outcomes stay in memory and are lost on restart; without a persisted receipt, request
   deduplication also ends at the memory caps. WAL `synchronous=NORMAL` may lose recent writes on power loss, and the tab
   shows `serverJob.endedAway` when no outcome receipt remains. Decision: Job Protocol D1, archive.

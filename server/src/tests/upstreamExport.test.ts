@@ -631,6 +631,26 @@ describe("buildUpstreamDatabase: settings", () => {
         expect(excluded(report, "plugin-storage")).toMatchObject({ count: 5 });
     });
 
+    it("omits the generation progress window setting from upstream exports even when disabled", async () => {
+        const snapshot = await snapshotOf((writer) => {
+            seedLibrary(writer);
+            writer.put(SECTION_KIND.ui, "main", { generationProgressWindow: false });
+        });
+        expect(exportOf(snapshot).db).not.toHaveProperty("generationProgressWindow");
+    });
+
+    it("omits Half Streaming from upstream exports for either stored preference", async () => {
+        for (const halfStreaming of [false, true]) {
+            const snapshot = await snapshotOf((writer) => {
+                seedLibrary(writer);
+                writer.put(SECTION_KIND.providers, "main", { halfStreaming, useStreaming: false });
+            });
+            const { db } = exportOf(snapshot);
+            expect(db).not.toHaveProperty("halfStreaming");
+            expect(db.useStreaming).toBe(false);
+        }
+    });
+
     it("omits the lore budget send warning from upstream exports even when disabled", async () => {
         const snapshot = await snapshotOf((writer) => {
             seedLibrary(writer);

@@ -432,6 +432,51 @@ describe("display install state", () => {
         expect(chat.isChatStale(ref)).toBe(false);
     });
 
+    it("shows a quiet reply from the final job chat event over an empty accepted buffer without resync", async () => {
+        const { server, chat, ref, take } = await boot();
+        const write = (text: string) => {
+            server.chatBatch([
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: server.chat("c", "k")!.revision,
+                    ops: [{ op: "setText", id: "c", text }],
+                },
+            ]);
+            return server.chat("c", "k")!;
+        };
+        const streaming = [{ messageId: "c", generationId: "g", seq: 0 }];
+        expect(chat.hydrateChat(write(""), { jobId: "J", streaming })).toBe(true);
+        chat.applyServerGeneration(ref, { jobId: "J", messageId: "c", generationId: "g", text: "", seq: 0 });
+        expect(chat.findChat(ref)!.message.at(-1)!.data).toBe("");
+        expect(chat.isMessageLocked(ref, "c")).toBe(true);
+        server.requests.length = 0;
+
+        const baseRevision = chat.heldChatRevision(ref)!;
+        const final = write("The completed reply.");
+        expect(
+            chat.hydrateChatPatch(
+                {
+                    characterId: "c",
+                    id: "k",
+                    baseRevision,
+                    revision: final.revision,
+                    count: 3,
+                    messages: [{ after: "b", message: final.data.message.at(-1)! }],
+                },
+                { jobId: "J", streaming },
+            ),
+        ).toBe("applied");
+        expect(chat.findChat(ref)!.message.at(-1)!.data).toBe("The completed reply.");
+        expect(chat.hydrateChat(final, { jobId: "J", streaming: [] })).toBe(true);
+        chat.endServerJob("J");
+        expect(chat.findChat(ref)!.message.at(-1)!.data).toBe("The completed reply.");
+        expect(chat.isMessageLocked(ref, "c")).toBe(false);
+        expect(chat.isChatStale(ref)).toBe(false);
+        expect(take().groups).toEqual([]);
+        expect(server.requests).toEqual([]);
+    });
+
     it("keeps a deferred collection reload unacknowledged after the job unlocks", async () => {
         const { server, chat, ref, take } = await boot();
         chat.applyServerGeneration(ref, { jobId: "J", messageId: "a", generationId: "g", text: "stream", seq: 0 });

@@ -14,6 +14,7 @@
   - `src/ts/process/{lorebook.svelte.ts,templates/{chatTemplate,templateCheck,templates}.ts,files/{inlays,multisend}.ts}`
   - `shared/lore/{activation,overrides}.ts`, `shared/prompt/{chatTemplate,templateCheck}.ts`
   - `src/ts/messageSearch.svelte.ts`, `shared/messageSearch.ts`
+  - `src/ts/ooc/**`
   - The send handlers in `src/lib/ChatScreens/DefaultChatScreen.svelte`
 - Not here:
   - Prompt assembly, token trimming, the request, streaming, and the post-processing tail run in the server job →
@@ -120,6 +121,21 @@
 - `src/ts/messageSearch.svelte.ts`: search requests, panel state, and message jumps (`searchMessages`,
   `messageSearchPanel`, `requestMessageJump`, `claimMessageJump`).
 
+### OOC session
+
+- `src/ts/ooc/oocSession.svelte.ts`: every OOC action of the tab and its per-chat in-memory state (`askOoc`, `retryOoc`,
+  `stopOoc`, `refreshOoc`, `deleteOocExchange`, `clearOocLog`, `toggleOocAttachment`; readers `readOocState`,
+  `readOocSegments`, `oocAnchorExists`, `oocMessagesAfterAnchor`). The flow is under [OOC question](#ooc-question).
+- `src/lib/Others/OocPanel.svelte` and its open flag `src/ts/ooc/oocPanel.svelte.ts` (`openOocPanel`, `closeOocPanel`):
+  the screen over the module ([ui theming](ui-theming.md#dialogs-popovers-and-portals)). Its one entry is the composer
+  menu item of `DefaultChatScreen.svelte`, beside the memory item and hidden for a group chat.
+- `src/ts/ooc/oocToggleSettings.svelte.ts`: the OOC toggle settings the panel edits. The preset is the chat's display
+  preset (`chatDisplayIds`). `useOwnOocToggles` copies its `oocToggles` into the chat's own (on) or unsets the chat's
+  field (off). `oocToggleSuggestion` and `answerOocToggleOffer` make the one offer per preset to force an `ooc` checkbox
+  toggle on, never for a chat with its own map (even an empty one), which ignores the preset's; the offered preset ids
+  are kept in this browser's `localStorage`, not in settings.
+- The stored shapes, limits, and pure helpers both runtimes use are in `shared/ooc.ts` ([persistence](persistence.md)).
+
 ### Inlays
 
 - `src/ts/process/files/inlays.ts`: server-backed inlays (`writeInlayImage`, `setInlayAsset`, `getInlayAsset`,
@@ -195,11 +211,36 @@ in [network jobs](network-jobs.md#job-recovery).
   [job recovery](network-jobs.md#job-recovery), [chat recovery](chat-store.md#job-hydration), and
   [feed locks](live-updates.md#feed-locks) own those boundaries.
 
+### OOC question
+
+An OOC question asks the model about the chat without adding a message: its exchanges live in the chat's metadata
+(`oocLog`, a merge key, and `oocSegment`), and `oocSession.svelte.ts` owns every step. The OOC panel (`OocPanel.svelte`,
+opened from the composer menu) calls it.
+
+- Guards, shared by `askOoc` and `retryOoc`: not a group chat; no local send or followed job (`isChatBusy`); no OOC
+  question in flight for the chat (reserved before the first await); a complete binding and no orphaned lore overrides
+  (checked before the exchange is written, as the send's checks are); the current segment's anchor is null or a stored
+  message. A gone anchor refuses and never moves the segment; only `refreshOoc` does.
+- `askOoc` pins the chat until its last write and captures `chatOwnerToken`. A chat without `oocSegment` gets one at its
+  newest message. `oocPrune` makes room, never removing the picked attachments, and the new exchange is merged before
+  the job is created.
+- The prompt is a `preview` job with `context.oocExchangeId` that writes nothing to the stored chat
+  ([Prompt job execution](server-generation.md#prompt-job-execution)) and appends no message. It holds the chat's local
+  send entry while the job runs, as `previewChat` does, so a send of this tab is refused locally instead of following
+  the OOC job. A done result without `ooc: true` is an older server's plain preview: no reply is requested.
+  - The job names `oocExchangeGone`, `oocAnchorGone`, and `oocMemoryAhead` as its caller's (`callerErrorCodes`): the
+    follow lifecycle this call creates raises no alert for them (`reportEnd`); an earlier lifecycle keeps its alert.
+- The answer is a tab request (`requestChatData` with `tools: []`, `bias: {}`, the captured owner), not a job: the main
+  chat can send while it streams. The answer is merged into the exchange once, on the captured ref, when the question
+  was not stopped and the exchange still exists. A failure or a stop leaves the exchange without an answer; `retryOoc`
+  runs the job and request again for an unanswered exchange of the current segment.
+
 ### Not in `sendChat`
 
 - Input auto-translation (`createInputTranslation`) and suggestions call the tab request layer; the `previewRequest`
   hotkey calls `previewChat("previewPrompt")` for a server preview job. Display translation is a UI concern. Group
   continues use the server speaker loop.
+- An OOC question's prompt and answer: [OOC question](#ooc-question).
 - Chat paging renders loaded messages only (`chatLoadInitialPages`, `chatLoadAdditionalPages`); it does not fetch
   history.
 
@@ -221,6 +262,10 @@ in [network jobs](network-jobs.md#job-recovery).
   (`readChatGeneration`) for the visible chat when it is shown, on page recovery, and when a feed lock list names it,
   skipping a chat that is locked, followed, or in a local send. A job holds no message lock until its first `begin`, so
   a visible mark without a lock is asked again every `FOREIGN_JOB_RECHECK_MS` until the job is gone or locks a message.
+- The live-update feed's running job of another client for the chat (`foreignGeneration`,
+  [live updates](live-updates.md#feed-connection)) shows the same spinner and extra Stop from the job's admission, in
+  its stage's color. Like a mark it is advisory: neither makes `isChatBusy` true, and the server still refuses a
+  competing send.
 - `chatStore.svelte.ts` owns loaded chats and every write ([chat store](chat-store.md)); autosave does not.
 - Chats load on demand. Async operations pin and load their captured targets; unavailable chats are gone to synchronous
   readers, never an excuse to use another selection ([pins and eviction](chat-store.md#pins-and-eviction)).
@@ -292,7 +337,8 @@ lore.
 
 - Focused:
   `pnpm --silent test:agent src/ts/process src/ts/messageSearch.test.ts src/lib/ChatScreens/DefaultChatScreen.drafts.test.ts`
-  for the tab; `pnpm --silent test:agent server/src/tests/{promptRunner,assemble,promptTail,lore}.test.ts` for the job.
+  for the tab, `pnpm --silent test:agent src/ts/ooc` for the OOC module (real chat store, the job and the request
+  mocked); `pnpm --silent test:agent server/src/tests/{promptRunner,assemble,promptTail,lore}.test.ts` for the job.
   Memory jobs: [memory](memory.md).
 - `slow`: `pnpm --silent test:agent --tags-filter=slow server/src/tests/{promptRunner,lore}.test.ts`
   ([test-harness](test-harness.md) `Slow-test table`).
@@ -344,6 +390,11 @@ lore.
 - A reroll's restore cannot see another tab's job that holds no lock yet and was not met at this tab's create: the
   restored replies land while that job runs, like any other edit. Decision: owner, 2026-11-10 (known-issues review),
   together with the live-updates reservation window.
+- OOC questions ([OOC question](#ooc-question)): a question is refused while its chat generates, and an answer that is
+  streaming when the page reloads is lost (Decision: OOC Session D5, owner, 2026-11-14). The answer request passes
+  `tools: []` but cannot stop a provider that adds its own tools or runs a call it was not offered, and a provider that
+  appends a midway error to its stream text is stored as an answer. Two devices that each prune a full `oocLog`
+  (`MAX_OOC_EXCHANGES`) and add an exchange at once can exceed the limit; the server refuses the later merge.
 - `disable_ui_prompt` lore decorators fill `disabledUIPrompts`, which nothing consumes. Decision: owner, 2026-11-10
   (known-issues review): upstream has no consumer either; the decorator is accepted and ignored.
 - `renderChatTemplate` calls Jinja's `Template.render` synchronously with no work or time limit; a costly custom

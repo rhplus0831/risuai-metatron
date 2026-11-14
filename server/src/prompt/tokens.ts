@@ -81,6 +81,18 @@ type PendingGoogleCount = {
 /** Scope-aware asynchronous encoding and counting, with optional caller cancellation. */
 export type TokenCounter = ReturnType<typeof createTokenCounter>;
 
+/** Server scopes never invoke a legacy plugin's tokenizer function. */
+function tokenizerForScope(scope: TokenCountScope) {
+    const choice = selectTokenizer({
+        aiModel: scope.aiModel,
+        customTokenizer: scope.customTokenizer,
+        pluginTokenizer: scope.pluginTokenizer,
+        modelTokenizer: scope.model.tokenizer,
+        googleClaudeTokenizing: scope.googleClaudeTokenizing,
+    });
+    return choice.kind === "pluginFunction" ? { kind: "family" as const, family: "cl100k_base" as const } : choice;
+}
+
 /**
  * A counter over the shared tokenizer choice. Concurrent Google counts of the same text and model share one call:
  * a caller's abort cancels it only after its last waiter leaves, while its own 30 s timeout, which starts when the
@@ -244,20 +256,11 @@ export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?
                 return cached;
             }
         }
-        const choice = selectTokenizer({
-            aiModel: scope.aiModel,
-            customTokenizer: scope.customTokenizer,
-            pluginTokenizer: scope.pluginTokenizer,
-            modelTokenizer: scope.model.tokenizer,
-            googleClaudeTokenizing: scope.googleClaudeTokenizing,
-        });
+        const choice = tokenizerForScope(scope);
         let result: Encoded;
         switch (choice.kind) {
             case "googleCloud":
                 result = await countWithGoogle(text, scope, signal);
-                break;
-            case "pluginFunction":
-                result = await tokenizers.encode("cl100k_base", text);
                 break;
             case "family":
                 result = await tokenizers.encode(choice.family, text);
@@ -273,5 +276,11 @@ export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?
         encode,
         count: async (text: string, scope: TokenCountScope, signal?: AbortSignal): Promise<number> =>
             (await encode(text, scope, signal)).length,
+        /** Counts locally without touching either cache or Google's endpoint. */
+        countLocal: async (text: string, scope: TokenCountScope): Promise<number> => {
+            const choice = tokenizerForScope(scope);
+            return (await tokenizers.encode(choice.kind === "googleCloud" ? "gemmaSentencePiece" : choice.family, text))
+                .length;
+        },
     };
 }

@@ -33,6 +33,7 @@ import type { MessageGuard } from "../jobs/generationLock.ts";
 import { createJobCbsHost, jobModuleLorebooks, serverCbsLimits, type ServerCbsTimeLimits } from "../jobs/cbsHost.ts";
 import type { JobChannel } from "../jobs/channel.ts";
 import { historyInsertionAnchor } from "../jobs/chatResult.ts";
+import { reduceChatOps } from "../jobs/chatOpsReducer.ts";
 import {
     failureOf,
     GenerationJobEndedError,
@@ -46,6 +47,7 @@ import {
     type JobScope,
     refreshCharacter,
     refreshChat,
+    replaceScopeChat,
     refreshChatAfterWrite,
     scopeChat,
     scopeHistoryChat,
@@ -373,7 +375,8 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
  * Chat functions work on the job's chat (`scope`), by index resolved to message ids when called,
  * and write through `job.write`; variable keys and note setters coalesce in the live scope until a
  * microtask or job barrier flushes them. After each write the scope adopts its stored data and
- * revision and sends it to the tab. A refused write of a message another generation owns is skipped with a warning, as
+ * revision and sends it to the tab. Detached scopes apply chat edits to their copy only and refuse
+ * character and persona writes. A refused write of a message another generation owns is skipped with a warning, as
  * the client's `liveWrite`; any other conflict is fatal. `getName`, `getDescription`,
  * `getCharacterFirstMessage`, `getBackgroundEmbedding`, and their setters address the run's
  * character. Reads refresh it from the store unless `deps.frozen`; frozen display bindings in
@@ -480,6 +483,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
      * (indexes resolved, messages and metadata copied from the stored state, never an older copy),
      * written with that revision; nothing when it returns null. A lone note setter joins the job's
      * pending metadata; every other group flushes that metadata as its own write first.
+     * A detached scope instead reduces the ops into its copy without storing or publishing them.
      */
     const writeChat = (build: (chat: Chat) => ChatOp[] | null, ctx?: HostContext): void => {
         fence(ctx);
@@ -506,6 +510,11 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             typeof only.set.note === "string"
         ) {
             metadata!.queue({ note: only.set.note }, latch);
+            return;
+        }
+        if (scope.detached) {
+            replaceScopeChat(scope, reduceChatOps(current, ops));
+            lastChat = scopeChat(scope);
             return;
         }
         // A refused message group must not discard a setter that already took effect.
@@ -636,11 +645,11 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         }
     };
 
-    /** Patches the run's character (`updateCharacter`): the record read again on the one retry. */
+    /** Patches the run's character, unless detached; the record is read again on the one retry. */
     const patchCharacter = (patch: Record<string, unknown>, ctx: HostContext, lore?: GlobalLoreChange): boolean => {
         fence(ctx);
         const id = deps.runCharacterId;
-        if (!id || !store.get(charactersKind, id)) {
+        if (scope.detached || !id || !store.get(charactersKind, id)) {
             return false;
         }
         let applied = false;
@@ -675,10 +684,13 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
 
     /**
      * `updatePersona(id, { personaPrompt })`: the one entry of the personas list, the others kept,
-     * read again on the one retry; false when the persona is gone (never recreated).
+     * read again on the one retry; false when detached or the persona is gone (never recreated).
      */
     const patchPersonaPrompt = (personaId: string, value: string, ctx: HostContext): boolean => {
         fence(ctx);
+        if (scope.detached) {
+            return false;
+        }
         let applied = false;
         try {
             job.write(() => {

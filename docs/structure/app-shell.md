@@ -180,8 +180,10 @@ Escape priority is below; the global `initHotkey` handler also applies its termi
    text field). A held Escape's repeats do not answer the next waiting lore budget stop.
 4. The message search panel (`MessageSearch.svelte`) or the bookmark list (`BookmarkList.svelte`), each a capture
    listener that yields to those layers.
-5. Settings.
-6. The grid.
+5. The OOC panel (`OocPanel.svelte`), a capture listener that also yields to the message search panel and acts only on
+   an Escape from inside the panel or the page body.
+6. Settings.
+7. The grid.
 
 A checkpoint load blocks other hotkeys until its save, request, and refresh finish.
 

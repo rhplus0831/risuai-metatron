@@ -916,6 +916,92 @@ describe("runServerJob", () => {
         kind = "send" as const,
     ) => commands.runServerJob(char, ref, { kind, label: "send", context }, options);
 
+    const oocEnd: Extract<GenerationTerminalEvent, { type: "error" }> = {
+        type: "error",
+        epoch: EPOCH,
+        code: "oocMemoryAhead",
+        message: "Memory moved past the OOC anchor",
+        status: 500,
+        reason: "failed",
+    };
+    const oocPreview = () =>
+        commands.runServerJob(char, ref, {
+            kind: "preview",
+            label: "send",
+            context: { oocExchangeId: "exchange" },
+            callerErrorCodes: ["oocMemoryAhead"],
+        });
+
+    it.each(["started", "replayed"] as const)(
+        "hands a registered OOC error to the caller of its own %s preview without a global alert",
+        async (outcome) => {
+            stubs.create.mockResolvedValueOnce(
+                outcome === "started"
+                    ? { outcome: "created", jobId: "j" }
+                    : { outcome: "replayed", jobId: "j", owned: true, status },
+            );
+            const run = oocPreview();
+            await whenAttached(1);
+            expect(stubs.create.mock.calls[0][0]).toMatchObject({
+                kind: "preview",
+                context: { oocExchangeId: "exchange" },
+            });
+            endWith(follows()[0], oocEnd);
+            expect(await run).toMatchObject({ outcome, terminal: oocEnd, callerErrorFollow: true });
+            expect(stubs.alertJobError).not.toHaveBeenCalled();
+            expect(stubs.alertError).not.toHaveBeenCalled();
+        },
+    );
+
+    it("still alerts for an OOC error the preview caller did not register", async () => {
+        const terminal: GenerationTerminalEvent = { ...oocEnd, code: "oocAnchorGone" };
+        stubs.create.mockResolvedValueOnce({ outcome: "created", jobId: "j" });
+        const run = oocPreview();
+        await whenAttached(1);
+        endWith(follows()[0], terminal);
+        expect(await run).toMatchObject({ outcome: "started", terminal });
+        expect(stubs.alertJobError).toHaveBeenCalledExactlyOnceWith("j", terminal);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+    });
+
+    it("keeps an earlier follow's OOC error alert when a caller joins with that code", async () => {
+        const earlier = commands.followJobToEnd("j", ref);
+        await whenAttached(1);
+        stubs.create.mockResolvedValueOnce({ outcome: "created", jobId: "j" });
+        const run = oocPreview();
+        await drainContinuations();
+        expect(follows()).toHaveLength(1);
+        endWith(follows()[0], oocEnd);
+        expect(await earlier).toEqual(oocEnd);
+        const result = await run;
+        expect(result).toMatchObject({ outcome: "started", terminal: oocEnd });
+        expect(result).not.toHaveProperty("callerErrorFollow");
+        expect(stubs.alertJobError).toHaveBeenCalledExactlyOnceWith("j", oocEnd);
+    });
+
+    it("keeps a busy job's OOC error alert instead of assigning it to the refused preview", async () => {
+        stubs.create.mockRejectedValueOnce(new BusyError("j"));
+        stubs.read.mockResolvedValueOnce(status);
+        const run = oocPreview();
+        await whenAttached(1);
+        endWith(follows()[0], oocEnd);
+        const result = await run;
+        expect(result).toMatchObject({ outcome: "followed", terminal: oocEnd });
+        expect(result).not.toHaveProperty("callerErrorFollow");
+        expect(stubs.alertJobError).toHaveBeenCalledExactlyOnceWith("j", oocEnd);
+    });
+
+    it("alerts for an OOC error when a saved job is resumed after reload", async () => {
+        stubs.saved.mockReturnValue(["j"]);
+        stubs.read.mockResolvedValue(status);
+        const boot = commands.resumeServerJobs();
+        await whenAttached(1);
+        endWith(follows()[0], oocEnd);
+        await boot;
+        expect(stubs.alertJobError).toHaveBeenCalledExactlyOnceWith("j", oocEnd);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+    });
+
     it.each(["started", "replayed"] as const)(
         "hands a lore budget end to the waiting caller of a %s job without an ordinary alert",
         async (outcome) => {

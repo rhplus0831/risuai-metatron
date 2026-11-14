@@ -38,6 +38,7 @@
     import GridChars from "./lib/Others/GridCatalog.svelte";
     import BookmarkList from "./lib/Others/BookmarkList.svelte";
     import MessageSearch from "./lib/Others/MessageSearch.svelte";
+    import OocPanel from "./lib/Others/OocPanel.svelte";
     import Settings from "./lib/Setting/Settings.svelte";
     import { showRealmInfoStore, importDroppedFile } from "./ts/characterCards";
     import SavePopupIconComp from "./lib/Others/SavePopupIcon.svelte";
@@ -60,6 +61,7 @@
     import { STRUCTURED_MEMORY_ALGORITHM } from "../shared/structuredMemory.ts";
     import { currentChatRef, selectedChat } from "./ts/storage/chatStore.svelte";
     import HypaV3Progress from "./lib/Others/HypaV3Progress.svelte";
+    import GenerationProgressWindow from "./lib/Others/GenerationProgressWindow.svelte";
     import PopupList from "./lib/UI/PopupList.svelte";
     import PopupEditor from "./lib/Others/PopupEditor.svelte";
     import IrisModal from "./lib/Others/IrisModal.svelte";
@@ -85,6 +87,9 @@
     let aprilFoolsPage = $state(0);
     /** The selected chat's memory run: a chat switch shows another chat's run without a new notice. */
     const memoryProgress = $derived(memoryProgressFor($memoryProgressStore, currentChatRef()));
+    const memoryProgressShown = $derived(
+        !!memoryProgress || legacyProgressShown($memoryProgressStore, $hypaV3ProgressStore, currentChatRef()),
+    );
 
     $effect(() => {
         if (settings.ui.keepSessionAlive !== "sound") {
@@ -342,6 +347,7 @@
     {/if}
     <!-- Always mounted: it keeps its query and results across a close (it renders only while open). -->
     {#if $loadedStore}
+        <OocPanel />
         <MessageSearch />
     {/if}
     <!-- The selected chat's memory: shown once that chat is loaded. -->
@@ -354,8 +360,11 @@
     {/if}
     <SavePopupIconComp />
     <!-- The selected chat's own memory run, else the legacy overlay. -->
-    {#if memoryProgress || legacyProgressShown($memoryProgressStore, $hypaV3ProgressStore, currentChatRef())}
+    {#if memoryProgressShown}
         <HypaV3Progress entry={memoryProgress} />
+    {/if}
+    {#if $loadedStore}
+        <GenerationProgressWindow {memoryProgressShown} />
     {/if}
     {#if popupStore.children}
         <PopupList />

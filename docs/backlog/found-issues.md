@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, seven more plan-leftover collections from memory the same day, the seventeenth (the Found Issues Decisions run) on 2026-11-09, the nineteenth (the Upstream Intake 2 run) on 2026-11-10, the twentieth (the Memory Panel Readability run) on 2026-11-11, the twenty-first (the Structured Memory Recent Timeline run) the same day, the twenty-second (the Per-Chat Memory run) on 2026-11-13, and the twenty-third (the Lore Budget Send Stop run) the same day; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, seven more plan-leftover collections from memory the same day, the seventeenth (the Found Issues Decisions run) on 2026-11-09, the nineteenth (the Upstream Intake 2 run) on 2026-11-10, the twentieth (the Memory Panel Readability run) on 2026-11-11, the twenty-first (the Structured Memory Recent Timeline run) the same day, the twenty-second (the Per-Chat Memory run) on 2026-11-13, the twenty-third (the Lore Budget Send Stop run) the same day, the Generation Progress Window run's two findings the same day, and the OOC Session run's two findings the same day; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. An entry is a `###` heading under its area section, a paragraph saying what and where (`file:line`), then a **Why it matters:** line and a **Suggested handling:** line; the Contents list at the top counts each area's entries. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's section of [known issues](known-issues.md) (or to the guide's Known Hazards `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -53,11 +53,30 @@ are the Plugins entry below.
 
 ## Contents
 
+- [Chat store](#chat-store): 1
 - [Plugins](#plugins): 1
 - [Rendering](#rendering): 1
 - [Selection](#selection): 1
-- [Server generation](#server-generation): 1
-- [Test tooling](#test-tooling): 1
+- [Server generation](#server-generation): 4
+- [Test tooling](#test-tooling): 2
+
+## Chat store
+
+### Two devices asking in a full OOC log at once can block the chat's other saves
+
+`askOoc` prunes the oldest exchanges with `oocPrune` so that one more fits `MAX_OOC_EXCHANGES` (200), then merges the
+new exchange into `oocLog` (`src/ts/ooc/oocSession.svelte.ts:210`). Two devices that each do this on a full log at the
+same time each remove a different exchange or the same one, and the second merge can leave 201 entries, which
+`normalizeChatMeta` refuses (`server/src/data/chats.ts`, the `oocLogError` check). The OOC Session plan's slice 3
+session reported that the refused write also holds the chat's other pending saves; that part was read, not run. The
+`chat-pipeline` guide's OOC Session limitations record the refusal.
+
+**Why it matters:** a rare race on a full log can stop unrelated edits of the same chat from being stored until the
+refused write is cleared.
+
+**Suggested handling:** reproduce with two clients first; then either let the server prune the oldest exchanges of
+earlier segments when a merge would pass the limit, or have the tab drop only its refused OOC entry and keep the rest of
+the queue.
 
 ## Plugins
 
@@ -136,6 +155,51 @@ it to a worker thread." A size refusal before encoding at the shared gateway (`t
 bound; it was offered and not taken, since it also refuses legitimate large text. An exact count of a large text
 needs the encode off the serving thread, which is the worker design.
 
+### A model's tool call runs even when the request offered no tools
+
+The buffered Anthropic path calls `arg.ctx.tools.call(content.name, content.input)` for every returned `tool_use`
+block without checking that the name was among the tools the request offered (`server/src/llm/anthropic.ts:1166`).
+The tab's callback (`src/ts/process/request/transport.ts:472`) dispatches it through `callTool` in
+`src/ts/process/mcp/mcp.ts`, which finds a matching tool on its own; some of those tools write chat variables
+(`graphmem.ts`). The OpenAI Responses adapter also adds the configured web search whatever `arg.tools` holds
+(`server/src/llm/openAI/responses.ts`, near line 340). Found 2026-11-14 by the challenger of the OOC Session plan's
+slice 3, whose answer request passes `tools: []`; not reproduced with a provider.
+
+**Why it matters:** "no tools" is a caller contract the lower layers do not enforce, so an OOC answer (or any request
+made without tools) can still run a tool that writes the chat if a provider returns a call it was not offered.
+
+**Suggested handling:** refuse a call whose name is not in the offered list at the dispatch boundary, and leave the
+web search out when the caller passed an empty tool list.
+
+### A reply containing a tokenizer special token can fail the job at the auto-continue count
+
+The tail of `runPromptSend` awaits `services.tokenize(result)` for the auto-continue decision
+(`server/src/prompt/runner.ts:2244`). That is `tokenize` in `server/src/lua/bindings.ts:711`, which calls
+`deps.tokens.count` with no refusal handling, and `cl100k_base` and `o200k_base` throw on a text containing one of their
+special tokens (`isTokenizerTextRefusal`, `server/src/prompt/tokens.ts:67`). Found 2026-11-14 by the challenger of the
+Generation Progress Window run's slice 2; read, not run.
+
+**Why it matters:** a model reply that contains `<|endoftext|>` (or a `<|fim_...|>` token for `cl100k_base`) on an
+OpenAI-family tokenizer is stored, then the job ends with an error terminal and skips the rest of the tail.
+
+**Suggested handling:** reproduce with a mock reply first; then treat a refusal at that count as the route does
+(`null`, or a count without the special tokens) instead of failing the job.
+
+### A streamed `OobaLegacy` reply is stored as its first character
+
+With Response Streaming on, `requestOobaLegacy` (`LLMFormat.OobaLegacy`, the `mancer` model) enqueues its cumulative
+text as a string, not a keyed map (`StreamResponseChunk`'s comment in `shared/llm/request.ts` says so). `readReply`
+reads `lastChunk[Object.keys(lastChunk)[0]]` (`server/src/prompt/runner.ts:2521`), which for a string is its first
+character, and the tail stores the remaining characters as one-character alternative samples. Found 2026-11-14 by the
+Generation Progress Window plan's audit (AUD-1); a probe outside the repository had the adapter emit `"Hello"` and
+`"Hello world."`, and the reader returned `"H"`.
+
+**Why it matters:** a `mancer` reply with Response Streaming on is stored as one character. Half Streaming stays off
+for this format until it is fixed (that plan's D26).
+
+**Suggested handling:** normalize a string snapshot to a one-key map at the job reader's boundary, leaving the
+adapter's other consumers as they are, with a regression test; then let Half Streaming apply to the format.
+
 ## Test tooling
 
 ### The job handoff driver's fixture is never given the database write consent its listener needs
@@ -150,3 +214,15 @@ open (0 of 10 cases), and passed once the run answered the dialog. The handoff i
 
 **Suggested handling:** seed the `dbWrite` grant with the `replacer` grant in the fixture, or have the driver answer
 the dialog.
+
+### The working-tree listing test can see the staged blob under load
+
+`util/typeCheckCache.test.ts:109` ("lists a tracked file by its content on disk ...") stages `src/tracked.ts`, rewrites
+it with content of the same length, and expects a new blob id. Under whole-suite load both writes can land in the same
+mtime tick, so git's racy-stat cache reports the staged blob: it failed once with `expected '100644 cc798ff…' not to
+be '100644 cc798ff…'` in the OOC Session slice 1 whole-suite run (2026-11-14) and passed when run alone.
+
+**Why it matters:** a whole-suite gate failure unrelated to the change under test.
+
+**Suggested handling:** rewrite with content of a different length, or move the file's mtime explicitly
+(`utimesSync`) before listing.

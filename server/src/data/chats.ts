@@ -3,13 +3,15 @@ import { randomUUID } from "node:crypto";
 import { CHAT_META_FORBIDDEN_KEYS, MAX_TOOL_CALL_RECORD_BYTES } from "../../../shared/chats.ts";
 import { isToolContentEntry } from "../../../shared/llm/validate.ts";
 import { firstOverridePerId } from "../../../shared/lore/overrides.ts";
+import { oocLogError, oocSegmentError, oocTogglesError } from "../../../shared/ooc.ts";
 import { dropInvalidTranslation, isMessageTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { isValidResourceId, ResourceValidationError } from "./resourceStore.ts";
 
 /**
  * Pure normalizers for chats. Minimum shapes only, as for the plain record kinds: the client
  * keeps building chats and messages; the server checks what it needs to store and address them and
- * fills the three defaults every reader relies on (`name`, `note`, `localLore`).
+ * fills the defaults readers rely on (`name`, `note`, `localLore`, `fmIndex`). Lore overrides, tool
+ * calls, and OOC metadata are checked when present because their readers rely on their stored shapes.
  */
 
 /** Version of the stored chat metadata, kept in `chats.schemaVersion`. */
@@ -25,7 +27,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 /**
  * The stored metadata of chat `id`: every field of the input except `message` and the client-only
  * streaming flags, with `id` set and `name`, `note`, `localLore`, `fmIndex` (-1) defaulted. A present `id`
- * must equal the chat id.
+ * must equal the chat id. Present lore overrides, tool calls, OOC log, segment, and toggles are validated.
  */
 export function normalizeChatMeta(input: unknown, id: string): Record<string, unknown> {
     if (!isPlainObject(input)) {
@@ -63,6 +65,24 @@ export function normalizeChatMeta(input: unknown, id: string): Record<string, un
     }
     if (meta.toolCalls !== undefined) {
         assertToolCalls(meta.toolCalls);
+    }
+    if (meta.oocLog !== undefined) {
+        const error = oocLogError(meta.oocLog);
+        if (error !== null) {
+            throw new ResourceValidationError(error);
+        }
+    }
+    if (meta.oocSegment !== undefined) {
+        const error = oocSegmentError(meta.oocSegment);
+        if (error !== null) {
+            throw new ResourceValidationError(error);
+        }
+    }
+    if (meta.oocToggles !== undefined) {
+        const error = oocTogglesError(meta.oocToggles);
+        if (error !== null) {
+            throw new ResourceValidationError(error);
+        }
     }
     // Last, after the defaults: the copy above drops `id`, so a chat normalized again keeps its key
     // order and stored string.

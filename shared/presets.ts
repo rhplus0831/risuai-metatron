@@ -170,6 +170,7 @@ export const PRESET_DEFAULTS: Readonly<PresetDefaults> = {
     openrouterProvider: { order: [], only: [], ignore: [] },
     useInstructPrompt: false,
     customPromptTemplateToggle: "",
+    oocToggles: {},
     templateDefaultVariables: "",
     moduleIntergration: "",
     top_k: 0,

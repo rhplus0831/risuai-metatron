@@ -166,7 +166,11 @@ function fixture(
             JSON.stringify({ choices: [{ message: { role: "assistant", content: `reply-${_index + 1}` } }] }),
             { headers: { "content-type": "application/json" } },
         );
-    const tokens: TokenCounter = options.tokens ?? { count: async () => 1, encode: async () => [1] };
+    const tokens: TokenCounter = options.tokens ?? {
+        count: async () => 1,
+        encode: async () => [1],
+        countLocal: async () => 1,
+    };
     const observer = createClaudeObserver({ now: clock });
     cleanups.push(() => observer.dispose());
     const llm = createLlmRequests({

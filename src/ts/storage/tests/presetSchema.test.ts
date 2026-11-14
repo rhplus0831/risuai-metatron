@@ -855,9 +855,9 @@ describe("field-to-resource partition", () => {
         );
     });
 
-    it("derives the forwarded lists from the owners: 47 prompt keys, 38 model keys (3 derived model ids, the toggle, 34 profile options), 4 persona keys, and 3 selections are forwarded; nothing remains in root", () => {
+    it("derives the forwarded lists from the owners: 48 prompt keys, 38 model keys (3 derived model ids, the toggle, 34 profile options), 4 persona keys, and 3 selections are forwarded; nothing remains in root", () => {
         expect(FORWARDED_PRESET_KEYS).toEqual(PROMPT_PRESET_FIELDS.map((field) => presetToRootName[field] ?? field));
-        expect(FORWARDED_PRESET_KEYS).toHaveLength(47);
+        expect(FORWARDED_PRESET_KEYS).toHaveLength(48);
         // The profile's options at root, without its record metadata (`modelId`, `credentialId`).
         expect(MODEL_PROFILE_ROOT_FIELDS).toEqual(
             MODEL_PROFILE_FIELDS.filter((field) => field !== "modelId" && field !== "credentialId"),
@@ -904,7 +904,7 @@ describe("field-to-resource partition", () => {
             ...PERSONA_ROOT_KEYS,
             ...SELECTION_KEYS,
         ]);
-        expect(FORWARDED_ROOT_KEYS).toHaveLength(47 + 38 + 4 + 3);
+        expect(FORWARDED_ROOT_KEYS).toHaveLength(48 + 38 + 4 + 3);
         expect(FORWARDED_ROOT_KEYS).not.toContain("proxyKey");
         expect(DROPPED_FIELDS).toEqual(expect.arrayContaining(["proxyKey", "apiType", "proxyCredentialId"]));
     });

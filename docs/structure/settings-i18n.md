@@ -109,7 +109,8 @@ section.
   (the UI language only).
 - Hybrid handwritten/registry pages: `ModelSettings` (the model preset and the aux selector owned by
   [media-aux](media-aux.md); its handwritten provider toggles include `saveSignatures`, shown for a `geminiThinking`
-  model whether or not streaming is on) and `PromptPresetSettings` (the prompt preset). Connections, profile editing,
+  model whether or not streaming is on, and `halfStreaming`, shown under Response Streaming only while that is off, as
+  in `Model/ModelProfileEditor.svelte`) and `PromptPresetSettings` (the prompt preset). Connections, profile editing,
   slot selection, and what the toggles do belong to [LLM requests](llm-requests.md).
 - `MemorySettings`: memory providers, presets, the embedding model, `supaMemoryKey`, and HypaV3 budget controls. The
   algorithm selector is what Legacy chats use and gates Hanurai, HypaV2, and SupaMemory (and search's
@@ -144,6 +145,11 @@ section.
 
 - `src/lib/UI/PromptDataItem.svelte` (one `PromptItem`) and `src/lib/Others/PromptDiffModal.svelte` (saved presets'
   templates, preferences in `db.promptDiffPrefs`).
+- `src/lib/Setting/OocToggleEditor.svelte`: a forced-toggle map editor over plain props (`definitionsText`, `value`,
+  `onchange` with a new map). Per value toggle it offers "as in the chat" (key absent) or a forced value in the toggle
+  kind's control; keys the definitions no longer hold are listed as stale and removable. `PromptSettings` shows it for
+  the preset's `oocToggles` under the toggle definitions, over the preset's own definitions text only; the OOC panel
+  uses it for a chat's own map ([ui theming](ui-theming.md#dialogs-popovers-and-portals)).
 
 ### Languages
 
@@ -177,6 +183,10 @@ section.
   record, so async handlers capture its id before awaiting. See [selection rules](persistence.md#settings-records).
 - `maxContextOverride` / `maxContextOverrideSize` (zero means unset) replace the main profile's `maxContext` for the
   server request and tab CBS roots; plugin roots and the settings root still expose the profile value.
+- `oocToggles` (prompt preset, default `{}`, bare toggle keys) holds the toggle values an OOC question forces; a chat's
+  own `oocToggles` replaces it whole. `normalizePreset` checks only that it is an object, and its reader
+  (`oocToggleValues` in `shared/ooc.ts`) ignores non-string values. It travels in `.risup` files; the upstream export
+  omits it.
 - `language` is replaced on switch; a component that captures it at module initialization keeps stale strings.
 - UI stores used here: `settingsOpen`, `SettingsMenuIndex`, `openPresetList`, and `openModelPresetList` (`true` or
   `{ chatRef }` for a picker bound to one chat).

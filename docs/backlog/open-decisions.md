@@ -7,7 +7,7 @@ The rest were read against the later plans and the code on 2026-11-11: a questio
 ## HaejeokRisuai ([§5](../reports/surveys/haejeok-feature-survey.md#5-open-questions))
 
 - Branch model for persistent in-chat branches (A1): a message tree inside one chat record, or linked chats with a parent pointer.
-- Should chat tabs with split panes (A6) be added now that Per-Chat Send supports concurrent sends in one tab? BTW threads (A7) were taken up on 2026-11-14 as the [OOC Session plan](../plan/ooc-session.md).
+- Should chat tabs with split panes (A6) be added now that Per-Chat Send supports concurrent sends in one tab? BTW threads (A7) were taken up on 2026-11-14 as the OOC Session plan, which landed the same day ([archive](../archived-plan/README.md)).
 - Whether to pursue Termux/Android hosting (E3), which hinges on `onnxruntime-node` running there.
 
 ## RisuNest ([§3](../reports/surveys/risunest-ideas.md#3-open-questions))

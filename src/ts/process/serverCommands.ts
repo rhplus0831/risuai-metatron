@@ -14,6 +14,7 @@ import type {
     GenerationKind,
     GenerationTerminalEvent,
     GenerationStatus,
+    GenerationErrorCode,
 } from "../../../shared/jobs.ts";
 import { language } from "src/lang";
 import { get, readonly, writable } from "svelte/store";
@@ -158,6 +159,8 @@ type FollowLifecycle = {
      * the end, so it shows such a stop itself (`reportEnd` stays silent for it). Set at creation only.
      */
     loreStopCaller: boolean;
+    /** Error codes shown by the waiting caller; copied only when this lifecycle is created. */
+    callerErrorCodes: ReadonlySet<GenerationErrorCode>;
     everOwner: boolean;
     attemptOwner: boolean;
     role: GenerationFollow["role"];
@@ -346,12 +349,14 @@ export async function stopChatJob(ref: ChatRef): Promise<void> {
  * `loreStopCaller` marks the lifecycle this call creates: its caller shows a lore budget stop
  * (`jobLoreStop`) itself, so the end report raises no alert for one. A lifecycle that already exists
  * keeps what it was created with, so a caller that needs the mark checks `following` before calling.
+ * `callerErrorCodes` similarly assigns coded errors to that caller. Existing lifecycles keep their
+ * original codes; resumed jobs without a waiting caller use the ordinary global alerts.
  */
 export function followJobToEnd(
     jobId: string,
     ref?: ChatRef,
     initialStatus?: GenerationStatus,
-    options: { ticket?: string; loreStopCaller?: boolean } = {},
+    options: { ticket?: string; loreStopCaller?: boolean; callerErrorCodes?: readonly GenerationErrorCode[] } = {},
 ): Promise<GenerationTerminalEvent | "lost"> {
     if (initialStatus?.state === "ended" && initialStatus.terminal) replayedStatuses.set(jobId, initialStatus);
     const existing = following.get(jobId);
@@ -372,6 +377,7 @@ export function followJobToEnd(
         promise: undefined!,
         creator: !options.ticket,
         loreStopCaller: options.loreStopCaller === true,
+        callerErrorCodes: new Set(options.callerErrorCodes),
         everOwner: false,
         attemptOwner: false,
         role: null,
@@ -467,7 +473,7 @@ export function followJobToEnd(
             if (typeof result !== "string" && target !== "lost") clearForeignJob(target, jobId);
             if (!lifecycle.creator && !lifecycle.everOwner) return end;
             if (result !== "gone") {
-                reportEnd(end, jobId, lifecycle.creator, lifecycle.loreStopCaller);
+                reportEnd(end, jobId, lifecycle.creator, lifecycle.loreStopCaller, lifecycle.callerErrorCodes);
             }
             if (target !== "lost") {
                 if (end === "lost") {
@@ -936,8 +942,15 @@ async function followOnce(
  * created the follow is waiting to show it. Without that mark (the boot resume, a follow that was
  * already running, a call that did not ask for the stop) it is an error like any other, and so is a
  * coded end whose `lore` does not parse.
+ * An error whose code is in the lifecycle's `callerErrorCodes` is also shown by its waiting caller.
  */
-function reportEnd(end: GenerationTerminalEvent | "lost", jobId: string, creator: boolean, loreStopCaller: boolean) {
+function reportEnd(
+    end: GenerationTerminalEvent | "lost",
+    jobId: string,
+    creator: boolean,
+    loreStopCaller: boolean,
+    callerErrorCodes: ReadonlySet<GenerationErrorCode>,
+) {
     if (end === "lost") {
         alertError(language.serverJob.lost);
         recordClientEvent({ kind: "notice", notice: "serverJobLost" });
@@ -953,6 +966,8 @@ function reportEnd(end: GenerationTerminalEvent | "lost", jobId: string, creator
         );
     } else if (loreStopCaller && jobLoreStop(end)) {
         // Shown by the waiting call, as its dialog or its own alert.
+    } else if (end.type === "error" && end.code && callerErrorCodes.has(end.code)) {
+        // This lifecycle's waiting caller shows the coded error itself.
     } else if (end.type === "error" && end.reason === "maintenance") {
         // The debug info's time is the end's, not the alert's (the restore watch may take minutes).
         const at = Date.now();
@@ -999,7 +1014,7 @@ export type ServerCommandOutcome = "started" | "replayed" | "followed" | "refuse
  */
 export type ServerJobLabel = "send" | "button" | "trigger" | "memoryRecord" | "memoryTest" | "memoryRebuild";
 
-/** What a server job of this tab runs: its kind, its command, and the context fields of the caller. */
+/** What a server job runs, its caller's context, and the coded errors that caller can show itself. */
 export type ServerJobRequest = {
     /** Identifies this action across unanswered creates; the transport mints one when omitted. */
     requestId?: string;
@@ -1009,10 +1024,18 @@ export type ServerJobRequest = {
     command?: GenerationCommand;
     /** What did not run, for the refusal alert (`language.serverJob.discarded`). */
     label: ServerJobLabel;
+    /** Suppresses these error alerts only on this call's own newly created follow lifecycle. */
+    callerErrorCodes?: readonly GenerationErrorCode[];
     context?: Partial<
         Pick<
             GenerationContext,
-            "mode" | "input" | "userMessageId" | "continueMessageId" | "triggerId" | "stopOverLoreBudget"
+            | "mode"
+            | "input"
+            | "userMessageId"
+            | "continueMessageId"
+            | "triggerId"
+            | "stopOverLoreBudget"
+            | "oocExchangeId"
         >
     >;
 };
@@ -1031,6 +1054,9 @@ export type ServerJobRequest = {
  * target chat is pinned from the start until the follow ends and is loaded before the job is
  * created (a failed load runs nothing). A flush refused for a generation gives the chats it waited on
  * (`blockedChats`); a create refused for another tab's job gives the target.
+ * `callerErrorCodes` suppresses matching error alerts only when this call creates its own job's
+ * follow lifecycle. `callerErrorFollow` reports that ownership; an existing or busy-job follow and
+ * a boot resume keep their original error reporting.
  */
 export async function runServerJob(
     char: AnyClientCharacter,
@@ -1049,7 +1075,8 @@ export async function runServerJob(
     }
 }
 
-type ServerJobResult = {
+/** The admission and terminal, including which error reports this call's follow took over. */
+export type ServerJobResult = {
     requestUncertain?: boolean;
     /** A replay with no usable owner terminal was reconciled against the chat. */
     reconciled?: boolean;
@@ -1061,6 +1088,8 @@ type ServerJobResult = {
      * stop in `terminal` (`jobLoreStop`) raised no alert and is the caller's to show.
      */
     loreStopFollow?: boolean;
+    /** This call installed its nonempty `callerErrorCodes`; matching terminal errors raised no alert. */
+    callerErrorFollow?: true;
 };
 
 type ServerJobOptions = {
@@ -1069,6 +1098,7 @@ type ServerJobOptions = {
     identity?: { presetId: string | null; modelPresetId: string | null; personaId: string | null };
 };
 
+/** Runs the pinned job and installs caller-owned error reporting only on a new, own-job follow. */
 async function runPinnedServerJob(
     char: AnyClientCharacter,
     ref: ChatRef,
@@ -1332,12 +1362,17 @@ async function runPinnedServerJob(
         // (a lifecycle removes itself before its promise resolves).
         const loreStopFollow =
             request.context?.stopOverLoreBudget === true && outcome !== "followed" && !following.has(jobId);
-        const terminal = await followJobToEnd(jobId, ref, initialStatus, { loreStopCaller: loreStopFollow });
+        const callerErrorFollow = !!request.callerErrorCodes?.length && outcome !== "followed" && !following.has(jobId);
+        const terminal = await followJobToEnd(jobId, ref, initialStatus, {
+            loreStopCaller: loreStopFollow,
+            ...(callerErrorFollow ? { callerErrorCodes: request.callerErrorCodes } : {}),
+        });
         return {
             outcome,
             terminal,
             requestUncertain: outcome !== "followed" && terminal === "lost",
             ...(loreStopFollow ? { loreStopFollow: true } : {}),
+            ...(callerErrorFollow ? { callerErrorFollow: true } : {}),
         };
     } finally {
         options.signal?.removeEventListener("abort", onAbort);

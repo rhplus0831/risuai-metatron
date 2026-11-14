@@ -152,6 +152,7 @@
   "textTheme": "standard",
   "emotionPrompt2": "",
   "requestRetrys": 2,
+  "halfStreaming": false,
   "useSayNothing": true,
   "bias": [],
   "showUnrecommended": false,
@@ -407,6 +408,7 @@
   "textAreaTextSize": 0,
   "combineTranslation": false,
   "customPromptTemplateToggle": "",
+  "oocToggles": {},
   "globalChatVariables": {},
   "templateDefaultVariables": "",
   "moduleIntergration": "",
@@ -691,6 +693,7 @@
   "contextMeterFixedWarn": 60,
   "contextMeterLookahead": true,
   "loreBudgetStop": true,
+  "generationProgressWindow": true,
   "formatversion": 5,
   "characterOrder": []
 }

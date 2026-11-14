@@ -1991,6 +1991,28 @@ describe("per-chat toggle metadata", () => {
 });
 
 describe("meta merge", () => {
+    it("merges an OOC exchange on an older revision while keeping another device's exchange", () => {
+        const store = memoryStore();
+        const base = seed(store).chat;
+        const first = {
+            id: "first",
+            segment: "s",
+            anchorMessageId: "a",
+            question: "Why?",
+            answer: "Because.",
+            time: 1,
+        };
+        const second = { id: "second", segment: "s", anchorMessageId: "a", question: "How?", time: 2 };
+        store.applyChanges({
+            chats: [group("k", base, [{ op: "meta", merge: { oocLog: { first } } }])],
+        });
+        store.applyChanges({
+            chats: [group("k", base, [{ op: "meta", merge: { oocLog: { second } } }])],
+        });
+        expect(chat(store, "k")!.data.oocLog).toEqual({ first, second });
+        expect(chat(store, "k")!.data.message).toEqual([m("a", "A"), m("b", "B"), m("c", "C")]);
+    });
+
     const record = (id: string, text = id) => ({
         call: { id, name: "t", arg: {} },
         response: [{ type: "text", text }],

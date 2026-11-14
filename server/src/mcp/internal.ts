@@ -148,7 +148,7 @@ export function createInternalMcps(deps: InternalToolDeps): Record<string, Inter
     /**
      * One job write of resource records. The ops carry the revisions the handler's patch was computed
      * from (read in the same tick), so a record changed in between conflicts again on the write's retry
-     * and is refused, never rebased; a refused value is an answer too.
+     * and is refused, never rebased; a refused value is an answer too. Detached scopes refuse writes.
      */
     const write = (
         ctx: HostContext,
@@ -156,6 +156,9 @@ export function createInternalMcps(deps: InternalToolDeps): Record<string, Inter
         emit: { kind: string; id: string }[],
     ): RisuAccessWrite => {
         services.fence(ctx);
+        if (scope.detached) {
+            return { ok: false, error: "A detached job cannot write resource records" };
+        }
         if (ops.length === 0) {
             return { ok: true };
         }

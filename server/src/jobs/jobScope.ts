@@ -58,12 +58,15 @@ import { GenerationRunnerError, type RunningJob } from "./generationJobs.ts";
  * - the live overlay: the job's chat and the characters, which `refreshChat` and `refreshCharacter`
  *   read again after the job's own writes and after a callback that may have written. After the
  *   job's own write of its chat, `refreshChatAfterWrite` lays the write's stored change onto the chat
- *   instead, and reads the chat whole only when that change cannot be adopted.
+ *   instead, and reads the chat whole only when that change cannot be adopted. A detached scope
+ *   keeps its own chat copy throughout the job; chat edits stay local and character/persona setters refuse.
  *
  * Prompt readers can derive a history view without a reroll's carrier; write readers always keep it.
  * Both stay on the main thread: neither the projection nor `request` is ever sent to Lua or a tab.
  */
 export type JobScope = {
+    /** The job owns its chat copy: refreshes leave it alone and chat/character edits never persist. */
+    detached?: boolean;
     /** While assembling an in-place reroll, prompt readers omit this stored carrier. */
     rerollHistoryMessageId?: string;
 
@@ -494,6 +497,14 @@ export function scopeChat(scope: JobScope): Chat | undefined {
     return owner?.chats.find((chat) => chat.id === scope.chatId) as Chat | undefined;
 }
 
+/** Replace both view-cache identities without changing the stored revision; message edits need a new list too. */
+export function replaceScopeChat(scope: JobScope, chat: Chat): void {
+    const owner = scope.db.characters.find((entry) => entry?.chaId === scope.characterId);
+    if (owner) {
+        setChats(owner, [{ ...chat }]);
+    }
+}
+
 const historyMessages = new WeakMap<JobScope, { source: Message[]; hidden: string; filtered: Message[] }>();
 
 /** Read-only history list, cached until the stored list or hidden carrier changes. */
@@ -542,6 +553,7 @@ function overlayChatMeta(scope: JobScope, chat: Chat): void {
  * One metadata batch per job, bound only to its live chat scope. Setters replace the variable map:
  * display copies may share the old map. The microtask runs before another request or abort timer;
  * job output and writes flush synchronously through the registered hook.
+ * Detached scopes apply setters only to their copy, register no flush, and discard any pending flush.
  */
 function createChatMetadata(job: RunningJob, store: ResourceStore, initialScope: JobScope) {
     let scope = initialScope;
@@ -559,6 +571,10 @@ function createChatMetadata(job: RunningJob, store: ResourceStore, initialScope:
         }
     };
     const flush = () => {
+        if (scope.detached) {
+            clear();
+            return;
+        }
         check();
         const pending = pendingMeta.get(scope);
         if (!pending) {
@@ -622,6 +638,9 @@ function createChatMetadata(job: RunningJob, store: ResourceStore, initialScope:
                 pending.note = patch.note;
                 chat.note = patch.note;
             }
+            if (scope.detached) {
+                return;
+            }
             pendingMeta.set(scope, pending);
             job.setPendingFlush?.(flush);
             if (!scheduled) {
@@ -671,9 +690,12 @@ export function bindChatMetadata(job: RunningJob, scope: JobScope): void {
  * may have written, and after an own write whose change `refreshChatAfterWrite` cannot adopt):
  * stored data and revision come together, with the pending metadata laid over that snapshot.
  * Pending values carry no stored revision until their own flush commits.
- * Returns false when the chat is gone.
+ * A detached scope never reads the store or replaces its copy. Returns false when the chat is gone.
  */
 export function refreshChat(store: ResourceStore, scope: JobScope): boolean {
+    if (scope.detached) {
+        return !!scopeChat(scope);
+    }
     if (store.chatRevision(scope.characterId, scope.chatId) === scope.chatRevision && scopeChat(scope)) {
         return true;
     }
@@ -707,7 +729,8 @@ export function refreshChat(store: ResourceStore, scope: JobScope): boolean {
  * speakers of the changed rows read; `chatSourceGeneration` stays (a by-id change never moves it).
  * Anything else (no change: a whole-chat write, a remove and reappend of one id, a group that
  * applied nothing; a stale group; a copy the change does not fit) reads the chat whole
- * (`refreshChat`). Returns false when the chat is gone.
+ * (`refreshChat`). A detached scope keeps its copy without reading or adopting stored data.
+ * Returns false when the chat is gone.
  */
 export function refreshChatAfterWrite(
     store: ResourceStore,
@@ -715,6 +738,9 @@ export function refreshChatAfterWrite(
     result: ChatGroupResult | undefined,
     change: ChatWriteChange | undefined,
 ): boolean {
+    if (scope.detached) {
+        return !!scopeChat(scope);
+    }
     const current = scopeChat(scope);
     if (
         current &&

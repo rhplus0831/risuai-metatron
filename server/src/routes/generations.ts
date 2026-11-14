@@ -13,6 +13,7 @@ import {
     MAX_TRIGGER_NAME_BYTES,
 } from "../../../shared/jobs.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
+import { isOocId } from "../../../shared/ooc.ts";
 import { STRUCTURED_MEMORY_REBUILD_MODES } from "../../../shared/structuredMemory.ts";
 import { isValidResourceId } from "../data/resourceStore.ts";
 import { readJsonBody } from "../http/body.ts";
@@ -133,7 +134,7 @@ function parseCommand(kind: string, value: unknown): GenerationCommand | undefin
 /** The kinds whose job runs the input stage (`userMessageId`). */
 const INPUT_KINDS: readonly string[] = ["send", "continue", "reroll", "group"];
 
-/** Checks a create body; returns the reason as a string when it is malformed. */
+/** Checks a create body, including preview-only OOC ids; returns a reason when it is malformed. */
 function parseCreateBody(body: unknown): GenerationCreateBody | string {
     if (!isPlainObject(body)) {
         return "Body must be an object";
@@ -179,6 +180,14 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
     if (context.rerollMessageId !== undefined && body.kind !== "reroll") {
         return "context.rerollMessageId is only for reroll jobs";
     }
+    if (context.oocExchangeId !== undefined) {
+        if (!isOocId(context.oocExchangeId)) {
+            return "context.oocExchangeId must be a valid OOC id when present";
+        }
+        if (body.kind !== "preview") {
+            return "context.oocExchangeId is only for preview jobs";
+        }
+    }
     // Only a send runs the input stage that appends the user message.
     if (context.userMessageId !== undefined && !INPUT_KINDS.includes(body.kind)) {
         return "context.userMessageId is only for send, continue, reroll, and group jobs";
@@ -221,6 +230,7 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
         chatRevision: context.chatRevision,
         ...(context.continueMessageId !== undefined ? { continueMessageId: context.continueMessageId as string } : {}),
         ...(context.rerollMessageId !== undefined ? { rerollMessageId: context.rerollMessageId as string } : {}),
+        ...(context.oocExchangeId !== undefined ? { oocExchangeId: context.oocExchangeId as string } : {}),
         ...(context.speakerChaId !== undefined ? { speakerChaId: context.speakerChaId as string } : {}),
         ...(context.userMessageId !== undefined ? { userMessageId: context.userMessageId as string } : {}),
         ...(context.triggerId !== undefined ? { triggerId: context.triggerId as string } : {}),
@@ -278,6 +288,8 @@ export function registerGenerationRoutes(
      * chatLoreOverrideOrphaned { entries: [{ id, name }] }.
      * `context.stopOverLoreBudget: true` is kept for any kind and refuses nothing here: a job that
      * honors it is admitted and ends as an `error` terminal coded `loreOverBudget`.
+     * `context.oocExchangeId` must be a valid OOC id and is accepted only for `preview`; other
+     * kinds carrying it are malformed (400).
      */
     app.post("/api/generations", limiter, async (c) => {
         const denied = await auth.checkAuth(c);

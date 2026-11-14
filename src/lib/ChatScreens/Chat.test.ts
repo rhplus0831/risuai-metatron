@@ -513,6 +513,38 @@ function answerWith(answer: (body: Record<string, unknown>) => Promise<Response>
 }
 
 describe("branching a pinned chat", () => {
+    it("drops the OOC log and segment from a branch while keeping its OOC toggles", async () => {
+        vi.useFakeTimers();
+        const { ref } = boot("ooc-source");
+        answerWith(async () => json(200, { revision: "memory-r1", inherited: true }));
+        const ooc = {
+            oocLog: {
+                q: { id: "q", segment: "s", anchorMessageId: "a", question: "Why?", answer: "Because.", time: 1 },
+            },
+            oocSegment: { id: "s", anchorMessageId: "a" },
+            oocToggles: { mode: "ooc", detail: "0" },
+        };
+        setChatMeta(ref, ooc);
+        const ui = render();
+        ui.click(ui.target.querySelector(".button-icon-menu"));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(popupStore.children).not.toBeNull();
+        const popupTarget = document.createElement("div");
+        ui.target.appendChild(popupTarget);
+        mounted.push(mount(PopupList, { target: popupTarget }));
+        flushSync();
+        ui.click(ui.button(language.branch));
+        await vi.advanceTimersByTimeAsync(1);
+
+        expect(chatList("c")).toHaveLength(2);
+        const branch = chatList("c").find((entry) => entry.id !== ref.chatId)!;
+        const branchedChat = findChat({ chaId: "c", chatId: branch.id })!;
+        expect(branchedChat).not.toHaveProperty("oocLog");
+        expect(branchedChat).not.toHaveProperty("oocSegment");
+        expect(branchedChat.oocToggles).toEqual(ooc.oocToggles);
+        expect(findChat(ref)).toMatchObject(ooc);
+    });
+
     it("creates an unpinned branch of the surviving messages and requests memory from its source", async () => {
         vi.useFakeTimers();
         try {
