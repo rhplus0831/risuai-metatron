@@ -4,7 +4,7 @@ Status: drafted 2026-11-14 at `d2d1a76a7` from the owner's request. D1 is the ow
 to D5 the same day, as recommended. D6 to D24 are this plan's own, found against the code. Audited 2026-11-14 at
 `31a39b8ad`, before any plan-runner run: [audit](../reports/audits/plan-runner/generation-progress-window-2026-11-14.md)
 (1 P1, 4 P2, 6 P3, all fixed in plan; no P1 open). D25 and D26 come from the audit; the owner accepted both the same
-day.
+day. Landed: 1 (`b7bf85fd5`).
 
 Sources: the owner's request (2026-11-14: a send shows only a circle, and a send running on another client shows no
 progress on the circle; a floating window at the top right with the seconds elapsed and, while streaming, the tokens
