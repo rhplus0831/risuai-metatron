@@ -1,8 +1,8 @@
 # Structured Memory Greeting Source Plan
 
-Status: drafted 2026-11-14 at `2ab7071fb` from the owner's request. D1 is the owner's request. D2, D5, D6, and D9 are
-recommendations that wait for the owner (see Open Questions); the rest are this plan's own, found against the code. Not
-audited yet.
+Status: drafted 2026-11-14 at `2ab7071fb` from the owner's request. D1 is the owner's request; the owner accepted D2,
+D6, and D9 the same day, as recommended. D5 waits for the owner (see Open Questions); the rest are this plan's own,
+found against the code. Not audited yet.
 
 Sources: the owner's report (2026-11-14: the request log shows the first message in every request); `assemblePrompt`'s
 greeting entry and `hypaV3Sources` in `server/src/prompt/assemble.ts`; `HypaV3EntrySource`, `hypaV3SourceHash`, and
@@ -262,8 +262,8 @@ shows "Greeting".
 
 ## Decisions
 
-D1 is the owner's request of 2026-11-14. D2, D5, D6, and D9 are recommendations waiting for the owner. The rest are
-this plan's.
+D1 is the owner's request of 2026-11-14. The owner accepted D2, D6, and D9 the same day, as recommended. D5 is a
+recommendation waiting for the owner. The rest are this plan's.
 
 - D1. The greeting becomes something Structured Memory records and can leave out of the prompt, like a message. Today
   it is sent with every request for as long as the chat fits.
@@ -305,11 +305,8 @@ this plan's.
 
 ## Open Questions
 
-The owner decides these before the plan-runner audit; each has a recommendation above.
+The owner decides this before the plan-runner audit; it has a recommendation above. Q2 (D2), Q3 (D6), and Q4 (D9)
+were settled on 2026-11-14 as recommended.
 
 - Q1 (D5). A greeting that changes after it was recorded: only the greeting returns to the prompt (recommended), or
   the citing event goes stale and its messages return too.
-- Q2 (D2). Existing chats: only on a person's request (recommended), or the automatic writer records the greeting
-  alone at the next send, one model call per chat.
-- Q3 (D6). The writer reads the greeting with CBS expanded and no scripts (recommended), or as stored.
-- Q4 (D9). A greeting row in Coverage (recommended), or Timeline and Pages only.
