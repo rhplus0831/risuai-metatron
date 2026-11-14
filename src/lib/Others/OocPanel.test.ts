@@ -7,6 +7,8 @@ import type { OocExchange } from "../../../shared/ooc";
 import type { OocSegmentView, OocSessionState } from "src/ts/ooc/oocSession.svelte";
 import { openOocPanel, closeOocPanel } from "src/ts/ooc/oocPanel.svelte";
 import { beginLocalSend } from "src/ts/process/localSends";
+import { readPresetFieldOf, writePresetField } from "src/ts/storage/settingsViews.svelte";
+import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { reactiveProps } from "../UI/tests/reactiveProps.svelte";
 import OocPanel from "./OocPanel.svelte";
 
@@ -16,6 +18,8 @@ type Fixture = {
     session: OocSessionState;
     anchorExists: boolean;
     generatingKeys: string[];
+    definitionsText: string;
+    characterType: "character" | "group";
 };
 
 const mocks = vi.hoisted(() => ({
@@ -24,6 +28,7 @@ const mocks = vi.hoisted(() => ({
     retryOoc: vi.fn<typeof import("src/ts/ooc/oocSession.svelte").retryOoc>(),
     refreshOoc: vi.fn<typeof import("src/ts/ooc/oocSession.svelte").refreshOoc>(),
     toggleOocAttachment: vi.fn<typeof import("src/ts/ooc/oocSession.svelte").toggleOocAttachment>(),
+    setChatMeta: vi.fn<typeof import("src/ts/storage/chatStore.svelte").setChatMeta>(),
 }));
 
 vi.mock(
@@ -47,10 +52,16 @@ vi.mock("src/ts/storage/chatStore.svelte", async () =>
     (await import("src/ts/storage/tests/chatStoreMock")).createChatStoreMock({
         currentChatRef: () => ({ chaId: "character", chatId: "chat" }),
         findChat: () => mocks.fixture!.chat,
+        chatEntry: () => ({ id: "chat", promptPresetId: mocks.fixture!.chat.promptPresetId }),
+        setChatMeta: mocks.setChatMeta,
     }),
 );
 vi.mock("src/ts/storage/characterStore.svelte", () => ({
-    characterList: () => [{ chaId: "character", type: "character", name: "Mira" }],
+    characterList: () => [{ chaId: "character", type: mocks.fixture!.characterType, name: "Mira" }],
+    selectedCharacter: () => undefined,
+}));
+vi.mock("src/ts/toggles/chatToggles.svelte", () => ({
+    chatToggleDefinitions: () => mocks.fixture!.definitionsText,
 }));
 vi.mock("src/ts/process/chatStatus.svelte", () => ({
     chatStatusKey: (ref: { chaId: string; chatId: string }) => `${ref.chaId}\u0000${ref.chatId}`,
@@ -74,6 +85,19 @@ const releases: (() => void)[] = [];
 
 beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
+    installFlatDatabase({
+        botPresets: [
+            { id: "tab-preset", name: "Tab preset", oocToggles: { wrong: "1" } },
+            { id: "display-preset", name: "Display preset" },
+            { id: "other-preset", name: "Other preset" },
+        ],
+        characters: [],
+    });
+    mocks.setChatMeta.mockImplementation((_ref, set, unset = []) => {
+        Object.assign(fixture.chat, set);
+        for (const key of unset) delete fixture.chat[key as keyof Chat];
+    });
     mocks.askOoc.mockResolvedValue({ status: "done" });
     mocks.retryOoc.mockResolvedValue({ status: "done" });
     mocks.refreshOoc.mockResolvedValue({ status: "done" });
@@ -113,6 +137,7 @@ beforeEach(() => {
     fixture = reactiveProps<Fixture>({
         chat: {
             id: "chat",
+            promptPresetId: "display-preset",
             oocSegment: { id: "current", anchorMessageId: "message-8" },
             oocLog: Object.fromEntries(exchanges.map((exchange) => [exchange.id, exchange])),
         },
@@ -133,6 +158,8 @@ beforeEach(() => {
         },
         anchorExists: true,
         generatingKeys: [],
+        definitionsText: "",
+        characterType: "character",
     });
     mocks.fixture = fixture;
     closeOocPanel();
@@ -144,6 +171,7 @@ afterEach(async () => {
     if (instance) await unmount(instance);
     instance = undefined;
     document.body.replaceChildren();
+    localStorage.clear();
 });
 
 function render() {
@@ -319,3 +347,142 @@ it("shows an error and retry only for an unanswered exchange in the current segm
     element<HTMLButtonElement>("[data-ooc-retry]", current).click();
     expect(mocks.retryOoc).toHaveBeenCalledExactlyOnceWith(ref, "current-unanswered");
 });
+
+const displayScope = { presetId: "display-preset", modelPresetId: "tab-preset" };
+const presetMap = () => readPresetFieldOf(displayScope, "oocToggles");
+const settingsButton = () => document.querySelector<HTMLButtonElement>('button[aria-label="OOC session settings"]');
+const suggestion = () => document.querySelector("[data-ooc-toggle-suggestion]");
+
+it.each([
+    {
+        description: "string entries only",
+        source: { ooc: "0", keep: "saved", invalid: 1 },
+        expected: { ooc: "0", keep: "saved" },
+    },
+    { description: "an empty map when absent", source: undefined, expected: {} },
+])(
+    "copies $description from the display preset, edits the chat map, and unsets it when switched off",
+    ({ source, expected }) => {
+        writePresetField(displayScope, "oocToggles", source);
+        fixture.definitionsText = "ooc=OOC mode";
+        render();
+        expect(document.querySelector("#ooc-toggle-settings")).toBeNull();
+        settingsButton()!.click();
+        flushSync();
+        const popover = element("#ooc-toggle-settings");
+        const own = element<HTMLInputElement>('input[type="checkbox"]', popover);
+        expect(own.closest("label")!.textContent).toContain("Use this chat's own OOC toggles");
+        expect(own.checked).toBe(false);
+        expect(popover.querySelector("[data-ooc-toggle-editor]")).toBeNull();
+        expect(mocks.setChatMeta).not.toHaveBeenCalled();
+
+        own.click();
+        flushSync();
+        expect(mocks.setChatMeta).toHaveBeenCalledExactlyOnceWith(ref, { oocToggles: expected });
+        expect(fixture.chat.oocToggles).toEqual(expected);
+        expect(fixture.chat.oocToggles).not.toBe(presetMap());
+        expect(own.checked).toBe(true);
+        const row = element('[data-ooc-toggle="ooc"]', popover);
+        if (source) {
+            element<HTMLInputElement>('input[type="checkbox"]', row).click();
+        } else {
+            const mode = element<HTMLSelectElement>("select", row);
+            mode.value = "forced";
+            mode.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+        flushSync();
+        expect(mocks.setChatMeta).toHaveBeenLastCalledWith(ref, { oocToggles: { ...expected, ooc: "1" } });
+        if (source) expect(presetMap()).toEqual(source);
+
+        own.click();
+        flushSync();
+        expect(mocks.setChatMeta).toHaveBeenLastCalledWith(ref, {}, ["oocToggles"]);
+        expect(Object.hasOwn(fixture.chat, "oocToggles")).toBe(false);
+        expect(own.checked).toBe(false);
+        expect(popover.querySelector("[data-ooc-toggle-editor]")).toBeNull();
+    },
+);
+
+it("hides toggle settings and suggestions for group chats", () => {
+    fixture.characterType = "group";
+    fixture.definitionsText = "ooc=OOC mode";
+    render();
+    expect(settingsButton()).toBeNull();
+    expect(suggestion()).toBeNull();
+});
+
+it("offers only a matching checkbox when the effective forced map is empty", () => {
+    fixture.definitionsText = "mood=Mood";
+    render();
+    expect(suggestion()).toBeNull();
+
+    fixture.definitionsText = "ooc=OOC text=text\nmeta=OOC notes=textarea\nmode=OOC mode=select=Off,On\n=OOC=caption";
+    flushSync();
+    expect(suggestion()).toBeNull();
+
+    fixture.definitionsText = "OoC_mode=Session mode";
+    flushSync();
+    expect(suggestion()?.textContent).toContain("Session mode");
+    fixture.definitionsText = "meta=Talk OoC";
+    flushSync();
+    expect(suggestion()?.textContent).toContain("Talk OoC");
+    for (const map of [{ other: "0" }, { other: "" }]) {
+        writePresetField(displayScope, "oocToggles", map);
+        flushSync();
+        expect(suggestion()).toBeNull();
+    }
+    writePresetField(displayScope, "oocToggles", {});
+    fixture.chat.oocToggles = { meta: "0" };
+    flushSync();
+    expect(suggestion()).toBeNull();
+
+    // An own empty map replaces the preset map, as oocToggleValues specifies.
+    writePresetField(displayScope, "oocToggles", { other: "1" });
+    fixture.chat.oocToggles = {};
+    flushSync();
+    expect(suggestion()?.textContent).toContain("Talk OoC");
+    expect(presetMap()).toEqual({ other: "1" });
+    expect(mocks.setChatMeta).not.toHaveBeenCalled();
+});
+
+it.each(["Force it on", "Not now"] as const)(
+    "%s remembers the answer locally for that preset and only acceptance writes its map",
+    async (answer) => {
+        writePresetField(displayScope, "oocToggles", { keep: "saved" });
+        fixture.chat.oocToggles = {};
+        fixture.definitionsText = "meta=OOC mode";
+        render();
+        expect(suggestion()).not.toBeNull();
+        expect(presetMap()).toEqual({ keep: "saved" });
+        expect(localStorage.length).toBe(0);
+        expect(mocks.setChatMeta).not.toHaveBeenCalled();
+        const button = [...suggestion()!.querySelectorAll("button")].find(
+            (node) => node.textContent?.trim() === answer,
+        )!;
+        button.click();
+        flushSync();
+        expect(presetMap()).toEqual(answer === "Force it on" ? { keep: "saved", meta: "1" } : { keep: "saved" });
+        expect(fixture.chat.oocToggles).toEqual({});
+        expect(suggestion()).toBeNull();
+
+        // Reopening with no forced values must still remember this preset's answer.
+        writePresetField(displayScope, "oocToggles", {});
+        await unmount(instance!);
+        instance = undefined;
+        document.body.replaceChildren();
+        render();
+        expect(suggestion()).toBeNull();
+        fixture.chat.promptPresetId = "other-preset";
+        flushSync();
+        expect(suggestion()).not.toBeNull();
+        fixture.chat.promptPresetId = "display-preset";
+        flushSync();
+        expect(suggestion()).toBeNull();
+
+        // A fresh module has no in-memory decision state; storage must carry the answer.
+        vi.resetModules();
+        const fresh = await import("src/ts/ooc/oocToggleSettings.svelte");
+        expect(fresh.oocToggleOfferHandled("display-preset")).toBe(true);
+        expect(fresh.oocToggleOfferHandled("other-preset")).toBe(false);
+    },
+);

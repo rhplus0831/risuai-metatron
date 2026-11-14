@@ -144,6 +144,11 @@ section.
 
 - `src/lib/UI/PromptDataItem.svelte` (one `PromptItem`) and `src/lib/Others/PromptDiffModal.svelte` (saved presets'
   templates, preferences in `db.promptDiffPrefs`).
+- `src/lib/Setting/OocToggleEditor.svelte`: a forced-toggle map editor over plain props (`definitionsText`, `value`,
+  `onchange` with a new map). Per value toggle it offers "as in the chat" (key absent) or a forced value in the toggle
+  kind's control; keys the definitions no longer hold are listed as stale and removable. `PromptSettings` shows it for
+  the preset's `oocToggles` under the toggle definitions, over the preset's own definitions text only; the OOC panel
+  uses it for a chat's own map ([ui theming](ui-theming.md#dialogs-popovers-and-portals)).
 
 ### Languages
 

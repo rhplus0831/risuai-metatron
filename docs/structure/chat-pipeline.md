@@ -129,6 +129,10 @@
 - `src/lib/Others/OocPanel.svelte` and its open flag `src/ts/ooc/oocPanel.svelte.ts` (`openOocPanel`, `closeOocPanel`):
   the screen over the module ([ui theming](ui-theming.md#dialogs-popovers-and-portals)). Its one entry is the composer
   menu item of `DefaultChatScreen.svelte`, beside the memory item and hidden for a group chat.
+- `src/ts/ooc/oocToggleSettings.svelte.ts`: the OOC toggle settings the panel edits. The preset is the chat's display
+  preset (`chatDisplayIds`). `useOwnOocToggles` copies its `oocToggles` into the chat's own (on) or unsets the chat's
+  field (off). `oocToggleSuggestion` and `answerOocToggleOffer` make the one offer per preset to force an `ooc` checkbox
+  toggle on; the offered preset ids are kept in this browser's `localStorage`, not in settings.
 - The stored shapes, limits, and pure helpers both runtimes use are in `shared/ooc.ts` ([persistence](persistence.md)).
 
 ### Inlays

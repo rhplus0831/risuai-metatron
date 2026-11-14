@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { XIcon } from "@lucide/svelte";
+    import { SettingsIcon, XIcon } from "@lucide/svelte";
     import { get } from "svelte/store";
     import { language } from "src/lang";
     import { alertConfirm, doingAlert, terminalNotice } from "src/ts/alert";
@@ -7,6 +7,14 @@
     import { ColorSchemeTypeStore } from "src/ts/gui/colorscheme";
     import { messageSearchPanel } from "src/ts/messageSearch.svelte";
     import { closeOocPanel, oocPanel } from "src/ts/ooc/oocPanel.svelte";
+    import {
+        answerOocToggleOffer,
+        oocToggleMap,
+        oocToggleOfferHandled,
+        oocToggleSuggestion,
+        presetOocToggles,
+        useOwnOocToggles,
+    } from "src/ts/ooc/oocToggleSettings.svelte";
     import {
         askOoc,
         clearOocLog,
@@ -23,8 +31,12 @@
     import { chatStatusKey, generatingChatKeys } from "src/ts/process/chatStatus.svelte";
     import { isLocalSend, localSends } from "src/ts/process/localSends";
     import { characterList } from "src/ts/storage/characterStore.svelte";
-    import { currentChatRef, findChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { currentChatRef, findChat, setChatMeta, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { chatToggleDefinitions } from "src/ts/toggles/chatToggles.svelte";
     import { createSimpleCharacter } from "src/ts/stores.svelte";
+    import { isPlainObject } from "../../../shared/valueKinds.ts";
+    import OocToggleEditor from "../Setting/OocToggleEditor.svelte";
+    import CheckInput from "../UI/GUI/CheckInput.svelte";
     import ChatBody from "../ChatScreens/ChatBody.svelte";
 
     /**
@@ -34,11 +46,28 @@
     let draft = $state("");
     let panel: HTMLDivElement | undefined = $state();
     let expanded = $state<Record<string, boolean>>({});
+    let settingsFor = $state<string | null>(null);
+    let settingsContainer: HTMLDivElement | undefined = $state();
+    let settingsButton: HTMLButtonElement | undefined = $state();
+    let settingsPopover: HTMLDivElement | undefined = $state();
 
     const ref = $derived(currentChatRef());
     const chat = $derived(ref ? findChat(ref) : undefined);
     const character = $derived(characterList().find((entry) => entry.chaId === ref?.chaId));
     const simpleCharacter = $derived(createSimpleCharacter(character));
+    const canEditToggles = $derived(!!ref && !!chat && !!character && character.type !== "group");
+    const toggleDefinitions = $derived(canEditToggles ? chatToggleDefinitions(ref) : "");
+    const presetToggles = $derived(ref && canEditToggles ? presetOocToggles(ref) : null);
+    const ownToggles = $derived(isPlainObject(chat?.oocToggles));
+    const settingsOpen = $derived(canEditToggles && ref && settingsFor === chatStatusKey(ref));
+    const suggestion = $derived(
+        presetToggles?.scope.presetId && !oocToggleOfferHandled(presetToggles.scope.presetId)
+            ? oocToggleSuggestion(toggleDefinitions, chat?.oocToggles, presetToggles.map)
+            : undefined,
+    );
+    $effect(() => {
+        if (!oocPanel.open || !settingsOpen) settingsFor = null;
+    });
     const session = $derived(ref ? readOocState(ref) : null);
     const segments = $derived(ref && chat ? readOocSegments(ref) : []);
     const hasEarlier = $derived(segments.some((segment) => !segment.current));
@@ -107,6 +136,18 @@
         if (await alertConfirm(language.oocPanel.clearConfirm)) await clearOocLog(target);
     }
 
+    function toggleSettings() {
+        const target = ref;
+        if (!target || !findChat(target)) return;
+        settingsFor = settingsOpen ? null : chatStatusKey(target);
+    }
+
+    function closeSettingsOutside(event: PointerEvent) {
+        if (settingsOpen && event.target instanceof Node && !settingsContainer?.contains(event.target)) {
+            settingsFor = null;
+        }
+    }
+
     function closeOnEscape(event: KeyboardEvent) {
         if (!oocPanel.open || event.key !== "Escape" || event.isComposing || event.keyCode === 229) return;
         if (messageSearchPanel.open || doingAlert() || get(terminalNotice) !== null || topBindingLayer() !== null)
@@ -114,6 +155,11 @@
         if (event.target !== document.body && !(event.target instanceof Node && panel?.contains(event.target))) return;
         event.stopPropagation();
         event.preventDefault();
+        if (settingsOpen && event.target instanceof Node && settingsPopover?.contains(event.target)) {
+            settingsFor = null;
+            settingsButton?.focus();
+            return;
+        }
         closeOocPanel();
     }
 </script>
@@ -133,7 +179,7 @@
     </div>
 {/snippet}
 
-<svelte:document onkeydowncapture={closeOnEscape} />
+<svelte:document onkeydowncapture={closeOnEscape} onpointerdowncapture={closeSettingsOutside} />
 
 {#if oocPanel.open}
     <div
@@ -147,8 +193,55 @@
         <header class="shrink-0 border-b border-darkborderc p-3">
             <div class="flex items-center gap-2">
                 <h2 id="ooc-panel-title" class="text-xl font-bold">{language.oocPanel.title}</h2>
+                <div class="relative ml-auto" bind:this={settingsContainer}>
+                    {#if canEditToggles && ref && chat && presetToggles}
+                        {@const target = ref}
+                        <button
+                            type="button"
+                            bind:this={settingsButton}
+                            class="text-textcolor2 hover:text-textcolor"
+                            title={language.oocToggles.settings}
+                            aria-label={language.oocToggles.settings}
+                            aria-expanded={!!settingsOpen}
+                            aria-controls="ooc-toggle-settings"
+                            onclick={toggleSettings}><SettingsIcon size={22} /></button
+                        >
+                        {#if settingsOpen}
+                            <div
+                                id="ooc-toggle-settings"
+                                bind:this={settingsPopover}
+                                class="absolute right-0 top-full z-10 mt-2 max-h-[60dvh] w-[min(24rem,calc(100vw-1.5rem))] overflow-y-auto rounded-md border border-darkborderc bg-darkbg p-3 shadow-lg"
+                                role="region"
+                                aria-label={language.oocToggles.settings}
+                            >
+                                <CheckInput
+                                    name={language.oocToggles.own}
+                                    check={ownToggles}
+                                    onChange={(enabled) => useOwnOocToggles(target, enabled)}
+                                />
+                                {#if ownToggles}
+                                    <div class="mt-3">
+                                        {#key chatStatusKey(target)}
+                                            <OocToggleEditor
+                                                definitionsText={toggleDefinitions}
+                                                value={oocToggleMap(chat.oocToggles)}
+                                                onchange={(next) => {
+                                                    if (findChat(target)) setChatMeta(target, { oocToggles: next });
+                                                }}
+                                            />
+                                        {/key}
+                                    </div>
+                                {:else}
+                                    <p class="mt-3 text-sm text-textcolor2">
+                                        {language.oocToggles.presetApplies(Object.keys(presetToggles.map).length)}
+                                    </p>
+                                {/if}
+                            </div>
+                        {/if}
+                    {/if}
+                </div>
                 <button
-                    class="ml-auto text-textcolor2 hover:text-textcolor"
+                    class="text-textcolor2 hover:text-textcolor"
                     title={language.oocPanel.close}
                     aria-label={language.oocPanel.close}
                     onclick={closeOocPanel}
@@ -171,6 +264,27 @@
                         onclick={() => clearEarlier(target)}>{language.oocPanel.clearEarlier}</button
                     >
                 </div>
+                {#if suggestion && presetToggles}
+                    {@const presetId = presetToggles.scope.presetId}
+                    {@const key = suggestion.key}
+                    <div class="mt-3 rounded-md border border-darkborderc p-2 text-sm" data-ooc-toggle-suggestion>
+                        <p class="text-textcolor2">{language.oocToggles.suggestion(suggestion.label)}</p>
+                        <div class="mt-2 flex flex-wrap gap-2">
+                            <button
+                                type="button"
+                                class="rounded-md border border-darkborderc px-2 py-1 hover:bg-selected"
+                                onclick={() => answerOocToggleOffer(target, presetId, key, true)}
+                                >{language.oocToggles.forceOn}</button
+                            >
+                            <button
+                                type="button"
+                                class="rounded-md border border-darkborderc px-2 py-1 hover:bg-selected"
+                                onclick={() => answerOocToggleOffer(target, presetId, key, false)}
+                                >{language.oocToggles.notNow}</button
+                            >
+                        </div>
+                    </div>
+                {/if}
                 {#if notice}
                     <p class="mt-2 text-sm text-textcolor2" role="status" data-ooc-notice>{notice}</p>
                 {:else if chat.oocSegment}

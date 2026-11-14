@@ -15,6 +15,8 @@
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
     import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
+    import OocToggleEditor from "../OocToggleEditor.svelte";
+    import { oocToggleMap } from "src/ts/ooc/oocToggleSettings.svelte";
     import { onDestroy, onMount } from "svelte";
     import { defaultAutoSuggestPrompt } from "../../../ts/storage/defaultPrompts";
 
@@ -335,6 +337,17 @@
         >{language.customPromptTemplateToggle} <Help key="customPromptTemplateToggle" /></span
     >
     <TextAreaInput bind:value={activePreset.customPromptTemplateToggle} popupEditorContext={activePreset.id} />
+    <section class="mt-4 min-w-0" aria-labelledby="preset-ooc-toggles-title">
+        <h3 id="preset-ooc-toggles-title" class="text-textcolor">{language.oocToggles.title}</h3>
+        <p class="mb-3 mt-1 text-sm text-textcolor2">{language.oocToggles.help}</p>
+        {#key activePreset.id}
+            <OocToggleEditor
+                definitionsText={activePreset.customPromptTemplateToggle}
+                value={oocToggleMap(activePreset.oocToggles)}
+                onchange={(next) => (activePreset.oocToggles = { ...next })}
+            />
+        {/key}
+    </section>
     <span class="text-textcolor mt-4">{language.defaultVariables} <Help key="defaultVariables" /></span>
     <TextAreaInput bind:value={activePreset.templateDefaultVariables} popupEditorContext={activePreset.id} />
     <span class="text-textcolor mt-4">{language.predictedOutput}</span>

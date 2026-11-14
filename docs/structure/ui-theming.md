@@ -133,6 +133,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   chat usable beside it; narrow: the full viewport. Rows render through `ChatBody` with `idx={-1}`, not `Chat.svelte`; a
   streaming answer is parsed as a stored one. Escape closes it only from inside it or the page body. Actions:
   [chat pipeline](chat-pipeline.md#ooc-session).
+- `OocPanel`'s header gear opens an anchored settings popover: "use this chat's own OOC toggles" and, while on,
+  `OocToggleEditor` over the chat's `oocToggles`. Outside press or Escape inside the popover closes the popover, not the
+  panel. Below the header buttons the panel may show the one-time offer to force an OOC toggle on in the preset.
 - `src/lib/Others/PopupEditor.svelte`, `src/ts/popupEditorSession.svelte.ts` (`openPopupEditorSession`,
   `closePopupEditorSession`, `popUpEditorStore`), `src/ts/gui/popupEditorMode.ts` (per-device Monaco/textarea).
 - HypaV3 modal/progress UI is chat-specific; its data and task fences belong to [memory](memory.md).

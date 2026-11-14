@@ -34,6 +34,22 @@ export const languageEnglish = {
         chatBusy: "Wait for the chat to finish generating.",
         emptyQuestion: "Enter a question to send.",
     },
+    oocToggles: {
+        title: "OOC session toggles",
+        help: "These values are forced on the toggles for an OOC session question.",
+        settings: "OOC session settings",
+        own: "Use this chat's own OOC toggles",
+        presetApplies: (count: number) =>
+            `The preset's OOC toggles apply (${count} forced ${count === 1 ? "key" : "keys"}).`,
+        asInChat: "As in the chat",
+        forced: "Forced value",
+        stale: "These forced keys are no longer defined:",
+        remove: "Remove",
+        removeKey: (key: string) => `Remove stale OOC toggle: ${key}`,
+        suggestion: (label: string) => `Force “${label}” on in this preset for OOC session questions?`,
+        forceOn: "Force it on",
+        notNow: "Not now",
+    },
     ooc: {
         group: "OOC sessions are not available for group chats.",
         busy: "Wait for this chat to finish generating before asking in the OOC session.",
