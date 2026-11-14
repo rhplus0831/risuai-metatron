@@ -152,6 +152,7 @@
   "textTheme": "standard",
   "emotionPrompt2": "",
   "requestRetrys": 2,
+  "halfStreaming": false,
   "useSayNothing": true,
   "bias": [],
   "showUnrecommended": false,

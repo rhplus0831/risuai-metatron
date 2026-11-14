@@ -215,6 +215,7 @@ export interface Database {
     showMemoryLimit: boolean;
     roundIcons: boolean;
     useStreaming: boolean;
+    halfStreaming: boolean;
     supaMemoryKey: string;
     hypaMemoryKey: string;
     voyageApiKey: string;

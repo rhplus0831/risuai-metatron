@@ -258,6 +258,8 @@ export const languageKorean = {
             "로어북 토큰 한도 때문에 활성화된 항목이 제외되면, 채팅 화면에서 시작한 전송·이어쓰기·리롤을 모델 호출 전에 멈추고 어떻게 할지 묻습니다. 플러그인, 자동 모드, 멀티센드, 명령어로 시작한 전송은 멈추지 않으며, 전송 후 컨텍스트 미터가 경고합니다. `@@ignore_on_max_context`가 지정된 항목은 전송을 멈추지 않습니다. 채팅별로 끌 수 있습니다.",
         generationProgressWindow:
             "오른쪽 위의 작은 창에 서버에서 생성 중인 모든 응답의 진행 단계와 경과 시간이 표시됩니다. 모델이 응답을 스트리밍하는 동안에는 생성한 토큰 수와 속도도 표시됩니다.",
+        halfStreaming:
+            "응답 스트리밍이 꺼져 있어도 지원하는 모델에는 스트리밍을 요청하여, 진행 창에 생성한 토큰 수와 속도를 표시합니다. 스트리밍으로 받은 응답은 완료된 뒤에 표시되며, 응답 스트리밍을 켰을 때와 동일하게 처리됩니다. 따라서 플러그인의 요청 후 치환과 '지정 문자권 포함 시 자동 재생성'은 실행되지 않습니다. 모델이 스트리밍 없이 응답하면 평소와 같이 처리합니다.",
         comfyWorkflow:
             "ComfyUI의 API 워크플로우 JSON을 입력하세요. ComfyUI에서 'Workflow > Export (API)' 버튼을 눌러 내보낼 수 있습니다. 워크플로우 안에 반드시 `{{risu_prompt}}`를 포함해야 하며, 실행 시 Risu가 생성한 이미지 프롬프트로 치환됩니다.",
         automaticCachePoint: "채팅이 끝난 뒤 캐시 포인트가 없으면 자동으로 새 캐시 포인트를 생성합니다.",
@@ -1180,6 +1182,7 @@ export const languageKorean = {
         localNetworkTimeoutSec: "로컬 네트워크 제한 시간 (초)",
         vertexRegion: "Vertex 리전",
         responseStreaming: "응답 스트리밍",
+        halfStreaming: "하프 스트리밍",
         streamGeminiThoughts: "Gemini 추론 과정 스트리밍",
         saveSignatures: "Gemini 추론 서명 저장",
     },

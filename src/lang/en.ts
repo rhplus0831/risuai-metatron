@@ -313,6 +313,8 @@ export const languageEnglish = {
             "When the lorebook token limit leaves out an activated entry, a send, continue, or reroll from the chat screen stops before the model is called and asks what to do. Sends from plugins, auto mode, multisend, and commands are not stopped; the context meter warns after them. Entries marked `@@ignore_on_max_context` never cause a stop. A chat can turn this off.",
         generationProgressWindow:
             "A small window at the top right lists every reply being generated on the server, with its stage, the time elapsed, and, while the model streams, the tokens generated and the speed.",
+        halfStreaming:
+            "With Response Streaming off, still ask models that support it to stream, so the progress window can show the tokens generated and the speed. A streamed reply appears when it is complete and is handled like one with Response Streaming on: plugins' after-request replacers and the banned-script retry do not run for it. A model that answers without streaming is handled as usual.",
         legacyMediaFindings:
             "If enabled, it will use the old method to find media assets, without using the additional search algorithm.",
         comfyWorkflow:
@@ -1244,6 +1246,7 @@ export const languageEnglish = {
         localNetworkTimeoutSec: "Local network timeout (seconds)",
         vertexRegion: "Vertex region",
         responseStreaming: "Response streaming",
+        halfStreaming: "Half Streaming",
         streamGeminiThoughts: "Stream Gemini thoughts",
         saveSignatures: "Save Gemini thought signatures",
     },

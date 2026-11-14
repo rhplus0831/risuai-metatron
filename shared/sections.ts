@@ -49,6 +49,7 @@ export const SECTION_FIELDS = {
         "descriptionPrefix",
         "requestRetrys",
         "useStreaming",
+        "halfStreaming",
         "usePlainFetch",
         "openrouterMiddleOut",
         "openrouterFallback",

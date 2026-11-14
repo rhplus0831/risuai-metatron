@@ -109,7 +109,8 @@ section.
   (the UI language only).
 - Hybrid handwritten/registry pages: `ModelSettings` (the model preset and the aux selector owned by
   [media-aux](media-aux.md); its handwritten provider toggles include `saveSignatures`, shown for a `geminiThinking`
-  model whether or not streaming is on) and `PromptPresetSettings` (the prompt preset). Connections, profile editing,
+  model whether or not streaming is on, and `halfStreaming`, shown under Response Streaming only while that is off, as
+  in `Model/ModelProfileEditor.svelte`) and `PromptPresetSettings` (the prompt preset). Connections, profile editing,
   slot selection, and what the toggles do belong to [LLM requests](llm-requests.md).
 - `MemorySettings`: memory providers, presets, the embedding model, `supaMemoryKey`, and HypaV3 budget controls. The
   algorithm selector is what Legacy chats use and gates Hanurai, HypaV2, and SupaMemory (and search's

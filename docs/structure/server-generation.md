@@ -141,6 +141,19 @@ refusal the memory step recovered from or outlived replaces no later error.
   reports `{ type: "output", tokens, since, at }` through `job.emit`. No write or event waits for it. A failed count is
   logged once (`generation.outputCount`) and stops the meter, which also stops when `readReply` returns. The tokenizer
   runs on the server thread for the new part, or a whole rewritten snapshot.
+- Half Streaming (`providers.halfStreaming`, read only here, from the request db): with Response Streaming off, a send
+  is quiet unless it is a `previewPrompt` or its reply model is `LLMFormat.OobaLegacy` (whose string stream `readReply`
+  misreads). Only its reply request gets `forceStreaming`; memory, translation, and Lua or trigger requests keep their
+  arguments. An answer that comes back buffered takes the buffered path.
+- A quiet stream takes the streamed path (reply row, `begin`, `accepted`, meter, tail, and the final write on a stop or
+  read failure), but `readReply`'s `quiet` emits no `chunk`, writes no raw checkpoint, and keeps chunk sequence 0, so no
+  tab sees partial text. A stream on a send that is not quiet (Response Streaming on, or a plugin provider that streams
+  on its own) is read with chunks and checkpoints.
+- A streamed reply, quiet or not, skips what only a buffered `success` gets (`requestChatDataOuter`): the plugins'
+  after-request replacers and the banned-character-set check and retry; a failure after the stream returned does not
+  restart the request. The primary text is trimmed before the output scripts, a continue is processed once as the
+  combined text, alternative samples are stored as the last chunk holds them, and Claude's buffered JSON extraction does
+  not run. The Half Streaming help text names the replacers and the retry.
 
 ### Reroll in place
 
@@ -357,6 +370,9 @@ Other subsystems' runtime limits live with their owners: [chat-pipeline](chat-pi
   only logged. Decision: Incremental Chat Transport D3, D4, archive.
 - Restart ends a running job as `shutdown`; reply text since its last checkpoint (3 s target, `CHECKPOINT_INTERVAL_MS`)
   is lost, and its message fence stays open until an ordinary write. Decision: Job Protocol D1, D8, and Q3, archive.
+- A quiet (Half Streaming) stream writes no checkpoint: a graceful shutdown finalizes the text so far inside its grace,
+  but a process lost without it (a crash, a kill) leaves the reply as last stored, empty for a new reply and the prefix
+  for a continue. A checkpoint would show the hidden text on every client. Decision: Generation Progress Window D23.
 - If receipt storage degrades, outcomes stay in memory and are lost on restart; without a persisted receipt, request
   deduplication also ends at the memory caps. WAL `synchronous=NORMAL` may lose recent writes on power loss, and the tab
   shows `serverJob.endedAway` when no outcome receipt remains. Decision: Job Protocol D1, archive.

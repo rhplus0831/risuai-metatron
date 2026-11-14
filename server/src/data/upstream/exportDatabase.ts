@@ -126,6 +126,7 @@ type Root = Record<string, unknown>;
 const METATRON_ONLY_SETTINGS = [
     "chatScreenWidth",
     "generationProgressWindow",
+    "halfStreaming",
     "googleSearchCredentials",
     "irisDialogue",
     "llmTranslationTarget",

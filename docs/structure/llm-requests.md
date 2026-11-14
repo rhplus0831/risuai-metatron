@@ -102,6 +102,10 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
   `resolveJobRequestModel`, and the per-format functions; the other adapters are `server/src/llm/anthropic.ts`,
   `server/src/llm/google.ts`, and `server/src/llm/openAI/` (helpers `server/src/llm/nai.ts`,
   `server/src/llm/openrouter.ts`). `server/src/llm/outer.ts` `requestChatDataOuter` is a job's outer loop.
+- The streaming decision (`requestChatDataMain`): a request streams when it sets `forceStreaming`, else when both
+  `providers.useStreaming` and its own `useStreaming` are on; an adapter may still answer buffered (`Invariants`). A
+  job's reply request sets `forceStreaming` only under Half Streaming
+  ([server generation](server-generation.md#prompt-job-execution)).
 - `server/src/llm/providerFetch.ts` `providerFetch`, `PROVIDER_RESPONSE_TIMEOUT_MS`: the fetch of provider requests (the
   transport's default and the local Ollama client). Its undici `Agent` waits 30 minutes for the headers and between body
   chunks; Node's own 300 s bound failed, and re-sent, a long non-streaming generation.
@@ -159,6 +163,9 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
   keys and the bindings. It hosts `Model/ProviderDefaultKeys.svelte`, each provider's flat default key for the models
   the selected model preset's slots use; that is the only place that edits the OpenAI and Google keys, listed there also
   while the image provider is DALL-E or Imagen, or when a status link asked for them; see [settings](settings-i18n.md).
+- `src/lib/Setting/Pages/ModelSettings.svelte` and `Model/ModelProfileEditor.svelte` bind the global Response Streaming
+  (`providers.useStreaming`) and, under it while it is off, Half Streaming (`providers.halfStreaming`), which only a
+  server job's reply request reads.
 - `src/lib/UI/GUI/CredentialSelect.svelte`: the per-profile key select.
 - `src/lib/UI/ModelList.svelte`, `src/lib/UI/ModelGrid.svelte`, `src/lib/UI/OpenrouterProviderList.svelte`,
   `src/lib/UI/NanoGPTProviderPicker.svelte`: pickers that write only their bindable `value`; slot writes are

@@ -23,6 +23,7 @@ import { completionNotificationTag } from "../../../shared/notifications.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { parseContextReport } from "../../../shared/contextReport.ts";
 import { AIACCESS_TOOLS } from "../../../shared/mcp/aiaccess.ts";
+import { LLMFormat } from "../../../shared/llm.ts";
 import { DICE_TOOLS } from "../mcp/dice.ts";
 import * as jobTools from "../mcp/jobTools.ts";
 import { createTokenizers } from "../prompt/tokenizers/index.ts";
@@ -2424,6 +2425,273 @@ describe("chat activity without character writes", () => {
         },
         SLOW,
     );
+});
+
+describe("Half Streaming", () => {
+    let providers: Record<string, unknown>;
+    let profile: Record<string, unknown>;
+    beforeEach(async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        providers = (await single("providers")).data;
+        profile = (await single("modelProfiles")).data.find((entry: any) => entry.id === profileId);
+        await patchProviders({
+            useStreaming: false,
+            halfStreaming: true,
+            autoContinueChat: false,
+            removeIncompleteResponse: false,
+            inlayErrorResponse: false,
+            presetChain: "",
+        });
+    });
+    afterEach(async () => {
+        await patchProviders(providers);
+        await patchPreset("modelProfiles", profileId, profile);
+        vi.useRealTimers();
+    });
+
+    /** Hold provider completion independently of the job's clock and watch its public reply acceptance. */
+    async function heldStream(chaId: string, kind = "send", extra = {}, options: JobOptions = {}) {
+        let controller!: ReadableStreamDefaultController<Record<string, string>>;
+        const stream = new ReadableStream<Record<string, string>>({
+            start(value) {
+                controller = value;
+            },
+        });
+        const requested = deferred<void>();
+        const upstream = vi.spyOn(server.context.llmRequests, "runInJob").mockImplementationOnce(async () => {
+            await socketOpen;
+            requested.resolve();
+            return { type: "streaming", result: stream };
+        });
+        const accepted = deferred<Extract<GenerationEvent, { type: "accepted" }>>();
+        const pending = job(kind, chaId, extra, {
+            ...options,
+            streamedRows: true,
+            onEvent(event) {
+                options.onEvent?.(event);
+                if (event.type === "accepted" && event.messageId) accepted.resolve(event);
+            },
+        });
+        const close = () => {
+            try {
+                controller.close();
+            } catch {
+                // An abort or read failure may already have closed the stream.
+            }
+        };
+        onTestFinished(async () => {
+            close();
+            await pending;
+            upstream.mockRestore();
+        });
+        const [acceptance] = await Promise.all([accepted.promise, requested.promise]);
+        return { controller, upstream, pending, acceptance, close };
+    }
+
+    it.each([
+        { useStreaming: false, halfStreaming: true, quiet: true, modelId: "reverse_proxy" },
+        { useStreaming: true, halfStreaming: true, quiet: false, modelId: "reverse_proxy" },
+        { useStreaming: true, halfStreaming: false, quiet: false, modelId: "reverse_proxy" },
+        { useStreaming: false, halfStreaming: false, quiet: false, modelId: "pluginmodel:::own-stream" },
+    ])(
+        "meters and completes a stream with Response Streaming=$useStreaming and Half Streaming=$halfStreaming; quiet=$quiet",
+        async ({ useStreaming, halfStreaming, quiet, modelId }) => {
+            await patchProviders({ useStreaming, halfStreaming });
+            await patchPreset("modelProfiles", profileId, { modelId });
+            const chaId = await seedCharacter({ name: "Ann", messages: [{ role: "user", chatId: "u", data: "q" }] });
+            const callbacks: Extract<GenerationEvent, { type: "callback" }>[] = [];
+            const h = await heldStream(
+                chaId,
+                "send",
+                {},
+                {
+                    hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"] },
+                    answerCallback(event) {
+                        callbacks.push(event);
+                        return { outcome: "answered", value: "Processed whole reply." };
+                    },
+                },
+            );
+            const request = h.upstream.mock.calls[0][0].arg;
+            if (quiet) expect(request.forceStreaming).toBe(true);
+            else expect(request).not.toHaveProperty("forceStreaming");
+            expect(h.acceptance).toMatchObject({ text: "", seq: 0 });
+            const initial = await readChat(chaId);
+            expect(initial.data.message.at(-1).data).toBe("");
+            const since = Date.now();
+            h.controller.enqueue({ primary: "hello world" });
+            await vi.advanceTimersByTimeAsync(3000);
+            const output = server.context.generationJobs.generationSnapshot()[0].output;
+            expect(output).toMatchObject({ since });
+            expect(output!.tokens).toBeGreaterThan(0);
+            const during = await readChat(chaId);
+            if (quiet) {
+                expect(during.revision).toBe(initial.revision);
+                expect(during.data.message.at(-1).data).toBe("");
+            } else {
+                expect(during.revision).not.toBe(initial.revision);
+                expect(during.data.message.at(-1).data).toBe("hello world");
+            }
+            h.controller.enqueue({ primary: "hello world. Completed." });
+            h.close();
+            const result = await h.pending;
+            expect(result.terminal).toMatchObject({ type: "done", messageId: h.acceptance.messageId });
+            expect((await readChat(chaId)).data.message.at(-1).data).toBe("Processed whole reply.");
+            expect(callbacks).toHaveLength(1);
+            expect(callbacks[0].payload).toEqual({ text: "hello world. Completed." });
+            const chunks = streamedTexts(result.events);
+            expect(chunks.map((chunk) => chunk.text)).toEqual(quiet ? [] : ["hello world", "hello world. Completed."]);
+            const patches = result.events.filter((event) => event.type === "chatPatch");
+            const sequences = patches.flatMap((event) => event.streaming.map((entry: { seq: number }) => entry.seq));
+            expect(sequences.length).toBeGreaterThan(0);
+            if (quiet) {
+                expect(sequences.every((seq) => seq === 0)).toBe(true);
+                expect(patches.flatMap((event) => event.messages ?? []).some((entry) => entry.streamed)).toBe(false);
+            } else {
+                expect(sequences).toContain(1);
+                expect(
+                    patches.flatMap((event) => event.messages ?? []).some((entry) => entry.streamed?.seq === 1),
+                ).toBe(true);
+            }
+        },
+    );
+
+    it.each([
+        { kind: "send", expected: "Partial reply." },
+        { kind: "continue", expected: "Previous reply. Partial reply." },
+        { kind: "reroll", expected: "Previous reply. " },
+    ])("keeps the correct stored reply when a quiet $kind is aborted", async ({ kind, expected }) => {
+        const candidates = [
+            { id: "first", data: "First reply." },
+            { id: "previous", data: "Previous reply. " },
+        ];
+        const chaId = await seedCharacter({
+            name: "Ann",
+            messages: [
+                { role: "user", chatId: "u", data: "q" },
+                ...(kind === "send"
+                    ? []
+                    : [{ role: "char", chatId: "r", data: "Previous reply. ", candidates, selected: 1 }]),
+            ],
+        });
+        const h = await heldStream(chaId, kind, kind === "reroll" ? { rerollMessageId: "r" } : {});
+        expect(h.upstream.mock.calls[0][0].arg.forceStreaming).toBe(true);
+        expect(h.acceptance).toMatchObject({ text: kind === "continue" ? "Previous reply. " : "", seq: 0 });
+        h.controller.enqueue({ primary: "Partial reply." });
+        await vi.advanceTimersByTimeAsync(0);
+        const stopped = await api(`/api/generations/${h.acceptance.jobId}?clientId=tab`, { method: "DELETE" });
+        expect(stopped.status).toBe(200);
+        const result = await h.pending;
+        expect(result.terminal).toMatchObject({ type: "error", reason: "aborted", status: 499 });
+        expect(streamedTexts(result.events)).toEqual([]);
+        const reply = (await readChat(chaId)).data.message.at(-1);
+        expect(reply.data).toBe(expected);
+        if (kind !== "send") expect(reply.chatId).toBe("r");
+        if (kind === "reroll") expect(reply).toMatchObject({ candidates, selected: 1 });
+        expect(await clientSetText(chaId, reply.chatId, expected)).toBe(200);
+    });
+
+    it("trims an incomplete quiet reply before processing the completed stream", async () => {
+        await patchProviders({ removeIncompleteResponse: true });
+        const chaId = await seedCharacter({ name: "Ann" });
+        const h = await heldStream(chaId);
+        h.controller.enqueue({ primary: "A whole sentence. An unfinished tail" });
+        h.close();
+        const result = await h.pending;
+        expect(result.terminal?.type).toBe("done");
+        expect(streamedTexts(result.events)).toEqual([]);
+        expect((await readChat(chaId)).data.message.at(-1).data).toBe("A whole sentence.");
+    });
+
+    it.each([false, true])(
+        "keeps a buffered Claude reply on the buffered path with Half Streaming=%s",
+        async (halfStreaming) => {
+            await patchProviders({ halfStreaming });
+            await patchPreset("modelProfiles", profileId, { customAPIFormat: LLMFormat.Anthropic });
+            const modules = await single("modules");
+            const saved = await batch({
+                ops: [
+                    {
+                        kind: "modules",
+                        id: "main",
+                        baseRevision: modules.revision ?? null,
+                        data: [
+                            ...(modules.data ?? []),
+                            { id: "half-streaming-dice", name: "Dice", mcp: { url: "internal:dice" } },
+                        ],
+                    },
+                ],
+            });
+            expect(saved.status).toBe(200);
+            onTestFinished(async () => {
+                const current = await single("modules");
+                await batch({
+                    ops: [
+                        {
+                            kind: "modules",
+                            id: "main",
+                            baseRevision: current.revision,
+                            ...(modules.revision ? { data: modules.data } : { delete: true }),
+                        },
+                    ],
+                });
+            });
+            const chaId = await seedCharacter({ name: "Ann", chat: { modules: ["half-streaming-dice"] } });
+            const upstream = vi.spyOn(server.context.llmRequests, "runInJob").mockImplementationOnce(async () => {
+                await socketOpen;
+                return { type: "success", result: "Buffered reply." };
+            });
+            const count = vi.spyOn(runnerTokens, "countLocal");
+            onTestFinished(() => {
+                upstream.mockRestore();
+                count.mockRestore();
+            });
+            const callbacks: Extract<GenerationEvent, { type: "callback" }>[] = [];
+            const result = await job(
+                "send",
+                chaId,
+                {},
+                {
+                    hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"] },
+                    answerCallback(event) {
+                        callbacks.push(event);
+                        return { outcome: "answered", value: "Processed reply." };
+                    },
+                },
+            );
+            const request = upstream.mock.calls[0][0];
+            if (halfStreaming) expect(request.arg.forceStreaming).toBe(true);
+            else expect(request.arg).not.toHaveProperty("forceStreaming");
+            expect(request.tools.descriptors.map((tool) => tool.name)).toEqual(DICE_TOOLS.map((tool) => tool.name));
+            expect(result.terminal?.type).toBe("done");
+            expect(callbacks).toHaveLength(1);
+            expect(callbacks[0].payload).toEqual({ text: "Buffered reply." });
+            expect((await readChat(chaId)).data.message.at(-1).data).toBe("Processed reply.");
+            expect(result.events.filter((event) => event.type === "accepted" && event.messageId)).toEqual([]);
+            expect(streamedTexts(result.events)).toEqual([]);
+            expect(count).not.toHaveBeenCalled();
+        },
+    );
+
+    it.each([
+        { kind: "previewPrompt", format: LLMFormat.OpenAICompatible },
+        { kind: "send", format: LLMFormat.OobaLegacy },
+    ])("never forces streaming for $kind with reply format $format", async ({ kind, format }) => {
+        await patchPreset("modelProfiles", profileId, { customAPIFormat: format });
+        const chaId = await seedCharacter({ name: "Ann" });
+        const before = await readChat(chaId);
+        const upstream = vi.spyOn(server.context.llmRequests, "runInJob").mockImplementationOnce(async () => {
+            await socketOpen;
+            return { type: "success", result: "Buffered reply." };
+        });
+        onTestFinished(() => upstream.mockRestore());
+        const result = await job(kind, chaId);
+        expect(result.terminal?.type).toBe("done");
+        expect(upstream).toHaveBeenCalledTimes(1);
+        expect(upstream.mock.calls[0][0].arg).not.toHaveProperty("forceStreaming");
+        if (kind === "previewPrompt") expect((await readChat(chaId)).data.message).toEqual(before.data.message);
+        else expect((await readChat(chaId)).data.message.at(-1).data).toBe("Buffered reply.");
+    });
 });
 
 describe("in-place reply candidates", () => {

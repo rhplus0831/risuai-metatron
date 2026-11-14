@@ -17,6 +17,43 @@ afterEach(async () => {
     vi.clearAllMocks();
 });
 
+it("shows and binds Half Streaming below Response Streaming only while Response Streaming is off", () => {
+    installFlatDatabase({
+        characters: [],
+        customModels: [],
+        aiModel: "echo_model",
+        subModel: "echo_model",
+        useStreaming: false,
+        halfStreaming: false,
+        additionalParams: [],
+    });
+    activeMainProfile.enableCustomFlags = true;
+    activeMainProfile.customFlags = [LLMFlags.hasStreaming];
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ModelSettings, { target });
+    flushSync();
+    const checkbox = (label: string) => target!.querySelector<HTMLInputElement>(`input[type=checkbox][alt="${label}"]`);
+    const half = () => checkbox(language.modelProfiles.halfStreaming);
+    const response = () => checkbox(language.modelProfiles.responseStreaming)!;
+    expect(half()).not.toBeNull();
+    expect(response().compareDocumentPosition(half()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(half()!.checked).toBe(false);
+    half()!.click();
+    flushSync();
+    expect(settings.providers.halfStreaming).toBe(true);
+    response().click();
+    flushSync();
+    expect(settings.providers.useStreaming).toBe(true);
+    expect(half()).toBeNull();
+    response().click();
+    flushSync();
+    expect(half()!.checked).toBe(true);
+    half()!.click();
+    flushSync();
+    expect(settings.providers.halfStreaming).toBe(false);
+});
+
 it("shows and binds Save Gemini thought signatures only for a thinking model, independently of streaming", () => {
     installFlatDatabase({
         characters: [],
