@@ -2319,6 +2319,10 @@ export const languageKorean = {
         draftPlaceholder: "여기에서 초안을 검토하고 수정하세요.",
         sendDraft: "초안 전송",
         runningDraft: "초안 훅 실행 중…",
+        btwPickerTitle: "BTW 훅 실행",
+        btwResult: "BTW 결과",
+        btwDismiss: "BTW 결과 닫기",
+        runningBtw: "BTW 훅 실행 중…",
     },
     translatorSteps: {
         title: "번역 단계",

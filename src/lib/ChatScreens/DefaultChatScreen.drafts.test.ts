@@ -1544,6 +1544,251 @@ function holdHook() {
     return { resolve: (text: string) => resolve(text), reject: (error: Error) => reject(error) };
 }
 
+async function mountBtwComposer(options: Parameters<typeof mountComposer>[0] = {}) {
+    const ui = await mountHookComposer(options);
+    ui.settings.inputHooks.push({
+        id: "btw-hook",
+        name: "Ask aside",
+        type: "btw",
+        prompt: "Consider {{content}} and {{draft}}",
+        model: { mode: "inherit" },
+    });
+    flushSync();
+    const runBtw = () => {
+        if (![...ui.target.querySelectorAll("span")].some((node) => node.textContent === language.inputHooks.btw))
+            ui.menu();
+        ui.click(ui.menuItem(language.inputHooks.btw));
+    };
+    const result = () => ui.target.querySelector<HTMLElement>(`[aria-label="${language.inputHooks.btwResult}"]`);
+    const stop = () => ui.target.querySelector('[aria-labelledby="cancel"]');
+    return { ...ui, runBtw, result, stop };
+}
+
+it("shows BTW only while BTW hooks exist and never in the playground", async () => {
+    const ui = await mountHookComposer();
+    const btwEntry = (target: Element) =>
+        [...target.querySelectorAll("span")].find((node) => node.textContent === language.inputHooks.btw);
+    const draftHook = JSON.parse(JSON.stringify(ui.settings.inputHooks[0])) as (typeof ui.settings.inputHooks)[number];
+    const btwHook = { ...draftHook, id: "btw-hook", name: "Ask aside", type: "btw" as const };
+    ui.menu();
+    expect(btwEntry(ui.target)).toBeUndefined();
+    for (const [hooks, visible] of [
+        [[], false],
+        [[draftHook, btwHook], true],
+        [[draftHook], false],
+        [[btwHook], true],
+    ] as const) {
+        ui.settings.inputHooks = [...hooks];
+        flushSync();
+        expect(Boolean(btwEntry(ui.target))).toBe(visible);
+    }
+    const playground = await mountBtwComposer({ reload: true, characterId: "§playground" });
+    const menuButton = playground.target.querySelector("svg.lucide-menu")?.closest("button");
+    if (menuButton) playground.click(menuButton);
+    expect(btwEntry(playground.target)).toBeUndefined();
+    expect(io.runInputHook).not.toHaveBeenCalled();
+});
+
+it("lists only BTW hooks by name, cancels the picker, and closes it when a hook is chosen", async () => {
+    const ui = await mountBtwComposer();
+    const chosen = { ...ui.settings.inputHooks[1], id: "second-btw", name: "Check an alternative" };
+    ui.settings.inputHooks.push(chosen);
+    ui.type("main for picker");
+    ui.enter(ui.draft()!, "draft for picker");
+    const dialog = () => document.querySelector('[role="dialog"]');
+    for (const cancel of ["Escape", "backdrop"]) {
+        ui.runBtw();
+        expect(dialog()).not.toBeNull();
+        expect(
+            [...dialog()!.querySelectorAll("button")].map((button) => button.textContent.trim()).filter(Boolean),
+        ).toEqual(["Ask aside", "Check an alternative"]);
+        expect(io.runInputHook).not.toHaveBeenCalled();
+        if (cancel === "Escape") {
+            window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+            flushSync();
+        } else ui.click(dialog()!.parentElement!.querySelector(`button[aria-label="${language.cancel}"]`));
+        expect(dialog()).toBeNull();
+        expect(io.runInputHook).not.toHaveBeenCalled();
+    }
+    const pending = holdHook();
+    ui.runBtw();
+    ui.click([...dialog()!.querySelectorAll("button")].find((button) => button.textContent.trim() === chosen.name)!);
+    expect(dialog()).toBeNull();
+    expect(io.runInputHook).toHaveBeenCalledExactlyOnceWith(chosen, {
+        ref: { chaId: "c", chatId: "a" },
+        content: "main for picker",
+        draft: "draft for picker",
+        signal: expect.any(AbortSignal),
+    });
+    pending.resolve("Chosen hook answer");
+    await until(() => ui.stop() === null);
+    expect(ui.result()?.textContent).toContain("Chosen hook answer");
+});
+
+it("runs a lone BTW hook even with empty main text without changing the composer, journal or chat", async () => {
+    const ui = await mountBtwComposer();
+    const { findChat } = await import("src/ts/storage/chatStore.svelte");
+    const { flushResources } = await import("src/ts/storage/resourceSync.svelte");
+    const chatBefore = JSON.parse(JSON.stringify(findChat({ chaId: "c", chatId: "a" })));
+    ui.enter(ui.draft()!, "existing draft");
+    ui.settings.memoryTranslateMedia.useAutoTranslateInput = true;
+    flushSync();
+    ui.enter(ui.translation()!, "existing translation");
+    const files = await attachHookAudio(ui);
+    for (const content of ["main question", ""]) {
+        ui.enter(ui.input(), content);
+        ui.hide();
+        const saved = { input: content, draft: "existing draft", translate: "existing translation", files };
+        expect(await drive(ui.journal.readComposer(a))).toEqual(saved);
+        await drive(flushResources());
+        const requestStart = io.server!.requests.length;
+        const pending = holdHook();
+        ui.runBtw();
+        expect(document.querySelector('[role="dialog"]')).toBeNull();
+        expect(io.runInputHook).toHaveBeenLastCalledWith(expect.objectContaining({ id: "btw-hook", type: "btw" }), {
+            ref: { chaId: "c", chatId: "a" },
+            content,
+            draft: "existing draft",
+            signal: expect.any(AbortSignal),
+        });
+        expect(ui.boxes()).toEqual([content, "existing draft", "existing translation"]);
+        const answer = content
+            ? "First answer\n<b>literal markup</b>"
+            : "Replacement answer\n<script>literal text</script>";
+        pending.resolve(answer);
+        await until(() => ui.stop() === null);
+        expect(ui.result()?.querySelector("h2")?.textContent).toBe(language.inputHooks.btwResult);
+        expect(ui.result()?.textContent).toContain(answer);
+        expect(ui.result()?.querySelector("b, script")).toBeNull();
+        expect(ui.result()!.compareDocumentPosition(ui.input()) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+        if (!content) expect(ui.result()?.textContent).not.toContain("First answer");
+        expect(ui.boxes()).toEqual([content, "existing draft", "existing translation"]);
+        expect(ui.target.querySelector("audio")).not.toBeNull();
+        ui.hide();
+        await drive(flushResources());
+        expect(await drive(ui.journal.readComposer(a))).toEqual(saved);
+        expect(await drive(ui.journal.readComposerSend(a))).toBeNull();
+        expect(await drive(ui.journal.listDrafts())).toEqual([]);
+        expect((await drive(ui.journal.readOwn())).filter((row) => row.scope === "chat")).toEqual([]);
+        expect(findChat({ chaId: "c", chatId: "a" })).toEqual(chatBefore);
+        expect(
+            io.server!.requests.slice(requestStart).filter((request) => {
+                const body = request.body as { chats?: unknown[] } | null;
+                return (
+                    (request.path === "/api/resources/batch" && !!body?.chats?.length) ||
+                    (request.method !== "GET" && request.path.startsWith("/api/resources/chats/"))
+                );
+            }),
+        ).toEqual([]);
+    }
+    expect(io.runInputHook).toHaveBeenCalledTimes(2);
+    expect(io.createJob).not.toHaveBeenCalled();
+    expect(io.alertError).not.toHaveBeenCalled();
+    ui.click(ui.result()!.querySelector(`[aria-label="${language.inputHooks.btwDismiss}"]`));
+    expect(ui.result()).toBeNull();
+});
+
+it("refuses Send, Send Draft and another hook while BTW runs, and Stop aborts it", async () => {
+    const ui = await mountBtwComposer();
+    ui.type("main question");
+    ui.enter(ui.draft()!, "existing draft");
+    const pending = holdHook();
+    ui.runBtw();
+    expect(ui.stop()).not.toBeNull();
+    const signal = io.runInputHook.mock.calls[0][1].signal!;
+    expect(signal.aborted).toBe(false);
+    expect(ui.sendDraft().disabled).toBe(true);
+    for (const action of [() => ui.sendKey(), () => ui.sendKey(ui.draft()!), () => ui.runBtw()]) {
+        io.alertError.mockClear();
+        action();
+        expect(io.alertError).toHaveBeenCalledExactlyOnceWith(language.chatGenerating);
+        expect(io.runInputHook).toHaveBeenCalledTimes(1);
+        expect(io.createJob).not.toHaveBeenCalled();
+        expect(ui.boxes()).toEqual(["main question", "existing draft", ""]);
+    }
+    io.alertError.mockClear();
+    ui.click(ui.stop());
+    expect(signal.aborted).toBe(true);
+    pending.resolve("Late answer after Stop");
+    await until(() => ui.stop() === null);
+    expect(ui.result()).toBeNull();
+    expect(io.alertError).not.toHaveBeenCalled();
+    expect(ui.boxes()).toEqual(["main question", "existing draft", ""]);
+});
+
+it("keeps BTW results through composer edits and shows each answer only in its originating chat", async () => {
+    const ui = await mountBtwComposer();
+    ui.type("original main");
+    ui.enter(ui.draft()!, "original draft");
+    let pending = holdHook();
+    ui.runBtw();
+    ui.type("edited main");
+    ui.enter(ui.draft()!, "edited draft");
+    pending.resolve("A after editing");
+    await until(() => ui.stop() === null);
+    expect(ui.result()?.textContent).toContain("A after editing");
+    expect(ui.boxes()).toEqual(["edited main", "edited draft", ""]);
+    pending = holdHook();
+    ui.runBtw();
+    selectChat("c", "b");
+    flushSync();
+    expect(ui.result()).toBeNull();
+    expect(ui.stop()).toBeNull();
+    pending.resolve("A completed while viewing B");
+    await drive(Promise.resolve());
+    expect(ui.result()).toBeNull();
+    pending = holdHook();
+    ui.runBtw();
+    expect(io.runInputHook.mock.lastCall![1].ref).toEqual({ chaId: "c", chatId: "b" });
+    pending.resolve("B answer");
+    await until(() => ui.stop() === null);
+    expect(ui.result()?.textContent).toContain("B answer");
+    selectChat("c", "a");
+    flushSync();
+    expect(ui.result()?.textContent).toContain("A completed while viewing B");
+    expect(ui.result()?.textContent).not.toContain("A after editing");
+    expect(ui.result()?.textContent).not.toContain("B answer");
+    ui.click(ui.result()!.querySelector(`[aria-label="${language.inputHooks.btwDismiss}"]`));
+    expect(ui.result()).toBeNull();
+    selectChat("c", "b");
+    flushSync();
+    expect(ui.result()?.textContent).toContain("B answer");
+    expect(io.alertError).not.toHaveBeenCalled();
+});
+
+it("preserves the previous BTW result on empty, failed and aborted runs with only the required alerts", async () => {
+    const ui = await mountBtwComposer();
+    ui.type("main question");
+    ui.enter(ui.draft()!, "existing draft");
+    const initial = holdHook();
+    ui.runBtw();
+    initial.resolve("Previous BTW answer");
+    await until(() => ui.stop() === null);
+    for (const outcome of ["empty", "failure", "abort"]) {
+        const pending = holdHook();
+        io.alertError.mockClear();
+        ui.runBtw();
+        expect(ui.result()?.textContent ?? "").toContain("Previous BTW answer");
+        if (outcome === "empty") pending.resolve(" \n\t ");
+        if (outcome === "failure") pending.reject(new Error("BTW provider failed"));
+        if (outcome === "abort") {
+            const signal = io.runInputHook.mock.lastCall![1].signal!;
+            ui.click(ui.stop());
+            expect(signal.aborted).toBe(true);
+            pending.reject(new DOMException("cancelled", "AbortError"));
+        }
+        await until(() => ui.stop() === null);
+        expect(ui.result()?.textContent ?? "").toContain("Previous BTW answer");
+        expect(ui.boxes()).toEqual(["main question", "existing draft", ""]);
+        if (outcome === "abort") expect(io.alertError).not.toHaveBeenCalled();
+        else
+            expect(io.alertError).toHaveBeenCalledExactlyOnceWith(
+                outcome === "empty" ? language.errors.emptyText : "BTW provider failed",
+            );
+    }
+    expect(io.createJob).not.toHaveBeenCalled();
+});
+
 it("runs the currently chosen hook without sending, preserves main text, and reloads the resulting draft", async () => {
     const ui = await mountHookComposer();
     const { findChat } = await import("src/ts/storage/chatStore.svelte");

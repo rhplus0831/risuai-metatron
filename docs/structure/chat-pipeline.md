@@ -153,6 +153,13 @@
   no controller: Stop is `sendAborts`'.
 - The hook list, its limits, and the request rows (`inputHookMessages`) are in `shared/inputHooks.ts`
   ([persistence](persistence.md)).
+- BTW hook: the composer menu's BTW entry (a BTW hook in the list, not the playground) runs the one BTW hook, or the one
+  chosen in `InputHookPicker.svelte`, on the chat captured at the click. `runBtwHook` shares the Draft run's busy check,
+  `inputHookRuns` (`"btw"`) and `sendAborts` registration, and alerts. It reads the main box (blank allowed) and the
+  draft box and writes neither.
+- A nonblank BTW result is kept per chat in the screen's memory (`btwResults`) while that chat exists, also after a
+  composer edit or a chat switch, and replaces the chat's earlier result; a failure, an empty result, and an abort leave
+  it. It is never journaled, sent, or stored in the chat, and a reload loses it.
 
 ### Inlays
 

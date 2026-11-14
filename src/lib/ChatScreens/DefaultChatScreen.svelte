@@ -86,6 +86,7 @@
     import { draftHookOf, type InputHook } from "../../../shared/inputHooks.ts";
     import { followedJobs, followedJobsOf, loadingJobChats, stopChatJob } from "src/ts/process/serverCommands";
     import HandoffControls from "./HandoffControls.svelte";
+    import InputHookPicker from "./InputHookPicker.svelte";
     import { jobStages, jobRetries, chatStageOf } from "src/ts/process/jobStages";
     import { foreignGeneration } from "src/ts/process/generationProgress.svelte";
     import { abortGenerationJob, generationClientId } from "src/ts/network/generationJobs";
@@ -203,6 +204,12 @@
     let openMenu = $state(false);
     const rerollHistory = createRerollHistory();
     const chatKeyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
+    let btwPicker: { ref: ChatRef; hooks: InputHook[] } | null = $state.raw(null);
+    let btwResults: ReadonlyMap<string, string> = $state.raw(new Map());
+    const btwResult = $derived.by(() => {
+        const ref = currentChatRef();
+        return ref && ref.chaId !== "§playground" ? btwResults.get(chatKeyOf(ref)) : undefined;
+    });
     let toggleStickers: boolean = $state(false);
     let showNewMessageButton = $state(false);
     let chatsInstance: any = $state();
@@ -604,6 +611,72 @@
             release();
             run.end();
         }
+    }
+
+    function chooseBtwHook() {
+        openMenu = false;
+        const ref = currentChatRef();
+        const hooks = (settings.inputHooks ?? []).filter((hook) => hook.type === "btw");
+        if (!ref || ref.chaId === "§playground" || hooks.length === 0) return;
+        if (hooks.length === 1) {
+            void runBtwHook(ref, hooks[0]);
+        } else {
+            btwPicker = { ref, hooks };
+        }
+    }
+
+    function runPickedBtwHook(hook: InputHook) {
+        const picker = btwPicker;
+        if (!picker) return;
+        btwPicker = null;
+        void runBtwHook(picker.ref, hook);
+    }
+
+    /** Keeps a BTW answer for its chat without changing any composer field or persisted record. */
+    async function runBtwHook(ref: ChatRef, hook: InputHook) {
+        if (!findChat(ref)) return;
+        if (isChatBusy(ref)) {
+            alertError(language.chatGenerating);
+            return;
+        }
+        const run = inputHookRuns.begin(ref, "btw");
+        if (!run) {
+            alertError(language.chatGenerating);
+            return;
+        }
+        const { signal, release } = sendAborts.begin(ref);
+        const key = chatKeyOf(ref);
+        const display = displayGeneration;
+        const eligible = () =>
+            !signal.aborted &&
+            chatShown &&
+            selection.chatOpen &&
+            chatKey === key &&
+            displayGeneration === display &&
+            !!findChat(ref);
+        try {
+            const draft = composer.at(key);
+            const result = (await runInputHook(hook, { ref, content: draft.input, draft: draft.draft, signal })).trim();
+            if (signal.aborted || !findChat(ref)) return;
+            if (!result) {
+                if (eligible()) alertError(language.errors.emptyText);
+                return;
+            }
+            btwResults = new Map(btwResults).set(key, result);
+        } catch (error) {
+            if (eligible()) alertError(error instanceof Error ? error.message : String(error));
+        } finally {
+            release();
+            run.end();
+        }
+    }
+
+    function dismissBtwResult() {
+        const ref = currentChatRef();
+        if (!ref) return;
+        const next = new Map(btwResults);
+        next.delete(chatKeyOf(ref));
+        btwResults = next;
     }
 
     /**
@@ -1521,6 +1594,29 @@
                         {/key}
                     {/if}
                 </div>
+                {#if btwResult}
+                    <div class="chat-screen-content-width px-4 mb-2">
+                        <section
+                            class="flex flex-col gap-2 rounded-md border border-darkborderc bg-darkbg p-3 text-textcolor"
+                            aria-label={language.inputHooks.btwResult}
+                        >
+                            <div class="flex items-center gap-2">
+                                <h2 class="m-0 text-sm font-medium text-textcolor2">{language.inputHooks.btwResult}</h2>
+                                <button
+                                    type="button"
+                                    class="ml-auto text-textcolor2 hover:text-textcolor transition-colors"
+                                    aria-label={language.inputHooks.btwDismiss}
+                                    onclick={dismissBtwResult}
+                                >
+                                    <XIcon size={18} />
+                                </button>
+                            </div>
+                            <div class="max-h-[30vh] overflow-y-auto whitespace-pre-wrap break-words text-sm">
+                                {btwResult}
+                            </div>
+                        </section>
+                    </div>
+                {/if}
                 <div class="relative flex items-stretch w-full">
                     {#if settings.ui.useChatSticker && currentCharacter.type !== "group"}
                         <div
@@ -1606,6 +1702,10 @@
                             {#if inputHookRuns.kindOf(currentChatRef()) === "draft"}
                                 <span class="ml-2 text-sm whitespace-nowrap" role="status"
                                     >{language.inputHooks.runningDraft}</span
+                                >
+                            {:else if inputHookRuns.kindOf(currentChatRef()) === "btw"}
+                                <span class="ml-2 text-sm whitespace-nowrap" role="status"
+                                    >{language.inputHooks.runningBtw}</span
                                 >
                             {/if}
                             {#if loadingJobChat}
@@ -1824,6 +1924,17 @@
                                     <MessageCircleQuestionIcon />
                                     <span class="ml-2">{language.oocPanel.title}</span>
                                 </div>
+                            {/if}
+
+                            {#if currentCharacter.chaId !== "§playground" && (settings.inputHooks ?? []).some((hook) => hook.type === "btw")}
+                                <button
+                                    type="button"
+                                    class="flex items-center hover:text-green-500 transition-colors"
+                                    onclick={chooseBtwHook}
+                                >
+                                    <MessageCircleQuestionIcon />
+                                    <span class="ml-2">{language.inputHooks.btw}</span>
+                                </button>
                             {/if}
 
                             {#if settings.memoryTranslateMedia.translator !== ""}
@@ -2171,6 +2282,10 @@
         </div>
     {/if}
 </div>
+
+{#if btwPicker}
+    <InputHookPicker hooks={btwPicker.hooks} onchoose={runPickedBtwHook} onclose={() => (btwPicker = null)} />
+{/if}
 
 {#if additionalFloatingActionButtons.length > 0}
     <div class="fixed top-4 right-4 flex flex-col gap-3 z-50">

@@ -141,6 +141,7 @@
     },
     { "match": "src/boot.test.ts", "guide": "app-shell" },
     { "match": "src/lib/ChatScreens/DefaultChatScreen.drafts.test.ts", "guide": "chat-pipeline" },
+    { "match": "src/lib/ChatScreens/InputHookPicker.svelte", "guide": "ui-theming" },
     { "match": "src/lib/ChatScreens/PartialEditController.test.ts", "guide": "translation" },
     { "match": "src/lib/ChatScreens/Chat.test.ts", "guide": "ui-theming" },
     { "match": "src/lib/Others/AlertComp.test.ts", "guide": "app-shell" },

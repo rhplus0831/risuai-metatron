@@ -59,6 +59,11 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   playground; read-only while the binding is incomplete): a labelled textarea bound to `composer.draft` and Send Draft,
   disabled while the draft is blank or the chat is busy or runs a hook. Stop carries a status label while a Draft hook
   runs ([chat pipeline](chat-pipeline.md#send)).
+- The composer menu's BTW entry sits next to the OOC entry while the hook list holds a BTW hook (never the playground).
+  With several BTW hooks it opens `src/lib/ChatScreens/InputHookPicker.svelte`, a portal dialog that Escape and the
+  backdrop close. The displayed chat's BTW result shows in a panel above the composer row as plain text
+  (`whitespace-pre-wrap`, scrolling past 30vh) with a dismiss button; Stop carries a status label while a BTW hook runs
+  ([chat pipeline](chat-pipeline.md#input-hooks)).
 - `src/lib/ChatScreens/HandoffControls.svelte` renders handoff and take-back beside Stop from the screen's followed job
   ids; presence, target selection, and requests belong to [network jobs](network-jobs.md#generation-job-client).
 

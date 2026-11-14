@@ -2420,6 +2420,10 @@ export const languageEnglish = {
         draftPlaceholder: "Review and edit your draft here.",
         sendDraft: "Send Draft",
         runningDraft: "Running Draft hook…",
+        btwPickerTitle: "Run BTW Hook",
+        btwResult: "BTW Result",
+        btwDismiss: "Dismiss BTW Result",
+        runningBtw: "Running BTW hook…",
     },
     translatorSteps: {
         title: "Steps",
