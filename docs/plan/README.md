@@ -6,8 +6,8 @@ their last commit and path, and the [backlog](../README.md) holds what they left
 
 - [Generation Progress Window](generation-progress-window.md): a top-right window lists every generation job running
   on the server with its stage, elapsed time, and, while the model streams, the tokens generated and the speed, on
-  every client; Half Streaming gives the count with Response Streaming off. Drafted and audited 2026-11-14; D25 and
-  D26 await the owner; no slice landed.
+  every client; Half Streaming gives the count with Response Streaming off. Drafted and audited 2026-11-14; no slice
+  landed.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive, following the archive's procedure for the plan's open items. Use `None`

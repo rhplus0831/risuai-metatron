@@ -21,7 +21,7 @@ AUD-8 and the supplementary corrections taken from its notes, disputed the wordi
 of AUD-4, and found AUD-9 to AUD-11 in the corrections. The AUD-2 and AUD-4 wording and AUD-9 to AUD-11 were applied
 afterwards and were not read again. No P1 is open.
 
-Two corrections are decisions, not wording, and await the owner's acceptance (the plan's Open Questions):
+Two corrections are decisions, not wording. The owner accepted both on 2026-11-14, after reading these findings:
 
 - AUD-1 is not fixed the way Astra first suggested (normalizing the string stream where the job reads it). The plan
   never forces that format to stream instead (D26), and the existing defect with Response Streaming on is filed as a
@@ -69,7 +69,7 @@ acknowledgment.
 
 ## P1
 
-### AUD-1. Forcing the legacy Ooba adapter to stream loses the reply (fixed in plan, D26; awaits the owner)
+### AUD-1. Forcing the legacy Ooba adapter to stream loses the reply (fixed in plan, D26, which the owner accepted)
 
 - Plan (slice 4, as audited): "A quiet send passes `forceStreaming: true` with the reply request."
 - Code: `mancer` resolves to `LLMFormat.OobaLegacy` (`shared/llm/models.ts:175`). Forcing reaches its streaming branch
@@ -90,7 +90,7 @@ acknowledgment.
 
 ## P2
 
-### AUD-2. Forcing a stream changes how the reply is processed (fixed in plan, D25; awaits the owner)
+### AUD-2. Forcing a stream changes how the reply is processed (fixed in plan, D25, which the owner accepted)
 
 - Plan (Goal, as audited): "Everything else is as today."
 - Code: `requestChatDataOuter` runs the after-request hook and the banned-character-set check and retry only on a
@@ -99,7 +99,7 @@ acknowledgment.
   extraction (`anthropic.ts:1252`) has no counterpart in its streaming parser. The probe returned `HOOK:Reply` buffered
   and `Reply` forced.
 - New: D25 and a Current State entry say a reply Half Streaming streams is a streamed reply in everything but its
-  visible partial text; the setting's help text names the replacers and the retry; Q1 asks the owner.
+  visible partial text; the setting's help text names the replacers and the retry.
 - Re-check: mechanism supported, wording disputed (AUD-10), and the list not exhaustive. D25 now also names: no request
   restart after the stream is returned and stream errors that become reply text (`outer.ts:211`, `runner.ts:2053`,
   `anthropic.ts:1064`, `openAI/responses.ts:685`); trimming before the output scripts and a continue processed once as

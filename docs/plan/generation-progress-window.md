@@ -3,8 +3,8 @@
 Status: drafted 2026-11-14 at `d2d1a76a7` from the owner's request. D1 is the owner's request; the owner accepted D2
 to D5 the same day, as recommended. D6 to D24 are this plan's own, found against the code. Audited 2026-11-14 at
 `31a39b8ad`, before any plan-runner run: [audit](../reports/audits/plan-runner/generation-progress-window-2026-11-14.md)
-(1 P1, 4 P2, 6 P3, all fixed in plan; no P1 open). D25 and D26 come from the audit and await the owner's acceptance
-(Open Questions).
+(1 P1, 4 P2, 6 P3, all fixed in plan; no P1 open). D25 and D26 come from the audit; the owner accepted both the same
+day.
 
 Sources: the owner's request (2026-11-14: a send shows only a circle, and a send running on another client shows no
 progress on the circle; a floating window at the top right with the seconds elapsed and, while streaming, the tokens
@@ -397,8 +397,9 @@ Limitations (a process lost during a quiet stream, D23). `llm-requests.md`: Serv
 
 ## Decisions
 
-D1 is the owner's request of 2026-11-14. The owner accepted D2 to D5 the same day. The rest are this plan's; D25 and
-D26 were added by its audit and await the owner's acceptance.
+D1 is the owner's request of 2026-11-14. The owner accepted D2 to D5 the same day. The rest are this plan's. D25 and
+D26 were added by its audit, and the owner accepted both the same day, with the narrowing of "everything else is as
+today" that D25 brings.
 
 - D1. A floating window at the top right shows how many seconds a send has run and, while the model streams, the
   tokens generated and the speed. A send another client started shows its progress too. Half Streaming provides the
@@ -477,11 +478,11 @@ D26 were added by its audit and await the owner's acceptance.
   reasoning text is wrapped as the streaming parsers wrap it. The setting's help text names the two a user set up
   deliberately (the replacers and the banned-script retry). Reproducing the buffered steps at the end of a quiet
   stream would be a second reply path to keep in step with the first. Found by the plan's audit (AUD-2, AUD-10); this
-  narrows "everything else is as today" for users who turn the setting on, and awaits the owner's acceptance.
+  narrows "everything else is as today" for users who turn the setting on.
 - D26. A reply on an `LLMFormat.OobaLegacy` model is never forced to stream. That adapter streams strings, which
   `readReply` misreads (the first character becomes the reply), so forcing it would lose replies for users who keep
   Response Streaming off. The existing defect with Response Streaming on is not this plan's to fix and is filed as a
-  found issue. Found by the plan's audit (AUD-1); awaits the owner's acceptance.
+  found issue. Found by the plan's audit (AUD-1).
 
 ## Not In This Plan
 
@@ -502,10 +503,7 @@ D26 were added by its audit and await the owner's acceptance.
 
 ## Open Questions
 
-The owner accepted the window's scope, statistics-only for other clients, the global Half Streaming switch, and
-approximate counts on 2026-11-14.
-
-- Q1. D25: is it acceptable that a reply Half Streaming streams is handled as a streamed reply (no after-request
-  replacers, no banned-script retry, and the other differences D25 lists), as it would be with Response Streaming on?
-- Q2. D26: is it acceptable that Half Streaming does nothing for `OobaLegacy` (`mancer`) models until their stream is
-  read correctly?
+None open. The owner accepted the window's scope, statistics-only for other clients, the global Half Streaming switch,
+and approximate counts on 2026-11-14, and D25 and D26 the same day after the audit: a reply Half Streaming streams is
+handled as a streamed reply, and Half Streaming does nothing for `OobaLegacy` (`mancer`) models until their stream is
+read correctly.
