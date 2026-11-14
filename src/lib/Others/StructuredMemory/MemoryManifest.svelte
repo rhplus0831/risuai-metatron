@@ -1,6 +1,7 @@
 <script lang="ts">
     import { CheckIcon, CircleAlertIcon } from "@lucide/svelte";
     import { language } from "src/lang";
+    import { MEMORY_GREETING_EVIDENCE_ID } from "../../../../shared/structuredMemory.ts";
     import { memoryItemKey } from "src/ts/process/structuredMemory.svelte";
     import type { ContextMemoryWriter, ContextReport } from "../../../../shared/contextReport.ts";
     import { memoryReasonText } from "./memoryText";
@@ -59,7 +60,10 @@
         {:else}
             <ul class="flex flex-col gap-0.5">
                 {#each items as item, index (index)}
-                    {@const title = titles.get(memoryItemKey(item))}
+                    {@const title =
+                        item.kind === "evidence" && item.id === MEMORY_GREETING_EVIDENCE_ID
+                            ? language.structuredMemory.greeting.source
+                            : titles.get(memoryItemKey(item))}
                     <li class="flex min-w-0 items-center gap-2" data-memory-manifest-item={item.lane}>
                         <span class="min-w-0 grow truncate" {title}>{title ?? ""}</span>
                         <span class="shrink-0 text-textcolor2">{text.lanes[item.lane]}</span>

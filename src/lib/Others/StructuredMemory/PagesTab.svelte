@@ -15,6 +15,11 @@
         findStructuredMemory,
         importStructuredMemoryPackage,
         memoryItemsUsed,
+        memoryPanelGreeting,
+        memoryMessageHasher,
+        reconcileMemoryCoverage,
+        readStructuredMemoryCoverage,
+        type StructuredMemoryCoverage,
         memoryMessageIndexes,
         memoryPageHistoryView,
         memoryPageTree,
@@ -28,6 +33,7 @@
         type MemoryPanelTabProps,
         type StructuredMemoryResult,
     } from "src/ts/process/structuredMemory.svelte";
+    import { findCharacter } from "src/ts/storage/characterStore.svelte";
     import { findChat, setChatMeta, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { selectSingleFileHandle } from "src/ts/util";
     import Button from "src/lib/UI/GUI/Button.svelte";
@@ -43,6 +49,7 @@
         MEMORY_FIND_HITS_MAX,
         MEMORY_FIND_QUERY_CHARS,
         memoryThreadEnded,
+        storedMemoryGreeting,
         STRUCTURED_MEMORY_LIMITS,
         type MemoryContextMode,
         type MemoryPage,
@@ -55,6 +62,7 @@
         type StructuredMemoryPageTool,
         type StructuredMemoryRecordAnswer,
     } from "../../../../shared/structuredMemory.ts";
+    import GreetingCitation from "./GreetingCitation.svelte";
     import MemoryLinkButton from "./MemoryLinkButton.svelte";
     import { codeText, memoryReadFailureText } from "./memoryText";
 
@@ -116,6 +124,7 @@
         focus,
         open,
         jump,
+        rebuild,
         onContents,
         only,
     }: MemoryPanelTabProps & { only?: "unsupported" } = $props();
@@ -147,6 +156,10 @@
     let contents = $state.raw<StructuredMemoryContentsAnswer | null>(null);
     let failure = $state<string | null>(null);
     let contentsNumber = 0;
+    let coverage = $state.raw<StructuredMemoryCoverage | null>(null);
+    let coverageFailure = $state<string | null>(null);
+    let coverageNumber = 0;
+    let coverageRead: number | null = null;
 
     let selectedId = $state<string | null>(null);
     let view = $state<string | number>("read");
@@ -215,7 +228,19 @@
     let entryScroll = $state.raw<{ ref: ChatRef; pageId: string; historyId: string } | null>(null);
     let historyList = $state<HTMLElement>();
 
-    const messages = $derived(findChat(chatRef)?.message ?? []);
+    const heldChat = $derived(findChat(chatRef));
+    const messages = $derived(heldChat?.message ?? []);
+    const greeting = $derived(memoryPanelGreeting(findCharacter(chatRef.chaId), heldChat));
+    const hashOf = memoryMessageHasher();
+    const reconciledCoverage = $derived(
+        coverage && heldChat ? reconcileMemoryCoverage(coverage, messages, hashOf, greeting?.source ?? null) : coverage,
+    );
+    const coverageEvents = $derived(new Map(reconciledCoverage?.events.map((event) => [event.id, event])));
+    const greetingEvents = (section: MemorySection) =>
+        section.provenance.flatMap((id) => {
+            const event = coverageEvents.get(id);
+            return event && storedMemoryGreeting(event.greeting) ? [event] : [];
+        });
     const usedPages = $derived(memoryItemsUsed(messages, "page"));
     const messageIndexes = $derived(memoryMessageIndexes(messages));
     const eventTitles = $derived(new Map<string, string>(contents?.events.map(({ id, title }) => [id, title])));
@@ -443,6 +468,34 @@
         } else {
             namingFailure = memoryReadFailureText(result);
         }
+    }
+
+    /** Section sources stay messages; greeting citations are read from their provenance events. */
+    async function readCoverage() {
+        const ref = chatRef;
+        const atRefresh = refresh;
+        const number = ++coverageNumber;
+        coverageRead = atRefresh;
+        const result = await readStructuredMemoryCoverage(ref);
+        if (number !== coverageNumber || !sameChat(ref) || refresh !== atRefresh) return;
+        if (result.outcome === "ok") {
+            coverage = result.value;
+            coverageFailure = null;
+        } else {
+            coverageFailure = memoryReadFailureText(result);
+        }
+    }
+
+    // Only a selected page with event provenance needs citation facts, once per refresh.
+    $effect(() => {
+        if (copy?.data.sections.some((section) => section.provenance.length > 0) && coverageRead !== refresh) {
+            untrack(() => void readCoverage());
+        }
+    });
+
+    async function refreshGreeting() {
+        read();
+        await readCoverage();
     }
 
     /** Reads the contents. An answer for another chat, or one a newer read replaced, changes nothing. */
@@ -1229,6 +1282,21 @@
     }
 </script>
 
+{#snippet greetingSources(section: MemorySection)}
+    {#each greetingEvents(section) as event (event.id)}
+        <GreetingCitation
+            {event}
+            current={heldChat ? (greeting?.source ?? null) : undefined}
+            {chatRef}
+            revision={coverage!.revision}
+            readOnly={controlsOff}
+            {jump}
+            {rebuild}
+            refreshed={refreshGreeting}
+        />
+    {/each}
+{/snippet}
+
 {#snippet sectionBlock(section: MemorySection)}
     <section
         class="flex flex-col min-w-0 gap-1 p-2 border rounded-md border-darkborderc break-words"
@@ -1332,9 +1400,14 @@
                 {/each}
             </div>
         {/if}
-        {#if section.sources.length > 0}
+        {#if section.sources.length > 0 || greetingEvents(section).length > 0}
             <div class="flex flex-wrap items-center gap-1">
-                <span class="text-textcolor2">{text.sources}</span>
+                <span class="text-textcolor2"
+                    >{greetingEvents(section).length > 0
+                        ? language.structuredMemory.greeting.sources
+                        : text.sources}</span
+                >
+                {@render greetingSources(section)}
                 {#each section.sources as { messageId }}
                     {@const index = messageIndexes.get(messageId)}
                     <MemoryLinkButton
@@ -1951,6 +2024,9 @@
             {@render pageMentions()}
         </div>
     {:else}
+        {#if coverageFailure && page.sections.some((section) => section.provenance.length > 0)}
+            <p role="alert" class="text-draculared">{coverageFailure}</p>
+        {/if}
         {#if page.type !== "scene" && !inTrash}
             {@render renameControl(page)}
         {/if}

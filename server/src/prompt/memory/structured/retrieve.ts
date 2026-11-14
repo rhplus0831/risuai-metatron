@@ -2,6 +2,9 @@ import { truncateCheckpointText as clampText } from "../../../../../shared/chatC
 import {
     type CharacterSectionSlot,
     MEMORY_STALE_REASONS,
+    MEMORY_GREETING_EVIDENCE_ID,
+    storedMemoryGreeting,
+    greetingCited,
     type MemoryEvent,
     memoryEventCovers,
     memoryEventHasReadableFields,
@@ -36,7 +39,8 @@ import { pageNamedInTexts, sectionVectorText } from "./pages.ts";
 /**
  * What a send's lanes offer the card, from the records and the prompt's own entries.
  *
- * - Places: an event's place is the entry of its newest source. With no source among the entries it has
+ * - Places: an event's place is the entry of its newest message or greeting citation, even when the
+ *   greeting has changed. With no source among the entries it has
  *   no place, so neither flow nor the events lane lists it. That is not staleness: a source can simply
  *   be disabled in this send.
  * - Required is the scene page unless `never`, then the `always` pages in stored order, each with every
@@ -63,7 +67,8 @@ import { pageNamedInTexts, sectionVectorText } from "./pages.ts";
  *   coverage or context trimming, by lexical match. Each pass searches at most `evidencePoolMessages`
  *   older messages and embeds at most `lexicalCandidates` matching excerpts for semantic reranking.
  *   A selection makes at most two passes; widening the pool after trimming reuses the event ranks and
- *   query vectors. A paraphrase sharing no term is not found.
+ *   query vectors. A greeting is excerpted only when a covering event's recorded citation matches it.
+ *   A paraphrase sharing no term is not found.
  * - Threads: any not ended, so a paused one stays. One naming nobody is listed low, as a thread recorded
  *   before its chat had pages is; one naming someone needs them on stage, which is the scene page's
  *   attendance.
@@ -528,7 +533,9 @@ function lexicalMatches(
 
 /**
  * The evidence lane in rank order. First the sources of `ranked` events that leave the prompt, newest
- * first, each message once, each needing its event's item. Then older messages, whether or not the
+ * first, each source once, each needing its event's item. A greeting excerpt requires a matching
+ * recorded citation, never a kept greeting. The pool checks all readable covering events, including
+ * when the events lane is closed. Then older messages, whether or not the
  * events lane opened: covered entries in `window.dropped` plus uncovered message indices in `trimmed`
  * that the caller actually removed, excluding anything above used. That pool is bounded newest first,
  * then matched lexically and reranked by similarity when there are vectors. The protected window and
@@ -537,7 +544,12 @@ function lexicalMatches(
 async function evidenceItems(
     ranked: readonly RankedEvent[],
     query: readonly ReadEntry[],
-    { entries, window, trimmed }: Pick<RetrievalInput, "entries" | "window"> & { trimmed?: ReadonlySet<number> },
+    {
+        entries,
+        window,
+        events,
+        trimmed,
+    }: Pick<RetrievalInput, "entries" | "window" | "events"> & { trimmed?: ReadonlySet<number> },
     embeddings: SendEmbeddings,
 ): Promise<LaneCandidate[]> {
     const queryTerms = new Set(query.flatMap(({ text }) => [...lexicalTerms(text)]));
@@ -546,8 +558,7 @@ async function evidenceItems(
         excerpt: string,
         fields: Pick<LaneCandidate, "reason" | "score" | "requires">,
     ): LaneCandidate => {
-        // Every index here names a message: covered by an event or removed by the caller's trim.
-        const id = entries[index].messageId!;
+        const id = entries[index].greeting !== undefined ? MEMORY_GREETING_EVIDENCE_ID : entries[index].messageId!;
         const line = evidenceLine(id, entries[index].role, excerpt);
         return { id, kind: "evidence", lane: "evidence", order: index, line, ...fields };
     };
@@ -556,7 +567,12 @@ async function evidenceItems(
     const used = new Set<number>();
     for (const { event, sources, score } of ranked) {
         const fresh = sources.filter(
-            (index) => window.dropped.has(index) && !used.has(index) && hasText(entries[index]),
+            (index) =>
+                window.dropped.has(index) &&
+                !used.has(index) &&
+                hasText(entries[index]) &&
+                (entries[index].greeting === undefined ||
+                    greetingCited(storedMemoryGreeting(event.greeting), entries[index].greeting ?? null)),
         );
         for (const index of [...new Set(fresh)].slice(0, RETRIEVAL_LIMITS.excerptsPerEvent)) {
             used.add(index);
@@ -570,8 +586,18 @@ async function evidenceItems(
         }
     }
 
+    const covering = events.filter((event) => memoryEventHasReadableFields(event) && memoryEventCovers(event));
     const pool = [...(trimmed ? new Set([...window.dropped, ...trimmed]) : window.dropped)]
-        .filter((index) => !used.has(index))
+        .filter(
+            (index) =>
+                !used.has(index) &&
+                (entries[index].greeting !== undefined
+                    ? window.dropped.has(index) &&
+                      covering.some((event) =>
+                          greetingCited(storedMemoryGreeting(event.greeting), entries[index].greeting ?? null),
+                      )
+                    : entries[index].messageId !== undefined),
+        )
         .sort((a, b) => b - a)
         .slice(0, RETRIEVAL_LIMITS.evidencePoolMessages);
     const matches = lexicalMatches(pool, entries, queryTerms).map((match) => ({
@@ -633,11 +659,18 @@ function threadItems(
  * Every fact of the events that cover their messages, its records newest first: by place, an event with
  * no place last, then storage order reversed.
  */
-function knownFacts(events: readonly MemoryEvent[], positions: ReadonlyMap<string, number>): KnownFact[] {
+function knownFacts(
+    events: readonly MemoryEvent[],
+    positions: ReadonlyMap<string, number>,
+    greetingIndex: number,
+): KnownFact[] {
     const facts = new Map<string, KnownFact>();
     let stored = 0;
     for (const event of events.filter(memoryEventCovers)) {
-        const place = Math.max(-1, ...event.sources.map(({ messageId }) => positions.get(messageId) ?? -1));
+        const place = Math.max(
+            storedMemoryGreeting(event.greeting) ? greetingIndex : -1,
+            ...event.sources.map(({ messageId }) => positions.get(messageId) ?? -1),
+        );
         for (const item of event.knowledge) {
             const text = flattened(item.fact);
             if (text === "") {
@@ -952,6 +985,7 @@ export async function prepareRetrieval(input: RetrievalInput) {
         }
     });
 
+    const greetingIndex = entries.findIndex((entry) => entry.greeting !== undefined);
     const excluded: ExcludedItem[] = [];
     const leaveOut = ({ id, staleReason }: MemoryEvent, reason: ExcludedItem["reason"]) => {
         // A report with a stale reason it does not know is no report, and the store checks no record's shape.
@@ -960,7 +994,9 @@ export async function prepareRetrieval(input: RetrievalInput) {
     };
     const placed: PlacedEvent[] = [];
     for (const event of events) {
-        const sources = event.sources.flatMap(({ messageId }) => positions.get(messageId) ?? []).sort((a, b) => b - a);
+        const sources = event.sources.flatMap(({ messageId }) => positions.get(messageId) ?? []);
+        if (greetingIndex >= 0 && storedMemoryGreeting(event.greeting)) sources.push(greetingIndex);
+        sources.sort((a, b) => b - a);
         if (event.status === "retracted") {
             continue;
         }
@@ -982,7 +1018,7 @@ export async function prepareRetrieval(input: RetrievalInput) {
         .map((entry) => ({ ...entry, text: clampText(entry.text.trim(), RETRIEVAL_LIMITS.queryChars) }));
     const eligible = placed.filter(
         ({ event, sources }) =>
-            sources.length < event.sources.length ||
+            event.sources.some(({ messageId }) => !positions.has(messageId)) ||
             sources.some((index) => index < window.start || !hasText(entries[index])),
     );
     const scene = pages.find(({ type }) => type === "scene");
@@ -999,7 +1035,7 @@ export async function prepareRetrieval(input: RetrievalInput) {
                 .filter(({ id, contextMode }) => stage.has(id) || found.has(id) || contextMode === "always")
                 .map(({ id }) => id),
         ),
-        facts: knownFacts(events, positions),
+        facts: knownFacts(events, positions, greetingIndex),
     };
     const required = requiredPages(reading);
     const lanes: Lane<LaneCandidate>[] = [
@@ -1059,7 +1095,9 @@ export async function retrieveLanes(
     }
 
     const evidence = async (trimmed?: ReadonlySet<number>): Promise<LaneCandidate[]> =>
-        targets.evidence > 0 ? evidenceItems(candidates, query, { entries, window, trimmed }, embeddings) : [];
+        targets.evidence > 0
+            ? evidenceItems(candidates, query, { entries, window, trimmed, events: input.events }, embeddings)
+            : [];
     const evidenceCandidates = await evidence();
     const openThreads = threadItems(threads, stage, targets.threads);
 

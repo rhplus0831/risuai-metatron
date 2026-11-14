@@ -484,7 +484,7 @@
     }
 
     /** Leaves for the message. The panel can sit over a closed chat, so the jump opens it. */
-    function jump(messageId: string) {
+    function jump(messageId: Parameters<typeof requestMessageJump>[1]) {
         if (chatRef) {
             setChatOpen(true);
             requestMessageJump(chatRef, messageId);
@@ -708,6 +708,7 @@
                             {focus}
                             {open}
                             {jump}
+                            rebuild={() => pressRebuild("rebuild")}
                             onContents={keepContents}
                         />
                     {/key}

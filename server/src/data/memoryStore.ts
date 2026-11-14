@@ -19,6 +19,7 @@ import {
     projectHypaV3Data,
     reconcileMemoryEvents,
     storedMemorySources,
+    storedMemoryGreeting,
     writerPaused,
 } from "../../../shared/structuredMemory.ts";
 import type {
@@ -1442,10 +1443,10 @@ function lastMemoryManifest(messages: readonly Message[]): MemoryManifest | null
 /**
  * A chat's `hypaV3Data` as its stored `events` and `messages` make it, unsealed: reconciled first.
  * `shared/structuredMemory.ts`'s `reconcileMemoryEvents` turns an active event with a changed source
- * stale unless a person kept its current source state (`keptState`). Events then follow the current position of their
- * earliest source, because every HypaV3 reader takes `summaries` as chronological while `seq` is
- * storage order and a re-record lands last. An event with no source in `messages` goes last, and ties
- * keep `seq` order. A malformed stored event can throw; the callers each decide what that means.
+ * stale unless a person kept its current source state (`keptState`). Events follow the current position
+ * of their earliest source, with a greeting citation at -1: HypaV3 readers take `summaries` as chronological,
+ * while `seq` is storage order and a re-record lands last. An event with no greeting or source in
+ * `messages` goes last, and ties keep `seq` order. A malformed stored event can throw; the callers each decide what that means.
  */
 export function projectChatMemory(
     events: readonly MemoryEvent[],
@@ -1458,7 +1459,7 @@ export function projectChatMemory(
         }
     });
     const placed = reconcileMemoryEvents(events, messages, messageSourceHash).map((event) => {
-        let position = Infinity;
+        let position = storedMemoryGreeting(event.greeting) ? -1 : Infinity;
         for (const { messageId } of storedMemorySources(event.sources)) {
             position = Math.min(position, positions.get(messageId) ?? Infinity);
         }

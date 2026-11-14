@@ -440,7 +440,8 @@
     /**
      * Runs a bookmark or claimed search jump through `runMessageJump` (`messageJump.ts`), as the screen's one
      * owned jump. A newer jump, a chat switch, a replaced transcript, or the screen's destruction stops it; after
-     * every await the chat must still be selected and shown, and the message is found by id in it. While it runs,
+     * every await the chat must still be selected and shown. Messages are found by id; a greeting target
+     * loads the full history and finds the row at -1. While it runs,
      * trimming is suspended and the transcript's scroll anchor is released.
      */
     async function scrollToMessageId(jump: Pick<MessageJump, "ref" | "messageId"> & { token?: number }) {

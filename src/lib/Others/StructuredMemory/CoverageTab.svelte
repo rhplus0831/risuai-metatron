@@ -11,6 +11,8 @@
         joinMemoryCoverage,
         MEMORY_COVERAGE_STATES,
         memoryItemsUsed,
+        memoryPanelGreeting,
+        type MemoryPanelTabProps,
         memoryMessageExcerpt,
         memoryMessageHasher,
         readStructuredMemoryCoverage,
@@ -20,10 +22,14 @@
         type StructuredMemoryCoverage,
     } from "src/ts/process/structuredMemory.svelte";
     import { findCharacter } from "src/ts/storage/characterStore.svelte";
-    import { findChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { findChat } from "src/ts/storage/chatStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { ChatTokenizer } from "src/ts/tokenizer";
-    import { normalizeStructuredMemorySettings } from "../../../../shared/structuredMemory.ts";
+    import GreetingCitation from "./GreetingCitation.svelte";
+    import {
+        normalizeStructuredMemorySettings,
+        MEMORY_GREETING_EVIDENCE_ID,
+    } from "../../../../shared/structuredMemory.ts";
     import { codeText, memoryReadFailureText, memoryReasonText } from "./memoryText";
 
     /**
@@ -32,19 +38,13 @@
      * therefore change rows without a request. An unloaded chat leaves the facts unreconciled: comparing
      * with no messages would falsely mark every source missing. Each mount keeps its own hash memo.
      *
-     * The join reads stored text, rather than a send's processed text and greeting. Only gap and leaving
+     * The join counts the stored greeting and messages; a send uses their processed text. Only gap and leaving
      * texts start token counts, so streaming a reply into the window starts none; a changed tokenizer alone
      * does not recount. Counts never hold up rows, and only the newest count may replace them. Consecutive
      * states are grouped, with one group open and 200 rows shown at a time. All message text stays plain.
      */
 
-    interface Props {
-        chatRef: ChatRef;
-        readOnly: boolean;
-        refresh: number;
-    }
-
-    let { chatRef, readOnly, refresh }: Props = $props();
+    let { chatRef, readOnly, refresh, jump, rebuild }: MemoryPanelTabProps = $props();
 
     /** The rows a list renders at once; a long chat stays cheap behind "show more". */
     const ROWS_AT_ONCE = 200;
@@ -79,9 +79,12 @@
 
     const heldChat = $derived(findChat(chatRef));
     const messages = $derived(heldChat?.message ?? []);
+    const greeting = $derived(memoryPanelGreeting(findCharacter(chatRef.chaId), heldChat));
     const hashOf = memoryMessageHasher();
     // With no chat held there is nothing to compare, which says nothing of its events.
-    const reconciled = $derived(facts && heldChat ? reconcileMemoryCoverage(facts, messages, hashOf) : facts);
+    const reconciled = $derived(
+        facts && heldChat ? reconcileMemoryCoverage(facts, messages, hashOf, greeting?.source ?? null) : facts,
+    );
     const writerSettings = $derived(
         normalizeStructuredMemorySettings(
             chatHypaV3Preset(settings.hypaV3Presets.items, settings.hypaV3Presets.selectedId, chatEntry(chatRef))
@@ -94,12 +97,18 @@
     );
     const coverage = $derived(
         reconciled
-            ? joinMemoryCoverage(messages, reconciled, { windowTurns, memoryOn, screening: writerSettings.screening })
+            ? joinMemoryCoverage(
+                  messages,
+                  reconciled,
+                  { windowTurns, memoryOn, screening: writerSettings.screening },
+                  greeting,
+              )
             : null,
     );
     const groups = $derived(coverage ? groupMemoryCoverage(coverage.rows) : []);
     const eventTitles = $derived(new Map<string, string>(reconciled?.events.map(({ id, title }) => [id, title])));
     const usedEvents = $derived(memoryItemsUsed(messages, "event"));
+    const usedGreeting = $derived(memoryItemsUsed(messages, "evidence").has(MEMORY_GREETING_EVIDENCE_ID));
     const usedGroups = $derived(usedMemoryCoverageGroups(coverage?.rows ?? [], groups, usedEvents));
 
     let shownGroups = $state(ROWS_AT_ONCE);
@@ -117,8 +126,11 @@
     /** The rows at `indices` as `getChatToken` counts a message. */
     const chatsAt = (indices: readonly number[]) =>
         indices.map((index): OpenAIChat => {
-            const { role, data } = messages[index];
-            return { role: role === "user" ? "user" : "assistant", content: data };
+            const row = coverage!.rows[index];
+            return {
+                role: row.role === "user" ? "user" : "assistant",
+                content: row.role === "greeting" ? (greeting?.text ?? "") : messages[row.index].data,
+            };
         });
 
     const sameChats = (a: readonly OpenAIChat[], b: readonly OpenAIChat[]) =>
@@ -193,17 +205,37 @@
     {@const title = row.eventId === undefined ? undefined : eventTitles.get(row.eventId)}
     <li class="flex flex-col min-w-0 py-1 break-words" data-memory-coverage-row={row.state}>
         <div class="flex flex-wrap items-baseline min-w-0 gap-x-2">
-            <span class="text-textcolor2">#{row.index}</span>
+            {#if row.role !== "greeting"}<span class="text-textcolor2">#{row.index}</span>{/if}
             <span class="text-textcolor2">{codeText(text.roles, row.role)}</span>
             <span class={stateClass(row.state)}>{text.states[row.state]}</span>
             {#if row.reason !== undefined}
                 <span class="min-w-0 text-textcolor2">{memoryReasonText(row.reason)}</span>
             {/if}
-            {#if row.eventId !== undefined && usedEvents.has(row.eventId)}
+            {#if (row.eventId !== undefined && usedEvents.has(row.eventId)) || (row.role === "greeting" && usedGreeting)}
                 {@render usedBadge()}
             {/if}
         </div>
-        <span class="truncate text-textcolor2">{memoryMessageExcerpt(messages[row.index]?.data ?? "")}</span>
+        <span class="truncate text-textcolor2"
+            >{memoryMessageExcerpt(
+                row.role === "greeting" ? (greeting?.text ?? "") : (messages[row.index]?.data ?? ""),
+            )}</span
+        >
+        {#if row.role === "greeting" && reconciled}
+            {#each row.greetingChanged ?? [] as id (id)}
+                {@const event = reconciled.events.find((entry) => entry.id === id)!}
+                <span class="text-textcolor2">{event.title}</span>
+                <GreetingCitation
+                    {event}
+                    current={heldChat ? (greeting?.source ?? null) : undefined}
+                    {chatRef}
+                    revision={reconciled.revision}
+                    {readOnly}
+                    {jump}
+                    {rebuild}
+                    refreshed={read}
+                />
+            {/each}
+        {/if}
         {#if title !== undefined && (row.state === "covered" || row.state === "stale")}
             <span class="min-w-0">{title}</span>
         {/if}
@@ -263,7 +295,11 @@
                                 <ChevronRightIcon size={16} class="shrink-0" />
                             {/if}
                             <span class="text-textcolor2">
-                                {text.range(group.start, group.end - 1, group.end - group.start)}
+                                {text.range(
+                                    coverage.rows[group.start].index,
+                                    coverage.rows[group.end - 1].index,
+                                    group.end - group.start,
+                                )}
                             </span>
                             <span class={stateClass(group.state)}>{text.states[group.state]}</span>
                             {#if !open && usedGroups.has(group.start)}

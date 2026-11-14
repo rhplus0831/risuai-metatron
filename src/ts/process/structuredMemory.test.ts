@@ -1334,3 +1334,38 @@ it("hashes the unexpanded greeting identically in the tab and server with the gr
         expect(memoryGreetingHash(stored)).toBe(expected);
     }
 });
+
+it("joins the greeting as the first coverage row and orders its event before surviving message sources", () => {
+    const messages: Message[] = [
+        { chatId: "old", role: "char", data: "Old reply" },
+        { chatId: "recent", role: "char", data: "Recent reply" },
+    ];
+    const greeting = { fmIndex: -1, hash: memoryGreetingHash("Original greeting") };
+    const current = { fmIndex: 0, hash: memoryGreetingHash("Swiped greeting") };
+    const early = { ...event("early", []), messageIds: ["old"], sourceIndex: 0 };
+    const opening = { ...event("opening", []), greeting, messageIds: ["recent"], sourceIndex: 1 };
+    const facts = { revision: "r1", events: [early, opening], runs: [] };
+    const before = structuredClone(facts);
+    const reconciled = reconcileMemoryCoverage(facts, messages, memoryMessageHasher(), current);
+    expect(reconciled.events[1]).toEqual({ ...opening, greetingChanged: true });
+    const options = { windowTurns: 1, memoryOn: true, screening: NO_SCREENING };
+    const joined = joinMemoryCoverage(messages, reconciled, options, { source: current, text: "Swiped greeting" });
+    expect(joined.rows.map(({ role, index }) => [role, index])).toEqual([
+        ["greeting", -1],
+        ["char", 0],
+        ["char", 1],
+    ]);
+    expect(joined.rows[0]).toMatchObject({ state: "covered", eventId: "opening", greetingChanged: ["opening"] });
+    expect(joined.leaving).toEqual([0, 1]);
+    expect(memoryTimelineRows(facts.events, messages).map(({ event }) => event.id)).toEqual(["opening", "early"]);
+    expect(
+        joinMemoryCoverage(messages, { events: [], runs: [] }, options, { source: null, text: "" }).rows.map(
+            ({ role }) => role,
+        ),
+    ).toEqual(["char", "char"]);
+    expect(joinMemoryCoverage(messages, facts, options, { source: null, text: "" }).rows[0]).toMatchObject({
+        role: "greeting",
+        state: "covered",
+    });
+    expect(facts).toEqual(before);
+});

@@ -25,7 +25,7 @@ import { loadJobScope, scopeChat } from "../jobs/jobScope.ts";
 import { assemblePrompt, type AssemblyHost, type AssemblyMemoryJob } from "../prompt/assemble.ts";
 import { createVectorCache, type CachedVector } from "../data/vectorCache.ts";
 import { createEmbeddings } from "../prompt/embeddings.ts";
-import { messageSourceHash } from "../data/memoryStore.ts";
+import { greetingSourceHash, messageSourceHash } from "../data/memoryStore.ts";
 import type { MemoryEvent } from "../../../shared/structuredMemory.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
@@ -1068,6 +1068,35 @@ describe("the context report", () => {
         });
         const rawIds = (formated: OpenAIChat[]) =>
             formated.flatMap(({ memo }) => (memo && memo !== "supaMemory" ? [memo] : []));
+
+        it("omits the recorded greeting from the assembled prompt before and after a greeting swipe", async () => {
+            const greeting = "ORIGINAL_GREETING_SENTINEL";
+            const swiped = "SWIPED_GREETING_SENTINEL";
+            const messages: Entry[] = [
+                { chatId: "a0", role: "char", data: "Old reply" },
+                { chatId: "a1", role: "char", data: "Recent reply" },
+                { chatId: "u1", role: "user", data: "Next question" },
+            ];
+            const first = event("first", ["a0"], { greeting: { fmIndex: -1, hash: greetingSourceHash(greeting) } });
+            const assembly = structuredAssembly({
+                messages,
+                greeting,
+                character: { alternateGreetings: [swiped] },
+                records: anchored(stored([first]), messages),
+                maxContext: 4000,
+                settings: { flowEvents: 1, laneTargets: { flow: 1000, pages: 0, events: 0, evidence: 0, threads: 0 } },
+            });
+            for (const fmIndex of [-1, 0]) {
+                assembly.chat.fmIndex = fmIndex;
+                const { formated } = await assembly.run();
+                const prompt = formated.map(({ content }) => content).join("\n");
+                expect(prompt).not.toContain(greeting);
+                expect(prompt).not.toContain(swiped);
+                expect(prompt).toContain("Recent reply");
+                expect(prompt).toContain("Next question");
+                expect(prompt).toContain(first.summary);
+            }
+        });
 
         function modeTestEmbeddings() {
             const cache = createVectorCache({ file: ":memory:", now: () => 0 });

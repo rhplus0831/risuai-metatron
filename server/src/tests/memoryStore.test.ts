@@ -1736,3 +1736,21 @@ it("round-trips raw run greeting citations and lets readers ignore malformed one
         expect(storedMemoryGreeting(saved.greeting)).toEqual(run.id === "valid" ? valid : null);
     }
 });
+
+it("projects a greeting event before earlier message sources with a leading null memo", () => {
+    const messages: Message[] = [
+        { chatId: "early", role: "char", data: "Earlier reply" },
+        { chatId: "late", role: "char", data: "Later reply" },
+    ];
+    const events = messages.map((message, index) => ({
+        ...records([message.chatId!]).events[0],
+        id: message.chatId!,
+        summary: message.data,
+        sources: [{ messageId: message.chatId!, index, hash: messageSourceHash(message) }],
+        ...(index === 1 ? { greeting: { fmIndex: -1, hash: "recorded greeting" } } : {}),
+    }));
+    expect(projectChatMemory(events, messages).summaries).toEqual([
+        { text: "Later reply", chatMemos: [null, "late"], isImportant: false },
+        { text: "Earlier reply", chatMemos: ["early"], isImportant: false },
+    ]);
+});

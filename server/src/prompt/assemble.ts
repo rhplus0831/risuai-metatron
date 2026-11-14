@@ -52,6 +52,7 @@ import {
 } from "../../../shared/prompt/toggles.ts";
 import {
     type MemoryManifestItem,
+    type MemoryGreetingSource,
     type MemoryReceipt,
     normalizeStructuredMemorySettings,
     STRUCTURED_MEMORY_ALGORITHM,
@@ -634,6 +635,7 @@ async function structuredMemoryStep(
         chats: readonly OpenAIChat[];
         historyStart: number;
         ms: readonly Message[];
+        greeting: MemoryGreetingSource | null;
         messages: readonly Message[];
         /** Undefined when the snapshot was not read with one: no hand-off, and no gap run. */
         sourceGeneration: number | undefined;
@@ -651,7 +653,7 @@ async function structuredMemoryStep(
     const memory = host.memory;
     const { chats, historyStart, messages, sourceGeneration, continueMessageId, maxContextTokens, tokenizer } = arg;
     const { settings } = getCurrentHypaV3Preset(memory);
-    const entries = readEntries(chats.slice(historyStart), arg.ms);
+    const entries = readEntries(chats.slice(historyStart), arg.ms, arg.greeting);
     const select = (stored: MemoryRecords) =>
         selectMemory(
             {
@@ -1743,7 +1745,9 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
     /** The greeting entry's source: the stored greeting text and `fmIndex`, from the snapshot of its generation. */
     let greetingSource: { fmIndex: Chat["fmIndex"]; text: string; generation: number | undefined } | null = null;
 
+    let structuredGreeting: MemoryGreetingSource | null = null;
     if (nowChatroom.type !== "group" && !msReseted) {
+        structuredGreeting = writerGreeting(nowChatroom, currentChat)?.source ?? null;
         const firstMsg = greetingText(nowChatroom, currentChat.fmIndex);
         greetingSource = { fmIndex: currentChat.fmIndex, text: firstMsg ?? "", generation: currentChatGeneration };
         const chat: OpenAIChat = {
@@ -2011,6 +2015,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                     chats,
                     historyStart,
                     ms,
+                    greeting: structuredGreeting,
                     messages: currentChat.message,
                     sourceGeneration: currentChatGeneration,
                     continueMessageId: input.continueMessageId,

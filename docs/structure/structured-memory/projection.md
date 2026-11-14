@@ -57,7 +57,9 @@ summaries. Plugin reads refresh through the revision and projection routes.
 The upstream export writes it unsealed (`memory-projected`) for each chat whose own algorithm, resolved from its stored
 metadata before the memory fields are stripped, is Structured Memory; a failed memory walk or event projection leaves
 chats as stored (`memory-unreadable`) and never stops the export. `pinned` or a grade at least `importantEventGrade`
-becomes `isImportant`; see `projectHypaV3Data` for metric rules and `projectChatMemory` for reconciliation and order.
+becomes `isImportant`. An event that cites the greeting gets a `null` memo first in its `chatMemos`, which HypaV3 reads
+as the greeting entry's, and sorts before every message position. See `projectHypaV3Data` for metric rules and
+`projectChatMemory` for reconciliation and order.
 
 ### A tab's read
 

@@ -106,7 +106,7 @@ it("stores missing and sourceless summaries stale while recording their citation
         { status: "stale", staleReason: "missing", sources: [] },
     ]);
     expect(reconcileMemoryEvents(events, messages, hashOf)).toEqual(events);
-    expect([...coveredMessages(events)]).toEqual(["m0", "m1"]);
+    expect([...coveredMessages(events).messages]).toEqual(["m0", "m1"]);
     expect([...recordedMessages(events).messages]).toEqual(["m0", "m1", "m2", "m3", "gone"]);
     const windows = await confirmedWindows({
         messages,

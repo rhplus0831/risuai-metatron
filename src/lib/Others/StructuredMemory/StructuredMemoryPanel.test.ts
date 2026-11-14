@@ -37,6 +37,7 @@ import { pendingMessageJump } from "src/ts/messageSearch.svelte";
 import {
     requestMemoryPanelTarget,
     memoryMessageHash,
+    memoryGreetingHash,
     type MemoryPanelTarget,
 } from "src/ts/process/structuredMemory.svelte";
 import {
@@ -4070,4 +4071,121 @@ it("shows the chat preset's manual cadence and follows the default when its pres
     expect(line()).not.toContain(language.structuredMemory.notAutomaticReasons.manual);
     expect(findChat(ref)).toHaveProperty("memoryPresetId", "manual-chat");
     expect(settings.hypaV3Presets.selectedId).toBe("memory");
+});
+
+it("labels changed greeting citations without changing history and hides the label only for the kept greeting", async () => {
+    const owner = characterList()[0];
+    if (owner.type !== "character") throw new Error("Expected a solo character");
+    owner.firstMessage = "Welcome home.";
+    owner.alternateGreetings = ["Welcome home.", "Welcome elsewhere."];
+    setChatMeta(ref, { fmIndex: -1 });
+    const state = serveAnchoredEvent();
+    state.event.greeting = { fmIndex: -1, hash: memoryGreetingHash("Welcome home.") };
+    const original = structuredClone(state.event);
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (!url.endsWith("/edits")) return fetch(url, init, options);
+        state.event = { ...state.event, greetingKept: { fmIndex: 0, hash: memoryGreetingHash("Welcome home.") } };
+        state.revision = "kept-revision";
+        return Response.json({ revision: state.revision, kind: "events", data: state.event });
+    });
+    await open();
+    await chooseTab("timeline");
+    click('[data-memory-event="e"] > button');
+    await settle();
+    const source = () => query('[data-memory-greeting-source="e"]');
+    const changed = () => query("[data-memory-greeting-changed]");
+    expect(source()).not.toBeNull();
+    expect(source()!.textContent).toContain(language.structuredMemory.greeting.source);
+    expect(source()?.textContent).not.toContain(language.structuredMemory.pages.messageGone);
+    expect(changed()).toBeNull();
+    owner.firstMessage = '<b class="new">Welcome home.</b>';
+    await settle();
+    expect(changed()).toBeNull();
+    owner.firstMessage = "Welcome back.";
+    await settle();
+    expect(changed()?.textContent).toBe(language.structuredMemory.greeting.changed);
+    owner.firstMessage = "Welcome home.";
+    await settle();
+    expect(changed()).toBeNull();
+    setChatMeta(ref, { fmIndex: 0 });
+    await settle();
+    expect(changed()?.textContent).toBe(language.structuredMemory.greeting.changed);
+    expect(query('[data-memory-event="e"]')?.dataset.memoryEventStatus).toBe("active");
+    const actions = [...source()!.querySelectorAll("button")].map((button) => button.textContent?.trim());
+    expect(actions).toEqual(
+        expect.arrayContaining([
+            language.structuredMemory.timeline.repairs.rerecord,
+            language.structuredMemory.rebuild.rebuild,
+            language.structuredMemory.greeting.keep,
+        ]),
+    );
+    expect(state.event).toEqual(original);
+    expect(sentEdits()).toEqual([]);
+    expect(io.runServerJob).not.toHaveBeenCalled();
+    await chooseTab("coverage");
+    expect(query('[data-memory-greeting-source="e"] [data-memory-greeting-changed]')).not.toBeNull();
+    await chooseTab("timeline");
+    if (!source()) {
+        click('[data-memory-event="e"] > button');
+        await settle();
+    }
+    const keep = [...source()!.querySelectorAll("button")].find(
+        (button) => button.textContent?.trim() === language.structuredMemory.greeting.keep,
+    )!;
+    keep.click();
+    await settle();
+    expect(sentEdits()).toEqual([
+        {
+            revision: "seen-revision",
+            edit: {
+                kind: "event",
+                eventId: "e",
+                repair: "keepGreeting",
+                greeting: { fmIndex: 0, hash: memoryGreetingHash("Welcome home.") },
+            },
+        },
+    ]);
+    expect(changed()).toBeNull();
+    expect(state.event).toEqual({
+        ...original,
+        greetingKept: { fmIndex: 0, hash: memoryGreetingHash("Welcome home.") },
+    });
+    setChatMeta(ref, { fmIndex: 1 });
+    await settle();
+    expect(changed()?.textContent).toBe(language.structuredMemory.greeting.changed);
+    expect(io.runServerJob).not.toHaveBeenCalled();
+});
+
+it("shows a page's provenance greeting as a Greeting source and jumps to the chat opening", async () => {
+    const owner = characterList()[0];
+    if (owner.type !== "character") throw new Error("Expected a solo character");
+    owner.firstMessage = "Welcome home.";
+    setChatMeta(ref, { fmIndex: -1 });
+    const state = serveMemory();
+    state.page.sections[0].sources = [];
+    const greeting = { fmIndex: -1, hash: memoryGreetingHash("Welcome home.") };
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.includes("/coverage"))
+            return Response.json({
+                revision: state.revision,
+                events: [{ id: "event", title: "Opening", status: "active", messageIds: [], greeting }],
+                runs: [],
+                next: null,
+            });
+        return fetch(url, init, options);
+    });
+    await open();
+    click('[data-memory-page="p"]');
+    await settle();
+    await choosePageView("manage");
+    const source = query('[data-memory-greeting-source="event"]');
+    expect(source).not.toBeNull();
+    expect(source!.textContent).toContain(language.structuredMemory.greeting.source);
+    expect(source?.textContent).not.toContain(language.structuredMemory.pages.messageGone);
+    source!.querySelector("button")!.click();
+    await settle();
+    expect(pendingMessageJump()).toMatchObject({ ref, messageId: { greeting: true } });
+    expect(get(hypaV3ModalOpen)).toBe(false);
 });

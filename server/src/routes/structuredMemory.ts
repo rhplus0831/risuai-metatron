@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { writerGreeting } from "../prompt/memory/structured/window.ts";
 import { resolveChatBinding } from "../../../shared/chatBinding.ts";
 import type { Context, Hono, MiddlewareHandler } from "hono";
 import type { Chat, Message, character, groupChat } from "../../../shared/database.ts";
 import { RESOURCE_KIND, RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     ADOPTED_WRITER_RUN,
-    memoryChatGreeting,
+    type MemoryGreetingSource,
     storedMemoryGreeting,
     hypaV3DataHoldsSummaries,
     isSealedHypaV3Data,
@@ -237,7 +238,12 @@ function sourceIds(sources: unknown): string[] {
 }
 
 /** The first source position, resolved against current messages when `positions` is supplied. */
-function firstSourceIndex(sources: unknown, positions?: ReadonlyMap<string, number>): number | null {
+function firstSourceIndex(
+    sources: unknown,
+    positions?: ReadonlyMap<string, number>,
+    greeting?: unknown,
+): number | null {
+    if (storedMemoryGreeting(greeting)) return -1;
     let first: number | null = null;
     for (const source of Array.isArray(sources) ? sources : []) {
         const index: unknown = isPlainObject(source)
@@ -436,7 +442,7 @@ function findEventHits(
                   kind: "event",
                   id,
                   title: findTextWindow(event.title),
-                  sourceIndex: firstSourceIndex(event.sources, positions),
+                  sourceIndex: firstSourceIndex(event.sources, positions, event.greeting),
                   excerpt,
                   ...(mention ? { mention } : {}),
               },
@@ -490,8 +496,9 @@ type RoundRead = {
  *   whole.
  * - `GET /api/memory/structured/:characterId/:chatId/coverage?cursor=N&revision=R`: one round of the
  *   list of the chat's events followed by its runs that are not `recorded`, in contents order, answered
- *   `StructuredMemoryCoverageRound`: what each says of its messages, with no error or message text. An
- *   event comes with its sources, its `keptState`, and its `rerecord` mark, as stored: the tab reconciles
+ *   `StructuredMemoryCoverageRound`: message and greeting citations, with no error or source text. An
+ *   event includes its normalized `greeting` and `greetingKept`; a run says whether it read the greeting.
+ *   Events also carry message sources, `keptState`, and `rerecord` as stored: the tab reconciles
  *   them with the messages it holds, so this reads no chat. The list comes from the contents, so a
  *   recorded run's body is never read. Bytes, `cursor`, `revision`, and the refusals work as in the
  *   package round.
@@ -894,10 +901,17 @@ export function registerStructuredMemoryRoutes(
             const runs: StructuredMemoryCoverageRun[] = [];
             for (const { kind, id } of rows) {
                 if (kind === "events") {
-                    const { title, status, staleReason, suppressed, keptState, rerecord, sources, greeting } = read(
-                        kind,
-                        id,
-                    );
+                    const {
+                        title,
+                        status,
+                        staleReason,
+                        suppressed,
+                        keptState,
+                        rerecord,
+                        sources,
+                        greeting,
+                        greetingKept,
+                    } = read(kind, id);
                     events.push({
                         id,
                         title,
@@ -907,13 +921,22 @@ export function registerStructuredMemoryRoutes(
                         keptState,
                         rerecord,
                         messageIds: sourceIds(sources),
-                        sourceIndex: firstSourceIndex(sources),
+                        sourceIndex: firstSourceIndex(sources, undefined, greeting),
                         sources: storedMemorySources(sources),
                         ...(storedMemoryGreeting(greeting) ? { greeting: storedMemoryGreeting(greeting)! } : {}),
+                        ...(storedMemoryGreeting(greetingKept)
+                            ? { greetingKept: storedMemoryGreeting(greetingKept)! }
+                            : {}),
                     });
                 } else {
-                    const { result, reason, receipt, window } = read(kind, id);
-                    runs.push({ id, result, reason: reason ?? receipt?.reason, messageIds: sourceIds(window) });
+                    const { result, reason, receipt, window, greeting } = read(kind, id);
+                    runs.push({
+                        id,
+                        result,
+                        reason: reason ?? receipt?.reason,
+                        messageIds: sourceIds(window),
+                        ...(storedMemoryGreeting(greeting) ? { greeting: true as const } : {}),
+                    });
                 }
             }
             return { revision, events, runs, next } satisfies StructuredMemoryCoverageRound;
@@ -1161,7 +1184,7 @@ export function registerStructuredMemoryRoutes(
                     return gone();
                 }
                 let messages: readonly Message[] = [];
-                let hasGreeting = false;
+                let currentGreeting: MemoryGreetingSource | null = null;
                 if (edit.repair !== "retract") {
                     const chat = store.readChatSource(characterId, chatId).data as Chat | null;
                     if (!chat) {
@@ -1170,9 +1193,16 @@ export function registerStructuredMemoryRoutes(
                     messages = chat.message;
                     const owner = store.get(kinds.get(RESOURCE_KIND.characters)!, characterId)?.data as
                         character | groupChat | undefined;
-                    hasGreeting = memoryChatGreeting(owner, chat) !== null;
+                    currentGreeting = writerGreeting(owner, chat)?.source ?? null;
                 }
-                const edited = applyEventRepair(stored.data, edit, messages, messageSourceHash, hasGreeting);
+                const edited = applyEventRepair(
+                    stored.data,
+                    edit,
+                    messages,
+                    messageSourceHash,
+                    currentGreeting !== null,
+                    currentGreeting,
+                );
                 const written = store.memory.write(
                     characterId,
                     chatId,

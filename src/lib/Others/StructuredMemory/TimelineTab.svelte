@@ -7,6 +7,7 @@
         editStructuredMemory,
         memoryEventView,
         memoryItemsUsed,
+        memoryPanelGreeting,
         memoryMessageHasher,
         memoryMessageIndexes,
         memoryTimelineRows,
@@ -31,13 +32,14 @@
         ADOPTED_WRITER_RUN,
         memoryAnchorState,
         memoryRerecordTarget,
-        memoryChatGreeting,
+        storedMemoryGreeting,
         STRUCTURED_MEMORY_LIMITS,
         type StructuredMemoryCoverageEvent,
         type StructuredMemoryEdit,
         type StructuredMemoryStoryEvent,
     } from "../../../../shared/structuredMemory.ts";
     import MemoryEventFacts from "./MemoryEventFacts.svelte";
+    import GreetingCitation from "./GreetingCitation.svelte";
     import MemoryLinkButton from "./MemoryLinkButton.svelte";
     import { pressMemoryRecord } from "./memoryRecordPress";
     import { memoryReadFailureText, memoryReasonText } from "./memoryText";
@@ -62,10 +64,11 @@
      * Text edits and mark releases also reread the open record and the chosen story view; a hidden
      * story is invalidated for the next switch. The mark is held beside the display view. A draft keeps
      * its base title and summary: a read that changes either closes it with `changed`, and selecting
-     * another event or closing the event discards it. All writes share the repair's send guard.
+     * another event or closing the event discards it. Text edits share the repair's send guard; greeting
+     * choices hold their own request guard and use the same revisioned repair route.
      */
 
-    let { chatRef, readOnly, refresh, focus, open, jump }: MemoryPanelTabProps = $props();
+    let { chatRef, readOnly, refresh, focus, open, jump, rebuild }: MemoryPanelTabProps = $props();
 
     /** The rows a list renders at once; a long chat stays cheap behind "show more". */
     const ROWS_AT_ONCE = 200;
@@ -112,15 +115,18 @@
 
     const heldChat = $derived(findChat(chatRef));
     const messages = $derived(heldChat?.message ?? []);
-    const greetingAvailable = $derived(
-        memoryChatGreeting(
+    const greeting = $derived(
+        memoryPanelGreeting(
             characterList().find((entry) => entry?.chaId === chatRef.chaId),
             heldChat,
-        ) !== null,
+        ),
     );
+    const greetingAvailable = $derived(greeting?.source != null);
     const hashOf = memoryMessageHasher();
     // With no chat held there is nothing to compare, which says nothing of its events.
-    const reconciled = $derived(facts && heldChat ? reconcileMemoryCoverage(facts, messages, hashOf) : facts);
+    const reconciled = $derived(
+        facts && heldChat ? reconcileMemoryCoverage(facts, messages, hashOf, greeting?.source ?? null) : facts,
+    );
     const rows = $derived(reconciled ? memoryTimelineRows(reconciled.events, messages) : []);
     const visibleRows = $derived(view === "story" ? rows.filter(({ event }) => event.status !== "retracted") : rows);
     const usedEvents = $derived(memoryItemsUsed(messages, "event"));
@@ -516,9 +522,25 @@
             {/if}
             <MemoryEventFacts event={openEvent} {pageTitles} {threadTitles} />
         {/if}
-        {#if event.messageIds.length > 0}
+        {#if event.messageIds.length > 0 || storedMemoryGreeting(event.greeting)}
             <div class="flex flex-wrap items-center gap-1">
-                <span class="text-textcolor2">{text.sources}</span>
+                <span class="text-textcolor2"
+                    >{storedMemoryGreeting(event.greeting)
+                        ? language.structuredMemory.greeting.sources
+                        : text.sources}</span
+                >
+                {#if storedMemoryGreeting(event.greeting) && facts}
+                    <GreetingCitation
+                        {event}
+                        current={heldChat ? (greeting?.source ?? null) : undefined}
+                        {chatRef}
+                        revision={facts.revision}
+                        readOnly={controlsOff}
+                        {jump}
+                        {rebuild}
+                        refreshed={read}
+                    />
+                {/if}
                 {#each event.messageIds as id}
                     {@const index = messageIndexes.get(id)}
                     <MemoryLinkButton

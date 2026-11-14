@@ -78,7 +78,8 @@ malformed, or deleted ids fall back to the Settings default through `chatHypaV3P
 
 1. The step drops unreadable events, then `selectMemory` reconciles events against stored messages before
    `retrieveLanes` and `buildMemoryCard` run ([reconciliation](lifecycle.md#reconciliation-and-repairs)).
-   `coveredMessages` decides what history may leave from active, unsuppressed events; `recordedMessages` separately
+   `coveredMessages` decides what history may leave from active, unsuppressed events, the greeting entry
+   (`ReadEntry.greeting`) once any of them cites a greeting, matching today's or not; `recordedMessages` separately
    prevents the writer repeating readable stored events. `retrieve.ts`'s header owns lane eligibility and scoring.
 2. The card enters history as `memo: "supaMemory"`. With `volatileBeforeLastUser`, its volatile part bypasses history so
    it survives chat ranges; assembly places it after formatting by provenance before the latest user, else after the
@@ -153,6 +154,10 @@ work inside a generation job.
 The coverage route returns stored event facts; Coverage and Timeline apply the send's reconciliation rule to held
 messages through `reconcileMemoryCoverage`, without a request or stored write. The join comment owns row priority,
 windows and the unloaded-chat exception. A newest reply otherwise reads `pending`: confirmation belongs to the job.
+Coverage's first row is the greeting, when it can be cited or an event cites one. Coverage, Timeline, and Pages (from a
+section's provenance events) show a greeting citation as a Greeting source that jumps to the chat's top. One that
+matches neither the chat's greeting nor its `greetingKept` (`memoryGreetingChanged`) is labelled changed, with
+re-record, rebuild, and keep (`keepGreeting`); the label changes nothing else.
 
 `memoryItemsUsed` supplies last-send badges from the same newest-valid-report boundary as the meter; its comment owns
 badge selection.
@@ -162,7 +167,8 @@ badge selection.
 Timeline reads coverage's `messageIds` at one revision, keeping `readContents` free of record `data` on sends and
 rounds; `memory_events.seq` is storage order. `memoryTimelineRows` owns message order and aging. Pages hosts
 [page tools](pages.md); each tab's contract holds its view rules. `open(target)` becomes the chosen tab's `focus`;
-`jump(messageId)` opens the chat with `setChatOpen`, calls `requestMessageJump`, then closes the panel.
+`jump(target)`, a message id or `{ greeting: true }`, opens the chat with `setChatOpen`, calls `requestMessageJump`,
+then closes the panel.
 
 A page opens in `read`: its title, type and aliases, its links, and each section with a body as plain text under a small
 label, the marks as badges, `currentState` first and set apart. A section's `(was: ...)` lines are folded behind a count
@@ -406,9 +412,9 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
   the press gets the 409. After the choice an `awaitingAdoption` receipt keeps its words with no button until a run
   replaces it, and Coverage reads it `skipped`. The panel's writer line is right throughout. Decision: Structured Memory
   slice 6c, archive.
-- Coverage's gap and leaving rows read stored text, where a send reads processed text and the greeting: a reply a script
-  blanks counts as a turn here, and uncovered history that no longer fits also trims at send time. The panel says so,
-  and a preview is the exact form. Decision: Structured Memory D8, archive.
+- Coverage's gap and leaving rows read the stored greeting and messages, where a send reads processed text: a reply a
+  script blanks counts as a turn here, and uncovered history that no longer fits also trims at send time. The panel says
+  so, and a preview is the exact form. Decision: Structured Memory D8, archive.
 - A press that re-records an event can also record ordinary windows open under its message if the re-record windows
   leave room under `maxWriterWindows`. The shared `pressMemoryRecord` cost preview and confirmation apply
   ([cost preview](rebuild.md#the-cost-preview)). Decision: Structured Memory D3, archive.

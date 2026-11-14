@@ -220,7 +220,7 @@ export interface Summary {
 
 /** A stored summary: `chatMemos` as a list. */
 export interface SerializableSummary extends Omit<Summary, "chatMemos"> {
-    chatMemos: string[];
+    chatMemos: (string | null)[];
 }
 
 // A job's memory write (`server/src/prompt/assemble.ts`) is built from the chat as stored at the

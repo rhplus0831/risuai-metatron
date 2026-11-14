@@ -244,7 +244,7 @@ it("keeps only the seen source state, marks rerecord without replacing evidence,
     );
     const kept = applyEventRepair(event, keep, changed, messageSourceHash)!;
     expect(kept).toEqual({ ...event, keptState: state });
-    expect([...coveredMessages(reconcileEvents([kept], changed))]).toEqual(["u", "a"]);
+    expect([...coveredMessages(reconcileEvents([kept], changed)).messages]).toEqual(["u", "a"]);
     expect(reconcileEvents([kept], [original[0], { ...original[1], data: "Edited again" }])[0]).toMatchObject({
         status: "stale",
         staleReason: "changed",
@@ -352,4 +352,53 @@ it("keeps only flagged sections, never clears a prior correction, refuses a miss
         stamp,
     )!;
     expect(edited.sections[0]).toEqual({ ...flagged.sections[0], body: "Person's wording", updatedAt: 20 });
+});
+
+it("keeps the shown greeting without rewriting the event or its pending repairs", () => {
+    const greeting = { fmIndex: -1, hash: "recorded" };
+    const current = { fmIndex: 0, hash: "shown" };
+    const event: MemoryEvent = {
+        ...memoryRecords(["e"]).events[0],
+        createdRevision: 1,
+        greeting,
+        greetingKept: { fmIndex: -1, hash: "previously accepted" },
+        status: "stale",
+        staleReason: "changed",
+        rerecord: true,
+        suppressed: true,
+    };
+    const before = structuredClone(event);
+    const edit = { kind: "event" as const, eventId: "e", repair: "keepGreeting" as const, greeting: current };
+    expect(parseMemoryEdit({ ...edit, status: "active", sources: [], rerecord: false })).toEqual(edit);
+    expect(applyEventRepair(event, edit, [], messageSourceHash, true, current)).toEqual({
+        ...before,
+        greetingKept: current,
+    });
+    expect(event).toEqual(before);
+});
+
+it("refuses a moved greeting or an event with no keepable greeting", () => {
+    const greeting = { fmIndex: -1, hash: "recorded" };
+    const shown = { fmIndex: 0, hash: "shown" };
+    const event = { ...memoryRecords(["e"]).events[0], createdRevision: 1, greeting };
+    const edit = { kind: "event" as const, eventId: "e", repair: "keepGreeting" as const, greeting: shown };
+    for (const current of [
+        { ...shown, fmIndex: 1 },
+        { ...shown, hash: "changed again" },
+    ]) {
+        expect(() => applyEventRepair(event, edit, [], messageSourceHash, true, current)).toThrow(
+            expect.objectContaining({ reason: "changed" }),
+        );
+    }
+    for (const invalid of [
+        { ...memoryRecords(["e"]).events[0], createdRevision: 1 },
+        { ...event, status: "retracted" as const },
+    ]) {
+        expect(() => applyEventRepair(invalid, edit, [], messageSourceHash, true, shown)).toThrow(
+            expect.objectContaining({ reason: "invalid" }),
+        );
+    }
+    expect(() => applyEventRepair(event, edit, [], messageSourceHash, false, null)).toThrow(
+        expect.objectContaining({ reason: "invalid" }),
+    );
 });

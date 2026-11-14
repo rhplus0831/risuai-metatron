@@ -1,9 +1,13 @@
 /**
- * The chat screen's jump to a message by id: the decisions of `DefaultChatScreen.svelte`'s
+ * The chat screen's jump to a message by id or its greeting: the decisions of `DefaultChatScreen.svelte`'s
  * `scrollToMessageId`, with the component's state and DOM injected so they can be tested without
  * mounting the screen. Every await is followed by an ownership check and a fresh lookup of the
- * message by its id: the index is never kept across an await.
+ * message by its id: the index is never kept across an await. A greeting loads the full history
+ * through its fixed row at -1, under the same cancellation and ownership checks.
  */
+
+/** A stored message id or the chat's initial greeting. */
+export type MessageJumpTarget = string | { greeting: true };
 
 /** Rows rendered past the target when jumping to a message (the context above it). */
 export const MESSAGE_JUMP_MARGIN = 5;
@@ -60,10 +64,12 @@ export interface MessageJumpDeps {
 }
 
 /**
- * Brings message `messageId` of the selected chat into view and rings it. `gone` when the chat no
+ * Brings a message or greeting of the selected chat into view and rings it. A greeting loads the
+ * history through index -1; the same ownership checks protect every wait. `gone` when the chat no
  * longer holds it; `stopped` when the jump lost the screen or the row never showed.
  */
-export async function runMessageJump(messageId: string, deps: MessageJumpDeps): Promise<MessageJumpOutcome> {
+export async function runMessageJump(messageId: MessageJumpTarget, deps: MessageJumpDeps): Promise<MessageJumpOutcome> {
+    const greeting = typeof messageId !== "string";
     const STOPPED = Symbol("stopped");
     const stopped = deps.stopped.then(() => STOPPED);
     /** Waits, then answers whether the jump still owns the screen; a failed wait counts as settled. */
@@ -80,12 +86,12 @@ export async function runMessageJump(messageId: string, deps: MessageJumpDeps): 
     /** The message's index, found again by id; null when the chat is not loaded, -1 when it is gone. */
     const indexOf = (): number | null => {
         const messages = deps.messages();
-        return messages === null ? null : messages.findIndex((message) => message.chatId === messageId);
+        return messages === null ? null : greeting ? -1 : messages.findIndex((message) => message.chatId === messageId);
     };
     /** The row of the target, only when it still renders this message. */
     const targetRow = (index: number): HTMLElement | null => {
         const row = deps.findRow(index);
-        return row && row.dataset.chatId === messageId ? row : null;
+        return row && (greeting ? row.dataset.chatIndex === "-1" : row.dataset.chatId === messageId) ? row : null;
     };
 
     for (let round = 0; round < MESSAGE_JUMP_ROUNDS; round++) {
@@ -96,16 +102,16 @@ export async function runMessageJump(messageId: string, deps: MessageJumpDeps): 
         if (index === null) {
             return "stopped";
         }
-        if (index === -1) {
+        if (index === -1 && !greeting) {
             return "gone";
         }
         const length = deps.messages()!.length;
-        const window = messageJumpWindow({
-            length,
-            index,
-            loadPages: deps.loadPages(),
-            folded: deps.foldedIndex(),
-        });
+        const window = greeting
+            ? {
+                  clearFold: deps.foldedIndex() !== -1,
+                  loadPages: Math.max(deps.loadPages(), length + MESSAGE_JUMP_MARGIN),
+              }
+            : messageJumpWindow({ length, index, loadPages: deps.loadPages(), folded: deps.foldedIndex() });
         if (window.clearFold) {
             deps.clearFold();
         }
@@ -120,7 +126,7 @@ export async function runMessageJump(messageId: string, deps: MessageJumpDeps): 
         if (index === null) {
             return "stopped";
         }
-        if (index === -1) {
+        if (index === -1 && !greeting) {
             return "gone";
         }
         const row = targetRow(index);
@@ -128,7 +134,7 @@ export async function runMessageJump(messageId: string, deps: MessageJumpDeps): 
             // The chat changed under the jump (a message added before it, a fold set): plan again.
             continue;
         }
-        deps.scrollTo(deps.findRow(Math.max(0, index - PRE_SCROLL_ROWS)) ?? row);
+        deps.scrollTo(greeting ? row : (deps.findRow(Math.max(0, index - PRE_SCROLL_ROWS)) ?? row));
         if (!(await settle(deps.settleImages()))) {
             return "stopped";
         }
@@ -137,7 +143,7 @@ export async function runMessageJump(messageId: string, deps: MessageJumpDeps): 
         if (index === null) {
             return "stopped";
         }
-        if (index === -1) {
+        if (index === -1 && !greeting) {
             return "gone";
         }
         const settled = targetRow(index);
@@ -153,7 +159,7 @@ export async function runMessageJump(messageId: string, deps: MessageJumpDeps): 
         if (index === null) {
             return "stopped";
         }
-        if (index === -1) {
+        if (index === -1 && !greeting) {
             return "gone";
         }
         const final = targetRow(index);

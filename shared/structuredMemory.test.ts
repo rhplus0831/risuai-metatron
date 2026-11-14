@@ -19,6 +19,9 @@ import {
     greetingCited,
     memoryChatGreeting,
     memoryGreetingHashFields,
+    coveredMessages,
+    rawWindow,
+    type ReadEntry,
 } from "./structuredMemory.ts";
 
 function event(id: string, overrides: Partial<MemoryEvent> = {}): MemoryEvent {
@@ -50,6 +53,18 @@ function item(
 }
 
 describe("projectHypaV3Data", () => {
+    it("puts the greeting's null memo before a greeting citation's message memos", () => {
+        const early = event("early", { sources: [{ messageId: "m0", hash: "h0", index: 0 }] });
+        const greeting = event("greeting", {
+            greeting: { fmIndex: -1, hash: "recorded greeting" },
+            sources: [{ messageId: "m9", hash: "h9", index: 9 }],
+        });
+        // Order is the caller's (`projectChatMemory`); this checks only the memos.
+        expect(projectHypaV3Data([greeting, early]).summaries.map(({ chatMemos }) => chatMemos)).toEqual([
+            [null, "m9"],
+            ["m0"],
+        ]);
+    });
     it("marks grade six and pinned events important but leaves grade five and ungraded events ordinary", () => {
         expect(
             projectHypaV3Data([
@@ -159,6 +174,52 @@ describe("projectHypaV3Data", () => {
         expect(metrics?.lastRecentSummaries).toHaveLength(2);
         expect(metrics?.lastSimilarSummaries).toHaveLength(2);
     });
+});
+
+it("drops only an actively covered greeting outside the raw window, even after the greeting changes", () => {
+    const greeting = { fmIndex: -1, hash: "original" };
+    const recorded = event("recorded", { greeting });
+    const entries: ReadEntry[] = [
+        { messageId: undefined, greeting, text: "Original greeting", role: "char" },
+        { messageId: "old", text: "Older reply", role: "char" },
+        { messageId: "question", text: "Next question", role: "user" },
+        { messageId: "recent", text: "Recent reply", role: "char" },
+    ];
+    for (const current of [greeting, { ...greeting, fmIndex: 0 }, { ...greeting, hash: "edited" }]) {
+        expect(
+            rawWindow(
+                [
+                    {
+                        ...entries[0],
+                        greeting: current,
+                        text: current.hash === "edited" ? "Edited greeting" : "Original greeting",
+                    },
+                    ...entries.slice(1),
+                ],
+                {
+                    windowTurns: 1,
+                    covered: coveredMessages([recorded]),
+                },
+            ),
+        ).toEqual({ start: 2, dropped: new Set([0]) });
+    }
+    // Two stored replies fit: the greeting must not become a third turn.
+    expect(rawWindow(entries, { windowTurns: 2, covered: coveredMessages([recorded]) })).toEqual({
+        start: 0,
+        dropped: new Set(),
+    });
+    for (const events of [
+        [],
+        [event("legacy")],
+        [{ ...recorded, status: "stale" as const }],
+        [{ ...recorded, status: "retracted" as const }],
+        [{ ...recorded, suppressed: true }],
+    ]) {
+        expect(
+            rawWindow(entries, { windowTurns: 1, covered: coveredMessages(events) }),
+            JSON.stringify(events),
+        ).toEqual({ start: 2, dropped: new Set() });
+    }
 });
 
 it("sums all three grade axes from zero through nine and has no grade without axes", () => {

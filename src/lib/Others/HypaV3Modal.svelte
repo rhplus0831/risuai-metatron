@@ -552,7 +552,7 @@
                 content: text,
             }));
 
-            const mergedChatMemos: string[] = [];
+            const mergedChatMemos: (string | null)[] = [];
             for (const index of sortedIndices) {
                 const summary = hypaV3Data.summaries[index];
                 mergedChatMemos.push(...summary.chatMemos);

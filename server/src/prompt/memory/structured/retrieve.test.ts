@@ -8,6 +8,7 @@ import { createHypaV3Preset } from "../../../../../shared/hypaV3Presets.ts";
 import type { OpenAIChat } from "../../../../../shared/openai.ts";
 import {
     coveredMessages,
+    MEMORY_GREETING_EVIDENCE_ID,
     normalizeStructuredMemorySettings,
     type MemoryEvent,
     type MemoryKnowledge,
@@ -28,6 +29,7 @@ import {
     readsAsPast,
     RETRIEVAL_LIMITS,
     retrieveLanes,
+    prepareRetrieval,
     shareRecordEmbeddingAllowance,
 } from "./retrieve.ts";
 import { readEntries, selectMemory, type MemorySelectionInput } from "./step.ts";
@@ -421,6 +423,46 @@ describe("selectMemory evidence from trimmed history", () => {
         };
     }
 
+    it("subtracts a covered greeting from the send token count without counting it as a trim gap", async () => {
+        const greeting = { fmIndex: -1, hash: "recorded greeting" };
+        const request = selectionInput([{ chatId: "old", role: "char", data: "Old reply" }, ...tail]);
+        const opening: OpenAIChat = { role: "assistant", content: "A greeting with exactly thirty!" };
+        request.chats = [opening, ...request.chats];
+        request.entries = readEntries(request.chats, request.messages, greeting);
+        request.currentTokens += opening.content.length;
+        request.settings.structured = settings({
+            laneSplit: "manual",
+            windowTurns: 1,
+            laneTargets: { flow: 0, pages: 0, events: 0, evidence: 0, threads: 0 },
+        });
+        const result = await selectMemory(request, { ...records, events: [event("opening", [], { greeting })] });
+        expect(result.type).toBe("selected");
+        if (result.type !== "selected") throw new Error(JSON.stringify(result));
+        expect(result.chats).toEqual(request.chats.slice(1));
+        expect(result.currentTokens).toBe("Old reply".length + "Continue.".length + "Ready.".length + question.length);
+        expect(result.gapTokens).toBe(0);
+    });
+
+    it("counts an uncovered greeting trimmed for context as a gap", async () => {
+        const request = selectionInput([{ chatId: "old", role: "char", data: "Old reply" }, ...tail]);
+        const opening: OpenAIChat = { role: "assistant", content: "Unrecorded greeting" };
+        request.chats = [opening, ...request.chats];
+        request.entries = readEntries(request.chats, request.messages, { fmIndex: -1, hash: "unrecorded" });
+        request.currentTokens += opening.content.length;
+        request.maxContextTokens = request.currentTokens - opening.content.length;
+        request.settings.structured = settings({
+            laneSplit: "manual",
+            windowTurns: 1,
+            laneTargets: { flow: 0, pages: 0, events: 0, evidence: 0, threads: 0 },
+        });
+        const result = await selectMemory(request, records);
+        expect(result.type).toBe("selected");
+        if (result.type !== "selected") throw new Error(JSON.stringify(result));
+        expect(result.chats).toEqual(request.chats.slice(1));
+        expect(result.gapTokens).toBe("Unrecorded greeting".length);
+        expect(result.coverage).toBe("gap");
+    });
+
     it("excerpts an unrecorded answer trimmed by raw history pressure and counts every removed entry in the gap", async () => {
         const request = selectionInput([
             { chatId: "answer", role: "char", data: longAnswer },
@@ -583,7 +625,7 @@ describe("structured memory retrieval", () => {
             }
         }
         const before = structuredClone(malformed);
-        expect([...coveredMessages(malformed)]).toEqual([]);
+        expect([...coveredMessages(malformed).messages]).toEqual([]);
         expect([...recordedMessages(malformed).messages]).toEqual([]);
         expect(recordVectorTexts({ events: malformed, pages: [] }, { events: true, pages: true })).toEqual({
             events: [],
@@ -603,7 +645,7 @@ describe("structured memory retrieval", () => {
             event("stale", ["stale-source"], { status: "stale" }),
             event("retracted", ["retracted-source"], { status: "retracted" }),
         ];
-        expect([...coveredMessages(readable)]).toEqual(["legacy-source"]);
+        expect([...coveredMessages(readable).messages]).toEqual(["legacy-source"]);
         expect([...recordedMessages(readable).messages]).toEqual(["legacy-source", "stale-source", "retracted-source"]);
         expect(recordVectorTexts({ events: readable, pages: [] }, { events: true, pages: true })).toEqual({
             events: ["legacy"],
@@ -1576,4 +1618,76 @@ it("omits a character page when filtering leaves no relationship lines or other 
     );
     expect(items(result, "pages").some(({ id }) => id === "Ada")).toBe(false);
     expect(result.excluded).toContainEqual({ id: "Ada", kind: "page", lane: "pages", reason: "not-relevant" });
+});
+
+it("places a greeting-only event at the greeting and excerpts it through either evidence pass", async () => {
+    const { host } = harness();
+    const greeting = { fmIndex: -1, hash: "beacon greeting" };
+    for (const eventsOpen of [true, false]) {
+        const request = input({
+            events: [event("opening", [], { greeting, summary: "The beacon is blue." })],
+            entries: [
+                { messageId: undefined, role: undefined, greeting, text: "The beacon is blue." },
+                entry("query", "beacon", "user"),
+            ],
+            settings: settings({
+                laneTargets: { flow: 0, pages: 0, events: eventsOpen ? 1000 : 0, evidence: 1000, threads: 0 },
+            }),
+        });
+        const prepared = await prepareRetrieval(request);
+        expect(prepared.placed.map(({ event, place, sources }) => ({ id: event.id, place, sources }))).toEqual([
+            { id: "opening", place: 0, sources: [0] },
+        ]);
+        const result = await retrieveLanes(host, request);
+        expect(result.eventsOpen).toBe(eventsOpen);
+        expect(items(result, "evidence")).toEqual([
+            expect.objectContaining({
+                id: MEMORY_GREETING_EVIDENCE_ID,
+                line: `[m:${MEMORY_GREETING_EVIDENCE_ID}] character: "The beacon is blue."`,
+                reason: eventsOpen ? "eventSource" : "matchedMessage",
+            }),
+        ]);
+    }
+});
+
+it("never excerpts a changed greeting through event sources or the dropped pool, even when kept", async () => {
+    const { host } = harness();
+    const recorded = { fmIndex: -1, hash: "original beacon" };
+    for (const current of [
+        { ...recorded, fmIndex: 0 },
+        { ...recorded, hash: "edited beacon" },
+    ]) {
+        for (const kept of [false, true]) {
+            for (const eventsOpen of [true, false]) {
+                const result = await retrieveLanes(
+                    host,
+                    input({
+                        events: [
+                            event("opening", [], { greeting: recorded, ...(kept ? { greetingKept: current } : {}) }),
+                        ],
+                        entries: [
+                            {
+                                messageId: undefined,
+                                role: undefined,
+                                greeting: current,
+                                text: "The beacon is now red.",
+                            },
+                            entry("query", "beacon", "user"),
+                        ],
+                        settings: settings({
+                            laneTargets: {
+                                flow: 0,
+                                pages: 0,
+                                events: eventsOpen ? 1000 : 0,
+                                evidence: 1000,
+                                threads: 0,
+                            },
+                        }),
+                    }),
+                );
+                expect(result.eventsOpen).toBe(eventsOpen);
+                expect(items(result, "evidence"), JSON.stringify({ current, kept, eventsOpen })).toEqual([]);
+            }
+        }
+    }
 });

@@ -1,3 +1,5 @@
+import type { MessageJumpTarget } from "src/lib/ChatScreens/messageJump";
+import { greetingText } from "../../../shared/greetings.ts";
 import { Sha256 } from "@aws-crypto/sha256-js";
 import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from "fflate";
 import {
@@ -21,6 +23,9 @@ import {
     memoryEventCovers,
     memoryScreenReason,
     memoryGreetingHashFields,
+    memoryChatGreeting,
+    greetingCited,
+    type MemoryGreetingSource,
     storedMemoryGreeting,
     memorySourceHashFields,
     memorySourceHashOf,
@@ -170,7 +175,9 @@ type PackageRead = { revision: string; pages: MemoryPage[]; events: MemoryEvent[
 type ImportFiles = { files: StructuredMemoryImportFile[] };
 
 /** The chat's memory as the coverage route lists it, every round read at one revision. */
-export type StructuredMemoryCoverage = Omit<StructuredMemoryCoverageRound, "next">;
+export type StructuredMemoryCoverage = Omit<StructuredMemoryCoverageRound, "next" | "events"> & {
+    events: (StructuredMemoryCoverageEvent & { greetingChanged?: true })[];
+};
 
 /** The chat's event stories, normalized for display, with every round read at one revision. */
 export type StructuredMemoryStory = Omit<StructuredMemoryStoryRound, "next">;
@@ -1574,8 +1581,9 @@ function packageHeader(revision: string): string[] {
     return ["---", `packageVersion: ${MEMORY_PACKAGE_VERSION}`, `revision: ${metadataValue(revision)}`, "---", ""];
 }
 
-/** The event's earliest anchored message position; Infinity without an anchored source. */
+/** A greeting citation sorts at -1; otherwise the earliest anchored position, or Infinity. */
 function firstSourceIndex(event: MemoryEvent): number {
+    if (storedMemoryGreeting(event.greeting)) return -1;
     let first = Infinity;
     for (const { index } of event.sources) {
         if (index !== null && index < first) {
@@ -1740,8 +1748,10 @@ export type MemoryPanelTabProps = {
     /** What to show after a jump from another tab or a receipt, or null. */
     focus: MemoryPanelTarget | null;
     open: (target: MemoryPanelTarget) => void;
-    /** Leaves the panel for this message in the chat. */
-    jump: (messageId: string) => void;
+    /** Leaves the panel for a message or the greeting in the chat. */
+    jump: (target: MessageJumpTarget) => void;
+    /** The panel's priced, confirmed rebuild press. */
+    rebuild?: () => void | Promise<void>;
 };
 
 /** What the memory panel says of a stored message. */
@@ -1749,12 +1759,14 @@ export const MEMORY_COVERAGE_STATES = ["covered", "pending", "failed", "skipped"
 /** A display state derived from current messages and record facts, never a persisted message outcome. */
 export type MemoryCoverageState = (typeof MEMORY_COVERAGE_STATES)[number];
 
-/** One stored message in the Coverage view. */
+/** One stored message or the greeting in the Coverage view. */
 export type MemoryCoverageRow = {
     id: string | undefined;
-    /** The message's place in the chat, which is the row's as well. */
+    /** The message's place in the chat; -1 for the greeting. Row indices may differ. */
     index: number;
-    role: Message["role"];
+    role: Message["role"] | "greeting";
+    /** Events whose greeting citation differs from both the current and kept greeting. */
+    greetingChanged?: string[];
     state: MemoryCoverageState;
     /** The event that decided the state. */
     eventId?: string;
@@ -1764,9 +1776,9 @@ export type MemoryCoverageRow = {
     reason?: string;
 };
 
-/** Stored-text coverage and window indices for display; a send can differ after scripts, greeting, and trim. */
+/** Stored-text coverage and row indices for display; a send can differ after scripts and trim. */
 export type MemoryCoverageJoin = {
-    /** One row per stored message, in order. */
+    /** The greeting first when present, then one row per stored message. */
     rows: MemoryCoverageRow[];
     counts: Record<MemoryCoverageState, number>;
     /** Row indices: eligible messages older than the window that no covering event cites. */
@@ -1807,6 +1819,33 @@ export function memoryGreetingHash(text: string): string {
     return memorySourceHashOf(hex, 3);
 }
 
+/** The panel's stored greeting; Coverage hides an empty entry unless an event cites it. Groups and resets have none. */
+export type MemoryPanelGreeting = { source: MemoryGreetingSource | null; text: string };
+export function memoryPanelGreeting(
+    owner: Parameters<typeof memoryChatGreeting>[0],
+    chat: Parameters<typeof memoryChatGreeting>[1],
+): MemoryPanelGreeting | null {
+    if (!owner || owner.type === "group" || !chat || eligibleHistory(chat.message).reset) return null;
+    const greeting = memoryChatGreeting(owner, chat);
+    return {
+        source: greeting ? { fmIndex: greeting.fmIndex, hash: memoryGreetingHash(greeting.text) } : null,
+        text: greeting?.text ?? greetingText(owner, chat.fmIndex) ?? "",
+    };
+}
+
+/** A changed citation is display-only; accepting the current greeting hides it without rewriting history. */
+export function memoryGreetingChanged(
+    event: Pick<MemoryEvent, "greeting" | "greetingKept">,
+    current: MemoryGreetingSource | null,
+): boolean {
+    const source = storedMemoryGreeting(event.greeting);
+    return (
+        source !== null &&
+        !greetingCited(source, current) &&
+        !greetingCited(storedMemoryGreeting(event.greetingKept), current)
+    );
+}
+
 /**
  * A `memoryMessageHash` that hashes again only when role, raw `data`, normalized group speaker, or the
  * requested hash version changed, for a tab to hold while it lives: most row changes affect no evidence.
@@ -1843,8 +1882,15 @@ export function reconcileMemoryCoverage(
     facts: StructuredMemoryCoverage,
     messages: readonly HashedMessage[],
     hashOf: (message: HashedMessage, like?: string) => string,
+    greeting: MemoryGreetingSource | null = null,
 ): StructuredMemoryCoverage {
-    return { ...facts, events: reconcileMemoryEvents(facts.events, messages, hashOf) };
+    return {
+        ...facts,
+        events: reconcileMemoryEvents(facts.events, messages, hashOf).map(({ greetingChanged, ...event }) => ({
+            ...event,
+            ...(memoryGreetingChanged(event, greeting) ? { greetingChanged: true as const } : {}),
+        })),
+    };
 }
 
 /** A row's fields that the join decides. */
@@ -1872,7 +1918,8 @@ function runState({ result }: StructuredMemoryCoverageRun): MemoryCoverageState 
 }
 
 /**
- * The Coverage view of a chat: `messages` as held, joined with the `facts` of its memory.
+ * The Coverage view of a chat: its stored greeting and `messages` as held, joined with memory facts.
+ * A greeting that cannot be cited joins neither the rows nor the raw window unless an event cites it.
  *
  * A row's state comes from the first of these that holds. A message a send does not read
  * (`eligibleHistory`) is `excluded`. Then the events that cite it: `covered` by one that covers it,
@@ -1882,8 +1929,8 @@ function runState({ result }: StructuredMemoryCoverageRun): MemoryCoverageState 
  * that is a notice no run row stands behind (`notAutomatic`, `skipped`), read as `skipped`. Anything
  * else is `pending`: a missing receipt proves nothing, so the newest reply reads `pending` too.
  *
- * `gap` and `leaving` come from `rawWindow` over the eligible stored messages, so they are a reading of
- * the stored text and not a send's prediction: a send works from processed text with the greeting, and
+ * `gap` and `leaving` are row indices from `rawWindow` over the greeting and eligible messages.
+ * They read stored text, not a send's prediction: a send works from processed text, and
  * can also trim uncovered history that no longer fits. A screened reply is no gap, since nothing will
  * record it, though its raw text stays in the prompt as any uncovered message's does. A send of a chat
  * with `memoryOn` false runs no memory, so nothing leaves.
@@ -1896,23 +1943,34 @@ export function joinMemoryCoverage(
         memoryOn,
         screening,
     }: { windowTurns: number; memoryOn: boolean; screening: StructuredMemorySettings["screening"] },
+    greeting: MemoryPanelGreeting | null = null,
 ): MemoryCoverageJoin {
     const citations = new Map<string, Citation>();
-    const covered = new Set<string>();
+    const covered = { messages: new Set<string>(), greeting: false };
+    let greetingCitation: Citation | undefined;
+    const greetingChanged: string[] = [];
     for (const event of facts.events) {
         const citation = citationOf(event);
+        if (storedMemoryGreeting(event.greeting)) {
+            if (citation.rank >= (greetingCitation?.rank ?? 0)) greetingCitation = citation;
+            covered.greeting ||= citation.state === "covered";
+            if (memoryGreetingChanged(event, greeting?.source ?? null)) greetingChanged.push(event.id);
+        }
         for (const id of event.messageIds) {
             if (citation.rank >= (citations.get(id)?.rank ?? 0)) {
                 citations.set(id, citation);
             }
             if (citation.state === "covered") {
-                covered.add(id);
+                covered.messages.add(id);
             }
         }
     }
+    const listedGreeting = greeting && (greeting.source !== null || greetingCitation !== undefined) ? greeting : null;
     // Storage order, so the newest run that names a message is the one left in the map.
     const runs = new Map<string, StructuredMemoryCoverageRun>();
+    let greetingRun: StructuredMemoryCoverageRun | undefined;
     for (const run of facts.runs) {
+        if (run.greeting === true) greetingRun = run;
         for (const id of run.messageIds) {
             runs.set(id, run);
         }
@@ -1957,21 +2015,54 @@ export function joinMemoryCoverage(
         return { id: message.chatId, index, role: message.role, ...decision };
     });
 
+    if (listedGreeting) {
+        const decision: CoverageDecision = greetingCitation
+            ? {
+                  state: greetingCitation.state,
+                  eventId: greetingCitation.eventId,
+                  ...present("reason", greetingCitation.reason),
+              }
+            : greetingRun
+              ? {
+                    state: runState(greetingRun),
+                    runId: greetingRun.id,
+                    ...present("reason", storedText(greetingRun.reason)),
+                }
+              : { state: "pending" };
+        rows.unshift({
+            id: undefined,
+            index: -1,
+            role: "greeting",
+            ...decision,
+            ...(greetingChanged.length ? { greetingChanged } : {}),
+        });
+        counts[decision.state]++;
+    }
     const entries = eligible.map(({ index }): ReadEntry => {
         const { chatId, role, data } = messages[index];
         return { messageId: chatId, role, text: data };
     });
+    const rowIndices = eligible.map(({ index }) => index + (listedGreeting ? 1 : 0));
+    if (listedGreeting) {
+        entries.unshift({
+            messageId: undefined,
+            role: undefined,
+            text: listedGreeting.text,
+            greeting: listedGreeting.source,
+        });
+        rowIndices.unshift(0);
+    }
     const { start, dropped } = rawWindow(entries, { windowTurns, covered });
     const gap: number[] = [];
     const leaving: number[] = [];
     for (let position = 0; position < start; position++) {
-        const { index } = eligible[position];
+        const rowIndex = rowIndices[position];
+        const row = rows[rowIndex];
         if (!dropped.has(position)) {
-            if (memoryScreenReason(messages[index], screening) === null) {
-                gap.push(index);
-            }
+            if (row.role === "greeting" || memoryScreenReason(messages[row.index], screening) === null)
+                gap.push(rowIndex);
         } else if (memoryOn) {
-            leaving.push(index);
+            leaving.push(rowIndex);
         }
     }
     return { rows, counts, gap, leaving };
@@ -1983,9 +2074,9 @@ export type MemoryCoverageGroup = { state: MemoryCoverageState; start: number; e
 /** `rows` as runs of one state, which is what keeps a long chat's view cheap. */
 export function groupMemoryCoverage(rows: readonly MemoryCoverageRow[]): MemoryCoverageGroup[] {
     const groups: MemoryCoverageGroup[] = [];
-    rows.forEach(({ state }, index) => {
+    rows.forEach(({ state, role }, index) => {
         const last = groups.at(-1);
-        if (last?.state === state) {
+        if (last?.state === state && role !== "greeting" && rows[last.start].role !== "greeting") {
             last.end = index + 1;
         } else {
             groups.push({ state, start: index, end: index + 1 });
@@ -2018,14 +2109,14 @@ export type MemoryTimelineRow<E = StructuredMemoryCoverageEvent> = {
 
 /**
  * The Timeline of a chat: `events` in the order of `messages` as held. A row sorts by its first message
- * still present, else by the position its sources stored, else last, ties in the given order. It ages
+ * still present, else by the position its sources stored, else last, ties in the given order. A greeting
+ * citation sorts at -1 even when the event also cites surviving messages. It ages
  * from its newest message still present, as the flow lane ages an event: the `char` messages with text
  * at or after it that a send reads (`eligibleHistory`), at least 1.
  */
-export function memoryTimelineRows<E extends Pick<StructuredMemoryCoverageEvent, "messageIds" | "sourceIndex">>(
-    events: readonly E[],
-    messages: readonly DeepReadonly<Message>[],
-): MemoryTimelineRow<E>[] {
+export function memoryTimelineRows<
+    E extends Pick<StructuredMemoryCoverageEvent, "messageIds" | "sourceIndex" | "greeting">,
+>(events: readonly E[], messages: readonly DeepReadonly<Message>[]): MemoryTimelineRow<E>[] {
     const indexes = memoryMessageIndexes(messages);
     const read = eligibleHistory(messages.map(({ disabled }, index) => ({ disabled, index }))).messages;
     const eligible = new Set(read.map(({ index }) => index));
@@ -2038,7 +2129,7 @@ export function memoryTimelineRows<E extends Pick<StructuredMemoryCoverageEvent,
         turnsFrom[index] = turns;
     }
     const rows = events.map((event): MemoryTimelineRow<E> => {
-        let first = Infinity;
+        let first = storedMemoryGreeting(event.greeting) ? -1 : Infinity;
         let newest = -1;
         for (const id of event.messageIds) {
             const index = indexes.get(id);
@@ -2048,7 +2139,7 @@ export function memoryTimelineRows<E extends Pick<StructuredMemoryCoverageEvent,
             }
         }
         return newest < 0
-            ? { event, position: event.sourceIndex ?? Infinity, turnsAgo: null }
+            ? { event, position: first === -1 ? -1 : (event.sourceIndex ?? Infinity), turnsAgo: null }
             : { event, position: first, turnsAgo: Math.max(1, turnsFrom[newest]) };
     });
     return rows.sort((a, b) => (a.position === b.position ? 0 : a.position - b.position));
@@ -2140,7 +2231,8 @@ export function memoryStatusWord({ coverage, writer }: Pick<ReportedMemory, "cov
  * The ids of the records of `itemKind` the last send verifiably used. The last send is the newest valid
  * report in `messages`, found as the context meter finds its own, so a report of another kind means
  * nothing was used and an older one is never reached. It reads only each scanned message's
- * `generationInfo`, never `data`, so streaming text does not rerun it.
+ * `generationInfo`, never `data`, so streaming text does not rerun it. Evidence retains
+ * `MEMORY_GREETING_EVIDENCE_ID` as the greeting's key, separate from every valid message id.
  */
 export function memoryItemsUsed(
     messages: readonly DeepReadonly<Pick<Message, "generationInfo">>[],

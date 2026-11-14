@@ -74,8 +74,10 @@ comparison ties rounds together.
 
 - The panel reads contents (`adoption`, `rebuild`, `recordedLanguage` included) and records through
   `store.memory.readContents` and `store.memory.readRecord`. A tab joins the panel's in-flight contents read unless a
-  write answer settled since it began. Coverage sends stored facts (`status`, `sources`, `keptState`, `rerecord`) for
-  [the tab to reconcile](read.md#the-memory-panel) against its held messages, reading no chat.
+  write answer settled since it began. Coverage sends stored facts (`status`, `sources`, `keptState`, `rerecord`, the
+  normalized `greeting` and `greetingKept`, and whether a run read the greeting) for
+  [the tab to reconcile](read.md#the-memory-panel) against its held messages, reading no chat. A greeting citation's
+  `sourceIndex` is -1.
 - `/story` sends each event's `summary`, `storyTime` and `participants` as stored, retracted events included, for
   [Timeline's story view](read.md#pages-timeline-and-threads), which joins them by id with the coverage rows it holds.
   Its rounds charge stored bytes as `/coverage`'s do. `readStructuredMemoryStory` gives the tab only well-shaped display
@@ -133,7 +135,10 @@ the mutation, and refuses with the resource routes' 503 and `Retry-After` while 
 3. `StructuredMemoryEditAnswer` gives the current record and the revision the next edit must name.
 
 [Event repairs](lifecycle.md#reconciliation-and-repairs) call `applyEventRepair`, reading the stored chat in the same
-step except for retract. Retraction also passes through `withRetractedEvidence` before the write.
+step except for retract. Retraction also passes through `withRetractedEvidence` before the write. A `keepGreeting` names
+the greeting the panel showed: the route reads the owner for the chat's greeting, refuses `changed` when it no longer
+equals that one and `invalid` for an event with no `greeting`, a retracted one, or a chat with no greeting, and
+otherwise stores it as `greetingKept`, keeping status, citation, and marks. Keeping again replaces it.
 
 An `eventText` changes only a standing event's `title`, `summary`, and `userCorrected: true`. The title is trimmed,
 non-blank, and at most `eventTitleChars`; the summary must be non-blank and at most `eventSummaryChars`, with its
@@ -303,6 +308,10 @@ group: no walk reads them.
 - Every reader of a greeting citation goes through `storedMemoryGreeting`, which reads anything but the exact shape as
   none, since runs are raw JSON. `greetingKept` has the same shape; `parseRestoredRecords` refuses either field in
   another shape, and the package version stays.
+- A greeting citation covers whether or not it still matches: `coveredMessages` lets the greeting leave the prompt once
+  an active, unsuppressed event cites one. `greetingCited` decides only the panel's changed label (where a matching
+  `greetingKept` also hides it) and the evidence lane, which excerpts a dropped greeting under
+  `MEMORY_GREETING_EVIDENCE_ID` (`.`, never a message id) only for a matching recorded citation.
 - Sections carry both `provenance` (event ids) and `sources`, and a history entry's `before` carries all three of body,
   provenance, and sources, so a revert never restores a body with the replacement's evidence. `before` is `null` when
   nothing was replaced, and `heading` is `null` for a change to the whole page.

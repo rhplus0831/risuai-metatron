@@ -946,13 +946,13 @@ export type StructuredMemoryPackageRound = {
     next: number | null;
 };
 
-/** An event as the coverage route lists it: what it says of its messages, with no text but its title. */
+/** Coverage facts for an event's messages and greeting, with no text but its title. */
 export type StructuredMemoryCoverageEvent = Pick<
     MemoryEvent,
-    "id" | "title" | "status" | "staleReason" | "suppressed" | "keptState" | "rerecord" | "greeting"
+    "id" | "title" | "status" | "staleReason" | "suppressed" | "keptState" | "rerecord" | "greeting" | "greetingKept"
 > & {
     messageIds: string[];
-    /** The smallest position its anchored sources stored, for an event none of whose messages is left. */
+    /** -1 for a greeting citation; otherwise the smallest stored anchored position, or null. */
     sourceIndex: number | null;
     /** Its sources as `storedMemorySources` reads them, for the tab's own reconciliation. */
     sources: MemorySource[];
@@ -962,7 +962,11 @@ export type StructuredMemoryCoverageEvent = Pick<
  * A run that is not `recorded` as the coverage route lists it. `reason` is the run's own, else its
  * receipt's: a failed run keeps its code only on the receipt.
  */
-export type StructuredMemoryCoverageRun = Pick<MemoryRun, "id" | "result" | "reason"> & { messageIds: string[] };
+export type StructuredMemoryCoverageRun = Pick<MemoryRun, "id" | "result" | "reason"> & {
+    messageIds: string[];
+    /** Whether this run read a valid greeting citation. Absent on message-only runs. */
+    greeting?: true;
+};
 
 /**
  * One round of the coverage route: record facts, never a message's text or a run's error. `next` is the
@@ -1059,7 +1063,8 @@ export type StructuredMemoryEdit =
     | { kind: "eventText"; eventId: string; title: string; summary: string }
     | { kind: "eventRelease"; eventId: string }
     | { kind: "event"; eventId: string; repair: "rerecord" | "retract" }
-    | { kind: "event"; eventId: string; repair: "keep"; state: string };
+    | { kind: "event"; eventId: string; repair: "keep"; state: string }
+    | { kind: "event"; eventId: string; repair: "keepGreeting"; greeting: MemoryGreetingSource };
 
 /** The edit route's answer: the record as it now stands, with the revision the next edit names. */
 export type StructuredMemoryEditAnswer = { revision: string } & (
@@ -1294,7 +1299,7 @@ export function itemTag({ lane, id }: Pick<MemoryManifestItem, "lane" | "id">): 
 /**
  * The events as `hypaV3Data`, for readers that know only that shape: each active event, in the given
  * order, as one summary. Retracted and stale events are left out, as they are of the prompt. A summary
- * is important when its event is pinned or graded `importantEventGrade` or above.
+ * cites the greeting with a leading null memo. A summary is important when its event is pinned or graded `importantEventGrade` or above.
  *
  * `metrics` come from `manifest` and are absent without one. They count only the events the send
  * verifiably used, by position in the returned `summaries`: `flow` as recent, `events` as similar, and
@@ -1334,7 +1339,10 @@ export function projectHypaV3Data(
         }
         summaries.push({
             text: event.summary,
-            chatMemos: event.sources.map((source) => source.messageId),
+            chatMemos: [
+                ...(storedMemoryGreeting(event.greeting) ? [null] : []),
+                ...event.sources.map((source) => source.messageId),
+            ],
             isImportant:
                 event.pinned === true ||
                 (event.grade !== undefined && event.grade >= STRUCTURED_MEMORY_LIMITS.importantEventGrade),
@@ -1495,12 +1503,25 @@ export function memoryScreenReason(
  *
  * `role` is the stored message's, because assembly rewrites a prompt entry's role in a group chat and
  * under `sendName`; undefined means no stored message stands behind the entry. `messageId` is the
- * message's `chatId`, undefined on the greeting too. `text` is the entry's processed content, so
+ * message's `chatId`, undefined on the greeting too. Its `greeting` marker identifies that entry even
+ * when its stored text is empty and cannot be cited. `text` is the entry's processed content, so
  * evidence quotes what the prompt would have shown, with a user's scripts applied.
  *
  * A stored message absent from the list (disabled, or before an `allBefore`) is just not in this send.
  */
-export type ReadEntry = { messageId: string | undefined; role: Message["role"] | undefined; text: string };
+export type ReadEntry = {
+    messageId: string | undefined;
+    role: Message["role"] | undefined;
+    text: string;
+    /** Present only on the greeting entry; null means its stored text cannot be cited. */
+    greeting?: MemoryGreetingSource | null;
+};
+
+/** The greeting's evidence key. A resource/message id cannot be ".", so excerpt tags never collide. */
+export const MEMORY_GREETING_EVIDENCE_ID = ".";
+
+/** What covered history may leave the prompt, independently of whether a greeting citation still matches. */
+export type MemoryCoverage = { messages: ReadonlySet<string>; greeting: boolean };
 
 /** The entries from `start` on stay raw; `dropped` holds the indices before it that an event covers. */
 export type RawWindow = { start: number; dropped: ReadonlySet<number> };
@@ -1523,43 +1544,46 @@ export function memoryEventHasReadableFields(event: unknown): boolean {
 }
 
 /**
- * The ids of the messages that may leave the prompt: cited by an event that is active and not
- * suppressed, so a retracted or stale event never stands in for its messages.
+ * Messages and the greeting may leave the prompt when a readable, active, unsuppressed event cites
+ * them. A greeting citation covers even after the chat changes its greeting; matching only gates excerpts.
  */
-export function coveredMessages(events: readonly MemoryEvent[]): Set<string> {
+export function coveredMessages(events: readonly MemoryEvent[]): MemoryCoverage {
     const covered = new Set<string>();
+    let greeting = false;
     for (const event of events) {
         if (memoryEventHasReadableFields(event) && memoryEventCovers(event)) {
+            greeting ||= storedMemoryGreeting(event.greeting) !== null;
             for (const source of event.sources) {
                 covered.add(source.messageId);
             }
         }
     }
-    return covered;
+    return { messages: covered, greeting };
 }
 
 /**
  * The raw window over `entries`. Walking back, the assistant message past the last `windowTurns` closes
  * the window at the entry after it; with no such message, every entry stays. A `char` entry counts only
- * with text, and the role is the stored message's.
+ * with text, and the role is the stored message's. The greeting never counts as a turn; outside the
+ * window it leaves only when covered, including a changed or now-empty greeting.
  */
 export function rawWindow(
     entries: readonly ReadEntry[],
-    { windowTurns, covered }: Pick<StructuredMemorySettings, "windowTurns"> & { covered: ReadonlySet<string> },
+    { windowTurns, covered }: Pick<StructuredMemorySettings, "windowTurns"> & { covered: MemoryCoverage },
 ): RawWindow {
     let start = 0;
     let turns = 0;
     for (let index = entries.length - 1; index >= 0; index--) {
         const { role, text } = entries[index];
-        if (role === "char" && text.trim() !== "" && ++turns > windowTurns) {
+        if (entries[index].greeting === undefined && role === "char" && text.trim() !== "" && ++turns > windowTurns) {
             start = index + 1;
             break;
         }
     }
     const dropped = new Set<number>();
     for (let index = 0; index < start; index++) {
-        const { messageId } = entries[index];
-        if (messageId !== undefined && covered.has(messageId)) {
+        const { messageId, greeting } = entries[index];
+        if (greeting !== undefined ? covered.greeting : messageId !== undefined && covered.messages.has(messageId)) {
             dropped.add(index);
         }
     }

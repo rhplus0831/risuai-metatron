@@ -3,6 +3,9 @@ import {
     MEMORY_CONTEXT_MODES,
     MEMORY_THREAD_STATES,
     memoryAnchorState,
+    storedMemoryGreeting,
+    greetingCited,
+    type MemoryGreetingSource,
     type MemoryEvent,
     type MemoryPage,
     type MemoryPageHistoryEntry,
@@ -84,7 +87,7 @@ function validGrade(value: unknown): value is number | null {
  * a section's body must have text and fit `sectionBodyChars`, because nothing is cut to fit. A new
  * section heading is trimmed, non-blank, and fits `labelChars`. Event
  * titles are trimmed and summaries keep their whitespace; both must have text and fit their limits.
- * A `keep` must name a state, the one repair that has any.
+ * A `keep` names the message state; `keepGreeting` names the exact greeting source the person saw.
  */
 export function parseMemoryEdit(value: unknown): StructuredMemoryEdit | null {
     if (!isPlainObject(value)) {
@@ -100,6 +103,10 @@ export function parseMemoryEdit(value: unknown): StructuredMemoryEdit | null {
         const { eventId, repair, state } = value;
         if (typeof eventId !== "string") {
             return null;
+        }
+        if (repair === "keepGreeting") {
+            const greeting = storedMemoryGreeting(value.greeting);
+            return greeting ? { kind, eventId, repair, greeting } : null;
         }
         if (repair === "keep") {
             return typeof state === "string" ? { kind, eventId, repair, state } : null;
@@ -343,6 +350,7 @@ export function applyThreadEdit(thread: MemoryThread, { state }: ThreadEdit): Me
  * change messages without changing that revision. It retains the recorded sources, since a missing
  * message has no new anchor. An already-active reconciled event needs no keep and returns null, even
  * with a `rerecord` mark; only a keep that writes a repair clears that mark and `staleReason`.
+ * Keeping a greeting changes only `greetingKept`, retaining status, citation, and every repair mark.
  */
 export function applyEventRepair<M extends Pick<Message, "chatId" | "role" | "saying" | "disabled">>(
     event: MemoryEvent,
@@ -350,7 +358,19 @@ export function applyEventRepair<M extends Pick<Message, "chatId" | "role" | "sa
     messages: readonly M[],
     hashOf: (message: M, like?: string) => string,
     hasGreeting = false,
+    currentGreeting: MemoryGreetingSource | null = null,
 ): MemoryEvent | null {
+    if (edit.repair === "keepGreeting") {
+        if (!storedMemoryGreeting(event.greeting) || event.status === "retracted" || currentGreeting === null) {
+            throw new MemoryEditRefusal("invalid", "This event has no current greeting to keep");
+        }
+        if (!greetingCited(edit.greeting, currentGreeting)) {
+            throw new MemoryEditRefusal("changed", "The greeting changed after this event was shown");
+        }
+        return greetingCited(storedMemoryGreeting(event.greetingKept), edit.greeting)
+            ? null
+            : { ...event, greetingKept: edit.greeting };
+    }
     const { staleReason, rerecord, ...settled } = event;
     if (edit.repair === "retract") {
         return event.status === "retracted" ? null : { ...settled, status: "retracted" };

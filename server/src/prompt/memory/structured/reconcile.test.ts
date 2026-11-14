@@ -355,7 +355,7 @@ it("reconciles changed, missing, inserted and moved sources on a copy and recove
         const input = structuredClone(row.messages);
         const [read] = reconcileEvents([event], row.messages);
         expect(read, row.reason).toEqual({ ...before, status: "stale", staleReason: row.reason });
-        expect([...coveredMessages([read])], row.reason).toEqual([]);
+        expect([...coveredMessages([read]).messages], row.reason).toEqual([]);
         expect(event).toEqual(before);
         expect(row.messages).toEqual(input);
         expect(reconcileEvents([event], messages)).toEqual([before]);

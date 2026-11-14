@@ -3663,9 +3663,10 @@ describe("structured memory tasks", () => {
             expect(ended.status).toMatchObject({ state: "done", reason: "rebuilt", done: 3, total: 3 });
             expect(t.provider.requests).toHaveLength(omitUserMessages ? 0 : 3);
             const records = readRecordSet(t.store.memory, "c", "k1")!.events;
-            expect(coveredMessages(reconcileEvents(records, messages))).toEqual(
-                new Set(["m1", "m2", "m3", "m4", "m5", "m6"]),
-            );
+            expect(coveredMessages(reconcileEvents(records, messages))).toEqual({
+                messages: new Set(["m1", "m2", "m3", "m4", "m5", "m6"]),
+                greeting: false,
+            });
             expect(t.store.memory.rebuild.status("c", "k1")).toBeNull();
             const savedAdoption = records.find(({ id }) => id === "adopted")!;
             if (omitUserMessages) {
@@ -3755,9 +3756,10 @@ describe("structured memory tasks", () => {
                 "m5",
                 "m6",
             ]);
-            expect(coveredMessages(reconcileEvents(records, messages))).toEqual(
-                new Set(omitAtSwap ? ["m1", "m2", "m3", "m4", "m5", "m6"] : ["m2", "m4", "m5", "m6"]),
-            );
+            expect(coveredMessages(reconcileEvents(records, messages))).toEqual({
+                messages: new Set(omitAtSwap ? ["m1", "m2", "m3", "m4", "m5", "m6"] : ["m2", "m4", "m5", "m6"]),
+                greeting: false,
+            });
             expect(Number(contents(t).revision.split(":").at(-1))).toBe(Number(before.split(":").at(-1)) + 1);
             expect(t.store.memory.rebuild.status("c", "k1")).toBeNull();
         }

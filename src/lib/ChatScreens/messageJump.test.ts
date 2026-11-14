@@ -286,3 +286,28 @@ describe("runMessageJump", () => {
         expect(scrollTo).toHaveBeenCalledTimes(3);
     });
 });
+
+it("opens the full history and scrolls to the greeting row without treating it as a missing message", async () => {
+    const { state, deps, container } = screen(ids(50), { loadPages: 10, folded: 20 });
+    const findRow = deps.findRow;
+    deps.findRow = (index) => {
+        if (index !== -1) return findRow(index);
+        if (state.folded !== -1 || state.loadPages <= state.messages.length) return null;
+        let greeting = container.querySelector<HTMLElement>('[data-chat-index="-1"]');
+        if (!greeting) {
+            greeting = document.createElement("div");
+            greeting.dataset.chatIndex = "-1";
+            container.prepend(greeting);
+        }
+        return greeting;
+    };
+    try {
+        await expect(runMessageJump({ greeting: true }, deps)).resolves.toBe("done");
+        expect(state.folded).toBe(-1);
+        expect(state.loadPages).toBeGreaterThan(50);
+        expect(state.scrolled).toEqual(["-1:undefined", "-1:undefined", "-1:undefined"]);
+        expect(state.rung).toEqual(["-1:undefined"]);
+    } finally {
+        container.remove();
+    }
+});

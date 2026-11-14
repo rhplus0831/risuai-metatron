@@ -11,6 +11,7 @@ import type { HypaV3Settings } from "../../../../../shared/memory.ts";
 import type { OpenAIChat } from "../../../../../shared/openai.ts";
 import {
     type MemoryEvent,
+    type MemoryGreetingSource,
     type MemoryManifestItem,
     type MemoryPage,
     type MemoryReceipt,
@@ -42,9 +43,9 @@ import { chatAdoptionHold, writerPaused } from "./writer.ts";
  * prompt, and the memory card's entries. Nothing here writes memory records, so a preview runs all of it;
  * `structuredMemoryStep` in `assemble.ts` owns what concerns the job, the gap question and the hand-off.
  *
- * - Two message sets come from the same events and answer different questions: `coveredMessages`
- *   (active and not suppressed) says what may leave the prompt, `recordedMessages(...).messages`
- *   (any status) what the writer must
+ * - Coverage and recorded sources answer different questions: `coveredMessages` (active and not
+ *   suppressed) says which messages and greeting may leave the prompt, `recordedMessages` (any status)
+ *   what the writer must
  *   not record again. History cited only by a stale or retracted event is recorded but not covered, so
  *   it stays raw unless context pressure trims it, with no work left to offer.
  * - A selection reconciles the events it is given against the stored messages (`reconcileEvents`), on a
@@ -189,15 +190,25 @@ export function readMemoryRecords(
 
 /**
  * One `ReadEntry` per entry of `history`, the greeting (when the send has one) and then one entry for
- * each of `messages`, which built them. The greeting has no stored message behind it.
+ * each of `messages`, which built them. The greeting has no stored message behind it; its marker
+ * carries the source captured during assembly, or null for an entry whose stored text cannot be cited.
  * `role` stays the stored role: server/src/prompt/assemble.ts can rewrite prompt roles for groups and
  * `sendName`. `text` is processed content, so evidence quotes what this prompt would have shown.
  */
-export function readEntries(history: readonly OpenAIChat[], messages: readonly Message[]): ReadEntry[] {
+export function readEntries(
+    history: readonly OpenAIChat[],
+    messages: readonly Message[],
+    greeting: MemoryGreetingSource | null = null,
+): ReadEntry[] {
     const first = history.length - messages.length;
     return history.map(({ content }, index) => {
         const message = index < first ? undefined : messages[index - first];
-        return { messageId: message?.chatId, role: message?.role, text: content };
+        return {
+            messageId: message?.chatId,
+            role: message?.role,
+            text: content,
+            ...(index < first ? { greeting } : {}),
+        };
     });
 }
 

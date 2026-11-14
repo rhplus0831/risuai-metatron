@@ -2821,6 +2821,13 @@ export const languageEnglish = {
             presetValues: "Every other value, the screening lists included, comes from the selected memory preset.",
             openMemorySettings: "Open memory settings",
         },
+        greeting: {
+            sources: "Sources",
+            source: "Greeting",
+            changed: "Changed",
+            help: "This event was recorded from an earlier greeting. A covered greeting outside the raw window still stays out of the prompt. Re-recording the event or rebuilding memory reads the current greeting.",
+            keep: "Keep this record",
+        },
         coverage: {
             states: {
                 covered: "Covered",
@@ -2842,22 +2849,22 @@ export const languageEnglish = {
                 screenedRefusal: "the reply matches a refusal text of the memory preset's screening",
                 screenedFormat: "the reply matches a format text of the memory preset's screening",
             } as Record<string, string>,
-            roles: { user: "User", char: "Character" } as Record<string, string>,
-            empty: "This chat has no messages yet.",
-            memoryOff: "Memory is off for this chat, so no covered message leaves the prompt.",
+            roles: { user: "User", char: "Character", greeting: "Greeting" } as Record<string, string>,
+            empty: "This chat has no greeting or messages yet.",
+            memoryOff: "Memory is off for this chat, so no covered history leaves the prompt.",
             gap: (turns: number, messages: number, tokens: string) =>
                 `Older than the last ${turns === 1 ? "turn" : `${turns} turns`} with no event covering them: ${
-                    messages === 1 ? "1 message" : `${messages} messages`
+                    messages === 1 ? "1 entry" : `${messages} entries`
                 }, ${tokens}`,
             leaving: (turns: number, messages: number, tokens: string) =>
-                `Covered messages older than the last ${turns === 1 ? "turn" : `${turns} turns`}, leaving the prompt: ${
-                    messages === 1 ? "1 message" : `${messages} messages`
+                `Covered history older than the last ${turns === 1 ? "turn" : `${turns} turns`}, leaving the prompt: ${
+                    messages === 1 ? "1 entry" : `${messages} entries`
                 }, ${tokens}`,
             aboutTokens: (tokens: number) => `about ${tokens} tokens`,
             countingTokens: "counting tokens...",
             tokensUnavailable: "tokens not counted",
             estimate:
-                "These come from the stored messages and are not an exact prediction: a send uses processed text and the greeting, and it can also trim uncovered history that no longer fits.",
+                "These counts include the stored greeting and messages. They are not an exact prediction: a send uses processed text and can also trim uncovered history that no longer fits.",
             range: (first: number, last: number, count: number) => `#${first} to #${last} (${count})`,
         },
         log: {

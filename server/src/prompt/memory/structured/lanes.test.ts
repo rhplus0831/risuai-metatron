@@ -306,7 +306,7 @@ describe("structured memory lanes", () => {
             }),
         );
         const covered = coveredMessages(events);
-        expect(covered).toEqual(new Set(["u1", "a1", "a2", "u3", "a3", "a5"]));
+        expect(covered).toEqual({ messages: new Set(["u1", "a1", "a2", "u3", "a3", "a5"]), greeting: false });
         for (const row of [
             { turns: 2, start: 5, dropped: [1, 2, 4] },
             { turns: 1, start: 7, dropped: [1, 2, 4, 5, 6] },
@@ -323,7 +323,10 @@ describe("structured memory lanes", () => {
             role: messageId.startsWith("u") ? "user" : "char",
             text: messageId,
         }));
-        const window = rawWindow(group, { windowTurns: 2, covered: new Set(["u1", "a1"]) });
+        const window = rawWindow(group, {
+            windowTurns: 2,
+            covered: { messages: new Set(["u1", "a1"]), greeting: false },
+        });
         expect(window.start).toBe(2);
         expect(window.dropped).toEqual(new Set([0, 1]));
     });

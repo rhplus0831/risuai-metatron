@@ -33,7 +33,7 @@ import type { ChatOp } from "../../../shared/chats.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import type { MemoryEvent, MemoryPage, MemoryRun, MemoryThread } from "../../../shared/structuredMemory.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
-import { messageSourceHash } from "../data/memoryStore.ts";
+import { greetingSourceHash, messageSourceHash } from "../data/memoryStore.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
 import { createVectorCache } from "../data/vectorCache.ts";
 import { createEmbeddings } from "../prompt/embeddings.ts";
@@ -4395,4 +4395,62 @@ it("refuses an edit whose body finishes after restore maintenance begins", async
         }),
     );
     expect(edited.data.sections[0].body).toBe("Changed");
+});
+
+it("round-trips a kept greeting through edits and coverage and refuses a moved or group greeting", async () => {
+    const s = await server();
+    const kind = createKindRegistry(DEFAULT_RESOURCE_KINDS).get("characters")!;
+    const setOwner = (fields: Record<string, unknown>) => {
+        const owner = s.store.get(kind, characterId)!;
+        s.store.put(kind, characterId, { ...(owner.data as object), ...fields }, owner.revision);
+    };
+    setOwner({ type: "character", firstMessage: "Current greeting", alternateGreetings: ["Swiped greeting"] });
+    s.store.applyChanges({
+        chats: [
+            {
+                characterId,
+                chatId,
+                baseRevision: s.store.chatRevision(characterId, chatId),
+                ops: [{ op: "meta", set: { fmIndex: -1 } }],
+            },
+        ],
+    });
+    const greeting = { fmIndex: -1, hash: greetingSourceHash("Original greeting") };
+    const shown = { fmIndex: -1, hash: greetingSourceHash("Current greeting") };
+    const original = {
+        ...event("greeting"),
+        greeting,
+        status: "stale" as const,
+        staleReason: "changed" as const,
+        rerecord: true,
+    };
+    const revision = s.write({ events: [original] });
+    const edit = { kind: "event", eventId: original.id, repair: "keepGreeting", greeting: shown };
+    const kept = await answer(await s.json(`${base}/edits`, { revision, edit }));
+    expect(kept).toEqual({ revision: expect.any(String), kind: "events", data: { ...original, greetingKept: shown } });
+    expect(s.store.memory.readRecord(characterId, chatId, "events", original.id)?.data).toEqual(kept.data);
+    const coverage = await answer(await s.request(`${base}/coverage`));
+    expect(coverage.events).toEqual([
+        expect.objectContaining({ id: original.id, greeting, greetingKept: shown, messageIds: [], sourceIndex: -1 }),
+    ]);
+    // The memory revision has not moved; the current chat or card state must reject the old UI choice.
+    s.store.applyChanges({
+        chats: [
+            {
+                characterId,
+                chatId,
+                baseRevision: s.store.chatRevision(characterId, chatId),
+                ops: [{ op: "meta", set: { fmIndex: 0 } }],
+            },
+        ],
+    });
+    expect(await answer(await s.json(`${base}/edits`, { revision: kept.revision, edit }), 409)).toMatchObject({
+        reason: "changed",
+    });
+    setOwner({ type: "group" });
+    await answer(await s.json(`${base}/edits`, { revision: kept.revision, edit }), 400);
+    expect(s.store.memory.readRecord(characterId, chatId, "events", original.id)).toEqual({
+        revision: kept.revision,
+        data: kept.data,
+    });
 });

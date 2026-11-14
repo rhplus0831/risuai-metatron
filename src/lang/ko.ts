@@ -2712,6 +2712,13 @@ export const languageKorean = {
             presetValues: "선별(제외) 문구 목록을 포함한 나머지 세부 설정은 선택한 메모리 프리셋 값을 따릅니다.",
             openMemorySettings: "메모리 설정 열기",
         },
+        greeting: {
+            sources: "근거",
+            source: "첫 메시지",
+            changed: "변경됨",
+            help: "이 사건은 이전 첫 메시지를 바탕으로 기록되었습니다. 기록 범위에 포함되고 원문 유지 구간 밖에 있는 첫 메시지는 계속 프롬프트에서 제외됩니다. 사건을 다시 기록하거나 기억을 재생성하면 현재 첫 메시지를 읽습니다.",
+            keep: "이 기록 유지",
+        },
         coverage: {
             states: {
                 covered: "기록됨",
@@ -2733,18 +2740,18 @@ export const languageKorean = {
                 screenedRefusal: "응답에 메모리 프리셋의 제외 대상 거절 문구가 포함되어 있습니다",
                 screenedFormat: "응답에 메모리 프리셋의 제외 대상 서식 문구가 포함되어 있습니다",
             },
-            roles: { user: "사용자", char: "캐릭터" },
-            empty: "이 채팅에는 아직 메시지가 없습니다.",
-            memoryOff: "이 채팅은 메모리가 꺼져 있어 이미 기록된 메시지도 프롬프트에서 제외되지 않습니다.",
+            roles: { user: "사용자", char: "캐릭터", greeting: "첫 메시지" },
+            empty: "이 채팅에는 아직 첫 메시지나 대화 메시지가 없습니다.",
+            memoryOff: "이 채팅은 메모리가 꺼져 있어 이미 기록된 대화도 프롬프트에서 제외되지 않습니다.",
             gap: (turns: number, messages: number, tokens: string) =>
-                `최근 ${turns}턴 이전의 대화 중 아직 사건으로 기록되지 않은 메시지: ${messages}개 (${tokens})`,
+                `최근 ${turns}턴 이전의 대화 중 아직 사건으로 기록되지 않은 항목: ${messages}개 (${tokens})`,
             leaving: (turns: number, messages: number, tokens: string) =>
-                `최근 ${turns}턴 이전의 대화로 원문 프롬프트에서 제외되는 기록 완료 메시지: ${messages}개 (${tokens})`,
+                `최근 ${turns}턴 이전의 대화로 원문 프롬프트에서 제외되는 기록 완료 항목: ${messages}개 (${tokens})`,
             aboutTokens: (tokens: number) => `약 ${tokens} 토큰`,
             countingTokens: "토큰 계산 중...",
             tokensUnavailable: "토큰 미계산",
             estimate:
-                "저장된 원본 메시지를 기준으로 추산한 값이므로 실제 전송과 다를 수 있습니다. 실제 전송에서는 후처리된 텍스트와 첫 메시지가 사용되며, 컨텍스트 한도를 넘는 미기록 대화는 잘릴 수 있습니다.",
+                "저장된 첫 메시지와 대화 메시지를 모두 계산합니다. 실제 전송에서는 후처리된 텍스트를 사용하며, 컨텍스트 한도를 넘는 미기록 대화는 잘릴 수 있어 추산값과 다를 수 있습니다.",
             range: (first: number, last: number, count: number) => `#${first} ~ #${last} (${count})`,
         },
         log: {
