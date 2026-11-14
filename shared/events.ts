@@ -1,4 +1,10 @@
-import type { MemoryTaskStatus, StreamingMessage } from "./jobs.ts";
+import type {
+    GenerationKind,
+    GenerationSequence,
+    GenerationStage,
+    MemoryTaskStatus,
+    StreamingMessage,
+} from "./jobs.ts";
 import type { ChangeSet } from "./resources.ts";
 
 /**
@@ -47,13 +53,29 @@ export type HandoffOffer = {
     target?: string;
 };
 
+/** A running job's content-free progress, sampled from the process-local generation registry. */
+export type GenerationProgressEntry = {
+    jobId: string;
+    characterId: string;
+    chatId: string;
+    kind: GenerationKind;
+    /** The immutable creating client, also used by GenerationCurrent.owned. */
+    clientId: string;
+    /** Admission time and sampling time, in server-clock milliseconds. */
+    startedAt: number;
+    at: number;
+    stage?: GenerationStage;
+    retry?: number;
+    sequence?: Pick<GenerationSequence, "total" | "sent">;
+};
+
 /**
  * A frame of the live-update socket, server to client:
  * - `hello`: sent once on every connection with the database epoch, current generation locks
  *   (`streaming`), every chat's memory task status (`memoryTasks`), and optional open handoff offers
- *   (`handoffs`) and connected clients (`clients`); these snapshots replace the
- *   client's whole sets. The optional `digest` fingerprints the revision listing sampled with those
- *   snapshots. A matching advertised map reconciles locally; otherwise the client reads
+ *   (`handoffs`), running job progress (`generations`), and connected clients (`clients`); these
+ *   snapshots replace the client's whole sets. The optional `digest` fingerprints the revision listing
+ *   sampled with those snapshots. A matching advertised map reconciles locally; otherwise the client reads
  *   `GET /api/resources/revisions`, as a digest-checked log replay up to the optional `cursor`
  *   (the change log's high-water mark) or as the whole listing;
  * - `change`: one committed write's refs and revisions, optionally with record or by-id chat patches;
@@ -63,6 +85,7 @@ export type HandoffOffer = {
  * - `memoryTask`: a chat's memory task status changed (in `epoch`); a memory task's write reaches
  *   the client as its `change` frame first;
  * - `handoff`: a content-free job handoff offer opened or closed;
+ * - `generation`: a content-free running job's progress or its end, process-local like `memoryTask` and `handoff`;
  * - `clients`: the whole registered-client list; presence is process-local and has no epoch;
  * - `epoch`: a restore or import replaced the database; the client reloads;
  * - `ping`: the heartbeat.
@@ -78,11 +101,16 @@ export type EventFeedFrame =
           /** Optional on older servers; the log high-water cursor sampled with the digest. */
           cursor?: number;
           handoffs?: HandoffOffer[];
+          generations?: GenerationProgressEntry[];
           clients?: FeedClient[];
       }
     | { type: "change"; epoch: string; changes: ChangeSet; streaming?: ChatStreaming[]; cursor?: number }
     | ({ type: "memoryTask"; epoch: string } & MemoryTaskEntry)
     | ({ type: "handoff" } & HandoffOffer)
+    | ({ type: "generation"; epoch: string } & (
+          | ({ state: "running" } & GenerationProgressEntry)
+          | { state: "ended"; jobId: string; characterId: string; chatId: string }
+      ))
     | { type: "clients"; clients: FeedClient[] }
     | { type: "epoch"; epoch: string }
     | { type: "ping"; ts: number };

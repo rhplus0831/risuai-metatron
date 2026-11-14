@@ -52,7 +52,13 @@ import {
     MAX_KEPT_OUTCOMES,
     type GenerationReceipts,
 } from "../data/generationReceipts.ts";
-import type { ChatStreaming, ChatStreamingSnapshot, HandoffOffer } from "../../../shared/events.ts";
+import type {
+    ChatStreaming,
+    ChatStreamingSnapshot,
+    EventFeedFrame,
+    GenerationProgressEntry,
+    HandoffOffer,
+} from "../../../shared/events.ts";
 import {
     type AppliedChanges,
     CommittedWriteError,
@@ -882,6 +888,8 @@ export function createGenerationJobs(options: {
     handoffTicketMs?: number;
     /** Publishes content-free open/closed offers to the live-update feed. */
     publishHandoff?: (event: { type: "handoff" } & HandoffOffer) => void;
+    /** Publishes content-free running/ended job progress to the live-update feed. */
+    publishGeneration?: (event: Extract<EventFeedFrame, { type: "generation" }>) => void;
     /** Synchronous current-owner name lookup for role events; missing, empty or throwing lookups omit the name. */
     clientName?: (clientId: string) => string | undefined;
     /** Clock for job timestamps, owner liveness, channel deadlines and identity retention (defaults to Date.now). */
@@ -1094,6 +1102,41 @@ export function createGenerationJobs(options: {
             options.publishHandoff?.({ type: "handoff", ...offer });
         } catch (error) {
             logEvent("generation.handoffPublish", { job: offer.jobId }, error, diagnostics);
+        }
+    }
+
+    function progressEntry(job: Job): GenerationProgressEntry {
+        return {
+            jobId: job.id,
+            characterId: job.context.characterId,
+            chatId: job.context.chatId,
+            kind: job.kind,
+            clientId: job.clientId,
+            startedAt: job.startedAt,
+            at: clock(),
+            ...(job.stage !== null ? { stage: job.stage } : {}),
+            ...(job.retry !== null ? { retry: job.retry } : {}),
+            ...(job.sequence ? { sequence: { total: job.sequence.total, sent: job.sequence.sent } } : {}),
+        };
+    }
+
+    function publishProgress(job: Job, state: "running" | "ended" = "running") {
+        try {
+            if (job.epoch !== store.epoch()) return;
+            options.publishGeneration?.(
+                state === "running"
+                    ? { type: "generation", epoch: job.epoch, state, ...progressEntry(job) }
+                    : {
+                          type: "generation",
+                          epoch: job.epoch,
+                          state,
+                          jobId: job.id,
+                          characterId: job.context.characterId,
+                          chatId: job.context.chatId,
+                      },
+            );
+        } catch (error) {
+            logEvent("generation.progressPublish", { job: job.id }, error, diagnostics);
         }
     }
 
@@ -1672,6 +1715,7 @@ export function createGenerationJobs(options: {
         job.stage = null;
         job.retry = null;
         job.endedAt = clock();
+        publishProgress(job, "ended");
         job.terminal = terminal as GenerationTerminalEvent;
         job.memoryControl = null;
         try {
@@ -1979,6 +2023,7 @@ export function createGenerationJobs(options: {
                 if (input.type === "retry") {
                     job.retry = (job.retry ?? 0) + 1;
                     send(job, { type: "retry", epoch: job.epoch, retry: job.retry });
+                    publishProgress(job);
                     return;
                 }
                 const event = { ...input, epoch: job.epoch };
@@ -2036,6 +2081,7 @@ export function createGenerationJobs(options: {
                             job.retry = null;
                             send(job, { type: "retry", epoch: job.epoch, retry: null });
                         }
+                        publishProgress(job);
                         return;
                     case "resource":
                         track(
@@ -2125,12 +2171,14 @@ export function createGenerationJobs(options: {
                 },
                 progress(value) {
                     assertLive(job);
+                    const changed = job.sequence?.total !== value.total || job.sequence?.sent !== value.sent;
                     job.sequence = { total: value.total, sent: value.sent };
                     try {
                         receipts?.progress(job.id, job.sequence);
                     } catch (error) {
                         logEvent("generation.endDelivery", { job: job.id }, error, diagnostics);
                     }
+                    if (changed) publishProgress(job);
                 },
                 releaseRemovedReplies() {
                     assertLive(job);
@@ -2390,6 +2438,7 @@ export function createGenerationJobs(options: {
             requestId: job.requestId,
             fingerprint: job.fingerprint,
         });
+        publishProgress(job);
         record({ kind: "job", phase: "accepted", jobId: job.id, jobKind: job.kind });
         if (body.handoff === "prefer") openOffer(job, "preferred");
         armOffer(job);
@@ -2948,6 +2997,11 @@ export function createGenerationJobs(options: {
                 armOffer(job);
             }
             return [...jobs.values()].flatMap((job) => (job.offer && canHandoff(job) ? [{ ...job.offer }] : []));
+        },
+        /** Content-free progress for every running job in the current epoch, sampled synchronously. */
+        generationSnapshot(): GenerationProgressEntry[] {
+            const epoch = store.epoch();
+            return [...jobs.values()].filter((job) => !job.ended && job.epoch === epoch).map(progressEntry);
         },
         cancel,
         current,

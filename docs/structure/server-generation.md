@@ -174,6 +174,11 @@ client (a participant's `DELETE` too) is attributed; `stop`'s comment holds the 
 - A job re-sending a failed provider request reports `{ type: "retry" }` (`JobEventInput`); the registry counts the
   reports since the stage last changed and sends the `retry` event with the count, then `retry: null` after a changed
   stage's event. The snapshot replays a count only, as it does the stage.
+- The registry publishes each job's progress to the live-update feed (`publishGeneration`, a `generation` frame): a
+  `running` entry once the job is admitted, before its runner starts, and again on each changed stage (after the retry
+  count it clears), each retry report, and each changed sequence part; an `ended` entry where `finalize` sets `endedAt`.
+  Every kind is published, previews included; a job of another epoch publishes nothing. `clientId` is the creator, as
+  `current`'s `owned` compares. A publisher's throw is logged (`generation.progressPublish`) and dropped.
 - `sendSocket` allows one oversized frame on an empty queue for whole-chat recovery; with queued bytes, it terminates an
   owner or viewer whose queue plus the next frame exceeds 4 MiB, leaving as on a drop.
 - `provider` callbacks offer `chunks: "append"`: `handleMessage` joins appends for `onChunk`, asks `chunkResync` on gaps
@@ -258,7 +263,8 @@ mode); like the request history, in no snapshot or archive.
 - Generation registry, chat slots, sockets, handoff offers and tickets, lock, and request-id index are process-local and
   lost on restart. An ended job is readable for 60 s (`JOB_DONE_GRACE_MS`), then its trimmed outcome stays in memory for
   24 h/up to 500 entries (`KEPT_OUTCOME_MS`, `MAX_KEPT_OUTCOMES`); status falls back to the [receipt](#job-receipts)
-  after restart. Epoch changes clear memory.
+  after restart. Epoch changes clear the kept outcomes and the request index; an ended job of the old epoch stays
+  through its grace, and `generationSnapshot` lists only the current epoch's running jobs.
 - Request identity moves from live job through grace to the kept entry, then disk. Cancellation tombstones are kept in
   memory 72 h/up to 10,000 entries; epoch changes clear both.
 - The transform service: its result LRU, pending two-call snapshots and pins, plus `createDisplayScopeLoader` (raw
