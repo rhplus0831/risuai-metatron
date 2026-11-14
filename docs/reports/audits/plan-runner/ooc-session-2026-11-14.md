@@ -28,7 +28,8 @@ write has no defined lifetime (N2). The corrected slice 2 does one thing instead
 and sets the cut history, the tail rows, and the forced toggles on the scope's own copy of the chat, so the readers
 do not change and no write of the job is stored.
 
-Two corrections are product choices the owner has not read yet, and the plan's Status line says so:
+Two corrections are product choices. The owner accepted both on 2026-11-14, after reading them in the audit's
+summary, and the plan's Status line says so:
 
 - **D24** (from F4 and N3). The anchor cuts the message list, not the memory. With SupaMemory or legacy Hypa, a
   question whose cut history holds no usable memory cursor ends with `oocMemoryAhead` and the panel asks for a
@@ -189,7 +190,7 @@ database (`server/src/data/resourceStore.ts:3855`); `sendText` still counts an o
   chat reads and `parseRisuChat` go to the tab's store, and its writes have their own persistence
   (`jobChannel.ts:823`, `:1289`, `src/ts/plugins/apiV3/v3.svelte.ts:2966`, `:3008`).
 - `fixed in plan` as an accepted limit, not read again by the auditor: D14 and the Rules say a plugin hook reads and
-  writes the stored chat as in any preview. Open for the owner (see above).
+  writes the stored chat as in any preview. The owner accepted the limit (see above).
 
 ### M2. The external-writer test contradicted byte equality
 
