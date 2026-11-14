@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { guideNames, outline, resolveGuide, sectionText } from "./docsRead.mjs";
+import { guideNames, outline, resolveGuide, sectionReport, sectionText, sectionTexts } from "./docsRead.mjs";
 
 const TEXT = [
     "# Guide",
@@ -29,6 +29,9 @@ const TEXT = [
     "One issue.",
     "",
 ].join("\n");
+
+/** Two headings one prefix names, so arguments joined into that prefix are one ambiguous query. */
+const PATHS = "# Guide\n## Read path\nOne.\n## Read paths\nTwo.\n";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -81,6 +84,63 @@ describe("docs:read", () => {
             expect(result.section).toMatchObject({ heading: "Relevant `package.json` scripts", line: 2 });
             expect(result.text).toBe("## Relevant `package.json` scripts\n\nUse pnpm.");
         }
+    });
+
+    it("reads the heading arguments as one query first, then as one query each", () => {
+        const names = (queries: string[]) => {
+            const { found, missed } = sectionTexts(TEXT, queries);
+            return { found: found.map((entry) => entry.section.heading), missed: missed.map((entry) => entry.query) };
+        };
+        expect(names(["Known", "Hazards"])).toEqual({ found: ["Known Hazards"], missed: [] });
+        expect(names(["Known Hazards", "Scope"])).toEqual({ found: ["Known Hazards", "Scope"], missed: [] });
+        expect(names(["Scope", "Readerz", "er"])).toEqual({ found: ["Scope"], missed: ["Readerz", "er"] });
+        // One argument, or arguments that together match several headings, stay one query.
+        expect(names(["absent"])).toEqual({ found: [], missed: ["absent"] });
+        expect(sectionTexts(PATHS, ["Read", "pa"]).missed).toMatchObject([{ query: "Read pa", matches: [{}, {}] }]);
+    });
+
+    it("prints several sections in document order, leaving out one inside another", () => {
+        const scope = "g.md:3\n## Scope\n\nRoutes the task.\n";
+        const files = `g.md:7\n${sectionText(TEXT, "Files").text}\n`;
+        expect(sectionReport("g.md", TEXT, ["Scope"])).toEqual({ out: scope, err: "" });
+        expect(sectionReport("g.md", TEXT, ["Writers", "Files", "Scope", "Files"])).toEqual({
+            out: `${scope}\n${files}`,
+            err: "",
+        });
+        expect(sectionReport("g.md", TEXT, ["Issues", "Readers"]).out).toBe(
+            "g.md:9\n### Readers\n\n`read()`: a reader.\n\ng.md:19\n### Issues\n\nOne issue.\n",
+        );
+    });
+
+    it("prints the sections found and warns about each heading argument that names no single heading", () => {
+        const headings =
+            "  # Guide\n  ## Scope\n  ## Files\n  ### Readers\n  ### Writers\n  ## Known Hazards\n  ### Issues\n";
+        expect(sectionReport("g.md", TEXT, ["Scope", "Readerz", "er"])).toEqual({
+            out: "g.md:3\n## Scope\n\nRoutes the task.\n",
+            err:
+                "warning: 2 of 3 headings name no single section (a typo?); the other 1 follow.\n" +
+                'Each argument was read as a heading of its own, since "Scope Readerz er" matches no heading.\n' +
+                '  "Readerz" matches no heading\n' +
+                '  "er" matches 2 headings:\n    ### Readers\n    ### Writers\n' +
+                `headings of g.md:\n${headings}`,
+        });
+        // Only ambiguous arguments: the candidates are enough, without the whole heading list.
+        expect(sectionReport("g.md", TEXT, ["er", "ers"])).toEqual({
+            out: "",
+            err:
+                "warning: 2 of 2 headings name no single section (a typo?); nothing is printed.\n" +
+                'Each argument was read as a heading of its own, since "er ers" matches no heading.\n' +
+                '  "er" matches 2 headings:\n    ### Readers\n    ### Writers\n' +
+                '  "ers" matches 2 headings:\n    ### Readers\n    ### Writers\n',
+        });
+        // A single query keeps the message `sectionText` throws.
+        expect(sectionReport("g.md", TEXT, ["absent"])).toEqual({
+            out: "",
+            err: `"absent" matches no heading:\n${headings}`,
+        });
+        expect(sectionReport("g.md", PATHS, ["Read", "pa"]).err).toBe(
+            '"Read pa" matches 2 headings:\n  ## Read path\n  ## Read paths\n',
+        );
     });
 
     it("resolves guide names, area folders, paths, STRUCTURE, and README aliases", () => {

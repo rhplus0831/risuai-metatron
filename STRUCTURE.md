@@ -8,8 +8,9 @@ server. Start with the task or source path you have.
 1. For an add/change task, read **Repository-Wide Invariants**.
 2. Pick one guide from **Choose By Task**, or run `pnpm docs:owner <path>` for a source file. A folder guide opens its
    README and routes you to a topic.
-3. Run `pnpm docs:read <guide>` for the outline, then `pnpm docs:read <guide> <heading>` for `Scope` and the section you
-   need. For edits also consult `Invariants`, the relevant `Recipes`, and `Tests`.
+3. Run `pnpm docs:read <guide>` for the outline, then `pnpm docs:read <guide> <heading>...` for `Scope` and the sections
+   you need; quote a heading of several words when you name more than one. For edits also consult `Invariants`, the
+   relevant `Recipes`, and `Tests`.
 4. Read the source contract at the `Files` entry. Follow `Coupling` when the change crosses into another guide.
 5. Confirm named identifiers in the current source with `rg -n "<identifier>" <path>`.
 6. Run V1 and the focused checks for the affected area.

@@ -59,7 +59,8 @@
 - Not validated: identifiers in code spans, and a path without a `/` (`package.json`, `vitest.*`). Confirm them with
   targeted `rg` searches; the link rule checks only relative Markdown destinations and heading anchors.
 - The guide tools; each header comment holds its contract:
-  - `pnpm docs:read <guide> [heading]` (`util/docsRead.mjs`): a guide's headings with their bytes, or one section.
+  - `pnpm docs:read <guide> [heading...]` (`util/docsRead.mjs`): a guide's headings with their bytes, or the sections
+    named. A heading that names no single section gets a warning and exit 2; the sections found still print.
   - `pnpm docs:owner <path>...` (`util/docsOwner.mjs`): each path's owning guide; exit 1 on an unowned one.
   - `pnpm docs:contracts <file-or-dir>...` (`util/docsContracts.mjs`): each export with the `/** */` comment above it.
   - `pnpm docs:ledger <guide> [--base <ref>] [--strict]` (`util/docsLedger.mjs`): the base's `Files` and `Flows`
@@ -328,7 +329,8 @@ Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
   display (icon, title and body fallbacks), and the userscript; verify those manually.
 - Not tested: the documentation scripts' command lines (exit codes, output streams).
 - Known skews of `pnpm docs:reads`: `scanTranscripts` checks a guide name only for `docs:read`, so a fixture guide path
-  in a command (`a.md`) counts as a read; a title-heading read counts the title alone (`countEvent`).
+  in a command (`a.md`) counts as a read; a title-heading read counts the title alone (`countEvent`); a call with
+  several quoted headings from before 2026-11-14 failed when it ran, but counts for each heading.
 - Not tested: the dev runner's process handling (process groups, the lock, the readiness wait); verify it manually when
   changing that code.
 - Not tested: `util/heap/snapshot.mjs` `loadSnapshot`/`parseSnapshot` and `dominators` in isolation; heap measurements

@@ -117,6 +117,23 @@ describe("docs:reads", () => {
         expect(tally.guides.get("STRUCTURE")).toMatchObject({ bash: 0, docsRead: 1, outline: 1, headings: new Map() });
     });
 
+    it("counts each heading argument of one docs:read call, and an argument naming no heading as unresolved", async () => {
+        const root = tree({
+            "session.jsonl": transcript(
+                tool("several", "Bash", {
+                    command: 'pnpm --silent docs:read example "Scope" "Readers" "Flowz" 2>&1 | head -80',
+                }),
+                tool("unquoted", "Bash", { command: "pnpm docs:read example Reader text" }),
+            ),
+        });
+        const { tally } = await scanTranscripts([root], textAt);
+        expect(tally.guides.get("example")).toMatchObject({ docsRead: 2, outline: 0, unresolved: 2 });
+        expect(Object.fromEntries(tally.guides.get("example").headings)).toEqual({
+            Scope: { ranges: 0, docsRead: 1 },
+            "Files > Readers": { ranges: 0, docsRead: 2 },
+        });
+    });
+
     it("attributes both folder README spellings in docs:read calls to the folder guide", async () => {
         const root = tree({
             "session.jsonl": transcript(

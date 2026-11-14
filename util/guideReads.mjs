@@ -10,14 +10,14 @@
 //     naming the guide's path (heredoc bodies stripped first, so a file written through `cat <<EOF` is not counted;
 //     a command counted as a `docs:read` of that guide is not counted again as Bash), of which `sed -n`: the Bash
 //     commands holding at least one `sed -n` range read of the guide (always a subset), and `docs:read` invocations
-//     (`pnpm [--silent] docs:read <guide> [heading]`, `node util/docsRead.mjs ...`).
+//     (`pnpm [--silent] docs:read <guide> [heading...]`, `node util/docsRead.mjs ...`).
 //   - Per heading: a ranged Read covers lines [offset, offset + limit) (no offset: from line 1; no limit: to the end),
 //     a Bash `sed -n 'A,Bp' <guide>` covers [A, B] (one command's ranges of a guide count together, once per
 //     heading), and each range counts once for every leaf heading whose own lines
 //     (heading line to the next heading of any level) it intersects; lines before the first heading count as
-//     `(before the first heading)`. A `docs:read <guide> <heading>` counts for the heading `sectionText` resolves;
-//     a query matching no heading or several is counted as unresolved and its text dropped. Whole-file Reads are not
-//     spread over headings.
+//     `(before the first heading)`. A `docs:read <guide> <heading>...` counts for each heading `sectionTexts`
+//     resolves, by the reader's current rule also for a command older than the rule; a query matching no heading or
+//     several is counted as unresolved and its text dropped. Whole-file Reads are not spread over headings.
 //   - Line numbers map against the guide as it was then: the text at `git rev-list -1 --before=<timestamp>
 //     refs/heads/dev` (emulated over one `git log` listing), cached per revision and path. A guide missing there
 //     counts under its name with the heading unmapped.
@@ -32,7 +32,7 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { GUIDE_DIR, INDEX_DOC, parseGuide } from "./docsBudget.mjs";
-import { sectionText } from "./docsRead.mjs";
+import { sectionTexts } from "./docsRead.mjs";
 
 /** The transcript directory read when none is given. */
 export const DEFAULT_DIRS = [path.join(os.homedir(), ".claude/projects/-home-codex-risuai-metatron")];
@@ -132,15 +132,15 @@ const DOCS_READ =
     /(?:\bpnpm(?:\s+(?:--silent|-s|--dir\s+\S+|-C\s+\S+))*\s+(?:run\s+)?docs:read|\bnode\s+(?:\S*\/)?util\/docsRead\.mjs)(?=\s|$)/g;
 
 /**
- * The `docs:read` invocations in a Bash command: `{ guide, heading }` each, `heading` the query text or null for an
- * outline, `guide` null when the argument names no guide (a placeholder or a variable).
+ * The `docs:read` invocations in a Bash command: `{ guide, headings }` each, `headings` the heading arguments (none
+ * for an outline), `guide` null when the argument names no guide (a placeholder or a variable).
  */
 export function docsReadCalls(command) {
     const calls = [];
     for (const match of command.matchAll(DOCS_READ)) {
         const [guide, ...rest] = shellWords(command.slice(match.index + match[0].length));
         if (guide === undefined) continue;
-        calls.push({ guide: guideOfArgument(guide), heading: rest.length > 0 ? rest.join(" ") : null });
+        calls.push({ guide: guideOfArgument(guide), headings: rest });
     }
     return calls;
 }
@@ -179,10 +179,10 @@ export function sedRanges(command) {
 }
 
 /**
- * What one assistant `tool_use` block does to the guides, as events: `{ kind, guide, ranges?, heading? }`, `kind`
+ * What one assistant `tool_use` block does to the guides, as events: `{ kind, guide, ranges?, headings? }`, `kind`
  * one of `whole`, `ranged`, `bash`, `docsRead`; `ranges` (lines, inclusive) on a ranged Read or a `sed` read;
- * `heading` the query of a `docs:read` (null for an outline). A `docs:read` naming no guide is `{ kind: "docsRead",
- * guide: null }`.
+ * `headings` the heading arguments of a `docs:read` (none for an outline). A `docs:read` naming no guide is
+ * `{ kind: "docsRead", guide: null }`.
  */
 export function guideEvents(block) {
     const input = block.input ?? {};
@@ -199,7 +199,7 @@ export function guideEvents(block) {
     const events = [];
     const viaReader = new Set();
     for (const call of docsReadCalls(command)) {
-        events.push({ kind: "docsRead", guide: call.guide, heading: call.heading });
+        events.push({ kind: "docsRead", guide: call.guide, headings: call.headings });
         if (call.guide) viaReader.add(call.guide);
     }
     // One `sed` event per guide per command, holding all its ranges, so `sed -n` stays a subset of Bash and each
@@ -295,7 +295,7 @@ export function countEvent(tally, event, guideText, timestamp) {
     }
     const stats = guideStats(tally, event.guide);
     stats[event.kind]++;
-    const mappable = event.kind === "ranged" || event.kind === "sed" || (event.kind === "docsRead" && event.heading);
+    const mappable = event.kind === "ranged" || event.kind === "sed" || event.headings?.length > 0;
     if (!mappable) {
         if (event.kind === "docsRead") stats.outline++;
         return;
@@ -306,18 +306,15 @@ export function countEvent(tally, event, guideText, timestamp) {
     }
     const headings = headingLines(guideText);
     if (event.kind === "docsRead") {
-        let section;
-        try {
-            ({ section } = sectionText(guideText, event.heading));
-        } catch {
-            stats.unresolved++;
-            return;
+        const { found, missed } = sectionTexts(guideText, event.headings);
+        stats.unresolved += missed.length;
+        for (const { section } of found) {
+            const label = headings.find((h) => h.line === section.line).label;
+            bump(stats, label, "docsRead");
+            // The reader prints the section through its subsections; the headings above it are its context.
+            for (const h of under(headings, label)) stats.covered.add(h.label);
+            for (const h of headings) if (label.startsWith(`${h.label} > `)) stats.covered.add(h.label);
         }
-        const label = headings.find((h) => h.line === section.line).label;
-        bump(stats, label, "docsRead");
-        // The reader prints the section through its subsections; the headings above it are its context.
-        for (const h of under(headings, label)) stats.covered.add(h.label);
-        for (const h of headings) if (label.startsWith(`${h.label} > `)) stats.covered.add(h.label);
         return;
     }
     const labels = new Set(event.ranges.flatMap((range) => headingsTouched(headings, range)));
@@ -493,7 +490,7 @@ export async function scanTranscripts(dirs, textAt, known = () => true) {
                 seen.add(block.id);
                 for (const event of guideEvents(block)) {
                     const reader = event.kind === "docsRead" && event.guide;
-                    const mappable = event.guide && (event.ranges || (reader && event.heading));
+                    const mappable = event.guide && (event.ranges || (reader && event.headings.length > 0));
                     const text = mappable || reader ? textAt(record.timestamp, event.guide) : null;
                     // A `docs:read` argument is a guide only when such a guide existed then or exists now.
                     if (reader && text === null && !known(event.guide)) event.unknown = true;
