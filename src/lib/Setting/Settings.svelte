@@ -20,6 +20,7 @@
         KeyboardIcon,
         CpuIcon,
         ScrollTextIcon,
+        WebhookIcon,
     } from "@lucide/svelte";
     import { language } from "src/lang";
     import { untrack, type Component } from "svelte";
@@ -54,6 +55,7 @@
         MODEL_PROFILES_SETTINGS_MENU,
         PROMPT_SETTINGS_MENU,
         TRANSLATION_SETTINGS_MENU,
+        INPUT_HOOKS_SETTINGS_MENU,
         MEMORY_SETTINGS_MENU,
         IMAGE_GENERATION_SETTINGS_MENU,
         VOICE_SETTINGS_MENU,
@@ -64,6 +66,7 @@
     } from "src/ts/stores.svelte";
     import LanguageSettings from "./Pages/LanguageSettings.svelte";
     import TranslationSettings from "./Pages/TranslationSettings.svelte";
+    import InputHookSettings from "./Pages/InputHookSettings.svelte";
     import InteractionSettings from "./Pages/InteractionSettings.svelte";
     import AccessibilitySettings from "./Pages/AccessibilitySettings.svelte";
     import PersonaSettings from "./Pages/PersonaSettings.svelte";
@@ -118,6 +121,11 @@
                     menus: [TRANSLATION_SETTINGS_MENU],
                     icon: LanguagesIcon,
                     label: () => language.translationSettings,
+                },
+                {
+                    menus: [INPUT_HOOKS_SETTINGS_MENU],
+                    icon: WebhookIcon,
+                    label: () => language.inputHooks.navLabel,
                 },
                 { menus: [14], icon: PackageIcon, label: () => language.modules },
                 { menus: [4], icon: CodeIcon, label: () => language.plugin },
@@ -368,6 +376,8 @@
                         <LanguageSettings />
                     {:else if $SettingsMenuIndex === TRANSLATION_SETTINGS_MENU}
                         <TranslationSettings />
+                    {:else if $SettingsMenuIndex === INPUT_HOOKS_SETTINGS_MENU}
+                        <InputHookSettings />
                     {:else if $SettingsMenuIndex === INTERACTION_SETTINGS_MENU}
                         <InteractionSettings />
                     {:else if $SettingsMenuIndex === 11}

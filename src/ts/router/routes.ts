@@ -1,6 +1,7 @@
 import {
     API_KEYS_SETTINGS_MENU,
     IMAGE_GENERATION_SETTINGS_MENU,
+    INPUT_HOOKS_SETTINGS_MENU,
     INTERACTION_SETTINGS_MENU,
     MEMORY_SETTINGS_MENU,
     MODEL_PROFILES_SETTINGS_MENU,
@@ -38,6 +39,7 @@ export const SETTINGS_PAGES = {
     display: 3,
     language: 10,
     translation: TRANSLATION_SETTINGS_MENU,
+    "input-hooks": INPUT_HOOKS_SETTINGS_MENU,
     interaction: INTERACTION_SETTINGS_MENU,
     accessibility: 11,
     modules: 14,

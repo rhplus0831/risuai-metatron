@@ -129,6 +129,11 @@ section.
 - `StorageSettings` (menu 23): its sections read the page's `Storage/storageController.svelte.ts` (via
   `Storage/storageContext.ts`), so polling ends with the page.
 - `HotkeySettings` (menu 15): `activeHotkeys` (`src/ts/hotkey.ts`) hides `quickSettings` ([app-shell](app-shell.md)).
+- `InputHookSettings` (menu 24): the hook list (`settings.inputHooks`, [persistence](persistence.md)). Each edit finds
+  its hook by id and assigns a new array (no draft layer). Add stops at `MAX_INPUT_HOOKS`; a card edits name, type
+  (Draft to BTW drops `translation`), model (as the translator step editor), and prompt (the hook id as
+  `popupEditorContext`). No `SettingItem`: search finds the page by title. `language.inputHooks` also holds the strings
+  of the chat's Draft hook panel ([UI](ui-theming.md#sidebar)).
 - Other handwritten pages: `PromptSettings`, `OobaSettings`, `OpenrouterSettings`, `UserSettings`, `ThanksPage`,
   `UpstreamImportReport`, `Advanced/BanCharacterSetSettings`, and `Display/*`.
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CLIENT_ROUTE_SEGMENTS, isClientRoutePath } from "../../../shared/routes.ts";
 import {
     IMAGE_GENERATION_SETTINGS_MENU,
+    INPUT_HOOKS_SETTINGS_MENU,
     MEMORY_SETTINGS_MENU,
     TRANSLATION_SETTINGS_MENU,
     VOICE_SETTINGS_MENU,
@@ -125,6 +126,14 @@ describe("slug tables", () => {
         for (const path of ["/settings/bot/extra", "/settings/Bot", "/playground/bot", "/bot"]) {
             expect(parseRoute(path), path).toBeNull();
         }
+    });
+
+    it("maps Input Hooks to menu 24 and formats its URL", () => {
+        expect(INPUT_HOOKS_SETTINGS_MENU).toBe(24);
+        expect(SETTINGS_PAGES["input-hooks"]).toBe(24);
+        expect(parseRoute("/settings/input-hooks")).toEqual({ kind: "settings", page: "input-hooks" });
+        expect(settingsPageOf(24)).toBe("input-hooks");
+        expect(formatRoute({ kind: "settings", page: settingsPageOf(24) })).toBe("/settings/input-hooks");
     });
 
     it("give no slug to the values without a route", () => {

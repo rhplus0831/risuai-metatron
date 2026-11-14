@@ -107,6 +107,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   home cards (`openPinnedChat`).
 - `src/lib/SideBars/OpenChatPanel.svelte`: the open chat's tab. New-chat defaults and translation behavior are
   documented in [persistence](persistence.md) and [translation](translation.md).
+- `src/lib/SideBars/ChatDraftHookPanel.svelte`: the loaded chat's Draft hook choice (`draftHookId`, through
+  `setChatMeta`; None unsets it), mounted by `OpenChatPanel.svelte` under its loaded-chat gate. It shows while the hook
+  list holds a Draft hook or the chat holds an id; an id naming no Draft hook (`draftHookOf`) shows as a missing entry.
 - `src/lib/SideBars/DevTool.svelte` owns prompt/lore previews and autopilot; `src/lib/SideBars/Toggles.svelte` owns
   per-chat prompt toggles.
 

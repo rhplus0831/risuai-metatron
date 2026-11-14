@@ -7,6 +7,7 @@ import { activeMainProfile } from "../storage/settingsViews.svelte";
 import {
     API_KEYS_SETTINGS_MENU,
     IMAGE_GENERATION_SETTINGS_MENU,
+    INPUT_HOOKS_SETTINGS_MENU,
     INTERACTION_SETTINGS_MENU,
     MEMORY_SETTINGS_MENU,
     MODEL_PROFILES_SETTINGS_MENU,
@@ -191,6 +192,7 @@ const PAGES: PageEntry[] = [
     { menu: IMAGE_GENERATION_SETTINGS_MENU, label: (lang) => lang.imageGeneration },
     { menu: VOICE_SETTINGS_MENU, label: (lang) => lang.voiceSettings },
     { menu: TRANSLATION_SETTINGS_MENU, label: (lang) => lang.translationSettings },
+    { menu: INPUT_HOOKS_SETTINGS_MENU, label: (lang) => lang.inputHooks.title },
     { menu: 14, label: (lang) => lang.modules },
     { menu: 4, label: (lang) => lang.plugin },
     { menu: 3, label: (lang) => lang.display },

@@ -138,6 +138,18 @@ describe("SETTING_LOCATIONS", () => {
 });
 
 describe("searchSettings", () => {
+    it("finds Input Hooks by its page title", () => {
+        changeLanguage("en");
+        expect(searchSettings("Input Hooks", ctx())).toContainEqual(
+            expect.objectContaining({
+                kind: "page",
+                label: "Input Hooks",
+                target: { menu: 24 },
+                available: true,
+            }),
+        );
+    });
+
     it("routes storage and snapshot searches to Storage instead of Advanced", () => {
         changeLanguage("ko");
         for (const query of ["snapshot", "스냅샷"]) {

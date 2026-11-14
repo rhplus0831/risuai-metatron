@@ -9,6 +9,7 @@
     import ChatNoteEditor from "./ChatNoteEditor.svelte";
     import OpenChatHeader from "./OpenChatHeader.svelte";
     import ChatTranslationPanel from "./ChatTranslationPanel.svelte";
+    import ChatDraftHookPanel from "./ChatDraftHookPanel.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import Toggles from "./Toggles.svelte";
 
@@ -16,7 +17,8 @@
      * The sidebar's chat tab while a chat is open (`selection.chatOpen`), in place of the chat list:
      * a way back to the list (the closed-chat screen), the chat's name with rename and export, its
      * binding, memory switch and, while a target language is set, translation settings (these read the list
-     * entry, so they show while the chat loads), the chat's author note, and the toggles.
+     * entry, so they show while the chat loads), the loaded chat's Draft hook choice and author note,
+     * and the toggles.
      *
      * Every child is bound to the open chat's ref, and its pickers and dialogs act on that ref. The editors that
      * capture the ref at mount (the header, the author note) are keyed by it, so another chat gets new ones.
@@ -56,6 +58,7 @@
 
     <!-- The chat's fields wait while the selected chat loads; another chat gets its own editor. -->
     {#if currentChat && currentRef}
+        <ChatDraftHookPanel chatRef={currentRef} />
         {#key `${currentRef.chaId}\n${currentRef.chatId}`}
             <ChatNoteEditor chat={currentRef} />
         {/key}
