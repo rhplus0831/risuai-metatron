@@ -83,7 +83,8 @@ One slice is one session and one commit. Workflow per slice: `opus-workflow` (ea
   for a guide edit, and `pnpm check:tests` for an added test file. Run `pnpm check` again after the last test edit. V4
   (`rg` each changed export and wire field) and V6 (each new test shown failing once with its guarded line broken).
 - **Persisted values.** Slice 1 fixes the names: `MemoryEvent.greeting` and `MemoryRun.greeting`, each an optional
-  `MemoryGreetingSource` `{ fmIndex: number; hash: string }` (D3). `MemorySource` does not change.
+  `MemoryGreetingSource` `{ fmIndex: number; hash: string }` (D3), and `MemoryEvent.greetingKept`, the same shape
+  (D11). `MemorySource` does not change.
 - **One reader.** The stored field is read only through one exported normalizer in `shared/structuredMemory.ts`
   (suggested: `storedMemoryGreeting(stored)`, null for anything that is not the shape), and whether it matches the
   chat's greeting only through one predicate (suggested: `greetingCited(source, current)`), shared by the server and
@@ -122,7 +123,8 @@ slice 3.
     `["greeting", memorySourceText(text)]` of the stored, unexpanded greeting text, through the same hashers the server
     and the tab use for message sources (D4).
   - `memoryRerecordTarget` answers for an event that cites only the greeting.
-- `restore.ts`: an event or run `greeting` must be the shape or absent; anything else is refused like a bad source.
+- `restore.ts`: an event or run `greeting`, and an event `greetingKept`, must be the shape or absent; anything else is
+  refused like a bad source.
   `MEMORY_PACKAGE_VERSION` stays (D3).
 - `window.ts`:
   - `WriterWindow` gains an optional `greeting: { source: MemoryGreetingSource; text: string }`, where `text` is what
@@ -199,11 +201,19 @@ writer's request (request log) shows the greeting first with the names expanded,
   - A citation that `greetingCited` does not match the chat's greeting shows a "changed" label on that source and on
     the Coverage row, with a help line: the event was recorded from an earlier greeting, the prompt still leaves the
     greeting out, and a re-record of the event or a rebuild reads the current one (D5). Nothing else changes: the
-    event keeps its status, and no re-record is marked or started.
-- The coverage route sends the event's `greeting` beside `messageIds`.
-- Strings: the greeting source label, the Coverage role, and the "changed" label with its help line, in English and
-  Korean. `coverage.estimate`'s sentence
-  about the greeting changes to say it is counted.
+    event keeps its status, and no re-record is marked or started. A citation the person kept for the current
+    greeting (`greetingKept` matches it) shows no label.
+  - The label offers three choices: re-record the event (the existing repair), rebuild (the existing press), or keep
+    the record as it is (D11).
+- Keep, through the existing event repair route: `applyEventRepair` in `edits.ts` takes a new repair (suggested:
+  `{ repair: "keepGreeting", greeting }`, where `greeting` is the current greeting's source as the panel showed it).
+  The route reads the owner character for the chat's greeting. It refuses `changed` when that greeting no longer
+  equals the one sent, as `keep` refuses a chat that moved on, and `invalid` for an event with no `greeting`, a
+  retracted one, or a group. Otherwise it stores `greetingKept` with the sent source and changes nothing else: the
+  citation, the status, and a `rerecord` mark stay. Keeping again replaces the field.
+- The coverage route sends the event's `greeting` and `greetingKept` beside `messageIds`.
+- Strings: the greeting source label, the Coverage role, the "changed" label with its help line, and the keep choice,
+  in English and Korean. `coverage.estimate`'s sentence about the greeting changes to say it is counted.
 
 **Test.**
 
@@ -217,7 +227,10 @@ writer's request (request log) shows the greeting first with the names expanded,
 - `projectHypaV3Data` test: `null` first in `chatMemos`, the event ordered first.
 - `src/ts/process/structuredMemory.test.ts`: the Coverage join's greeting row; the panel tests: the "Greeting" source
   in Timeline and Pages, and the "changed" label after an `fmIndex` change and a text change, absent for a markup-only
-  change.
+  change, absent after a keep, and back after a second change.
+- `edits.test.ts` (or the repair route's test): `keepGreeting` stores `greetingKept` and changes nothing else; refused
+  `changed` when the greeting moved after it was shown, `invalid` without a `greeting`, on a retracted event, and on a
+  group.
 - An assembly test (`assemble` or the generation harness): a chat whose first event cites the greeting sends no
   greeting once the window has moved past it; the same chat after a greeting swipe still sends none.
 
@@ -227,8 +240,8 @@ stored text. `records.md`: coverage of the greeting. `projection.md`: the `null`
 **Manual checks.** In a long chat started after slice 1: the request log stops showing the greeting once the window
 has passed it; Coverage shows the greeting row as leaving; the Timeline shows "Greeting" on the first event and its
 button opens the top of the chat. Swipe the greeting: the next request still has no greeting, the Timeline and Coverage
-show "changed", and a re-record of the first event clears it and its new record reads the new greeting. In English and
-Korean.
+show "changed". Keep it: the label goes and the request is unchanged. Swipe once more: the label is back. A re-record
+of the first event clears it and its new record reads the new greeting. In English and Korean.
 
 ## Slice 3. Existing chats (_hard_, `structured-memory/rebuild.md`, `structured-memory/lifecycle.md`)
 
@@ -246,7 +259,8 @@ Korean.
 - `adopt.ts`: `adoptedEvents` takes the chat's current greeting. The first summary whose `chatMemos` holds `null`
   becomes an event with `greeting` anchored to the greeting as it stands now, as adoption anchors a held message as it
   stands now. The comment about dropping the `null` is replaced.
-- `inherit.ts`: a copied or branched event keeps its `greeting` as it is: the copy shares the past it records (D5).
+- `inherit.ts`: a copied or branched event keeps its `greeting` and `greetingKept` as they are: the copy shares the
+  past it records (D5).
   The panel shows "changed" when the target chat's greeting differs.
 - The chat file import restores `greeting` as stored, with the same label when it differs.
 - A person's re-record of the first event (slice 1's `rerecordWindows` rule) is the cheapest path for one chat:
@@ -271,8 +285,8 @@ shows "Greeting".
 
 ## Decisions
 
-D1 is the owner's request of 2026-11-14. The owner accepted D2, D6, and D9 the same day, as recommended. The owner chose D5 the same
-day, in place of the plan's first recommendation. The rest are this plan's.
+D1 is the owner's request of 2026-11-14. The owner accepted D2, D6, and D9 the same day, as recommended. The owner
+chose D5 the same day, in place of the plan's first recommendation, and asked for D11. The rest are this plan's.
 
 - D1. The greeting becomes something Structured Memory records and can leave out of the prompt, like a message. Today
   it is sent with every request for as long as the chat fits.
@@ -294,7 +308,7 @@ day, in place of the plan's first recommendation. The rest are this plan's.
   the new greeting back into the prompt (the plan's first recommendation) would act without the person; staling the
   event would bring every message it covers back for one card edit. No hook watches card writes: the label is computed
   where the panel reads coverage. Until a re-record the model sees the old greeting's facts in memory and not the new
-  greeting.
+  greeting. A person who is content with that keeps the record (D11).
 - D6. The writer reads the greeting with CBS expanded by the job's `parse`, without the `editprocess` scripts, so
   `{{user}}` and `{{char}}` read as names. Messages reach the writer without scripts too. The hash stays over the
   stored text, so a CBS value that changes per send (a random pick, the time) does not unsettle the citation.
@@ -307,6 +321,11 @@ day, in place of the plan's first recommendation. The rest are this plan's.
   The estimate text stops calling the greeting a difference from the send.
 - D10. The greeting joins the first window and is not a turn of its own. As a turn, the `turns` cadence would close
   the first window one reply early, and a new chat's greeting could become an event with no message.
+- D11. A person can accept a changed greeting without a model call: keep stores the greeting they saw in
+  `greetingKept`, and the label is gone while the chat's greeting equals it. The citation itself is not rewritten, so
+  the record still says which greeting the event was recorded from, and a later change shows the label again. This
+  follows the stale-event `keep` (`keptState`), which also holds only for the state the person saw. Keep marks
+  nothing, so a re-record or a rebuild is still there afterward.
 
 ## Not In This Plan
 
