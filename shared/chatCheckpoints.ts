@@ -42,6 +42,7 @@ export const CHECKPOINT_CHAT_FIELDS: Record<keyof ChatMeta, "capture" | "keep" |
     promptPresetId: "keep",
     modelPresetId: "keep",
     bindingReview: "keep",
+    draftHookId: "keep",
     togglePresetId: "keep",
     translatorPresetId: "keep",
     autoTranslate: "keep",

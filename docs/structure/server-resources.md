@@ -25,8 +25,9 @@ headers and method comments.
   and `server/src/data/chats.ts` (`normalizeChatMeta`, `normalizeMessage`): the chat tables, their summaries and memos,
   and chat validation.
 - `server/src/data/kinds.ts`: kind declarations (`DEFAULT_RESOURCE_KINDS`, `ResourceKind`), with normalizers in
-  `server/src/data/normalize/`. `pluginStorage` declares `nestedFields: PLUGIN_STORAGE_DICTIONARIES`
-  (`shared/pluginStorage.ts`); `plugins` permits `itemKey: "name"`.
+  `server/src/data/normalize/`. `inputHooks` materializes `defaultInputHooks()` (`shared/inputHooks.ts`), refuses a
+  write that is not a list, and drops a list's malformed entries instead of refusing them. `pluginStorage` declares
+  `nestedFields: PLUGIN_STORAGE_DICTIONARIES` (`shared/pluginStorage.ts`); `plugins` permits `itemKey: "name"`.
 - `server/src/data/checkpointStore.ts` (`createCheckpointTables`, `walkCheckpointSnapshot`) and
   `server/src/data/checkpointService.ts` (`createCheckpointService`: `save`, `load`, `autoSave`): checkpoints.
 - `server/src/data/snapshots.ts` (`createSnapshotManager`: the timer, `stageCopy`, `withMaintenance`;

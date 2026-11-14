@@ -2,6 +2,7 @@ import { CREDENTIAL_TYPES, type Credential, type CredentialType, type Database }
 import { isRecordId } from "../../../../shared/ids.ts";
 import { defaultHotkeys } from "../../../../shared/hotkeys.ts";
 import { createHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
+import { defaultInputHooks, normalizeInputHooks as normalizeInputHookList } from "../../../../shared/inputHooks.ts";
 import type { CollectionResource } from "../../../../shared/resources.ts";
 import { normalizeTogglePresets as normalizeTogglePresetList } from "../../../../shared/togglePresets.ts";
 import { createTranslatorPreset, getNormalizedTranslatorPresetName } from "../../../../shared/translatorPresets.ts";
@@ -11,9 +12,9 @@ import { isPlainObject, plainClone, requireArrayOfObjects, requireObject } from 
 /**
  * The collection normalizers other than `personas`. Each accepts `undefined` (a record being
  * materialized) and returns the fresh-boot value; otherwise it rejects a value of the wrong shape
- * (a `ResourceValidationError`, a 400 on write) and returns a copy. Only `hotkeys` and the two
- * `{ items, selectedId }` records add default items; `togglePresets` repairs ids and fields without
- * adding items.
+ * (a `ResourceValidationError`, a 400 on write) and returns a copy. `loreBook` and `inputHooks`
+ * default only when absent; `hotkeys` and the two `{ items, selectedId }` records also add default
+ * items to existing lists. `togglePresets` repairs ids and fields without adding items.
  */
 
 function objectList<T>(what: string, fallback: () => T[] = () => []): (input: unknown) => T[] {
@@ -29,6 +30,17 @@ export const normalizeGlobalscript = objectList<Database["globalscript"][number]
 /** `togglePresets`: a possibly empty list with unique ids and no collection-level selection. */
 export function normalizeTogglePresets(input: unknown): Database["togglePresets"] {
     return input === undefined ? [] : normalizeTogglePresetList(requireArrayOfObjects(input, "togglePresets"));
+}
+
+/** `inputHooks`: an absent list gets the default; a saved list drops malformed entries and may stay empty. */
+export function normalizeInputHooks(input: unknown): Database["inputHooks"] {
+    if (input === undefined) {
+        return defaultInputHooks();
+    }
+    if (!Array.isArray(input)) {
+        throw new ResourceValidationError("inputHooks must be an array");
+    }
+    return normalizeInputHookList(input);
 }
 
 /** `hotkeys`: the stored list, then each built-in hotkey whose `action` it lacks (as `setDatabase` merged them). */

@@ -1,5 +1,6 @@
 import type { NewChatBinding } from "./chatBinding.ts";
 import type { ContextMeterTurnUnit, ContextReport } from "./contextReport.ts";
+import type { InputHook } from "./inputHooks.ts";
 import type { LLMFlags, LLMFormat, LLMTokenizer } from "./llm.ts";
 import type {
     HypaModel,
@@ -512,6 +513,11 @@ export interface Database {
     hotkeys: Hotkey[];
     /** The custom model definitions; credentials belong to the profiles that use them. */
     customModels: CustomModel[];
+    /**
+     * The input hooks (`shared/inputHooks.ts`): a whole-list collection; an absent record defaults to one Draft hook,
+     * a saved empty list stays empty.
+     */
+    inputHooks: InputHook[];
     credentials: Credential[];
     igpPrompt: string;
     useTokenizerCaching: boolean;
@@ -1339,6 +1345,11 @@ export interface Chat {
     modelPresetId?: string;
     /** Set on an imported chat: its binding needs the user's confirmation before it is sent. */
     bindingReview?: boolean;
+    /**
+     * The id of the chat's chosen Draft hook (`inputHooks`); nothing validates it against the hook list, so an absent,
+     * stale, or BTW id reads as no hook (`draftHookOf`).
+     */
+    draftHookId?: string;
     /*
      * Translation settings (read through `shared/translation/chatSettings.ts`, missing means off).
      * List fields, stored as sent.

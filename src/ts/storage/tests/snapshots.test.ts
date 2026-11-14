@@ -132,10 +132,11 @@ const COMPONENT_REMOVED_KEYS = [
 ];
 
 /**
- * Removed later: the saved toggle presets hold free user text like `globalChatVariables` and
- * `customPromptTemplateToggle`, and the blocked Realm creators are third-party ids and names.
+ * Removed later: the saved toggle presets and the input hooks' prompts hold free user text like
+ * `globalChatVariables` and `customPromptTemplateToggle`, and the blocked Realm creators are
+ * third-party ids and names.
  */
-const LATER_REMOVED_KEYS = ["togglePresets", "blockedRealmCreators"];
+const LATER_REMOVED_KEYS = ["togglePresets", "inputHooks", "blockedRealmCreators"];
 
 /** The report's filter: the component's removal list, the later removals, and whether `key` is dropped. */
 function componentDropped(key: string): boolean {
@@ -206,6 +207,9 @@ function fixture(): AnyRecord {
         plugins: [],
         enabledModules: [],
         loreBook: [{ name: "L0", data: [] }],
+        inputHooks: [
+            { id: "h1", name: "Private", type: "draft", prompt: "private hook prompt", model: { mode: "inherit" } },
+        ],
     };
 }
 
@@ -460,6 +464,7 @@ describe("buildSettingsReport", () => {
             "claudeAPIKey",
             "hypaV3",
             "togglePresets",
+            "inputHooks",
         ]) {
             expect(Object.hasOwn(report, dropped), dropped).toBe(false);
         }
@@ -471,6 +476,8 @@ describe("buildSettingsReport", () => {
         const report = buildSettingsReport();
         const text = JSON.stringify(report);
         expect(text).not.toContain("sk-secret-in-record");
+        expect(rootSnapshot().inputHooks).toEqual([expect.objectContaining({ prompt: "private hook prompt" })]);
+        expect(text).not.toContain("private hook prompt");
         expect(text).toContain('"theme":"dark"');
         report.theme = "light";
         (report.meta as AnyRecord).protocol = "x:";

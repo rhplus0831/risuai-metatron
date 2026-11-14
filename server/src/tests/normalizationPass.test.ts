@@ -94,10 +94,60 @@ const parseToken = (token: string) => {
 };
 
 describe("a fresh store", () => {
+    it("stores the default English Draft hook at startup and reads it without writing", () => {
+        const file = path.join(tempDir(), "resources.sqlite");
+        const store = open(file);
+        const expected = [
+            {
+                id: "default-translate",
+                name: "Translate",
+                type: "draft",
+                prompt: "Translate the following user message into English. Preserve names, commands, markdown, and inlay tags. Output only the translated message.",
+                model: { mode: "inherit" },
+            },
+        ];
+        // Inspect the persisted row before the first resource read: reads must not materialize it.
+        const before = rawRows(file);
+        const row = before.find((row) => row.kind === "inputHooks" && row.id === "main");
+        expect(row).toBeDefined();
+        expect(JSON.parse(row!.data)).toEqual(expected);
+        expect(row!.revision).toBe(1);
+        const writes = store.writeCount();
+        const kind = defaults.get("inputHooks")!;
+        expect(store.get(kind, "main")?.data).toEqual(expected);
+        expect(store.readKinds([kind]).kinds.inputHooks[0].data).toEqual(expected);
+        expect(store.writeCount()).toBe(writes);
+        expect(rawRows(file)).toEqual(before);
+    });
+
+    it("preserves a saved input hook list and then an explicit empty list across store reopens", () => {
+        const file = path.join(tempDir(), "resources.sqlite");
+        const kind = defaults.get("inputHooks")!;
+        let store = open(file);
+        const saved = [
+            {
+                id: "polish",
+                name: "Polish",
+                type: "draft",
+                prompt: "Polish my text.",
+                translation: true,
+                model: { mode: "profile", profileId: "profile-not-in-this-store" },
+            },
+            { id: "explain", name: "Explain", type: "btw", prompt: "Explain my text.", model: { mode: "inherit" } },
+        ];
+        for (const list of [saved, []]) {
+            store.put(kind, "main", list, store.get(kind, "main")!.revision);
+            stores.pop()!.close();
+            store = open(file);
+            expect(store.get(kind, "main")?.data).toEqual(list);
+            expect(store.writeCount()).toBe(0);
+        }
+    });
+
     it("holds every materialize singleton at revision 1 as its normalizer's fixed point, and nothing else", () => {
         const store = open(path.join(tempDir(), "resources.sqlite"));
         expect(store.writeCount()).toBe(materialized.length);
-        expect(materialized.length).toBe(22);
+        expect(materialized.length).toBe(23);
         const state = observe(store);
         for (const kind of allDefaults) {
             const records = state.kinds[kind.name];

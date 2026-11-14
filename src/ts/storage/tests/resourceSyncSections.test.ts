@@ -270,6 +270,30 @@ afterEach(() => {
 });
 
 describe("fixed point and no echo (the convergence rule) on the real server store", () => {
+    it("reloads the whole input hook list on a conflict between edits to different hooks", async () => {
+        const store = await StoreBackedServer.create();
+        try {
+            const hooks = [
+                { id: "first", name: "First", type: "draft", prompt: "First prompt.", model: { mode: "inherit" } },
+                { id: "second", name: "Second", type: "btw", prompt: "Second prompt.", model: { mode: "inherit" } },
+            ];
+            store.set("inputHooks", "main", hooks);
+            const tab = await boot(store);
+            expect(tab.settings.inputHooks).toEqual(hooks);
+            const remote = [hooks[0], { ...hooks[1], prompt: "Remote edit." }];
+            store.set("inputHooks", "main", remote);
+            tab.settings.inputHooks[0].prompt = "Local edit.";
+            expect((await tab.sync.flushResources()).discarded).toEqual(["inputHooks/main"]);
+            expect(store.record("inputHooks", "main")!.data).toEqual(remote);
+            expect(tab.settings.inputHooks).toEqual(remote);
+            const reloaded = await boot(store);
+            expect(reloaded.settings.inputHooks).toEqual(remote);
+            expect(reloaded.bootBatches).toEqual([]);
+        } finally {
+            store.close();
+        }
+    });
+
     it("writes only modules and plugins on a first boot from a fresh store, and nothing on the next", async () => {
         const store = await StoreBackedServer.create();
         try {
@@ -442,6 +466,13 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             settings.characterOrder.push("z");
             settings.authRefreshes.push({ url: "u2", tokenUrl: "t2", refreshToken: "r2", clientId: "c2" } as any);
             settings.customModels.push({ id: "m2", internalId: "i2", name: "M2" } as any);
+            settings.inputHooks.push({
+                id: "h2",
+                name: "H2",
+                type: "btw",
+                prompt: "Explain.",
+                model: { mode: "inherit" },
+            });
             settings.credentials.push({ id: "key-1", name: "Key", type: "custom" });
             settings.enabledModules.push("mod2");
             settings.statics.messages += 1;
@@ -474,6 +505,13 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
                 updatedAt: 30,
             };
             expect(store.record("togglePresets", "main")!.data).toEqual([editedTogglePreset]);
+            expect(store.record("inputHooks", "main")!.data.at(-1)).toEqual({
+                id: "h2",
+                name: "H2",
+                type: "btw",
+                prompt: "Explain.",
+                model: { mode: "inherit" },
+            });
             expect(Object.hasOwn(store.record("llmSecrets", "main")!.data.credentials, "__proto__")).toBe(true);
             expect(store.record("llmSecrets", "main")!.data.credentials.__proto__).toEqual({ key: "proto2" });
             expect(store.record("llmSecrets", "main")!.data.credentials["key-1"]).toEqual({ key: "q" });

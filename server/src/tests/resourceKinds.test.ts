@@ -575,6 +575,52 @@ const CASES: KindCase[] = [
         refused: "customModels entries need string id and internalId",
     },
     {
+        kind: "inputHooks",
+        // One Draft hook that translates into English.
+        fresh: [
+            {
+                id: "default-translate",
+                name: "Translate",
+                type: "draft",
+                prompt: "Translate the following user message into English. Preserve names, commands, markdown, and inlay tags. Output only the translated message.",
+                model: { mode: "inherit" },
+            },
+        ],
+        // Malformed entries and a repeated id are dropped rather than refused; `translation` stays
+        // only as `true` on a Draft hook, a malformed model reads as inherit, other keys go.
+        write: [
+            {
+                id: "d1",
+                name: "D",
+                type: "draft",
+                prompt: "p",
+                translation: true,
+                model: { mode: "profile", profileId: "pr1" },
+                extra: 1,
+            },
+            { id: "b1", name: "B", type: "btw", prompt: "q", translation: true, model: { mode: "profile" } },
+            { id: "d1", name: "again", type: "draft", prompt: "r", model: { mode: "inherit" } },
+            { id: "x1", name: "X", type: "other", prompt: "s", model: { mode: "inherit" } },
+            "not a hook",
+        ],
+        stored: [
+            {
+                id: "d1",
+                name: "D",
+                type: "draft",
+                prompt: "p",
+                translation: true,
+                model: { mode: "profile", profileId: "pr1" },
+            },
+            { id: "b1", name: "B", type: "btw", prompt: "q", model: { mode: "inherit" } },
+        ],
+        // A saved empty list stays empty.
+        update: [],
+        updated: [],
+        invalid: { hooks: [] },
+        refused: "inputHooks must be an array",
+    },
+    {
         kind: "credentials",
         fresh: [],
         // A key's value is an `llmSecrets` credential, and only a Vertex key keeps its client email.
@@ -616,6 +662,29 @@ const CASES: KindCase[] = [
 ];
 
 describe("every registered kind over the resource routes", () => {
+    it("keeps input hooks when an older tab replaces a section using its own field list", async () => {
+        const s = await server();
+        const fresh = (await (await s.get("inputHooks", "main")).json()) as Stored;
+        const hooks = [
+            { id: "polish", name: "Polish", type: "draft", prompt: "My private prompt.", model: { mode: "inherit" } },
+        ];
+        const saved = await s.put("inputHooks", "main", { baseRevision: fresh.revision, data: hooks });
+        expect(saved.status).toBe(200);
+        const storedHooks = (await saved.json()) as Stored;
+        expect(storedHooks.data).toEqual(hooks);
+
+        const section = (await (await s.get("memoryTranslateMedia", "main")).json()) as Stored;
+        // An older tab projects only the fields it knows, even if its flat snapshot includes hooks.
+        const olderFields = ["translator", "useAutoTranslateInput", "sdSteps"];
+        const flat: Record<string, unknown> = { ...(section.data as object), inputHooks: hooks, sdSteps: 31 };
+        const data = Object.fromEntries(olderFields.map((field) => [field, flat[field]]));
+        expect(data).not.toHaveProperty("inputHooks");
+        const updated = await s.put("memoryTranslateMedia", "main", { baseRevision: section.revision, data });
+        expect(updated.status).toBe(200);
+        expect(((await updated.json()) as Stored).data).toMatchObject({ sdSteps: 31 });
+        expect(await (await s.get("inputHooks", "main")).json()).toEqual(storedHooks);
+    });
+
     it("the table names every registered kind, and the registry names every shared kind", () => {
         const registered = DEFAULT_RESOURCE_KINDS.map((kind) => kind.name).sort();
         expect(CASES.map((c) => c.kind).sort()).toEqual(registered);

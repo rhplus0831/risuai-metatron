@@ -34,6 +34,8 @@ export const DISPLAY_KIND_CLASSIFICATION = {
     hypaV3Presets: "drop",
     // Applying a saved toggle preset writes keyed chat metadata; display reads the resolved variables.
     togglePresets: "drop",
+    // Input hooks run in the tab before a send; the display transform reads no hook.
+    inputHooks: "drop",
     // CBS model metadata and prefill support resolve custom model definitions.
     customModels: "keep",
     // Merged into LLM request settings; display Lua cannot request, and embeddings use their own keys.

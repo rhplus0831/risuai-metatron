@@ -613,6 +613,34 @@ describe("buildUpstreamDatabase: presets and the root", () => {
 });
 
 describe("buildUpstreamDatabase: settings", () => {
+    it("omits the input hook list and Draft hook ids from every exported chat", async () => {
+        const snapshot = await snapshotOf((w) => {
+            w.put("inputHooks", "main", [
+                { id: "polish", name: "Polish", type: "draft", prompt: "Private prompt.", model: { mode: "inherit" } },
+            ]);
+            for (const type of ["character", "group"]) {
+                w.put("characters", type, { chaId: type, name: type, type });
+                for (const id of ["one", "two"]) {
+                    w.chat(type, id, {
+                        name: id,
+                        draftHookId: id === "one" ? "polish" : "missing-hook",
+                        message: [{ role: "user", data: `${type} ${id}`, chatId: "m" }],
+                    });
+                }
+            }
+        });
+        const { db } = exportOf(snapshot);
+        expect(db).not.toHaveProperty("inputHooks");
+        for (const type of ["character", "group"]) {
+            const chats = chatsOf(db, type);
+            expect(chats.map((chat) => chat.name)).toEqual(["one", "two"]);
+            for (const chat of chats) {
+                expect(chat).not.toHaveProperty("draftHookId");
+                expect(chat.message).toEqual([{ role: "user", data: `${type} ${chat.name}`, chatId: "m" }]);
+            }
+        }
+    });
+
     it("omits owned plugin storage from upstream exports and counts every excluded entry", async () => {
         const snapshot = await snapshotOf((w) => {
             w.put(RESOURCE_KIND.pluginStorage, "main", {

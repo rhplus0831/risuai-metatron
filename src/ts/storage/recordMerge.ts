@@ -66,6 +66,7 @@ const COLLECTION_MERGE_POLICIES = {
     modelProfiles: "nonemptyItems",
     togglePresets: "items",
     customModels: "items",
+    inputHooks: "whole",
     translatorPresets: "selectedItems",
     hypaV3Presets: "selectedItems",
     loreBook: "whole",

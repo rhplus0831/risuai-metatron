@@ -130,6 +130,7 @@ const REPORT_REMOVED_KEYS: ReadonlySet<string> = new Set([
     "translatorPresets",
     "translatorPresetId",
     "customModels",
+    "inputHooks",
     "credentials",
     "mcpURLs",
     "authRefreshes",

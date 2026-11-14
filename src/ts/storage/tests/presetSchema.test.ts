@@ -1080,15 +1080,17 @@ describe("field-to-resource partition", () => {
         expect(COLLECTION_FIELDS.statics).toBe("statics");
     });
 
-    it("lists five sections and sixteen collections, two of them with a selection field, modelPresets and modelProfiles among them", () => {
+    it("lists five sections and seventeen collections, two of them with a selection field, modelPresets, modelProfiles, and inputHooks among them", () => {
         expect(Object.keys(SECTION_KIND)).toHaveLength(5);
         expect(Object.keys(SECTION_FIELDS).sort()).toEqual(Object.keys(SECTION_KIND).sort());
-        expect(Object.keys(COLLECTION_KIND)).toHaveLength(16);
+        expect(Object.keys(COLLECTION_KIND)).toHaveLength(17);
         expect(Object.keys(COLLECTION_FIELDS).sort()).toEqual(Object.keys(COLLECTION_KIND).sort());
         expect(COLLECTION_KIND.modelPresets).toBe("modelPresets");
         expect(COLLECTION_FIELDS.modelPresets).toBe("modelPresets");
         expect(COLLECTION_KIND.modelProfiles).toBe("modelProfiles");
         expect(COLLECTION_FIELDS.modelProfiles).toBe("modelProfiles");
+        expect(COLLECTION_KIND.inputHooks).toBe("inputHooks");
+        expect(COLLECTION_FIELDS.inputHooks).toBe("inputHooks");
         expect(COLLECTION_SELECTION_FIELDS).toEqual({
             translatorPresets: "translatorPresetId",
             hypaV3Presets: "hypaV3PresetId",

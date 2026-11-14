@@ -67,7 +67,7 @@ export function createTranslatorStep(index: number): TranslatorStep {
     };
 }
 
-function normalizeStepModel(value: unknown): TranslatorStepModel {
+export function normalizeStepModel(value: unknown): TranslatorStepModel {
     if (isPlainObject(value) && value.mode === "profile" && isRecordId(value.profileId)) {
         return { mode: "profile", profileId: value.profileId };
     }

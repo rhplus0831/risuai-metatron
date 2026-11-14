@@ -34,6 +34,9 @@ callers:
 - `shared/recordPatch.ts`, `shared/mutationValidation.ts`: patch validation/application and mutation errors.
 - `shared/ooc.ts`: the OOC session's stored shapes, limits, validators, and pure readers (`oocTail`, `oocToggleValues`,
   `oocPrune`).
+- `shared/inputHooks.ts`: the input hook shape, limit (`MAX_INPUT_HOOKS`), default list, and normalizer, and the pure
+  prompt helpers (`draftHookOf`, `inputHookHistoryCounts`, `inputHookMessages`), which fill the slots in one pass and
+  reuse the translator's ChatML parser and history format.
 - `shared/chatCheckpoints.ts`, `shared/jobs.ts`, `shared/chatBinding.ts`, `shared/chatLoadPages.ts`, `shared/ids.ts`:
   checkpoint, job, binding, chat load-count, and id helpers; their domain guides own semantics.
 
@@ -98,6 +101,10 @@ Kinds (`shared/resources.ts`):
   (`SECTION_FIELDS`) and the collections of `COLLECTION_FIELDS`, served under the same flat names. `translatorPresets`
   and `hypaV3Presets` hold `{ items, selectedId }` (served as `translatorPresetId`, `hypaV3PresetId`); `togglePresets`
   is a plain list, default `[]`.
+- `inputHooks` is a plain list merged whole (`recordMerge.ts`); a missing record is materialized with
+  `defaultInputHooks()` (one Draft hook), a saved empty list stays empty, and the server refuses a write that is not a
+  list but drops malformed entries from one. It is its own kind, not a section field, so a tab that does not know it
+  never writes it.
 - `llmSecrets` is write-only and read masked; it also holds the entry map `credentials` (`SECRET_ENTRY_MAPS`), each
   named API key's `key` by id ([credential binding](llm-requests.md)), and normalization drops older `modelPresets` and
   `customModels` maps.
@@ -211,6 +218,9 @@ carry them. The Translation page can clear `LLMTranslateCache` through `clearLLM
   (`assertLoreOverrides`) and keeps only the first override per `entry.id`, the one the merge applies. The upstream
   import drops a refused value and keeps the chat. Checkpoints capture it, the transform cache key includes it, the
   upstream export strips it.
+- `draftHookId?: string` names the chat's Draft hook (`shared/inputHooks.ts`). Nothing validates it against the hook
+  list: a missing, stale, or BTW id reads as no hook (`draftHookOf`), so deleting a hook sweeps no chat. A new chat has
+  none. Checkpoints keep the current value, copies, branches, and imports keep it, the upstream export strips it.
 - `loreBudgetWarnOff?: true` silences the context meter's left-out lore warning ([UI theming](ui-theming.md)) and turns
   off the screen's lore budget send stop ([chat pipeline](chat-pipeline.md#send)); present only while set, not a summary
   field. Copies and chat imports keep it, checkpoints keep the current value, the upstream export strips it.
@@ -281,7 +291,9 @@ carry them. The Translation page can clear `LLMTranslateCache` through `clearLLM
   another kind), is forwarded (`FORWARDED_ROOT_KEYS`: served from the selected preset or persona, or this client's
   selection), or is dropped (`DROPPED_FIELDS`). The boot, the records, the views, the projections, and `applyToMirror`
   iterate those lists, so a new field needs only its place there and its `SectionSpec` entry.
-- A new kind also needs `server/src/data/kinds.ts` and the branches in `bootstrap.ts` and `resourceSync.svelte.ts`.
+- A new kind also needs `server/src/data/kinds.ts` and its `RESOURCE_KIND` and `BOOT_CACHE_ELIGIBILITY` entries. A
+  settings collection then needs only `COLLECTION_KIND`, `COLLECTION_FIELDS`, and a `recordMerge.ts` policy: the boot
+  and `resourceSync.svelte.ts` iterate those maps. Any other kind needs its own branches there.
 - A section or settings collection's projection must equal the server's normalized text for an unchanged record
   (`normalize(project(assemble(normalized))) === normalized`); otherwise every boot writes it. So the client applies no
   default to those fields, and boot code must not rewrite them.

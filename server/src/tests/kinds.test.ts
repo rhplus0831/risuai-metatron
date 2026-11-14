@@ -27,6 +27,7 @@ const settingsKinds = [
     "hypaV3Presets",
     "togglePresets",
     "customModels",
+    "inputHooks",
     "credentials",
     "enabledModules",
     "statics",
@@ -44,7 +45,7 @@ const accepts = (name: string, id: string, input: unknown) => {
 };
 
 describe("createKindRegistry", () => {
-    it("holds the seven record kinds (no root), five of them singletons, and the 21 settings singletons (including credentials and togglePresets); presets and the settings kinds materialize", () => {
+    it("holds the seven record kinds (no root), five of them singletons, and the 22 settings singletons (including credentials, togglePresets, and inputHooks); presets and the settings kinds materialize", () => {
         expect([...kinds.keys()]).toEqual([...recordKinds, ...settingsKinds]);
         expect(kinds.has("root")).toBe(false);
         expect([...kinds.values()].filter((k) => k.singleton).map((k) => k.name)).toEqual([

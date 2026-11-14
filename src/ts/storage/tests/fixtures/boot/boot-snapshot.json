@@ -598,6 +598,15 @@
   "seperateModelsForAxModels": false,
   "seperateModels": { "memory": "", "emotion": "", "translate": "", "otherAx": "" },
   "customModels": [],
+  "inputHooks": [
+    {
+      "id": "default-translate",
+      "name": "Translate",
+      "type": "draft",
+      "prompt": "Translate the following user message into English. Preserve names, commands, markdown, and inlay tags. Output only the translated message.",
+      "model": { "mode": "inherit" }
+    }
+  ],
   "credentials": [],
   "modelPresets": [
     {
