@@ -11,7 +11,15 @@ import type { MemoryHost, MemoryTokenizer } from "./host.ts";
  * `supaMemoryData` and `lastMemory`, falling back to the stored fields when a result has none.
  */
 
-type SupaResult = { currentTokens: number; chats: OpenAIChat[]; error?: string; memory?: string; lastId?: string };
+type SupaResult = {
+    currentTokens: number;
+    chats: OpenAIChat[];
+    error?: string;
+    /** Stored memory has no usable cursor in the supplied history. */
+    cursorMissing?: true;
+    memory?: string;
+    lastId?: string;
+};
 
 /**
  * `supaMemory` of the former `src/ts/process/memory/supaMemory.ts` (SupaMemory, and HypaMemory with `asHyper`),
@@ -117,6 +125,7 @@ export async function supaMemory(
                             currentTokens: currentTokens,
                             chats: chats,
                             error: "hypaMemory: chat ID not found",
+                            cursorMissing: true,
                         };
                     }
 
@@ -130,6 +139,7 @@ export async function supaMemory(
                                 currentTokens: currentTokens,
                                 chats: chats,
                                 error: "SupaMemory: chat ID not found",
+                                cursorMissing: true,
                             };
                         }
                         if (chats[0].memo === id) {

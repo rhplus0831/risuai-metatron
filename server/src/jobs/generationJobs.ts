@@ -374,12 +374,14 @@ function canonicalJson(value: unknown): string {
 
 /**
  * SHA-256 of exactly kind, characterId, chatId, command, input, userMessageId, continueMessageId and rerollMessageId,
- * with recursively sorted JSON object keys, array order kept, and absent fields encoded as null.
+ * plus oocExchangeId only when present, with recursively sorted JSON object keys, array order kept,
+ * and the other absent fields encoded as null. Omitting the OOC key preserves existing receipts.
  * Revision, binding ids, hooks and client id are excluded: retry identity follows the action and
  * input even after its owner's stored revision or connection changed.
  */
 function requestFingerprint(body: GenerationCreateBody): string {
-    const { characterId, chatId, input, userMessageId, continueMessageId, rerollMessageId } = body.context;
+    const { characterId, chatId, input, userMessageId, continueMessageId, rerollMessageId, oocExchangeId } =
+        body.context;
     return createHash("sha256")
         .update(
             canonicalJson({
@@ -391,6 +393,7 @@ function requestFingerprint(body: GenerationCreateBody): string {
                 userMessageId,
                 continueMessageId,
                 rerollMessageId,
+                ...(oocExchangeId !== undefined ? { oocExchangeId } : {}),
             }),
         )
         .digest("hex");

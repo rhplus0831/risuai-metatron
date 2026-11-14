@@ -46,6 +46,8 @@ export type GenerationContext = {
     continueMessageId?: string;
     /** Regenerate the newest reply in place; accepted only for a reroll job. */
     rerollMessageId?: string;
+    /** Assemble a preview on a detached chat for this stored OOC exchange; accepted only for preview jobs. */
+    oocExchangeId?: string;
     speakerChaId?: string;
     /**
      * A send's user message: the id the job appends `input` under after the input trigger and
@@ -233,9 +235,17 @@ export type GenerationErrorStage = (typeof GENERATION_ERROR_STAGES)[number];
  * not fit under the preset's cap (`memoryRequiredOverCap`), which the memory health badge shows, a
  * record-now window skipped (`memoryRecordSkipped`), whose message is a reason token the tab translates,
  * or a send that asked to stop when the lore budget left an entry out (`loreOverBudget`), whose
- * terminal carries the budget pass's result as `lore`.
+ * terminal carries the budget pass's result as `lore`. An OOC preview can also fail because its
+ * exchange or anchor is gone, or its memory cursor is outside the anchored history.
  */
-export const GENERATION_ERROR_CODES = ["memoryRequiredOverCap", "memoryRecordSkipped", "loreOverBudget"] as const;
+export const GENERATION_ERROR_CODES = [
+    "memoryRequiredOverCap",
+    "memoryRecordSkipped",
+    "loreOverBudget",
+    "oocExchangeGone",
+    "oocAnchorGone",
+    "oocMemoryAhead",
+] as const;
 
 /** A machine-readable generation failure code with specialized client handling. */
 export type GenerationErrorCode = (typeof GENERATION_ERROR_CODES)[number];
@@ -359,6 +369,8 @@ export type GenerationPreviewResult = {
     messages: OpenAIChat[];
     context: MessageGenerationInfo["context"];
     memoryBlock?: number[];
+    /** Confirms the preview used the OOC exchange's detached chat and forced toggles. */
+    ooc?: true;
 };
 
 /** A `memoryRecord` command's `done.result`: work finished in the job, or accepted by the task queue. */

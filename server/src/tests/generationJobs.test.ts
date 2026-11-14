@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { EventEmitter } from "node:events";
@@ -314,6 +315,57 @@ function setup(
         follow,
     };
 }
+
+describe("preview request identity", () => {
+    it("distinguishes OOC exchanges while replaying receipts made without an OOC field", async () => {
+        const s = setup({ receipts: true, now: () => 1000 });
+        const body = { kind: "preview" as const, clientId: "tab", requestId: "legacy-preview", context: s.context() };
+        // The pre-OOC wire identity includes absent legacy fields as null, with sorted keys.
+        const legacyFingerprint = createHash("sha256")
+            .update(
+                '{"characterId":"c","chatId":"k","command":null,"continueMessageId":null,"input":"","kind":"preview","rerollMessageId":null,"userMessageId":null}',
+            )
+            .digest("hex");
+        s.receipts!.admit({
+            jobId: "legacy-job",
+            requestId: body.requestId,
+            clientId: "tab",
+            epoch: s.store.epoch(),
+            kind: "preview",
+            characterId: "c",
+            chatId: "k",
+            admittedAt: 1000,
+            fingerprint: legacyFingerprint,
+        });
+        s.receipts!.end("legacy-job", 1000, {
+            jobId: "legacy-job",
+            kind: "preview",
+            state: "ended",
+            characterId: "c",
+            chatId: "k",
+            epoch: s.store.epoch(),
+            terminal: { type: "done", epoch: s.store.epoch(), revision: s.revision() },
+        });
+        expect(s.jobs.create(body, s.store.epoch())).toMatchObject({ ok: true, jobId: "legacy-job", replayed: true });
+
+        const started = withResolvers<void>();
+        const pending = s.run(async (job) => {
+            started.resolve();
+            await aborted(job);
+        });
+        const ooc = { ...body, requestId: "ooc-preview", context: { ...body.context, oocExchangeId: "first" } };
+        const first = s.jobs.create(ooc, s.store.epoch());
+        expect(first).toMatchObject({ ok: true });
+        if (!first.ok) throw new Error(JSON.stringify(first));
+        await started.promise;
+        expect(s.jobs.create(ooc, s.store.epoch())).toMatchObject({ ok: true, jobId: first.jobId, replayed: true });
+        expect(
+            s.jobs.create({ ...ooc, context: { ...ooc.context, oocExchangeId: "second" } }, s.store.epoch()),
+        ).toMatchObject({ ok: false, status: 409, body: { error: "requestIdReused" } });
+        s.jobs.beginShutdown();
+        await pending;
+    });
+});
 
 describe("job chat checkpoints", () => {
     const query = "&hydration=patch&rows=streamed&proto=1";

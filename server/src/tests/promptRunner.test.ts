@@ -3278,3 +3278,386 @@ describe("in-place reply candidates", () => {
         vi.clearAllTimers();
     });
 });
+
+describe("OOC previews", () => {
+    const history = { type: "chat", rangeStart: 0, rangeEnd: "end" };
+    const plain = (text: string) => ({ type: "plain", type2: "normal", role: "system", text });
+    const log = (anchorMessageId: string | null = "anchor") => ({
+        earlier: {
+            id: "earlier",
+            segment: "discussion",
+            anchorMessageId,
+            question: "Earlier question",
+            answer: "Earlier answer",
+            time: 1,
+        },
+        target: { id: "target", segment: "discussion", anchorMessageId, question: "Current question", time: 2 },
+    });
+    const messages = [
+        { role: "user", chatId: "anchor", data: "Story at anchor" },
+        { role: "char", chatId: "after", data: "STORY AFTER ANCHOR" },
+    ];
+    const tail = [
+        { role: "user", content: "Earlier question" },
+        { role: "assistant", content: "Earlier answer" },
+        { role: "user", content: "Current question" },
+    ];
+    const previewResult = (result: Awaited<ReturnType<typeof job>>) => {
+        expect(result.terminal, JSON.stringify(result.terminal)).toMatchObject({ type: "done" });
+        if (result.terminal?.type !== "done") throw new Error(JSON.stringify(result.terminal));
+        return result.terminal.result as import("../../../shared/jobs.ts").GenerationPreviewResult;
+    };
+    const contents = (result: import("../../../shared/jobs.ts").GenerationPreviewResult) =>
+        result.messages.map(({ role, content }) => ({ role, content }));
+    let preset: any;
+    let profile: any;
+    let providers: any;
+    let memory: any;
+    beforeEach(async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        vi.setSystemTime(new Date("2026-11-01T00:00:00Z"));
+        preset = (await single("presets")).data.find((entry: any) => entry.id === presetId);
+        profile = (await single("modelProfiles")).data.find((entry: any) => entry.id === profileId);
+        providers = (await single("providers")).data;
+        memory = (await single("memoryTranslateMedia")).data;
+        await patchProviders({ presetChain: "", useStreaming: false, inlayErrorResponse: false, requestRetrys: 0 });
+        await patchPreset("modelProfiles", profileId, { maxContext: 4000 });
+        await patchPreset("presets", presetId, {
+            regex: [],
+            maxResponse: 100,
+            promptTemplate: [history],
+            oocToggles: { flag: "1", other: "1" },
+            customToggle: "flag=Flag\nother=Other",
+            promptSettings: { ...preset.promptSettings, trimStartNewChat: true, sendName: false },
+        });
+        onRequest = null;
+        plainAnswer = null;
+    });
+    afterEach(async () => {
+        onRequest = null;
+        plainAnswer = null;
+        await patchPreset("presets", presetId, preset);
+        await patchPreset("modelProfiles", profileId, profile);
+        await patchProviders(providers);
+        await patchSection("memoryTranslateMedia", memory);
+        vi.useRealTimers();
+    });
+
+    it("keeps ordinary preview messages and result shape when the chat has OOC data", async () => {
+        const seed = (chat: Record<string, unknown>) =>
+            seedCharacter({ name: "Ann", extra: { firstMessage: "" }, messages, chat });
+        const baseline = previewResult(await job("preview", await seed({})));
+        const withOoc = previewResult(await job("preview", await seed({ oocLog: log(), oocToggles: { flag: "1" } })));
+        expect(withOoc.messages).toEqual(baseline.messages);
+        expect(contents(withOoc)).toEqual(
+            messages.map(({ role, data }) => ({ role: role === "char" ? "assistant" : role, content: data })),
+        );
+        expect(withOoc).not.toHaveProperty("ooc");
+    });
+
+    it.each([
+        { label: "preset toggles", anchor: "anchor", chatToggles: undefined, expected: "ON/1/1" },
+        {
+            label: "chat toggles replacing the preset",
+            anchor: "anchor",
+            chatToggles: { flag: "0" },
+            expected: "OFF/0/0",
+        },
+        { label: "a null anchor", anchor: null, chatToggles: undefined, expected: "ON/1/1" },
+    ])("uses the anchored history and OOC tail with $label", async ({ anchor, chatToggles, expected }) => {
+        await patchPreset("presets", presetId, {
+            promptTemplate: [
+                plain(
+                    "{{#when::toggle::flag}}ON{{:else}}OFF{{/when}}/{{getglobalvar::toggle_flag}}/{{getglobalvar::toggle_other}}",
+                ),
+                history,
+            ],
+        });
+        const chaId = await seedCharacter({
+            name: "Ann",
+            extra: { firstMessage: "" },
+            messages,
+            chat: {
+                oocLog: log(anchor),
+                GLGlobalVariables: { toggle_flag: "0", toggle_other: "0" },
+                ...(chatToggles ? { oocToggles: chatToggles } : {}),
+            },
+        });
+        const before = JSON.stringify(await readChat(chaId));
+        const result = previewResult(await job("preview", chaId, { oocExchangeId: "target" }));
+        expect(result.ooc).toBe(true);
+        expect(contents(result)).toEqual([
+            { role: "system", content: expected },
+            ...(anchor === null ? [] : [{ role: "user", content: "Story at anchor" }]),
+            ...tail,
+        ]);
+        const tailIds = result.messages.slice(-tail.length).map((row) => row.memo);
+        expect(
+            tailIds.every((id) => typeof id === "string" && id.length > 0 && !messages.some((m) => m.chatId === id)),
+        ).toBe(true);
+        expect(new Set(tailIds).size).toBe(tail.length);
+        expect(JSON.stringify(await readChat(chaId))).toBe(before);
+    });
+
+    it.each([false, true])(
+        "keeps CBS, regex, variables and trimming on the copy when assembly fails: %s",
+        async (fail) => {
+            await patchPreset("modelProfiles", profileId, { maxContext: 600 });
+            await patchPreset("presets", presetId, { promptTemplate: [plain("Variable={{getvar::local}}"), history] });
+            const chaId = await seedCharacter({
+                name: "Ann",
+                extra: { firstMessage: "" },
+                chat: { oocLog: log(), GLGlobalVariables: { toggle_flag: "0" }, scriptstate: { $local: "stored" } },
+                messages: [
+                    { role: "user", chatId: "old", data: "TRIM THIS HISTORY ".repeat(400) },
+                    {
+                        role: "char",
+                        chatId: "cbs",
+                        data: "{{setvar::local::copy}}{{#when::toggle::flag}}Forced history{{:else}}Stored history{{/when}}",
+                    },
+                    { role: "user", chatId: "anchor", data: "raw INJECT" },
+                    messages[1],
+                ],
+                customscript: [
+                    { comment: "rewrite", in: "raw", out: "rewritten", type: "editprocess", flag: "g", ableFlag: true },
+                    {
+                        comment: "save processed text",
+                        in: "INJECT",
+                        out: "@@inject",
+                        type: "editprocess",
+                        flag: "g",
+                        ableFlag: true,
+                    },
+                ],
+                triggerscript: [
+                    trig("start", [ef("v2Impersonate", { role: "user", ...v("START MUST NOT RUN") })]),
+                    ...(fail
+                        ? [
+                              trig("manual", [
+                                  {
+                                      type: "triggerlua",
+                                      code: `listenEdit("editRequest", function(id, data) return {{role="system", content=string.rep("Overfull request ", 1000)}} end)`,
+                                  },
+                              ]),
+                          ]
+                        : []),
+                ],
+            });
+            const before = JSON.stringify(await readChat(chaId));
+            const result = await job("preview", chaId, { oocExchangeId: "target" });
+            expect(JSON.stringify(await readChat(chaId))).toBe(before);
+            if (fail) {
+                expect(result.terminal).toMatchObject({
+                    type: "error",
+                    message: expect.stringContaining("At token rechecking"),
+                });
+            } else {
+                expect(contents(previewResult(result))).toEqual([
+                    { role: "system", content: "Variable=copy" },
+                    { role: "assistant", content: "Forced history" },
+                    { role: "user", content: "rewritten" },
+                    ...tail,
+                ]);
+            }
+        },
+    );
+
+    it("keeps an interleaved writer's stored edit and lets editRequest read and edit only the preview copy", async () => {
+        const chaId = await seedCharacter({
+            name: "Ann",
+            extra: { firstMessage: "", desc: "Stored description" },
+            messages,
+            chat: { oocLog: log() },
+            triggerscript: [
+                trig("manual", [
+                    {
+                        type: "triggerlua",
+                        code: `listenEdit("editRequest", function(id, data)
+                local prior = getChatData(id, 0)
+                setChat(id, 0, prior .. " edited locally")
+                setDescription(id, "PREVIEW DESCRIPTION")
+                data[1].content = getChatData(id, 0) .. " / " .. getDescription(id)
+                return data
+            end)`,
+                    },
+                ]),
+            ],
+        });
+        const before = await readChat(chaId);
+        const characterBefore = JSON.stringify((await api(`/api/resources/characters/${chaId}`)).body);
+        let wrote = false;
+        const result = previewResult(
+            await job(
+                "preview",
+                chaId,
+                { oocExchangeId: "target" },
+                {
+                    hooks: { ...NO_GENERATION_HOOKS, scripts: ["editprocess"] },
+                    answerCallback: (event) => {
+                        if (!wrote) {
+                            wrote = true;
+                            runnerStore.applyChanges({
+                                chats: [
+                                    {
+                                        characterId: chaId,
+                                        chatId: "k",
+                                        baseRevision: before.revision,
+                                        ops: [{ op: "setText", id: "anchor", text: "Other writer" }],
+                                    },
+                                ],
+                            });
+                        }
+                        return { outcome: "answered", value: event.payload.text };
+                    },
+                },
+            ),
+        );
+        expect(wrote).toBe(true);
+        expect(contents(result)).toEqual([
+            { role: "user", content: "Story at anchor edited locally / Stored description" },
+            ...tail,
+        ]);
+        const expected = structuredClone(before.data);
+        expected.message[0].data = "Other writer";
+        expect(JSON.stringify((await readChat(chaId)).data)).toBe(JSON.stringify(expected));
+        expect(JSON.stringify((await api(`/api/resources/characters/${chaId}`)).body)).toBe(characterBefore);
+    });
+
+    it.each([false, true])(
+        "keeps SupaMemory writes on the copy and its requests tool-free when assembly fails: %s",
+        async (fail) => {
+            await patchSection("memoryTranslateMedia", {
+                supaModelType: "subModel",
+                hypaV3: false,
+                hypav2: false,
+                hanuraiEnable: false,
+                hypaMemory: false,
+            });
+            await patchPreset("modelProfiles", profileId, { maxContext: 600 });
+            const modules = await single("modules");
+            const moduleData = modules.data ?? [];
+            expect(
+                (
+                    await batch({
+                        ops: [
+                            {
+                                kind: "modules",
+                                id: "main",
+                                baseRevision: modules.revision ?? null,
+                                data: [...moduleData, { id: "ooc-dice", name: "Dice", mcp: { url: "internal:dice" } }],
+                            },
+                        ],
+                    })
+                ).status,
+            ).toBe(200);
+            try {
+                const chaId = await seedCharacter({
+                    name: "Ann",
+                    extra: { firstMessage: "", supaMemory: true },
+                    messages: [
+                        ...Array.from({ length: 8 }, (_, i) => ({
+                            role: i % 2 ? "char" : "user",
+                            chatId: `old-${i}`,
+                            data:
+                                `History ${i}: ` +
+                                "The party explored the forest and discussed the journey. ".repeat(12),
+                        })),
+                        ...messages,
+                    ],
+                    chat: { oocLog: log(), modules: ["ooc-dice"] },
+                    triggerscript: fail
+                        ? [
+                              trig("manual", [
+                                  {
+                                      type: "triggerlua",
+                                      code: `listenEdit("editRequest", function(id, data) return {{role="system", content=string.rep("Overfull request ", 1000)}} end)`,
+                                  },
+                              ]),
+                          ]
+                        : [],
+                });
+                const before = JSON.stringify(await readChat(chaId));
+                const requestsBefore = bodies.length;
+                plainAnswer = () => "The party explored a forest.";
+                const result = await job("preview", chaId, { oocExchangeId: "target" });
+                expect(JSON.stringify(await readChat(chaId))).toBe(before);
+                const requests = bodies.slice(requestsBefore);
+                expect(requests.length).toBeGreaterThan(0);
+                expect(JSON.stringify(requests)).toContain("History 0");
+                expect(JSON.stringify(requests)).not.toContain("STORY AFTER ANCHOR");
+                for (const request of requests) expect(request.tools ?? []).toEqual([]);
+                if (fail) {
+                    expect(result.terminal).toMatchObject({
+                        type: "error",
+                        message: expect.stringContaining("At token rechecking"),
+                    });
+                } else {
+                    expect(JSON.stringify(contents(previewResult(result)))).toContain("The party explored a forest.");
+                }
+            } finally {
+                const current = await single("modules");
+                expect(
+                    (
+                        await batch({
+                            ops: [{ kind: "modules", id: "main", baseRevision: current.revision, data: moduleData }],
+                        })
+                    ).status,
+                ).toBe(200);
+            }
+        },
+    );
+
+    it.each([
+        {
+            label: "a missing exchange",
+            code: "oocExchangeGone",
+            chat: { oocLog: {} },
+            memoryAhead: false,
+            group: false,
+        },
+        {
+            label: "a missing anchor",
+            code: "oocAnchorGone",
+            chat: { oocLog: log("gone") },
+            memoryAhead: false,
+            group: false,
+        },
+        {
+            label: "memory beyond the anchor",
+            code: "oocMemoryAhead",
+            chat: { oocLog: log(), supaMemoryData: "after\nSummary beyond the anchor" },
+            memoryAhead: true,
+            group: false,
+        },
+        { label: "a group chat", code: undefined, chat: { oocLog: log() }, memoryAhead: false, group: true },
+    ])("refuses an OOC preview with $label without changing the chat", async ({ code, chat, memoryAhead, group }) => {
+        if (memoryAhead) {
+            await patchPreset("modelProfiles", profileId, { maxContext: 600 });
+            await patchSection("memoryTranslateMedia", {
+                supaModelType: "subModel",
+                hypaV3: false,
+                hypav2: false,
+                hanuraiEnable: false,
+                hypaMemory: false,
+            });
+        }
+        const chaId = await seedCharacter({
+            name: "Ann",
+            ...(group ? ({ type: "group", members: [] } as const) : {}),
+            extra: { firstMessage: "", supaMemory: memoryAhead },
+            chat,
+            messages: [
+                { ...messages[0], data: memoryAhead ? "Old history ".repeat(800) : messages[0].data },
+                messages[1],
+            ],
+        });
+        const before = JSON.stringify(await readChat(chaId));
+        const result = await job("preview", chaId, { oocExchangeId: "target" });
+        expect(result.terminal).toMatchObject({
+            type: "error",
+            ...(code ? { code } : { message: expect.stringMatching(/group/i) }),
+        });
+        if (group) expect(result.terminal).not.toHaveProperty("code");
+        expect(JSON.stringify(await readChat(chaId))).toBe(before);
+    });
+});

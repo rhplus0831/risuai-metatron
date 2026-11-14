@@ -607,6 +607,31 @@ describe("generation jobs over HTTP and WebSocket", () => {
         });
     });
 
+    it("accepts an OOC exchange only on a preview and preserves it in the runner context", async () => {
+        await listen();
+        const ctx = { ...(await context()), oocExchangeId: "exchange-one" };
+        for (const kind of ["send", "continue", "reroll", "group", "previewPrompt", "command"]) {
+            const refused = await create({
+                kind,
+                context: ctx,
+                clientId: "tab",
+                ...(kind === "command" ? { command: { type: "button", data: "" } } : {}),
+            });
+            expect(refused, kind).toMatchObject({
+                status: 400,
+                body: { error: expect.stringContaining("oocExchangeId") },
+            });
+        }
+        const observed = withResolvers<string | undefined>();
+        steps.push((job) => {
+            observed.resolve(job.context.oocExchangeId);
+            job.emit({ type: "done", revision: ctx.chatRevision });
+        });
+        const accepted = await create({ kind: "preview", context: ctx, clientId: "tab" });
+        expect(accepted.status).toBe(200);
+        expect(await observed.promise).toBe("exchange-one");
+    });
+
     it("validates the body and needs a JWT (never the password) on every route", async () => {
         await listen();
         const body = { kind: "send", context: await context(), clientId: "tab" };

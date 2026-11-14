@@ -729,6 +729,39 @@ it.each([
 });
 
 describe("HypaV3", () => {
+    it("keeps taskless OOC summary checkpoints on the copy and selects them into the preview", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        try {
+            await patchSettings({ hypaV3: true });
+            const chaId = await seedCharacter();
+            await setChatMeta(chaId, {
+                oocLog: {
+                    target: {
+                        id: "target",
+                        segment: "discussion",
+                        anchorMessageId: "m23",
+                        question: "Explain the journey",
+                        time: 1,
+                    },
+                },
+            });
+            const before = JSON.stringify(await readChat(chaId));
+            const characterBefore = JSON.stringify(await readCharacter(chaId));
+            const { terminal } = await job("preview", chaId, { oocExchangeId: "target" });
+            expect(JSON.stringify(await readChat(chaId))).toBe(before);
+            expect(JSON.stringify(await readCharacter(chaId))).toBe(characterBefore);
+            expect(terminal, JSON.stringify(terminal)).toMatchObject({ type: "done", result: { ooc: true } });
+            if (terminal?.type !== "done") throw new Error(JSON.stringify(terminal));
+            const result = terminal.result as import("../../../shared/jobs.ts").GenerationPreviewResult;
+            expect(summaries().length).toBeGreaterThan(0);
+            expect(mains()).toEqual([]);
+            expect(memoryCard(result.messages)?.content).toContain("Summary 1: events happened.");
+            expect(result.messages.at(-1)).toMatchObject({ role: "user", content: "Explain the journey" });
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it(
         "requests the summaries without streaming, stores them before the main request, puts the memory card in the prompt, and reuses the vectors on the next send",
         async () => {

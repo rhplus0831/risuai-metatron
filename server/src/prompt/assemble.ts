@@ -150,7 +150,7 @@ export type AssemblyHost = {
     chatRef: { chaId: string; chatId: string };
     /** `risuChatParser` with the job's chat as its default `chatRef`. */
     parse(text: string, arg?: CbsParseArg): string;
-    /** The job's chat as stored now (`chatNow()`). */
+    /** The job's current chat (`chatNow()`), including local edits when its scope is detached. */
     chat(): Chat;
     /** `findCharacterbyId`: a blank "Unknown Character" when there is none. */
     findCharacter(id: string | undefined): character;
@@ -164,7 +164,7 @@ export type AssemblyHost = {
      */
     activateLore(options?: { stopOverBudget?: boolean }): Promise<LoreActivation>;
     scripts: ScriptProcessor;
-    /** The `start` trigger on a copy of the chat, applied; its result. */
+    /** The `start` trigger on a copy of the chat, applied; null for an OOC preview. */
     runStartTrigger(): Promise<TriggerResult | null | undefined>;
     /** `runLuaEditTrigger(currentChar, "editRequest", formated)`. */
     runEditRequest(formated: OpenAIChat[]): Promise<OpenAIChat[]>;
@@ -279,6 +279,8 @@ export type AssemblyMemoryRun = {
 };
 
 export type AssembleInput = {
+    /** The job uses an OOC exchange's anchored history; missing memory cursors get a coded alert. */
+    ooc?: boolean;
     chatAdditonalTokens: number;
     continue: boolean;
     /** The message a continue extends (the runner's resolved target); absent for a preview. */
@@ -2146,6 +2148,9 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                 );
                 host.fence();
                 if (sp.error) {
+                    if (input.ooc && sp.cursorMissing) {
+                        return { type: "alert", error: sp.error, code: "oocMemoryAhead" };
+                    }
                     return { type: "error", error: sp.error };
                 }
                 chats = sp.chats;

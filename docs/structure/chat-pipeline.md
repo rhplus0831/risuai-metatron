@@ -200,6 +200,9 @@ in [network jobs](network-jobs.md#job-recovery).
 - Input auto-translation (`createInputTranslation`) and suggestions call the tab request layer; the `previewRequest`
   hotkey calls `previewChat("previewPrompt")` for a server preview job. Display translation is a UI concern. Group
   continues use the server speaker loop.
+- An OOC question's prompt is a `preview` job with `context.oocExchangeId` that writes nothing to the stored chat
+  ([Prompt job execution](server-generation.md#prompt-job-execution)) and appends no message. No tab caller sets the
+  field yet.
 - Chat paging renders loaded messages only (`chatLoadInitialPages`, `chatLoadAdditionalPages`); it does not fetch
   history.
 

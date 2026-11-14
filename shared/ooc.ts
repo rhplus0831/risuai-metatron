@@ -42,7 +42,7 @@ function compareExchanges(a: OocExchange, b: OocExchange): number {
     return a.time - b.time || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
-/** Builds the question's rows; the caller must ensure their derived ids name no stored message. */
+/** Builds the question's rows; callers turning them into messages must assign fresh message ids. */
 export function oocTail(log: OocLog | undefined, exchangeId: string): OocTailRow[] {
     if (!log || !Object.hasOwn(log, exchangeId)) {
         return [];
@@ -116,7 +116,8 @@ export function oocPrune(
     return candidates.length < needed ? null : candidates.slice(0, needed).map((exchange) => exchange.id);
 }
 
-function isOocId(value: unknown): value is string {
+/** Checks the shared exchange and segment id format. */
+export function isOocId(value: unknown): value is string {
     return (
         typeof value === "string" &&
         value.length > 0 &&

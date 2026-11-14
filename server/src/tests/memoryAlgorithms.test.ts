@@ -233,6 +233,10 @@ describe("the server ports against the browser fixture", () => {
         "v3exp-existing-voyage-groups": [queued(1), queued(0)],
     };
 
+    // The server marks a stored memory cursor missing from the history, which the browser's result
+    // never carried, so an OOC preview can tell it from other memory errors.
+    const serverCursorMissing = new Set(["supa-id-not-found", "hyper-id-not-found"]);
+
     for (const scenario of scenarios) {
         it(`${scenario.name}: the port's outcome is the browser's`, async () => {
             const browser = fixture.cases[scenario.name];
@@ -246,6 +250,9 @@ describe("the server ports against the browser fixture", () => {
                 ...browser,
                 ...(keys ? { cacheKeys: keys } : {}),
                 ...(leading ? { progress: [...leading, ...browser.progress] } : {}),
+                ...(serverCursorMissing.has(scenario.name)
+                    ? { result: { ...(browser.result as object), cursorMissing: true } }
+                    : {}),
             });
         });
     }

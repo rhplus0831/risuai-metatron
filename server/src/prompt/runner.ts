@@ -45,6 +45,7 @@ import { LLMFormat } from "../../../shared/llm.ts";
 import type { StreamResponseChunk } from "../../../shared/llm/request.ts";
 import { resolveModelInfo } from "../../../shared/llm/models.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
+import { oocTail, oocToggleValues } from "../../../shared/ooc.ts";
 import { ChatTokenCounter } from "../../../shared/prompt/chatTokens.ts";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
 import { tokenizerIdentityKey } from "../../../shared/tokenizerChoice.ts";
@@ -73,6 +74,7 @@ import {
     refreshCharacter,
     refreshChatAfterWrite,
     refreshChat,
+    replaceScopeChat,
     scopeChat,
     scopeHistoryChat,
 } from "../jobs/jobScope.ts";
@@ -323,12 +325,15 @@ function reportStage(job: RunningJob, stage: GenerationStage): void {
  *    `presetChain`, as the tab runs it before `sendChat`.
  * 3. `presetChain` (picked by name with `deps.random` before input): the scope now becomes the picked
  *    preset's (the keep rules of `setPreset`), later callbacks name it, and `preset { presetId }` tells the tab.
+ *    A preview naming `oocExchangeId` then owns a detached chat: history through the exchange's
+ *    anchor, its OOC tail, and the chat's or picked preset's forced toggles. Groups are refused.
  * 4. The speakers: the character, or the group's members in `groupChat`'s order (one budget, one
  *    effect count, each speaker's own bindings and request projection). A preview stops after the
  *    first; a speaker that fails ends the loop.
  * 5. Per speaker: a continue's message is locked first (`begin`, `accepted`); the prompt is assembled
  *    (`assemblePrompt`); `preview` ends with the messages and their context report, `previewPrompt`
- *    with the provider body.
+ *    with the provider body. An OOC preview skips the start trigger, makes memory requests without
+ *    tools, and applies assembly and editRequest chat edits only to its copy; character writes fail.
  *    Otherwise the request runs, and the reply is appended (or the continued message extended) and
  *    streamed: `chunk` per provider chunk, a raw checkpoint every 3 s, and the final raw write at the
  *    end, after an abort (inside the grace), or after a read failure.
@@ -437,6 +442,7 @@ async function runSend(
         throw new GenerationRunnerError(404, "The job's character no longer exists");
     }
     const preview = job.kind === "preview" || job.kind === "previewPrompt";
+    const oocExchangeId = job.kind === "preview" ? job.context.oocExchangeId : undefined;
 
     // `presetChain` (the tab's top-level send picks one prompt preset for the whole send): picked and
     // read with the admitted configuration, applied after the input stage, where the tab's `sendChat`
@@ -548,6 +554,40 @@ async function runSend(
     const sendOwner = scope.db.characters.find((entry) => entry?.chaId === characterId);
     if (!sendOwner) {
         throw new GenerationRunnerError(404, "The job's character no longer exists");
+    }
+
+    if (oocExchangeId !== undefined) {
+        if (sendOwner.type === "group") {
+            throw new GenerationRunnerError(400, "OOC previews are not supported for group chats");
+        }
+        refreshChat(store, scope);
+        const chat = scopeChat(scope);
+        if (!chat?.oocLog || !Object.hasOwn(chat.oocLog, oocExchangeId)) {
+            throw new GenerationRunnerError(404, "The OOC exchange no longer exists", { code: "oocExchangeGone" });
+        }
+        const exchange = chat.oocLog[oocExchangeId];
+        const anchor = exchange.anchorMessageId;
+        const anchorIndex = anchor === null ? -1 : chat.message.findIndex((message) => message.chatId === anchor);
+        if (anchor !== null && anchorIndex === -1) {
+            throw new GenerationRunnerError(404, "The OOC anchor message no longer exists", { code: "oocAnchorGone" });
+        }
+        const copy = structuredClone(chat);
+        const messageIds = new Set(chat.message.map((message) => message.chatId));
+        copy.message = copy.message.slice(0, anchorIndex + 1);
+        for (const row of oocTail(chat.oocLog, oocExchangeId)) {
+            let chatId: string;
+            do {
+                chatId = randomUUID();
+            } while (messageIds.has(chatId));
+            messageIds.add(chatId);
+            copy.message.push({ chatId, role: row.role, data: row.data, time: exchange.time });
+        }
+        copy.GLGlobalVariables = {
+            ...copy.GLGlobalVariables,
+            ...oocToggleValues(chat.oocToggles, scope.db.oocToggles),
+        };
+        replaceScopeChat(scope, copy);
+        scope.detached = true;
     }
 
     // The speakers.
@@ -839,6 +879,7 @@ export function createJobMemoryHost(arg: {
                 "memory",
                 nativeCtx,
                 "memory",
+                ...(scope.detached ? ([{ toolSet: null }] as const) : []),
             );
             setup.check();
             return response;
@@ -1030,6 +1071,7 @@ async function runSpeaker(arg: {
     ) => CheckpointOutcome[];
 }): Promise<SpeakerResult> {
     const { job, deps, state, scope, owner, speakerId, writeOwn } = arg;
+    const ooc = job.kind === "preview" && job.context.oocExchangeId !== undefined;
     const { store, kinds } = deps;
     // Every speaker and every round of one starts over: its setup, then assembly, request, tail.
     state.stage = "setup";
@@ -1654,6 +1696,9 @@ async function runSpeaker(arg: {
                     options ? services.activateLore(nativeCtx, options) : services.activateLore(nativeCtx),
                 scripts,
                 runStartTrigger: async () => {
+                    if (ooc) {
+                        return null;
+                    }
                     const result = await setup.runOnCopy(
                         currentChar,
                         "start",
@@ -1757,6 +1802,7 @@ async function runSpeaker(arg: {
                 generationId,
                 stageTimings,
                 ...(arg.stopOverLoreBudget ? { stopOverLoreBudget: true } : {}),
+                ...(ooc ? { ooc: true } : {}),
             },
         ).catch((error: unknown) => {
             if (toolListFailure !== undefined && error === toolListFailure) {
@@ -1796,6 +1842,7 @@ async function runSpeaker(arg: {
                 messages: formated,
                 context: generationInfo.context,
                 ...(assembled.memoryBlock ? { memoryBlock: assembled.memoryBlock } : {}),
+                ...(ooc ? { ooc: true } : {}),
             };
             return { type: "preview", result };
         }

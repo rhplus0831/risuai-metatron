@@ -131,6 +131,17 @@ refusal the memory step recovered from or outlived replaces no later error.
   ([Lore](chat-pipeline.md#lore)): `assemblePrompt` returns an `alert` coded `loreOverBudget` before history, and the
   `error` terminal carries `lore` (`parseLoreBudgetStop`). What ran before activation stays; no reply request is made.
   Later rounds and speakers, previews, and command-sequence parts (the part view drops the field) never stop.
+- `context.oocExchangeId` (kept by `parseCreateBody` for a `preview` only, refused for other kinds; in
+  `requestFingerprint` only when present) makes an OOC preview. After the `presetChain` pick, `runSend` reads the
+  exchange from the stored `oocLog` and sets `scope.detached`: the job's chat is its own copy, cut after the exchange's
+  anchor, with the `oocTail` rows appended under fresh message ids and `oocToggleValues` over its `GLGlobalVariables`.
+  The result carries `ooc: true`.
+- A detached scope: `refreshChat` and the metadata queue leave the copy alone, `writeChat` applies its ops to it
+  (`reduceChatOps` in `server/src/jobs/chatOpsReducer.ts`), and character, persona, and `risuAccess` resource writes
+  refuse. Media is stored as in any preview. No start trigger runs and memory requests list no tools. The registry's
+  `sentChat` and hydration stay on the stored chat.
+- OOC failure codes: `oocExchangeGone`, `oocAnchorGone`, and `oocMemoryAhead` (SupaMemory or legacy Hypa finds no cursor
+  in the cut history). A group chat is refused with a plain error.
 - After final chat writes, `runPromptSend` hands off translations and due memory input, detached, before returning.
 
 ### Reroll in place
