@@ -1,12 +1,13 @@
 import { onChatRemoved, type ChatRemoval } from "../storage/chatStore.svelte";
 import { pageDraftJournal, type ComposerValue, type DraftJournal } from "../storage/draftJournal";
-import { composerSendText, type SendDraft } from "./sendDraft";
+import { composerSendText, type ComposerRetry, type SendDraft } from "./sendDraft";
 
 /**
- * The chat screen's composers, one per chat (`createComposer`). `input`, `translate`, and `files` belong
+ * The chat screen's composers, one per chat (`createComposer`). `input`, `draft`, `translate`, and `files` belong
  * to the shown chat; `switchTo(key)` stashes the previous chat's draft and loads the next one, and
  * `at(key)` routes a delayed write to the chat it captured. Setters track edits; getters never schedule
- * writes, and opening an empty composer is not an edit.
+ * writes, and opening an empty composer is not an edit. A separate text revision invalidates hook
+ * results after main or draft text changes, but not translation or attachment changes.
  *
  * Without a journal everything stays in memory. With one (the screen passes `pageDraftJournal()`), edits
  * are journaled after `debounceMs` (500 ms) of quiet per chat, and every dirty chat flushes on page hide
@@ -14,7 +15,8 @@ import { composerSendText, type SendDraft } from "./sendDraft";
  *
  * - `beginSend` journals the consumed composer at once as the hand-off, with its message id and, when
  *   the caller passes one (an ordinary Send; Continue passes none), its request id and the current
- *   epoch. Typing or clearing during the send writes only the draft row.
+ *   epoch. A draft send marks which box was sent and retains the whole raw composer. Typing or clearing
+ *   during the send writes only the draft row.
  * - `settleSend` with `landed` false updates the request identity of both rows, for hidden or unmounted
  *   chats too (`updateComposerRequest` in `src/ts/storage/draftJournal.ts`: a known end clears its
  *   request id from the matching attempt, an uncertain end adds it to a matching row that has none, and
@@ -25,15 +27,16 @@ import { composerSendText, type SendDraft } from "./sendDraft";
  * - `restore` applies a journal read only to the same still-empty, unchanged composer; a draft typed
  *   during a send wins over the hand-off. The caller's `RestoreChecks` decide the rest: a landed send is
  *   dropped, an unknown load outcome keeps the draft and its message id, a missing inlay is dropped and a
- *   failed lookup keeps it, and dropping an attachment drops both ids. It returns a request id only when
+ *   failed lookup keeps it, and dropping an attachment drops both ids and the sent-box marker. It returns
+ *   the sent text and, for a draft send, the whole composer for recovery. It returns a request id only when
  *   the row's `requestEpoch` is the current epoch; another epoch keeps the text and message id.
  * - A module-level `onChatRemoved` subscription clears the chat's journal rows even without a mounted
  *   screen, invalidates pending restores and writes, and fences late `at(key)` callbacks until the key
  *   is shown again.
  */
 
-/** A chat composer's main text, translation text, and ordered attachment ids. */
-export type ComposerDraft = { input: string; translate: string; files: string[] };
+/** A chat composer's main text, draft text, translation text, and ordered attachment ids. */
+export type ComposerDraft = { input: string; draft: string; translate: string; files: string[] };
 /** A chat's live composer while shown, or its stashed draft otherwise. */
 export type ComposerView = ComposerDraft & { addFile(id: string): void; removeFileAt(index: number): void };
 
@@ -41,7 +44,7 @@ type ComposerOptions = {
     journal?: DraftJournal;
     debounceMs?: number;
     epoch?: () => string;
-    retryIdFor?: (key: string, text: string) => Pick<SendDraft, "userMessageId" | "requestId"> | undefined;
+    retryIdFor?: (key: string, composer: ComposerDraft) => ComposerRetry | undefined;
 };
 type RestoreChecks = {
     landed(userMessageId: string): Promise<boolean | undefined>;
@@ -50,13 +53,16 @@ type RestoreChecks = {
 
 class ComposerState implements ComposerDraft {
     input = $state("");
+    draft = $state("");
     translate = $state("");
     files: string[] = $state([]);
 }
 
-const empty = (draft: ComposerDraft) => draft.input === "" && draft.translate === "" && draft.files.length === 0;
-const snapshot = (draft?: ComposerDraft): ComposerDraft => ({
+const empty = (draft: ComposerDraft) =>
+    draft.input === "" && draft.draft === "" && draft.translate === "" && draft.files.length === 0;
+const snapshot = (draft?: Omit<ComposerDraft, "draft"> & { draft?: string }): ComposerDraft => ({
     input: draft?.input ?? "",
+    draft: draft?.draft ?? "",
     translate: draft?.translate ?? "",
     files: [...(draft?.files ?? [])],
 });
@@ -105,6 +111,7 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
     const drafts = new Map<string, ComposerDraft>();
     const dirty = new Set<string>();
     const edits = new Map<string, number>();
+    const textRevisions = new Map<string, number>();
     const timers = new Map<string, ReturnType<typeof setTimeout>>();
     const lastWritten = new Map<string, string>();
     const removedKeys = new Set<string>();
@@ -116,6 +123,10 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
 
     const read = (key: string) => (key === shown ? live : drafts.get(key));
     const version = (key: string) => edits.get(key) ?? 0;
+    const textRevision = (key: string) => textRevisions.get(key) ?? 0;
+    const textChanged = (key: string | null) => {
+        if (key !== null) textRevisions.set(key, textRevision(key) + 1);
+    };
     const removed = (key: string) =>
         removedKeys.has(key) || (removedCharacters.has(key.split("\u0000")[0]) && !reopened.has(key));
     const requestIdentity = (requestId?: string) => {
@@ -156,10 +167,16 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
             await journal.removeComposer(key);
             return;
         }
-        const retry = retryIdFor?.(key, composerSendText(draft));
+        const retry = retryIdFor?.(key, draft);
         const value: ComposerValue = {
             ...draft,
-            ...(retry === undefined ? {} : { userMessageId: retry.userMessageId, ...requestIdentity(retry.requestId) }),
+            ...(retry === undefined
+                ? {}
+                : {
+                      userMessageId: retry.userMessageId,
+                      ...requestIdentity(retry.requestId),
+                      ...(retry.sent ? { sent: retry.sent } : {}),
+                  }),
         };
         const text = JSON.stringify(value);
         if (takeOver === undefined && lastWritten.get(key) === text) {
@@ -187,6 +204,8 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
         }
         if (key === shown) return;
         generation++;
+        textChanged(shown);
+        textChanged(key);
         if (shown !== null) {
             if (empty(live) || removed(shown)) drafts.delete(shown);
             else drafts.set(shown, snapshot(live));
@@ -218,6 +237,7 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
                 drafts.set(key!, draft);
             }
             draft[field] = value;
+            if (field === "input" || field === "draft") textChanged(key);
             changed(key);
         }
         return {
@@ -226,6 +246,12 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
             },
             set input(value: string) {
                 set("input", value);
+            },
+            get draft() {
+                return current()?.draft ?? "";
+            },
+            set draft(value: string) {
+                set("draft", value);
             },
             get translate() {
                 return current()?.translate ?? "";
@@ -258,7 +284,7 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
 
     function beginSend(
         key: string,
-        send: { snapshot: ComposerDraft; userMessageId: string; requestId?: string },
+        send: { snapshot: ComposerDraft; userMessageId: string; requestId?: string; sent?: "draft" },
     ): void {
         if (destroyed || removed(key)) return;
         cancelTimer(key);
@@ -273,6 +299,7 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
             state: "sending",
             userMessageId: send.userMessageId,
             ...requestIdentity(send.requestId),
+            ...(send.sent ? { sent: send.sent } : {}),
         });
     }
 
@@ -298,20 +325,22 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
     }
 
     /**
-     * Puts a failed send's text back in the chat's composer and writes the draft at once, replacing the
-     * hand-off; a file queued meanwhile stays and makes the draft a new input without the send's ids.
+     * Restores a failed draft send's whole composer, or an ordinary send's text into the main box, and
+     * writes at once, replacing the hand-off. The caller gates a draft send on all four parts being empty;
+     * an ordinary send leaves queued files alone, making a new input without the send's ids.
      */
-    function placeSend(key: string, text: string, userMessageId: string): void {
-        at(key).input = text;
+    function placeSend(key: string, send: SendDraft): void {
+        if (send.composer) Object.assign(at(key), snapshot(send.composer));
+        else at(key).input = send.input;
         if (!journal || destroyed || removed(key)) return;
         dirty.add(key);
-        void write(key, userMessageId);
+        void write(key, send.userMessageId);
     }
 
     async function restore(
         key: string,
         checks: RestoreChecks,
-    ): Promise<{ userMessageId: string; text: string; requestId?: string } | undefined> {
+    ): Promise<{ userMessageId: string; text: string; requestId?: string; composer?: ComposerDraft } | undefined> {
         const edit = version(key);
         const switched = generation;
         const current = () =>
@@ -342,6 +371,7 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
         if (!current()) return;
         const files = value.files.filter((_, i) => exists[i] !== false);
         Object.assign(live, snapshot({ ...value, files }));
+        textChanged(key);
         if (handoff) {
             // The restored draft replaces the hand-off at once, so neither an edit nor clearing the
             // composer can bring the send's text back later. A dropped attachment drops both ids.
@@ -357,7 +387,8 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
             if (value.userMessageId !== undefined)
                 return {
                     userMessageId: value.userMessageId,
-                    text: composerSendText(live),
+                    text: composerSendText(live, value.sent),
+                    ...(value.sent === "draft" ? { composer: snapshot(live) } : {}),
                     ...(value.requestId !== undefined && value.requestEpoch === epoch?.()
                         ? { requestId: value.requestId }
                         : {}),
@@ -377,12 +408,14 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
         for (const candidate of new Set([
             ...drafts.keys(),
             ...edits.keys(),
+            ...textRevisions.keys(),
             ...reopened,
             ...(shown === null ? [] : [shown]),
         ])) {
             if (!matches(candidate)) continue;
             cancelTimer(candidate);
             edits.set(candidate, version(candidate) + 1);
+            textChanged(candidate);
             dirty.delete(candidate);
             drafts.delete(candidate);
             lastWritten.delete(candidate);
@@ -404,6 +437,6 @@ export function createComposer({ journal, debounceMs = 500, epoch, retryIdFor }:
 
     return Object.assign(
         view(() => shown),
-        { switchTo, at, flush, beginSend, settleSend, placeSend, restore, destroy },
+        { switchTo, at, flush, beginSend, settleSend, placeSend, restore, destroy, textRevision },
     );
 }

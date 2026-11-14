@@ -22,6 +22,7 @@ const transcript = vi.hoisted(() => ({
 const io = vi.hoisted(() => ({
     server: null as FakeResourceServer | null,
     inlayWritten: null as (() => void) | null,
+    runInputHook: vi.fn<typeof import("src/ts/process/inputHooks").runInputHook>(),
     createJob: vi.fn<typeof import("src/ts/network/generationJobs").createGenerationJob>(),
     generationFetch: vi.fn<(path: string, init?: RequestInit) => Promise<Response>>(),
     selectFiles: vi.fn<typeof import("src/ts/util").selectMultipleFile>(),
@@ -116,7 +117,9 @@ async function mountComposer({
     configureChat,
     configureCharacter,
     chatLoadInitialPages,
+    characterId = "c",
 }: {
+    characterId?: string;
     reload?: boolean;
     configureChat?: (chat: Chat) => void;
     configureCharacter?: (character: Record<string, unknown>) => void;
@@ -139,6 +142,7 @@ async function mountComposer({
         return { default: stub.default };
     });
     io.createJob.mockReset();
+    io.runInputHook.mockReset();
     io.generationFetch.mockReset();
     io.confirm.mockReset().mockResolvedValue(false);
     io.alertError.mockReset();
@@ -166,6 +170,8 @@ async function mountComposer({
     const { seedResources } = await import("src/ts/storage/resourceSync.svelte");
     const { selectCharacter, selection } = await import("src/ts/storage/selection.svelte");
     const transport = await import("src/ts/network/generationJobs");
+    const hooks = await import("src/ts/process/inputHooks");
+    vi.spyOn(hooks, "runInputHook").mockImplementation(io.runInputHook);
     createHttpJob = transport.createGenerationJob;
     vi.spyOn(transport, "createGenerationJob").mockImplementation(io.createJob);
     const chats = ["a", "b"].map((id) => ({
@@ -182,7 +188,7 @@ async function mountComposer({
         bindedPersona: "persona",
     }));
     const character = {
-        chaId: "c",
+        chaId: characterId,
         type: "character",
         name: "C",
         image: "",
@@ -206,12 +212,15 @@ async function mountComposer({
         useAutoTranslateInput: false,
     });
     seedChats(
-        chats.map((data) => ({ characterId: "c", id: data.id, revision: "r1", data })),
-        [{ characterId: "c", revision: "o1", ids: ["a", "b"] }],
+        chats.map((data) => ({ characterId, id: data.id, revision: "r1", data })),
+        [{ characterId, revision: "o1", ids: ["a", "b"] }],
     );
-    seedResources({ epoch: io.server!.epoch, kinds: { characters: [{ id: "c", revision: "r1", data: character }] } });
-    selectCharacter("c");
-    selectChat("c", "a");
+    seedResources({
+        epoch: io.server!.epoch,
+        kinds: { characters: [{ id: characterId, revision: "r1", data: character }] },
+    });
+    selectCharacter(characterId);
+    selectChat(characterId, "a");
     selection.chatOpen = true;
     const journal = pageDraftJournal();
     await drive(journal.putComposer(b, { input: "B from a previous page", translate: "", files: [] }));
@@ -1485,3 +1494,359 @@ it("renders a memory health badge with the context meter off and opens the panel
     expect(target.querySelector("[data-memory-health-badge]")).toBeNull();
     hypaV3ModalOpen.set(false);
 });
+
+async function mountHookComposer(options: Parameters<typeof mountComposer>[0] = {}) {
+    const ui = await mountComposer({
+        configureChat: (chat) => {
+            chat.draftHookId = "draft-hook";
+        },
+        ...options,
+    });
+    const { settings } = await import("src/ts/storage/settingsViews.svelte");
+    settings.inputHooks = [
+        { id: "draft-hook", name: "Rewrite", type: "draft", prompt: "Rewrite {{content}}", model: { mode: "inherit" } },
+    ];
+    settings.ui.sendWithEnter = true;
+    flushSync();
+    const draft = () => ui.target.querySelector<HTMLTextAreaElement>("#messageInputDraft");
+    const translation = () => ui.target.querySelector<HTMLTextAreaElement>("#messageInputTranslate");
+    const enter = (node: HTMLTextAreaElement, value: string) => {
+        // Exercise the binding without starting an unrelated translator request.
+        const enabled = settings.memoryTranslateMedia.useAutoTranslateInput;
+        settings.memoryTranslateMedia.useAutoTranslateInput = false;
+        node.value = value;
+        node.dispatchEvent(new Event("input", { bubbles: true }));
+        settings.memoryTranslateMedia.useAutoTranslateInput = enabled;
+        flushSync();
+    };
+    const sendDraft = () =>
+        [...ui.target.querySelectorAll<HTMLButtonElement>("button")].find(
+            (button) => button.textContent.trim() === language.inputHooks.sendDraft,
+        )!;
+    const sendKey = (node = ui.input()) => {
+        node.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+        flushSync();
+    };
+    const boxes = () => [ui.input().value, draft()?.value ?? "", translation()?.value ?? ""];
+    return { ...ui, settings, draft, translation, enter, sendDraft, sendKey, boxes };
+}
+
+function holdHook() {
+    let resolve!: (text: string) => void;
+    let reject!: (error: Error) => void;
+    io.runInputHook.mockImplementationOnce(
+        () =>
+            new Promise<string>((yes, no) => {
+                resolve = yes;
+                reject = no;
+            }),
+    );
+    return { resolve: (text: string) => resolve(text), reject: (error: Error) => reject(error) };
+}
+
+it("runs the currently chosen hook without sending, preserves main text, and reloads the resulting draft", async () => {
+    const ui = await mountHookComposer();
+    const { findChat } = await import("src/ts/storage/chatStore.svelte");
+    const before = JSON.parse(JSON.stringify(findChat({ chaId: "c", chatId: "a" })));
+    expect(ui.draft()).not.toBeNull();
+    expect(ui.sendDraft().disabled).toBe(true);
+    ui.type("original main");
+    ui.enter(ui.draft()!, "previous draft");
+    // Lookup happens at Send, so edits to the selected hook after mount take effect.
+    ui.settings.inputHooks[0].prompt = "Updated prompt";
+    const pending = holdHook();
+    ui.click(ui.target.querySelector(".button-icon-send"));
+    expect(io.runInputHook).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ id: "draft-hook", prompt: "Updated prompt" }),
+        expect.objectContaining({
+            ref: { chaId: "c", chatId: "a" },
+            content: "original main",
+            draft: "previous draft",
+            signal: expect.any(AbortSignal),
+        }),
+    );
+    expect(ui.boxes()).toEqual(["original main", "previous draft", ""]);
+    expect(ui.input().readOnly).toBe(false);
+    expect(ui.draft()!.readOnly).toBe(false);
+    expect(ui.target.querySelector('[role="status"]')?.textContent).toBe(language.inputHooks.runningDraft);
+    pending.resolve("converted draft");
+    await until(() => ui.target.querySelector('[aria-labelledby="cancel"]') === null);
+    expect(ui.boxes()).toEqual(["original main", "converted draft", ""]);
+    expect(io.createJob).not.toHaveBeenCalled();
+    expect(findChat({ chaId: "c", chatId: "a" })).toEqual(before);
+    ui.hide();
+    expect(await drive(ui.journal.readComposer(a))).toEqual({
+        input: "original main",
+        draft: "converted draft",
+        translate: "",
+        files: [],
+    });
+    const reloaded = await mountHookComposer({ reload: true, configureChat: () => {} });
+    await until(() => reloaded.input().value === "original main");
+    expect(reloaded.draft()!.value).toBe("converted draft");
+    expect(io.alertError).not.toHaveBeenCalled();
+});
+
+it.each(["empty", "failure", "abort"] as const)(
+    "keeps both boxes on a hook %s and reports only the required alert",
+    async (outcome) => {
+        const ui = await mountHookComposer();
+        ui.type("original main");
+        ui.enter(ui.draft()!, "existing draft");
+        ui.settings.memoryTranslateMedia.useAutoTranslateInput = true;
+        flushSync();
+        ui.enter(ui.translation()!, "existing translation");
+        const files = await attachHookAudio(ui);
+        const pending = holdHook();
+        ui.sendKey();
+        if (outcome === "empty") pending.resolve(" \n ");
+        if (outcome === "failure") pending.reject(new Error("hook provider failed"));
+        if (outcome === "abort") {
+            const signal = io.runInputHook.mock.calls[0][1].signal;
+            ui.click(ui.target.querySelector('[aria-labelledby="cancel"]'));
+            expect(signal.aborted).toBe(true);
+            pending.reject(new DOMException("aborted", "AbortError"));
+        }
+        await until(() => ui.target.querySelector('[aria-labelledby="cancel"]') === null);
+        expect(ui.boxes()).toEqual(["original main", "existing draft", "existing translation"]);
+        ui.hide();
+        expect(await drive(ui.journal.readComposer(a))).toEqual({
+            input: "original main",
+            draft: "existing draft",
+            translate: "existing translation",
+            files,
+        });
+        expect(ui.target.querySelector("audio")).not.toBeNull();
+        expect(io.createJob).not.toHaveBeenCalled();
+        if (outcome === "abort") expect(io.alertError).not.toHaveBeenCalled();
+        else
+            expect(io.alertError).toHaveBeenCalledExactlyOnceWith(
+                outcome === "empty" ? language.errors.emptyText : "hook provider failed",
+            );
+    },
+);
+
+it.each(["main", "draft", "chat"] as const)(
+    "silently drops hook results and failures after the %s changes, even when restored",
+    async (changed) => {
+        const ui = await mountHookComposer();
+        ui.type("original main");
+        ui.enter(ui.draft()!, "existing draft");
+        for (const outcome of ["success", "failure"] as const) {
+            const pending = holdHook();
+            ui.sendKey();
+            if (changed === "chat") {
+                selectChat("c", "b");
+                flushSync();
+                selectChat("c", "a");
+                flushSync();
+            } else {
+                const node = changed === "main" ? ui.input() : ui.draft()!;
+                const original = node.value;
+                ui.enter(node, "edited meanwhile");
+                ui.enter(node, original);
+            }
+            if (outcome === "success") pending.resolve("outdated result");
+            else pending.reject(new Error("outdated error"));
+            await until(() => ui.target.querySelector('[aria-labelledby="cancel"]') === null);
+            expect(ui.boxes()).toEqual(["original main", "existing draft", ""]);
+            expect(io.alertError).not.toHaveBeenCalled();
+        }
+        expect(io.createJob).not.toHaveBeenCalled();
+    },
+);
+
+it("accepts a hook result after only the translation box changes", async () => {
+    const ui = await mountHookComposer();
+    ui.type("original main");
+    ui.settings.memoryTranslateMedia.useAutoTranslateInput = true;
+    flushSync();
+    const pending = holdHook();
+    ui.sendKey();
+    ui.enter(ui.translation()!, "translation edited meanwhile");
+    pending.resolve("converted draft");
+    await until(() => ui.target.querySelector('[aria-labelledby="cancel"]') === null);
+    expect(ui.boxes()).toEqual(["original main", "converted draft", "translation edited meanwhile"]);
+    expect(io.alertError).not.toHaveBeenCalled();
+    expect(io.createJob).not.toHaveBeenCalled();
+});
+
+it("refuses another Send, auto mode, reroll and Send Draft while a hook runs", async () => {
+    const ui = await mountHookComposer({
+        configureChat: (chat) => {
+            chat.draftHookId = "draft-hook";
+        },
+        configureCharacter: (character) => {
+            Object.assign(character, { type: "group", characters: [], characterTalks: [], characterActive: [] });
+        },
+    });
+    ui.type("original main");
+    ui.enter(ui.draft()!, "existing draft");
+    const pending = holdHook();
+    ui.sendKey();
+    ui.sendKey();
+    expect(ui.sendDraft().disabled).toBe(true);
+    ui.sendKey(ui.draft()!);
+    ui.input().dispatchEvent(
+        new KeyboardEvent("keydown", { key: "m", ctrlKey: true, bubbles: true, cancelable: true }),
+    );
+    ui.menu();
+    ui.click(ui.menuItem(language.autoMode));
+    await drive(Promise.resolve());
+    expect(io.runInputHook).toHaveBeenCalledTimes(1);
+    expect(io.createJob).not.toHaveBeenCalled();
+    expect(ui.boxes()).toEqual(["original main", "existing draft", ""]);
+    ui.click(ui.target.querySelector('[aria-labelledby="cancel"]'));
+    pending.resolve("ignored after Stop");
+    await until(() => ui.target.querySelector('[aria-labelledby="cancel"]') === null);
+});
+
+it.each(["Continue", "slash command", "empty main", "playground", "missing hook"] as const)(
+    "keeps the existing send path for %s",
+    async (kind) => {
+        const ui = await mountHookComposer({
+            characterId: kind === "playground" ? "§playground" : "c",
+            configureChat: (chat) => {
+                chat.draftHookId = kind === "missing hook" ? "deleted-hook" : "draft-hook";
+            },
+        });
+        const input = kind === "empty main" ? "" : kind === "slash command" ? "/comment command text" : "ordinary main";
+        ui.type(input);
+        io.createJob.mockImplementationOnce(() => new Promise(() => {}));
+        if (kind === "Continue") {
+            ui.menu();
+            ui.click(ui.menuItem(language.continueResponse));
+        } else ui.sendKey();
+        if (kind === "slash command") {
+            await until(() => ui.input().value === "");
+            const { findChat } = await import("src/ts/storage/chatStore.svelte");
+            expect(findChat({ chaId: "c", chatId: "a" })!.message.at(-1)!.data).toBe(
+                "earlier answer<Comment>\ncommand text\n</Comment>",
+            );
+            expect(io.createJob).not.toHaveBeenCalled();
+        } else {
+            await until(() => io.createJob.mock.calls.length === 1);
+            expect(io.createJob.mock.calls[0][0].context.input ?? "").toBe(input);
+            expect(ui.input().value).toBe("");
+        }
+        expect(io.runInputHook).not.toHaveBeenCalled();
+        if (kind === "playground" || kind === "missing hook") expect(ui.draft()).toBeNull();
+    },
+);
+
+async function attachHookAudio(ui: Awaited<ReturnType<typeof mountHookComposer>>) {
+    const written = new Promise<void>((resolve) => {
+        io.inlayWritten = resolve;
+    });
+    io.selectFiles.mockResolvedValue([{ name: "voice.mp3", data: new Uint8Array([1, 2, 3]) }]);
+    ui.menu();
+    ui.click(ui.menuItem(language.postFile));
+    await written;
+    await until(() => ui.target.querySelector("audio") !== null);
+    io.inlayWritten = null;
+    ui.hide();
+    return (await drive(ui.journal.readComposer(a)))!.files;
+}
+
+it("sends the draft with attachments, clears all four parts, and restores a failed send for an unchanged retry", async () => {
+    const ui = await mountHookComposer();
+    ui.type("original main");
+    ui.enter(ui.draft()!, "/draft text is not a command");
+    ui.settings.memoryTranslateMedia.useAutoTranslateInput = true;
+    flushSync();
+    ui.enter(ui.translation()!, "translation");
+    const files = await attachHookAudio(ui);
+    const saved = { input: "original main", draft: "/draft text is not a command", translate: "translation", files };
+    let refuse!: (error: Error) => void;
+    io.createJob.mockImplementationOnce(
+        () =>
+            new Promise((_, reject) => {
+                refuse = reject;
+            }),
+    );
+    ui.click(ui.sendDraft());
+    expect(ui.boxes()).toEqual(["", "", ""]);
+    expect(ui.target.querySelector("audio")).toBeNull();
+    await until(() => io.createJob.mock.calls.length === 1);
+    const request = io.createJob.mock.calls[0][0];
+    expect(request.context.input).toBe(`/draft text is not a command{{inlayed::${files[0]}}}`);
+    expect(await drive(ui.journal.readComposerSend(a))).toEqual({
+        ...saved,
+        state: "sending",
+        sent: "draft",
+        userMessageId: request.context.userMessageId,
+        requestId: request.requestId,
+        requestEpoch: io.server!.epoch,
+    });
+    refuse(new Error("create answer lost"));
+    await until(() => ui.input().value === "original main");
+    expect(ui.boxes()).toEqual(["original main", "/draft text is not a command", "translation"]);
+    await until(() => ui.target.querySelector("audio") !== null);
+    expect(await drive(ui.journal.readComposer(a))).toMatchObject({
+        ...saved,
+        sent: "draft",
+        userMessageId: request.context.userMessageId,
+    });
+    expect(await drive(ui.journal.readComposerSend(a))).toBeNull();
+    io.createJob.mockImplementationOnce(() => new Promise(() => {}));
+    ui.click(ui.sendDraft());
+    await until(() => io.createJob.mock.calls.length === 2);
+    expect(io.createJob.mock.calls[1][0].context).toMatchObject({
+        input: request.context.input,
+        userMessageId: request.context.userMessageId,
+    });
+    expect(io.createJob.mock.calls[1][0].requestId).toBe(request.requestId);
+    expect(io.runInputHook).not.toHaveBeenCalled();
+});
+
+it.each(["draft", "translation", "attachments"] as const)(
+    "keeps a failed draft send unplaced while newer %s occupy the composer, including after switching back",
+    async (part) => {
+        const ui = await mountHookComposer();
+        ui.type("original main");
+        ui.enter(ui.draft()!, "converted draft");
+        ui.settings.memoryTranslateMedia.useAutoTranslateInput = true;
+        flushSync();
+        ui.enter(ui.translation()!, "original translation");
+        const files = await attachHookAudio(ui);
+        const saved = { input: "original main", draft: "converted draft", translate: "original translation", files };
+        let refuse!: (error: Error) => void;
+        io.createJob.mockImplementationOnce(
+            () =>
+                new Promise((_, reject) => {
+                    refuse = reject;
+                }),
+        );
+        ui.click(ui.sendDraft());
+        await until(() => io.createJob.mock.calls.length === 1);
+        if (part === "attachments") await attachHookAudio(ui);
+        else ui.enter(part === "draft" ? ui.draft()! : ui.translation()!, "newer text");
+        const newer = ui.boxes();
+        refuse(new Error("send failed"));
+        const { isChatBusy } = await import("src/ts/process/chatStatus.svelte");
+        await until(() => !isChatBusy({ chaId: "c", chatId: "a" }));
+        expect(ui.boxes()).toEqual(newer);
+        expect(await drive(ui.journal.readComposerSend(a))).toMatchObject(saved);
+        selectChat("c", "b");
+        flushSync();
+        selectChat("c", "a");
+        flushSync();
+        await drive(Promise.resolve());
+        expect(ui.boxes()).toEqual(newer);
+        expect(await drive(ui.journal.readComposerSend(a))).toMatchObject(saved);
+        if (part === "attachments") {
+            await until(() => ui.target.querySelector("audio") !== null);
+            ui.click(ui.target.querySelector("audio")!.parentElement!.querySelector("button"));
+        } else ui.enter(part === "draft" ? ui.draft()! : ui.translation()!, "");
+        ui.hide();
+        await drive(ui.journal.readComposer(a));
+        selectChat("c", "b");
+        flushSync();
+        selectChat("c", "a");
+        flushSync();
+        await until(() => ui.input().value === "original main");
+        expect(ui.boxes()).toEqual(["original main", "converted draft", "original translation"]);
+        await until(() => ui.target.querySelector("audio") !== null);
+        expect(await drive(ui.journal.readComposerSend(a))).toBeNull();
+    },
+);

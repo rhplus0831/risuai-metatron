@@ -55,6 +55,10 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `src/lib/ChatScreens/composerPlaceholder.ts` owns the main placeholder. `DefaultChatScreen.svelte` also handles
   incomplete chat bindings, the Stop button's `processStage` ring, and the loading label beside Stop while a discovered
   job's chat loads.
+- The draft box sits under the composer row for a chat with a Draft hook chosen or draft text left (never the
+  playground; read-only while the binding is incomplete): a labelled textarea bound to `composer.draft` and Send Draft,
+  disabled while the draft is blank or the chat is busy or runs a hook. Stop carries a status label while a Draft hook
+  runs ([chat pipeline](chat-pipeline.md#send)).
 - `src/lib/ChatScreens/HandoffControls.svelte` renders handoff and take-back beside Stop from the screen's followed job
   ids; presence, target selection, and requests belong to [network jobs](network-jobs.md#generation-job-client).
 

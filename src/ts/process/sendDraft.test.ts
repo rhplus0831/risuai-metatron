@@ -90,12 +90,13 @@ describe("createSendDrafts", () => {
         expect(composerSendText(restored)).toBe("hello{{inlayed::first}}{{inlayed::second}}");
         drafts.adopt(a, { input: composerSendText(restored), userMessageId: "journal-id" });
         expect(drafts.takeUnplaced(a)).toBeUndefined();
-        expect(drafts.retryIdFor(a, "hello{{inlayed::first}}{{inlayed::second}}")).toEqual({
+        const composer = { ...restored, draft: "", translate: "" };
+        expect(drafts.retryIdFor(a, composer)).toEqual({
             userMessageId: "journal-id",
         });
-        expect(drafts.retryIdFor(b, composerSendText(restored))).toBeUndefined();
-        expect(drafts.retryIdFor(a, composerSendText({ ...restored, input: "edited" }))).toBeUndefined();
-        expect(drafts.retryIdFor(a, composerSendText({ ...restored, files: ["second", "first"] }))).toBeUndefined();
+        expect(drafts.retryIdFor(b, composer)).toBeUndefined();
+        expect(drafts.retryIdFor(a, { ...composer, input: "edited" })).toBeUndefined();
+        expect(drafts.retryIdFor(a, { ...composer, files: ["second", "first"] })).toBeUndefined();
         expect(drafts.idFor(a, composerSendText(restored))).toBe("journal-id");
     });
 });
@@ -108,4 +109,43 @@ it("gives Continue a fresh request id even when the same text has an uncertain S
     expect(continued.requestId).not.toBe(first.requestId);
     expect(continued.userMessageId).toBe(first.userMessageId);
     expect(continued.requestUncertain).toBe(false);
+});
+
+it("serializes and retries draft sends by draft text and ordered attachments, retaining uncertain request ids", () => {
+    const drafts = createSendDrafts();
+    const composer = { input: "original", draft: "converted", translate: "translation", files: ["first", "second"] };
+    const text = "converted{{inlayed::first}}{{inlayed::second}}";
+    expect(composerSendText(composer, "draft")).toBe(text);
+    expect(composerSendText(composer)).toBe("original{{inlayed::first}}{{inlayed::second}}");
+    const attempt = { input: text, ...drafts.idsFor(a, text, true, composer), composer };
+    expect(drafts.settle(a, attempt, { ...failed, requestUncertain: true })).toBe("restore");
+    expect(drafts.retryIdFor(a, { ...composer, input: "edited main", translate: "edited translation" })).toEqual({
+        userMessageId: attempt.userMessageId,
+        requestId: attempt.requestId,
+        sent: "draft",
+    });
+    expect(drafts.retryIdFor(a, { ...composer, draft: "edited draft" })).toBeUndefined();
+    expect(drafts.retryIdFor(a, { ...composer, files: ["second", "first"] })).toBeUndefined();
+    expect(drafts.idsFor(a, text, true, composer)).toEqual({
+        userMessageId: attempt.userMessageId,
+        requestId: attempt.requestId,
+        requestUncertain: true,
+    });
+    expect(
+        drafts.idsFor(a, "edited draft{{inlayed::first}}{{inlayed::second}}", true, {
+            ...composer,
+            draft: "edited draft",
+        }).userMessageId,
+    ).not.toBe(attempt.userMessageId);
+});
+
+it("keeps a failed draft snapshot unplaced until the caller admits all four parts, then places it once", () => {
+    const drafts = createSendDrafts();
+    const composer = { input: "original", draft: "converted", translate: "translation", files: ["attachment"] };
+    const attempt = { input: "converted{{inlayed::attachment}}", userMessageId: "draft-message", composer };
+    expect(drafts.settle(a, attempt, { ...failed, composerEmpty: false })).toBe("keep");
+    expect(drafts.takeUnplaced(a)).toBeUndefined();
+    expect(drafts.takeUnplaced(a, () => false)).toBeUndefined();
+    expect(drafts.takeUnplaced(a, () => true)).toEqual(attempt);
+    expect(drafts.takeUnplaced(a, () => true)).toBeUndefined();
 });

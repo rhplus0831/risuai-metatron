@@ -181,6 +181,149 @@ describe("durable composers", () => {
         vi.restoreAllMocks();
     });
 
+    it("journals draft-only edits across switches and reloads and defaults old rows to an empty draft", async () => {
+        const first = composer();
+        first.switchTo(a);
+        first.draft = "only draft text";
+        first.switchTo(b);
+        first.at(a).draft = "edited while away";
+        first.switchTo(a);
+        expect(first.draft).toBe("edited while away");
+        await drive(first.flush());
+        expect(await drive(journal.readComposer(a))).toEqual({
+            input: "",
+            draft: "edited while away",
+            translate: "",
+            files: [],
+        });
+        first.destroy();
+        const reloaded = composer();
+        reloaded.switchTo(a);
+        await drive(reloaded.restore(a, checks));
+        expect(reloaded.draft).toBe("edited while away");
+        expect(reloaded.input).toBe("");
+        await drive(journal.putComposer(b, { input: "legacy main", translate: "legacy translation", files: [] }));
+        reloaded.switchTo(b);
+        await drive(reloaded.restore(b, checks));
+        expect(reloaded.draft).toBe("");
+        expect(reloaded.input).toBe("legacy main");
+    });
+
+    it("hands off and reloads a failed draft send with all four parts, sent text and retry identity", async () => {
+        const ref = { chaId: "c", chatId: "a" };
+        const saved = { input: "original", draft: "converted", translate: "translation", files: ["first", "second"] };
+        const first = composer();
+        first.switchTo(a);
+        Object.assign(first, saved);
+        first.beginSend(a, { snapshot: saved, userMessageId: "draft-message", sent: "draft" });
+        Object.assign(first, { input: "", draft: "", translate: "", files: [] });
+        await drive(first.flush());
+        first.settleSend(a, "draft-message", false);
+        expect(await drive(journal.readComposerSend(a))).toEqual({
+            ...saved,
+            state: "sending",
+            userMessageId: "draft-message",
+            sent: "draft",
+        });
+        first.destroy();
+        const sends = createSendDrafts();
+        const reloaded = composer((_, value) => sends.retryIdFor(ref, value));
+        reloaded.switchTo(a);
+        const recovery = await drive(reloaded.restore(a, checks));
+        expect(recovery).toEqual({
+            text: "converted{{inlayed::first}}{{inlayed::second}}",
+            userMessageId: "draft-message",
+            composer: saved,
+        });
+        expect({ ...snapshot(reloaded), draft: reloaded.draft }).toEqual(saved);
+        expect(await drive(journal.readComposerSend(a))).toBeNull();
+        expect(await drive(journal.readComposer(a))).toEqual({
+            ...saved,
+            userMessageId: "draft-message",
+            sent: "draft",
+        });
+        sends.adopt(ref, {
+            input: recovery!.text,
+            userMessageId: recovery!.userMessageId,
+            composer: recovery!.composer,
+        });
+        reloaded.input = "original edited independently";
+        reloaded.translate = "translation edited independently";
+        await drive(reloaded.flush());
+        expect(await drive(journal.readComposer(a))).toMatchObject({ userMessageId: "draft-message", sent: "draft" });
+        reloaded.draft = "edited draft";
+        await drive(reloaded.flush());
+        const edited = await drive(journal.readComposer(a));
+        expect(edited).not.toHaveProperty("userMessageId");
+        expect(edited).not.toHaveProperty("sent");
+    });
+
+    it("places a failed draft snapshot intact and keeps ordinary failed-send placement beside queued attachments", async () => {
+        const ref = { chaId: "c", chatId: "a" };
+        const sends = createSendDrafts();
+        const first = composer((_, value) => sends.retryIdFor(ref, value));
+        first.switchTo(a);
+        const saved = { input: "original", draft: "converted", translate: "translation", files: ["attachment"] };
+        const send = { input: "converted{{inlayed::attachment}}", userMessageId: "draft-message", composer: saved };
+        await drive(
+            journal.putComposerSend(a, {
+                ...saved,
+                state: "sending",
+                sent: "draft",
+                userMessageId: send.userMessageId,
+            }),
+        );
+        sends.adopt(ref, send);
+        first.placeSend(a, send);
+        expect({ ...snapshot(first), draft: first.draft }).toEqual(saved);
+        expect(await drive(journal.readComposerSend(a))).toBeNull();
+        expect(await drive(journal.readComposer(a))).toEqual({
+            ...saved,
+            sent: "draft",
+            userMessageId: "draft-message",
+        });
+        first.switchTo(b);
+        first.files = ["queued later"];
+        first.placeSend(b, { input: "ordinary{{inlayed::old-file}}", userMessageId: "ordinary-message" });
+        expect({ ...snapshot(first), draft: first.draft }).toEqual({
+            input: "ordinary{{inlayed::old-file}}",
+            draft: "",
+            translate: "",
+            files: ["queued later"],
+        });
+    });
+
+    it("drops a landed draft hand-off and lets later draft-only typing win over a failed hand-off", async () => {
+        const handoff = {
+            input: "original",
+            draft: "sent draft",
+            translate: "translation",
+            files: ["attachment"],
+            state: "sending" as const,
+            sent: "draft" as const,
+            userMessageId: "draft-message",
+        };
+        await drive(journal.putComposerSend(a, handoff));
+        const first = composer();
+        first.switchTo(a);
+        expect(await drive(first.restore(a, { ...checks, landed: async () => true }))).toBeUndefined();
+        expect(await drive(journal.readComposerSend(a))).toBeNull();
+        expect({ ...snapshot(first), draft: first.draft }).toEqual({ input: "", draft: "", translate: "", files: [] });
+        await drive(journal.putComposerSend(a, handoff));
+        first.draft = "typed during send";
+        await drive(first.flush());
+        // A live draft-only composer is occupied too.
+        await drive(first.restore(a, checks));
+        expect(first.draft).toBe("typed during send");
+        first.destroy();
+        const reloaded = composer();
+        reloaded.switchTo(a);
+        expect(await drive(reloaded.restore(a, checks))).toBeUndefined();
+        expect(reloaded.draft).toBe("typed during send");
+        expect(reloaded.input).toBe("");
+        expect(await drive(journal.readComposerSend(a))).toEqual(handoff);
+    });
+
     it("persists shown and stashed edits after 500 ms of quiet and restores them", async () => {
         const first = composer();
         first.switchTo(a);
@@ -230,7 +373,7 @@ describe("durable composers", () => {
         first.input = "send this";
         first.translate = "translation";
         first.addFile("attachment");
-        first.beginSend(a, { snapshot: snapshot(first), userMessageId: "sending-id" });
+        first.beginSend(a, { snapshot: { ...snapshot(first), draft: first.draft }, userMessageId: "sending-id" });
         first.input = "";
         first.translate = "";
         first.files = [];
@@ -317,7 +460,7 @@ describe("durable composers", () => {
         const first = composer();
         first.switchTo(a);
         first.input = "original";
-        first.beginSend(a, { snapshot: snapshot(first), userMessageId: "original-id" });
+        first.beginSend(a, { snapshot: { ...snapshot(first), draft: first.draft }, userMessageId: "original-id" });
         first.input = "";
         first.input = "follow-up";
         await drive(first.flush());
@@ -359,17 +502,20 @@ describe("durable composers", () => {
     it("replaces a failed send's hand-off once its text is placed, also beside a file queued during the send", async () => {
         const ref = { chaId: "c", chatId: "a" };
         const drafts = createSendDrafts();
-        const first = composer((_, text) => drafts.retryIdFor(ref, text));
+        const first = composer((_, value) => drafts.retryIdFor(ref, value));
         first.switchTo(a);
         first.input = "original";
         first.addFile("old-file");
         const attempt = { input: composerSendText(first), ...drafts.idsFor(ref, composerSendText(first)) };
-        first.beginSend(a, { snapshot: snapshot(first), userMessageId: attempt.userMessageId });
+        first.beginSend(a, {
+            snapshot: { ...snapshot(first), draft: first.draft },
+            userMessageId: attempt.userMessageId,
+        });
         first.input = "";
         first.files = ["new-file"];
         drafts.settle(ref, attempt, { landed: false, ok: false, selected: true, composerEmpty: true });
         first.settleSend(a, attempt.userMessageId, false);
-        first.placeSend(a, attempt.input, attempt.userMessageId);
+        first.placeSend(a, attempt);
         expect(await drive(journal.readComposerSend(a))).toBeNull();
         // The queued file makes it another input: the draft keeps both, without the send's ids.
         expect(await drive(journal.readComposer(a))).toEqual({
@@ -389,11 +535,14 @@ describe("durable composers", () => {
     it("keeps a draft typed again during a send, without that send's id, when the send lands", async () => {
         const ref = { chaId: "c", chatId: "a" };
         const drafts = createSendDrafts();
-        const first = composer((_, text) => drafts.retryIdFor(ref, text));
+        const first = composer((_, value) => drafts.retryIdFor(ref, value));
         first.switchTo(a);
         first.input = "continue";
         const attempt = { input: "continue", ...drafts.idsFor(ref, "continue") };
-        first.beginSend(a, { snapshot: snapshot(first), userMessageId: attempt.userMessageId });
+        first.beginSend(a, {
+            snapshot: { ...snapshot(first), draft: first.draft },
+            userMessageId: attempt.userMessageId,
+        });
         first.input = "";
         first.input = "continue";
         await drive(first.flush());

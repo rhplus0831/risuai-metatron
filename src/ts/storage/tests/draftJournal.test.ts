@@ -1824,3 +1824,110 @@ describe("partial recovery hand-over", () => {
         }
     });
 });
+
+describe("draft box journal compatibility", () => {
+    it("round-trips draft text and the draft-send marker in format 2 without reporting its own rows as unknown", async () => {
+        const h = harness();
+        const tab = await started(h);
+        const key = "c\u0000a";
+        for (const extra of [{ draft: "converted" }, { sent: "draft" as const, userMessageId: "message-id" }]) {
+            const value = { input: "original", translate: "translation", files: ["attachment"], ...extra };
+            expect(await tab.journal.putComposer(key, value)).toBe("written");
+            expect((await rows(h.factory))[composerKey(key)]).toMatchObject({ format: 2, value });
+            expect(await tab.journal.readComposer(key)).toEqual(value);
+            const handoff = { ...value, state: "sending" as const, userMessageId: "message-id" };
+            expect(await tab.journal.putComposerSend(key, handoff)).toBe("written");
+            const raw = (await rows(h.factory))[composerSendKey(key)];
+            expect(raw).toMatchObject({ format: 2, value: handoff });
+            expect(await tab.journal.readComposerSend(key)).toEqual(handoff);
+        }
+        await tab.journal.close();
+        const reloaded = await started(h, { storage: () => tab.storage });
+        expect(reloaded.events).toEqual([]);
+        expect(await reloaded.journal.readComposerSend(key)).toMatchObject({ sent: "draft" });
+        await reloaded.journal.close();
+    });
+
+    it("writes ordinary composer and send rows with exactly the format-1 shape, omitting empty draft fields", async () => {
+        const h = harness();
+        const { journal } = await started(h);
+        const key = "c\u0000a";
+        for (const sending of [false, true]) {
+            const value = {
+                input: "original",
+                translate: "translation",
+                files: ["attachment"],
+                ...(sending ? { state: "sending" as const, userMessageId: "message-id" } : {}),
+            };
+            if (sending)
+                await journal.putComposerSend(key, {
+                    ...value,
+                    draft: "",
+                    state: "sending",
+                    userMessageId: "message-id",
+                });
+            else await journal.putComposer(key, { ...value, draft: "" });
+            const expected = {
+                format: 1,
+                type: "composer",
+                chatKey: key,
+                createdAt: T0,
+                updatedAt: T0,
+                value,
+                size: 0,
+            };
+            expected.size = journalValueSize(expected);
+            expect((await rows(h.factory))[sending ? composerSendKey(key) : composerKey(key)]).toEqual(expected);
+            expect(await (sending ? journal.readComposerSend(key) : journal.readComposer(key))).toEqual(value);
+        }
+        await journal.close();
+    });
+
+    it("preserves unreadable composer rows through reads, writes, takeover, removal, settle, request updates, chat removal and expiry", async () => {
+        const h = harness();
+        const { journal } = await started(h);
+        const key = "c\u0000a";
+        const value = {
+            input: "original",
+            draft: "converted",
+            translate: "translation",
+            files: ["attachment"],
+            state: "sending" as const,
+            userMessageId: "message-id",
+        };
+        // An otherwise valid future row takes today's reader down the same refusal paths as format 2
+        // takes a format-1-only reader. No copy of the journal implementation is needed.
+        const future = { format: 99, type: "composer", chatKey: key, createdAt: T0, updatedAt: T0, value, size: 200 };
+        await rawPut(h.factory, composerKey(key), future);
+        await rawPut(h.factory, composerSendKey(key), future);
+        const before = await rows(h.factory);
+        expect(await journal.readComposer(key)).toBeNull();
+        expect(await journal.readComposerSend(key)).toBeNull();
+        const preserved = async () => expect(await rows(h.factory)).toEqual(before);
+        await preserved();
+        expect(await journal.putComposer(key, { input: "older typing", translate: "", files: [] })).toBe("skipped");
+        await preserved();
+        expect(await journal.putComposer(key, value, "message-id")).toBe("skipped");
+        await preserved();
+        expect(await journal.putComposerSend(key, value)).toBe("skipped");
+        await preserved();
+        await journal.removeComposer(key);
+        await preserved();
+        await journal.settleComposerSend(key, "message-id");
+        await preserved();
+        await journal.updateComposerRequest(
+            key,
+            { userMessageId: "message-id" },
+            { requestId: "retry", requestEpoch: EPOCH },
+        );
+        await preserved();
+        await journal.removeComposersOf("c", "a");
+        await preserved();
+        await journal.removeComposersOf("c");
+        await preserved();
+        h.clock.now += JOURNAL_ENTRY_TTL_MS;
+        expect(await journal.purgeExpired()).toBe(0);
+        await preserved();
+        await journal.close();
+    });
+});

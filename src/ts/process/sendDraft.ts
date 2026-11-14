@@ -1,8 +1,10 @@
 import { v4 } from "uuid";
 import type { ChatRef } from "../storage/chatStore.svelte";
+import type { ComposerDraft } from "./composerDrafts.svelte";
 
 /**
- * Serializes composer text and ordered attachments, and retains send identities per chat.
+ * Serializes the sent box and ordered attachments, and retains send identities per chat. Draft sends
+ * retain the whole raw composer for recovery; ordinary sends retain only their serialized input.
  * `createSendDrafts` keeps message ids for unchanged retries and request ids only while admission
  * remains uncertain. A landed or successful send drops its draft; other ends restore it only into
  * the selected empty composer, otherwise retaining it for later. Browser journaling is handled
@@ -13,7 +15,14 @@ import type { ChatRef } from "../storage/chatStore.svelte";
  * A send's input and ids; `requestUncertain`: the request id is reused from an attempt that may have
  * reached the server.
  */
-export type SendDraft = { input: string; userMessageId: string; requestId?: string; requestUncertain?: boolean };
+export type SendDraft = {
+    input: string;
+    userMessageId: string;
+    requestId?: string;
+    requestUncertain?: boolean;
+    composer?: ComposerDraft;
+};
+export type ComposerRetry = Pick<SendDraft, "userMessageId" | "requestId"> & { sent?: "draft" };
 /** How a send ended, for `settle`: `selected` and `composerEmpty` decide whether its text goes back at once. */
 export type SendDraftOutcome = {
     landed: boolean;
@@ -30,8 +39,14 @@ const keyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
  * The one serialization of a composer into send text: the screen's send, the journal's retry lookup,
  * and a restored draft's text all use it, so the same composer always maps to the same send.
  */
-export function composerSendText(draft: { input: string; files: readonly string[] }): string {
-    return draft.input + draft.files.map((file) => `{{inlayed::${file}}}`).join("");
+export function composerSendText(
+    composer: { input: string; draft?: string; files: readonly string[] },
+    sent?: "draft",
+): string {
+    return (
+        (sent === "draft" ? (composer.draft ?? "") : composer.input) +
+        composer.files.map((file) => `{{inlayed::${file}}}`).join("")
+    );
 }
 
 /**
@@ -44,12 +59,14 @@ export function composerSendText(draft: { input: string; files: readonly string[
 export function createSendDrafts() {
     const drafts = new Map<string, SendDraft & { placed: boolean }>();
 
-    function retryIdFor(ref: ChatRef, text: string): Pick<SendDraft, "userMessageId" | "requestId"> | undefined {
+    function retryIdFor(ref: ChatRef, composer: ComposerDraft): ComposerRetry | undefined {
         const draft = drafts.get(keyOf(ref));
-        return draft?.input === text
+        const sent = draft?.composer ? "draft" : undefined;
+        return draft?.input === composerSendText(composer, sent)
             ? {
                   userMessageId: draft.userMessageId,
                   ...(draft.requestId === undefined ? {} : { requestId: draft.requestId }),
+                  ...(sent ? { sent } : {}),
               }
             : undefined;
     }
@@ -58,12 +75,12 @@ export function createSendDrafts() {
         drafts.set(keyOf(ref), { ...draft, placed: true });
     }
 
-    function idFor(ref: ChatRef, text: string): string {
+    function idFor(ref: ChatRef, text: string, composer?: ComposerDraft): string {
         const key = keyOf(ref);
         const pending = drafts.get(key);
         const userMessageId = pending?.input === text ? pending.userMessageId : v4();
         // The active send owns the text until it settles; switching chats must not restore it early.
-        drafts.set(key, { input: text, userMessageId, placed: true });
+        drafts.set(key, { input: text, userMessageId, ...(composer ? { composer } : {}), placed: true });
         return userMessageId;
     }
 
@@ -71,10 +88,11 @@ export function createSendDrafts() {
         ref: ChatRef,
         text: string,
         reuseRequest = true,
+        composer?: ComposerDraft,
     ): Pick<SendDraft, "userMessageId" | "requestId" | "requestUncertain"> {
         const pending = drafts.get(keyOf(ref));
         const requestId = reuseRequest && pending?.input === text ? pending.requestId : undefined;
-        const userMessageId = idFor(ref, text);
+        const userMessageId = idFor(ref, text, composer);
         return { userMessageId, requestId: requestId ?? v4(), requestUncertain: requestId !== undefined };
     }
 
@@ -91,9 +109,9 @@ export function createSendDrafts() {
         return placed ? "restore" : "keep";
     }
 
-    function takeUnplaced(ref: ChatRef): SendDraft | undefined {
+    function takeUnplaced(ref: ChatRef, canPlace?: (send: SendDraft) => boolean): SendDraft | undefined {
         const draft = drafts.get(keyOf(ref));
-        if (!draft || draft.placed) {
+        if (!draft || draft.placed || !(canPlace ? canPlace(draft) : !draft.composer)) {
             return undefined;
         }
         draft.placed = true;

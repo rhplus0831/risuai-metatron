@@ -2316,6 +2316,9 @@ export const languageKorean = {
         panelTitle: "초안 훅",
         none: "없음",
         missingHook: "초안 훅을 찾을 수 없음",
+        draftPlaceholder: "여기에서 초안을 검토하고 수정하세요.",
+        sendDraft: "초안 전송",
+        runningDraft: "초안 훅 실행 중…",
     },
     translatorSteps: {
         title: "번역 단계",

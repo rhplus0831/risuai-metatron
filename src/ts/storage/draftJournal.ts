@@ -10,7 +10,9 @@ import { isJournalEligible } from "./journalEligibility";
  * so the change survives the loss of the page (a killed PWA, a crash, a reload during an outage), and
  * the local version kept at a conflict (a recovery draft). This module is the store alone: keys,
  * layers, versions, budgets, expiry, and the tab ownership protocol. The composer uses the page's
- * shared journal; its browser-wide rows keep text, translation, attachments, and a send's retry ids.
+ * shared journal; its browser-wide rows keep main and draft text, translation, attachments, and a
+ * send's retry ids and sent-box marker. Composer rows with draft text or that marker use format 2;
+ * other composer rows and all other row types keep format 1. Older readers leave format 2 untouched.
  * A chat has two composer rows: the editable draft, and the hand-off of the send that consumed the
  * composer, so typing during that send never replaces what was sent. Composer writes keep
  * `createdAt` while the row is live; a write after expiry starts a new entry. A landed send deletes
@@ -70,8 +72,9 @@ import { isJournalEligible } from "./journalEligibility";
  */
 
 export const JOURNAL_DB_NAME = "risu-draft-journal";
-/** The rows' layout; a row of another format is kept untouched. */
+/** The ordinary rows' layout; unsupported formats are kept untouched. */
 export const JOURNAL_FORMAT = 1;
+const COMPOSER_DRAFT_FORMAT = 2;
 export const JOURNAL_ENTRY_TTL_MS = 48 * 60 * 60 * 1000;
 export const MAX_JOURNAL_ENTRY_BYTES = 16 * 1024 * 1024;
 export const MAX_JOURNAL_TOTAL_BYTES = 64 * 1024 * 1024;
@@ -179,16 +182,24 @@ export type DraftEntry = RowBase & { type: "draft"; id: string; epoch: string; t
 /** What a chat's composer held, with an uncertain send's request identity scoped to its epoch. */
 export type ComposerValue = {
     input: string;
+    draft?: string;
     translate: string;
     files: string[];
     state?: "sending";
     userMessageId?: string;
+    sent?: "draft";
     requestId?: string;
     requestEpoch?: string;
 };
 
 /** A composer draft of one chat, shared by the browser's tabs. */
-export type ComposerEntry = RowBase & { type: "composer"; chatKey: string; updatedAt: number; value: ComposerValue };
+export type ComposerEntry = Omit<RowBase, "format"> & {
+    format: typeof JOURNAL_FORMAT | typeof COMPOSER_DRAFT_FORMAT;
+    type: "composer";
+    chatKey: string;
+    updatedAt: number;
+    value: ComposerValue;
+};
 
 export type JournalRow = MutationEntry | DraftEntry | ComposerEntry;
 
@@ -285,7 +296,12 @@ function checkLayers(scope: unknown, layers: unknown): boolean {
 
 /** A stored row this version can read, or null (an unknown row: kept as it is). */
 export function checkJournalRow(value: unknown): JournalRow | null {
-    if (!isPlainObject(value) || value.format !== JOURNAL_FORMAT || !isTime(value.createdAt) || !isSize(value.size)) {
+    if (
+        !isPlainObject(value) ||
+        (value.format !== JOURNAL_FORMAT && !(value.type === "composer" && value.format === COMPOSER_DRAFT_FORMAT)) ||
+        !isTime(value.createdAt) ||
+        !isSize(value.size)
+    ) {
         return null;
     }
     switch (value.type) {
@@ -317,13 +333,15 @@ export function checkJournalRow(value: unknown): JournalRow | null {
 }
 
 /**
- * Request identity is an optional pair tied to a message id. Rows predating that pair, including
- * a sending hand-off stored in the draft row, remain readable without changing the journal format.
+ * Request identity is an optional pair tied to a message id, as is the draft-send marker. Missing
+ * draft text reads as empty. Older rows, including a sending hand-off in the draft row, remain readable.
  */
 function checkComposerValue(value: unknown): value is ComposerValue {
     return (
         isPlainObject(value) &&
         isString(value.input) &&
+        (value.draft === undefined || isString(value.draft)) &&
+        (value.sent === undefined || (value.sent === "draft" && isString(value.userMessageId))) &&
         isString(value.translate) &&
         Array.isArray(value.files) &&
         Array.from(value.files).every(isString) &&
@@ -853,7 +871,13 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
             "readonly",
             async (store) => {
                 const total = await requestValue(store.count());
-                const current = await requestValue(store.index(INDEXES.format).count(JOURNAL_FORMAT));
+                let current = await requestValue(store.index(INDEXES.format).count(JOURNAL_FORMAT));
+                await eachCursor(
+                    store.index(INDEXES.format).openCursor(IDBKeyRange.only(COMPOSER_DRAFT_FORMAT)),
+                    (cursor) => {
+                        if (checkJournalRow(cursor.value)?.type === "composer") current++;
+                    },
+                );
                 let highest = 0;
                 let malformed = 0;
                 await eachCursor(store.index(INDEXES.tabId).openCursor(IDBKeyRange.only(own)), (cursor) => {
@@ -1816,7 +1840,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                 chatKey,
                 (row, time) => {
                     if (!row || isExpired(row.createdAt, time) || row.value.userMessageId !== userMessageId) return;
-                    const { userMessageId: sentId, requestId, requestEpoch, ...draft } = row.value;
+                    const { userMessageId: sentId, requestId, requestEpoch, sent, ...draft } = row.value;
                     return draft;
                 },
                 skip,
@@ -1876,13 +1900,19 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
             skip("format");
             return "skipped";
         }
+        const { draft, sent, ...ordinary } = copy;
+        const value: ComposerValue = {
+            ...ordinary,
+            ...(draft ? { draft } : {}),
+            ...(sent ? { sent } : {}),
+        };
         const row: ComposerEntry = {
-            format: JOURNAL_FORMAT,
+            format: draft || sent ? COMPOSER_DRAFT_FORMAT : JOURNAL_FORMAT,
             type: "composer",
             chatKey,
             createdAt: existing && !isExpired(existing.createdAt, time) ? existing.createdAt : time,
             updatedAt: time,
-            value: copy,
+            value,
             size: 0,
         };
         row.size = sizeOf(row);

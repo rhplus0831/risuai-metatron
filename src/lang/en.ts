@@ -2417,6 +2417,9 @@ export const languageEnglish = {
         panelTitle: "Draft hook",
         none: "None",
         missingHook: "Missing Draft hook",
+        draftPlaceholder: "Review and edit your draft here.",
+        sendDraft: "Send Draft",
+        runningDraft: "Running Draft hook…",
     },
     translatorSteps: {
         title: "Steps",

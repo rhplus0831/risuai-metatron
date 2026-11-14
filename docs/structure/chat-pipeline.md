@@ -86,10 +86,13 @@
 
 ### Composer and drafts
 
-- `src/ts/process/sendDraft.ts`: failed sends' text and ids (`createSendDrafts`, `idsFor`, `takeUnplaced`,
-  `composerSendText`).
+- `src/ts/process/sendDraft.ts`: failed sends' text and ids (`createSendDrafts`, `idsFor`, `takeUnplaced`), and
+  `composerSendText`, the one sent text of a composer: the main box, or the draft box for a draft send, plus the inlay
+  tags. A draft send's `SendDraft` also carries the raw `composer` it consumed; the retry lookup compares only the
+  retained send's own box.
 - `src/ts/process/composerDrafts.svelte.ts`: the screen's per-chat composer and browser journal (`createComposer`,
-  `beginSend`, `settleSend`, `placeSend`, `restore`).
+  `beginSend`, `settleSend`, `placeSend`, `restore`). The composer holds four parts (`input`, `draft`, `translate`,
+  `files`) and a `textRevision(key)` that advances on main or draft text changes only.
 - `src/ts/process/inputTranslation.svelte.ts`: input auto-translation (`createInputTranslation`) and the composer keys
   (`handleMainComposerKeydown`, `handleTranslationComposerKeydown`).
 
@@ -172,6 +175,16 @@ In `DefaultChatScreen.svelte`: `send`/`sendContinue` → `sendMain` → `sendCha
   characters mid-send is allowed. Its checks, an incomplete binding (`chatBinding(ref)`,
   [chat bindings](persistence.md)) and orphaned lore overrides included, come before the composer is consumed; the flush
   and server admission can still refuse it afterward. The generation-create refusal list is below.
+- Draft hook: with the chat's `draftHookId` naming a Draft hook (`draftHookOf`, read at the press), Send of nonblank
+  main text (not Continue, not the playground) runs `runInputHook` after the slash command, binding, and override checks
+  and consumes nothing. The run registers in `inputHookRuns` and `sendAborts` (Stop aborts it). Every admission check of
+  the screen reads `isScreenBusy` (`isChatBusy` or a hook run).
+- The run's result replaces the draft box only while the chat is still shown, not switched away and back, and its main
+  and draft text unchanged (`textRevision`); otherwise it is dropped without an alert. An empty result alerts
+  `errors.emptyText`, a failure its text.
+- Send Draft (`sendDraftMessage`) makes Send's checks, sends the draft box's sent text with the attachments, clears all
+  four parts, and shares Send's lore-stop handling (`sendConsumed`). A failed draft send comes back whole, only into a
+  composer whose four parts are empty (`composerEmptyFor`, `takeUnplaced`'s gate); an unchanged retry keeps its ids.
 - A nonempty input carries its `userMessageId`; retries of the same draft preserve it. The server job runs input
   processing and appends the message; Stop targets the captured chat's controller and followed jobs.
 - Lore budget stop: with the Interaction setting `loreBudgetStop` on and the chat's `loreBudgetWarnOff` unset

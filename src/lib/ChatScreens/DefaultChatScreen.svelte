@@ -81,6 +81,9 @@
     import { isLocalSend, localSends } from "src/ts/process/localSends";
     import { openOocPanel } from "src/ts/ooc/oocPanel.svelte";
     import { createSendAborts } from "src/ts/process/sendAborts.svelte";
+    import { createInputHookRuns } from "src/ts/process/inputHookRuns.svelte";
+    import { runInputHook } from "src/ts/process/inputHooks";
+    import { draftHookOf, type InputHook } from "../../../shared/inputHooks.ts";
     import { followedJobs, followedJobsOf, loadingJobChats, stopChatJob } from "src/ts/process/serverCommands";
     import HandoffControls from "./HandoffControls.svelte";
     import { jobStages, jobRetries, chatStageOf } from "src/ts/process/jobStages";
@@ -182,15 +185,21 @@
     }
 
     const sendDrafts = createSendDrafts();
+    const inputHookRuns = createInputHookRuns();
+    const isScreenBusy = (ref: ChatRef) => isChatBusy(ref) || inputHookRuns.kindOf(ref) !== null;
     const composer = createComposer({
         journal: pageDraftJournal(),
         epoch: getResourceEpoch,
-        retryIdFor: (key, text) => {
+        retryIdFor: (key, draft) => {
             const [chaId, chatId] = key.split("\u0000");
-            return sendDrafts.retryIdFor({ chaId, chatId }, text);
+            return sendDrafts.retryIdFor({ chaId, chatId }, draft);
         },
     });
-    onDestroy(() => composer.destroy());
+    let displayGeneration = 0;
+    onDestroy(() => {
+        displayGeneration++;
+        composer.destroy();
+    });
     let openMenu = $state(false);
     const rerollHistory = createRerollHistory();
     const chatKeyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
@@ -226,6 +235,10 @@
     // The chat is on screen: its chat is open, or it is the playground chat (always open).
     let chatShown = $derived(
         currentCharacter !== undefined && (selection.chatOpen || currentCharacter.chaId === "§playground"),
+    );
+    const showDraft = $derived(
+        currentCharacter?.chaId !== "§playground" &&
+            (!!draftHookOf(settings.inputHooks ?? [], currentChat?.draftHookId) || composer.draft !== ""),
     );
     // While the selected chat loads (null when it is loaded or nothing is selected).
     let selectedLoad = $derived(selectedChatLoad());
@@ -274,14 +287,19 @@
     });
     $effect(() => {
         chatKey;
+        chatShown;
+        displayGeneration++;
+    });
+    $effect(() => {
+        chatKey;
         inputTranslation.invalidate();
         untrack(() => {
             composer.switchTo(chatKey);
             const ref = currentChatRef();
-            if (ref && composer.input === "") {
-                const draft = sendDrafts.takeUnplaced(ref);
+            if (ref) {
+                const draft = sendDrafts.takeUnplaced(ref, (send) => composerEmptyFor(ref, send));
                 if (draft) {
-                    composer.placeSend(chatKeyOf(ref), draft.input, draft.userMessageId);
+                    composer.placeSend(chatKeyOf(ref), draft);
                 }
             }
             if (ref) {
@@ -311,6 +329,7 @@
                                 input: draft.text,
                                 userMessageId: draft.userMessageId,
                                 requestId: draft.requestId,
+                                ...(draft.composer ? { composer: draft.composer } : {}),
                             });
                     });
             }
@@ -539,14 +558,64 @@
         return sendMain(true);
     }
 
+    /** A whole draft snapshot may replace only an entirely empty composer; ordinary sends need only the main box. */
+    function composerEmptyFor(ref: ChatRef, send: SendDraft): boolean {
+        const draft = composer.at(chatKeyOf(ref));
+        return (
+            draft.input === "" &&
+            (!send.composer || (draft.draft === "" && draft.translate === "" && draft.files.length === 0))
+        );
+    }
+
+    async function runDraftHook(ref: ChatRef, hook: InputHook) {
+        if (isChatBusy(ref)) {
+            alertError(language.chatGenerating);
+            return;
+        }
+        const run = inputHookRuns.begin(ref, "draft");
+        if (!run) {
+            alertError(language.chatGenerating);
+            return;
+        }
+        const { signal, release } = sendAborts.begin(ref);
+        const key = chatKeyOf(ref);
+        const revision = composer.textRevision(key);
+        const display = displayGeneration;
+        const eligible = () =>
+            !signal.aborted &&
+            chatShown &&
+            selection.chatOpen &&
+            chatKey === key &&
+            displayGeneration === display &&
+            !!findChat(ref) &&
+            composer.textRevision(key) === revision;
+        try {
+            const draft = composer.at(key);
+            const result = await runInputHook(hook, { ref, content: draft.input, draft: draft.draft, signal });
+            if (!eligible()) return;
+            if (!result.trim()) {
+                alertError(language.errors.emptyText);
+                return;
+            }
+            composer.at(key).draft = result;
+        } catch (error) {
+            if (eligible()) alertError(error instanceof Error ? error.message : String(error));
+        } finally {
+            release();
+            run.end();
+        }
+    }
+
     /**
      * Send (`send`) and Continue (`sendContinue`) from the selected chat's composer. The checks run in
-     * this order, all before the input, translation draft, attachments, or reroll history are consumed:
-     * the chat busy (`isChatBusy`), a slash command (`processMultiCommand`, which consumes its line), the
-     * chat busy again after a line that is not a command, an incomplete binding (`chatBindingDialog`),
-     * then orphaned lore overrides. While the binding is incomplete the send button reads "Set up this
-     * chat" and keeps the `button-icon-send` class, so the send hotkey opens the setup too, and both
-     * composers are read-only. The send text is `composerSendText`, which appends the queued
+     * this order, all before the composer or reroll history is consumed:
+     * the chat busy or running a hook (`isScreenBusy`), a slash command (`processMultiCommand`, which
+     * consumes its line), the chat busy again after a line that is not a command, an incomplete binding
+     * (`chatBindingDialog`), then orphaned lore overrides. A chosen Draft hook runs on nonblank main text and returns without
+     * consuming anything; Continue, commands, blank main text, and the playground keep the send path.
+     * While the binding is incomplete the send button reads "Set up this chat" and keeps the
+     * `button-icon-send` class, so the send hotkey opens the setup too, and the composers are read-only.
+     * The send text is `composerSendText`, which appends the queued
      * `{{inlayed::id}}` tags; an empty one (Continue included) appends "*says nothing*" only with
      * `useSayNothing` on, outside a group, and when the last message is not the user's. Consuming the
      * input clears the chat's bundle history, and nothing awaits between it and the send's admission.
@@ -567,7 +636,7 @@
         // Only this chat's own work refuses the send (a send of this tab, a followed job, or a lock),
         // before the text, translation draft, attachments, or reroll history are consumed; other chats
         // send at the same time.
-        if (isChatBusy(ref)) {
+        if (isScreenBusy(ref)) {
             alertError(language.chatGenerating);
             return;
         }
@@ -581,7 +650,7 @@
                 return;
             }
             // Not a command: the chat may have started work meanwhile.
-            if (isChatBusy(ref)) {
+            if (isScreenBusy(ref)) {
                 alertError(language.chatGenerating);
                 return;
             }
@@ -601,7 +670,18 @@
             return;
         }
 
-        const snapshot = { input: draft.input, translate: draft.translate, files: [...draft.files] };
+        const hook = draftHookOf(settings.inputHooks ?? [], findChat(ref)?.draftHookId);
+        if (!continueResponse && ref.chaId !== "§playground" && draft.input.trim() && hook) {
+            await runDraftHook(ref, hook);
+            return;
+        }
+
+        const snapshot = {
+            input: draft.input,
+            draft: draft.draft,
+            translate: draft.translate,
+            files: [...draft.files],
+        };
         const input = composerSendText(snapshot);
         // The job runs the input stage and appends the user message.
         let serverInput: SendDraft | null = null;
@@ -629,6 +709,51 @@
         rerollHistory.clear(ref);
         // The send is admitted without another await after the input is consumed.
         void sleep(10).then(updateInputSizeAll);
+        return sendConsumed(continueResponse, ref, serverInput);
+    }
+
+    /** Sends the draft box through the ordinary path, retaining the whole composer for a failed send. */
+    async function sendDraftMessage() {
+        const ref = currentChatRef();
+        if (!ref || ref.chaId === "§playground") return;
+        if (isScreenBusy(ref)) {
+            alertError(language.chatGenerating);
+            return;
+        }
+        if (!characterList().some((character) => character?.chaId === ref.chaId) || !findChat(ref)?.message) return;
+        if (chatBinding(ref)?.ok === false) {
+            chatBindingDialog.set(ref);
+            return;
+        }
+        if (refuseOrphanedOverrides(ref)) return;
+        const draft = composer.at(chatKeyOf(ref));
+        if (!draft.draft.trim()) return;
+        const snapshot = {
+            input: draft.input,
+            draft: draft.draft,
+            translate: draft.translate,
+            files: [...draft.files],
+        };
+        const input = composerSendText(snapshot, "draft");
+        const serverInput: SendDraft = { input, ...sendDrafts.idsFor(ref, input, true, snapshot), composer: snapshot };
+        composer.beginSend(chatKeyOf(ref), {
+            snapshot,
+            userMessageId: serverInput.userMessageId,
+            requestId: serverInput.requestId,
+            sent: "draft",
+        });
+        draft.input = "";
+        draft.draft = "";
+        draft.translate = "";
+        draft.files = [];
+        inputTranslation.invalidate();
+        rerollHistory.clear(ref);
+        void sleep(10).then(updateInputSizeAll);
+        return sendConsumed(false, ref, serverInput);
+    }
+
+    /** Admits a consumed composer immediately and handles the lore-stop choice for either sent box. */
+    async function sendConsumed(continueResponse: boolean, ref: ChatRef, serverInput: SendDraft | null) {
         const end = await sendChatMain(continueResponse, ref, serverInput, undefined, { askLoreStop: true });
         if (!end.loreStop) {
             return;
@@ -645,9 +770,9 @@
             // the server skips an input the chat already holds under that id. The stopped request's id
             // would replay its stop.
             const repeated: SendDraft | null = serverInput && {
-                input: serverInput.input,
-                userMessageId: serverInput.userMessageId,
+                ...serverInput,
                 requestId: v4(),
+                requestUncertain: false,
             };
             await offerLoreStop(ref, owner, end.loreStop, serverInput !== null, () =>
                 sendChatMain(continueResponse, ref, repeated),
@@ -728,7 +853,7 @@
         }
         // Refused while this chat has work of its own (a send of this tab, a followed job, or a lock:
         // the last reply stays locked until its server job releases it).
-        if (isChatBusy(ref)) {
+        if (isScreenBusy(ref)) {
             alertError(language.chatGenerating);
             return;
         }
@@ -794,7 +919,7 @@
      * (and the unsafe-restoration alert after it).
      */
     async function rerollByRemoval(ref: ChatRef, askLoreStop: boolean) {
-        if (isChatBusy(ref)) {
+        if (isScreenBusy(ref)) {
             alertError(language.chatGenerating);
             return;
         }
@@ -867,7 +992,7 @@
         }
         // Refused while this chat has work of its own (a send of this tab, a followed job, or a lock:
         // the last reply stays locked until its server job releases it).
-        if (isChatBusy(ref)) {
+        if (isScreenBusy(ref)) {
             alertError(language.chatGenerating);
             return;
         }
@@ -887,7 +1012,7 @@
         if (rerollHistory.back(ref)) void showSwappedReply(ref, follow);
     }
 
-    // This screen's sends by chat: Stop aborts the selected chat's.
+    // This screen's sends and hook runs by chat: Stop aborts the selected chat's.
     const sendAborts = createSendAborts();
     // Stop shows for this screen's send in the selected chat or any followed job of it.
     const stoppable = $derived(sendAborts.has(currentChatRef()) || ownedJobIds.length > 0);
@@ -931,11 +1056,12 @@
      * `ok`: whether it ran to a reply (`sendChat`'s result: false for a failed, lost, or stopped job too).
      * `settled`: nothing of the send writes to the chat any more (`sendChat`'s `onEnd`; false when it threw).
      * `blockedChats`: the chats a flush refused for a generation waited on.
-     * It rechecks `target`'s busy state, takes the chat's Stop controller (`sendAborts`, from
+     * It rechecks `target`'s busy state including hook runs, takes the chat's Stop controller (`sendAborts`, from
      * `createSendAborts`), and calls `sendChat` with `target` and `serverInput`'s ids. An input that
      * neither landed nor succeeded keeps its text and `userMessageId` (`sendDrafts.settle`), and the text
-     * goes back only to an empty main input for its chat: at once when that chat is selected, else when
-     * it is shown next (`takeUnplaced`). Auto mode is `runAutoMode`.
+     * goes back only to an empty main input for its chat. A draft send restores its whole raw composer
+     * only when all four parts are empty. Both restore at once when selected, else when shown next
+     * (`takeUnplaced`). The raw snapshot never reaches `sendChat`. Auto mode is `runAutoMode`.
      *
      * `options.askLoreStop`: the send asks its job to stop before the model request when the lore budget
      * leaves an activated entry out, while the setting is on and the chat has not turned the warning off
@@ -977,7 +1103,7 @@
         try {
             // Only this chat's own work refuses it; `sendChat` takes the chat's entry synchronously
             // right after this check.
-            if (isChatBusy(target)) {
+            if (isScreenBusy(target)) {
                 alertError(language.chatGenerating);
                 end = {
                     settled: !serverInput?.requestUncertain,
@@ -988,11 +1114,12 @@
             }
             const { signal, release } = sendAborts.begin(target);
             releaseAbort = release;
+            const { composer: consumedComposer, ...sendInput } = serverInput ?? {};
             ok = await sendChat(-1, {
                 target,
                 signal,
                 continue: continued,
-                ...serverInput,
+                ...sendInput,
                 ...rerollTarget,
                 ...(options.askLoreStop && wantsLoreBudgetStop(target) ? { stopOverLoreBudget: true } : {}),
                 onServerRefused: () => {
@@ -1024,14 +1151,22 @@
                     ok,
                     requestUncertain: !continued && (end.requestUncertain ?? !end.settled),
                     selected: selected?.chaId === target.chaId && selected?.chatId === target.chatId,
-                    composerEmpty: composer.at(chatKeyOf(target)).input === "",
+                    composerEmpty: composerEmptyFor(target, serverInput),
                 });
                 composer.settleSend(chatKeyOf(target), serverInput.userMessageId, result === "drop", {
                     requestId: continued ? undefined : serverInput.requestId,
-                    retainedRequestId: sendDrafts.retryIdFor(target, serverInput.input)?.requestId,
+                    retainedRequestId: sendDrafts.retryIdFor(
+                        target,
+                        serverInput.composer ?? {
+                            input: serverInput.input,
+                            draft: "",
+                            translate: "",
+                            files: [],
+                        },
+                    )?.requestId,
                 });
                 if (result === "restore") {
-                    composer.placeSend(chatKeyOf(target), serverInput.input, serverInput.userMessageId);
+                    composer.placeSend(chatKeyOf(target), serverInput);
                 }
             }
         }
@@ -1131,10 +1266,17 @@
     let inputEle: HTMLTextAreaElement = $state();
     let inputTranslateHeight = $state("44px");
     let inputTranslateEle: HTMLTextAreaElement = $state();
+    let inputDraftHeight = $state("44px");
+    let inputDraftEle: HTMLTextAreaElement = $state();
 
     function updateInputSizeAll() {
         updateInputSize();
         updateInputTranslateSize();
+        if (inputDraftEle) {
+            inputDraftEle.style.height = "0";
+            inputDraftHeight = inputDraftEle.scrollHeight + "px";
+            inputDraftEle.style.height = inputDraftHeight;
+        }
     }
 
     function updateInputTranslateSize() {
@@ -1154,6 +1296,11 @@
 
     $effect.pre(() => {
         updateInputSizeAll();
+    });
+    $effect(() => {
+        composer.draft;
+        showDraft;
+        void tick().then(updateInputSizeAll);
     });
 
     /**
@@ -1456,6 +1603,11 @@
                             style:height={inputHeight}
                         >
                             <div class="loadmove chat-process-stage-{processStage}" class:autoload={autoMode}></div>
+                            {#if inputHookRuns.kindOf(currentChatRef()) === "draft"}
+                                <span class="ml-2 text-sm whitespace-nowrap" role="status"
+                                    >{language.inputHooks.runningDraft}</span
+                                >
+                            {/if}
                             {#if loadingJobChat}
                                 <span class="ml-2 text-sm whitespace-nowrap" role="status"
                                     >{language.serverJob.chatLoading}</span
@@ -1758,6 +1910,34 @@
                     {/if}
                 </div>
             </div>
+            {#if showDraft}
+                <div class="chat-screen-content-width flex flex-col gap-2 mt-2 mb-2 px-4">
+                    <label for="messageInputDraft" class="text-textcolor">{language.inputHooks.draft}</label>
+                    <div class="flex items-end gap-2">
+                        <textarea
+                            id="messageInputDraft"
+                            class="text-textcolor rounded-md p-2 min-w-0 bg-transparent input-text text-xl grow border-darkbutton resize-none focus:bg-selected overflow-y-hidden overflow-x-hidden max-w-full read-only:cursor-not-allowed"
+                            readonly={bindingIncomplete}
+                            bind:value={composer.draft}
+                            bind:this={inputDraftEle}
+                            onkeydown={(event) =>
+                                handleTranslationComposerKeydown(event, {
+                                    sendWithEnter: settings.ui.sendWithEnter,
+                                    send: sendDraftMessage,
+                                    reroll,
+                                })}
+                            oninput={updateInputSizeAll}
+                            placeholder={language.inputHooks.draftPlaceholder}
+                            style:height={inputDraftHeight}></textarea>
+                        <button
+                            type="button"
+                            class="p-3 rounded-md border border-darkborderc text-textcolor hover:bg-darkbutton transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            disabled={!composer.draft.trim() || (displayedChat !== null && isScreenBusy(displayedChat))}
+                            onclick={sendDraftMessage}>{language.inputHooks.sendDraft}</button
+                        >
+                    </div>
+                </div>
+            {/if}
             {#if settings.memoryTranslateMedia.useAutoTranslateInput && currentCharacter?.chaId !== "§playground"}
                 <div class="chat-screen-content-width flex items-center mt-2 mb-2">
                     <label for="messageInputTranslate" class="text-textcolor ml-4">

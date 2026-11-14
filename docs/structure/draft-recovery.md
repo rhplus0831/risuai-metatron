@@ -49,6 +49,10 @@
   timing. The editable draft and a send hand-off remain separate browser-wide rows. Read `checkComposerValue` and the
   composer method comments for compatibility and atomic swaps; composer timing and guarded restore are in
   [chat pipeline](chat-pipeline.md#composer-and-drafts).
+- A composer row holding draft-box text (`draft`) or the draft-send marker (`sent: "draft"`) is written in composer
+  format 2; every other composer row keeps today's shape and format 1, and a reader of format 1 only keeps a format 2
+  row untouched on every path. The marker goes with the row's `userMessageId`; a draft send's hand-off restores both
+  boxes, the translation, and the attachments.
 - `onChatRemoved` in `chatStore.svelte.ts` notifies isolated listeners for local and remote single-chat deletion (a
   retained last chat included), collection removals, conflict reconciliation, and
   `forgetCharacterChats`/`forgetCharacter` (`chatId: null` for a character). The composer subscribes at app load and
