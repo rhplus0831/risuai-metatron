@@ -42,7 +42,7 @@ import {
 } from "src/ts/storage/chatStore.svelte";
 import { activeMainProfile, activePreset, readSettingsRoot, settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
-import { MEMORY_SETTINGS_MENU, SettingsMenuIndex, settingsOpen } from "src/ts/stores.svelte";
+import { hypaV3ModalOpen, MEMORY_SETTINGS_MENU, SettingsMenuIndex, settingsOpen } from "src/ts/stores.svelte";
 import { jobTokenScope, tokenScopeKey } from "src/ts/tokenizer";
 import ContextMeter from "./ContextMeter.svelte";
 
@@ -85,7 +85,23 @@ const reply = (chatId: string, info?: Info): FixtureMessage => ({
     generationInfo: info,
 });
 
-function install(messages: FixtureMessage[]) {
+type ChatMemory = { memoryMode: "hypaV3" | "structuredMemory"; memoryEnabled: boolean };
+
+/**
+ * Installs the chat. Its memory is the one its newest report was sent with, on (HypaV3 or Structured
+ * Memory, as the chat's own mode), unless `memory` says otherwise; a chat without one has no memory set up.
+ */
+function install(messages: FixtureMessage[], memory?: ChatMemory | null) {
+    const sent = (
+        messages.findLast((message) => message.generationInfo?.context)?.generationInfo?.context as
+            ContextReport | undefined
+    )?.memory?.kind;
+    const chatMemory =
+        memory !== undefined
+            ? memory
+            : sent === "hypaV3" || sent === "structuredMemory"
+              ? { memoryMode: sent, memoryEnabled: true }
+              : null;
     installFlatDatabaseWithChats({
         characters: [
             {
@@ -93,11 +109,12 @@ function install(messages: FixtureMessage[]) {
                 type: "character",
                 name: "C",
                 chatPage: 0,
-                chats: [{ id: "k", name: "K", note: "", localLore: [], message: messages }],
+                chats: [{ id: "k", name: "K", note: "", localLore: [], message: messages, ...chatMemory }],
             },
         ],
     } as any);
-    // The fixture installs no defaults: the meter settings are set as the server's normalization would.
+    // The fixture installs no defaults: the settings are set as the server's normalization would.
+    settings.memoryTranslateMedia.supaModelType = "none";
     settings.ui.contextMeter = true;
     settings.ui.contextMeterTurnUnit = "user";
     settings.ui.contextMeterFixedWarn = 60;
@@ -122,6 +139,19 @@ function render(props: { group?: boolean; draft?: string; generating?: boolean }
 const chip = () => target.querySelector<HTMLButtonElement>("button.context-meter-chip");
 const panel = () => document.body.querySelector<HTMLElement>('[role="dialog"].context-meter-panel');
 const chipText = () => chip()?.textContent?.replace(/\s+/g, " ").trim();
+/** Sets the chat's memory mode and switch, as the sidebar's memory panel does. */
+function setMemory(memory: ChatMemory) {
+    setChatMeta(ref, memory);
+    flushSync();
+}
+const memoryWord = () => chip()?.querySelector<HTMLElement>("[data-context-meter-memory-word]") ?? null;
+const memoryBlock = () => panel()?.querySelector<HTMLElement>("[data-context-meter-memory-now]") ?? null;
+const memoryNotes = () =>
+    [...(memoryBlock()?.querySelectorAll<HTMLElement>("[data-context-meter-memory-note]") ?? [])].map((note) => [
+        note.dataset.contextMeterMemoryNote,
+        note.textContent?.trim(),
+        note.classList.contains("text-danger-500"),
+    ]);
 const outside = () => {
     const other = document.createElement("button");
     document.body.appendChild(other);
@@ -188,6 +218,7 @@ beforeEach(() => {
     vi.mocked(doingAlert).mockReturnValue(false);
     settingsOpen.set(false);
     SettingsMenuIndex.set(-1);
+    hypaV3ModalOpen.set(false);
     target = document.createElement("div");
     document.body.appendChild(target);
 });
@@ -201,7 +232,7 @@ afterEach(async () => {
 
 describe("Structured Memory in the context meter", () => {
     it("shows memory tokens and gives uncovered history priority over writer state, falling back to memory-on without a writer", () => {
-        install([reply("m1", { context: report() })]);
+        install([reply("m1", { context: report() })], { memoryMode: "structuredMemory", memoryEnabled: true });
         render();
         for (const coverage of ["gap", "unknown", "covered"] as const) {
             for (const state of ["recorded", "pending", "failed", "paused", "notAutomatic", undefined] as const) {
@@ -229,6 +260,8 @@ describe("Structured Memory in the context meter", () => {
                 expect(chipText(), `${coverage}/${state}`).toBe(
                     `3 turns · ${language.contextUsage.tokens("137")} · ${word} · 75%`,
                 );
+                // Only uncovered history warns: the health badge owns the writer's states.
+                expect(memoryWord()!.dataset.tone, `${coverage}/${state}`).toBe(coverage === "gap" ? "warn" : "plain");
             }
         }
     });
@@ -343,6 +376,8 @@ describe("the chip", () => {
             flushSync();
             expect(chipText(), coverage).toBe(`2 turns · ${note} · 75%`);
             expect(chip()!.getAttribute("aria-label"), coverage).toContain(`2 turns, HypaV3 ${note}`);
+            expect(memoryWord()!.textContent, coverage).toBe(note);
+            expect(memoryWord()!.classList.contains("text-danger-500"), coverage).toBe(coverage === "gap");
         }
     });
 
@@ -418,6 +453,180 @@ describe("the chip", () => {
         // A second instance for a group adds no chip.
         render({ group: true });
         expect(target.querySelectorAll("button.context-meter-chip").length).toBe(1);
+    });
+});
+
+describe("the chat's memory as it is now", () => {
+    const hypa = (on: boolean): ChatMemory => ({ memoryMode: "hypaV3", memoryEnabled: on });
+    const covered = () => trimmed({ memory: { kind: "hypaV3", tokens: 300, coverage: "covered" } });
+    const s = language.contextUsage;
+
+    it("names no memory while none is set up, whatever the last reply was sent with", () => {
+        install([reply("m1", { context: covered() })], null);
+        render();
+        expect(chipText()).toBe("2 turns · 75%");
+        expect(memoryWord()).toBeNull();
+        expect(chip()!.getAttribute("aria-label")).toBe(s.chipLabel(s.trimmedSummary("2 turns")));
+    });
+
+    it("follows the chat's switch at once: off drops the last reply's coverage, on brings it back", () => {
+        install([reply("m1", { context: covered() })]);
+        render();
+        expect(chipText()).toBe(`2 turns · ${s.summarized} · 75%`);
+        setMemory(hypa(false));
+        expect(chipText()).toBe(`2 turns · ${s.memoryOff} · 75%`);
+        expect(chip()!.getAttribute("aria-label")).toBe(
+            s.chipLabel(`${s.trimmedSummary("2 turns")}; ${s.memoryNowOffSummary("HypaV3")}`),
+        );
+        setMemory(hypa(true));
+        expect(chipText()).toBe(`2 turns · ${s.summarized} · 75%`);
+    });
+
+    it("says memory on, without the last reply's coverage, when that reply used no memory or another one", () => {
+        install([reply("m1", { context: report() })], hypa(true));
+        render();
+        expect(chipText()).toBe(`3 turns · ${s.memoryOn} · 75%`);
+        expect(memoryWord()!.dataset.tone).toBe("plain");
+        expect(chip()!.getAttribute("aria-label")).toBe(
+            s.chipLabel(`${s.fullSummary(75)}; ${s.memoryNowOnSummary("HypaV3")}`),
+        );
+        // A Structured Memory reply's tokens and writer word are not HypaV3's.
+        patchMessage(ref, "m1", {
+            generationInfo: {
+                context: report({
+                    memory: { kind: "structuredMemory", tokens: 137, coverage: "gap", writer: { state: "failed" } },
+                }),
+            },
+        });
+        flushSync();
+        expect(chipText()).toBe(`3 turns · ${s.memoryOn} · 75%`);
+        expect(memoryWord()!.dataset.tone).toBe("plain");
+    });
+
+    it("names the legacy algorithm of the settings and the owner's switch for a chat that chose neither", () => {
+        install([reply("m1", { inputTokens: 600, maxContext: 1000 })]);
+        settings.memoryTranslateMedia.supaModelType = "subModel";
+        render();
+        expect(chipText()).toBe(`${s.memoryOff} · 60%`);
+        expect(chip()!.getAttribute("aria-label")).toBe(
+            s.chipLabel(`${s.legacySummary(60)}; ${s.memoryNowOffSummary(s.memoryKinds.supa)}`),
+        );
+        setChatMeta(ref, { memoryEnabled: true });
+        flushSync();
+        expect(chipText()).toBe(`${s.memoryOn} · 60%`);
+    });
+
+    it("shows the line before the first reply once memory is set up, with a popover of the memory alone", async () => {
+        install([{ chatId: "u1", role: "user", data: "hello" }], hypa(true));
+        render();
+        expect(chipText()).toBe(s.memoryOn);
+        expect(chip()!.getAttribute("aria-label")).toBe(s.chipLabelNoReply(s.memoryNowOnSummary("HypaV3")));
+        const opened = await openPanel();
+        expect(opened.textContent).toContain(s.noReplyYet);
+        expect(opened.textContent).not.toContain(s.asOfLastReply);
+        expect(memoryBlock()!.dataset.contextMeterMemoryNow).toBe("on");
+        expect(memoryNotes()).toEqual([]);
+        expect(opened.querySelector("[data-context-meter-headline], [data-context-meter-history]")).toBeNull();
+        // Unsetting the mode leaves no memory and no report: the line and its popover go.
+        setChatMeta(ref, {}, ["memoryMode"]);
+        flushSync();
+        expect(chip()).toBeNull();
+        expect(panel()).toBeNull();
+    });
+
+    it("warns of memory off only while history is left out and the chat did not silence the trim question", () => {
+        install([reply("m1", { context: report() })], hypa(false));
+        render();
+        expect(memoryWord()!.textContent).toBe(s.memoryOff);
+        expect(memoryWord()!.dataset.tone).toBe("plain");
+        patchMessage(ref, "m1", { generationInfo: { context: trimmed() } });
+        flushSync();
+        expect(memoryWord()!.dataset.tone).toBe("warn");
+        expect(memoryWord()!.classList.contains("text-danger-500")).toBe(true);
+        // "Don't ask again" holds while it equals the owner's count (0 for a character that never counted).
+        setChatMeta(ref, { memoryTrimAck: 0 });
+        flushSync();
+        expect(memoryWord()!.dataset.tone).toBe("plain");
+        setChatMeta(ref, { memoryTrimAck: 1 });
+        flushSync();
+        expect(memoryWord()!.dataset.tone).toBe("warn");
+    });
+
+    it("states the memory in the popover and says how the last reply differed", async () => {
+        install([reply("m1", { context: covered() })]);
+        render();
+        await openPanel();
+        const state = () => memoryBlock()!.querySelector(".text-right")!.textContent?.trim();
+        expect(memoryBlock()!.dataset.contextMeterMemoryNow).toBe("on");
+        expect(state()).toBe(s.memoryNowOn("HypaV3"));
+        expect(memoryNotes()).toEqual([]);
+
+        // Off after a reply that used it: the history it left out goes unsummarized from now on.
+        setMemory(hypa(false));
+        expect(memoryBlock()!.dataset.contextMeterMemoryNow).toBe("off");
+        expect(state()).toBe(s.memoryNowOff("HypaV3"));
+        expect(memoryNotes()).toEqual([
+            ["leftOut", s.memoryOffLeftOut(2), true],
+            ["last", s.memoryLastUsed("HypaV3"), false],
+        ]);
+        setChatMeta(ref, { memoryTrimAck: 0 });
+        flushSync();
+        expect(memoryNotes()[0]).toEqual(["leftOut", s.memoryOffLeftOut(2), false]);
+
+        // On after a reply sent without it.
+        patchMessage(ref, "m1", { generationInfo: { context: trimmed() } });
+        setMemory(hypa(true));
+        expect(memoryNotes()).toEqual([["last", s.memoryLastWithout, false]]);
+
+        // No memory set up: only the way to the settings.
+        setChatMeta(ref, {}, ["memoryMode", "memoryEnabled"]);
+        flushSync();
+        expect(memoryBlock()!.dataset.contextMeterMemoryNow).toBe("none");
+        expect(state()).toBe(s.memoryNowNone);
+        expect(memoryNotes()).toEqual([["leftOut", s.memoryNoneLeftOut(2), false]]);
+        expect(memoryBlock()!.querySelector("[data-context-meter-memory-toggle]")).toBeNull();
+        expect(memoryBlock()!.querySelector("[data-context-meter-memory-panel]")).toBeNull();
+        memoryBlock()!.querySelector<HTMLButtonElement>("[data-context-meter-memory-now-settings]")!.click();
+        flushSync();
+        expect(get(SettingsMenuIndex)).toBe(MEMORY_SETTINGS_MENU);
+        expect(panel()).toBeNull();
+    });
+
+    it("switches the chat's memory from the popover, dropping the trim acknowledgement as it turns on", async () => {
+        install([reply("m1", { context: trimmed() })], hypa(false));
+        setChatMeta(ref, { memoryTrimAck: 0 });
+        render();
+        await openPanel();
+        const toggle = () => memoryBlock()!.querySelector<HTMLButtonElement>("[data-context-meter-memory-toggle]")!;
+        expect(toggle().textContent).toBe(s.memoryTurnOn);
+        toggle().click();
+        flushSync();
+        expect(findChat(ref)).toMatchObject({ memoryEnabled: true });
+        expect(findChat(ref)).not.toHaveProperty("memoryTrimAck");
+        expect(chipText()).toBe(`2 turns · ${s.memoryOn} · 75%`);
+        // The popover stays for the next press.
+        expect(toggle().textContent).toBe(s.memoryTurnOff);
+        toggle().click();
+        flushSync();
+        expect(findChat(ref)).toMatchObject({ memoryEnabled: false });
+        expect(memoryWord()!.textContent).toBe(s.memoryOff);
+    });
+
+    it("opens the chat's memory panel for HypaV3 and Structured Memory only", async () => {
+        install([reply("m1", { inputTokens: 600, maxContext: 1000 })]);
+        settings.memoryTranslateMedia.supaModelType = "subModel";
+        render();
+        await openPanel();
+        const button = () => memoryBlock()!.querySelector<HTMLButtonElement>("[data-context-meter-memory-panel]");
+        expect(button()).toBeNull();
+        setMemory({ memoryMode: "structuredMemory", memoryEnabled: false });
+        expect(button()!.textContent).toBe(language.structuredMemory.panel.title);
+        setMemory(hypa(true));
+        expect(button()!.textContent).toBe(language.hypaMemoryV3Modal);
+        button()!.click();
+        flushSync();
+        expect(get(hypaV3ModalOpen)).toBe(true);
+        expect(panel()).toBeNull();
     });
 });
 
@@ -850,8 +1059,11 @@ describe("the popover", () => {
         expect(opened.querySelector("[data-context-meter-omitted]")!.textContent).toBe(
             language.contextUsage.historyOmitted(2, "300"),
         );
-        // Without memory the report gives no reason for what it left out: no tag.
-        expect(opened.querySelector("[data-context-meter-omitted-tags]")).toBeNull();
+        // Without memory the report gives no reason for what it left out, but none of it was summarized.
+        const tags = opened.querySelectorAll<HTMLElement>("[data-context-meter-omitted-tags] span");
+        expect([...tags].map((tag) => [tag.dataset.tone, tag.textContent])).toEqual([
+            ["warn", language.contextUsage.omittedNoMemory],
+        ]);
         // The setting's unit leads, the other in parentheses; the totals sit under them.
         expect(opened.querySelector("[data-context-meter-kept]")!.textContent).toBe(
             language.contextUsage.historySent(2, 4, "user"),
@@ -1168,7 +1380,7 @@ describe("the background summary task", () => {
     const hypaReport = () => trimmed({ memory: { kind: "hypaV3", tokens: 300, coverage: "gap" } });
 
     it("puts a running writer in place of a pending or recorded memory word, and after any other word", () => {
-        install([reply("m1", { context: report() })]);
+        install([reply("m1", { context: report() })], { memoryMode: "structuredMemory", memoryEnabled: true });
         render();
         const s = language.contextUsage;
         const tokens = s.tokens("137");
@@ -1237,7 +1449,8 @@ describe("the background summary task", () => {
 
         taskFrame({ ...live("running", 3, 8), kind: "structuredMemory", taskId: "t2" });
         taskFrame({ ...ended("failed", { kind: "structuredMemory", error: "upstream 429" }), taskId: "t2" });
-        expect(chipText()).toBe(plain);
+        expect(chipText()).toBe(withTask(plain!, writer.failedMark));
+        expect(chip()!.getAttribute("aria-label")).toContain(s.taskSummary(writer.failedMark));
         expectWriterBlock("failed", writer.failed);
     });
 
@@ -1344,8 +1557,17 @@ describe("the background summary task", () => {
     it("reports a failed task with its error and a way to the memory settings", async () => {
         install([reply("m1", { context: hypaReport() })]);
         render();
+        const plain = chipText();
         taskFrame(ended("failed", { error: "upstream 429" }));
+        // The line says so too: nothing else on it tells that the summaries stopped.
         expect(target.querySelector("[data-context-meter-task-mark]")).toBeNull();
+        const failed = target.querySelector<HTMLElement>("[data-context-meter-task-failed]")!;
+        expect(failed.textContent?.trim()).toBe(language.contextUsage.taskFailedMark);
+        expect(failed.classList.contains("text-danger-500")).toBe(true);
+        expect(chipText()).toBe(withTask(plain!, language.contextUsage.taskFailedMark));
+        expect(chip()!.getAttribute("aria-label")).toContain(
+            `; ${language.contextUsage.taskSummary(language.contextUsage.taskFailedMark)}`,
+        );
         await openPanel();
         const block = taskBlock()!;
         expect(block.dataset.tone).toBe("failed");
@@ -1356,6 +1578,29 @@ describe("the background summary task", () => {
         expect(get(settingsOpen)).toBe(true);
         expect(get(SettingsMenuIndex)).toBe(MEMORY_SETTINGS_MENU);
         expect(panel()).toBeNull();
+    });
+
+    it("puts a failed writer in place of the report's failed word, and after any other word", () => {
+        install([reply("m1", { context: report() })], { memoryMode: "structuredMemory", memoryEnabled: true });
+        render();
+        const tokens = language.contextUsage.tokens("137");
+        const failedMark = language.contextUsage.writerTask.failedMark;
+        taskFrame(ended("failed", { kind: "structuredMemory", error: "upstream 429" }));
+        for (const state of ["failed", "pending", "paused"] as const) {
+            patchMessage(ref, "m1", {
+                generationInfo: {
+                    context: report({
+                        memory: { kind: "structuredMemory", tokens: 137, coverage: "covered", writer: { state } },
+                    }),
+                },
+            });
+            flushSync();
+            expect(chipText(), state).toBe(
+                state === "failed"
+                    ? `3 turns · ${tokens} · ${failedMark} · 75%`
+                    : `3 turns · ${tokens} · ${language.structuredMemory.meter.status[state]} · ${failedMark} · 75%`,
+            );
+        }
     });
 
     it("shows on a legacy fallback too", async () => {

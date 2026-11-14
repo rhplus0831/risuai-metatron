@@ -1894,7 +1894,25 @@ export const languageEnglish = {
         summarized: "summarized",
         gap: "gap",
         memoryOn: "memory on",
+        memoryOff: "memory off",
         chipLabel: (summary: string) => `Context usage: ${summary}. As of the last reply. Open the breakdown.`,
+        chipLabelNoReply: (summary: string) => `Context usage: ${summary}. No reply yet. Open the details.`,
+        noReplyYet: "No reply yet in this chat.",
+        memoryNowOnSummary: (memory: string) => `memory is on (${memory})`,
+        memoryNowOffSummary: (memory: string) => `memory is off for this chat (${memory})`,
+        memoryNowTitle: "Memory for this chat",
+        memoryNowOn: (memory: string) => `On · ${memory}`,
+        memoryNowOff: (memory: string) => `Off · ${memory}`,
+        memoryNowNone: "Not set up",
+        memoryTurnOn: "Turn on for this chat",
+        memoryTurnOff: "Turn off for this chat",
+        memoryOffLeftOut: (count: number) =>
+            `The last request left out ${countOf(count, "message")}. With memory off, sends leave them out without a summary.`,
+        memoryNoneLeftOut: (count: number) =>
+            `The last request left out ${countOf(count, "message")}. With no memory set up, sends leave them out without a summary.`,
+        memoryLastUsed: (memory: string) =>
+            `The last reply was sent with ${memory}; the breakdown below is that reply's.`,
+        memoryLastWithout: "The last reply was sent without memory; the breakdown below is that reply's.",
         fullSummary: (percent: number) =>
             `all eligible history fit in the last request, ${percent}% of the prompt budget`,
         trimmedSummary: (kept: string) => `the last request kept ${kept}`,
@@ -1961,6 +1979,7 @@ export const languageEnglish = {
             "Later sends use its summaries as the history needs them; the breakdown below is the last reply's.",
         taskDone: "Finished: the new summaries are stored; later sends use them as the history needs them.",
         taskFailed: "The last background summary failed.",
+        taskFailedMark: "summary failed",
         writerTask: {
             title: "Memory recording",
             queued: "recording queued",
@@ -1969,11 +1988,13 @@ export const languageEnglish = {
             liveNote: "Later sends read its new records; the breakdown below is the last reply's.",
             done: "Finished: the new records are stored; later sends read them.",
             failed: "The last memory recording failed.",
+            failedMark: "recording failed",
         },
         historyOmitted: (count: number, tokens: string) =>
             `${count === 1 ? "1 message" : `${count} messages`} left out · ${tokens} tokens`,
         omittedSummarized: (count: number) => `summarized into memory: ${count}`,
         omittedUnsummarized: (count: number) => `left out unsummarized: ${count}`,
+        omittedNoMemory: "sent without memory: none summarized",
         loreBudget: "Lorebook activation budget",
         loreBudgetHelp: "Tokens of the activated entries before injection edits, not the lore tokens finally sent.",
         loreRejected: (count: number, tokens: string) =>
