@@ -60,6 +60,7 @@ import {
     type RunningJob,
 } from "../jobs/generationJobs.ts";
 import { logEvent } from "../diagnostics/log.ts";
+import { createOutputMeter } from "./outputMeter.ts";
 import { isValidResourceId } from "../data/resourceStore.ts";
 import {
     admitProviderModels,
@@ -330,8 +331,9 @@ function reportStage(job: RunningJob, stage: GenerationStage): void {
  *    (`assemblePrompt`); `preview` ends with the messages and their context report, `previewPrompt`
  *    with the provider body.
  *    Otherwise the request runs, and the reply is appended (or the continued message extended) and
- *    streamed: `chunk` per provider chunk, a raw checkpoint every 3 s, and the final raw write at the
- *    end, after an abort (inside the grace), or after a read failure.
+ *    streamed: `chunk` per provider chunk, detached local `output` counts for registry progress, a raw
+ *    checkpoint every 3 s, and the final raw write at the end, after an abort (inside the grace), or
+ *    after a read failure.
  * 6. The tail of a completed reply, in the tab's order on each path: `editoutput` once on
  *    the completed text, the output trigger, inlays, the `chatOutput` listeners, TTS; the
  *    auto-continue decision, `igp`, a trigger's resend, the notification, the emotion modes or the
@@ -2031,25 +2033,37 @@ async function runSpeaker(arg: {
                     text: "",
                 });
             }
-            const stream = await readReply(job, req.result, {
-                prefix,
-                removeIncompleteResponse: !!db.removeIncompleteResponse,
-                emitChunk: (text, seq) => job.emit({ type: "chunk", messageId, generationId, text, seq }),
-                checkpoint: (text, seq) => {
-                    generation!.seq += 1;
-                    writeOwn(
-                        [
-                            {
-                                op: "setText",
-                                id: messageId,
-                                text,
-                                generation: { id: generationId, seq: generation!.seq },
-                            },
-                        ],
-                        [{ messageId, generationId, seq, raw: true }],
-                    );
-                },
+            const meter = createOutputMeter({
+                count: (text) => deps.tokens.countLocal(text, tokenScopeFor(requestDb)),
+                report: (output) => job.emit({ type: "output", ...output }),
+                now: Date.now,
+                log: (error) => logEvent("generation.outputCount", { job: job.id }, error, deps.diagnostics),
             });
+            let stream: Awaited<ReturnType<typeof readReply>>;
+            try {
+                stream = await readReply(job, req.result, {
+                    prefix,
+                    removeIncompleteResponse: !!db.removeIncompleteResponse,
+                    onRaw: meter.note,
+                    emitChunk: (text, seq) => job.emit({ type: "chunk", messageId, generationId, text, seq }),
+                    checkpoint: (text, seq) => {
+                        generation!.seq += 1;
+                        writeOwn(
+                            [
+                                {
+                                    op: "setText",
+                                    id: messageId,
+                                    text,
+                                    generation: { id: generationId, seq: generation!.seq },
+                                },
+                            ],
+                            [{ messageId, generationId, seq, raw: true }],
+                        );
+                    },
+                });
+            } finally {
+                meter.stop();
+            }
             if (stream.error !== undefined || job.signal.aborted) {
                 // An abort or a read failure: the final write carries the text so far; nothing after
                 // the stream runs.
@@ -2424,9 +2438,10 @@ async function runSpeaker(arg: {
 }
 
 /**
- * Reads a streaming reply to its end, an abort, or a read failure: each chunk's first value
- * (`trimUntilPunctuation` with `removeIncompleteResponse`) after `prefix`, trimmed, is sent as a
- * `chunk`. Text not yet stored is checkpointed `CHECKPOINT_INTERVAL_MS` after the last checkpoint
+ * Reads a streaming reply to its end, an abort, or a read failure: each chunk's first value is passed
+ * to `onRaw` before trimming or adding the continue's prefix. With `removeIncompleteResponse` it is
+ * trimmed by `trimUntilPunctuation`, then combined with `prefix`, trimmed, and sent as a `chunk`.
+ * Text not yet stored is checkpointed `CHECKPOINT_INTERVAL_MS` after the last checkpoint
  * (a timer, so a provider that stalls after a chunk does not hold it back). Returns the text, the
  * newest chunk's sequence, the last chunk, and the read failure (an abort, or a checkpoint that
  * failed, is one).
@@ -2437,6 +2452,7 @@ async function readReply(
     options: {
         prefix: string;
         removeIncompleteResponse: boolean;
+        onRaw?: (raw: string) => void;
         emitChunk: (text: string, seq: number) => void;
         checkpoint: (text: string, seq: number) => void;
     },
@@ -2487,6 +2503,7 @@ async function readReply(
             if (read.value) {
                 lastChunk = read.value;
                 let result = lastChunk[Object.keys(lastChunk)[0]] ?? "";
+                options.onRaw?.(result);
                 if (options.removeIncompleteResponse) {
                     result = trimUntilPunctuation(result);
                 }

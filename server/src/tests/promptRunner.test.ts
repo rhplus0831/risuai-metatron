@@ -26,6 +26,7 @@ import { AIACCESS_TOOLS } from "../../../shared/mcp/aiaccess.ts";
 import { DICE_TOOLS } from "../mcp/dice.ts";
 import * as jobTools from "../mcp/jobTools.ts";
 import { createTokenizers } from "../prompt/tokenizers/index.ts";
+import * as tokenCounters from "../prompt/tokens.ts";
 import * as resourceStores from "../data/resourceStore.ts";
 import type { ChatGroup, ChatOp } from "../../../shared/chats.ts";
 import type { triggerscript } from "../../../shared/triggers.ts";
@@ -154,6 +155,7 @@ const provider = http.createServer(async (req, res) => {
 });
 
 let runnerStore: resourceStores.ResourceStore;
+let runnerTokens: tokenCounters.TokenCounter;
 let runnerFeed: ChangeFeed;
 let runnerStoreOptions: Parameters<typeof resourceStores.createResourceStore>[0];
 let rootDir = "";
@@ -568,6 +570,7 @@ beforeAll(async () => {
     // Capture the real service so a test can refuse local inference at the process boundary.
     const createdModels = vi.spyOn(localModels, "createTransformers");
     const createdStore = vi.spyOn(resourceStores, "createResourceStore");
+    const createdCounter = vi.spyOn(tokenCounters, "createTokenCounter");
     try {
         server = createTestServer({
             rootDir,
@@ -580,9 +583,11 @@ beforeAll(async () => {
         runnerStore = createdStore.mock.results[0].value;
         runnerStoreOptions = createdStore.mock.calls[0][0];
         runnerFeed = createdStore.mock.calls[0][0].feed!;
+        runnerTokens = createdCounter.mock.results[0].value;
     } finally {
         createdModels.mockRestore();
         createdStore.mockRestore();
+        createdCounter.mockRestore();
     }
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
@@ -736,7 +741,7 @@ describe("trigger stage chat copies", () => {
                     savePath: server.savePath,
                     scriptWorkers: server.context.scriptWorkers,
                     llm: server.context.llmRequests,
-                    tokens: { count: unusedModelService, encode: unusedModelService },
+                    tokens: { count: unusedModelService, encode: unusedModelService, countLocal: unusedModelService },
                     embeddings: { forJob: unusedModelService },
                     transformers,
                 },
@@ -787,6 +792,133 @@ describe("trigger stage chat copies", () => {
 });
 
 describe("a send", () => {
+    it(
+        "reports growing counts of the raw first stream value before trimming and without the continue prefix",
+        async () => {
+            const providers = (await single("providers")).data;
+            await patchProviders({ removeIncompleteResponse: true, autoContinueChat: false });
+            const chaId = await seedCharacter({
+                name: "Ann",
+                messages: [
+                    { role: "user", data: "q", chatId: "u1" },
+                    { role: "char", data: "Prefix. ", chatId: "r1" },
+                ],
+            });
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+            const since = Date.now();
+            let controller!: ReadableStreamDefaultController<Record<string, string>>;
+            const stream = new ReadableStream<Record<string, string>>({
+                start(value) {
+                    controller = value;
+                },
+            });
+            const upstream = vi.spyOn(server.context.llmRequests, "runInJob").mockImplementationOnce(async () => {
+                await socketOpen;
+                return { type: "streaming", result: stream };
+            });
+            const count = vi.spyOn(runnerTokens, "countLocal");
+            const chunks = [deferred<void>(), deferred<void>(), deferred<void>()];
+            let chunkIndex = 0;
+            const published: ChangeFeedEvent[] = [];
+            const unsubscribe = runnerFeed.subscribe((event) => {
+                if (event.type === "generation") published.push(event);
+            });
+            const lastCount = deferred<number>();
+            const pending = job("continue", chaId, {}, { onChunk: () => chunks[chunkIndex++].resolve() });
+            try {
+                controller.enqueue({ primary: "hello world", alternative: "This is another sample." });
+                await chunks[0].promise;
+                await vi.advanceTimersByTimeAsync(0);
+                expect(server.context.generationJobs.generationSnapshot()[0].output).toEqual({
+                    tokens: 2,
+                    since,
+                    at: since,
+                });
+                await vi.advanceTimersByTimeAsync(500);
+                controller.enqueue({ primary: "hello world. hello world", alternative: "Another sample grows too." });
+                await chunks[1].promise;
+                await vi.advanceTimersByTimeAsync(0);
+                expect(count.mock.calls.map(([text]) => text)).toEqual(["hello world", ". hello world"]);
+                expect(count.mock.calls.map(([, scope]) => scope)).toEqual([
+                    upstream.mock.calls[0][0].tokenScope,
+                    upstream.mock.calls[0][0].tokenScope,
+                ]);
+                expect(server.context.generationJobs.generationSnapshot()[0].output).toEqual({
+                    tokens: 5,
+                    since,
+                    at: since + 500,
+                });
+                // Finishing the reply must not wait for local telemetry still in flight.
+                count.mockImplementationOnce(() => lastCount.promise);
+                await vi.advanceTimersByTimeAsync(500);
+                controller.enqueue({ primary: "hello world. hello world. unfinished" });
+                await chunks[2].promise;
+                controller.close();
+                const result = await pending;
+                expect(result.terminal?.type).toBe("done");
+                expect(streamedTexts(result.events).map((chunk) => chunk.text)).toEqual([
+                    "Prefix.",
+                    "Prefix. hello world.",
+                    "Prefix. hello world. hello world.",
+                ]);
+                expect((await readChat(chaId)).data.message.at(-1).data).toBe("Prefix. hello world. hello world.");
+                const before = [...published];
+                lastCount.resolve(99);
+                await vi.advanceTimersByTimeAsync(1000);
+                expect(published).toEqual(before);
+            } finally {
+                try {
+                    controller.close();
+                } catch {
+                    /* The stream may already be closed. */
+                }
+                lastCount.resolve(99);
+                await pending;
+                unsubscribe();
+                count.mockRestore();
+                upstream.mockRestore();
+                vi.useRealTimers();
+                await patchProviders({
+                    removeIncompleteResponse: providers.removeIncompleteResponse ?? false,
+                    autoContinueChat: providers.autoContinueChat ?? false,
+                });
+            }
+        },
+        SLOW,
+    );
+
+    it(
+        "stores a buffered reply without counting or publishing output",
+        async () => {
+            const chaId = await seedCharacter({ name: "Ann" });
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+            const count = vi.spyOn(runnerTokens, "countLocal");
+            const upstream = vi.spyOn(server.context.llmRequests, "runInJob").mockImplementationOnce(async () => {
+                await socketOpen;
+                return { type: "success", result: "Buffered reply." };
+            });
+            const published: ChangeFeedEvent[] = [];
+            const unsubscribe = runnerFeed.subscribe((event) => {
+                if (event.type === "generation") published.push(event);
+            });
+            try {
+                const result = await job("send", chaId);
+                expect(result.terminal?.type).toBe("done");
+                expect((await readChat(chaId)).data.message.at(-1).data).toBe("Buffered reply.");
+                expect(count).not.toHaveBeenCalled();
+                await vi.advanceTimersByTimeAsync(1000);
+                expect(published.length).toBeGreaterThan(0);
+                for (const event of published) expect(event).not.toHaveProperty("output");
+            } finally {
+                unsubscribe();
+                count.mockRestore();
+                upstream.mockRestore();
+                vi.useRealTimers();
+            }
+        },
+        SLOW,
+    );
+
     it("keeps the user message but makes no request or lore flag write when the lore budget option ends assembly", async () => {
         await prepareLoreBudgetJob();
         const chaId = await seedCharacter({ name: "Ann", extra: overBudgetLore() });

@@ -67,6 +67,11 @@ export type GenerationProgressEntry = {
     stage?: GenerationStage;
     retry?: number;
     sequence?: Pick<GenerationSequence, "total" | "sent">;
+    /**
+     * Approximate local token count of the reply being generated now. `since` is when its first
+     * counted text was noted and `at` when this count was taken, in server-clock milliseconds.
+     */
+    output?: { tokens: number; since: number; at: number };
 };
 
 /**

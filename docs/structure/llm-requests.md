@@ -127,7 +127,9 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
 - `server/src/prompt/tokenizers/index.ts` `LOADERS`, `createTokenizers`: one loader per `TokenizerFamily`; payloads are
   `server/assets/token/` files (`server/src/prompt/tokenizers/payloads.ts`).
 - `server/src/prompt/tokens.ts` `createTokenCounter`, `isTokenizerTextRefusal`, `GOOGLE_COUNT_MAX_CONCURRENT`: the
-  server counter; the routes are `server/src/routes/tokens.ts`.
+  server counter; the routes are `server/src/routes/tokens.ts`. `countLocal` is the same choice without either cache and
+  without Google's endpoint (a `googleCloud` choice counts with `gemmaSentencePiece`); the streamed reply's output meter
+  uses it.
 - `shared/prompt/chatTokens.ts` `ChatTokenCounter`, `ChatTokenHost`, and `shared/prompt/imageTokens.ts` `imageTokens`: a
   prompt's token arithmetic, the same on both runtimes.
 - The context report (`shared/contextReport.ts`, written by `assemblePrompt`) makes no counts of its own: it records the

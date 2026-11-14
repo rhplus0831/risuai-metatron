@@ -305,6 +305,52 @@ describe("selectTokenizer (the shared routing)", () => {
     });
 });
 describe("createTokenCounter", () => {
+    it("counts Google scopes locally with Gemma SentencePiece without fetching or reading or filling the encode cache", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        try {
+            const { tokenizers, calls } = stubTokenizers();
+            const fetchImpl = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ totalTokens: 7 })));
+            const counter = createTokenCounter({ tokenizers, fetchImpl });
+            const google = scope({
+                model: { tokenizer: LLMTokenizer.GoogleCloud, internalID: "gemini-3-flash-preview" },
+                googleClaudeTokenizing: true,
+                useTokenizerCaching: true,
+            });
+            expect(await counter.countLocal("reply", google)).toBe(2);
+            expect(await counter.countLocal("reply", google)).toBe(2);
+            expect(fetchImpl).not.toHaveBeenCalled();
+            // A local result must not become the next remote encode's cached answer.
+            expect(await counter.count("reply", google)).toBe(7);
+            expect(fetchImpl).toHaveBeenCalledTimes(1);
+            // The remote result is now cached, but the local count still uses its own tokenizer.
+            expect(await counter.countLocal("reply", google)).toBe(2);
+            expect(calls).toEqual([
+                ["gemmaSentencePiece", "reply"],
+                ["gemmaSentencePiece", "reply"],
+                ["gemmaSentencePiece", "reply"],
+            ]);
+            expect(await counter.count("reply", google)).toBe(7);
+            expect(fetchImpl).toHaveBeenCalledTimes(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("counts family scopes like count while bypassing the encode cache in both directions", async () => {
+        const { tokenizers, calls } = stubTokenizers();
+        const counter = createTokenCounter({ tokenizers });
+        const selected = scope({ aiModel: "reverse_proxy", customTokenizer: "glm5", useTokenizerCaching: true });
+        expect(await counter.countLocal("reply", selected)).toBe(2);
+        expect(await counter.count("reply", selected)).toBe(2);
+        expect(await counter.count("reply", selected)).toBe(2);
+        expect(await counter.countLocal("reply", selected)).toBe(2);
+        expect(calls).toEqual([
+            ["GLM5", "reply"],
+            ["GLM5", "reply"],
+            ["GLM5", "reply"],
+        ]);
+    });
+
     it("encodes with the routed family and counts the ids; caching off asks the tokenizers every time", async () => {
         const { tokenizers, calls } = stubTokenizers();
         const counter = createTokenCounter({ tokenizers });

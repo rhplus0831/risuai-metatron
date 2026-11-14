@@ -22,6 +22,7 @@ import {
     failureOf,
     GenerationJobEndedError,
     GenerationRunnerError,
+    GENERATION_PROGRESS_INTERVAL_MS,
     type GenerationRunner,
     JOB_ABORT_GRACE_MS,
     JOB_DONE_GRACE_MS,
@@ -468,6 +469,167 @@ describe("generation progress on the live-update feed", () => {
         cleanups.push(() => finish.resolve());
         return { started: started.promise, finish: finish.resolve, completed };
     }
+
+    it("publishes only the newest output each second per job, keeps snapshots current and sends no output to job sockets", async () => {
+        clock();
+        expect(GENERATION_PROGRESS_INTERVAL_MS).toBe(1000);
+        const published: Progress[] = [];
+        const s = setup({ publishGeneration: (event) => published.push(event) });
+        const held = holdRunner(s);
+        const jobId = s.create();
+        const job = await held.started;
+        const owner = await s.follow(jobId);
+        expect(s.jobs.handoff(jobId, { clientId: "tab", target: "worker" }, s.store.epoch()).ok).toBe(true);
+        const takeover = s.jobs.takeover(jobId, { clientId: "worker" }, s.store.epoch());
+        if (!takeover.ok) throw new Error(JSON.stringify(takeover));
+        const worker = await s.follow(jobId, "worker", `&ticket=${takeover.body.ticket}`);
+        const running = published[0];
+        await vi.advanceTimersByTimeAsync(100);
+        job.emit({ type: "output", tokens: 2, since: 200, at: 200 });
+        await vi.advanceTimersByTimeAsync(300);
+        const newest = { tokens: 7, since: 200, at: 500 };
+        job.emit({ type: "output", ...newest });
+        expect(s.jobs.generationSnapshot()).toEqual([
+            { jobId, ...ref, kind: "send", clientId: "tab", startedAt: 100, at: 500, output: newest },
+        ]);
+        await vi.advanceTimersByTimeAsync(599);
+        expect(published).toEqual([running]);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(published).toEqual([running, { ...running, at: 1100, output: newest }]);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(published).toHaveLength(2);
+        // A second job's admission must not reset the first job's publication window.
+        const other = holdRunner(s);
+        const admitted = s.jobs.create(
+            {
+                kind: "send",
+                clientId: "tab",
+                context: {
+                    ...s.context(),
+                    chatId: "j",
+                    chatRevision: s.store.chatRevision("c", "j")!,
+                },
+            },
+            s.store.epoch(),
+        );
+        if (!admitted.ok) throw new Error(JSON.stringify(admitted));
+        const otherJob = await other.started;
+        otherJob.emit({ type: "output", tokens: 1, since: 2100, at: 2100 });
+        const immediate = { tokens: 11, since: 200, at: 2100 };
+        job.emit({ type: "output", ...immediate });
+        expect(published.at(-1)).toEqual({ ...running, at: 2100, output: immediate });
+        expect(published.filter((event) => event.jobId === admitted.jobId)).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(published.filter((event) => event.jobId === admitted.jobId)).toHaveLength(2);
+        expect(published.at(-1)).toMatchObject({
+            jobId: admitted.jobId,
+            at: 3100,
+            output: { tokens: 1, since: 2100, at: 2100 },
+        });
+        for (const socket of [owner, worker]) {
+            await socket.fence();
+            expect(socket.events.some((event) => (event as { type: string }).type === "output")).toBe(false);
+        }
+    });
+
+    it("publishes stages, retries and sequence progress immediately with the newest output and cancels its pending publication", async () => {
+        clock();
+        const published: Progress[] = [];
+        const s = setup({ publishGeneration: (event) => published.push(event) });
+        const held = holdRunner(s);
+        s.create("", "command");
+        const job = await held.started;
+        const running = published[0];
+        await vi.advanceTimersByTimeAsync(100);
+        job.emit({ type: "output", tokens: 2, since: 200, at: 200 });
+        await vi.advanceTimersByTimeAsync(100);
+        const output = { tokens: 5, since: 200, at: 300 };
+        job.emit({ type: "output", ...output });
+        job.emit({ type: "stage", stage: "finishing" });
+        expect(published).toEqual([running, { ...running, at: 300, stage: "finishing", output }]);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(published).toHaveLength(2);
+        for (const change of ["retry", "sequence"] as const) {
+            job.emit({ type: "stage", stage: change === "retry" ? "generating" : "finishing" });
+            const before = published.length;
+            await vi.advanceTimersByTimeAsync(100);
+            const next = { tokens: change === "retry" ? 8 : 13, since: 200, at: Date.now() };
+            job.emit({ type: "output", ...next });
+            if (change === "retry") job.emit({ type: "retry" });
+            else job.sequence!.progress({ total: 2, sent: 1 });
+            expect(published).toHaveLength(before + 1);
+            expect(published.at(-1)).toMatchObject({
+                at: Date.now(),
+                output: next,
+                ...(change === "retry" ? { retry: 1 } : { sequence: { total: 2, sent: 1 } }),
+            });
+            await vi.advanceTimersByTimeAsync(1000);
+            expect(published).toHaveLength(before + 1);
+        }
+    });
+
+    it("clears the previous reply's output when another reply is accepted", async () => {
+        clock();
+        const published: Progress[] = [];
+        const s = setup({ publishGeneration: (event) => published.push(event) });
+        const held = holdRunner(s);
+        s.create();
+        const job = await held.started;
+        job.emit({ type: "output", tokens: 9, since: 100, at: 100 });
+        expect(s.jobs.generationSnapshot()[0].output).toEqual({ tokens: 9, since: 100, at: 100 });
+        job.write(() => ({ chats: [group(s.revision(), [begin("r", "g1")])] }));
+        job.emit({
+            type: "accepted",
+            jobId: job.id,
+            messageId: "r",
+            generationId: "g1",
+            revision: s.revision(),
+            text: "",
+        });
+        expect(s.jobs.generationSnapshot()[0]).not.toHaveProperty("output");
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(published.at(-1)).not.toHaveProperty("output");
+    });
+
+    it("clears output when preparing the next reply even without another accepted event", async () => {
+        clock();
+        const published: Progress[] = [];
+        const s = setup({ publishGeneration: (event) => published.push(event) });
+        const held = holdRunner(s);
+        s.create();
+        const job = await held.started;
+        job.emit({ type: "stage", stage: "generating" });
+        job.emit({ type: "output", tokens: 9, since: 100, at: 100 });
+        expect(s.jobs.generationSnapshot()[0].output).toEqual({ tokens: 9, since: 100, at: 100 });
+        await vi.advanceTimersByTimeAsync(100);
+        job.emit({ type: "stage", stage: "preparing" });
+        expect(published.at(-1)).toMatchObject({ state: "running", stage: "preparing", at: 200 });
+        expect(published.at(-1)).not.toHaveProperty("output");
+        expect(s.jobs.generationSnapshot()[0]).not.toHaveProperty("output");
+        const before = [...published];
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(published).toEqual(before);
+    });
+
+    it("drops pending and late output after the terminal without throwing or publishing running again", async () => {
+        clock();
+        const published: Progress[] = [];
+        const s = setup({ publishGeneration: (event) => published.push(event) });
+        const held = holdRunner(s);
+        const jobId = s.create();
+        const job = await held.started;
+        job.emit({ type: "output", tokens: 9, since: 100, at: 100 });
+        job.emit({ type: "done", revision: s.revision() });
+        const ended = { type: "generation", state: "ended", epoch: s.store.epoch(), jobId, ...ref };
+        expect(published).toEqual([expect.objectContaining({ state: "running" }), ended]);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(() => job.emit({ type: "output", tokens: 12, since: 100, at: 1100 })).not.toThrow();
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(published).toEqual([expect.objectContaining({ state: "running" }), ended]);
+        expect(s.jobs.generationSnapshot()).toEqual([]);
+        held.finish();
+        await held.completed;
+    });
 
     it("publishes every admitted kind before its runner starts and removes it from the snapshot when it ends", async () => {
         clock();

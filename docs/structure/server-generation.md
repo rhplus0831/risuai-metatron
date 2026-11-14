@@ -28,10 +28,11 @@
 - `server/src/jobs/{jobScope,chatBinding,loreOverrides,generationLock,cbsHost,chatResult}.ts`: scoped reads
   (`loadJobScope`), the binding check (`checkChatBinding`), orphaned overrides (`readOrphanedOverrideEntries`), reply
   locks (`createGenerationLock`), the CBS host (`createJobCbsHost`), trigger chat results (`applyTriggerChat`).
-- `server/src/prompt/runner.ts` `runPromptJob`, `runPromptSend`, `createJobMemoryHost`; `server/src/prompt/assemble.ts`
-  `assemblePrompt`, `AssemblyHost`; `server/src/prompt/{commands,scripts,triggers,postProcess,thoughts}.ts`
-  (`createCommandExecutor`, `createScriptProcessor`, `runLuaEdit`, `createTriggerRuntime`, `runEmotionMode`,
-  `stripThoughtsBlock`).
+- `server/src/prompt/runner.ts` `runPromptJob`, `runPromptSend`, `createJobMemoryHost`;
+  `server/src/prompt/outputMeter.ts` `createOutputMeter` (a streamed reply's token count);
+  `server/src/prompt/assemble.ts` `assemblePrompt`, `AssemblyHost`;
+  `server/src/prompt/{commands,scripts,triggers,postProcess,thoughts}.ts` (`createCommandExecutor`,
+  `createScriptProcessor`, `runLuaEdit`, `createTriggerRuntime`, `runEmotionMode`, `stripThoughtsBlock`).
 - `server/src/prompt/transform.ts` `createTransformService`, `partitionKnownResults`;
   `server/src/prompt/transformCache.ts`, `server/src/prompt/displayScope.ts` `createDisplayScopeLoader`,
   `server/src/prompt/displayKinds.ts`; wire shapes in `shared/transform.ts`.
@@ -132,6 +133,14 @@ refusal the memory step recovered from or outlived replaces no later error.
   `error` terminal carries `lore` (`parseLoreBudgetStop`). What ran before activation stays; no reply request is made.
   Later rounds and speakers, previews, and command-sequence parts (the part view drops the field) never stop.
 - After final chat writes, `runPromptSend` hands off translations and due memory input, detached, before returning.
+- A streamed reply is metered (`createOutputMeter`, `server/src/prompt/outputMeter.ts`): `readReply`'s `onRaw` hands it
+  each chunk's raw first value, before `removeIncompleteResponse` and the continue's prefix, so the count covers what
+  this request generated. A buffered answer has no meter.
+- A count starts at most every `OUTPUT_COUNT_INTERVAL_MS` (500) with none in flight and counts the part the last count
+  did not cover (a rewritten snapshot is counted whole and replaces the total) with the reply scope's `countLocal`; it
+  reports `{ type: "output", tokens, since, at }` through `job.emit`. No write or event waits for it. A failed count is
+  logged once (`generation.outputCount`) and stops the meter, which also stops when `readReply` returns. The tokenizer
+  runs on the server thread for the new part, or a whole rewritten snapshot.
 
 ### Reroll in place
 
@@ -179,6 +188,11 @@ client (a participant's `DELETE` too) is attributed; `stop`'s comment holds the 
   count it clears), each retry report, and each changed sequence part; an `ended` entry where `finalize` sets `endedAt`.
   Every kind is published, previews included; a job of another epoch publishes nothing. `clientId` is the creator, as
   `current`'s `owned` compares. A publisher's throw is logged (`generation.progressPublish`) and dropped.
+- An `output` report (registry-only, never on a job socket) becomes the entry's `output`, the reply being generated now:
+  `accepted` and a change to `preparing` clear it, and a report after the job ended or of another epoch is dropped
+  without throwing (it does not flush pending writes). Output alone publishes at once when
+  `GENERATION_PROGRESS_INTERVAL_MS` (1 s) has passed since the job's last `running` entry, else once by a timer with the
+  newest count; any other `running` entry carries the newest count and cancels the timer, and `finalize` clears it.
 - `sendSocket` allows one oversized frame on an empty queue for whole-chat recovery; with queued bytes, it terminates an
   owner or viewer whose queue plus the next frame exceeds 4 MiB, leaving as on a drop.
 - `provider` callbacks offer `chunks: "append"`: `handleMessage` joins appends for `onChunk`, asks `chunkResync` on gaps
@@ -264,7 +278,8 @@ mode); like the request history, in no snapshot or archive.
   lost on restart. An ended job is readable for 60 s (`JOB_DONE_GRACE_MS`), then its trimmed outcome stays in memory for
   24 h/up to 500 entries (`KEPT_OUTCOME_MS`, `MAX_KEPT_OUTCOMES`); status falls back to the [receipt](#job-receipts)
   after restart. Epoch changes clear the kept outcomes and the request index; an ended job of the old epoch stays
-  through its grace, and `generationSnapshot` lists only the current epoch's running jobs.
+  through its grace, and `generationSnapshot` lists only the current epoch's running jobs, each with its newest output
+  count.
 - Request identity moves from live job through grace to the kept entry, then disk. Cancellation tombstones are kept in
   memory 72 h/up to 10,000 entries; epoch changes clear both.
 - The transform service: its result LRU, pending two-call snapshots and pins, plus `createDisplayScopeLoader` (raw
@@ -308,7 +323,7 @@ In-process harness, slow table: [shell's Tests](self-host-server.md#tests).
 - Browser checks: `util/playwright/checkJobProtocol.mjs`, `checkJobHandoff.mjs`, and `checkServerRestartRaces.mjs`
   ([test-harness](test-harness.md)); `e2e`: `e2e/multiClientGeneration.spec.ts`, two-client lock.
 - Jobs:
-  `pnpm --silent test:agent server/src/tests/{generationJobs,generationReceipts,generationDeltaChunks,generations,commandSequences,generationBarrier,jobChannel,promptRunner}.test.ts`.
+  `pnpm --silent test:agent server/src/tests/{generationJobs,generationReceipts,generationDeltaChunks,generations,commandSequences,generationBarrier,jobChannel,promptRunner,outputMeter}.test.ts`.
 - Transform and translation: `pnpm --silent test:agent server/src/tests/{transform,transformService,translate}.test.ts`.
 - LLM and tokens: `pnpm --silent test:agent server/src/tests/{llmRoutes,llmRequests,tokenRoutes,tokens}.test.ts`.
 - Job modules and CBS: `pnpm --silent test:agent server/src/tests/{jobModules,dynamicAssets,cbs}.test.ts`.

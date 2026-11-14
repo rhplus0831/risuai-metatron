@@ -37,6 +37,8 @@ export const LOG_EVENT_KINDS = [
     "generation.handoffPublish",
     /** Publishing a job's progress or end threw. */
     "generation.progressPublish",
+    /** Counting or reporting a streamed reply's output tokens threw. */
+    "generation.outputCount",
     /** The runner's settlement could not end the job. */
     "generation.runnerSettle",
     /** A listener of the owner's socket messages threw. */

@@ -71,6 +71,7 @@ export const RUNTIME_ORIGINS = [
     "generation.endDelivery",
     "generation.handoffPublish",
     "generation.progressPublish",
+    "generation.outputCount",
     "generation.runnerSettle",
     "generation.listener",
     "generation.release",
