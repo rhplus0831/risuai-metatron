@@ -114,6 +114,9 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   `mergeUnset` onto its stored map, validates `chat.toolCalls` and `chat.oocLog` entries wherever a chat is written (an
   `oocLog` merge past its entry limit is refused, so its writer prunes first), and stores the whole map again with no
   eviction ([server resources](server-resources.md)).
+- `oocLog`'s one writer is `src/ts/ooc/oocSession.svelte.ts`: a new exchange with its prune removals in one merge, the
+  answer as the whole exchange again, and deletions as removals. It checks each entry with `oocExchangeError` before the
+  merge, since a refused merge refuses the chat's queued work. `oocSegment` is a plain field (`setChatMeta`).
 
 ### Stored translations
 

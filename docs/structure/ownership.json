@@ -265,6 +265,7 @@
     { "match": "src/ts/chatLoadPages.ts", "guide": "persistence" },
     { "match": "shared/{chatCheckpoints,togglePresets}.ts", "guide": "persistence" },
     { "match": "src/ts/messageSearch.svelte.ts", "guide": "chat-pipeline" },
+    { "match": "src/ts/ooc/**", "guide": "chat-pipeline" },
     { "match": "shared/{messageSearch,contextReport,eligibleHistory}.ts", "guide": "chat-pipeline" },
     { "match": "shared/lore/**", "guide": "chat-pipeline" },
     { "match": "shared/cbs/**", "guide": "cbs-rendering" },

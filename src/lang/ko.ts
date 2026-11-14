@@ -4,6 +4,27 @@ const memoryCostText = (calls: number, tokens: number) =>
 
 /** Korean `DeepPartial` overrides of `src/lang/en.ts`; missing strings inherit English. */
 export const languageKorean = {
+    ooc: {
+        group: "그룹 채팅에서는 OOC 세션을 사용할 수 없습니다.",
+        busy: "채팅 생성이 끝난 뒤 OOC 세션에서 질문해 주세요.",
+        inFlight: "OOC 세션 질문이 이미 진행 중입니다. 중지하거나 완료될 때까지 기다려 주세요.",
+        binding: "OOC 세션에서 질문하기 전에 이 채팅의 프롬프트 프리셋, 모델 프리셋, 페르소나를 선택해 주세요.",
+        loreOrphans: "OOC 세션에서 질문하기 전에 이 채팅에서 원본이 사라진 로어 오버라이드를 정리해 주세요.",
+        anchorGone: "이 OOC 세션 구간의 기준 메시지가 사라졌습니다. 세션을 최신화한 뒤 다시 질문해 주세요.",
+        pruneFull: "OOC 세션 기록이 가득 찼습니다. 세션을 최신화하거나 문답을 삭제한 뒤 다시 질문해 주세요.",
+        tooLarge: "이 OOC 세션 문답이 저장 한도를 초과하여 저장하지 못했습니다.",
+        olderServer: "서버가 OOC 세션 미리보기를 지원하지 않습니다. 서버를 업데이트한 뒤 다시 질문해 주세요.",
+        previewFailed: "OOC 세션 프롬프트를 준비하지 못했습니다. 질문을 재시도해 주세요.",
+        oocExchangeGone: "이 OOC 세션 문답을 더 이상 사용할 수 없습니다.",
+        oocAnchorGone: "OOC 세션의 기준 메시지를 더 이상 사용할 수 없습니다. 세션을 최신화한 뒤 다시 질문해 주세요.",
+        oocMemoryAhead: "채팅의 메모리가 이 OOC 세션 구간보다 앞서 있습니다. 세션을 최신화한 뒤 다시 질문해 주세요.",
+        requestFailed: "OOC 세션 답변 요청에 실패했습니다. 질문을 재시도해 주세요.",
+        stopped: "OOC 세션 질문을 중지했습니다. 답변은 저장하지 않았습니다.",
+        chatGone: "이 채팅이 삭제되거나 교체되어 OOC 세션 작업을 완료하지 못했습니다.",
+        retryUnavailable: "현재 OOC 세션 구간에서 답변이 없는 문답만 재시도할 수 있습니다.",
+        attachmentUnavailable: "이전 OOC 세션 구간의 문답만 첨부할 수 있습니다.",
+        updateFailed: "OOC 세션을 변경하지 못했습니다. 다시 시도해 주세요.",
+    },
     rerollCandidateUnavailable:
         "이 응답 후보를 사용할 수 없거나 저장 한도를 초과했습니다. 채팅을 새로 불러와 현재 후보를 확인해 주세요.",
     rerollCandidatePending:

@@ -7,6 +7,27 @@ const memoryCostText = (calls: number, tokens: number) =>
 
 /** Complete UI string catalog and source type; other `src/lang/` locales supply `DeepPartial` overrides. */
 export const languageEnglish = {
+    ooc: {
+        group: "OOC sessions are not available for group chats.",
+        busy: "Wait for this chat to finish generating before asking in the OOC session.",
+        inFlight: "An OOC session question is already in progress. Stop it or wait for it to finish.",
+        binding: "Choose this chat's prompt preset, model preset, and persona before asking in the OOC session.",
+        loreOrphans: "Resolve this chat's orphaned lore overrides before asking in the OOC session.",
+        anchorGone: "This OOC session segment's anchor message is gone. Refresh the session to ask again.",
+        pruneFull: "The OOC session log is full. Refresh the session or delete exchanges before asking again.",
+        tooLarge: "This OOC session exchange exceeds the storage limit and could not be saved.",
+        olderServer: "The server does not support OOC session previews. Update the server before asking again.",
+        previewFailed: "The OOC session prompt could not be prepared. Retry the question.",
+        oocExchangeGone: "This OOC session exchange is no longer available.",
+        oocAnchorGone: "The OOC session's anchor message is no longer available. Refresh the session to ask again.",
+        oocMemoryAhead: "The chat's memory has moved past this OOC session segment. Refresh the session to ask again.",
+        requestFailed: "The OOC session answer request failed. Retry the question.",
+        stopped: "The OOC session question was stopped. No answer was saved.",
+        chatGone: "This chat was removed or replaced. The OOC session action could not be completed.",
+        retryUnavailable: "Only an unanswered exchange in the current OOC session segment can be retried.",
+        attachmentUnavailable: "Only an exchange from an earlier OOC session segment can be picked as an attachment.",
+        updateFailed: "The OOC session could not be updated. Try again.",
+    },
     rerollCandidateUnavailable:
         "This reply candidate is unavailable or exceeds the storage limit. Reload the chat to see the current candidates.",
     rerollCandidatePending:
