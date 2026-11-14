@@ -5,7 +5,9 @@ import {
     hypaV3DataHoldsSummaries,
     isSealedHypaV3Data,
     type MemoryAnchoredSource,
+    type MemoryGreetingSource,
     type MemorySource,
+    storedMemoryGreeting,
     STRUCTURED_MEMORY_LIMITS,
 } from "../../../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../../../shared/valueKinds.ts";
@@ -24,12 +26,11 @@ import type { MemoryEventWrite } from "../../../data/memoryStore.ts";
  * - `title` is the text's first sentence. `3.5` ends none: `.!?…` end one only before whitespace or the end
  *   of the text, closing quotes and brackets allowed between, while a newline and `。！？` always do.
  * - `isImportant` becomes `pinned`. `categoryId` and `tags` have no place on an event and stay behind.
- * - Sources come from `chatMemos`, each id once. Only non-empty strings count: `assemble.ts` builds the
- *   greeting entry with no memo, so HypaV3's first summary normally holds a `null`, which is no stored
- *   message, and calling it missing would make the first summary of most chats stale.
+ * - Message sources come from non-empty `chatMemos` strings, each id once. The first adopted summary
+ *   holding a `null` memo cites the chat's current greeting, when it has one. No later summary cites it.
  * - A cited message that is held is anchored as it stands now, and those sources sort by position, so a
  *   list in another order does not read `moved`. A cited message that is gone is unanchored, after them.
- * - An event with an unanchored source is stored `stale`, and so is one left with no source at all:
+ * - An event with an unanchored message is stored `stale`, and so is one with neither a message nor a greeting:
  *   reconciliation reads an event with no sources as active, and nothing could check it.
  */
 
@@ -37,6 +38,7 @@ import type { MemoryEventWrite } from "../../../data/memoryStore.ts";
 export type HypaV3Adoption<M> = {
     data: unknown;
     messages: readonly M[];
+    greeting?: MemoryGreetingSource | null;
     hashOf: (message: M) => string;
     newId: () => string;
 };
@@ -90,6 +92,7 @@ export function adoptedEvents<M extends Pick<Message, "chatId">>(arg: HypaV3Adop
         return [];
     }
     const sourceOf = sourceReader(arg);
+    let greeting = storedMemoryGreeting(arg.greeting);
     return (data as { summaries: unknown[] }).summaries.flatMap((entry): MemoryEventWrite[] => {
         if (!isPlainObject(entry) || typeof entry.text !== "string" || entry.text.trim() === "") {
             return [];
@@ -97,6 +100,8 @@ export function adoptedEvents<M extends Pick<Message, "chatId">>(arg: HypaV3Adop
         const cited = citedIds(entry.chatMemos).map(sourceOf);
         const anchored = cited.filter((source): source is MemoryAnchoredSource => source.hash !== null);
         const unanchored = cited.filter(({ hash }) => hash === null);
+        const citedGreeting = Array.isArray(entry.chatMemos) && entry.chatMemos.includes(null) ? greeting : null;
+        if (citedGreeting) greeting = null;
         return [
             {
                 id: newId(),
@@ -110,7 +115,8 @@ export function adoptedEvents<M extends Pick<Message, "chatId">>(arg: HypaV3Adop
                 relationshipShifts: [],
                 openThreads: { add: [], close: [], transitions: [] },
                 sources: [...anchored.sort((a, b) => a.index - b.index), ...unanchored],
-                ...(anchored.length > 0 && unanchored.length === 0
+                ...(citedGreeting ? { greeting: citedGreeting } : {}),
+                ...((anchored.length > 0 || citedGreeting) && unanchored.length === 0
                     ? { status: "active" as const }
                     : { status: "stale" as const, staleReason: "missing" as const }),
                 writerRun: ADOPTED_WRITER_RUN,

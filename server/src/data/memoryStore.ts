@@ -24,6 +24,7 @@ import {
 } from "../../../shared/structuredMemory.ts";
 import type {
     MemoryEvent,
+    MemoryGreetingSource,
     MemoryManifest,
     MemoryPage,
     MemoryRun,
@@ -657,6 +658,9 @@ function createRecordSet(db: DatabaseSync, descriptions: Record<MemoryRecordKind
     };
 }
 
+/** A persisted window: legacy message ids, or ids with the greeting source fixed at the run's start. */
+export type MemoryRebuildPlanEntry = readonly string[] | { ids: readonly string[]; greeting: MemoryGreetingSource };
+
 /** The row of a chat's run but its plan, which only `rebuild.plan` reads. */
 type RebuildRow = {
     mode: StructuredMemoryRebuildMode;
@@ -1105,7 +1109,7 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
             begin(
                 characterId: string,
                 chatId: string,
-                { mode, plan }: { mode: StructuredMemoryRebuildMode; plan: readonly (readonly string[])[] },
+                { mode, plan }: { mode: StructuredMemoryRebuildMode; plan: readonly MemoryRebuildPlanEntry[] },
                 seed: Pick<MemoryChanges, "pages" | "threads">,
             ): void {
                 const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
@@ -1197,11 +1201,20 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
                     : null;
             },
 
-            /** Message ids per window, as written once at the start; null without a run. */
-            plan(characterId: string, chatId: string): string[][] | null {
+            /** Window ids and greeting sources fixed at the start; malformed greetings leave just the ids. */
+            plan(characterId: string, chatId: string): MemoryRebuildPlanEntry[] | null {
                 const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
                 const row = chat && (selectRunPlan.get(chat.seq) as { plan: string } | undefined);
-                return row ? (JSON.parse(row.plan) as string[][]) : null;
+                if (!row) return null;
+                return (JSON.parse(row.plan) as unknown[]).map((entry) => {
+                    if (Array.isArray(entry)) return entry as string[];
+                    const stored = isPlainObject(entry) ? entry : {};
+                    const ids = Array.isArray(stored.ids)
+                        ? stored.ids.filter((id): id is string => typeof id === "string")
+                        : [];
+                    const greeting = storedMemoryGreeting(stored.greeting);
+                    return greeting ? { ids, greeting } : ids;
+                });
             },
 
             /** Keeps why the run stopped, in place of what it kept before: none clears it. Whether it holds a run. */

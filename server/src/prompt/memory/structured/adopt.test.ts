@@ -8,6 +8,7 @@ import {
     sealHypaV3Data,
     STRUCTURED_MEMORY_LIMITS,
 } from "../../../../../shared/structuredMemory.ts";
+import { greetingSourceHash } from "../../../data/memoryStore.ts";
 import { adoptedEvents } from "./adopt.ts";
 import { confirmedWindows, recordedMessages } from "./window.ts";
 
@@ -133,4 +134,48 @@ it("stores missing and sourceless summaries stale while recording their citation
 it("never adopts sealed HypaV3 projections even when they contain summary text", () => {
     const data = sealHypaV3Data({ summaries: [{ text: "Projected event.", chatMemos: ["m0"], isImportant: true }] });
     expect(adopt(data, [message("m0", "char")])).toEqual([]);
+});
+
+it("adopts the first null memo as the greeting, requiring every cited message to remain anchored", () => {
+    const greeting = { fmIndex: 1, hash: greetingSourceHash("Welcome") };
+    const messages = [message("m0", "char", "Stored reply")];
+    for (const row of [
+        { label: "greeting alone", greeting, memos: [null], status: "active", sources: [] },
+        {
+            label: "missing message",
+            greeting,
+            memos: [null, "gone"],
+            status: "stale",
+            sources: [{ messageId: "gone", hash: null, index: null }],
+        },
+        {
+            label: "group",
+            greeting: null,
+            memos: [null, "m0"],
+            status: "active",
+            sources: [{ messageId: "m0", hash: '["char","Stored reply"]', index: 0 }],
+        },
+    ]) {
+        let id = 0;
+        const events = adoptedEvents({
+            data: {
+                summaries: [
+                    { text: "Earlier message.", chatMemos: ["m0"] },
+                    { text: "Greeting summary.", chatMemos: row.memos },
+                    { text: "Later null memo.", chatMemos: [null] },
+                ],
+            },
+            messages,
+            greeting: row.greeting,
+            hashOf,
+            newId: () => `adopted-${++id}`,
+        });
+        expect(events, row.label).toHaveLength(3);
+        expect(events[0]).not.toHaveProperty("greeting");
+        expect(events[1], row.label).toMatchObject({ sources: row.sources, status: row.status });
+        expect(events[1].greeting, row.label).toEqual(row.greeting ?? undefined);
+        expect(events[1].staleReason, row.label).toBe(row.status === "stale" ? "missing" : undefined);
+        expect(events[2]).toMatchObject({ sources: [], status: "stale", staleReason: "missing" });
+        expect(events[2]).not.toHaveProperty("greeting");
+    }
 });

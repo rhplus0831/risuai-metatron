@@ -50,7 +50,7 @@ import { createResourceStore, type ChatInvalidation } from "../data/resourceStor
 import { createGenerationLock } from "../jobs/generationLock.ts";
 import { createCheckpointService } from "../data/checkpointService.ts";
 import { MaintenanceError, type MaintenanceGate } from "../data/snapshots.ts";
-import { messageSourceHash, type MemoryEventWrite } from "../data/memoryStore.ts";
+import { messageSourceHash, type MemoryEventWrite, type MemoryRebuildPlanEntry } from "../data/memoryStore.ts";
 import { createVectorCache } from "../data/vectorCache.ts";
 import {
     type JobScope,
@@ -2747,7 +2747,7 @@ describe("structured memory tasks", () => {
     const beginStagedRun = (
         t: Harness,
         mode: "rebuild" | "backfill" = "rebuild",
-        plan = [
+        plan: readonly MemoryRebuildPlanEntry[] = [
             ["m1", "m2"],
             ["m3", "m4"],
             ["m5", "m6"],
@@ -2757,6 +2757,159 @@ describe("structured memory tasks", () => {
         t.store.memory.rebuild.begin("c", "k1", { epoch: t.store.epoch(), mode, plan }, rebuildSeed(mode, live));
         return { ...writerInput(t), rebuild: true as const };
     };
+
+    it("runs and swaps a greeting-only backfill historically without changing current pages or threads", async () => {
+        const t = structuredHarness();
+        const messages = t.chat("k1")!.message;
+        const greeting = writerGreeting({ firstMessage: GREETING }, t.chat("k1"))!;
+        const old = event(
+            "old",
+            messages.slice(0, 6).map((message, index) => ({
+                messageId: message.chatId!,
+                index,
+                hash: messageSourceHash(message),
+            })),
+        );
+        const records = memoryRecords(["place"]);
+        const scene = {
+            ...memoryRecords(["scene"]).pages[0],
+            type: "scene" as const,
+            contextMode: "always" as const,
+            participants: [],
+        };
+        writeMemory(t.store, "c", "k1", { events: [old], pages: [...records.pages, scene], threads: records.threads });
+        const savedOld = eventRecord(t);
+        const before = t.store.readChatSource("c", "k1");
+        const plan = rebuildPlan({
+            messages,
+            events: [savedOld],
+            mode: "backfill",
+            turns: 1,
+            screening: { refusal: [], format: [] },
+            greeting,
+        });
+        expect(plan).toEqual([{ ids: [], greeting: greeting.source }]);
+        const input = { ...beginStagedRun(t, "backfill", plan), confirmedBefore: "" };
+        const terminal = t.nextTerminal("k1");
+        expect(t.service.rebuild(input).outcome).toBe("queued");
+        const request = await nextPatch(t, 0, terminal);
+        expect(t.provider.asked(request)).toContain(`Messages to record:\n[greeting] Cara:\n${GREETING}`);
+        expect(t.provider.asked(request)).not.toContain("[m:m1]");
+        request.answer(
+            JSON.stringify({
+                ...analysis({
+                    openThreads: { add: [{ title: "Historical thread", who: [] }], close: ["place"], transitions: [] },
+                }),
+                scene: { place: "Old scene", time: "Yesterday", state: "Past", participants: [] },
+                pageCandidates: [{ targetId: "place", reason: "Old fact", confidence: 1 }],
+            }),
+        );
+        await finishRecording(t, terminal);
+        expect((await terminal).status).toMatchObject({ reason: "rebuilt" });
+        expect(t.provider.requests).toHaveLength(1);
+        expect(contents(t).events).toHaveLength(2);
+        expect(t.store.memory.readRecord("c", "k1", "events", "old")!.data).toEqual(savedOld);
+        expect(eventRecord(t)).toMatchObject({
+            greeting: greeting.source,
+            sources: [],
+            status: "active",
+            openThreads: { add: [], close: [], transitions: [] },
+        });
+        expect(pageRecords(t)).toEqual([...records.pages, scene]);
+        expect(t.store.memory.readRecord("c", "k1", "threads", "place")!.data).toEqual(records.threads[0]);
+        expect(contents(t).threads).toHaveLength(1);
+        expect(t.store.memory.rebuild.status("c", "k1")).toBeNull();
+        expect(t.store.readChatSource("c", "k1")).toEqual(before);
+    });
+
+    it("refuses a greeting-only backfill edited during analysis without advancing its cursor", async () => {
+        const t = structuredHarness();
+        const greeting = writerGreeting({ firstMessage: GREETING }, t.chat("k1"))!;
+        const before = contents(t);
+        const input = {
+            ...beginStagedRun(t, "backfill", [{ ids: [], greeting: greeting.source }]),
+            confirmedBefore: "",
+        };
+        const terminal = t.nextTerminal("k1");
+        expect(t.service.rebuild(input).outcome).toBe("queued");
+        const request = await nextPatch(t, 0, terminal);
+        t.updateOwner((owner) => ({ ...owner, firstMessage: "Changed during analysis" }));
+        request.answer(JSON.stringify(analysis()));
+        expect((await terminal).status).toMatchObject({ state: "skipped", reason: "windowChanged", done: 0, total: 1 });
+        await t.service.drain();
+        expect(t.provider.requests).toHaveLength(1);
+        expect(contents(t)).toEqual(before);
+        expect(t.store.memory.rebuild.staged.readContents("c", "k1")!.events).toEqual([]);
+        expect(t.store.memory.rebuild.status("c", "k1")).toMatchObject({ done: 0, total: 1, reason: "windowChanged" });
+    });
+
+    it("resumes the stored greeting after restart and refuses a changed greeting before another model call", async () => {
+        for (const changed of [false, true]) {
+            const storedText = "Alternate greeting saved at the start";
+            const t = structuredHarness({
+                owner: { firstMessage: "Unused main greeting", alternateGreetings: [storedText] },
+            });
+            t.write("k1", [{ op: "meta", set: { fmIndex: 0 } }]);
+            const greeting = writerGreeting(
+                { firstMessage: "Unused main greeting", alternateGreetings: [storedText] },
+                t.chat("k1"),
+            )!;
+            const plan = [{ ids: [], greeting: greeting.source }];
+            const input = { ...beginStagedRun(t, "backfill", plan), confirmedBefore: "" };
+            const failed = t.nextTerminal("k1");
+            expect(t.service.rebuild(input).outcome).toBe("queued");
+            (await nextPatch(t, 0, failed)).fail("Writer unavailable");
+            expect((await failed).status).toMatchObject({ state: "failed", done: 0, total: 1 });
+            t.service.beginShutdown();
+            await t.service.drain();
+            if (changed) t.updateOwner((owner) => ({ ...owner, alternateGreetings: ["Changed after shutdown"] }));
+            const restarted = createMemoryTasks({
+                store: t.store,
+                kinds: t.kinds,
+                gate: t.gate,
+                hostDeps: t.hostDeps,
+                now: () => t.clock.now,
+            });
+            cleanups.push(async () => {
+                restarted.beginShutdown();
+                t.provider.abortAll();
+                await restarted.drain();
+            });
+            const terminal = deferred<MemoryTaskEvent>();
+            restarted.onStatus((entry) => {
+                if (TERMINAL.has(entry.status.state)) terminal.resolve(entry);
+            });
+            expect(restarted.rebuild({ ...writerInput(t, ""), rebuild: true }).outcome).toBe("queued");
+            if (changed) {
+                const stopped = await Promise.race([
+                    terminal.promise,
+                    t.provider.request(1).then(() => {
+                        throw new Error("Changed greeting reached the model");
+                    }),
+                ]);
+                expect(stopped.status).toMatchObject({ state: "skipped", reason: "windowChanged", done: 0, total: 1 });
+                expect(t.store.memory.rebuild.status("c", "k1")).toMatchObject({ done: 0, reason: "windowChanged" });
+                expect(t.store.memory.rebuild.plan("c", "k1")).toEqual(plan);
+                expect(contents(t).events).toEqual([]);
+                expect(t.provider.requests).toHaveLength(1);
+            } else {
+                const request = await nextPatch(t, 1, terminal.promise);
+                expect(t.provider.asked(request)).toContain(`[greeting] Cara:\n${storedText}`);
+                request.answer(JSON.stringify(analysis()));
+                expect((await terminal.promise).status).toMatchObject({
+                    state: "done",
+                    reason: "rebuilt",
+                    done: 1,
+                    total: 1,
+                });
+                expect(eventRecord(t)).toMatchObject({ sources: [], greeting: greeting.source });
+                expect(runRecord(t).greeting).toEqual(greeting.source);
+                expect(t.store.memory.rebuild.status("c", "k1")).toBeNull();
+                expect(t.provider.requests).toHaveLength(2);
+            }
+            await restarted.drain();
+        }
+    });
 
     it("records the first solo greeting with expanded names and keeps its unexpanded source on the event and run", async () => {
         const storedText = "{{char}} welcomes {{user}} to the harbor.";

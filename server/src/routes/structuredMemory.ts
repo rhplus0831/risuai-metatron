@@ -1625,9 +1625,12 @@ export function registerStructuredMemoryRoutes(
             if (!chat) {
                 return gone();
             }
+            const owner = store.get(kinds.get(RESOURCE_KIND.characters)!, characterId)?.data as
+                character | groupChat | undefined;
             const events = adoptedEvents({
                 data: chat.hypaV3Data,
                 messages: chat.message,
+                greeting: writerGreeting(owner, chat)?.source ?? null,
                 hashOf: messageSourceHash,
                 newId: randomUUID,
             });

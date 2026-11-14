@@ -13,7 +13,7 @@ import type { MemoryEvent, MemoryPage, MemoryRun, MemoryThread } from "../../../
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
 import { createCheckpointService } from "../data/checkpointService.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
-import { messageSourceHash, projectChatMemory, type MemoryChanges } from "../data/memoryStore.ts";
+import { greetingSourceHash, messageSourceHash, projectChatMemory, type MemoryChanges } from "../data/memoryStore.ts";
 import {
     createResourceStore,
     ResourceConflictError,
@@ -1570,6 +1570,24 @@ function beginRebuild(store: ResourceStore) {
         records(["staged"]),
     );
 }
+
+it("persists greeting-bearing rebuild entries and reads legacy id arrays unchanged after reopen", () => {
+    const greeting = { fmIndex: 1, hash: greetingSourceHash("Welcome") };
+    for (const plan of [
+        [{ ids: [], greeting }, ["m"], ["next"]],
+        [{ ids: ["m"], greeting }, ["next"]],
+        [["m"], ["next"]],
+    ]) {
+        const { store, file } = fileStore();
+        seed(store);
+        store.memory.rebuild.begin("c", "k", { epoch: store.epoch(), mode: "backfill", plan }, {});
+        store.close();
+        stores.splice(stores.indexOf(store), 1);
+        const reopened = createResourceStore({ file, kinds });
+        stores.push(reopened);
+        expect(reopened.memory.rebuild.plan("c", "k")).toEqual(plan);
+    }
+});
 
 it("persists staged progress across reopen and swaps all live records once, rolling back a failed swap", () => {
     const { store, db, file, events } = fileStore();

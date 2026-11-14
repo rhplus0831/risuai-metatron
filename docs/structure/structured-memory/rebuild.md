@@ -91,11 +91,21 @@ abandon and release read-only; the tab's task fence alone cannot release a run's
 
 Read `rebuildPlan` in `server/src/prompt/memory/structured/rebuild.ts`.
 
+Each persisted entry stays a message-id array unless it carries a greeting: `{ ids, greeting }` fixes that source at the
+start. Rebuild and fresh attach the current greeting to their first window without changing turn grouping; rebuild
+excludes one cited only by retracted readable events. Neither adds a window to an empty message plan. Groups, reset
+histories and empty greetings supply none. A malformed stored greeting reads as just its ids.
+
+At window time `rebuildWindow` takes current greeting text from a direct owner read and keeps the stored source. A
+mismatch stops `windowChanged` before any model call and leaves the cursor for resume or abandon; the commit checks
+again for an in-flight change. A greeting-only window uses the first eligible anchored message as its exclusive ceiling,
+or moves past with no call if none remains. Other windows use their last message, inclusive.
+
 With the preset's `omitUserMessages` on, a turn with no reply left after the mode's exclusions is a window of its own,
 and only turns that keep a reply are grouped by `turns`, so a leftover user message is never cited by the next turn's
 event. A run keeps the plan it began with, so a resume after the switch changed records the old grouping.
-`rebuildWindow` returns null for a window none of whose messages the writer reads (`memoryWriterReads`), as for one with
-nothing left, so `rebuildWork` moves the cursor with no call; the cost preview counts neither its call nor its messages.
+`rebuildWindow` returns null when neither a greeting nor a message is read (`memoryWriterReads`), so `rebuildWork` moves
+the cursor with no call; the cost preview counts neither its call nor its messages.
 
 ### What a rebuild keeps
 
@@ -106,23 +116,31 @@ is decided against live records at the swap, so a retraction during the run coun
 aliases (`namedByUser`) seeds like one with a person's grade or context mode: its id, title, and aliases, and only its
 marked sections, so a language change does not retitle it. A fresh rebuild forgets it, like every mark.
 
-Each staged event takes the trust marks of standing live events that share a source message with it. It takes a
-corrected title and summary only when exactly one of those events holds `userCorrected` and cites the same set of source
-message ids as the staged event. Overlaps are counted by event id, since several shared messages repeat the same event.
-Other corrected overlaps with different message sets do not affect that count. With zero or several exact matches, only
-the marks cross and the staged text stays. An event the swap carries keeps its own text; a fresh rebuild carries neither
-corrected text nor marks, and backfill replaces nothing.
+Rebuild replaces a non-retracted live event only when it cites something and staged events cite every message and any
+greeting it cites. This replaces greeting-only events too; retracted events stay stored.
+
+Each staged event takes the trust marks of standing live events that share a source message or greeting with it. It
+takes a corrected title and summary only when exactly one of those events holds `userCorrected` and cites the same set
+of source message ids and the same presence of a greeting as the staged event. Overlaps are counted by event id. A
+shared greeting also carries adoption lineage from retracted events, which supply no trust marks. Other corrected
+overlaps with different message sets do not affect that count. With zero or several exact matches, only the marks cross
+and the staged text stays. An event the swap carries keeps its own text; a fresh rebuild carries neither corrected text
+nor marks, and backfill replaces nothing.
 
 No chat or `hypaV3Data` is written. An adopted chat's stored summaries stay until [reset](projection.md#the-reset), and
 the projection stands aside while they remain. The live store's write also preserves an adoption decline.
 
 A fresh rebuild (`fresh`, the panel's Start over) keeps nothing: `rebuildSeed` gives it an empty seed, its plan excludes
-no message, a retraction included, and `rebuildChanges` removes every live event, page, thread, and trashed page, so
-marks, reverts, grades, context modes, merges, and a person's threads all go. Only the adoption lineage crosses: with
-any live event adopted or rebuilt over one, every staged event takes `adoptedSummaries`, so the stored summaries stay
-resettable. It is the one path that empties the trash in one write.
+no message or greeting, a retraction included, and `rebuildChanges` removes every live event, page, thread, and trashed
+page, so marks, reverts, grades, context modes, merges, and a person's threads all go. Only the adoption lineage
+crosses: with any live event adopted or rebuilt over one, every staged event takes `adoptedSummaries`, so the stored
+summaries stay resettable. It is the one path that empties the trash in one write.
 
 ### Backfill
+
+When no readable event in any status cites the greeting, backfill puts a greeting-only window first, provided an
+eligible anchored message remains. This window alone can start a run and costs one analysis call; like every backfill
+window it is historical and can also need page-patch or compaction calls.
 
 Backfill includes an adopted chat's user messages that summaries left uncovered, even when their replies were recorded.
 With the preset's `omitUserMessages` on, those messages' windows hold nothing the writer reads, so the run moves past
@@ -184,6 +202,9 @@ abandoned.
 owns window counting, and the shared answer and `memoryCostTokens` own the
 [estimate](../../reports/measurements/structured-memory-2026-11-03.md).
 
+Rebuild and backfill count the stored greeting's UTF-8 bytes in its window and one analysis call for a greeting-only
+window, without adding to `messages`. Record now keeps its message-only estimate.
+
 A backfill preview with `omitUserMessages` on also answers `folds`: the user messages the swap may attach, judged by the
 events' stored status without hashing, so an upper bound. `pressMemoryRebuild` asks for rebuild/backfill when cost is
 nonzero or unknown, or when folds are counted: with no call it asks without a model cost. A preview with neither ends
@@ -200,7 +221,7 @@ beside the rebuild buttons. The comparison starts no work; a person must press. 
 ## State
 
 - `memory_rebuilds`: one row per chat at most: `mode`, `revision` (the staged set's own counter), `sourceReplaced`,
-  `cursor`, `total`, `plan` (message ids per window, written once), `reason`, `error`.
+  `cursor`, `total`, `plan` (message ids and optional greeting source per window, written once), `reason`, `error`.
 - `memory_staged_pages`, `_events`, `_threads`, `_runs`: the columns, uniqueness, and scene index of the live tables.
   `readContents` of the staged set always says declined, because a chat is held by its live records.
 - `sourceReplaced` is a column, not a stored source generation: those live in memory and start over with a process, so
@@ -273,7 +294,8 @@ Decisions: Structured Memory slice 6b, archive, unless an entry names another.
 - A person's state change on a writer's thread does not survive a rebuild: only `openedBy` says whose a thread is.
 - Old receipts stay on their messages, with their event and run ids.
 - Seeded and carried text stays in its language, and a resume under another language leaves a mix.
-- A pin spreads to every staged event sharing a message, so an adopted summary's pin reaches all its turns' events.
+- A pin spreads to every staged event sharing a message or greeting, so an adopted summary's pin reaches all its turns'
+  events.
 - The cost preview's `record` mode has no cadence, so `everyK` above 2 overstates calls.
 - The cost preview leans high on purpose: at 3,000 tokens per call it overstates a short English chat by up to
   two-thirds and understates a long Korean one by up to a quarter. Decision: owner, 2026-11-08.

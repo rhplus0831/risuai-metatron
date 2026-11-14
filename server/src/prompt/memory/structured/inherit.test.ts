@@ -10,6 +10,7 @@ import {
 } from "../../../../../shared/structuredMemory.ts";
 import { memoryRecords } from "../../../tests/memoryFixtures.ts";
 import { applyPageEdit } from "./edits.ts";
+import { writerGreeting } from "./window.ts";
 import { inheritedRecords } from "./inherit.ts";
 import { addPage, changeSection, newScenePage, type PageChanges, type PageStamp } from "./pages.ts";
 
@@ -323,4 +324,44 @@ it("keeps a reshaped page's text and later creation across a branch while ordina
         [{ ...original.sections[0], provenance: [], sources: [], unsupported: true }],
         [{ ...created.sections[0], provenance: [], sources: [], unsupported: true }],
     ]);
+});
+
+it("carries greeting-only and mixed events through copies and branches even when the target greeting differs", () => {
+    const owner = { firstMessage: "Original greeting", alternateGreetings: ["Target greeting"] };
+    const sourceChat = { fmIndex: -1, message: [message("early", "Before"), message("late", "After")] };
+    const greeting = writerGreeting(owner, sourceChat)!.source;
+    const greetingKept = writerGreeting(owner, { ...sourceChat, fmIndex: 0 })!.source;
+    const events = [event("greeting-only", []), event("mixed", [anchor(sourceChat.message[0], 0)])].map((record) => ({
+        ...record,
+        greeting,
+        greetingKept,
+    }));
+    for (const length of [2, 1]) {
+        for (const fmIndex of [-1, 0]) {
+            const targetChat = {
+                fmIndex,
+                message: sourceChat.message.slice(0, length).map((m) => ({
+                    ...m,
+                    chatId: `copy-${m.chatId}`,
+                })),
+            };
+            const result = inheritedRecords({
+                pages: [],
+                threads: [],
+                events,
+                sourceMessages: sourceChat.message,
+                messages: targetChat.message,
+                hashOf,
+            });
+            expect(result.events, `messages=${length}, fmIndex=${fmIndex}`).toEqual([
+                { ...memoryRecords(["greeting-only"]).events[0], sources: [], greeting, greetingKept },
+                {
+                    ...memoryRecords(["mixed"]).events[0],
+                    sources: [{ messageId: "copy-early", index: 0, hash: '["char","Before"]' }],
+                    greeting,
+                    greetingKept,
+                },
+            ]);
+        }
+    }
 });

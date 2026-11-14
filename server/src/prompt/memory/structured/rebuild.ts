@@ -2,6 +2,7 @@ import type { Chat, Message, character, groupChat } from "../../../../../shared/
 import type { GenerationCommand, MemoryChatRef, StructuredMemoryTaskInput } from "../../../../../shared/jobs.ts";
 import {
     ADOPTED_WRITER_RUN,
+    greetingCited,
     memoryCostTokens,
     type MemoryEvent,
     type MemoryPage,
@@ -11,11 +12,17 @@ import {
     type MemoryThread,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
     storedMemorySources,
+    storedMemoryGreeting,
     type StructuredMemoryCostAnswer,
     type StructuredMemoryCostMode,
     type StructuredMemoryRebuildMode,
 } from "../../../../../shared/structuredMemory.ts";
-import type { MemoryChanges, MemoryContents, MemoryEventWrite } from "../../../data/memoryStore.ts";
+import type {
+    MemoryChanges,
+    MemoryContents,
+    MemoryEventWrite,
+    MemoryRebuildPlanEntry,
+} from "../../../data/memoryStore.ts";
 import type { ResourceKind } from "../../../data/kinds.ts";
 import type { ResourceStore } from "../../../data/resourceStore.ts";
 import { GenerationRunnerError, type RunningJob } from "../../../jobs/generationJobs.ts";
@@ -50,17 +57,20 @@ import type { WriterMemory } from "./writer.ts";
  * atomic swap, and a run that fails or is abandoned leaves them so. The run is a row, not a task, so it
  * outlives a process. `rebuild` takes every confirmed turn and replaces what the transcript can
  * reproduce; `fresh` takes every confirmed turn and replaces every record, a person's work and the trash
- * included, so the chat's memory starts over from its messages; `backfill` takes only the turns no event
- * cites and adds to the records.
+ * included, so the chat's memory starts over from its messages and greeting; `backfill` takes uncited
+ * messages and an unrecorded greeting and adds to the records.
  *
- * - The plan: the windows are worked out once, at the start, as message ids (`rebuildPlan`), so a step
- *   parses no event to find what is next. Planning and rebuild/backfill cost previews read the transcript
- *   once and hash nothing. With `omitUserMessages`, a turn with no reply left has its own window;
- *   the others group by the requested turn count. A run's window then reads the chat as stored
- *   (`rebuildWindow`); one with no message the writer reads moves the cursor with no model call.
+ * - The plan fixes message ids and any greeting source at the start (`rebuildPlan`). Rebuild and fresh
+ *   attach the greeting to the first window; a rebuild excludes a greeting cited only by retracted
+ *   readable events. Backfill puts an unrecorded greeting alone first when an eligible message remains.
+ *   Planning and cost previews read the transcript once without hashing messages. With `omitUserMessages`,
+ *   a turn with no reply left has its own window; the others group by the requested turn count. At window
+ *   time a direct owner read checks the stored greeting source before any call (`rebuildWindow`). A window
+ *   with neither a greeting nor a message the writer reads moves the cursor with no model call.
  * - What a rebuild keeps: a person's work is seeded at the start (`rebuildSeed`), so the writer sees those
  *   pages and a lock binds it. No event is seeded: carrying is decided at the swap (`rebuildChanges`), so a
- *   retraction that lands during the run counts, and the writer reads only what the run wrote.
+ *   retraction that lands during the run counts, and the writer reads only what the run wrote. Replacement
+ *   requires staged citations for every message and any greeting; shared greetings also carry trust marks.
  * - A fresh rebuild seeds nothing and its swap removes every live record, so only the adoption lineage
  *   crosses it: with none kept, an adopted chat's stored summaries would stop being resettable.
  * - A backfill stands behind records that already exist, so each of its windows is a historical write
@@ -114,7 +124,9 @@ function retractedMessages(events: readonly MemoryEvent[]): Set<string> {
  * With `omitUserMessages`, a turn with no reply left closes any pending group and gets its own window;
  * only turns with a reply group by `turns`. A reply `screening` keeps out of the writer's windows is
  * dropped before the turns are made, so the user message before it folds into the next turn. Empty when
- * there is nothing to do. Reads the transcript once and hashes nothing; the cost preview uses the same entries.
+ * there is nothing to do. The greeting changes no turn grouping: it joins the first rebuild/fresh window,
+ * or precedes backfill windows alone. Reads the transcript once without hashing messages; the preview
+ * uses the same entries and counts greeting text separately from messages.
  */
 export function rebuildPlan({
     messages,
@@ -123,6 +135,7 @@ export function rebuildPlan({
     turns,
     screening,
     omitUserMessages,
+    greeting = null,
 }: {
     messages: readonly Message[];
     events: readonly MemoryEvent[];
@@ -130,15 +143,30 @@ export function rebuildPlan({
     turns: 1 | 2;
     screening: WriterCadence["screening"];
     omitUserMessages?: boolean;
-}): string[][] {
-    return rebuildEntryPlan(rebuildTurns(messages, screening), { events, mode, turns, omitUserMessages }).map(
-        (entries) => entries.map(({ id }) => id),
-    );
+    greeting?: WriterWindow["greeting"] | null;
+}): MemoryRebuildPlanEntry[] {
+    const anchored = anchoredMessages(messages);
+    return rebuildEntryPlan(
+        rebuildTurns(anchored, screening),
+        {
+            events,
+            mode,
+            turns,
+            omitUserMessages,
+            greeting,
+        },
+        anchored.length > 0,
+    ).map(({ entries, greeting }) => {
+        const ids = entries.map(({ id }) => id);
+        return greeting ? { ids, greeting: greeting.source } : ids;
+    });
 }
 
 /** Confirmed turns shared by planning and folds, with stored positions and screened replies left out. */
-function rebuildTurns(messages: readonly Message[], screening: WriterCadence["screening"]): ConfirmedMessage[][] {
-    const anchored = anchoredMessages(messages);
+function rebuildTurns(
+    anchored: readonly ConfirmedMessage[],
+    screening: WriterCadence["screening"],
+): ConfirmedMessage[][] {
     const confirmed = anchored
         .slice(0, anchored.findLastIndex(({ message }) => message.role === "char") + 1)
         .filter(({ message }) => memoryScreenReason(message, screening) === null);
@@ -148,8 +176,15 @@ function rebuildTurns(messages: readonly Message[], screening: WriterCadence["sc
 /** The plan's entries, retained so a preview can count messages and bytes without rereading the transcript. */
 function rebuildEntryPlan(
     confirmed: readonly (readonly ConfirmedMessage[])[],
-    { events, mode, turns, omitUserMessages }: Omit<Parameters<typeof rebuildPlan>[0], "messages" | "screening">,
-): ConfirmedMessage[][] {
+    {
+        events,
+        mode,
+        turns,
+        omitUserMessages,
+        greeting,
+    }: Omit<Parameters<typeof rebuildPlan>[0], "messages" | "screening">,
+    hasAnchoredMessages: boolean,
+): { entries: ConfirmedMessage[]; greeting?: WriterWindow["greeting"] }[] {
     const excluded =
         mode === "backfill"
             ? recordedMessages(events).messages
@@ -182,7 +217,24 @@ function rebuildEntryPlan(
     if (pending.length > 0) {
         plan.push(pending);
     }
-    return plan;
+    const windows: { entries: ConfirmedMessage[]; greeting?: WriterWindow["greeting"] }[] = plan.map((entries) => ({
+        entries,
+    }));
+    if (greeting) {
+        if (mode === "backfill") {
+            if (hasAnchoredMessages && !recordedMessages(events).greeting) {
+                windows.unshift({ entries: [], greeting });
+            }
+        } else if (
+            windows.length > 0 &&
+            (mode === "fresh" ||
+                !recordedMessages(events.filter(({ status }) => status === "retracted")).greeting ||
+                recordedMessages(events.filter(({ status }) => status !== "retracted")).greeting)
+        ) {
+            windows[0].greeting = greeting;
+        }
+    }
+    return windows;
 }
 
 /**
@@ -247,7 +299,11 @@ export function backfillFolds({
     staged: readonly MemoryEvent[];
     screening: WriterCadence["screening"];
 }): MemoryEvent[] {
-    const candidates = backfillCandidates(rebuildTurns(messages, screening), reconcileEvents(live, messages), staged);
+    const candidates = backfillCandidates(
+        rebuildTurns(anchoredMessages(messages), screening),
+        reconcileEvents(live, messages),
+        staged,
+    );
     const positions = new Map(messages.map(({ chatId }, index) => [chatId, index]));
     const merged = [...candidates.values()].map(({ event, entries }) => {
         const additions = windowOf(entries).sources;
@@ -333,26 +389,48 @@ export function rebuildSeed(
 export type RebuildWindow = { window: WriterWindow; ceiling: WriterCeiling };
 
 /**
- * The plan's window `ids` from `messages` as stored: those a send still reads and `screening` leaves in,
+ * The plan's window from `messages` as stored: those a send still reads and `screening` leaves in,
  * since a reply can be edited after the plan was taken, in chat order, with fresh anchors. Its own last
- * message is its ceiling, inclusive. Null when none of the remaining messages is read by the writer,
- * including a resumed window whose replies are now screened. Otherwise all remaining sources stay.
+ * message is its ceiling, inclusive. A greeting keeps the planned source and current text; a mismatch
+ * returns `windowChanged` before a model call. Alone it uses the first eligible message, exclusive,
+ * or returns null if none remains. Otherwise null means neither a greeting nor a message the writer
+ * reads, including a resumed window whose replies are now screened. All remaining message sources stay.
  */
 export function rebuildWindow(
     messages: readonly Message[],
-    ids: readonly string[],
+    entry: MemoryRebuildPlanEntry,
     screening: WriterCadence["screening"],
     omitUserMessages = false,
-): RebuildWindow | null {
+    greeting: WriterWindow["greeting"] | null = null,
+): RebuildWindow | "windowChanged" | null {
+    const ids = "ids" in entry ? entry.ids : entry;
+    const storedGreeting = "ids" in entry ? storedMemoryGreeting(entry.greeting) : null;
+    if (storedGreeting && !greetingCited(storedGreeting, greeting?.source ?? null)) {
+        return "windowChanged";
+    }
     const wanted = new Set(ids);
-    const entries = anchoredMessages(messages).filter(
+    const anchored = anchoredMessages(messages);
+    const entries = anchored.filter(
         ({ id, message }) => wanted.has(id) && memoryScreenReason(message, screening) === null,
     );
-    if (!entries.some(({ message }) => memoryWriterReads(message, { omitUserMessages }))) {
+    if (!storedGreeting && !entries.some(({ message }) => memoryWriterReads(message, { omitUserMessages }))) {
         return null;
     }
     const last = entries.at(-1);
-    return last ? { window: windowOf(entries), ceiling: { id: last.id, inclusive: true } } : null;
+    const ceiling = last
+        ? { id: last.id, inclusive: true }
+        : anchored[0]
+          ? { id: anchored[0].id, inclusive: false }
+          : null;
+    return ceiling
+        ? {
+              window: {
+                  ...windowOf(entries),
+                  ...(storedGreeting && greeting ? { greeting: { source: storedGreeting, text: greeting.text } } : {}),
+              },
+              ceiling,
+          }
+        : null;
 }
 
 const sourceIds = ({ sources }: Pick<MemoryEvent, "sources">) =>
@@ -387,7 +465,8 @@ const adoptedLineage = ({ writerRun, adoptedSummaries }: Pick<MemoryEvent, "writ
  * `userCorrected` are the union from standing overlapping live events, carried ones included, so a
  * partially rebuilt suppressed event cannot expose its surviving text. The title and summary cross
  * only from exactly one corrected standing event, counted by id, with the same set of source message
- * ids as the staged event; other overlaps carry only the mark. Adoption lineage is separate:
+ * ids and the same presence of a greeting as the staged event; other overlaps carry only the mark.
+ * Adoption lineage is separate:
  * `ADOPTED_WRITER_RUN` or `adoptedSummaries` on any overlapping event, retracted ones included, keeps
  * the stored summaries resettable through later rebuilds.
  */
@@ -401,12 +480,17 @@ function swappedEvent(
         ).values(),
     ];
     const stagedIds = new Set(sourceIds(event));
+    const stagedGreeting = storedMemoryGreeting(event.greeting) !== null;
     const corrected = standing.filter((entry) => {
         if (!entry.userCorrected) {
             return false;
         }
         const ids = new Set(sourceIds(entry));
-        return ids.size === stagedIds.size && [...ids].every((id) => stagedIds.has(id));
+        return (
+            (storedMemoryGreeting(entry.greeting) !== null) === stagedGreeting &&
+            ids.size === stagedIds.size &&
+            [...ids].every((id) => stagedIds.has(id))
+        );
     });
     return {
         ...event,
@@ -423,15 +507,15 @@ function swappedEvent(
  * fold. Rebuild and fresh modes ignore folds. Called in the swap's synchronous step, so each list is
  * read once in the run's life.
  *
- * A rebuild replaces a live event only when it is not retracted, has a source, and every source's message
- * is cited by a staged event: a replacement committed for everything it said. Any other is carried, left
- * in the table as it is, which takes in every retracted event and an adopted summary with a source that is
- * gone or disabled, past the plan, or none. Each staged event takes the marks of every standing live event
- * it shares a message with, carried ones included, so rebuilding what survives of a suppressed event does
- * not expose it, and the adoption's lineage from any such event, so a chat rebuilt any number of times
- * keeps the reset of its stored summaries. Text crosses only from exactly one corrected standing event
- * with the same source-message set; otherwise the staged title and summary stay, with the union of marks.
- * Carried events keep their own text. Pages and threads not in the staged set go: an event carried
+ * A rebuild replaces a live event only when it is not retracted, cites something, and every cited message
+ * and any cited greeting is cited by staged events: a replacement committed for everything it said.
+ * Any other is carried as it is, including every retracted event and an adopted summary whose sources
+ * are gone, disabled, past the plan, or absent. Each staged event takes the marks of every standing live event
+ * it shares a message or greeting with, carried ones included, so rebuilding what survives of a suppressed
+ * event does not expose it, and the adoption's lineage from any such event, so later rebuilds keep the
+ * reset of stored summaries. Text crosses only from exactly one corrected standing event
+ * with the same source set, counting the greeting as a member; otherwise staged text stays, with the union
+ * of marks. Carried events keep their own text. Pages and threads not in the staged set go: an event carried
  * may then name a page that is gone and a page's `provenance` an event that is, and dangling ids are legal.
  * A section a person marked goes back whole from the live page, a corrected one too although a patch may
  * replace it in an ordinary run, with its heading's history, so the history never sits under a body it
@@ -482,10 +566,18 @@ export function rebuildChanges(
         };
     }
     const cited = new Set(staged.events.flatMap(sourceIds));
+    const greetingRecorded = staged.events.some((event) => storedMemoryGreeting(event.greeting) !== null);
     const replaced = live.events.filter((event) => {
         const ids = sourceIds(event);
-        return event.status !== "retracted" && ids.length > 0 && ids.every((id) => cited.has(id));
+        const greeting = storedMemoryGreeting(event.greeting) !== null;
+        return (
+            event.status !== "retracted" &&
+            (ids.length > 0 || greeting) &&
+            ids.every((id) => cited.has(id)) &&
+            (!greeting || greetingRecorded)
+        );
     });
+    const greetingEvents = live.events.filter((event) => storedMemoryGreeting(event.greeting) !== null);
     const citing = new Map<string, MemoryEvent[]>();
     for (const event of live.events) {
         for (const id of sourceIds(event)) {
@@ -496,10 +588,10 @@ export function rebuildChanges(
     const stagedThreads = new Set(staged.threads.map(({ id }) => id));
     return {
         events: staged.events.map((event) =>
-            swappedEvent(
-                event,
-                sourceIds(event).flatMap((id) => citing.get(id) ?? []),
-            ),
+            swappedEvent(event, [
+                ...sourceIds(event).flatMap((id) => citing.get(id) ?? []),
+                ...(storedMemoryGreeting(event.greeting) ? greetingEvents : []),
+            ]),
         ),
         pages: staged.pages.map((page) => {
             const stored = livePages.get(page.id);
@@ -566,9 +658,9 @@ function windowsCost(
 /**
  * What a press would cost, from the chat as stored and its live records; null for a missing chat. Reads only.
  * `turns` is what the tab would ask of a rebuild or a backfill. Those previews read the transcript once,
- * counting windows with a message the writer reads, and only read messages and their UTF-8 bytes,
- * without hashing messages or building writer windows. A backfill with `omitUserMessages` also counts
- * possible folds by the live events' stored status; reconciliation at the swap can reject them.
+ * counting windows with a greeting or message the writer reads, and their stored UTF-8 bytes; the greeting
+ * is not counted as a message. No message hashing or writer window building. A backfill with
+ * `omitUserMessages` also counts possible folds by stored status; reconciliation at the swap can reject them.
  * Record now's windows are the writer's own, in windows of `turns` turns, because a route has no job scope
  * to read the cadence from, up to `maxWriterWindows`, marked events first. It plans with the current
  * greeting and the manual greeting-only ceiling; this estimate still counts message text and calls only.
@@ -585,21 +677,29 @@ export async function memoryWorkCost(
     }
     // A route has no job scope, so what the preset screens or omits is read from the store.
     const { screening, omitUserMessages } = store.memory.readWriterSettings(chat.memoryPresetId);
+    const greeting = writerGreeting(store.get(charactersKind, chaId)?.data as character | groupChat | undefined, chat);
     if (mode !== "record") {
         const listed = store.memory.readContents(chaId, chatId)?.events ?? [];
         const events = listed.flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "events", id)?.data ?? []);
-        const confirmed = rebuildTurns(chat.message, screening);
-        const plan = rebuildEntryPlan(confirmed, {
-            events,
-            mode,
-            turns,
-            omitUserMessages,
-        });
+        const anchored = anchoredMessages(chat.message);
+        const confirmed = rebuildTurns(anchored, screening);
+        const plan = rebuildEntryPlan(
+            confirmed,
+            {
+                events,
+                mode,
+                turns,
+                omitUserMessages,
+                greeting,
+            },
+            anchored.length > 0,
+        );
         let calls = 0;
         let messages = 0;
         let bytes = 0;
-        for (const entries of plan) {
-            let read = false;
+        for (const { entries, greeting } of plan) {
+            let read = !!greeting;
+            if (greeting) bytes += Buffer.byteLength(greeting.text, "utf8");
             for (const { message } of entries) {
                 if (!memoryWriterReads(message, { omitUserMessages })) {
                     continue;
@@ -626,7 +726,6 @@ export async function memoryWorkCost(
                 : {}),
         };
     }
-    const greeting = writerGreeting(store.get(charactersKind, chaId)?.data as character | groupChat | undefined, chat);
     const rerecord = readRerecordEvents(store, chaId, chatId);
     const confirmedBefore =
         through ?? writerCeiling(chat.message) ?? greetingRerecordCeiling(chat.message, rerecord, greeting);
@@ -692,8 +791,9 @@ export async function runMemoryRebuild(
     if (task === "queued" || task === "running") {
         throw refusal("The memory writer is working in this chat. Try again when it ends.");
     }
-    const queue = (plan: readonly (readonly string[])[]) => {
-        const owner = scope.db.characters.find((entry) => entry?.chaId === characterId);
+    const owner = scope.db.characters.find((entry) => entry?.chaId === characterId);
+    const queue = (plan: readonly MemoryRebuildPlanEntry[]) => {
+        const last = plan.at(-1);
         const input: StructuredMemoryTaskInput = {
             ...jobMemoryTaskBase({
                 job,
@@ -704,7 +804,7 @@ export async function runMemoryRebuild(
                 chatAdditionalTokens: 0,
             }),
             kind: "structuredMemory",
-            confirmedBefore: plan.at(-1)?.at(-1) ?? "",
+            confirmedBefore: (last && ("ids" in last ? last.ids : last).at(-1)) ?? "",
             rebuild: true,
         };
         return memoryTasks.rebuild(input);
@@ -736,6 +836,7 @@ export async function runMemoryRebuild(
         const { screening, omitUserMessages } = writerCadence(scope.db);
         const plan = rebuildPlan({
             messages: scopeChat(scope)?.message ?? [],
+            greeting: writerGreeting(owner, scopeChat(scope)),
             events: records?.events ?? [],
             mode,
             turns,

@@ -343,11 +343,14 @@ const statusKind = (input: Pick<AnyMemoryTaskInput, "kind">) =>
  *   its terminal.
  * - Rebuild work: the run holds what the task works, so a task takes its plan once and goes on from the
  *   run's cursor, `done` and `total` counting the whole run. Each window reads the chat as stored
- *   (`rebuildWindow`), and one with no remaining message the writer reads moves the cursor with no call,
- *   including when current settings omit its user messages. The writer then runs on
+ *   (`rebuildWindow`) and the greeting from a direct owner read. A greeting that differs from the stored
+ *   plan source stops `windowChanged` before any call, without moving the cursor. A window with neither
+ *   a greeting nor a remaining message the writer reads moves past with no call, including when current
+ *   settings omit its user messages. The writer then runs on
  *   the staged store (`rebuildStore`), marked manual, and in a backfill as a historical write. Its `commit`
  *   checks what any commit does, the hold on the live records, then `commitWindow` under the window's own
- *   last message, inclusive, with no receipt: a rebuild writes no chat, so `lastCommittedRevision` stays. A
+ *   last message, inclusive, or the first eligible message, exclusive, for a greeting-only window, with
+ *   no receipt: a rebuild writes no chat, so `lastCommittedRevision` stays. A
  *   closing commit moves the cursor with what it stands for. A window that does not record ends the
  *   task, and the run stops there with no retry and no more spending; a resume replays that window
  *   through the writer's replay rule. After `maxWriterWindows` windows or half of `taskDeadlineMs` the task
@@ -1369,7 +1372,16 @@ export function createMemoryTasks(deps: {
                 return;
             }
             const { screening, omitUserMessages } = writerCadence(scope.db);
-            const window = rebuildWindow(scopeChat(scope)?.message ?? [], plan[done], screening, omitUserMessages);
+            const chat = scopeChat(scope);
+            const greeting = writerGreeting(
+                store.get(charactersKind!, chaId)?.data as character | groupChat | undefined,
+                chat,
+            );
+            const window = rebuildWindow(chat?.message ?? [], plan[done], screening, omitUserMessages, greeting);
+            if (window === "windowChanged") {
+                endRunning(task, "skipped", { reason: "windowChanged" });
+                return;
+            }
             if (window) {
                 const result = await stagedWriter({
                     scope,

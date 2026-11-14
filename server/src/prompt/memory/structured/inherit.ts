@@ -10,6 +10,7 @@ import {
     type MemoryThread,
     memoryThreadEnded,
     storedMemorySources,
+    storedMemoryGreeting,
 } from "../../../../../shared/structuredMemory.ts";
 import type { MemoryChanges, MemoryEventWrite } from "../../../data/memoryStore.ts";
 
@@ -22,7 +23,9 @@ import type { MemoryChanges, MemoryEventWrite } from "../../../data/memoryStore.
  *   chats' messages there read alike, and the new chat's is no copy of another source-chat message. An
  *   unanchored source never maps. A mapped source keeps `hash` and `index`, and only `messageId` changes:
  *   the stored gaps are what show an insertion, so a current position would make such an event read whole.
- * - An event crosses when it has sources and every one maps. It crosses as stored, marks and `status`
+ * - An event crosses when it cites a message or a greeting and every message maps. Greeting-only events
+ *   cross copies and branches; `greeting` and `greetingKept` stay verbatim, even when the new chat's
+ *   greeting differs, because the copy shares the recorded past. It crosses as stored, marks and `status`
  *   included: `recordedMessages` counts a retracted event, so leaving one out would let the writer record
  *   again what a person retracted. `keptState` stays verbatim: remapped ids no longer match that
  *   acknowledgment; an active event with otherwise-whole anchors still reads active under
@@ -111,7 +114,7 @@ function sortEvents(
     for (const event of events) {
         const sources = storedMemorySources(event.sources);
         const mapped = sources.flatMap((source) => map.mapped(source) ?? []);
-        if (sources.length > 0 && mapped.length === sources.length) {
+        if ((sources.length > 0 || storedMemoryGreeting(event.greeting) !== null) && mapped.length === sources.length) {
             const { createdRevision, rerecord, ...stored } = event;
             crossing.push({ ...stored, sources: mapped });
         } else if (sources.some((source) => map.mapped(source) === null && map.leftBehind(source))) {

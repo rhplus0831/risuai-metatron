@@ -12,10 +12,11 @@ import {
     type MemoryEvent,
     type MemoryPage,
 } from "../../../../../shared/structuredMemory.ts";
-import { messageSourceHash } from "../../../data/memoryStore.ts";
+import { greetingSourceHash, messageSourceHash } from "../../../data/memoryStore.ts";
 import { memoryRecords } from "../../../tests/memoryFixtures.ts";
 import { applyPageTool } from "./pages.ts";
 import { backfillFolds, memoryWorkCost, rebuildChanges, rebuildPlan, rebuildSeed, rebuildWindow } from "./rebuild.ts";
+import { writerGreeting } from "./window.ts";
 
 const messages: Message[] = ["u1", "a1", "u2", "a2", "u3", "a3", "u4"].map((id) => ({
     chatId: id,
@@ -816,6 +817,180 @@ it("screens the rebuild cost with the chat's preset and falls back after that pr
             estimatedTokens: 6004,
         });
         expect(store.chatMeta("c", "k")!.data.memoryPresetId).toBe("chat");
+    } finally {
+        store.close();
+    }
+});
+
+it("attaches the greeting only to the first rebuild window, excluding retracted greetings, groups and resets", () => {
+    const greeting = writerGreeting({ firstMessage: "Welcome" }, { fmIndex: -1, message: messages })!;
+    const retracted = event("retracted-greeting", [], { greeting: greeting.source, status: "retracted" });
+    const standing = event("standing-greeting", [], { greeting: greeting.source, status: "stale" });
+    for (const mode of ["rebuild", "fresh"] as const) {
+        for (const events of [[], [retracted], [retracted, standing]]) {
+            expect(
+                rebuildPlan({ messages, events, mode, turns: 1, screening: NO_SCREENING, greeting }),
+                `${mode}, ${events.map(({ id }) => id)}`,
+            ).toEqual([
+                mode === "rebuild" && events.length === 1
+                    ? ["u1", "a1"]
+                    : { ids: ["u1", "a1"], greeting: greeting.source },
+                ["u2", "a2"],
+                ["u3", "a3"],
+            ]);
+        }
+    }
+    for (const row of [
+        { owner: { type: "group" as const, firstMessage: "Group greeting" }, messages },
+        {
+            owner: { firstMessage: "Welcome" },
+            messages: [
+                { chatId: "reset", role: "user" as const, data: "Old history", disabled: "allBefore" as const },
+                ...messages,
+            ],
+        },
+    ]) {
+        const greeting = writerGreeting(row.owner, { fmIndex: -1, message: row.messages });
+        for (const mode of ["rebuild", "fresh", "backfill"] as const) {
+            expect(
+                rebuildPlan({ messages: row.messages, events: [], mode, turns: 1, screening: NO_SCREENING, greeting }),
+            ).toEqual([
+                ["u1", "a1"],
+                ["u2", "a2"],
+                ["u3", "a3"],
+            ]);
+        }
+    }
+});
+
+it("backfills an unrecorded greeting before messages and none once any event cites it", () => {
+    const greeting = writerGreeting({ firstMessage: "Welcome" }, { fmIndex: -1, message: messages })!;
+    const args = { messages, mode: "backfill" as const, turns: 1 as const, screening: NO_SCREENING, greeting };
+    const ordinary = [
+        ["u1", "a1"],
+        ["u2", "a2"],
+        ["u3", "a3"],
+    ];
+    const greetingOnly = { ids: [], greeting: greeting.source };
+    expect(rebuildPlan({ ...args, events: [] })).toEqual([greetingOnly, ...ordinary]);
+    for (const status of ["active", "stale", "retracted"] as const) {
+        // A changed greeting is still recorded; backfill must not silently re-record it.
+        const cited = event(status, [], {
+            greeting: { fmIndex: 0, hash: greetingSourceHash("Earlier greeting") },
+            status,
+            suppressed: true,
+        });
+        expect(rebuildPlan({ ...args, events: [cited] }), status).toEqual(ordinary);
+    }
+    const recorded = event("recorded-messages", ["u1", "a1", "u2", "a2", "u3", "a3"]);
+    expect(rebuildPlan({ ...args, events: [recorded] })).toEqual([greetingOnly]);
+    expect(rebuildPlan({ ...args, messages: [messages[0]], events: [] })).toEqual([greetingOnly]);
+    expect(rebuildPlan({ ...args, messages: [{ ...messages[0], disabled: true }], events: [] })).toEqual([]);
+});
+
+it("bounds a greeting-only window before the first eligible message and refuses a changed stored greeting", () => {
+    const current = [{ ...messages[0], chatId: "disabled", disabled: true }, ...messages];
+    const greeting = writerGreeting({ firstMessage: "Welcome" }, { fmIndex: -1, message: current })!;
+    const entry = { ids: [], greeting: { ...greeting.source } };
+    expect(rebuildWindow(current, entry, NO_SCREENING, false, greeting)).toEqual({
+        window: { messages: [], sources: [], greeting: { source: entry.greeting, text: "Welcome" } },
+        ceiling: { id: "u1", inclusive: false },
+    });
+    for (const changed of [
+        null,
+        { ...greeting, source: { ...greeting.source, fmIndex: 0 } },
+        { text: "Goodbye", source: { ...greeting.source, hash: greetingSourceHash("Goodbye") } },
+    ]) {
+        expect(rebuildWindow(current, entry, NO_SCREENING, false, changed)).toBe("windowChanged");
+    }
+});
+
+it("replaces standing greeting-only events with their marks and retains retractions and uncovered mixed events", () => {
+    const greeting = { fmIndex: -1, hash: greetingSourceHash("Welcome") };
+    const live = {
+        pages: [],
+        threads: [],
+        events: [
+            event("standing", [], { greeting, status: "stale", pinned: true, suppressed: true, userCorrected: true }),
+            event("retracted", [], { greeting, status: "retracted" }),
+            event("mixed", ["u1", "a1"], { greeting }),
+        ],
+    };
+    const staged = event("new-greeting", [], { greeting });
+    const { createdRevision, ...written } = staged;
+    const changes = rebuildChanges("rebuild", live, { pages: [], threads: [], events: [staged] });
+    expect(changes?.remove?.events).toEqual(["standing"]);
+    expect(changes?.events).toEqual([
+        {
+            ...written,
+            title: live.events[0].title,
+            summary: live.events[0].summary,
+            pinned: true,
+            suppressed: true,
+            userCorrected: true,
+        },
+    ]);
+    const messageOnly = rebuildChanges("rebuild", live, {
+        pages: [],
+        threads: [],
+        events: [event("new-messages", ["u1", "a1"])],
+    });
+    expect(messageOnly?.remove?.events).toEqual([]);
+});
+
+it("charges greeting UTF-8 bytes once and a greeting-only backfill call without adding a message", async () => {
+    const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
+    const store = createResourceStore({ file: ":memory:", kinds });
+    try {
+        store.put(
+            kinds.get("characters")!,
+            "c",
+            {
+                chaId: "c",
+                type: "character",
+                name: "C",
+                firstMessage: "한😀é",
+            },
+            null,
+        );
+        const current: Message[] = [
+            { chatId: "u1", role: "user", data: "x" },
+            { chatId: "a1", role: "char", data: "ok" },
+            { chatId: "u2", role: "user", data: "x" },
+            { chatId: "a2", role: "char", data: "ok" },
+        ];
+        store.applyChanges({
+            chats: [
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: null,
+                    ops: [{ op: "create", chat: { id: "k", fmIndex: -1, message: current } }],
+                },
+            ],
+        });
+        // Nine greeting bytes plus six message bytes: five text tokens, with 3,000 per call.
+        for (const mode of ["rebuild", "fresh", "backfill"] as const) {
+            expect(
+                await memoryWorkCost(store, { chaId: "c", chatId: "k" }, { mode, turns: 1 }, CHARACTERS),
+                mode,
+            ).toEqual({
+                calls: mode === "backfill" ? 3 : 2,
+                messages: 4,
+                estimatedTokens: mode === "backfill" ? 9005 : 6005,
+            });
+        }
+        store.memory.write(
+            "c",
+            "k",
+            { epoch: store.epoch(), baseRevision: store.memory.readContents("c", "k")!.revision },
+            {
+                events: [event("recorded", ["u1", "a1", "u2", "a2"])],
+            },
+        );
+        expect(
+            await memoryWorkCost(store, { chaId: "c", chatId: "k" }, { mode: "backfill", turns: 1 }, CHARACTERS),
+        ).toEqual({ calls: 1, messages: 0, estimatedTokens: 3003 });
     } finally {
         store.close();
     }

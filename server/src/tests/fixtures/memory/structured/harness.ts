@@ -523,10 +523,11 @@ export function createFixture(options: FixtureOptions) {
                 { epoch: store.epoch(), mode: "rebuild", plan },
                 rebuildSeed("rebuild", records),
             );
+            const last = plan.at(-1)!;
             const input: StructuredMemoryTaskInput = {
                 ...taskBase(scope),
                 kind: "structuredMemory",
-                confirmedBefore: plan.at(-1)!.at(-1)!,
+                confirmedBefore: ("ids" in last ? last.ids : last).at(-1)!,
                 rebuild: true,
             };
             const from = events.length;

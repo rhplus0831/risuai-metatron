@@ -68,11 +68,14 @@ The panel sends repairs through [the edit route](records.md#the-edit-route). A `
 run: the old event remains until [the writer commit](writer.md#the-writer-task) replaces it, and a replacement older
 than later evidence uses the [historical path](writer.md#a-writer-run).
 
+A person's re-record of the first event is the cheapest way to give one chat's previously unrecorded greeting a
+citation: it joins that event's window, with no separate analysis call.
+
 A person's event title and summary correction sets `userCorrected` without changing evidence, status, grades, or repair
 marks. `retireRerecorded` carries that corrected title and summary into the replacement, alongside the trust flags and
 thread effects it already carries; the other fields come from the new recording. Releasing the mark keeps the text but
 lets a later recording replace it. A [rebuild](rebuild.md#what-a-rebuild-keeps) carries the text only when exactly one
-corrected standing event cites the same set of messages as the staged event.
+corrected standing event cites the same messages and the same presence of a greeting as the staged event.
 
 Loading a checkpoint starts no work. Its restored `rerecord` marks persist; a later automatic hand-off can process a
 mark that still reads `changed` under a non-`manual` cadence (`automaticRerecords` in
@@ -129,11 +132,18 @@ included, prevents inheritance. Runs stay behind, so receipts are stripped from 
 event sources. A decline crosses with the records; `inherited` reports record transfer only. For refusal and repeat
 answers, see the route header. Imports instead [restore their file](#chat-files).
 
+Greeting-only events cross both copies and branches. Mixed events still require every message source to map; `greeting`
+and `greetingKept` cross verbatim because the copy shares the recorded past. When the target greeting differs, the panel
+labels its citation "changed".
+
 ### Chat files
 
 JSON chat files carry pages, events and threads, preserving coverage on an unchanged round trip even to another server.
 Runs stay behind because they hold whole prompts and the file can be shared; the imported Log starts empty, with no
 pause.
+
+The greeting citation and `greetingKept` cross as stored, with the same "changed" label when the imported chat's
+greeting differs.
 
 `risuChat` and `risuAllChats` remain `ver: 2`. Beside `data`, optional `structuredMemory` lists
 `StructuredMemoryFileEntry`, `{ chatId, pages, events, threads }`, for chats with records, by the file's chat id. This
@@ -189,6 +199,11 @@ synchronous step, the route reads stored `hypaV3Data`, builds events and writes 
 adopted. Adoption uses no model; the `adopt.ts` header owns summary conversion, and the route header owns hold, repeat
 and refusal rules. It permits existing runs but fences a live one and writes only events, leaving summaries and failed
 runs untouched; `ADOPTED_WRITER_RUN` names no run.
+
+The first nonblank summary in stored order whose `chatMemos` includes `null` cites the current greeting, read from the
+stored owner; groups and reset histories supply none. An event is active when it has an anchored message or a greeting
+and no unanchored message. Thus a greeting-only summary is active, while one also citing a gone message stays stale
+`missing`. Later summaries receive no greeting citation.
 
 Adopted sources count as recorded to the writer, while send coverage still requires an active, unsuppressed event. A
 later send can therefore process them through the normal read path; adoption alone makes no model call. Stored summaries

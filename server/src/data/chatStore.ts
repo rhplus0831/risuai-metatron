@@ -233,7 +233,8 @@ export const MEMORY_TABLES_SQL = `
 /**
  * A chat's rebuild (`memoryStore.ts`): `memory_rebuilds`, the run itself, and the staged tables holding what
  * it records until its swap: the same columns, uniqueness, and scene index as the record tables above, each
- * row going with its chat by cascade. `plan` is a JSON list of message ids per window, written once;
+ * row going with its chat by cascade. `plan` is a JSON list of message-id arrays or `{ ids, greeting }`
+ * windows with their stored greeting source, written once;
  * `cursor` counts the windows done and `revision` the staged set's writes, which is its own counter.
  * `sourceReplaced` is set in the commit of a whole-chat replace: the store's source generations live in
  * memory and start over with a process, and a run outlives one.
