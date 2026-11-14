@@ -30,9 +30,10 @@
 ### Changed-file checks
 
 - `util/changedChecks.mjs` (`format`, `types`, `--base <ref>`, `isInert`, `ownersLine`): the local checks narrowed to
-  the paths git says changed against the merge base with `origin/dev`. Its header defines the changed set and when
-  `types` skips one of its three programs (client, server, e2e); `types` never narrows a program to the changed files,
-  and its first line names the guides owning the changed paths and the unowned source paths.
+  the paths git says changed against the merge base with local `dev` (`origin/dev` when there is no local `dev`); on
+  `dev` itself that is uncommitted work only. Its header defines the changed set and when `types` skips one of its three
+  programs (client, server, e2e); `types` never narrows a program to the changed files, and its first line names the
+  guides owning the changed paths and the unowned source paths.
 - `types --all` is `pnpm check`: client `svelte-check`, server `tsc` (incremental cache in `node_modules/.cache/tsc/`),
   and e2e `tsc`, none skipped. Both `types` forms start their programs together, print one block per program as it ends,
   and end with a verdict line (`typeCheckVerdict`) naming every failed program; the exit code is 1 when any failed. Read
@@ -313,8 +314,9 @@ Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
   stay under the compiler cache without writing generated files.
 - `util/agentDevHost.test.ts` and `util/agentDataSandbox.test.ts` (node) cover the `dev:agent` runner's host resolution
   and the sandbox.
-- `util/changedChecks.test.ts` (node) covers `typeCheckTargets`, `ownersLine`, and `typeCheckVerdict`;
-  `util/typeCheckCache.test.ts` (node) covers which edits change which program's key (`programKeys`), the working-tree
+- `util/changedChecks.test.ts` (node) covers `typeCheckTargets`, `ownersLine`, `typeCheckVerdict`, and the default base
+  (`resolveBase`) over temporary git repositories.
+- `util/typeCheckCache.test.ts` (node) covers which edits change which program's key (`programKeys`), the working-tree
   listing over temporary git repositories, and `cachedRun` (miss, replay, `--force`, what is never stored) over a
   temporary directory. Not tested: the spawned programs and their output blocks. After changing the runner or the key,
   run `pnpm check` twice, then add a type error to a `.svelte`, a `server/`, and an `e2e/` file in turn and check that

@@ -2,7 +2,9 @@
 // narrowed to what git says changed.
 // The changed set is every path that differs between the base and the working tree (committed, staged,
 // or not), plus untracked files that `.gitignore` does not hide. The base defaults to the merge base of
-// HEAD and `origin/dev`, so a branch's own commits count; with no `origin/dev` it is HEAD.
+// HEAD and the local `dev` branch (`resolveBase`), so a branch's own commits count and the commits `dev`
+// holds do not, pushed or not. On `dev` itself the base is HEAD: only uncommitted work counts. With no
+// local `dev` it is the merge base with `origin/dev`, and with neither it is HEAD.
 //   - `format [--write]`: Prettier on the changed files that still exist, `--check` unless `--write`, with
 //     the same cache as `pnpm format:check`. `.prettierignore` still applies, and files Prettier cannot
 //     parse are skipped.
@@ -131,13 +133,17 @@ function git(root, args) {
     return execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 }
 
-function resolveBase(root, base) {
+export function resolveBase(root, base) {
     if (base) return git(root, ["rev-parse", "--verify", `${base}^{commit}`]).trim();
-    try {
-        return git(root, ["merge-base", "HEAD", "origin/dev"]).trim();
-    } catch {
-        return git(root, ["rev-parse", "HEAD"]).trim();
+    // Full ref names: a tag or another ref named `dev` is not the branch.
+    for (const ref of ["refs/heads/dev", "refs/remotes/origin/dev"]) {
+        try {
+            return git(root, ["merge-base", "HEAD", ref]).trim();
+        } catch {
+            // No such ref, or no common history with it: try the next base.
+        }
     }
+    return git(root, ["rev-parse", "HEAD"]).trim();
 }
 
 /** Repository-relative paths changed since `base`, deletions and both sides of a rename included. */

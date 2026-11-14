@@ -1,6 +1,10 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
-import { ownersLine, typeCheckTargets, typeCheckVerdict } from "./changedChecks.mjs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { ownersLine, resolveBase, typeCheckTargets, typeCheckVerdict } from "./changedChecks.mjs";
 import { parseOwnership } from "./docsOwner.mjs";
 
 describe("ownersLine", () => {
@@ -122,5 +126,70 @@ describe("typeCheckVerdict", () => {
             "[changed] passed: 1 of 3 programs in 7.3 s",
         );
         expect(typeCheckVerdict("changed", [], 0)).toEqual({ code: 0, line: "[changed] no program to run" });
+    });
+});
+
+describe("resolveBase", () => {
+    const roots: string[] = [];
+    afterEach(() => {
+        for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    });
+
+    function git(root: string, ...args: string[]) {
+        return execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", ...args], {
+            cwd: root,
+            encoding: "utf8",
+            stdio: "pipe",
+            env: { ...process.env, GIT_CONFIG_GLOBAL: os.devNull, GIT_CONFIG_NOSYSTEM: "1" },
+        }).trim();
+    }
+
+    function commit(root: string, text: string) {
+        writeFileSync(path.join(root, "file.txt"), text);
+        git(root, "add", "--", ".");
+        git(root, "commit", "--quiet", "--no-gpg-sign", "-m", text);
+        return git(root, "rev-parse", "HEAD");
+    }
+
+    /** A `work` branch one commit past local `dev`, which is one commit past `origin/dev`. */
+    function repository() {
+        const root = mkdtempSync(path.join(os.tmpdir(), "risu-changed-checks-"));
+        roots.push(root);
+        git(root, "init", "--quiet", "--initial-branch=dev");
+        const pushed = commit(root, "pushed");
+        git(root, "update-ref", "refs/remotes/origin/dev", pushed);
+        const local = commit(root, "local");
+        git(root, "checkout", "--quiet", "-b", "work");
+        const work = commit(root, "work");
+        return { root, pushed, local, work };
+    }
+
+    it("defaults to the merge base with local dev, not with origin/dev behind it", () => {
+        const { root, local } = repository();
+
+        expect(resolveBase(root, undefined)).toBe(local);
+    });
+
+    it("falls back to origin/dev without a local dev, then to HEAD without either", () => {
+        const { root, pushed, work } = repository();
+
+        git(root, "branch", "--quiet", "-D", "dev");
+        expect(resolveBase(root, undefined)).toBe(pushed);
+        git(root, "update-ref", "-d", "refs/remotes/origin/dev");
+        expect(resolveBase(root, undefined)).toBe(work);
+    });
+
+    it("does not take a tag named dev for the branch", () => {
+        const { root, pushed, local } = repository();
+
+        git(root, "tag", "dev", pushed);
+        expect(resolveBase(root, undefined)).toBe(local);
+    });
+
+    it("resolves an explicit base to its commit", () => {
+        const { root, pushed, work } = repository();
+
+        expect(resolveBase(root, "origin/dev")).toBe(pushed);
+        expect(resolveBase(root, "HEAD")).toBe(work);
     });
 });
