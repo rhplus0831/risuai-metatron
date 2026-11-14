@@ -163,8 +163,9 @@ refusal the memory step recovered from or outlived replaces no later error.
 - A streamed reply, quiet or not, skips what only a buffered `success` gets (`requestChatDataOuter`): the plugins'
   after-request replacers and the banned-character-set check and retry; a failure after the stream returned does not
   restart the request. The primary text is trimmed before the output scripts, a continue is processed once as the
-  combined text, alternative samples are stored as the last chunk holds them, and Claude's buffered JSON extraction does
-  not run. The Half Streaming help text names the replacers and the retry.
+  combined text, alternative samples are stored as the last chunk holds them, Claude's buffered JSON extraction does not
+  run, and reasoning is wrapped as the adapter's streaming parser wraps it. The Half Streaming help names the replacers
+  and the retry.
 
 ### Reroll in place
 

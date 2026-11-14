@@ -69,7 +69,8 @@ A window always cites every message of its turns, also under `omitUserMessages`:
 what it records over. `memoryWriterReads` is the one rule for what the writer reads, and the prompt, the cast slice,
 quote verification, and the `tokens` cadence all go through it. Every ordinary window `confirmedWindows` makes holds a
 reply, so it always has something to read. A rebuild window or the test run's newest run can hold none; neither makes a
-call on it ([rebuild](rebuild.md#the-plan)).
+call on one that also has no greeting ([rebuild](rebuild.md#the-plan)). A greeting-only backfill window has the greeting
+to read and makes its analysis call.
 
 A solo chat's greeting (`writerGreeting`: none for a group or a reset history) joins the first ordinary window when no
 readable event cites a greeting and no eligible message before that window is recorded, so a new chat's first window
@@ -219,7 +220,8 @@ Compaction changes no event, and a warning does not fail the run.
   unrecorded. It is separate from HypaV3's `doNotSummarizeUserMessage`, which Structured Memory never reads.
 - The writer reads the greeting CBS-expanded by the host's plain-text `parse`, once per run, without the `editprocess`
   scripts, and quotes are checked against that text; the citation hashes the stored text. A failed run's input replays
-  only while its greeting citation is the window's and the input still shows the greeting as expanded now.
+  only while its greeting citation is the window's and the input still lists the greeting's entry as expanded now, up to
+  the label of the message entry after it (the expansion found elsewhere in the input does not count).
 - `keyLineGuidance` defaults to false and applies to events recorded from then on; stored events keep their key lines
   until re-recorded or rebuilt.
 - `MemorySettings.svelte` exposes only the fields something reads, and shares with HypaV3 only the preset picker, the
@@ -356,8 +358,8 @@ Compaction changes no event, and a warning does not fail the run.
 - The writer reads the greeting with its CBS expanded but without the `editprocess` scripts, so a script that rewrites
   the greeting's display text, or a CBS value that changes per send, can make what the writer read differ from what a
   send showed; the citation stays settled because it hashes the stored text. A greeting whose CBS changes between a
-  failed run and its retry rebuilds the prompt instead of replaying it. Decision: Structured Memory Greeting Source D6
-  (owner, 2026-11-14).
+  failed run and its retry rebuilds the prompt instead of replaying it, except in a greeting-only window when the saved
+  greeting only continues the new one. Decision: Structured Memory Greeting Source D6 (owner, 2026-11-14).
 
 ### Gotchas
 

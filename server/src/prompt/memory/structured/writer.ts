@@ -61,11 +61,12 @@ import {
     assemblePatchPrompt,
     compactSlots,
     fillSlots,
+    greetingEntry,
+    messageEntryLabel,
     parseCustomFrame,
     patchSlots,
     promptThreads,
     sceneTakenBackLines,
-    shownText,
 } from "./prompts.ts";
 import { eventVectorTexts } from "./retrieve.ts";
 import { writerGreeting, windowStillConfirmed, type WriterCeiling, type WriterWindow } from "./window.ts";
@@ -344,7 +345,11 @@ function buildPrompt(
  * must hold every line the scene now lists as taken back: compared with its parsed text, so that JSON's
  * escapes cannot hide one. Its scene slot quoting the same text as the scene does not count. A stored
  * input is also one of this run's prompt mode: a fingerprint that matches does not say which frame built
- * it, and a custom frame must not replay a default input or the other way round.
+ * it, and a custom frame must not replay a default input or the other way round. A greeting's citation is
+ * over its stored text, so the input must also list the greeting as it expands now: its whole entry up to
+ * the label of the message entry after it, since the expansion alone can occur in a message or begin a
+ * longer greeting. A greeting-only window has no next label, and a saved greeting that only continues
+ * the new one still replays.
  */
 function replayedInput(
     store: Pick<WriterStore, "memory">,
@@ -366,9 +371,17 @@ function replayedInput(
     const sceneRow = contents.pages.find(({ type }) => type === "scene");
     const scene = sceneRow ? (store.memory.readRecord(chaId, chatId, "pages", sceneRow.id)?.data ?? null) : null;
     const lists = (line: string) => formated?.some(({ content }) => content.includes(line));
+    const { greeting, messages, sources } = arg.window;
+    const settings = writerSettings(arg.host);
+    const next = messages.findIndex((message) => memoryWriterReads(message, settings));
+    const owner = arg.scope.db.characters.find((entry) => entry?.chaId === chaId);
     return formated &&
         sceneTakenBackLines(scene).every(lists) &&
-        (!arg.window.greeting || lists(shownText({ data: arg.window.greeting.text })))
+        (!greeting ||
+            lists(
+                greetingEntry(owner?.name ?? "", greeting.text) +
+                    (next < 0 ? "" : `\n\n${messageEntryLabel(sources[next].messageId)}`),
+            ))
         ? { text: run.input, formated }
         : null;
 }

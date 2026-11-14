@@ -6394,6 +6394,26 @@ describe("structured memory tasks", () => {
         expect(eventRecord(t).sources.map(({ messageId }) => messageId)).toEqual(["m1", "m2"]);
     });
 
+    it("rebuilds a failed greeting window whose greeting expands differently, though a message holds the new text", async () => {
+        const t = structuredHarness({ owner: { firstMessage: "{{getvar::welcome}}" } });
+        t.write("k1", [
+            { op: "meta", set: { scriptstate: { $welcome: "Welcome home." } } },
+            { op: "patchMessage", id: "m1", set: { data: "Please say Welcome back. next time." } },
+        ]);
+        const first = await beginAnalysis(t);
+        expect(t.provider.asked(first.request)).toContain("[greeting] Cara:\nWelcome home.\n\n[m:m1]");
+        first.request.fail("Analysis unavailable");
+        expect((await first.terminal).status.state).toBe("failed");
+        await t.service.drain();
+
+        // The stored greeting, and so its citation, is unchanged; only what it expands to differs.
+        t.write("k1", [{ op: "meta", set: { scriptstate: { $welcome: "Welcome back." } } }]);
+        const retry = await beginAnalysis(t);
+        expect(t.provider.asked(retry.request)).toContain("[greeting] Cara:\nWelcome back.\n\n[m:m1]");
+        retry.request.answer(JSON.stringify(analysis()));
+        await finishRecording(t, retry.terminal);
+    });
+
     it("replays a failed snapshot byte for byte despite thread changes and rebuilds when settings change", async () => {
         const t = structuredHarness();
         writeMemory(t.store, "c", "k1", {

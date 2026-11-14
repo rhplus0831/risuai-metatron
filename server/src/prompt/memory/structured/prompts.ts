@@ -348,6 +348,12 @@ export function promptThreads(
     return { listed: ranked.map(({ thread }) => thread), more: open.length - ranked.length };
 }
 
+/** The greeting's entry in the `messages` slot, which lists it first. */
+export const greetingEntry = (speaker: string, text: string) => `[greeting] ${speaker}:\n${shownText({ data: text })}`;
+
+/** What a window message's entry in the `messages` slot starts with; entries are a blank line apart. */
+export const messageEntryLabel = (messageId: string) => `[m:${messageId}] `;
+
 /**
  * The slot values of one recording. Only messages the writer reads supply window and context text;
  * each window message keeps its own source id. A greeting is listed first with its solo owner's name. Text is `memorySourceText`, display markup removed, as
@@ -369,12 +375,12 @@ export function analysisSlots(input: AnalysisInput): AnalysisSlots {
             ].join("\n") || NONE,
         previous: previousSlot(input),
         messages: [
-            ...(input.window.greeting
-                ? [`[greeting] ${input.greetingSpeaker ?? ""}:\n${shownText({ data: input.window.greeting.text })}`]
-                : []),
+            ...(input.window.greeting ? [greetingEntry(input.greetingSpeaker ?? "", input.window.greeting.text)] : []),
             ...input.window.messages.flatMap((message, index) =>
                 memoryWriterReads(message, input)
-                    ? [`[m:${input.window.sources[index].messageId}] ${input.speaker(message)}:\n${shownText(message)}`]
+                    ? [
+                          `${messageEntryLabel(input.window.sources[index].messageId)}${input.speaker(message)}:\n${shownText(message)}`,
+                      ]
                     : [],
             ),
         ].join("\n\n"),
