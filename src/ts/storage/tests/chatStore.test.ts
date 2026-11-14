@@ -4,6 +4,7 @@ import type { MessageTranslation } from "../../../../shared/database.ts";
 import { translationSourceHash } from "../../../../shared/translation/hash.ts";
 import { storedTranslation } from "../../../../shared/translation/messageTranslation.ts";
 import { SMALL_FEED_PATCH_BYTES } from "../../../../shared/resources.ts";
+import { MAX_OOC_EXCHANGE_BYTES } from "../../../../shared/ooc.ts";
 import { textHash } from "../../../../shared/textHash.ts";
 import { warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
@@ -820,6 +821,32 @@ describe("membership and selection", () => {
         const before = clone(input);
         expect(() => chat.validateChatInput(input)).toThrow("message.data must be a string");
         expect(input).toEqual(before);
+        expect(chat.hasChatWork()).toBe(false);
+    });
+
+    it("refuses the OOC fields the server would refuse and accepts valid ones during validation", async () => {
+        const { chat } = await boot();
+        const exchange = { id: "q", segment: "s", anchorMessageId: null, question: "Why?", time: 1 };
+        const valid = {
+            message: [m("a", "A")],
+            oocLog: { q: exchange },
+            oocSegment: { id: "s", anchorMessageId: null },
+            oocToggles: { ooc: "1" },
+        };
+        expect(chat.validateChatInput(valid)).toBeUndefined();
+        const refused: [object, string][] = [
+            [{ oocLog: { q: null } }, "a chat.oocLog entry must be a plain object"],
+            [
+                { oocLog: { q: { ...exchange, answer: "x".repeat(MAX_OOC_EXCHANGE_BYTES) } } },
+                `a chat.oocLog entry must be at most ${MAX_OOC_EXCHANGE_BYTES} bytes`,
+            ],
+            [{ oocLog: null }, "chat.oocLog must be a plain object"],
+            [{ oocSegment: { id: "", anchorMessageId: null } }, "chat.oocSegment must be a plain object"],
+            [{ oocToggles: { ooc: 1 } }, "chat.oocToggles must be a plain object with string values"],
+        ];
+        for (const [fields, error] of refused) {
+            expect(() => chat.validateChatInput({ ...valid, ...fields } as any), error).toThrow(error);
+        }
         expect(chat.hasChatWork()).toBe(false);
     });
 

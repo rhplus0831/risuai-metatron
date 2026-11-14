@@ -24,6 +24,7 @@ import { CHAT_META_FORBIDDEN_KEYS, CHAT_META_MERGE_KEYS } from "../../../shared/
 import type { ChatStreaming, ChatStreamingSnapshot } from "../../../shared/events.ts";
 import type { GenerationChatPatchEvent, GenerationChunkEvent, StreamingMessage } from "../../../shared/jobs.ts";
 import { readChatBindingIds } from "../../../shared/chatBinding.ts";
+import { oocLogError, oocSegmentError, oocTogglesError } from "../../../shared/ooc.ts";
 import {
     type ChangeSet,
     type ChatDeltaBody,
@@ -1656,12 +1657,23 @@ function sendChat(chat: Chat): Chat {
     return withoutProjection(projectChat(chat));
 }
 
-/** Checks a chat's message data without changing it; imports validate every chat before any write. */
-export function validateChatInput(chat: DeepReadonly<Pick<Chat, "message">>) {
+/**
+ * Checks a chat's message data and OOC fields without changing them; imports validate every chat before
+ * any write. The OOC checks are the server's (`normalizeChatMeta`), which would refuse the chat's save
+ * only after the tab held it, and whose shape the OOC panel reads without checking.
+ */
+export function validateChatInput(chat: DeepReadonly<Pick<Chat, "message" | "oocLog" | "oocSegment" | "oocToggles">>) {
     for (const message of chat.message ?? []) {
         if (typeof message.data !== "string") {
             throw new Error("message.data must be a string");
         }
+    }
+    const error =
+        (chat.oocLog !== undefined ? oocLogError(chat.oocLog) : null) ??
+        (chat.oocSegment !== undefined ? oocSegmentError(chat.oocSegment) : null) ??
+        (chat.oocToggles !== undefined ? oocTogglesError(chat.oocToggles) : null);
+    if (error !== null) {
+        throw new Error(error);
     }
 }
 

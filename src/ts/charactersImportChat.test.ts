@@ -220,6 +220,33 @@ describe("importChat writes the character selected when the dialog opened", () =
         expect(serverText()).toBe(serverBefore);
     });
 
+    it("refuses a JSON chat whose OOC log the server would refuse through the error alert and adds no chat", async () => {
+        const { run, alpha, chatsOf, sync, serverText } = await boot();
+        const before = chatsOf(alpha);
+        const serverBefore = serverText();
+
+        await run({
+            name: "invalid-ooc.json",
+            data: encode({
+                type: "risuChat",
+                ver: 2,
+                data: {
+                    name: "Invalid OOC log",
+                    note: "",
+                    localLore: [],
+                    message: [{ role: "user", data: "Hello" }],
+                    oocLog: { q: null },
+                },
+            }),
+        });
+
+        expect(alerts.error).toHaveBeenCalledExactlyOnceWith(new Error("a chat.oocLog entry must be a plain object"));
+        expect(alerts.normal).not.toHaveBeenCalled();
+        expect(chatsOf(alpha)).toEqual(before);
+        await sync.flushResources();
+        expect(serverText()).toBe(serverBefore);
+    });
+
     it("a jsonl chat lands at the top of that character, substitutes its name, and selects it while it is still on screen", async () => {
         const { run, alpha, chatsOf, texts, character, sync, fake, activePersona } = await boot();
         await run(jsonl());

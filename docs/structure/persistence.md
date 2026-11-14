@@ -217,8 +217,9 @@ carry them. The Translation page can clear `LLMTranslateCache` through `clearLLM
 - OOC session (`shared/ooc.ts`): `oocLog?` (exchanges by id, a merge key), `oocSegment?` (current segment and anchor
   message id), `oocToggles?` (the chat's forced toggle values, replacing the preset's whole). `normalizeChatMeta`
   refuses a malformed value, an exchange over `MAX_OOC_EXCHANGE_BYTES`, and a log over `MAX_OOC_EXCHANGES`. Not summary
-  fields. Checkpoints keep all three (the log is not story state), copies and imports keep them, a branch drops `oocLog`
-  and `oocSegment`, the upstream export strips them.
+  fields. Checkpoints keep all three (the log is not story state), copies and imports keep them (an import refuses a
+  value the server would, `validateChatInput`), a branch drops `oocLog` and `oocSegment`, the upstream export strips
+  them.
 - `isStreaming`/`activeStreamingDisplayOptimizationMode` remain in the type for old data, never stored; a chat's
   streaming message is its `streamingEntry`.
 
