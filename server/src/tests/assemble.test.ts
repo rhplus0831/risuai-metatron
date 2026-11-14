@@ -816,6 +816,7 @@ describe("the context report", () => {
             regex: async () => {
                 throw new Error("No regex runs in these tests");
             },
+            parse: (text) => text,
             parseChatML: () => null,
             userName: () => "User",
             progress() {},

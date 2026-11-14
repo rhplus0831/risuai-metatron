@@ -12,6 +12,7 @@ import {
     MEMORY_RUN_RESULTS,
     MEMORY_SECTION_BUDGETS,
     MEMORY_THREAD_STATES,
+    memoryGreetingHashFields,
     memorySourceHashFields,
     memorySourceHashOf,
     memorySourceHashVersion,
@@ -1420,6 +1421,11 @@ export function messageSourceHash(message: Pick<Message, "role" | "data" | "sayi
     const version = memorySourceHashVersion(like);
     const hash = createHash("sha256").update(memorySourceHashFields(message, version), "utf8").digest("hex");
     return memorySourceHashOf(hash, version);
+}
+
+/** The stored greeting's version-3 SHA-256, before CBS expansion. */
+export function greetingSourceHash(text: string): string {
+    return memorySourceHashOf(createHash("sha256").update(memoryGreetingHashFields(text), "utf8").digest("hex"), 3);
 }
 
 /** The last send's manifest: the newest context report with an `items` list, empty when that send included nothing. */

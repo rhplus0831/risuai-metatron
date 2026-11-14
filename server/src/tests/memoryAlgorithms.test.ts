@@ -98,6 +98,7 @@ function hostOf(
         summarizer: (text) => world.summarizer(text),
         embeddings,
         regex: async (op) => runRegexOp(op),
+        parse: (text) => text,
         parseChatML: options.parseChatML ?? (() => null),
         userName: () => USER_NAME,
         progress: (payload) => world.progress(payload),

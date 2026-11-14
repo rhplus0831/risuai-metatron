@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { readFileSync } from "node:fs";
 import type { Message } from "../../../shared/database.ts";
@@ -18,6 +19,7 @@ import {
     readStructuredMemoryCost,
     abandonStructuredMemoryRebuild,
     memoryMessageHash,
+    memoryGreetingHash,
     memoryMessageHasher,
     reconcileMemoryCoverage,
     buildStructuredMemoryPackage,
@@ -1314,5 +1316,21 @@ it("prefers the current writer rule, clears old tab-bound warnings on null, and 
             reason,
             action: "record",
         });
+    }
+});
+
+it("hashes the unexpanded greeting identically in the tab and server with the greeting domain", async () => {
+    // A computed import keeps the server graph outside the tab TypeScript project.
+    const serverPath = path.resolve(import.meta.dirname, "../../../server/src/data/memoryStore.ts");
+    const { greetingSourceHash } = (await import(/* @vite-ignore */ serverPath)) as {
+        greetingSourceHash(text: string): string;
+    };
+    const text = "Welcome {{user}}, says {{char}}. 문 😀";
+    const expected = `v3:${createHash("sha256")
+        .update(JSON.stringify(["greeting", text]))
+        .digest("hex")}`;
+    for (const stored of [text, `<p class="old">${text}</p>`, ` <div data-new="yes">${text}</div><!-- hidden --> `]) {
+        expect(greetingSourceHash(stored)).toBe(expected);
+        expect(memoryGreetingHash(stored)).toBe(expected);
     }
 });

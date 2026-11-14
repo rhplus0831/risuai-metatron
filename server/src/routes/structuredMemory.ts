@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { resolveChatBinding } from "../../../shared/chatBinding.ts";
 import type { Context, Hono, MiddlewareHandler } from "hono";
-import type { Chat, Message } from "../../../shared/database.ts";
-import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
+import type { Chat, Message, character, groupChat } from "../../../shared/database.ts";
+import { RESOURCE_KIND, RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     ADOPTED_WRITER_RUN,
+    memoryChatGreeting,
+    storedMemoryGreeting,
     hypaV3DataHoldsSummaries,
     isSealedHypaV3Data,
     MEMORY_FIND_EXCERPT_CHARS,
@@ -892,7 +894,10 @@ export function registerStructuredMemoryRoutes(
             const runs: StructuredMemoryCoverageRun[] = [];
             for (const { kind, id } of rows) {
                 if (kind === "events") {
-                    const { title, status, staleReason, suppressed, keptState, rerecord, sources } = read(kind, id);
+                    const { title, status, staleReason, suppressed, keptState, rerecord, sources, greeting } = read(
+                        kind,
+                        id,
+                    );
                     events.push({
                         id,
                         title,
@@ -904,6 +909,7 @@ export function registerStructuredMemoryRoutes(
                         messageIds: sourceIds(sources),
                         sourceIndex: firstSourceIndex(sources),
                         sources: storedMemorySources(sources),
+                        ...(storedMemoryGreeting(greeting) ? { greeting: storedMemoryGreeting(greeting)! } : {}),
                     });
                 } else {
                     const { result, reason, receipt, window } = read(kind, id);
@@ -1155,14 +1161,18 @@ export function registerStructuredMemoryRoutes(
                     return gone();
                 }
                 let messages: readonly Message[] = [];
+                let hasGreeting = false;
                 if (edit.repair !== "retract") {
                     const chat = store.readChatSource(characterId, chatId).data as Chat | null;
                     if (!chat) {
                         return c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
                     }
                     messages = chat.message;
+                    const owner = store.get(kinds.get(RESOURCE_KIND.characters)!, characterId)?.data as
+                        character | groupChat | undefined;
+                    hasGreeting = memoryChatGreeting(owner, chat) !== null;
                 }
-                const edited = applyEventRepair(stored.data, edit, messages, messageSourceHash);
+                const edited = applyEventRepair(stored.data, edit, messages, messageSourceHash, hasGreeting);
                 const written = store.memory.write(
                     characterId,
                     chatId,
@@ -1711,6 +1721,7 @@ export function registerStructuredMemoryRoutes(
                 store,
                 { chaId: characterId, chatId },
                 { mode, turns: turns === "1" ? 1 : 2, ...(through !== undefined ? { through } : {}) },
+                kinds.get(RESOURCE_KIND.characters)!,
             );
             if (!cost) {
                 return c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);

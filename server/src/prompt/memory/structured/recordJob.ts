@@ -1,3 +1,4 @@
+import { RESOURCE_KIND } from "../../../../../shared/resources.ts";
 import { chatMemoryAlgorithm, chatMemoryEnabled } from "../../../../../shared/chatMemory.ts";
 import { eligibleHistory } from "../../../../../shared/contextReport.ts";
 import { summarizesLocally } from "../../../../../shared/hypaV3Presets.ts";
@@ -40,6 +41,8 @@ import { MEMORY_TASK_LIMITS, type StructuredMemoryCommit } from "../memoryTasks.
 import { retireRerecorded } from "./reconcile.ts";
 import {
     confirmedWindows,
+    writerGreeting,
+    greetingRerecordCeiling,
     historicalWindow,
     readRecordedMessages,
     readRerecordEvents,
@@ -196,6 +199,7 @@ async function runWindows(
                 return { outcome: "refused", reason: "windowChanged" };
             }
             return commitWindow(store, {
+                charactersKind: deps.kinds.get(RESOURCE_KIND.characters)!,
                 input,
                 window,
                 ceiling,
@@ -218,6 +222,10 @@ async function runWindows(
         refreshed();
         const windows = await confirmedWindows({
             messages: scopeChat(scope)?.message ?? [],
+            greeting: writerGreeting(
+                scope.db.characters.find((owner) => owner?.chaId === characterId),
+                scopeChat(scope),
+            ),
             confirmedBefore: ceiling.id,
             inclusive: ceiling.inclusive,
             recorded: readRecordedMessages(store, characterId, chatId),
@@ -386,12 +394,20 @@ export async function runMemoryRecord(
     const { characterId, chatId } = job.context;
     const scope = admitRecord(job, deps, messageId);
     const result: MemoryRecordResult = { memoryRecord: "completed" };
-    const confirmedBefore = messageId ?? writerCeiling(scopeChat(scope)?.message ?? []);
+    const owner = scope.db.characters.find((entry) => entry?.chaId === characterId);
+    const messages = scopeChat(scope)?.message ?? [];
+    const confirmedBefore =
+        messageId ??
+        writerCeiling(messages) ??
+        greetingRerecordCeiling(
+            messages,
+            readRerecordEvents(store, characterId, chatId),
+            writerGreeting(owner, scopeChat(scope)),
+        );
     if (confirmedBefore === null) {
         job.emit({ type: "done", revision: store.chatRevision(characterId, chatId), result });
         return;
     }
-    const owner = scope.db.characters.find((entry) => entry?.chaId === characterId);
     const input: StructuredMemoryTaskInput = {
         ...jobMemoryTaskBase({
             job,

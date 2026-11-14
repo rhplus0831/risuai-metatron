@@ -32,6 +32,8 @@ import {
     STRUCTURED_MEMORY_LIMITS as LIMITS,
 } from "../../../shared/structuredMemory.ts";
 import { MAX_READ_RESPONSE_BYTES } from "../../../shared/resources.ts";
+import { commitWindow } from "../prompt/memory/structured/writer.ts";
+import { writerGreeting } from "../prompt/memory/structured/window.ts";
 import { defaultPrompts } from "../prompt/memory/structured/prompts.ts";
 import { revertChange } from "../prompt/memory/structured/pages.ts";
 import { readRecordSet, rebuildPlan, rebuildSeed } from "../prompt/memory/structured/rebuild.ts";
@@ -2755,6 +2757,87 @@ describe("structured memory tasks", () => {
         t.store.memory.rebuild.begin("c", "k1", { epoch: t.store.epoch(), mode, plan }, rebuildSeed(mode, live));
         return { ...writerInput(t), rebuild: true as const };
     };
+
+    it("records the first solo greeting with expanded names and keeps its unexpanded source on the event and run", async () => {
+        const storedText = "{{char}} welcomes {{user}} to the harbor.";
+        const t = structuredHarness({
+            owner: { firstMessage: "Unused main greeting", alternateGreetings: [storedText] },
+        });
+        t.write("k1", [{ op: "meta", set: { fmIndex: 0 } }]);
+        const { request, terminal } = await beginAnalysis(t);
+        const prompt = t.provider.asked(request);
+        expect(prompt).toContain("Messages to record:\n[greeting] Cara:\nCara welcomes Uma to the harbor.\n\n[m:m1]");
+        request.answer(
+            JSON.stringify(analysis({ keyLines: [{ speaker: "Cara", text: "Cara welcomes Uma to the harbor." }] })),
+        );
+        await finishRecording(t, terminal);
+        const greeting = {
+            fmIndex: 0,
+            hash: `v3:${createHash("sha256")
+                .update(JSON.stringify(["greeting", storedText]))
+                .digest("hex")}`,
+        };
+        expect(eventRecord(t).greeting).toEqual(greeting);
+        expect(eventRecord(t).keyLines).toEqual([{ speaker: "Cara", text: "Cara welcomes Uma to the harbor." }]);
+        expect(runRecord(t).greeting).toEqual(greeting);
+        expect(runRecord(t).receipt?.unverified).toEqual([]);
+    });
+
+    it("commits a greeting-only window without writing a chat receipt and keeps the run receipt", () => {
+        const t = structuredHarness();
+        const greeting = writerGreeting({ firstMessage: GREETING }, t.chat("k1"))!;
+        const run = {
+            ...memoryRecords(["greeting"]).runs[0],
+            window: [],
+            greeting: greeting.source,
+            receipt: {
+                state: "recorded" as const,
+                runId: "greeting",
+                pages: [],
+                refused: [],
+                unverified: [],
+                warnings: [],
+            },
+        };
+        const before = t.store.readChatSource("c", "k1");
+        const writeReceipt = vi.fn();
+        const result = commitWindow(t.store, {
+            charactersKind: t.kinds.get("characters")!,
+            input: writerInput(t, "m1"),
+            window: { sources: [], messages: [], greeting },
+            ceiling: { id: "m1", inclusive: false },
+            baseRevision: contents(t).revision,
+            changes: { events: [{ ...event("greeting", []), greeting: greeting.source }], runs: [run] },
+            writeReceipt,
+        });
+        expect(result.outcome).toBe("committed");
+        expect(eventRecord(t)).toMatchObject({ id: "greeting", sources: [], greeting: greeting.source });
+        expect(runRecord(t).receipt).toEqual(run.receipt);
+        expect(writeReceipt).not.toHaveBeenCalled();
+        expect(t.store.readChatSource("c", "k1")).toEqual(before);
+    });
+
+    it("refuses a greeting commit after its index or prose changes but accepts markup-only changes", async () => {
+        for (const change of ["index", "prose", "markup"] as const) {
+            const t = structuredHarness({ owner: { firstMessage: "Welcome", alternateGreetings: ["Welcome"] } });
+            const { request, terminal } = await beginAnalysis(t);
+            if (change === "index") t.write("k1", [{ op: "meta", set: { fmIndex: 0 } }]);
+            else
+                t.updateOwner((owner) => ({
+                    ...owner,
+                    firstMessage: change === "prose" ? "Goodbye" : '<p class="new">Welcome</p>',
+                }));
+            request.answer(JSON.stringify(analysis()));
+            const ended = await terminal;
+            await t.service.drain();
+            expect(ended.status, change).toMatchObject(
+                change === "markup"
+                    ? { state: "done", done: 1 }
+                    : { state: "skipped", done: 0, reason: "windowChanged" },
+            );
+            expect(contents(t).events, change).toHaveLength(change === "markup" ? 1 : 0);
+        }
+    });
 
     const customFrames = {
         fineTuning: true,
@@ -5984,6 +6067,8 @@ describe("structured memory tasks", () => {
 
     it("replays a failed window exactly after a newer window records and the task service restarts", async () => {
         const t = structuredHarness({
+            // No greeting: the earlier window would take it once re-enabled, and replay compares it too.
+            owner: { firstMessage: "" },
             hypaSettings: {
                 structured: {
                     ...customFrames,

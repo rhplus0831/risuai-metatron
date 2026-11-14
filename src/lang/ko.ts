@@ -3174,6 +3174,7 @@ export const languageKorean = {
             testResult: {
                 nothing: "이 채팅에는 테스트할 구간이 없습니다(아직 확정된 대화가 없음).",
                 window: (count: number) => `테스트 구간: 메시지 ${count}개`,
+                windowWithGreeting: (count: number) => `테스트 구간: 첫 메시지 + 대화 메시지 ${count}개`,
                 outcome: "실행 결과",
                 outcomes: { recorded: "정상 기록 가능 (저장 안 함)", failed: "실패", skipped: "건너뜀" },
                 reason: "사유",

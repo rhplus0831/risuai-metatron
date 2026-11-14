@@ -24,7 +24,8 @@
 
 - `shared/structuredMemory.ts`: shared types, limits and pure rules, safe in tab and server.
   - Records and evidence: `MemoryEvent`, `MemoryPage`, `MemorySection`, `MemoryThread`, `MemoryRun`, `MemoryReceipt`,
-    `MemorySource`, `MemoryAnchoredSource`, `MemoryUnanchoredSource`.
+    `MemorySource`, `MemoryAnchoredSource`, `MemoryUnanchoredSource`, `MemoryGreetingSource`; `storedMemoryGreeting`,
+    `greetingCited`, `memoryChatGreeting`, `memoryGreetingHashFields`.
   - Writer and send shapes: `MemoryEventDraft`, `MemoryAnalysisResult`, `MemoryPageCandidate`, `MemoryManifest`,
     `MemoryManifestItem`; `memoryGrade`, `memoryThreadEnded`, `writerPaused`.
   - Limits and window: `STRUCTURED_MEMORY_ALGORITHM`, `ADOPTED_WRITER_RUN`, `STRUCTURED_MEMORY_LIMITS`,
@@ -42,7 +43,8 @@
     `StructuredMemoryDeclineAnswer`, `StructuredMemoryResetAnswer`, `StructuredMemoryAdoption`.
 - `server/src/data/memoryStore.ts`: synchronous record storage; `createMemoryTables`, `MemoryChanges`, `MemoryContents`,
   `MemoryRowTexts`, `readContents`, `readKindPage`, `readRecord`, `write`, `checkMemoryRow`; `messageSourceHash`
-  supplies source hashes. The projection's part: [projection](projection.md#files).
+  supplies source hashes and `greetingSourceHash` greeting hashes. The projection's part:
+  [projection](projection.md#files).
 - `server/src/data/chatStore.ts`: table declarations; `MEMORY_TABLES_SQL`, `CHAT_OPEN_SCHEMA_SQL`.
 - `server/src/data/resourceStore.ts`: transaction and epoch boundary; `store.memory`, `readContents`, `readRecord`,
   `write`. Other parts: [projection](projection.md#files), [checkpoints](lifecycle.md#files).
@@ -59,7 +61,7 @@
   `readStructuredMemoryContents`, `readStructuredMemoryRecord`, `readStructuredMemoryCoverage`,
   `readStructuredMemoryStory`, `findStructuredMemory`, `readStructuredMemoryRuns`, `readStructuredMemoryHealth`,
   `editStructuredMemory`, `buildStructuredMemoryPackage`, `buildStructuredMemoryLog`, `renderMemoryPage`,
-  `renderMemoryTimeline`, `renderMemoryThreads`, `memoryPagePath`.
+  `renderMemoryTimeline`, `renderMemoryThreads`, `memoryPagePath`, `memoryGreetingHash`.
 
 ## Flows
 
@@ -290,6 +292,17 @@ group: no walk reads them.
 - A `MemoryUnanchoredSource` means the anchor was never known: an adopted summary whose message was already gone. It
   forces its event `stale` until a person keeps it. A source whose message disappears later keeps its original hash and
   index. A run's window holds only anchored sources.
+- A solo chat's greeting is cited apart from the message sources: `MemoryEvent.greeting` and `MemoryRun.greeting`, a
+  `MemoryGreetingSource` (`fmIndex`, the effective index `greetingIndex` reads, and `hash`). It is no `MemorySource`, so
+  the reverse source tables, reconciliation, page sections, and adoption's memo lookup stay message-only, and a record
+  without it reads as before.
+- A greeting hash is version 3 over `["greeting", memorySourceText(text)]` of the stored, unexpanded greeting
+  (`memoryGreetingHashFields`, digested by `greetingSourceHash` and the tab's `memoryGreetingHash`), so a markup change
+  keeps it and a CBS value that changes per send does not move it. `greetingCited` needs both fields to match the chat's
+  greeting (`memoryChatGreeting`: none for a group, a reset history, or an empty greeting).
+- Every reader of a greeting citation goes through `storedMemoryGreeting`, which reads anything but the exact shape as
+  none, since runs are raw JSON. `greetingKept` has the same shape; `parseRestoredRecords` refuses either field in
+  another shape, and the package version stays.
 - Sections carry both `provenance` (event ids) and `sources`, and a history entry's `before` carries all three of body,
   provenance, and sources, so a revert never restores a body with the replacement's evidence. `before` is `null` when
   nothing was replaced, and `heading` is `null` for a change to the whole page.

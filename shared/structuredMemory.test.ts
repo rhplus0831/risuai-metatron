@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { Message } from "./database.ts";
 import {
@@ -14,6 +15,10 @@ import {
     memoryRerecordTarget,
     memorySourceHashVersion,
     memorySourceText,
+    storedMemoryGreeting,
+    greetingCited,
+    memoryChatGreeting,
+    memoryGreetingHashFields,
 } from "./structuredMemory.ts";
 
 function event(id: string, overrides: Partial<MemoryEvent> = {}): MemoryEvent {
@@ -182,8 +187,10 @@ it("names the seen anchor state independently of prefix shifts and targets only 
         [messages[0], { chatId: "inserted", role: "user", data: "Wait" }, messages[1]],
     ];
     for (const changed of changes) expect(memoryAnchorState(sources, changed, hash)).not.toBe(seen);
-    expect(memoryRerecordTarget(sources, messages)).toBe("a");
-    expect(memoryRerecordTarget(sources, [...messages, { chatId: "unrelated", role: "user", data: "Next" }])).toBe("a");
+    expect(memoryRerecordTarget(sources, messages)).toEqual({ messageId: "a" });
+    expect(memoryRerecordTarget(sources, [...messages, { chatId: "unrelated", role: "user", data: "Next" }])).toEqual({
+        messageId: "a",
+    });
     expect(memoryRerecordTarget(sources, [messages[1], messages[0]])).toBeNull();
     expect(memoryRerecordTarget(sources, [messages[0], { ...messages[1], disabled: true }])).toBeNull();
     expect(
@@ -346,4 +353,62 @@ describe("memorySourceText", () => {
 
 it("reads a source hash's version from its prefix, current when absent", () => {
     expect([undefined, "v3:ab", "v2:ab", "ab", "v4:ab"].map(memorySourceHashVersion)).toEqual([3, 3, 2, 1, 1]);
+});
+
+it("reads only a greeting citation with a numeric index and string hash", () => {
+    const source = { fmIndex: -1, hash: "v3:stored" };
+    expect(storedMemoryGreeting(source)).toEqual(source);
+    expect(storedMemoryGreeting({ fmIndex: 2, hash: "v3:alternate" })).toEqual({ fmIndex: 2, hash: "v3:alternate" });
+    for (const value of [
+        undefined,
+        null,
+        {},
+        [],
+        { hash: "v3:x" },
+        { fmIndex: -1 },
+        { fmIndex: "0", hash: "v3:x" },
+        { fmIndex: 0, hash: 7 },
+        { fmIndex: 0.5, hash: "v3:x" },
+        { fmIndex: -2, hash: "v3:x" },
+        { ...source, extra: true },
+    ]) {
+        expect(storedMemoryGreeting(value), JSON.stringify(value)).toBeNull();
+    }
+});
+
+it("matches the effective solo greeting by index and normalized stored text", () => {
+    const owner = { firstMessage: "Hello {{user}}.", alternateGreetings: ["Welcome {{user}}."] };
+    const chat = { fmIndex: 0, message: [] };
+    const source = {
+        fmIndex: 0,
+        hash: `v3:${createHash("sha256")
+            .update(JSON.stringify(["greeting", "Welcome {{user}}."]))
+            .digest("hex")}`,
+    };
+    const current = (character: Parameters<typeof memoryChatGreeting>[0] = owner, held = chat) => {
+        const greeting = memoryChatGreeting(character, held);
+        return (
+            greeting && {
+                fmIndex: greeting.fmIndex,
+                hash: `v3:${createHash("sha256").update(memoryGreetingHashFields(greeting.text)).digest("hex")}`,
+            }
+        );
+    };
+    expect(memoryChatGreeting(owner, chat)).toEqual({ fmIndex: 0, text: "Welcome {{user}}." });
+    expect(memoryChatGreeting(owner, { ...chat, fmIndex: 99 })).toEqual({ fmIndex: -1, text: "Hello {{user}}." });
+    expect(greetingCited(source, current())).toBe(true);
+    expect(
+        greetingCited(
+            source,
+            current({ ...owner, firstMessage: owner.alternateGreetings[0] }, { ...chat, fmIndex: -1 }),
+        ),
+    ).toBe(false);
+    expect(greetingCited(source, current({ ...owner, alternateGreetings: ["Goodbye {{user}}."] }))).toBe(false);
+    for (const text of ["<b>Welcome {{user}}.</b>", '<p class="changed">Welcome {{user}}.</p>']) {
+        expect(greetingCited(source, current({ ...owner, alternateGreetings: [text] }))).toBe(true);
+    }
+    const group = current({ ...owner, type: "group" });
+    expect(group).toBeNull();
+    expect(greetingCited(source, group)).toBe(false);
+    expect(greetingCited(null, source)).toBe(false);
 });

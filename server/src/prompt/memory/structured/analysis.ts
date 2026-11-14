@@ -9,6 +9,9 @@ import {
     type MemoryEvent,
     type MemoryEventDraft,
     memoryGrade,
+    greetingCited,
+    storedMemoryGreeting,
+    type MemoryGreetingSource,
     type MemoryKnowledge,
     type MemoryKnowledgeDraft,
     type MemoryPageCandidate,
@@ -31,7 +34,8 @@ import type { WriterWindow } from "./window.ts";
  * bounded draft, and `admitAnalysis` turns the draft into records against the state it is given.
  *
  * The model's output is never trusted for what code owns. Ids, grades, status, and sources are code's;
- * a quote must be found in a window message the writer reads as `memorySourceText`, a page or thread id must exist, and whatever
+ * a quote must be found in a window message or expanded greeting as `memorySourceText`, a page or
+ * thread id must exist, and whatever
  * fails is listed in the receipt and kept out of the records, never dropped silently.
  */
 
@@ -473,9 +477,12 @@ function repeatsEvent(
     summary: string,
     participants: readonly string[],
     messages: readonly Message[],
+    currentGreeting: MemoryGreetingSource | null,
 ): boolean {
     const before = new Set(last.participants);
+    const greeting = storedMemoryGreeting(last.greeting);
     if (
+        (greeting !== null && !greetingCited(greeting, currentGreeting)) ||
         last.status !== "active" ||
         before.size !== participants.length ||
         !participants.every((id) => before.has(id)) ||
@@ -497,7 +504,7 @@ function repeatsEvent(
  * The records a draft comes to against the state given, read fresh for each attempt.
  *
  * - Evidence: a key line's text and a knowledge or state item's `quote` must be a non-empty contiguous
- *   piece of a read window message's `memorySourceText` (its `data` without display markup), never of
+ *   piece of a read window message or expanded greeting's `memorySourceText` (without display markup), never of
  *   an omitted user message, a context message or the text the prompt showed, so one that spans an
  *   `[Image]` fails. What fails goes to `unverified` with `quoteNotFound`. Sources still cite the whole window.
  * - Pages: a page reference is a page's id, or the title of a create it accepted (`created`). A
@@ -513,7 +520,8 @@ function repeatsEvent(
  *   reach it. A window that re-records an event is never a repeat: a repair must replace that event,
  *   not merge into it.
  *   Repetition requires an active event, the same participants and character-bigram Jaccard similarity
- *   at least `dedupeSimilarity`; hashed sources must still match, while adopted null hashes pass.
+ *   at least `dedupeSimilarity`; hashed sources and any greeting citation must still match, while
+ *   adopted null hashes pass.
  */
 export function admitAnalysis(arg: {
     draft: MemoryEventDraft;
@@ -537,6 +545,8 @@ export function admitAnalysis(arg: {
     lastEvent: MemoryEvent | null;
     /** The chat's stored messages. */
     messages: readonly Message[];
+    /** The chat's greeting identity, even when this window does not read it. */
+    currentGreeting?: MemoryGreetingSource | null;
     newId: () => string;
 }): Admission {
     const { draft, window, pages, threads, lastEvent, newId, speakerId } = arg;
@@ -560,6 +570,7 @@ export function admitAnalysis(arg: {
     const windowTexts = window.messages
         .filter((message) => memoryWriterReads(message, arg))
         .map(({ data }) => memorySourceText(data));
+    if (window.greeting) windowTexts.unshift(memorySourceText(window.greeting.text));
     /** Whether an item stands: its quote is in the window and the page it names, if any, exists. */
     const verified = (kind: string, quote: string, pageId?: string) => {
         const quoted = quote.trim() !== "" && windowTexts.some((text) => text.includes(quote));
@@ -603,7 +614,7 @@ export function admitAnalysis(arg: {
     const repeated =
         lastEvent &&
         window.rerecords === undefined &&
-        repeatsEvent(lastEvent, draft.summary, participants, arg.messages)
+        repeatsEvent(lastEvent, draft.summary, participants, arg.messages, arg.currentGreeting ?? null)
             ? lastEvent
             : null;
     const eventId = repeated ? repeated.id : newId();
@@ -639,11 +650,13 @@ export function admitAnalysis(arg: {
     const close = [...moved].flatMap(([id, state]) => (state === "done" ? [id] : []));
     const transitions = [...moved].flatMap(([threadId, to]) => (to === "done" ? [] : [{ threadId, to }]));
     const grade = memoryGrade(draft.axes);
+    const greeting = (repeated && storedMemoryGreeting(repeated.greeting)) || window.greeting?.source;
     const event: MemoryEventWrite = repeated
         ? {
               ...repeated,
               repeatCount: (repeated.repeatCount ?? 0) + 1,
               sources: [...repeated.sources, ...window.sources],
+              ...(greeting ? { greeting } : {}),
               openThreads: {
                   ...repeated.openThreads,
                   close: [...repeated.openThreads.close.filter((id) => !moved.has(id)), ...close],
@@ -667,6 +680,7 @@ export function admitAnalysis(arg: {
               },
               id: eventId,
               sources: window.sources,
+              ...(greeting ? { greeting } : {}),
               status: "active",
               writerRun: arg.runId,
               ...(grade !== undefined ? { grade } : {}),

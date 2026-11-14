@@ -97,6 +97,8 @@ export type AnalysisInput = {
     window: WriterWindow;
     /** A message's speaker label. */
     speaker(message: Message): string;
+    /** The solo owner's name for the greeting, independent of message speaker attribution. */
+    greetingSpeaker?: string;
 };
 
 /** What the patch slots are written from. */
@@ -272,7 +274,8 @@ Section:
  * A message's text as the prompt shows it: `memorySourceText`, the text a v3 source hash reads and
  * quotes are checked against, with inlays as `[Image]`.
  */
-const shownText = (message: Message) => memorySourceText(message.data).replace(INLAY_TOKEN_REGEX, "[Image]");
+export const shownText = (message: Pick<Message, "data">) =>
+    memorySourceText(message.data).replace(INLAY_TOKEN_REGEX, "[Image]");
 
 /**
  * The last recorded event and the earlier eligible messages the writer reads, which it may not quote.
@@ -347,7 +350,7 @@ export function promptThreads(
 
 /**
  * The slot values of one recording. Only messages the writer reads supply window and context text;
- * each window message keeps its own source id. Text is `memorySourceText`, display markup removed, as
+ * each window message keeps its own source id. A greeting is listed first with its solo owner's name. Text is `memorySourceText`, display markup removed, as
  * quote verification reads it, except that inlays show as `[Image]`; filling after ChatML and CBS parsing
  * prevents that text becoming prompt syntax.
  * When `input.keyLineGuidance` is true, `rules` gains the key-line selection rule; otherwise it stays unchanged.
@@ -365,13 +368,16 @@ export function analysisSlots(input: AnalysisInput): AnalysisSlots {
                 ...(input.moreThreads ? [`(${input.moreThreads} more open threads are not listed)`] : []),
             ].join("\n") || NONE,
         previous: previousSlot(input),
-        messages: input.window.messages
-            .flatMap((message, index) =>
+        messages: [
+            ...(input.window.greeting
+                ? [`[greeting] ${input.greetingSpeaker ?? ""}:\n${shownText({ data: input.window.greeting.text })}`]
+                : []),
+            ...input.window.messages.flatMap((message, index) =>
                 memoryWriterReads(message, input)
                     ? [`[m:${input.window.sources[index].messageId}] ${input.speaker(message)}:\n${shownText(message)}`]
                     : [],
-            )
-            .join("\n\n"),
+            ),
+        ].join("\n\n"),
     };
 }
 

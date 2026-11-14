@@ -1,5 +1,6 @@
 import {
     MEMORY_CONTEXT_MODES,
+    storedMemoryGreeting,
     MEMORY_EVENT_STATUSES,
     MEMORY_HISTORY_CHANGE_KINDS,
     MEMORY_KNOWLEDGE_STANCES,
@@ -197,6 +198,8 @@ const isEvent = shaped<Omit<MemoryEventWrite, "rerecord">>({
     openThreads: isOpenThreads,
     axes: optional(isAxes),
     sources: listOf(isSource),
+    greeting: optional((value) => storedMemoryGreeting(value) !== null),
+    greetingKept: optional((value) => storedMemoryGreeting(value) !== null),
     status: oneOf(MEMORY_EVENT_STATUSES),
     staleReason: optional(oneOf(MEMORY_STALE_REASONS)),
     keptState: optional(isText),

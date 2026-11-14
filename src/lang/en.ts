@@ -3291,6 +3291,8 @@ export const languageEnglish = {
             testResult: {
                 nothing: "This chat has no window to test: nothing is confirmed yet.",
                 window: (count: number) => (count === 1 ? "Window: 1 message" : `Window: ${count} messages`),
+                windowWithGreeting: (count: number) =>
+                    `Window: greeting + ${count} ${count === 1 ? "message" : "messages"}`,
                 outcome: "Outcome",
                 outcomes: { recorded: "Would record (nothing saved)", failed: "Failed", skipped: "Skipped" },
                 reason: "Reason",

@@ -79,6 +79,7 @@ import {
 import { automaticRerecords, retireRerecorded } from "./structured/reconcile.ts";
 import {
     confirmedWindows,
+    writerGreeting,
     historicalWindow,
     readRecordedMessages,
     readRerecordEvents,
@@ -1122,6 +1123,7 @@ export function createMemoryTasks(deps: {
                 return { outcome: "refused", reason: "windowChanged" };
             }
             return commitWindow(store, {
+                charactersKind,
                 input,
                 window,
                 ceiling,
@@ -1177,6 +1179,10 @@ export function createMemoryTasks(deps: {
             confirmedBefore: ceiling.id,
             inclusive: ceiling.inclusive,
             recorded: readRecordedMessages(store, chaId, chatId),
+            greeting: writerGreeting(
+                scope.db.characters.find((owner) => owner?.chaId === chaId),
+                scopeChat(scope),
+            ),
             cadence,
             maxContext: input.maxContext,
             tokenizer,
@@ -1256,6 +1262,7 @@ export function createMemoryTasks(deps: {
                 return { outcome: "refused", reason: "windowChanged" };
             }
             return commitWindow(stagedStore, {
+                charactersKind,
                 input,
                 window,
                 ceiling,

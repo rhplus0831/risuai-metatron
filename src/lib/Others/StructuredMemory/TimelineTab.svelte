@@ -31,6 +31,7 @@
         ADOPTED_WRITER_RUN,
         memoryAnchorState,
         memoryRerecordTarget,
+        memoryChatGreeting,
         STRUCTURED_MEMORY_LIMITS,
         type StructuredMemoryCoverageEvent,
         type StructuredMemoryEdit,
@@ -111,6 +112,12 @@
 
     const heldChat = $derived(findChat(chatRef));
     const messages = $derived(heldChat?.message ?? []);
+    const greetingAvailable = $derived(
+        memoryChatGreeting(
+            characterList().find((entry) => entry?.chaId === chatRef.chaId),
+            heldChat,
+        ) !== null,
+    );
     const hashOf = memoryMessageHasher();
     // With no chat held there is nothing to compare, which says nothing of its events.
     const reconciled = $derived(facts && heldChat ? reconcileMemoryCoverage(facts, messages, hashOf) : facts);
@@ -352,13 +359,13 @@
     function rerecord(event: StructuredMemoryCoverageEvent) {
         return repairing(async () => {
             const ref = chatRef;
-            const target = memoryRerecordTarget(event.sources, messages);
+            const target = memoryRerecordTarget(event.sources, messages, event.greeting, greetingAvailable);
             const owner = characterList().find((entry) => entry?.chaId === ref.chaId);
             if (target === null || !owner) {
                 return;
             }
             if (event.rerecord || (await sendRepair({ kind: "event", eventId: event.id, repair: "rerecord" }))) {
-                await pressMemoryRecord(owner, ref, target);
+                await pressMemoryRecord(owner, ref, "messageId" in target ? target.messageId : undefined);
             }
         });
     }
@@ -529,7 +536,8 @@
                 <Button
                     size="sm"
                     styled="outlined"
-                    disabled={off || memoryRerecordTarget(event.sources, messages) === null}
+                    disabled={off ||
+                        memoryRerecordTarget(event.sources, messages, event.greeting, greetingAvailable) === null}
                     onclick={() => rerecord(event)}
                 >
                     <span data-memory-repair="rerecord">{repairText.rerecord}</span>

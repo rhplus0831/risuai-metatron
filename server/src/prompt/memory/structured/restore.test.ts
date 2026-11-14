@@ -126,3 +126,21 @@ it("validates every optional history snapshot mark as a boolean while preserving
         }
     }
 });
+
+it("restores greeting citations and kept citations only in their stored shape", () => {
+    const { pages, events, threads } = memoryRecords(["saved"]);
+    const legacy = { pages, events, threads };
+    expect(parseRestoredRecords(legacy)).toEqual(legacy);
+    const greeting = { fmIndex: -1, hash: "v3:original" };
+    const greetingKept = { fmIndex: 0, hash: "v3:kept" };
+    const valid = { ...legacy, events: [{ ...events[0], greeting, greetingKept }] };
+    expect(parseRestoredRecords(valid)).toEqual(valid);
+    for (const field of ["greeting", "greetingKept"]) {
+        for (const value of [null, { fmIndex: "0", hash: "v3:x" }, { fmIndex: 0, hash: false }, { fmIndex: 0 }]) {
+            expect(
+                parseRestoredRecords({ ...valid, events: [{ ...valid.events[0], [field]: value }] }),
+                `${field}: ${JSON.stringify(value)}`,
+            ).toBeNull();
+        }
+    }
+});

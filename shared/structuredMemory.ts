@@ -1,5 +1,6 @@
 import type { Message } from "./database.ts";
 import { eligibleHistory } from "./eligibleHistory.ts";
+import { greetingIndex, greetingText } from "./greetings.ts";
 import type { SerializableHypaV3Data, SerializableSummary } from "./memory.ts";
 import { MAX_READ_RESPONSE_BYTES } from "./resources.ts";
 import { isPlainObject } from "./valueKinds.ts";
@@ -9,7 +10,7 @@ import { isPlainObject } from "./valueKinds.ts";
  * per recorded window), pages (what is currently true of a character, place, or other subject),
  * threads (open promises and questions), and the writer's runs and receipts. The chat's messages stay
  * the evidence: records point at them through sources and copy no more of them than the bounded key
- * lines.
+ * lines. A solo chat's initial greeting has its own optional citation, separate from message sources.
  *
  * The writer returns drafts (`MemoryAnalysisResult`); the fields only code decides, such as ids, grades,
  * and status, exist on the stored records alone, so a model's output can never set them.
@@ -286,6 +287,57 @@ export interface MemoryUnanchoredSource {
 /** A source whose message disappears later stays anchored, keeping its original hash and index. */
 export type MemorySource = MemoryAnchoredSource | MemoryUnanchoredSource;
 
+/** The stored, unexpanded greeting an event or run read, separate from message sources. */
+export interface MemoryGreetingSource {
+    fmIndex: number;
+    hash: string;
+}
+
+/** A stored greeting citation, or null for anything other than its exact shape. */
+export function storedMemoryGreeting(stored: unknown): MemoryGreetingSource | null {
+    if (
+        !isPlainObject(stored) ||
+        Object.keys(stored).length !== 2 ||
+        typeof stored.fmIndex !== "number" ||
+        !Number.isInteger(stored.fmIndex) ||
+        stored.fmIndex < -1 ||
+        typeof stored.hash !== "string"
+    ) {
+        return null;
+    }
+    return { fmIndex: stored.fmIndex, hash: stored.hash };
+}
+
+/** Whether a citation names the current greeting; no greeting can match a group or reset chat. */
+export function greetingCited(source: MemoryGreetingSource | null, current: MemoryGreetingSource | null): boolean {
+    return source !== null && current !== null && source.fmIndex === current.fmIndex && source.hash === current.hash;
+}
+
+/** The greeting that starts this solo chat's eligible history, using its effective stored index. */
+export function memoryChatGreeting(
+    owner:
+        | { type?: "character" | "group"; firstMessage: string; alternateGreetings?: readonly string[] | null }
+        | null
+        | undefined,
+    chat: { fmIndex?: number; message: readonly Pick<Message, "disabled">[] } | null | undefined,
+): { fmIndex: number; text: string } | null {
+    if (!owner || owner.type === "group" || !chat || eligibleHistory(chat.message).reset) {
+        return null;
+    }
+    const text = greetingText(owner, chat.fmIndex);
+    return typeof text !== "string" || memorySourceText(text) === ""
+        ? null
+        : {
+              fmIndex: greetingIndex(chat.fmIndex, owner.alternateGreetings?.length ?? 0),
+              text,
+          };
+}
+
+/** The version-3 greeting preimage, shared by the server and tab digesters. */
+export function memoryGreetingHashFields(text: string): string {
+    return JSON.stringify(["greeting", memorySourceText(text)]);
+}
+
 /** The model's scores for a record, each 0 to `STRUCTURED_MEMORY_LIMITS.axisMax`; code computes grades from them. */
 export interface MemoryAxes {
     persistence: number;
@@ -386,6 +438,10 @@ export interface MemoryEvent extends Omit<MemoryEventDraft, "knowledge">, Memory
     knowledge: MemoryKnowledge[];
     id: string;
     sources: MemorySource[];
+    /** The initial greeting read by the writer, hashed before CBS expansion. */
+    greeting?: MemoryGreetingSource;
+    /** A greeting state accepted without rewriting the original citation. */
+    greetingKept?: MemoryGreetingSource;
     status: MemoryEventStatus;
     /** Set while `status` is `stale`, for the badge and the repair choices. */
     staleReason?: MemoryStaleReason;
@@ -570,6 +626,7 @@ export interface MemoryRun {
     id: string;
     /** The messages the run recorded. */
     window: MemoryAnchoredSource[];
+    greeting?: MemoryGreetingSource;
     model: string;
     inputTokens: number;
     outputTokens: number;
@@ -579,7 +636,8 @@ export interface MemoryRun {
     reason?: string;
     error?: string;
     /**
-     * The exact input, so a retry replays the same call; absent when no model call was made. Kept only
+     * The exact input, replayed when sources, expanded greeting and settings still match; absent when
+     * no model call was made. Kept only
      * while a retry can use it: a commit that settles a run strips it from every run but the newest
      * failed or skipped one and any pending one, so a recorded run and a superseded failure hold none.
      */
@@ -848,6 +906,7 @@ export type StructuredMemoryTestResult = {
     customPrompt: boolean;
     slots: { analysis: StructuredMemorySlotWarnings; patch: StructuredMemorySlotWarnings };
     messageIds: string[];
+    greeting?: MemoryGreetingSource;
     outcome: "recorded" | "failed" | "skipped" | "none";
     reason?: string;
     error?: string;
@@ -890,7 +949,7 @@ export type StructuredMemoryPackageRound = {
 /** An event as the coverage route lists it: what it says of its messages, with no text but its title. */
 export type StructuredMemoryCoverageEvent = Pick<
     MemoryEvent,
-    "id" | "title" | "status" | "staleReason" | "suppressed" | "keptState" | "rerecord"
+    "id" | "title" | "status" | "staleReason" | "suppressed" | "keptState" | "rerecord" | "greeting"
 > & {
     messageIds: string[];
     /** The smallest position its anchored sources stored, for an event none of whose messages is left. */
@@ -1746,19 +1805,28 @@ export function reconcileMemoryEvents<
 }
 
 /**
- * The message a re-record of `sources` is confirmed through: the id of the newest of them, by current
- * position, that a send reads (`eligibleHistory`), when that message is `char`. Null otherwise, also with
- * none left, so an event with nothing to record from cannot offer it.
+ * A re-record's newest eligible cited reply, or the greeting when no cited message remains readable.
+ * A greeting-only recording needs a current solo greeting and an eligible anchor to confirm it; a
+ * reset history never confirms one. A surviving user-only citation still cannot confirm a re-record.
  */
 export function memoryRerecordTarget(
     sources: unknown,
     messages: readonly Pick<Message, "chatId" | "role" | "disabled">[],
-): string | null {
+    greeting: unknown = undefined,
+    hasGreeting = false,
+): { messageId: string } | { greeting: true } | null {
     const cited = new Set(storedMemorySources(sources).map(({ messageId }) => messageId));
-    const newest = eligibleHistory(messages).messages.findLast(
-        ({ chatId }) => chatId !== undefined && cited.has(chatId),
-    );
-    return newest?.role === "char" ? newest.chatId! : null;
+    const eligible = eligibleHistory(messages);
+    const newest = eligible.messages.findLast(({ chatId }) => chatId !== undefined && cited.has(chatId));
+    if (newest) {
+        return newest.role === "char" ? { messageId: newest.chatId! } : null;
+    }
+    return hasGreeting &&
+        !eligible.reset &&
+        storedMemoryGreeting(greeting) &&
+        eligible.messages.some(({ chatId }) => chatId)
+        ? { greeting: true }
+        : null;
 }
 
 /** `value` when it is a member of `list`, else `undefined`. */

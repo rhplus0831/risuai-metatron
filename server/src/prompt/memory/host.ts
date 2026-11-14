@@ -55,6 +55,8 @@ export type MemoryHost = {
     regex(op: RegexOp, opts?: { deadlineMs?: number }): Promise<RegexOpResult>;
     /** HypaV3's summary separator limits; absent, the production ones (tests lengthen them). */
     separatorLimits?: HypaV3SeparatorLimits;
+    /** Plain-text CBS with the same scope, budget and failure checks as `parseChatML`. */
+    parse(text: string): string;
     /** `parseChatML` with the job's CBS (the job's chat and its owner). */
     parseChatML(text: string): OpenAIChat[] | null;
     /** `getUserName()`: the job's effective persona. */

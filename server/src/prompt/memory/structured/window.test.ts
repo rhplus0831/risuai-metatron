@@ -3,10 +3,13 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import type { Message } from "../../../../../shared/database.ts";
 import { createHypaV3Preset } from "../../../../../shared/hypaV3Presets.ts";
-import { messageSourceHash } from "../../../data/memoryStore.ts";
+import { greetingSourceHash, messageSourceHash } from "../../../data/memoryStore.ts";
 import { memoryRecords } from "../../../tests/memoryFixtures.ts";
 import { writerState } from "./step.ts";
 import {
+    writerGreeting,
+    recordedMessages,
+    greetingRerecordCeiling,
     confirmedThrough,
     confirmedWindows,
     windowStillConfirmed,
@@ -39,7 +42,7 @@ describe("confirmed writer windows", () => {
             const windows = await confirmedWindows({
                 messages,
                 confirmedBefore: "next",
-                recorded: new Set(),
+                recorded: { messages: new Set(), greeting: false },
                 cadence: writerCadence({ hypaV3Presets: [preset], hypaV3PresetId: preset.id }),
                 maxContext: 100,
                 tokenizer: { tokenizeChat: async ({ content }) => content.length },
@@ -88,6 +91,7 @@ describe("confirmed writer windows", () => {
             cadence?: Partial<WriterCadence>;
             manual?: boolean;
             recorded?: string[];
+            greeting?: boolean;
             expected: string[][];
         }[] = [
             {
@@ -188,6 +192,43 @@ describe("confirmed writer windows", () => {
                 expected: [],
             },
         ];
+        cases.push(
+            {
+                name: "a greeting joins only the first turn",
+                ceiling: "u4",
+                greeting: true,
+                expected: [
+                    ["u1", "a1"],
+                    ["u2", "a2"],
+                    ["u3", "a3"],
+                ],
+            },
+            {
+                name: "a greeting does not advance every K",
+                ceiling: "u4",
+                greeting: true,
+                cadence: { cadence: "everyK" },
+                expected: [["u1", "a1", "u2", "a2"]],
+            },
+            {
+                name: "stored greeting text reaches the token threshold",
+                ceiling: "u4",
+                greeting: true,
+                cadence: { cadence: "tokens" },
+                expected: [
+                    ["u1", "a1"],
+                    ["u2", "a2", "u3", "a3"],
+                ],
+            },
+            {
+                name: "a greeting alone is not a turn",
+                messages: [message("u1")],
+                ceiling: "u1",
+                greeting: true,
+                expected: [],
+            },
+        );
+        const greeting = writerGreeting({ firstMessage: "{{user}}" }, { fmIndex: -1, message: history })!;
         for (const row of cases) {
             const messages = row.messages ?? history;
             const ceiling = writerCeiling(messages, row.continueId);
@@ -198,7 +239,8 @@ describe("confirmed writer windows", () => {
                     : await confirmedWindows({
                           messages,
                           confirmedBefore: ceiling,
-                          recorded: new Set(row.recorded),
+                          recorded: { messages: new Set(row.recorded), greeting: false },
+                          greeting: row.greeting ? greeting : null,
                           cadence: { ...cadence, ...row.cadence },
                           maxContext: 100,
                           tokenizer: { tokenizeChat: async (chat) => chat.content.length },
@@ -209,6 +251,12 @@ describe("confirmed writer windows", () => {
                 windows?.map((window) => window.messages.map((entry) => entry.chatId)),
                 row.name,
             ).toEqual(row.expected);
+            if (row.greeting) {
+                expect(
+                    windows?.map((window) => window.greeting),
+                    row.name,
+                ).toEqual(row.expected.map((_, index) => (index === 0 ? greeting : undefined)));
+            }
         }
     });
 });
@@ -257,7 +305,7 @@ it("includes the manually confirmed assistant in both window planning and commit
             messages,
             confirmedBefore: row.id,
             inclusive: row.inclusive,
-            recorded: new Set(),
+            recorded: { messages: new Set(), greeting: false },
             cadence: {
                 cadence: "manual",
                 cadenceTurns: 3,
@@ -307,7 +355,7 @@ it("puts one exact remaining-source repair window before ordinary recorded-aware
     const args = {
         messages: current,
         confirmedBefore: "next",
-        recorded: new Set(["u2", "a2", "u3", "a3"]),
+        recorded: { messages: new Set(["u2", "a2", "u3", "a3"]), greeting: false },
         cadence: {
             cadence: "everyTurn" as const,
             cadenceTurns: 1,
@@ -347,7 +395,7 @@ it("screens live assistant text after finding the ceiling and folds users into t
     const args = {
         messages,
         confirmedBefore: "next",
-        recorded: new Set<string>(),
+        recorded: { messages: new Set<string>(), greeting: false },
         cadence: { cadence: "everyTurn" as const, cadenceTurns: 1, cadenceTokens: 1, cadenceRatio: 0.1, screening },
         maxContext: 1000,
         tokenizer: { tokenize: async () => 1, tokenizeChat: async () => 1 },
@@ -386,7 +434,7 @@ it("only a person's start re-records a marked event through screened sources", a
     const args = {
         messages,
         confirmedBefore: "next",
-        recorded: new Set(["u", "a"]),
+        recorded: { messages: new Set(["u", "a"]), greeting: false },
         rerecord: [repair],
         cadence: {
             cadence: "everyTurn" as const,
@@ -417,4 +465,180 @@ it("only a person's start re-records a marked event through screened sources", a
     expect(writerState(undefined, [], "a", new Set(["u", "a"]), [{ ...repair, status: "retracted" }])).toEqual({
         state: "recorded",
     });
+});
+
+it("never automatically adds a readable event's greeting again, regardless of status or current source", async () => {
+    const messages: Message[] = [
+        { chatId: "u", role: "user", data: "Question" },
+        { chatId: "a", role: "char", data: "Answer" },
+        { chatId: "next", role: "user", data: "Continue" },
+    ];
+    const greeting = writerGreeting({ firstMessage: "Welcome" }, { fmIndex: -1, message: messages })!;
+    for (const status of ["active", "stale", "retracted"] as const) {
+        for (const citation of [
+            greeting.source,
+            { fmIndex: 0, hash: greeting.source.hash },
+            { fmIndex: -1, hash: "v3:old-text" },
+        ]) {
+            const event = { ...memoryRecords(["cited"]).events[0], sources: [], status, greeting: citation };
+            const recorded = recordedMessages([event]);
+            expect(recorded).toEqual({ messages: new Set(), greeting: true });
+            const windows = await confirmedWindows({
+                messages,
+                confirmedBefore: "next",
+                recorded,
+                greeting,
+                cadence: {
+                    cadence: "everyTurn",
+                    cadenceTurns: 1,
+                    cadenceTokens: 1,
+                    cadenceRatio: 0.1,
+                    screening: { refusal: [], format: [] },
+                },
+                maxContext: 100,
+                tokenizer: { tokenizeChat: async () => 1 },
+                limit: 1,
+            });
+            expect(windows).toHaveLength(1);
+            expect(windows![0].messages).toEqual(messages.slice(0, 2));
+            expect(windows![0]).not.toHaveProperty("greeting");
+        }
+    }
+    const unreadable = { ...memoryRecords(["bad"]).events[0], sources: [], greeting: greeting.source };
+    Object.assign(unreadable, { summary: 42 });
+    expect(recordedMessages([unreadable]).greeting).toBe(false);
+});
+
+it("leaves reset histories, groups and empty greetings out of the first window", async () => {
+    const messages: Message[] = [
+        { chatId: "u", role: "user", data: "Question" },
+        { chatId: "a", role: "char", data: "Answer" },
+        { chatId: "next", role: "user", data: "Continue" },
+    ];
+    for (const row of [
+        { owner: { type: "group" as const, firstMessage: "Group greeting" }, messages },
+        {
+            owner: { firstMessage: "Welcome" },
+            messages: [
+                { chatId: "reset", role: "user" as const, data: "Old history", disabled: "allBefore" as const },
+                ...messages,
+            ],
+        },
+        { owner: { firstMessage: "" }, messages },
+        { owner: { firstMessage: '<p class="empty"></p><!-- nothing -->' }, messages },
+    ]) {
+        const greeting = writerGreeting(row.owner, { fmIndex: -1, message: row.messages });
+        expect(greeting).toBeNull();
+        const windows = await confirmedWindows({
+            messages: row.messages,
+            confirmedBefore: "next",
+            greeting,
+            recorded: recordedMessages([]),
+            cadence: {
+                cadence: "everyTurn",
+                cadenceTurns: 1,
+                cadenceTokens: 1,
+                cadenceRatio: 0.1,
+                screening: { refusal: [], format: [] },
+            },
+            maxContext: 100,
+            tokenizer: { tokenizeChat: async () => 1 },
+            limit: 1,
+        });
+        expect(windows).toHaveLength(1);
+        expect(windows![0].messages).toEqual(messages.slice(0, 2));
+        expect(windows![0]).not.toHaveProperty("greeting");
+    }
+});
+
+it("keeps or adds the current greeting when re-recording the first event", async () => {
+    const messages: Message[] = [
+        { chatId: "u", role: "user", data: "Question" },
+        { chatId: "a", role: "char", data: "Answer" },
+        { chatId: "next", role: "user", data: "Continue" },
+    ];
+    const sources = messages
+        .slice(0, 2)
+        .map((message, index) => ({ messageId: message.chatId!, index, hash: messageSourceHash(message) }));
+    const greeting = writerGreeting({ firstMessage: "New greeting" }, { fmIndex: -1, message: messages })!;
+    for (const prior of [undefined, { fmIndex: 0, hash: "v3:old" }]) {
+        const event = {
+            ...memoryRecords(["first"]).events[0],
+            createdRevision: 1,
+            sources,
+            rerecord: true,
+            ...(prior ? { greeting: prior } : {}),
+        };
+        const windows = await confirmedWindows({
+            messages,
+            confirmedBefore: "next",
+            greeting,
+            recorded: recordedMessages([event]),
+            rerecord: [event],
+            manual: true,
+            cadence: {
+                cadence: "everyTurn",
+                cadenceTurns: 1,
+                cadenceTokens: 1,
+                cadenceRatio: 0.1,
+                screening: { refusal: [], format: [] },
+            },
+            maxContext: 100,
+            tokenizer: { tokenizeChat: async () => 1 },
+            limit: 1,
+        });
+        expect(windows).toEqual([{ rerecords: "first", sources, messages: messages.slice(0, 2), greeting }]);
+    }
+});
+
+it("confirms greeting-only repairs before the first eligible stored message and rechecks their greeting source", async () => {
+    const messages: Message[] = [
+        { chatId: "disabled", role: "user", data: "Ignored", disabled: true },
+        { chatId: "reply", role: "char", data: "First reply" },
+        { chatId: "later", role: "char", data: "Later reply" },
+    ];
+    const greeting = writerGreeting({ firstMessage: "Welcome" }, { fmIndex: -1, message: messages })!;
+    const event = {
+        ...memoryRecords(["first"]).events[0],
+        createdRevision: 1,
+        rerecord: true,
+        greeting: greeting.source,
+        sources: [{ messageId: "gone", index: 0, hash: "v3:gone" }],
+    };
+    expect(greetingRerecordCeiling(messages, [event], greeting)).toBe("reply");
+    const windows = await confirmedWindows({
+        messages,
+        confirmedBefore: "reply",
+        greeting,
+        recorded: recordedMessages([event]),
+        rerecord: [event],
+        manual: true,
+        cadence: {
+            cadence: "everyTurn",
+            cadenceTurns: 1,
+            cadenceTokens: 1,
+            cadenceRatio: 0.1,
+            screening: { refusal: [], format: [] },
+        },
+        maxContext: 100,
+        tokenizer: { tokenizeChat: async () => 1 },
+        limit: 1,
+    });
+    expect(windows).toEqual([{ rerecords: "first", sources: [], messages: [], greeting }]);
+    const window = windows![0];
+    expect(windowStillConfirmed(window, messages, "reply", { greeting: greeting.source })).toBe(true);
+    expect(windowStillConfirmed(window, messages, "disabled", { greeting: greeting.source })).toBe(false);
+    expect(windowStillConfirmed(window, messages, "reply", { greeting: { ...greeting.source, fmIndex: 0 } })).toBe(
+        false,
+    );
+    expect(
+        windowStillConfirmed(window, messages, "reply", {
+            greeting: { ...greeting.source, hash: greetingSourceHash("Goodbye") },
+        }),
+    ).toBe(false);
+    expect(
+        windowStillConfirmed(window, messages, "reply", {
+            greeting: { ...greeting.source, hash: greetingSourceHash('<b class="new">Welcome</b>') },
+        }),
+    ).toBe(true);
 });

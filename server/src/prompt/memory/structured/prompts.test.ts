@@ -414,3 +414,17 @@ it("lists open threads about who is on stage before older ones and states how ma
     expect(analysisSlots({ ...input, threads: [], moreThreads: 0 }).threads).toBe("(none)");
     expect(promptThreads(threads.slice(0, 3), new Set())).toEqual({ listed: threads.slice(0, 3), more: 0 });
 });
+
+it("puts the greeting before anchored messages and preserves the prompt bytes when it is absent", () => {
+    const message: Message = { chatId: "a", role: "char", data: "The gate opens." };
+    const window = { messages: [message], sources: [{ messageId: "a", index: 0, hash: "v3:a" }] };
+    const input = { ...analysisInput, messages: [message], window, greetingSpeaker: "Cara" };
+    const without = analysisSlots(input);
+    const withGreeting = analysisSlots({
+        ...input,
+        window: { ...window, greeting: { source: { fmIndex: -1, hash: "v3:g" }, text: "Cara greets Uma." } },
+    });
+    expect(withGreeting.messages).toBe("[greeting] Cara:\nCara greets Uma.\n\n[m:a] Cara:\nThe gate opens.");
+    expect(without.messages).toBe("[m:a] Cara:\nThe gate opens.");
+    expect(withGreeting).toEqual({ ...without, messages: withGreeting.messages });
+});

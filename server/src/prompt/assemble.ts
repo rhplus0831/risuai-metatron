@@ -99,6 +99,7 @@ import {
 import {
     confirmedThrough,
     confirmedWindows,
+    writerGreeting,
     recordedMessages,
     writerCadence,
     writerCeiling,
@@ -676,6 +677,7 @@ async function structuredMemoryStep(
     const vectorInput =
         job.tasks && job.input && sourceGeneration !== undefined ? job.vectorInput?.(sourceGeneration) : undefined;
     const cadence = writerCadence(host.db);
+    const greeting = writerGreeting(host.owner, { ...host.chat(), message: messages });
 
     let records = writer.records();
     let selected = await select(records);
@@ -693,6 +695,7 @@ async function structuredMemoryStep(
         const planned = await confirmedWindows({
             messages,
             confirmedBefore: input.confirmedBefore,
+            greeting,
             recorded: recordedMessages(records.events),
             cadence,
             maxContext: input.maxContext,
@@ -726,6 +729,7 @@ async function structuredMemoryStep(
         const windows = await confirmedWindows({
             messages,
             confirmedBefore: input.confirmedBefore,
+            greeting,
             recorded,
             cadence,
             maxContext: input.maxContext,
@@ -741,7 +745,7 @@ async function structuredMemoryStep(
         selected,
         manifest: sendManifest(selected, {
             confirmedThrough: through,
-            writer: writerState(notice, records.runs, through, recorded, records.events),
+            writer: writerState(notice, records.runs, through, recorded.messages, records.events),
             ...(gap !== undefined ? { gap } : {}),
             ...(handsOff ? { writerStage: notice?.reason ?? (memoryTask?.due ? "due" : "notDue") } : {}),
         }),

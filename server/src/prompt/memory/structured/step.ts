@@ -42,8 +42,9 @@ import { chatAdoptionHold, writerPaused } from "./writer.ts";
  * prompt, and the memory card's entries. Nothing here writes memory records, so a preview runs all of it;
  * `structuredMemoryStep` in `assemble.ts` owns what concerns the job, the gap question and the hand-off.
  *
- * - Two sets come from the same events and answer different questions: `coveredMessages` (active and
- *   not suppressed) says what may leave the prompt, `recordedMessages` (any status) what the writer must
+ * - Two message sets come from the same events and answer different questions: `coveredMessages`
+ *   (active and not suppressed) says what may leave the prompt, `recordedMessages(...).messages`
+ *   (any status) what the writer must
  *   not record again. History cited only by a stale or retracted event is recorded but not covered, so
  *   it stays raw unless context pressure trims it, with no work left to offer.
  * - A selection reconciles the events it is given against the stored messages (`reconcileEvents`), on a

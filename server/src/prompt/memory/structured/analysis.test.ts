@@ -297,3 +297,27 @@ describe("analysis admission", () => {
         }
     });
 });
+
+it("verifies a quote found only in the expanded greeting and stores its separate citation", () => {
+    const keyLines = [{ speaker: "Cara", text: "Uma, I will return." }];
+    const parsed = parseAnalysis(JSON.stringify(draft({ keyLines })));
+    if (!parsed.ok) throw new Error(parsed.error);
+    const greeting = { source: { fmIndex: 0, hash: "v3:unexpanded" }, text: "Uma, I will return." };
+    const message: Message = { chatId: "a", role: "char", data: "The gate opens." };
+    const sources = [{ messageId: "a", index: 0, hash: messageSourceHash(message) }];
+    const admitted = admitAnalysis({
+        draft: parsed.analysis.event,
+        warnings: [],
+        window: { messages: [message], sources, greeting },
+        messages: [message],
+        runId: "run",
+        pages: new Set(),
+        threads: new Map(),
+        lastEvent: null,
+        newId: () => "event",
+    });
+    expect(admitted.event.keyLines).toEqual(keyLines);
+    expect(admitted.unverified).toEqual([]);
+    expect(admitted.event.sources).toEqual(sources);
+    expect(admitted.event.greeting).toEqual(greeting.source);
+});

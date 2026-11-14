@@ -20,6 +20,8 @@ import {
     MEMORY_THREAD_STATES,
     memoryEventCovers,
     memoryScreenReason,
+    memoryGreetingHashFields,
+    storedMemoryGreeting,
     memorySourceHashFields,
     memorySourceHashOf,
     memorySourceHashVersion,
@@ -1797,6 +1799,14 @@ export function memoryMessageHash(message: Pick<HashedMessage, "role" | "data" |
     return memorySourceHashOf(hex, version);
 }
 
+/** The stored greeting's hash, identical to the server's `greetingSourceHash`. */
+export function memoryGreetingHash(text: string): string {
+    const hash = new Sha256();
+    hash.update(memoryGreetingHashFields(text));
+    const hex = Array.from(hash.digestSync(), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    return memorySourceHashOf(hex, 3);
+}
+
 /**
  * A `memoryMessageHash` that hashes again only when role, raw `data`, normalized group speaker, or the
  * requested hash version changed, for a tab to hold while it lives: most row changes affect no evidence.
@@ -2412,6 +2422,7 @@ export function memoryTestResultView(result: unknown): MemoryTestResultView | nu
         customPrompt: result.customPrompt === true,
         slots: { analysis: slotWarnings(slots.analysis), patch: slotWarnings(slots.patch) },
         messageIds: storedTexts(result.messageIds),
+        ...(storedMemoryGreeting(result.greeting) ? { greeting: storedMemoryGreeting(result.greeting)! } : {}),
         outcome,
         ...present("reason", storedText(result.reason)),
         ...present("error", storedText(result.error)),

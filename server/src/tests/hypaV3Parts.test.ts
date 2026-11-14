@@ -134,6 +134,7 @@ function hostOf(scenario: Scenario, world: World, options: HostOptions = {}): Me
         embeddings,
         regex: async (op) => runRegexOp(op),
         separatorLimits: UNHURRIED_HYPAV3_SEPARATOR,
+        parse: (text) => text,
         parseChatML: () => null,
         userName: () => USER_NAME,
         progress: (payload) => world.progress(payload),

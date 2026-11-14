@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createHash } from "node:crypto";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -3415,7 +3416,7 @@ describe("structured memory job hand-offs", () => {
             return confirmedWindows({
                 messages,
                 confirmedBefore,
-                recorded: new Set(),
+                recorded: { messages: new Set(), greeting: false },
                 cadence: writerCadence({ hypaV3Presets: presets.items, hypaV3PresetId: presets.selectedId }),
                 maxContext: 5000,
                 tokenizer: { tokenizeChat: async () => 1 },
@@ -4365,6 +4366,62 @@ describe("structured memory job hand-offs", () => {
             });
         const testJob = (chaId: string, hooks?: Record<string, unknown>) =>
             job("command", chaId, { mode: "manual" }, { command: { type: "memoryTest" }, ...(hooks ? { hooks } : {}) });
+
+        it("re-records a greeting through the job without a message id or eligible user and expands plain-text names", async () => {
+            const storedText = "{{char}} greets {{user}}.";
+            const held = [
+                { chatId: "ignored-user", role: "user", data: "Disabled question", disabled: true },
+                { chatId: "reply", role: "char", data: "Unconfirmed reply" },
+                { chatId: "later", role: "char", data: "Later unconfirmed reply" },
+            ];
+            // A request trigger selects the real job writer instead of the detached task service.
+            const chaId = await seedCharacter({
+                messages: held,
+                extra: { firstMessage: storedText, lowLevelAccess: true, triggerscript: [requestTrigger] },
+            });
+            const store = testStore();
+            try {
+                const greeting = {
+                    fmIndex: -1,
+                    hash: `v3:${createHash("sha256")
+                        .update(JSON.stringify(["greeting", storedText]))
+                        .digest("hex")}`,
+                };
+                writeMemory(store, chaId, "k", {
+                    events: [
+                        {
+                            ...memoryRecords(["old"]).events[0],
+                            sources: [{ messageId: "removed-reply", index: 0, hash: "v3:removed" }],
+                            greeting: { fmIndex: 0, hash: "v3:old" },
+                            rerecord: true,
+                        },
+                    ],
+                });
+                state.summaries = [analysis(0)];
+                const result = await job("command", chaId, { mode: "manual" }, { command: { type: "memoryRecord" } });
+                expect(result.terminal).toMatchObject({ type: "done", result: { memoryRecord: "completed" } });
+                expect(summaries()).toHaveLength(1);
+                const persona = (await single("personas")).data.find(
+                    (entry: { id: string }) => entry.id === personaId,
+                ).name;
+                const prompt = summaries()[0]
+                    .body.messages.map((message: { content: string }) => message.content)
+                    .join("\n");
+                expect(prompt).toContain(`[greeting] Mira:\nMira greets ${persona}.`);
+                expect(prompt).not.toContain("Unconfirmed reply");
+                const contents = store.memory.readContents(chaId, "k")!;
+                const events = contents.events.map(({ id }) => store.memory.readRecord(chaId, "k", "events", id)!.data);
+                expect(events.every((event) => !event.rerecord)).toBe(true);
+                expect(events.filter(({ status }) => status === "active")).toEqual([
+                    expect.objectContaining({ greeting, sources: [], summary: "Cara promises to return." }),
+                ]);
+                const run = store.memory.readRecord(chaId, "k", "runs", contents.runs.at(-1)!.id)!.data;
+                expect(run).toMatchObject({ greeting, window: [], result: "recorded", receipt: { state: "recorded" } });
+                expect((await readChat(chaId)).data.message).toEqual(held);
+            } finally {
+                store.close();
+            }
+        });
 
         it("uses the chat's named connection for the writer test run", async () => {
             await installChatMemoryConnection();

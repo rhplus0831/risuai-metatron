@@ -875,6 +875,7 @@ export function createJobMemoryHost(arg: {
         recoverLocalModelFailure: arg.recoverLocalModelFailure,
         regex: (op, opts) => untilAborted(deps.scriptWorkers.regex(op, opts), nativeCtx.signal),
         ...(deps.hypaV3SeparatorLimits ? { separatorLimits: deps.hypaV3SeparatorLimits } : {}),
+        parse: (text) => services.parse(text, undefined),
         parseChatML: (text) => parseChatML(text, (part) => services.parse(part, undefined)),
         userName: () => scope.effectivePersona.name,
         progress: (payload) => {

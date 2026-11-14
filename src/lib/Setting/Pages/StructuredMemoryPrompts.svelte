@@ -228,7 +228,11 @@
             {#if result.outcome === "none"}
                 <span>{resultText.nothing}</span>
             {:else}
-                <span>{resultText.window(result.messageIds.length)}</span>
+                <span
+                    >{result.greeting
+                        ? resultText.windowWithGreeting(result.messageIds.length)
+                        : resultText.window(result.messageIds.length)}</span
+                >
                 <span>{resultText.outcome}: {codeText(resultText.outcomes, result.outcome)}</span>
                 {#if result.reason !== undefined}
                     <span>{resultText.reason}: {memoryReasonText(result.reason)}</span>

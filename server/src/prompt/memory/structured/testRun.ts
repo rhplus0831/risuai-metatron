@@ -7,6 +7,7 @@ import {
     memoryWriterReads,
     normalizeStructuredMemorySettings,
     storedMemorySources,
+    storedMemoryGreeting,
     type StructuredMemorySlotWarnings,
     type StructuredMemoryTestResult,
 } from "../../../../../shared/structuredMemory.ts";
@@ -26,6 +27,7 @@ import {
     readRecordedMessages,
     windowOf,
     windowStillConfirmed,
+    writerGreeting,
     writerCadence,
     writerCeiling,
     type WriterWindow,
@@ -48,7 +50,8 @@ import { createStructuredWriter, writerHostDeps } from "./writer.ts";
  *   Not the job's own host, which reaches those.
  * - The window is the newest run's when every message it names is still an eligible message with the
  *   same hash (`windowStillConfirmed` through the window's own last message), rebuilt from the stored
- *   messages by id, with no screened reply and at least one message the writer reads. A test saves
+ *   messages by id, with no screened reply and at least one message or matching current greeting to read.
+ *   A greeting-only run confirms before the first eligible anchor; without one there is no window. A test saves
  *   nothing, so it needs no confirmation past the window itself: a run
  *   recorded through the newest reply, or a chat with no user message after it, still has that window.
  *   Else the first window the cadence would close before the chat's ceiling (`writerCeiling`), closed as
@@ -113,17 +116,30 @@ async function testWindow(
     const sources = storedMemorySources(run?.window).filter(
         (source): source is MemoryAnchoredSource => source.hash !== null,
     );
+    const currentGreeting = writerGreeting(
+        scope.db.characters.find((owner) => owner?.chaId === chaId),
+        scopeChat(scope),
+    );
+    const source = storedMemoryGreeting(run?.greeting);
+    const greeting = source && currentGreeting ? { source, text: currentGreeting.text } : undefined;
     const last = sources.at(-1);
+    const ceilingId = last?.messageId ?? (greeting ? anchoredMessages(messages)[0]?.id : undefined);
     const cadence = writerCadence(scope.db);
-    if (last && windowStillConfirmed({ sources }, messages, last.messageId, { inclusive: true })) {
+    if (
+        ceilingId &&
+        windowStillConfirmed({ sources, ...(greeting ? { greeting } : {}) }, messages, ceilingId, {
+            inclusive: last !== undefined,
+            greeting: currentGreeting?.source ?? null,
+        })
+    ) {
         const byId = new Map(anchoredMessages(messages).map((entry) => [entry.id, entry]));
         const entries = sources.map(({ messageId }) => byId.get(messageId)!);
         // A screened reply or a window with nothing the writer reads falls back to the cadence's window.
         if (
             entries.every(({ message }) => memoryScreenReason(message, cadence.screening) === null) &&
-            entries.some(({ message }) => memoryWriterReads(message, cadence))
+            (greeting || entries.some(({ message }) => memoryWriterReads(message, cadence)))
         ) {
-            return windowOf(entries);
+            return { ...windowOf(entries), ...(greeting ? { greeting } : {}) };
         }
     }
     const ceiling = writerCeiling(messages);
@@ -134,6 +150,7 @@ async function testWindow(
         messages,
         confirmedBefore: ceiling,
         recorded: readRecordedMessages(store, chaId, chatId),
+        greeting: currentGreeting,
         cadence,
         maxContext: base.maxContext,
         tokenizer,
@@ -162,6 +179,7 @@ function testResult(
         customPrompt,
         slots,
         messageIds: window.sources.map(({ messageId }) => messageId),
+        ...(window.greeting ? { greeting: window.greeting.source } : {}),
         outcome: ended.outcome,
         ...(reason !== undefined ? { reason } : {}),
         ...(ended.outcome === "failed" ? { error: redact(ended.error) } : {}),
@@ -248,7 +266,8 @@ export async function runMemoryTest(job: RunningJob, deps: GenerationRunnerDeps)
         const input: StructuredMemoryTaskInput = {
             ...base,
             kind: "structuredMemory",
-            confirmedBefore: window.sources.at(-1)!.messageId,
+            confirmedBefore:
+                window.sources.at(-1)?.messageId ?? anchoredMessages(scopeChat(scope)?.message ?? [])[0]!.id,
         };
         const ended = await createStructuredWriter(store)({
             scope,

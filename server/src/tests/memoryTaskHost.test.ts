@@ -934,6 +934,14 @@ describe("the task's abort", () => {
 });
 
 describe("CBS", () => {
+    it("expands character and persona names in plain text for the detached memory host", () => {
+        const h = openStore();
+        cleanups.push(() => h.dispose());
+        const scope = h.jobScope();
+        const { host } = hostOf(h, scope, inputOf(scope));
+        expect(host.parse("{{char}} greets {{user}}.")).toBe("Cara greets Uma.");
+    });
+
     it("`parseChatML` reads the job's chat variables and persona; a variable write is never run (no `runVar`), and the stored chat stays as it was", async () => {
         const h = openStore();
         cleanups.push(() => h.dispose());

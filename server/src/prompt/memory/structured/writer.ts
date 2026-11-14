@@ -1,17 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { truncateCheckpointText as clampText } from "../../../../../shared/chatCheckpoints.ts";
 import type { ChatGroup, ChatOp } from "../../../../../shared/chats.ts";
-import type { Chat, Message } from "../../../../../shared/database.ts";
+import type { Chat, Message, character, groupChat } from "../../../../../shared/database.ts";
 import { selectedHypaV3Preset } from "../../../../../shared/hypaV3Presets.ts";
 import type { OpenAIChat } from "../../../../../shared/openai.ts";
 import { MAX_READ_RESPONSE_BYTES } from "../../../../../shared/resources.ts";
 import {
     type MemoryAnalysisResult,
-    type MemoryAnchoredSource,
     type MemoryPage,
     type MemoryReceipt,
     type MemoryRun,
     type MemoryThread,
+    greetingCited,
+    storedMemoryGreeting,
     memoryThreadEnded,
     memoryWriterReads,
     normalizeStructuredMemorySettings,
@@ -28,6 +29,7 @@ import {
     type MemoryEventWrite,
 } from "../../../data/memoryStore.ts";
 import { ResourceBatchConflictError, ResourceConflictError, type ResourceStore } from "../../../data/resourceStore.ts";
+import type { ResourceKind } from "../../../data/kinds.ts";
 import { jobModuleLorebooks } from "../../../jobs/cbsHost.ts";
 import { JobWriteConflictError } from "../../../jobs/generationJobs.ts";
 import { resolveScopeMemoryModel, scopeChat } from "../../../jobs/jobScope.ts";
@@ -63,9 +65,10 @@ import {
     patchSlots,
     promptThreads,
     sceneTakenBackLines,
+    shownText,
 } from "./prompts.ts";
 import { eventVectorTexts } from "./retrieve.ts";
-import { windowStillConfirmed, type WriterCeiling, type WriterWindow } from "./window.ts";
+import { writerGreeting, windowStillConfirmed, type WriterCeiling, type WriterWindow } from "./window.ts";
 
 /**
  * The Structured Memory writer: an analysis call per window, a patch call when a writable target can
@@ -84,7 +87,8 @@ import { windowStillConfirmed, type WriterCeiling, type WriterWindow } from "./w
  *   nor resetting and a recorded one resetting, stop an automatic run with no call and no row
  *   (`writerPaused`). A manual start runs past it.
  * - Replay: the newest row that did not record is the only one read. Its input is sent again, exactly,
- *   when its window (by message id and hash) and its settings are still this run's, and it lists all a
+ *   when its window (message anchors and greeting citation) and settings are still this run's, its
+ *   parsed text contains the greeting expanded once at this run's start, and it lists all a
  *   person took back of the scene since; otherwise, so that fixed instructions take effect, a regrouped
  *   window rebuilds, and a reverted scene stays reverted, the prompt is built anew. A row keeps its
  *   `input` and `patchInput` only while a retry can use them: every commit that settles a run has the
@@ -236,12 +240,21 @@ function highlightRule({ host, input, scope }: WriterArg): HighlightRule {
 }
 
 /** A saved run's window compared with fresh messages under each saved source's hash version. */
-const sameWindow = (sources: readonly MemoryAnchoredSource[], window: WriterWindow) =>
-    sources.length === window.sources.length &&
-    sources.every(
-        ({ messageId, hash }, i) =>
-            messageId === window.sources[i].messageId && messageSourceHash(window.messages[i], hash) === hash,
+const sameWindow = (run: MemoryRun, window: WriterWindow) => {
+    const source = storedMemoryGreeting(run.greeting);
+    const current = window.greeting?.source ?? null;
+    if (source || current) {
+        if (!greetingCited(source, current)) return false;
+    }
+    const sources = run.window;
+    return (
+        sources.length === window.sources.length &&
+        sources.every(
+            ({ messageId, hash }, i) =>
+                messageId === window.sources[i].messageId && messageSourceHash(window.messages[i], hash) === hash,
+        )
     );
+};
 
 /** A stored input as messages; null for one a run could not have written. */
 function parsedInput(text: string): OpenAIChat[] | null {
@@ -308,10 +321,10 @@ function buildPrompt(
         language: writerLanguage(arg),
         keyLineGuidance: settings.keyLineGuidance,
         omitUserMessages: settings.omitUserMessages,
-        cast: castSlice(
-            pages,
-            window.messages.filter((message) => memoryWriterReads(message, settings)),
-        ),
+        cast: castSlice(pages, [
+            ...(window.greeting ? [{ data: window.greeting.text }] : []),
+            ...window.messages.filter((message) => memoryWriterReads(message, settings)),
+        ]),
         scene,
         threads,
         moreThreads,
@@ -319,6 +332,7 @@ function buildPrompt(
         messages: chat?.message ?? [],
         window,
         speaker: speakerLabels(arg, owner?.name ?? ""),
+        greetingSpeaker: owner?.name ?? "",
     });
     return {
         formated: frame ? fillSlots(frame.messages, slots) : assembleAnalysisPrompt(host, settings.instructions, slots),
@@ -344,7 +358,7 @@ function replayedInput(
         !run?.input ||
         run.settingsFingerprint !== arg.input.settingsFingerprint ||
         Boolean(run.customPrompt) !== writerSettings(arg.host).fineTuning ||
-        !sameWindow(run.window, arg.window)
+        !sameWindow(run, arg.window)
     ) {
         return null;
     }
@@ -352,7 +366,11 @@ function replayedInput(
     const sceneRow = contents.pages.find(({ type }) => type === "scene");
     const scene = sceneRow ? (store.memory.readRecord(chaId, chatId, "pages", sceneRow.id)?.data ?? null) : null;
     const lists = (line: string) => formated?.some(({ content }) => content.includes(line));
-    return formated && sceneTakenBackLines(scene).every(lists) ? { text: run.input, formated } : null;
+    return formated &&
+        sceneTakenBackLines(scene).every(lists) &&
+        (!arg.window.greeting || lists(shownText({ data: arg.window.greeting.text })))
+        ? { text: run.input, formated }
+        : null;
 }
 
 /**
@@ -383,7 +401,8 @@ function failedRun(run: MemoryRun, reason: string, error: string): MemoryRun {
  *
  * The source generation moves only on a whole-chat replace or a delete, so an edit, a removal, a
  * disabled flag, or a continue since the window was read shows only in the chat as stored now, which is
- * checked here under the ceiling the window was computed with. A continue takes its message's lock
+ * checked here under the ceiling the window was computed with. A greeting is checked against the
+ * owner read synchronously from storage too. A continue takes its message's lock
  * before it changes the text, so a window holding a message a generation job owns is refused too: its
  * hash still matches, and its receipt could not land. A chat that waits for its adoption choice is
  * refused here as well: `openRun` looked before it awaited, and a metadata write can land after that. So
@@ -399,17 +418,18 @@ function failedRun(run: MemoryRun, reason: string, error: string): MemoryRun {
  * never reaches here and keeps every field it captured.
  *
  * A run in `changes` with a receipt puts that receipt on the window's assistant messages, each with
- * its other generation info as stored. A receipt moves the chat's revision and no source hash, so it
+ * its other generation info as stored; with no assistant operations, only the run keeps it. A receipt moves the chat's revision and no source hash, so it
  * keeps every window valid. A receipt that conflicts all the same is logged and left to the run, which
  * keeps it: the memory commit stands and the window is neither failed nor run again.
  */
 export function commitWindow(
-    store: Pick<ResourceStore, "readChatSource" | "messagesLocked"> & {
+    store: Pick<ResourceStore, "readChatSource" | "messagesLocked" | "get"> & {
         memory: Pick<WriterMemory, "readContents" | "write"> & {
             rebuild: Pick<ResourceStore["memory"]["rebuild"], "status">;
         };
     },
     arg: {
+        charactersKind: ResourceKind;
         input: WriterArg["input"];
         window: WriterWindow;
         ceiling: WriterCeiling;
@@ -422,11 +442,18 @@ export function commitWindow(
     const { chaId, chatId } = input.chatRef;
     const chat = store.readChatSource(chaId, chatId);
     const stored = chat.data as Chat | null;
+    const greeting =
+        window.greeting && stored
+            ? writerGreeting(store.get(arg.charactersKind, chaId)?.data as character | groupChat | undefined, stored)
+            : null;
     const sources = window.sources.map(({ messageId }) => messageId);
     if (
         !stored ||
         chat.revision === null ||
-        !windowStillConfirmed(window, stored.message, ceiling.id, { inclusive: ceiling.inclusive }) ||
+        !windowStillConfirmed(window, stored.message, ceiling.id, {
+            inclusive: ceiling.inclusive,
+            greeting: greeting?.source ?? null,
+        }) ||
         store.messagesLocked(chaId, chatId, sources) ||
         store.memory.rebuild.status(chaId, chatId)
     ) {
@@ -463,7 +490,9 @@ export function commitWindow(
                 set: { generationInfo: { ...message.generationInfo, memory: receipt } },
             }));
         try {
-            arg.writeReceipt({ characterId: chaId, chatId, baseRevision: chat.revision, ops });
+            if (ops.length > 0) {
+                arg.writeReceipt({ characterId: chaId, chatId, baseRevision: chat.revision, ops });
+            }
         } catch (error) {
             if (!(error instanceof ResourceBatchConflictError || error instanceof JobWriteConflictError)) {
                 throw error;
@@ -488,6 +517,7 @@ async function openRun(store: WriterStore, arg: WriterArg): Promise<OpenedRun | 
     const { chaId, chatId } = input.chatRef;
     const memoryModel = resolveScopeMemoryModel(arg.scope);
     const id = randomUUID();
+    let expanded = false;
     for (let attempt = 0; attempt < WRITE_ATTEMPTS; attempt++) {
         const contents = store.memory.readContents(chaId, chatId);
         if (!contents) {
@@ -509,6 +539,7 @@ async function openRun(store: WriterStore, arg: WriterArg): Promise<OpenedRun | 
         const run: MemoryRun = {
             id,
             window: arg.window.sources,
+            ...(arg.window.greeting ? { greeting: arg.window.greeting.source } : {}),
             model: memoryModel.kind === "resolved" ? memoryModel.aiModel : "",
             inputTokens: 0,
             outputTokens: 0,
@@ -527,9 +558,14 @@ async function openRun(store: WriterStore, arg: WriterArg): Promise<OpenedRun | 
             }
             return answer.reason === "revisionConflict" ? null : { outcome: "skipped", reason: answer.reason };
         };
-        const replayed = arg.dryRun ? null : replayedInput(store, arg, contents);
+        let replayed: ReturnType<typeof replayedInput> = null;
         let built: ReturnType<typeof buildPrompt>;
         try {
+            if (!expanded && arg.window.greeting) {
+                arg.window.greeting = { ...arg.window.greeting, text: arg.host.parse(arg.window.greeting.text) };
+                expanded = true;
+            }
+            replayed = arg.dryRun ? null : replayedInput(store, arg, contents);
             built = replayed ? { formated: replayed.formated } : buildPrompt(store, arg, contents);
         } catch (error) {
             if (error instanceof MemoryHostFailure) {
@@ -690,6 +726,11 @@ function admitRecording(
             scene: analysis.scene,
             speakerId: plan.speakerId,
             messages: scopeChat(arg.scope)?.message ?? [],
+            currentGreeting:
+                writerGreeting(
+                    arg.scope.db.characters.find((owner) => owner?.chaId === arg.input.chatRef.chaId),
+                    scopeChat(arg.scope),
+                )?.source ?? null,
             newId: randomUUID,
         });
     const first = planned(false);
@@ -738,7 +779,8 @@ function historicalAnalysis(analysis: MemoryAnalysisResult): MemoryAnalysisResul
 /**
  * The production writer, over the live or staged records `store` holds. `now` times the runs.
  *
- * Replay compares message ids and hashes, `settingsFingerprint`, prompt mode and the scene's current
+ * Replay compares message ids and hashes, the greeting citation and freshly expanded text,
+ * `settingsFingerprint`, prompt mode and the scene's current
  * taken-back lines. The opening write stores the exact input and language, or an `inputTooLarge`
  * failure without a call. Failed patch rows keep `analysis` and any built `patchInput` that fits;
  * oversized custom patch input is cleared before the `inputTooLarge` failure.
@@ -761,6 +803,8 @@ export function createStructuredWriter(
 ): StructuredMemoryWriter {
     const now = options.now ?? Date.now;
     return async (arg) => {
+        // Keep the planner's stored text intact; this run owns its expanded evidence.
+        arg = { ...arg, window: { ...arg.window } };
         const { host, input, tokenizer, window } = arg;
         const { chaId, chatId } = input.chatRef;
         const frozenPages = new Set(arg.historical?.frozenPages);

@@ -184,6 +184,7 @@ describe("summary chunk separator", () => {
                 ops.push({ op, opts });
                 return regex(op, opts);
             },
+            parse: (text) => text,
             parseChatML: () => null,
             userName: () => "User",
             progress: (payload) => {

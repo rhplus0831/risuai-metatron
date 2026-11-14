@@ -5,6 +5,10 @@ import type { HypaV3Settings } from "../../../../../shared/memory.ts";
 import {
     type MemoryAnchoredSource,
     type MemoryEvent,
+    type MemoryGreetingSource,
+    memoryChatGreeting,
+    greetingCited,
+    storedMemoryGreeting,
     memoryEventHasReadableFields,
     memoryRerecordTarget,
     memoryScreenReason,
@@ -13,7 +17,7 @@ import {
     storedMemorySources,
     type StructuredMemorySettings,
 } from "../../../../../shared/structuredMemory.ts";
-import { messageSourceHash } from "../../../data/memoryStore.ts";
+import { greetingSourceHash, messageSourceHash } from "../../../data/memoryStore.ts";
 import type { ResourceStore } from "../../../data/resourceStore.ts";
 import type { MemoryTokenizer } from "../host.ts";
 
@@ -34,12 +38,16 @@ import type { MemoryTokenizer } from "../host.ts";
  *   names one speaker, so two replies in a row are two turns.
  * - Recorded means cited by a stored event in any status: the writer must not automatically record it
  *   again, whatever became of the event. It says nothing about the raw history a send may drop, where
- *   only an active event counts.
+ *   only an active event counts. A readable greeting citation counts in any status too, even when
+ *   the current greeting differs. An unrecorded solo greeting joins the first ordinary window only
+ *   when every eligible anchor before it is unrecorded. Groups and reset histories have none.
  * - A window before another event's cited message uses the historical write path (`historicalWindow`)
  *   to preserve current state, whether it repairs an event or records previously unrecorded messages.
  * - Windows close in order over the turns left. A trailing partial one stays open unless a manual
  *   start closes it. The token cadence counts only the messages the writer reads, while every window
  *   keeps all its messages and sources, including user messages when `omitUserMessages` is on.
+ *   The greeting is no turn; the token cadence counts its stored text as an assistant message in
+ *   the window carrying it. The writer later expands that text once under its host's CBS scope.
  * - What is recorded can be asked to be recorded again, one event at a time (`rerecord` on the event): a
  *   person's repair marks it, and so does an edit of a message it cites. That asks nothing of `recorded`:
  *   each event a start re-records gets one window of its own ahead of the rest, and the ordinary windows
@@ -54,9 +62,29 @@ import type { MemoryTokenizer } from "../host.ts";
 
 /**
  * One writer run's messages: `sources[i]` anchors `messages[i]`, its `index` the place in the stored
- * list. `rerecords` is the event the run replaces (`retireRerecorded`).
+ * list. The optional greeting precedes them and has a separate source. `rerecords` is the event the
+ * run replaces (`retireRerecorded`).
  */
-export type WriterWindow = { sources: MemoryAnchoredSource[]; messages: Message[]; rerecords?: string };
+export type WriterWindow = {
+    sources: MemoryAnchoredSource[];
+    messages: Message[];
+    /** Stored text while planning; expanded once by the host before a writer run reads it. */
+    greeting?: { source: MemoryGreetingSource; text: string };
+    rerecords?: string;
+};
+
+/** The chat's eligible greeting with its hash over stored text, shared by planning and commit checks. */
+export function writerGreeting(
+    ...args: Parameters<typeof memoryChatGreeting>
+): NonNullable<WriterWindow["greeting"]> | null {
+    const greeting = memoryChatGreeting(...args);
+    return greeting
+        ? { source: { fmIndex: greeting.fmIndex, hash: greetingSourceHash(greeting.text) }, text: greeting.text }
+        : null;
+}
+
+/** Readable citations in any status; independent of whether they cover today's prompt. */
+export type RecordedSources = { messages: ReadonlySet<string>; greeting: boolean };
 
 /**
  * What decides when a window closes and what stays out of one: the writer's settings, the budget mode of
@@ -116,26 +144,36 @@ export function writerCeiling(messages: readonly Message[], continueMessageId?: 
 }
 
 /**
- * The ids cited by readable `events`, retracted and stale ones included, so nothing automatically brings
+ * The message ids and whether a greeting is cited by readable `events`, retracted and stale ones
+ * included, so nothing automatically brings
  * back what the user retracted. A failed run writes no event, so its window stays open and is retried.
  */
 export function recordedMessages(
-    events: readonly Pick<MemoryEvent, "sources" | "summary" | "knowledge" | "keyLines" | "participants">[],
-): Set<string> {
+    events: readonly Pick<
+        MemoryEvent,
+        "sources" | "summary" | "knowledge" | "keyLines" | "participants" | "greeting"
+    >[],
+): RecordedSources {
     const recorded = new Set<string>();
+    let greeting = false;
     for (const event of events) {
         if (!memoryEventHasReadableFields(event)) {
             continue;
         }
+        greeting ||= storedMemoryGreeting(event.greeting) !== null;
         for (const source of storedMemorySources(event.sources)) {
             recorded.add(source.messageId);
         }
     }
-    return recorded;
+    return { messages: recorded, greeting };
 }
 
 /** `recordedMessages` of every event stored for the chat; empty for a missing chat. */
-export function readRecordedMessages(store: Pick<ResourceStore, "memory">, chaId: string, chatId: string): Set<string> {
+export function readRecordedMessages(
+    store: Pick<ResourceStore, "memory">,
+    chaId: string,
+    chatId: string,
+): RecordedSources {
     const stored = store.memory.readContents(chaId, chatId)?.events ?? [];
     return recordedMessages(
         stored.flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "events", id)?.data ?? []),
@@ -144,7 +182,7 @@ export function readRecordedMessages(store: Pick<ResourceStore, "memory">, chaId
 
 /**
  * Historical write options when an event other than the one `window` replaces cites a message after
- * its last source. Every event status counts: stale, retracted and adopted events also leave state
+ * its last source, with a greeting-only window at position -1. Every event status counts: stale, retracted and adopted events also leave state
  * behind. Positions come from message ids in `messages`, never stored indexes or creation revisions;
  * sources no longer in the chat do not count. Read before each window's write, so earlier commits in
  * the same run count, and freeze every page that exists then. Undefined when no later evidence exists.
@@ -157,11 +195,11 @@ export function historicalWindow(
     window: WriterWindow,
 ): { frozenPages: string[] } | undefined {
     const lastSource = window.sources.at(-1);
-    if (!lastSource) {
+    if (!lastSource && !window.greeting) {
         return undefined;
     }
     const positions = new Map(messages.map(({ chatId }, index) => [chatId, index]));
-    const last = positions.get(lastSource.messageId);
+    const last = lastSource ? positions.get(lastSource.messageId) : -1;
     if (last === undefined) {
         return undefined;
     }
@@ -190,6 +228,22 @@ export function readRerecordEvents(store: Pick<ResourceStore, "memory">, chaId: 
         const event = status === "retracted" ? undefined : store.memory.readRecord(chaId, chatId, "events", id)?.data;
         return event?.rerecord ? [event] : [];
     });
+}
+
+/**
+ * A greeting-only marked repair can be confirmed by the first eligible anchored message, exclusive,
+ * when a manual start has no ordinary user-message ceiling. Automatic ceilings never use this fallback.
+ */
+export function greetingRerecordCeiling(
+    messages: readonly Message[],
+    events: readonly MemoryEvent[],
+    greeting: NonNullable<WriterWindow["greeting"]> | null,
+): string | null {
+    const pending = events.some((event) => {
+        const target = memoryRerecordTarget(event.sources, messages, event.greeting, greeting !== null);
+        return event.rerecord && event.status !== "retracted" && target !== null && "greeting" in target;
+    });
+    return pending ? (anchoredMessages(messages)[0]?.id ?? null) : null;
 }
 
 /** The messages a send reads that can be anchored, in chat order, positioned in the stored list. */
@@ -287,29 +341,42 @@ export function windowOf(entries: readonly ConfirmedMessage[]): WriterWindow {
 /**
  * One window for each of `events` that can run, by its first message still present. An event's window is
  * exactly its sources a send still reads, in chat order, with fresh anchors. It runs when `confirmed`
- * holds every one of them and `memoryRerecordTarget` names a reply: any other is left out and keeps its
- * mark. `confirmed` is what the start reads: a person's start passes the messages with the screened
+ * holds every one of them and `memoryRerecordTarget` names a reply or a confirmed greeting; otherwise
+ * it keeps its mark. A cited greeting is refreshed; an uncited one joins only before any recorded earlier anchor,
+ * when no other readable event records it. Greeting-only repairs sort before messages. `confirmed`
+ * is what the start reads: a person's start passes the messages with the screened
  * replies in, an automatic one without them, so an event over a screened reply waits for a person.
  */
 function rerecordWindows(
     events: readonly MemoryEvent[],
     messages: readonly Message[],
     confirmed: readonly ConfirmedMessage[],
+    recorded: RecordedSources,
+    greeting: NonNullable<WriterWindow["greeting"]> | null,
 ): WriterWindow[] {
-    const positions = new Map(messages.map(({ chatId }, index) => [chatId, index]));
     const eligible = eligibleHistory(messages).messages;
+    const firstRecorded = anchoredMessages(messages).find(({ id }) => recorded.messages.has(id))?.index ?? Infinity;
     const ready = events.flatMap((event) => {
         const cited = new Set(storedMemorySources(event.sources).map(({ messageId }) => messageId));
         const read = eligible.filter(({ chatId }) => chatId !== undefined && cited.has(chatId));
         const entries = confirmed.filter(({ id }) => cited.has(id));
-        if (entries.length < read.length || memoryRerecordTarget(event.sources, messages) === null) {
+        if (
+            entries.length < read.length ||
+            memoryRerecordTarget(event.sources, messages, event.greeting, greeting !== null) === null
+        ) {
             return [];
         }
-        const first = Math.min(...[...cited].flatMap((id) => positions.get(id) ?? []));
-        return [{ rerecords: event.id, entries, first }];
+        const first = entries.length === 0 ? -1 : Math.min(...entries.map(({ index }) => index));
+        const includeGreeting =
+            greeting && (storedMemoryGreeting(event.greeting) || (!recorded.greeting && firstRecorded >= first));
+        return [{ rerecords: event.id, entries, first, greeting: includeGreeting ? greeting : undefined }];
     });
     ready.sort((a, b) => a.first - b.first);
-    return ready.map(({ rerecords, entries }) => ({ ...windowOf(entries), rerecords }));
+    return ready.map(({ rerecords, entries, greeting }) => ({
+        ...windowOf(entries),
+        rerecords,
+        ...(greeting ? { greeting } : {}),
+    }));
 }
 
 /**
@@ -337,7 +404,8 @@ export async function confirmedWindows(arg: {
     messages: readonly Message[];
     confirmedBefore: string;
     inclusive?: boolean;
-    recorded: ReadonlySet<string>;
+    recorded: RecordedSources;
+    greeting?: NonNullable<WriterWindow["greeting"]> | null;
     cadence: WriterCadence;
     maxContext: number;
     tokenizer: MemoryTokenizer;
@@ -352,7 +420,22 @@ export async function confirmedWindows(arg: {
     }
     const confirmed = unscreened(underCeiling, cadence.screening);
     const threshold = tokenThreshold(cadence, arg.maxContext);
-    const windows = rerecordWindows(rerecord, arg.messages, manual ? underCeiling : confirmed).slice(0, limit);
+    const greeting = arg.greeting ?? null;
+    const windows = rerecordWindows(
+        rerecord,
+        arg.messages,
+        manual ? underCeiling : confirmed,
+        recorded,
+        greeting,
+    ).slice(0, limit);
+    const firstRecorded = anchoredMessages(arg.messages).find(({ id }) => recorded.messages.has(id))?.index ?? Infinity;
+    let greetingPending = greeting !== null && !recorded.greeting && !windows.some((window) => window.greeting);
+    let openGreeting: WriterWindow["greeting"];
+    const close = () => {
+        windows.push({ ...windowOf(open), ...(openGreeting ? { greeting: openGreeting } : {}) });
+        if (openGreeting) greetingPending = false;
+        openGreeting = undefined;
+    };
     if (windows.length >= limit) {
         return windows;
     }
@@ -360,10 +443,16 @@ export async function confirmedWindows(arg: {
     let turns = 0;
     let tokens = 0;
     for (const turn of turnsOf(confirmed)) {
-        if (recorded.has(turn.at(-1)!.id)) {
+        if (recorded.messages.has(turn.at(-1)!.id)) {
             continue;
         }
-        const unrecorded = turn.filter(({ id }) => !recorded.has(id));
+        const unrecorded = turn.filter(({ id }) => !recorded.messages.has(id));
+        if (open.length === 0 && greetingPending && firstRecorded >= unrecorded[0].index) {
+            openGreeting = greeting!;
+            if (cadence.cadence === "tokens") {
+                tokens += await tokenizer.tokenizeChat({ role: "assistant", content: openGreeting.text });
+            }
+        }
         open.push(...unrecorded);
         turns++;
         if (cadence.cadence === "tokens") {
@@ -384,7 +473,7 @@ export async function confirmedWindows(arg: {
             manual,
         }[cadence.cadence];
         if (closes) {
-            windows.push(windowOf(open));
+            close();
             if (windows.length >= limit) {
                 return windows;
             }
@@ -394,7 +483,7 @@ export async function confirmedWindows(arg: {
         }
     }
     if (manual && open.length > 0) {
-        windows.push(windowOf(open));
+        close();
     }
     return windows;
 }
@@ -402,18 +491,18 @@ export async function confirmedWindows(arg: {
 /**
  * Whether `window` still reads from the chat as stored in `messages`: `confirmedBefore` is still an
  * eligible message, and every source's message is there, still confirmed under it, with the same hash
- * under that source's stored hash version.
+ * under that source's stored hash version. A greeting must still match the chat's current greeting.
  * A message that only moved keeps its window; its source's `index` is not compared. `inclusive` is
  * what the window was computed under.
  */
 export function windowStillConfirmed(
-    window: Pick<WriterWindow, "sources">,
+    window: Pick<WriterWindow, "sources" | "greeting">,
     messages: readonly Message[],
     confirmedBefore: string,
-    options: { inclusive?: boolean } = {},
+    options: { inclusive?: boolean; greeting?: MemoryGreetingSource | null } = {},
 ): boolean {
     const confirmed = confirmedMessages(messages, confirmedBefore, options.inclusive ?? false, NO_SCREENING);
-    if (!confirmed) {
+    if (!confirmed || (window.greeting && !greetingCited(window.greeting.source, options.greeting ?? null))) {
         return false;
     }
     const byId = new Map(confirmed.map(({ id, message }) => [id, message]));

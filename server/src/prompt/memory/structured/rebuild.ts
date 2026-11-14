@@ -1,4 +1,4 @@
-import type { Chat, Message } from "../../../../../shared/database.ts";
+import type { Chat, Message, character, groupChat } from "../../../../../shared/database.ts";
 import type { GenerationCommand, MemoryChatRef, StructuredMemoryTaskInput } from "../../../../../shared/jobs.ts";
 import {
     ADOPTED_WRITER_RUN,
@@ -16,6 +16,7 @@ import {
     type StructuredMemoryRebuildMode,
 } from "../../../../../shared/structuredMemory.ts";
 import type { MemoryChanges, MemoryContents, MemoryEventWrite } from "../../../data/memoryStore.ts";
+import type { ResourceKind } from "../../../data/kinds.ts";
 import type { ResourceStore } from "../../../data/resourceStore.ts";
 import { GenerationRunnerError, type RunningJob } from "../../../jobs/generationJobs.ts";
 import { scopeChat } from "../../../jobs/jobScope.ts";
@@ -28,6 +29,8 @@ import {
     anchoredMessages,
     type ConfirmedMessage,
     confirmedWindows,
+    writerGreeting,
+    greetingRerecordCeiling,
     readRecordedMessages,
     readRerecordEvents,
     recordedMessages,
@@ -97,8 +100,8 @@ export function readRecordSet(
  * messages, does not.
  */
 function retractedMessages(events: readonly MemoryEvent[]): Set<string> {
-    const standing = recordedMessages(events.filter(({ status }) => status !== "retracted"));
-    const retracted = recordedMessages(events.filter(({ status }) => status === "retracted"));
+    const standing = recordedMessages(events.filter(({ status }) => status !== "retracted")).messages;
+    const retracted = recordedMessages(events.filter(({ status }) => status === "retracted")).messages;
     return new Set([...retracted].filter((id) => !standing.has(id)));
 }
 
@@ -149,7 +152,7 @@ function rebuildEntryPlan(
 ): ConfirmedMessage[][] {
     const excluded =
         mode === "backfill"
-            ? recordedMessages(events)
+            ? recordedMessages(events).messages
             : mode === "rebuild"
               ? retractedMessages(events)
               : new Set<string>();
@@ -193,7 +196,7 @@ function backfillCandidates(
     live: readonly MemoryEvent[],
     staged: readonly MemoryEvent[],
 ): Map<string, { event: MemoryEvent; entries: ConfirmedMessage[] }> {
-    const cited = recordedMessages([...live, ...staged]);
+    const cited = recordedMessages([...live, ...staged]).messages;
     const targets = new Map<string, MemoryEvent>();
     for (const event of live) {
         if (event.status !== "active") {
@@ -514,11 +517,14 @@ export function rebuildChanges(
 /**
  * The store a rebuild's writer and its commits work on: the staged records in place of the live ones, with
  * a closing commit, the one with a `recorded` run, moving the cursor, so progress and what it stands for
- * commit together. It answers that the chat has no run: a run's own commits must pass `commitWindow`.
+ * commit together. The owner reader stays live for greeting validation. It answers that the chat has no run: a run's own commits must pass `commitWindow`.
  */
-export function rebuildStore(store: Pick<ResourceStore, "memory" | "chatMeta" | "readChatSource" | "messagesLocked">) {
+export function rebuildStore(
+    store: Pick<ResourceStore, "memory" | "chatMeta" | "readChatSource" | "messagesLocked" | "get">,
+) {
     const { staged } = store.memory.rebuild;
     return {
+        get: store.get,
         chatMeta: store.chatMeta,
         readChatSource: store.readChatSource,
         messagesLocked: store.messagesLocked,
@@ -564,12 +570,14 @@ function windowsCost(
  * without hashing messages or building writer windows. A backfill with `omitUserMessages` also counts
  * possible folds by the live events' stored status; reconciliation at the swap can reject them.
  * Record now's windows are the writer's own, in windows of `turns` turns, because a route has no job scope
- * to read the cadence from, up to `maxWriterWindows`, marked events first.
+ * to read the cadence from, up to `maxWriterWindows`, marked events first. It plans with the current
+ * greeting and the manual greeting-only ceiling; this estimate still counts message text and calls only.
  */
 export async function memoryWorkCost(
-    store: Pick<ResourceStore, "memory" | "readChatSource">,
+    store: Pick<ResourceStore, "memory" | "readChatSource" | "get">,
     { chaId, chatId }: MemoryChatRef,
     { mode, turns, through }: { mode: StructuredMemoryCostMode; turns: 1 | 2; through?: string },
+    charactersKind: ResourceKind,
 ): Promise<StructuredMemoryCostAnswer | null> {
     const chat = store.readChatSource(chaId, chatId).data as Chat | null;
     if (!chat) {
@@ -618,7 +626,10 @@ export async function memoryWorkCost(
                 : {}),
         };
     }
-    const confirmedBefore = through ?? writerCeiling(chat.message);
+    const greeting = writerGreeting(store.get(charactersKind, chaId)?.data as character | groupChat | undefined, chat);
+    const rerecord = readRerecordEvents(store, chaId, chatId);
+    const confirmedBefore =
+        through ?? writerCeiling(chat.message) ?? greetingRerecordCeiling(chat.message, rerecord, greeting);
     const windows =
         confirmedBefore === null
             ? null
@@ -627,6 +638,7 @@ export async function memoryWorkCost(
                   confirmedBefore,
                   inclusive: through !== undefined,
                   recorded: readRecordedMessages(store, chaId, chatId),
+                  greeting,
                   cadence: {
                       cadence: "everyK",
                       cadenceTurns: turns,
@@ -639,7 +651,7 @@ export async function memoryWorkCost(
                   tokenizer: { tokenizeChat: () => Promise.resolve(0) },
                   limit: MEMORY_TASK_LIMITS.maxWriterWindows,
                   manual: true,
-                  rerecord: readRerecordEvents(store, chaId, chatId),
+                  rerecord,
               });
     return windowsCost(
         (windows ?? []).map(({ messages }) => messages),

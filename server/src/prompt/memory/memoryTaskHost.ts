@@ -256,6 +256,7 @@ export function createMemoryTaskHost(arg: {
         embeddings: embeddingEnv,
         regex: (op, opts) => fenced(() => untilAborted(deps.scriptWorkers.regex(op, opts), signal)),
         ...(deps.separatorLimits ? { separatorLimits: deps.separatorLimits } : {}),
+        parse: (text) => parse(text),
         parseChatML: (text) => {
             live();
             return parseChatML(text, (part) => parse(part));

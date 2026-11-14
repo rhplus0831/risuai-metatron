@@ -584,7 +584,7 @@ describe("structured memory retrieval", () => {
         }
         const before = structuredClone(malformed);
         expect([...coveredMessages(malformed)]).toEqual([]);
-        expect([...recordedMessages(malformed)]).toEqual([]);
+        expect([...recordedMessages(malformed).messages]).toEqual([]);
         expect(recordVectorTexts({ events: malformed, pages: [] }, { events: true, pages: true })).toEqual({
             events: [],
             pages: [],
@@ -604,7 +604,7 @@ describe("structured memory retrieval", () => {
             event("retracted", ["retracted-source"], { status: "retracted" }),
         ];
         expect([...coveredMessages(readable)]).toEqual(["legacy-source"]);
-        expect([...recordedMessages(readable)]).toEqual(["legacy-source", "stale-source", "retracted-source"]);
+        expect([...recordedMessages(readable).messages]).toEqual(["legacy-source", "stale-source", "retracted-source"]);
         expect(recordVectorTexts({ events: readable, pages: [] }, { events: true, pages: true })).toEqual({
             events: ["legacy"],
             pages: [],

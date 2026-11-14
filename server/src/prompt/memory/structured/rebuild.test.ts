@@ -173,6 +173,9 @@ it("ignores folds in rebuild and fresh swaps even when nothing was staged", () =
     }
 });
 
+/** The characters kind `memoryWorkCost` reads the chat's owner through. */
+const CHARACTERS = createKindRegistry(DEFAULT_RESOURCE_KINDS).get("characters")!;
+
 function costStore(
     message: Message[],
     events: MemoryEvent[] = [],
@@ -181,6 +184,7 @@ function costStore(
 ) {
     return {
         readChatSource: () => ({ data: { message } }),
+        get: () => null,
         memory: {
             readWriterSettings: () => ({ screening, omitUserMessages }),
             readContents: () => ({ events }),
@@ -264,6 +268,7 @@ it("previews only readable windows, messages and UTF-8 bytes in every work mode"
                 costStore(current, events, NO_SCREENING, setting),
                 { chaId: "character", chatId: "chat" },
                 { mode, turns: 2 },
+                CHARACTERS,
             );
             // Fresh reads all 15 bytes (9 reply bytes when on). Rebuild/backfill leave a1 out:
             // 11 bytes when off, and 5 reply bytes when on. Record now skips the covered turn:
@@ -295,7 +300,12 @@ it("previews two rebuild calls with 6,000 overhead tokens and four text tokens",
         { chatId: "a2", role: "char", data: "x" },
     ];
     expect(
-        await memoryWorkCost(costStore(current), { chaId: "character", chatId: "chat" }, { mode: "rebuild", turns: 1 }),
+        await memoryWorkCost(
+            costStore(current),
+            { chaId: "character", chatId: "chat" },
+            { mode: "rebuild", turns: 1 },
+            CHARACTERS,
+        ),
     ).toEqual({ calls: 2, messages: 4, estimatedTokens: 6_004 });
 });
 
@@ -342,7 +352,7 @@ it("estimates rebuild and backfill calls, messages, and UTF-8 bytes from eligibl
     ] as const;
     for (const { mode, turns, calls, messages, bytes } of estimates) {
         expect(
-            await memoryWorkCost(store, { chaId: "character", chatId: "chat" }, { mode, turns }),
+            await memoryWorkCost(store, { chaId: "character", chatId: "chat" }, { mode, turns }, CHARACTERS),
             `${mode}, ${turns} turns`,
         ).toEqual({
             calls,
@@ -371,7 +381,9 @@ it("bounds rebuild and backfill eligibility reads by transcript size across 2,00
         for (const turns of [1, 2] as const) {
             reads = 0;
             const calls = pairs / turns;
-            expect(await memoryWorkCost(store, { chaId: "character", chatId: "chat" }, { mode, turns })).toEqual({
+            expect(
+                await memoryWorkCost(store, { chaId: "character", chatId: "chat" }, { mode, turns }, CHARACTERS),
+            ).toEqual({
                 calls,
                 messages: pairs * 2,
                 estimatedTokens: memoryCostTokens(pairs * 2, calls),
@@ -787,14 +799,18 @@ it("screens the rebuild cost with the chat's preset and falls back after that pr
             ],
         });
         // Screening folds the two user messages and the eligible answer into one 3-byte turn.
-        expect(await memoryWorkCost(store, { chaId: "c", chatId: "k" }, { mode: "rebuild", turns: 1 })).toEqual({
+        expect(
+            await memoryWorkCost(store, { chaId: "c", chatId: "k" }, { mode: "rebuild", turns: 1 }, CHARACTERS),
+        ).toEqual({
             calls: 1,
             messages: 3,
             estimatedTokens: 3001,
         });
         store.put(kind, "main", { items: [defaults], selectedId: "default" }, store.get(kind, "main")!.revision);
         // With the default's empty screening, both turns count: 10 bytes plus two call overheads.
-        expect(await memoryWorkCost(store, { chaId: "c", chatId: "k" }, { mode: "rebuild", turns: 1 })).toEqual({
+        expect(
+            await memoryWorkCost(store, { chaId: "c", chatId: "k" }, { mode: "rebuild", turns: 1 }, CHARACTERS),
+        ).toEqual({
             calls: 2,
             messages: 4,
             estimatedTokens: 6004,

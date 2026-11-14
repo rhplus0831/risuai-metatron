@@ -26,8 +26,9 @@
 - `shared/hypaV3Presets.ts`: preset defaults; `createHypaV3Preset`.
 - `server/src/jobs/jobScope.ts`: task settings digest; `memorySettingsFingerprint`.
 - `server/src/prompt/memory/structured/window.ts`: confirmed writer windows; `confirmedWindows`, `WriterWindow`,
-  `WriterCeiling`, `writerCeiling`, `writerCadence`, `recordedMessages`, `readRecordedMessages`, `historicalWindow`,
-  `readRerecordEvents`, `confirmedThrough`, `windowStillConfirmed`, `windowOf`.
+  `WriterCeiling`, `writerCeiling`, `writerCadence`, `RecordedSources`, `recordedMessages`, `readRecordedMessages`,
+  `writerGreeting`, `greetingRerecordCeiling`, `historicalWindow`, `readRerecordEvents`, `confirmedThrough`,
+  `windowStillConfirmed`, `windowOf`.
 - `server/src/prompt/memory/structured/prompts.ts`: prompt frames and safe slot filling; `analysisSlots`,
   `assembleAnalysisPrompt`, `patchSlots`, `assemblePatchPrompt`, `compactSlots`, `assembleCompactPrompt`,
   `parseCustomFrame`, `defaultPrompts`, `sceneTakenBackLines`.
@@ -66,9 +67,21 @@ as recorded, keeping [adoption](lifecycle.md#adopting-hypav3-summaries) from aut
 
 A window always cites every message of its turns, also under `omitUserMessages`: what the writer is shown narrows, not
 what it records over. `memoryWriterReads` is the one rule for what the writer reads, and the prompt, the cast slice,
-quote verification, and the `tokens` cadence all go through it. Every window `confirmedWindows` makes holds a reply, so
-it always has something to read. A rebuild window or the test run's newest run can hold none; neither makes a call on it
-([rebuild](rebuild.md#the-plan)).
+quote verification, and the `tokens` cadence all go through it. Every ordinary window `confirmedWindows` makes holds a
+reply, so it always has something to read. A rebuild window or the test run's newest run can hold none; neither makes a
+call on it ([rebuild](rebuild.md#the-plan)).
+
+A solo chat's greeting (`writerGreeting`: none for a group or a reset history) joins the first ordinary window when no
+readable event cites a greeting and no eligible message before that window is recorded, so a new chat's first window
+reads it and a chat recorded before greetings were cited never gets it automatically. It is no turn: the turn cadences
+count as without it, and the `tokens` cadence adds its stored text. It is always read, `omitUserMessages` or not, and
+listed first in the prompt as `[greeting] <character name>:`; the event and the run store its source. A re-record keeps
+the greeting on an event that cited it, with the current greeting's source, and adds it to the event whose window starts
+the recorded history when no other event cites one. An event that cites the greeting and no message a send still reads
+re-records as a greeting-only window, ordered first and confirmed through the first eligible message, exclusive: a press
+with no user message to confirm through takes that ceiling (`greetingRerecordCeiling`), and a chat with no eligible
+message offers none. At commit, `windowStillConfirmed` refuses a greeting window whose greeting no longer matches the
+owner read from storage, and a window with no assistant message writes no chat receipt; its run keeps it.
 
 ### The writer task
 
@@ -204,6 +217,9 @@ Compaction changes no event, and a warning does not fail the run.
   message, as a window message or a context line, and a quote only a user message holds is `quoteNotFound`; its events
   still cite the user messages, so coverage and reconciliation read them as before, and turning it off leaves no message
   unrecorded. It is separate from HypaV3's `doNotSummarizeUserMessage`, which Structured Memory never reads.
+- The writer reads the greeting CBS-expanded by the host's plain-text `parse`, once per run, without the `editprocess`
+  scripts, and quotes are checked against that text; the citation hashes the stored text. A failed run's input replays
+  only while its greeting citation is the window's and the input still shows the greeting as expanded now.
 - `keyLineGuidance` defaults to false and applies to events recorded from then on; stored events keep their key lines
   until re-recorded or rebuilt.
 - `MemorySettings.svelte` exposes only the fields something reads, and shares with HypaV3 only the preset picker, the
@@ -247,7 +263,8 @@ Compaction changes no event, and a warning does not fail the run.
   changing another preset leaves that task current.
 - A message is recorded when a readable stored event cites it, in any status, retracted and stale included: that stops
   the writer recording it again automatically, so nothing brings back what the user retracted. It is not coverage:
-  dropping raw history asks whether an active event covers it, and never reads this set.
+  dropping raw history asks whether an active event covers it, and never reads this set. The greeting is recorded the
+  same way, by any readable event's greeting citation, also one that no longer matches the chat's greeting.
 - `confirmedBefore` is captured in the job's step. An automatic task never derives its ceiling from the chat as it
   stands later: an output trigger's `v2Impersonate` can append a user message after the reply, and that must not confirm
   the reply. A manual task does derive it, because the person's start is the confirmation; the writer's `input` keeps
@@ -336,6 +353,11 @@ Compaction changes no event, and a warning does not fail the run.
   Decision: Structured Memory Reply-Only Recording D18 (owner, 2026-11-13).
 - A repair never carries an edit into later state; a rebuild from that point does. A later event with every cited
   message deleted no longer counts. Decision: Implementation Audit Fixes Q3.
+- The writer reads the greeting with its CBS expanded but without the `editprocess` scripts, so a script that rewrites
+  the greeting's display text, or a CBS value that changes per send, can make what the writer read differ from what a
+  send showed; the citation stays settled because it hashes the stored text. A greeting whose CBS changes between a
+  failed run and its retry rebuilds the prompt instead of replaying it. Decision: Structured Memory Greeting Source D6
+  (owner, 2026-11-14).
 
 ### Gotchas
 

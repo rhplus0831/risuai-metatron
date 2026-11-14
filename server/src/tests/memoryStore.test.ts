@@ -8,7 +8,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { Chat, Message } from "../../../shared/database.ts";
 import { MAX_READ_RESPONSE_BYTES } from "../../../shared/resources.ts";
-import { sealHypaV3Data } from "../../../shared/structuredMemory.ts";
+import { sealHypaV3Data, storedMemoryGreeting } from "../../../shared/structuredMemory.ts";
 import type { MemoryEvent, MemoryPage, MemoryRun, MemoryThread } from "../../../shared/structuredMemory.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
 import { createCheckpointService } from "../data/checkpointService.ts";
@@ -1717,4 +1717,22 @@ it("reads only live flagged page ids in contents order, once per page and within
     expect(store.memory.readUnsupportedPages("c", "missing")).toEqual([]);
     write(store, contents(store).revision, { pages: [{ ...pages[0], sections: [] }] });
     expect(store.memory.readUnsupportedPages("c", "k")).toEqual(["a"]);
+});
+
+it("round-trips raw run greeting citations and lets readers ignore malformed ones", () => {
+    const { store, file } = fileStore();
+    seed(store);
+    const valid = { fmIndex: 1, hash: "v3:stored-greeting" };
+    const malformed = { fmIndex: "1", hash: "v3:stored-greeting" };
+    const runs = records(["legacy", "valid", "malformed"]).runs;
+    runs[1].greeting = valid;
+    Object.assign(runs[2], { greeting: malformed });
+    write(store, contents(store).revision, { runs });
+    const reopened = createResourceStore({ file, kinds });
+    stores.push(reopened);
+    for (const run of runs) {
+        const saved = reopened.memory.readRecord("c", "k", "runs", run.id)!.data;
+        expect(saved).toEqual(run);
+        expect(storedMemoryGreeting(saved.greeting)).toEqual(run.id === "valid" ? valid : null);
+    }
 });

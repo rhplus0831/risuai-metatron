@@ -349,6 +349,7 @@ export function applyEventRepair<M extends Pick<Message, "chatId" | "role" | "sa
     edit: EventEdit,
     messages: readonly M[],
     hashOf: (message: M, like?: string) => string,
+    hasGreeting = false,
 ): MemoryEvent | null {
     const { staleReason, rerecord, ...settled } = event;
     if (edit.repair === "retract") {
@@ -364,7 +365,7 @@ export function applyEventRepair<M extends Pick<Message, "chatId" | "role" | "sa
         const [now] = reconcileMemoryEvents([event], messages, hashOf);
         return now.status === "active" ? null : { ...settled, status: "active", keptState: edit.state };
     }
-    if (memoryRerecordTarget(event.sources, messages) === null) {
+    if (memoryRerecordTarget(event.sources, messages, event.greeting, hasGreeting) === null) {
         throw new MemoryEditRefusal("invalid", "This event has no reply left to record from");
     }
     return rerecord ? null : { ...event, rerecord: true };
