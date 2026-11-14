@@ -1031,6 +1031,7 @@ export type ServerJobRequest = {
             GenerationContext,
             | "mode"
             | "input"
+            | "inputOriginal"
             | "userMessageId"
             | "continueMessageId"
             | "triggerId"

@@ -1432,8 +1432,9 @@ export interface Message {
     isComment?: boolean;
     /**
      * A stored translation of `data`, shown only while fresh (`storedTranslation`,
-     * `shared/translation/messageTranslation.ts`). Written by `setTranslation`, `selectCandidate`, or whole-chat replacement; a
-     * `setMessage` never changes it.
+     * `shared/translation/messageTranslation.ts`). Written by `setTranslation`, `selectCandidate`,
+     * whole-chat replacement, or a send's input stage for a Draft hook's translation mode;
+     * a `setMessage` never changes it.
      */
     translation?: MessageTranslation;
     /** Two or more alternatives; the message's own fields hold the selected reply. */

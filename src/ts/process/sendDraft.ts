@@ -17,6 +17,8 @@ import type { ComposerDraft } from "./composerDrafts.svelte";
  */
 export type SendDraft = {
     input: string;
+    /** The raw main text for this draft send's translation, read anew at each press and never retained for retry. */
+    inputOriginal?: string;
     userMessageId: string;
     requestId?: string;
     requestUncertain?: boolean;
@@ -72,7 +74,8 @@ export function createSendDrafts() {
     }
 
     function adopt(ref: ChatRef, draft: SendDraft): void {
-        drafts.set(keyOf(ref), { ...draft, placed: true });
+        const { inputOriginal, ...retained } = draft;
+        drafts.set(keyOf(ref), { ...retained, placed: true });
     }
 
     function idFor(ref: ChatRef, text: string, composer?: ComposerDraft): string {
@@ -104,7 +107,7 @@ export function createSendDrafts() {
         }
         // Refusals and accepted jobs that fail recover alike. Keep the id even if the mirror is behind.
         const placed = outcome.selected && outcome.composerEmpty;
-        const { requestId, requestUncertain, ...message } = draft;
+        const { requestId, requestUncertain, inputOriginal, ...message } = draft;
         drafts.set(key, { ...message, ...(outcome.requestUncertain && requestId ? { requestId } : {}), placed });
         return placed ? "restore" : "keep";
     }

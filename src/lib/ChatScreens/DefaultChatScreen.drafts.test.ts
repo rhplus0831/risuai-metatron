@@ -1993,6 +1993,70 @@ async function attachHookAudio(ui: Awaited<ReturnType<typeof mountHookComposer>>
     return (await drive(ui.journal.readComposer(a)))!.files;
 }
 
+it("reads the current raw original and Translation mode at every Send Draft retry", async () => {
+    const ui = await mountHookComposer();
+    const raw = "  원문\n 그대로  ";
+    const revised = "  edited original\n  ";
+    ui.enter(ui.input(), raw);
+    ui.enter(ui.draft()!, "Reviewed draft");
+    // Enable after mounting: the send must look up the current hook at the press.
+    ui.settings.inputHooks = ui.settings.inputHooks.map((hook) => ({ ...hook, translation: true }));
+    flushSync();
+    let first: (typeof io.createJob.mock.calls)[number][0] | undefined;
+    for (const [main, translation] of [
+        [raw, true],
+        [revised, true],
+        [revised, false],
+    ] as const) {
+        ui.enter(ui.input(), main);
+        ui.settings.inputHooks = ui.settings.inputHooks.map(({ translation: _old, ...hook }) =>
+            translation ? { ...hook, translation: true as const } : hook,
+        );
+        flushSync();
+        let reject!: (error: Error) => void;
+        io.createJob.mockImplementationOnce(
+            () =>
+                new Promise((_, fail) => {
+                    reject = fail;
+                }),
+        );
+        const count = io.createJob.mock.calls.length;
+        ui.click(ui.sendDraft());
+        await until(() => io.createJob.mock.calls.length === count + 1);
+        const request = io.createJob.mock.calls.at(-1)![0];
+        expect(request.context.input).toBe("Reviewed draft");
+        if (translation) expect(request.context.inputOriginal).toBe(main);
+        else expect(request.context).not.toHaveProperty("inputOriginal");
+        if (first) {
+            expect(request.requestId).toBe(first.requestId);
+            expect(request.context.userMessageId).toBe(first.context.userMessageId);
+        } else first = request;
+        reject(new Error("create answer lost"));
+        await until(() => ui.input().value === main && ui.draft()?.value === "Reviewed draft");
+        await drive(ui.journal.readComposer(a));
+    }
+    expect(io.runInputHook).not.toHaveBeenCalled();
+});
+
+it.each(["blank main", "ordinary Send"] as const)(
+    "omits the original for %s even with Translation mode enabled",
+    async (kind) => {
+        const ui = await mountHookComposer(kind === "ordinary Send" ? { configureChat: () => {} } : {});
+        ui.settings.inputHooks = ui.settings.inputHooks.map((hook) => ({ ...hook, translation: true }));
+        ui.enter(ui.input(), kind === "blank main" ? " \n\t " : "Ordinary input");
+        io.createJob.mockImplementationOnce(() => new Promise(() => {}));
+        if (kind === "blank main") {
+            ui.enter(ui.draft()!, "Reviewed draft");
+            ui.click(ui.sendDraft());
+        } else ui.sendKey();
+        await until(() => io.createJob.mock.calls.length === 1);
+        expect(io.createJob.mock.calls[0][0].context).toMatchObject({
+            input: kind === "blank main" ? "Reviewed draft" : "Ordinary input",
+        });
+        expect(io.createJob.mock.calls[0][0].context).not.toHaveProperty("inputOriginal");
+    },
+);
+
 it("sends the draft with attachments, clears all four parts, and restores a failed send for an unchanged retry", async () => {
     const ui = await mountHookComposer();
     ui.type("original main");

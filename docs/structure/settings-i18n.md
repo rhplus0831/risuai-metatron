@@ -134,6 +134,8 @@ section.
   (Draft to BTW drops `translation`), model (as the translator step editor), and prompt (the hook id as
   `popupEditorContext`). No `SettingItem`: search finds the page by title. `language.inputHooks` also holds the strings
   of the chat's Draft hook panel ([UI](ui-theming.md#sidebar)).
+- A Draft hook's card also has the Translation mode checkbox, which writes `translation: true` or removes the key
+  ([translation](translation.md#send-hand-off)).
 - Other handwritten pages: `PromptSettings`, `OobaSettings`, `OpenrouterSettings`, `UserSettings`, `ThanksPage`,
   `UpstreamImportReport`, `Advanced/BanCharacterSetSettings`, and `Display/*`.
 

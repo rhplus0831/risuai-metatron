@@ -188,6 +188,20 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
             return "context.oocExchangeId is only for preview jobs";
         }
     }
+    if (context.inputOriginal !== undefined) {
+        if (typeof context.inputOriginal !== "string") {
+            return "context.inputOriginal must be a string when present";
+        }
+        if (!INPUT_KINDS.includes(body.kind)) {
+            return "context.inputOriginal is only for send, continue, reroll, and group jobs";
+        }
+        if (context.userMessageId === undefined) {
+            return "context.inputOriginal requires context.userMessageId";
+        }
+        if (context.input === "") {
+            return "context.inputOriginal requires a nonempty context.input";
+        }
+    }
     // Only a send runs the input stage that appends the user message.
     if (context.userMessageId !== undefined && !INPUT_KINDS.includes(body.kind)) {
         return "context.userMessageId is only for send, continue, reroll, and group jobs";
@@ -227,6 +241,7 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
         personaId: context.personaId as string | null,
         mode: context.mode,
         input: context.input,
+        ...(context.inputOriginal !== undefined ? { inputOriginal: context.inputOriginal as string } : {}),
         chatRevision: context.chatRevision,
         ...(context.continueMessageId !== undefined ? { continueMessageId: context.continueMessageId as string } : {}),
         ...(context.rerollMessageId !== undefined ? { rerollMessageId: context.rerollMessageId as string } : {}),
@@ -290,6 +305,8 @@ export function registerGenerationRoutes(
      * honors it is admitted and ends as an `error` terminal coded `loreOverBudget`.
      * `context.oocExchangeId` must be a valid OOC id and is accepted only for `preview`; other
      * kinds carrying it are malformed (400).
+     * `context.inputOriginal` must be a string and is accepted only for send, continue, reroll,
+     * and group jobs with `userMessageId` and nonempty `input`; other uses are malformed (400).
      */
     app.post("/api/generations", limiter, async (c) => {
         const denied = await auth.checkAuth(c);

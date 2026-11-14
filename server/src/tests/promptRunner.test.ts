@@ -21,6 +21,7 @@ import type { ChangeFeed, ChangeFeedEvent } from "../data/changeFeed.ts";
 import type { EventFeedFrame } from "../../../shared/events.ts";
 import { completionNotificationTag } from "../../../shared/notifications.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
+import { storedTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { parseContextReport } from "../../../shared/contextReport.ts";
 import { AIACCESS_TOOLS } from "../../../shared/mcp/aiaccess.ts";
 import { LLMFormat } from "../../../shared/llm.ts";
@@ -1234,6 +1235,49 @@ describe("a send", () => {
         SLOW,
     );
 
+    it("stores the original against the appended text after editinput and preserves it on a second job", async () => {
+        await prepareLoreBudgetJob();
+        const appendedAt = Date.now();
+        for (const [input, data] of [
+            ["Reviewed draft.", "Reviewed draft."],
+            ["hi you", "hello you"],
+        ]) {
+            const chaId = await seedCharacter({ name: "Ann" });
+            const inputOriginal = "  원문\n 그대로  ";
+            const sent = await job("send", chaId, { input, userMessageId: "draft-user", inputOriginal });
+            expect(sent.terminal?.type, JSON.stringify(sent.terminal)).toBe("done");
+            const user = (await readChat(chaId)).data.message[0];
+            expect(user).toMatchObject({ role: "user", chatId: "draft-user", data, time: appendedAt });
+            expect(user.translation).toEqual({
+                text: inputOriginal,
+                sourceHash: translationSourceHash(data),
+                targetLanguage: "original",
+                translatedAt: appendedAt,
+            });
+            expect(storedTranslation(user)).toBe(inputOriginal);
+
+            vi.setSystemTime(appendedAt + 1_000);
+            const again = await job("send", chaId, {
+                input: "Replacement draft",
+                userMessageId: "draft-user",
+                inputOriginal: "Replacement original",
+            });
+            expect(again.terminal?.type).toBe("done");
+            const messages = (await readChat(chaId)).data.message;
+            expect(messages.filter((message: { chatId: string }) => message.chatId === "draft-user")).toEqual([user]);
+            vi.setSystemTime(appendedAt);
+        }
+
+        const plain = await seedCharacter({ name: "Ann" });
+        expect((await job("send", plain, { input: "hi you", userMessageId: "plain-user" })).terminal?.type).toBe(
+            "done",
+        );
+        const user = (await readChat(plain)).data.message[0];
+        expect(user.data).toBe("hello you");
+        expect(user).not.toHaveProperty("translation");
+        expect(storedTranslation(user)).toBeNull();
+    });
+
     it(
         "skips the input stage for a user message the chat already holds under the id, and refuses the id of another role",
         async () => {
@@ -2088,6 +2132,47 @@ describe("automatic translation of a send's messages", () => {
     afterEach(() => {
         onRequest = null;
     });
+
+    it.each([false, true])(
+        "keeps the stored original and translates only the reply with translateBotOnly=%s",
+        async (translateBotOnly) => {
+            await prepareLoreBudgetJob();
+            const appendedAt = Date.now();
+            const chaId = await seedCharacter({ name: "Ann", chat: { autoTranslate: true, translateBotOnly } });
+            const released = deferred<void>();
+            let requests = 0;
+            onRequest = async () => {
+                if (++requests > 1) await released.promise;
+            };
+            const before = bodies.length;
+            const cleanup = cleanupOnce(() => released.resolve());
+            try {
+                const result = await job("send", chaId, {
+                    input: "hi you",
+                    userMessageId: "draft-user",
+                    inputOriginal: "Original words",
+                });
+                expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+                const replyId = (result.terminal as Extract<GenerationTerminalEvent, { type: "done" }>).messageId;
+                expect(translating(result.events)).toEqual([{ chaId, chatId: "k", messageIds: [replyId] }]);
+                expect(server.context.translationRunner.runningCount()).toBe(1);
+            } finally {
+                cleanup();
+                await server.context.translationRunner.drain();
+            }
+            // Draining under the frozen clock waits for the actual translation work, not a deadline.
+            expect(bodies).toHaveLength(before + 2);
+            const [user, reply] = (await readChat(chaId)).data.message;
+            expect(user.translation).toEqual({
+                text: "Original words",
+                sourceHash: translationSourceHash("hello you"),
+                targetLanguage: "original",
+                translatedAt: appendedAt,
+            });
+            expect(storedTranslation(user)).toBe("Original words");
+            expect(storedTranslation(reply)).not.toBeNull();
+        },
+    );
 
     it(
         "hands the reply and the user message over before done and tells the tab, without waiting: a second send runs while the translations are held, then they land",

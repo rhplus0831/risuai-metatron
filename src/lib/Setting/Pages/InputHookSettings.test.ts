@@ -124,6 +124,32 @@ function beforeEdit() {
 }
 
 describe("InputHookSettings", () => {
+    it("shows Translation mode only on Draft cards and replaces the list when toggling it", () => {
+        render();
+        const editor = expand("Translate draft");
+        const aside = expand("Explain aside");
+        const checkbox = editor.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+        expect(checkbox).not.toBeNull();
+        expect(checkbox.closest("label")?.textContent).toContain("Translation mode");
+        expect(checkbox.checked).toBe(true);
+        expect(aside.querySelector('input[type="checkbox"]')).toBeNull();
+        expect(aside.textContent).not.toContain("Translation mode");
+
+        const { translation: _translation, ...withoutTranslation } = draft();
+        const assertUnchecked = beforeEdit();
+        checkbox.click();
+        flushSync();
+        assertUnchecked([withoutTranslation, other()]);
+        expect(settings.inputHooks[0]).not.toHaveProperty("translation");
+        expect(checkbox.checked).toBe(false);
+
+        const assertChecked = beforeEdit();
+        checkbox.click();
+        flushSync();
+        assertChecked([draft(), other()]);
+        expect(checkbox.checked).toBe(true);
+    });
+
     it("adds each chosen type with a unique id, inherit model and focused name", async () => {
         render();
         expect(target.querySelector("h2")?.textContent).toBe("Input Hooks");

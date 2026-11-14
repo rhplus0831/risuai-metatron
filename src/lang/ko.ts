@@ -2304,6 +2304,9 @@ export const languageKorean = {
             "프롬프트 슬롯: {{slot::content}}는 입력창 텍스트, {{slot::draft}}는 초안 상자 텍스트입니다. {{slot::history::N}}은 최근 N개 메시지, {{slot::historytrans::N}}은 해당 메시지의 번역문으로, 번역기와 같은 형식을 사용합니다.",
         draft: "초안",
         btw: "BTW",
+        translationMode: "번역 모드",
+        translationModeDescription:
+            "직접 입력한 텍스트를 전송된 메시지의 번역문으로 저장합니다. LLM 번역기의 대상을 메시지로 선택하고 대상 언어를 설정하면, 메시지의 번역 토글이나 채팅의 자동 번역으로 표시됩니다.",
         add: "훅 추가",
         empty: "아직 입력 훅이 없습니다.",
         name: "이름",

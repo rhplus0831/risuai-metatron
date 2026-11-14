@@ -49,6 +49,7 @@ import { oocTail, oocToggleValues } from "../../../shared/ooc.ts";
 import { ChatTokenCounter } from "../../../shared/prompt/chatTokens.ts";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
 import { tokenizerIdentityKey } from "../../../shared/tokenizerChoice.ts";
+import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { jobModules } from "../jobs/cbsHost.ts";
 import type { OwnedGeneration } from "../jobs/chatResult.ts";
 import {
@@ -322,6 +323,7 @@ function reportStage(job: RunningJob, stage: GenerationStage): void {
  * 2. The input stage (a send with a nonempty `input`, unless the chat already holds the user message
  *    `userMessageId`): for a character, the `input` trigger on a copy of the chat as stored, then
  *    `editinput`, then the user message appended under that id; a group appends the input as it came.
+ *    The append stores `inputOriginal`, when present, as the message's translation.
  *    `accepted { userMessageId }` follows. It runs on the admitted preset, before applying
  *    `presetChain`, as the tab runs it before `sendChat`.
  * 3. `presetChain` (picked by name with `deps.random` before input): the scope now becomes the picked
@@ -529,10 +531,28 @@ async function runSend(
                 }
             }
             setup.check();
+            const time = Date.now();
             writeOwn([
                 {
                     op: "append",
-                    messages: [{ role: "user", data, time: Date.now(), chatId: userMessageId }],
+                    messages: [
+                        {
+                            role: "user",
+                            data,
+                            time,
+                            chatId: userMessageId,
+                            ...(job.context.inputOriginal !== undefined
+                                ? {
+                                      translation: {
+                                          text: job.context.inputOriginal,
+                                          sourceHash: translationSourceHash(data),
+                                          targetLanguage: "original",
+                                          translatedAt: time,
+                                      },
+                                  }
+                                : {}),
+                        },
+                    ],
                     anchor: { end: true },
                 },
             ]);

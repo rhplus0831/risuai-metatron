@@ -43,6 +43,11 @@ export type GenerationContext = {
     personaId: string | null;
     mode: string;
     input: string;
+    /**
+     * The text the user typed for a send whose `input` is a reviewed draft. The input stage stores
+     * it as the appended user message's translation. Not part of `requestFingerprint`.
+     */
+    inputOriginal?: string;
     continueMessageId?: string;
     /** Regenerate the newest reply in place; accepted only for a reroll job. */
     rerollMessageId?: string;

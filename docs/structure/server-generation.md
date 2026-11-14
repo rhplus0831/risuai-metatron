@@ -132,6 +132,11 @@ refusal the memory step recovered from or outlived replaces no later error.
   ([Lore](chat-pipeline.md#lore)): `assemblePrompt` returns an `alert` coded `loreOverBudget` before history, and the
   `error` terminal carries `lore` (`parseLoreBudgetStop`). What ran before activation stays; no reply request is made.
   Later rounds and speakers, previews, and command-sequence parts (the part view drops the field) never stop.
+- `context.inputOriginal` (accepted by `parseCreateBody` only as a string, for a `send`, `continue`, `reroll`, or
+  `group` job with `userMessageId` and a nonempty `input`; not in `requestFingerprint`, so a retry with another original
+  replays the first attempt) is what the user typed for a reviewed draft. When the input stage appends the user message,
+  the message carries it as a `translation` (`targetLanguage: "original"`, `sourceHash` of the text after `editinput`,
+  `translatedAt` the append time; [Translation](translation.md#send-hand-off)). A skipped input stage writes nothing.
 - `context.oocExchangeId` (kept by `parseCreateBody` for a `preview` only, refused for other kinds; in
   `requestFingerprint` only when present) makes an OOC preview. After the `presetChain` pick, `runSend` reads the
   exchange from the stored `oocLog` and sets `scope.detached`: the job's chat is its own copy, cut after the exchange's

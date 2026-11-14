@@ -808,7 +808,13 @@
             files: [...draft.files],
         };
         const input = composerSendText(snapshot, "draft");
-        const serverInput: SendDraft = { input, ...sendDrafts.idsFor(ref, input, true, snapshot), composer: snapshot };
+        const hook = draftHookOf(settings.inputHooks ?? [], findChat(ref)?.draftHookId);
+        const serverInput: SendDraft = {
+            input,
+            ...sendDrafts.idsFor(ref, input, true, snapshot),
+            composer: snapshot,
+            ...(hook?.translation === true && snapshot.input.trim() !== "" ? { inputOriginal: snapshot.input } : {}),
+        };
         composer.beginSend(chatKeyOf(ref), {
             snapshot,
             userMessageId: serverInput.userMessageId,

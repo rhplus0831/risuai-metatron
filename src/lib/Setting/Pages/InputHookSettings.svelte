@@ -3,6 +3,7 @@
     import { tick } from "svelte";
     import { language } from "src/lang";
     import Button from "src/lib/UI/GUI/Button.svelte";
+    import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
     import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
@@ -41,6 +42,15 @@
     function modelValue(id: string): string {
         const model = liveHook(id)?.model;
         return model?.mode === "profile" ? `profile:${model.profileId}` : "inherit";
+    }
+
+    function setTranslation(id: string, checked: boolean) {
+        update(id, (hook) => {
+            if (hook.type !== "draft") return hook;
+            if (checked) return { ...hook, translation: true };
+            const { translation: _translation, ...rest } = hook;
+            return rest;
+        });
     }
 
     function missingProfileId(id: string): string | null {
@@ -113,8 +123,7 @@
     <p class="text-sm text-textcolor2">{language.inputHooks.empty}</p>
 {/if}
 
-{#each hooks as hook (hook.id)}
-    {@const hookId = hook.id}
+{#each hooks.map((hook) => hook.id) as hookId (hookId)}
     {@const expanded = expandedIds.includes(hookId)}
     <div class="flex flex-col mb-3 rounded-md border border-darkborderc min-w-0" data-input-hook={hookId}>
         <button
@@ -127,9 +136,9 @@
                     size={18}
                     class="shrink-0"
                 />{/if}
-            <span class="grow min-w-0 break-words">{hook.name}</span>
+            <span class="grow min-w-0 break-words">{liveHook(hookId)?.name ?? ""}</span>
             <span class="shrink-0 rounded-sm border border-darkborderc px-2 py-0.5 text-xs text-textcolor2">
-                {hook.type === "draft" ? language.inputHooks.draft : language.inputHooks.btw}
+                {liveHook(hookId)?.type === "draft" ? language.inputHooks.draft : language.inputHooks.btw}
             </span>
         </button>
         {#if expanded}
@@ -155,6 +164,16 @@
                     <OptionInput value="draft">{language.inputHooks.draft}</OptionInput>
                     <OptionInput value="btw">{language.inputHooks.btw}</OptionInput>
                 </SelectInput>
+                {#if liveHook(hookId)?.type === "draft"}
+                    <Check
+                        className="mt-2"
+                        name={language.inputHooks.translationMode}
+                        bind:check={
+                            () => liveHook(hookId)?.translation === true, (value) => setTranslation(hookId, value)
+                        }
+                    />
+                    <p class="text-sm text-textcolor2">{language.inputHooks.translationModeDescription}</p>
+                {/if}
                 <label for={`input-hook-model-${hookId}`} class="text-sm mt-2">{language.inputHooks.model}</label>
                 <SelectInput
                     id={`input-hook-model-${hookId}`}

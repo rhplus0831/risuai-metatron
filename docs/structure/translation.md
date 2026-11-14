@@ -174,6 +174,13 @@ on the rendered path; cache buttons remain for LLM. Auto-translate is a [chat se
    question.
 3. Notices are best effort: a tab disconnected when the job sent one has no loading state or failure notice, but still
    gets the stored translation through its chat refresh.
+4. A Draft hook with translation mode ([chat pipeline](chat-pipeline.md#send)) sends the typed main box text as
+   `context.inputOriginal`; the input stage appends the user message with it as a fresh record
+   (`targetLanguage: "original"`, no `presetId`; [server generation](server-generation.md#prompt-job-execution)). The
+   unforced hand-off request finds it fresh and starts no run; with `translateBotOnly` the message is not handed off.
+5. It shows only on the stored path ([Stored display and edits](#stored-display-and-edits)); with another translator or
+   the `rendered` target it is kept and not shown. In a bilingual pair the sent draft is the original and the typed text
+   the translation.
 
 ### Stored display and edits
 
@@ -294,3 +301,7 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
   `ChatBody` sanitizes the result. `translator.ts` `translateHTML` collects provider input from decoded `textContent`,
   so escaped markup reaches the provider as literal text. Escaping before the pass would break code spans, angle-bracket
   links, and KaTeX. Decision: owner, 2026-11-09 (Found Issues Clearance D1).
+- A Draft hook's stored original is hashed at the append. A start or output trigger of the same job that rewrites the
+  user message's `data` makes it stale, and the send hand-off (when it includes user messages) may then translate over
+  it. Re-hashing after the trigger would mark a record fresh that does not match the text. Decision: Input Hooks D2,
+  D13.

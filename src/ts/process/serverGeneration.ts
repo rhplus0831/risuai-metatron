@@ -27,6 +27,8 @@ export type ServerSendArg = {
     previewPrompt?: boolean;
     /** The chat input the job's input stage appends (from `sendMain`), with its message id. */
     input?: string;
+    /** The user's original text, stored as the reviewed draft's translation when the job appends it. */
+    inputOriginal?: string;
     userMessageId?: string;
     /** This action's request id, reused only while its previous attempt remains uncertain. */
     requestId?: string;
@@ -138,6 +140,9 @@ async function sendPinned(
                       }
                     : {}),
                 ...(input !== "" && arg.userMessageId ? { userMessageId: arg.userMessageId } : {}),
+                ...(input !== "" && arg.userMessageId && arg.inputOriginal !== undefined
+                    ? { inputOriginal: arg.inputOriginal }
+                    : {}),
                 ...(kind === "continue" && arg.continueMessageId ? { continueMessageId: arg.continueMessageId } : {}),
                 ...(arg.stopOverLoreBudget === true ? { stopOverLoreBudget: true } : {}),
             },

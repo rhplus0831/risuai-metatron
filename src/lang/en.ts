@@ -2405,6 +2405,9 @@ export const languageEnglish = {
             "Prompt slots: {{slot::content}} is the composer text, {{slot::draft}} is the draft box text, {{slot::history::N}} is the last N messages, and {{slot::historytrans::N}} is their translations, as in the translator.",
         draft: "Draft",
         btw: "BTW",
+        translationMode: "Translation mode",
+        translationModeDescription:
+            "Stores the text you typed as the sent message's translation. With the LLM translator on the message target and a target language set, it appears through the row's translation toggle or the chat's auto-translate.",
         add: "Add hook",
         empty: "No input hooks yet.",
         name: "Name",

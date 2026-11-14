@@ -100,6 +100,33 @@ const seededCharacters = () => [
 ];
 
 describe("sendChatOnServer", () => {
+    it("forwards the original with send, group and Continue input, and omits it from previews and rerolls", async () => {
+        const inputOriginal = "  원문\n 그대로  ";
+        for (const [arg, kind, context] of [
+            [{}, "send", { input: "Reviewed draft", userMessageId: "draft-user", inputOriginal }],
+            [
+                { target: { chaId: "g", chatId: "k" } },
+                "group",
+                { input: "Reviewed draft", userMessageId: "draft-user", inputOriginal },
+            ],
+            [
+                { continue: true, continueMessageId: "reply" },
+                "continue",
+                { input: "Reviewed draft", userMessageId: "draft-user", inputOriginal, continueMessageId: "reply" },
+            ],
+            [{ preview: true }, "preview", { input: "" }],
+            [{ previewPrompt: true }, "previewPrompt", { input: "" }],
+            [{ rerollMessageId: "reply" }, "reroll", { input: "", rerollMessageId: "reply" }],
+        ] as const) {
+            started(done());
+            await send({ target: ref, input: "Reviewed draft", userMessageId: "draft-user", inputOriginal, ...arg });
+            expect(lastRequest(), kind).toEqual({ kind, label: "send", context });
+        }
+        started(done());
+        await send({ target: ref, input: "Ordinary send", userMessageId: "plain-user" });
+        expect(lastRequest().context).toEqual({ input: "Ordinary send", userMessageId: "plain-user" });
+    });
+
     it("passes the requested lore budget guard to the job and returns a stop only for its marked follow", async () => {
         const terminal = loreBudgetTerminal(EPOCH);
         for (const [marked, valid] of [

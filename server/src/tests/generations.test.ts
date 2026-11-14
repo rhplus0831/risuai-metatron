@@ -607,6 +607,83 @@ describe("generation jobs over HTTP and WebSocket", () => {
         });
     });
 
+    it("preserves an original string for input jobs and leaves it absent when omitted", async () => {
+        await listen();
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        for (const kind of ["send", "continue", "reroll", "group"]) {
+            for (const original of [{ inputOriginal: "  원문\n 그대로  " }, { inputOriginal: "" }, {}]) {
+                const ctx = { ...(await context("Reviewed draft")), userMessageId: "draft-user", ...original };
+                const observed = withResolvers<RunningJob["context"]>();
+                step((job) => {
+                    job.emit({ type: "done", revision: ctx.chatRevision });
+                    observed.resolve(job.context);
+                    return "end" as never;
+                });
+                const accepted = await create({ kind, context: ctx, clientId: "tab" });
+                expect(accepted.status, `${kind}: ${JSON.stringify(original)}`).toBe(200);
+                const parsed = await observed.promise;
+                if ("inputOriginal" in original) expect(parsed.inputOriginal).toBe(original.inputOriginal);
+                else expect(parsed).not.toHaveProperty("inputOriginal");
+            }
+        }
+    });
+
+    it("rejects originals without a string, an input-stage kind, a user message id or nonempty input", async () => {
+        await listen();
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        const ctx = { ...(await context("Reviewed draft")), userMessageId: "draft-user", inputOriginal: "Original" };
+        for (const inputOriginal of [null, 7, true, {}, []]) {
+            expect((await create({ kind: "send", context: { ...ctx, inputOriginal }, clientId: "tab" })).status).toBe(
+                400,
+            );
+        }
+        for (const kind of ["preview", "previewPrompt", "command"]) {
+            expect(
+                (
+                    await create({
+                        kind,
+                        context: ctx,
+                        clientId: "tab",
+                        ...(kind === "command" ? { command: { type: "button", data: "" } } : {}),
+                    })
+                ).status,
+            ).toBe(400);
+        }
+        const { userMessageId: _id, ...withoutId } = ctx;
+        for (const context of [withoutId, { ...ctx, input: "" }]) {
+            expect((await create({ kind: "send", context, clientId: "tab" })).status).toBe(400);
+        }
+    });
+
+    it("replays the same request when the original changes or is omitted", async () => {
+        await listen();
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        const ctx = { ...(await context("Reviewed draft")), userMessageId: "draft-user" };
+        const body = {
+            kind: "send",
+            context: { ...ctx, inputOriginal: "First original" },
+            clientId: "tab",
+            requestId: "draft-request",
+        };
+        const observed = withResolvers<RunningJob>();
+        step((job) => observed.resolve(job));
+        const first = await create(body);
+        expect(first.status).toBe(200);
+        const running = await observed.promise;
+        for (const original of [{ inputOriginal: "Changed original" }, {}]) {
+            expect(await create({ ...body, context: { ...ctx, ...original } })).toMatchObject({
+                status: 200,
+                body: { jobId: first.body.jobId, replayed: true },
+            });
+        }
+        expect(running.context.inputOriginal).toBe("First original");
+        running.emit({ type: "done", revision: ctx.chatRevision });
+        expect(await create({ ...body, context: { ...ctx, inputOriginal: "After completion" } })).toMatchObject({
+            status: 200,
+            body: { jobId: first.body.jobId, replayed: true },
+        });
+    });
+
     it("accepts an OOC exchange only on a preview and preserves it in the runner context", async () => {
         await listen();
         const ctx = { ...(await context()), oocExchangeId: "exchange-one" };

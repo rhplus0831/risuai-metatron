@@ -192,6 +192,10 @@ In `DefaultChatScreen.svelte`: `send`/`sendContinue` → `sendMain` → `sendCha
 - Send Draft (`sendDraftMessage`) makes Send's checks, sends the draft box's sent text with the attachments, clears all
   four parts, and shares Send's lore-stop handling (`sendConsumed`). A failed draft send comes back whole, only into a
   composer whose four parts are empty (`composerEmptyFor`, `takeUnplaced`'s gate); an unchanged retry keeps its ids.
+- Translation mode: when the chat's Draft hook, read at the press, has `translation` and the main box is not blank, Send
+  Draft's `SendDraft` carries the raw main box text as `inputOriginal`, which `sendChatOnServer` forwards as
+  `context.inputOriginal` for a send with input ([translation](translation.md#send-hand-off)). The lore-stop repeat
+  carries it; `sendDrafts` does not keep it, so a retry reads the main box and the option again.
 - A nonempty input carries its `userMessageId`; retries of the same draft preserve it. The server job runs input
   processing and appends the message; Stop targets the captured chat's controller and followed jobs.
 - Lore budget stop: with the Interaction setting `loreBudgetStop` on and the chat's `loreBudgetWarnOff` unset

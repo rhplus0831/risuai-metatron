@@ -390,7 +390,7 @@ function canonicalJson(value: unknown): string {
  * SHA-256 of exactly kind, characterId, chatId, command, input, userMessageId, continueMessageId and rerollMessageId,
  * plus oocExchangeId only when present, with recursively sorted JSON object keys, array order kept,
  * and the other absent fields encoded as null. Omitting the OOC key preserves existing receipts.
- * Revision, binding ids, hooks and client id are excluded: retry identity follows the action and
+ * Revision, binding ids, hooks, client id and inputOriginal are excluded: retry identity follows the action and
  * input even after its owner's stored revision or connection changed.
  */
 function requestFingerprint(body: GenerationCreateBody): string {
