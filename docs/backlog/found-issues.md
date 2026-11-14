@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, seven more plan-leftover collections from memory the same day, the seventeenth (the Found Issues Decisions run) on 2026-11-09, the nineteenth (the Upstream Intake 2 run) on 2026-11-10, the twentieth (the Memory Panel Readability run) on 2026-11-11, the twenty-first (the Structured Memory Recent Timeline run) the same day, the twenty-second (the Per-Chat Memory run) on 2026-11-13, and the twenty-third (the Lore Budget Send Stop run) the same day; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, seven more plan-leftover collections from memory the same day, the seventeenth (the Found Issues Decisions run) on 2026-11-09, the nineteenth (the Upstream Intake 2 run) on 2026-11-10, the twentieth (the Memory Panel Readability run) on 2026-11-11, the twenty-first (the Structured Memory Recent Timeline run) the same day, the twenty-second (the Per-Chat Memory run) on 2026-11-13, the twenty-third (the Lore Budget Send Stop run) the same day, and the twenty-fifth (the OOC Session run) on 2026-11-14; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. An entry is a `###` heading under its area section, a paragraph saying what and where (`file:line`), then a **Why it matters:** line and a **Suggested handling:** line; the Contents list at the top counts each area's entries. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's section of [known issues](known-issues.md) (or to the guide's Known Hazards `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -56,8 +56,8 @@ are the Plugins entry below.
 - [Plugins](#plugins): 1
 - [Rendering](#rendering): 1
 - [Selection](#selection): 1
-- [Server generation](#server-generation): 1
-- [Test tooling](#test-tooling): 1
+- [Server generation](#server-generation): 2
+- [Test tooling](#test-tooling): 2
 
 ## Plugins
 
@@ -136,6 +136,22 @@ it to a worker thread." A size refusal before encoding at the shared gateway (`t
 bound; it was offered and not taken, since it also refuses legitimate large text. An exact count of a large text
 needs the encode off the serving thread, which is the worker design.
 
+### A model's tool call runs even when the request offered no tools
+
+The buffered Anthropic path calls `arg.ctx.tools.call(content.name, content.input)` for every returned `tool_use`
+block without checking that the name was among the tools the request offered (`server/src/llm/anthropic.ts:1166`).
+The tab's callback (`src/ts/process/request/transport.ts:472`) dispatches it through `callTool` in
+`src/ts/process/mcp/mcp.ts`, which finds a matching tool on its own; some of those tools write chat variables
+(`graphmem.ts`). The OpenAI Responses adapter also adds the configured web search whatever `arg.tools` holds
+(`server/src/llm/openAI/responses.ts`, near line 340). Found 2026-11-14 by the challenger of the OOC Session plan's
+slice 3, whose answer request passes `tools: []`; not reproduced with a provider.
+
+**Why it matters:** "no tools" is a caller contract the lower layers do not enforce, so an OOC answer (or any request
+made without tools) can still run a tool that writes the chat if a provider returns a call it was not offered.
+
+**Suggested handling:** refuse a call whose name is not in the offered list at the dispatch boundary, and leave the
+web search out when the caller passed an empty tool list.
+
 ## Test tooling
 
 ### The job handoff driver's fixture is never given the database write consent its listener needs
@@ -150,3 +166,15 @@ open (0 of 10 cases), and passed once the run answered the dialog. The handoff i
 
 **Suggested handling:** seed the `dbWrite` grant with the `replacer` grant in the fixture, or have the driver answer
 the dialog.
+
+### The working-tree listing test can see the staged blob under load
+
+`util/typeCheckCache.test.ts:109` ("lists a tracked file by its content on disk ...") stages `src/tracked.ts`, rewrites
+it with content of the same length, and expects a new blob id. Under whole-suite load both writes can land in the same
+mtime tick, so git's racy-stat cache reports the staged blob: it failed once with `expected '100644 cc798ff…' not to
+be '100644 cc798ff…'` in the OOC Session slice 1 whole-suite run (2026-11-14) and passed when run alone.
+
+**Why it matters:** a whole-suite gate failure unrelated to the change under test.
+
+**Suggested handling:** rewrite with content of a different length, or move the file's mtime explicitly
+(`utimesSync`) before listing.
