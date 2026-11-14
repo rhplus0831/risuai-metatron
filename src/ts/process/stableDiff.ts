@@ -621,12 +621,17 @@ async function generateAIImageForProvider(
         }
 
         const uri = model === "core" ? "core" : model === "ultra" ? "ultra" : "sd3";
-        const da = await fetch("https://api.stability.ai/v2beta/stable-image/generate/" + uri, {
+        // `fetchNative` takes bytes, not FormData: encode the form here and send its boundary with it.
+        const multipart = new Response(formData);
+        const multipartBody = new Uint8Array(await multipart.arrayBuffer());
+        signal?.throwIfAborted();
+        const da = await fetchNative("https://api.stability.ai/v2beta/stable-image/generate/" + uri, {
             signal,
-            body: formData,
+            body: multipartBody,
             headers: {
                 authorization: "Bearer " + settings.secrets.stabilityKey,
                 accept: "image/*",
+                "content-type": multipart.headers.get("content-type"),
             },
             method: "POST",
         });

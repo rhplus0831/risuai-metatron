@@ -44,6 +44,7 @@ import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import type { CapturedTransform } from "src/ts/parser/transformClient";
 import { runTranslator, translate, translateHTML, translateVox } from "./translator";
+import { globalFetchFromResponse } from "src/ts/tests/globalApiMock";
 import { sayTTS, stopTTS } from "src/ts/process/tts";
 import type { ClientCharacter } from "src/ts/storage/characterStore.svelte";
 
@@ -106,7 +107,8 @@ function reply(url: string, init: Request = {}) {
               },
           };
 }
-const calls = () => deps.globalFetch.mock.calls.length + deps.fetch.mock.calls.length;
+// Every provider request goes through `globalFetch`; `deps.fetch` is the direct Google adapter's transport behind it.
+const calls = () => deps.globalFetch.mock.calls.length;
 
 it("suppresses translator failures after speech is Stopped while signal-free translator calls still alert", async () => {
     media.translatorType = "llm";
@@ -152,12 +154,15 @@ it("suppresses translator failures after speech is Stopped while signal-free tra
 beforeEach(() => {
     vi.clearAllMocks();
     configure();
-    deps.globalFetch.mockImplementation(async (url: string, init: Request) => reply(url, init));
+    deps.globalFetch.mockImplementation(async (url: string, init: Request) =>
+        url.startsWith("https://translate.googleapis.com/")
+            ? globalFetchFromResponse(deps.fetch, url, init)
+            : reply(url, init),
+    );
     deps.fetch.mockImplementation(async (url: string) => {
         const query = new URL(url).searchParams;
         return Response.json([[[`${query.get("tl").toUpperCase()}:${query.get("q")}`]]]);
     });
-    vi.stubGlobal("fetch", deps.fetch);
     deps.script.mockImplementation(async (_char: unknown, text: string) => ({ data: text }));
     // A visible marker proves that the translated node, including a replacement node, was processed.
     deps.markdown.mockImplementation((node: HTMLElement) => node.setAttribute("data-markdown", "applied"));
@@ -371,7 +376,8 @@ describe("translate memory cache ownership", () => {
         );
 
         await expect(translate(source, false)).resolves.toBe("KO:experimental Google retry");
-        expect(deps.globalFetch).toHaveBeenCalledTimes(2);
+        // The experimental page, the direct fallback, then the experimental page again.
+        expect(deps.globalFetch).toHaveBeenCalledTimes(3);
         expect(deps.fetch).toHaveBeenCalledTimes(1);
     });
 

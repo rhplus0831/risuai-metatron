@@ -73,9 +73,9 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
   refresh identity `keyVersion`).
 - `src/ts/model/openrouter.ts`, `src/ts/model/nanogpt.ts`, `src/ts/model/ollama.ts`: discovery and account fetches with
   the edited profile, through `auxFetch` ([network jobs](network-jobs.md)) to the server's `/proxy2` rows (NanoGPT's
-  keyless public list and a local Ollama host are fetched directly; the module headers say how). Their callers, the
-  pickers and panels `src/lib/Setting/Pages/Model/ModelProfileEditor.svelte` mounts (`NanoGPTDashboard.svelte` among
-  them), refetch on `keyVersion`.
+  keyless public list and a local Ollama host go through `globalFetch` instead; the module headers say how). Their
+  callers, the pickers and panels `src/lib/Setting/Pages/Model/ModelProfileEditor.svelte` mounts
+  (`NanoGPTDashboard.svelte` among them), refetch on `keyVersion`.
 - `server/src/llm/credentials.ts` `resolveCredential`, `defaultCredentialKey`: the server's resolver over the plaintext
   keys; refusal messages are `server/src/llm/messages.ts` `errors.credential*`.
 - `server/src/llm/auxOps.ts` `AUX_OPS`, `planAuxOp`: the `/proxy2` auxiliary operations ([server](self-host-server.md)):

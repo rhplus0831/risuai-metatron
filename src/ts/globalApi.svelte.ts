@@ -837,6 +837,14 @@ function addFetchLogInGlobalFetch(response: any, success: boolean, url: string, 
 }
 
 /**
+ * The JSON content type a request body gets by default. A GET has no body and gets none: a cross-origin plain fetch
+ * would otherwise need a CORS preflight, which some hosts (plugin update URLs among them) do not answer.
+ */
+function defaultContentType(arg: GlobalFetchArgs): { "Content-Type"?: string } {
+    return arg.method === "GET" ? {} : { "Content-Type": "application/json" };
+}
+
+/**
  * Performs a fetch request using plain fetch.
  *
  * @param {string} url - The URL to fetch.
@@ -845,7 +853,7 @@ function addFetchLogInGlobalFetch(response: any, success: boolean, url: string, 
  */
 async function fetchWithPlainFetch(url: string, arg: GlobalFetchArgs): Promise<GlobalFetchResult> {
     try {
-        const headers = { "Content-Type": "application/json", ...arg.headers };
+        const headers = { ...defaultContentType(arg), ...arg.headers };
         const response = await fetch(new URL(url), {
             body: JSON.stringify(arg.body),
             headers,
@@ -870,7 +878,7 @@ async function fetchWithPlainFetch(url: string, arg: GlobalFetchArgs): Promise<G
  */
 async function fetchWithUSFetch(url: string, arg: GlobalFetchArgs): Promise<GlobalFetchResult> {
     try {
-        const headers = { "Content-Type": "application/json", ...arg.headers };
+        const headers = { ...defaultContentType(arg), ...arg.headers };
         const response = await userScriptFetch(url, {
             body: JSON.stringify(arg.body),
             headers,
@@ -891,15 +899,18 @@ async function fetchWithUSFetch(url: string, arg: GlobalFetchArgs): Promise<Glob
  * `risu-header` the encoded JSON upstream headers. A fresh JWT is sent as `risu-auth` when present,
  * `useRisuToken` adds `x-risu-tk: use`, and `requestTimeoutMs` adds `risu-timeout-ms` (floored,
  * at least 1). These outer headers are separate from the upstream headers.
- * URLSearchParams uses form encoding; other bodies use JSON, with matching default content types.
+ * URLSearchParams uses form encoding; other bodies use JSON, with matching default upstream content types (none for
+ * a GET).
  * Method defaults to POST. Raw responses return bytes; otherwise a non-JSON response is a failure
  * even on HTTP success. Transport/auth errors become status 400 results; response reads are logged.
  */
 async function fetchWithProxy(url: string, arg: GlobalFetchArgs): Promise<GlobalFetchResult> {
     try {
         arg.headers ??= {};
-        arg.headers["Content-Type"] ??=
-            arg.body instanceof URLSearchParams ? "application/x-www-form-urlencoded" : "application/json";
+        if (arg.method !== "GET") {
+            arg.headers["Content-Type"] ??=
+                arg.body instanceof URLSearchParams ? "application/x-www-form-urlencoded" : "application/json";
+        }
         const nodeProxyAuth = await getNodeServerProxyAuth();
         const headers = {
             "risu-header": encodeURIComponent(JSON.stringify(arg.headers)),

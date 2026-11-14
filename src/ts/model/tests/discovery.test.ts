@@ -5,6 +5,7 @@ vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).cre
 
 import type { ModelProfile } from "../../../../shared/database.ts";
 import { auxFetch } from "src/ts/network/auxFetch";
+import { globalFetch } from "src/ts/globalApi.svelte";
 import * as auxRequests from "src/ts/network/auxFetch";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { setMaskedSecrets } from "src/ts/storage/llmSecrets.svelte";
@@ -22,7 +23,6 @@ import { getOllamaModels } from "../ollama";
 import { getModelList, LLMModels, registerModelDynamic } from "../modellist";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 
-const originalFetch = globalThis.fetch;
 const catalogueLength = LLMModels.length;
 
 beforeEach(() => {
@@ -34,14 +34,16 @@ beforeEach(() => {
             models: [{ name: "private-model" }],
         }),
     );
-    vi.stubGlobal(
-        "fetch",
-        vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: "public-model" }] })),
-    );
+    // The public NanoGPT list goes through `globalFetch`.
+    vi.mocked(globalFetch).mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: {},
+        data: { data: [{ id: "public-model" }] },
+    });
 });
 afterEach(() => {
     vi.clearAllMocks();
-    globalThis.fetch = originalFetch;
     LLMModels.splice(catalogueLength);
     vi.restoreAllMocks();
 });
@@ -92,7 +94,7 @@ describe("profile discovery calls", () => {
                 expect.objectContaining({ method: "GET", profileId: "edited" }),
             );
             expect(getModelList({ groupedByProvider: false })).toContainEqual(expect.objectContaining({ id, name }));
-            expect(fetch).not.toHaveBeenCalled();
+            expect(globalFetch).not.toHaveBeenCalled();
         },
     );
     it.each([
@@ -116,7 +118,7 @@ describe("profile discovery calls", () => {
             expect.any(String),
             expect.objectContaining({ profileId: "edited" }),
         );
-        expect(fetch).not.toHaveBeenCalled();
+        expect(globalFetch).not.toHaveBeenCalled();
     });
     it.each([
         ["personalized", getNanoGPTModels],
@@ -124,7 +126,7 @@ describe("profile discovery calls", () => {
     ] as const)("%s returns the named account's models without a flat key", async (_list, call) => {
         const profile = normalizeModelProfile({ id: "edited", modelId: "nanogpt", credentialId: "named" });
         expect(await call(profile)).toEqual([expect.objectContaining({ id: "private-model" })]);
-        expect(fetch).not.toHaveBeenCalled();
+        expect(globalFetch).not.toHaveBeenCalled();
     });
     it.each([
         ["personalized", getNanoGPTModels],
@@ -134,12 +136,12 @@ describe("profile discovery calls", () => {
         const profile = normalizeModelProfile({ id: "edited", modelId: "nanogpt", credentialId: "gone" });
         expect(await call(profile)).toEqual([]);
         expect(auxFetch).not.toHaveBeenCalled();
-        expect(fetch).not.toHaveBeenCalled();
+        expect(globalFetch).not.toHaveBeenCalled();
     });
     it("keeps public discovery for an unbound profile without a default key", async () => {
         const profile = normalizeModelProfile({ id: "edited", modelId: "nanogpt" });
         expect(await getNanoGPTModels(profile)).toEqual([expect.objectContaining({ id: "public-model" })]);
         expect(auxFetch).not.toHaveBeenCalled();
-        expect(fetch).toHaveBeenCalledTimes(1);
+        expect(globalFetch).toHaveBeenCalledTimes(1);
     });
 });

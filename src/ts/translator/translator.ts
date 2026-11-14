@@ -550,27 +550,27 @@ async function translateMain(
         `https://${arg.host}/translate_a/single?client=gtx&dt=t&sl=${provider.translatorInputLanguage}&tl=${arg.to}&q=` +
         encodeURIComponent(text);
 
-    let f: Response;
-    try {
-        f = await fetch(url, {
-            signal: arg.signal,
-            method: "GET",
-        });
-    } catch (error) {
-        throw markTransient(error, arg.signal);
-    }
+    const f = await globalFetch(url, {
+        abortSignal: arg.signal,
+        method: "GET",
+        rawResponse: true,
+    });
 
     arg.signal?.throwIfAborted();
     if (!f.ok) {
-        throw markTransient(new Error(`Google Translate returned HTTP ${f.status}`), arg.signal);
+        // With `rawResponse` a reply's body is bytes; string data is `globalFetch`'s own transport failure.
+        const message =
+            typeof f.data === "string"
+                ? `Google Translate request failed: ${f.data}`
+                : `Google Translate returned HTTP ${f.status}`;
+        throw markTransient(new Error(message), arg.signal);
     }
     let res: unknown;
     try {
-        res = await f.json();
+        res = JSON.parse(new TextDecoder().decode(f.data));
     } catch (error) {
         throw markTransient(error, arg.signal);
     }
-    arg.signal?.throwIfAborted();
     const translations: string[] =
         Array.isArray(res) && Array.isArray(res[0])
             ? res[0].flatMap((segment: unknown) =>

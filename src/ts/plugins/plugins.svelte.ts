@@ -3,6 +3,7 @@ import { language } from "../../lang";
 import { upsertPlugin } from "../storage/collectionStore.svelte";
 import { alertConfirm, alertError } from "../alert";
 import { selectSingleFile } from "../util";
+import { globalFetch } from "../globalApi.svelte";
 import { hotReloading } from "../stores.svelte";
 import {
     getV3PluginInstance,
@@ -73,15 +74,16 @@ export const checkPluginUpdate = async (plugin: RisuPlugin) => {
             }
         }
 
-        const response = await fetch(plugin.updateURL, {
+        const response = await globalFetch(plugin.updateURL, {
             method: "GET",
             headers: {
                 Range: "bytes=0-512",
             },
+            rawResponse: true,
         });
 
-        if (response.status >= 200 && response.status < 300) {
-            const text = await response.text();
+        if (response.ok) {
+            const text = new TextDecoder().decode(response.data);
             const versioRegex = /\/\/@version\s+([^\s]+)/;
             const match = text.match(versioRegex);
             if (match && match[1]) {
@@ -108,9 +110,9 @@ export async function updatePlugin(plugin: RisuPlugin) {
         if (!plugin.updateURL) {
             return false;
         }
-        const response = await fetch(plugin.updateURL);
-        if (response.status >= 200 && response.status < 300) {
-            const jsFile = await response.text();
+        const response = await globalFetch(plugin.updateURL, { method: "GET", rawResponse: true });
+        if (response.ok) {
+            const jsFile = new TextDecoder().decode(response.data);
             await importPlugin(jsFile, {
                 isUpdate: true,
                 originalPluginName: plugin.name,

@@ -31,7 +31,8 @@ vi.mock("./gui/guisize", () => ({}));
 vi.mock("./process/modules", () => ({}));
 vi.mock("./storage/serverAuth", () => ({ getNodeServerProxyAuth: async () => "" }));
 
-import { fetchNative, getFetchLogs } from "./globalApi.svelte";
+import { fetchNative, getFetchLogs, globalFetch } from "./globalApi.svelte";
+import { settings } from "./storage/settingsViews.svelte";
 const fetchStub = vi.fn<typeof fetch>();
 const url = "https://example.test/internal";
 const sent = () => fetchStub.mock.calls.at(-1)![1]!;
@@ -275,5 +276,33 @@ describe("internal fetchNative body contract", () => {
         const log = vi.spyOn(console, "log").mockImplementation(() => {});
         await fetchNative(url, { method: "POST", body: "private-body-sentinel" });
         expect(log.mock.calls.flat().join(" ")).not.toContain("private-body-sentinel");
+    });
+});
+
+describe.each(["plain fetch", "userscript", "/proxy2"] as const)("globalFetch via %s", (route) => {
+    const userScript = vi.fn<typeof fetch>();
+    beforeEach(() => {
+        fetchStub.mockImplementation(async () => new Response("{}"));
+        userScript.mockReset().mockImplementation(async () => new Response("{}"));
+        if (route === "userscript") vi.stubGlobal("userScriptFetch", userScript);
+        settings.providers.usePlainFetch = route === "plain fetch";
+    });
+    afterEach(() => {
+        settings.providers.usePlainFetch = false;
+    });
+    // The headers the remote host receives; through `/proxy2` they travel encoded in `risu-header`.
+    const upstreamHeaders = (): Record<string, string> => {
+        const init = (route === "userscript" ? userScript : fetchStub).mock.lastCall![1]!;
+        const headers = init.headers as Record<string, string>;
+        return route === "/proxy2" ? JSON.parse(decodeURIComponent(headers["risu-header"])) : headers;
+    };
+
+    it("sends a GET with only the caller's headers and gives a POST the JSON content type", async () => {
+        // A JSON content type on a cross-origin GET would need a CORS preflight that a plugin's update host may refuse.
+        await globalFetch(url, { method: "GET", headers: { Range: "bytes=0-512" }, rawResponse: true });
+        expect(upstreamHeaders()).toEqual({ Range: "bytes=0-512" });
+
+        await globalFetch(url, { method: "POST", body: { text: "hi" } });
+        expect(upstreamHeaders()).toEqual({ "Content-Type": "application/json" });
     });
 });

@@ -28,6 +28,8 @@ vi.mock("src/ts/util", () => ({
     selectSingleFile: vi.fn(),
 }));
 
+// The update check and download go through `globalFetch`.
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/ts/stores.svelte", async () =>
     (await import("src/ts/tests/storesMock")).createStoresMock({
         hotReloading: [] as string[],
@@ -46,7 +48,15 @@ import { changeLanguage, language } from "src/lang";
 import { hotReloading } from "src/ts/stores.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
-import { handlePluginInstallViaPlugin, importPlugin, loadPlugins, type RisuPlugin } from "./plugins.svelte";
+import { globalFetch } from "src/ts/globalApi.svelte";
+import {
+    checkPluginUpdate,
+    handlePluginInstallViaPlugin,
+    importPlugin,
+    loadPlugins,
+    updatePlugin,
+    type RisuPlugin,
+} from "./plugins.svelte";
 import { pluginHooks } from "./pluginHooks";
 
 // The plugin functions read and write the plugin list through the settings views: the records are
@@ -91,6 +101,37 @@ describe("importPlugin API version gate", () => {
             enabled: true,
         });
         expect(mocks.loadV3Plugins).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("plugin updates through globalFetch", () => {
+    const updateURL = "https://plugins.test/test_plugin.js";
+    const bytes = (text: string) => ({ ok: true, status: 200, headers: {}, data: new TextEncoder().encode(text) });
+    beforeEach(() => vi.mocked(globalFetch).mockClear());
+
+    it("reads the newer version from the first bytes of the update URL", async () => {
+        vi.mocked(globalFetch).mockResolvedValueOnce({
+            ...bytes("//@name version_probe\n//@version 1.2.0\n"),
+            status: 206,
+        });
+        const plugin = { name: "version_probe", updateURL, versionOfPlugin: "1.0.0" } as RisuPlugin;
+
+        await expect(checkPluginUpdate(plugin)).resolves.toEqual({ version: "1.2.0", updateURL });
+        expect(globalFetch).toHaveBeenCalledExactlyOnceWith(updateURL, {
+            method: "GET",
+            headers: { Range: "bytes=0-512" },
+            rawResponse: true,
+        });
+    });
+
+    it("installs the script the update URL answers in place of the installed one", async () => {
+        await importPlugin(script("//@api 3.0\n//@version 1.0.0"));
+        vi.mocked(globalFetch).mockResolvedValueOnce(bytes(script("//@api 3.0\n//@version 2.0.0")));
+
+        await expect(updatePlugin({ ...settings.plugins[0], updateURL })).resolves.toBe(true);
+        expect(globalFetch).toHaveBeenLastCalledWith(updateURL, { method: "GET", rawResponse: true });
+        expect(settings.plugins).toHaveLength(1);
+        expect(settings.plugins[0].versionOfPlugin).toBe("2.0.0");
     });
 });
 

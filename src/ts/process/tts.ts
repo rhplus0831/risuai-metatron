@@ -257,28 +257,25 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                 break;
             }
             case "elevenlab": {
-                const da = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${character.ttsSpeech}`, {
-                    signal,
-                    body: JSON.stringify({
+                const da = await globalFetch(`https://api.elevenlabs.io/v1/text-to-speech/${character.ttsSpeech}`, {
+                    abortSignal: signal,
+                    body: {
                         text: text,
                         model_id: "eleven_multilingual_v2",
-                    }),
+                    },
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
                         "xi-api-key": settings.secrets.elevenLabKey || undefined,
                     },
+                    rawResponse: true,
                 });
                 signal.throwIfAborted();
-                if (da.status >= 200 && da.status < 300) {
-                    const buffer = await da.arrayBuffer();
-                    signal.throwIfAborted();
-                    const mimeType = da.headers.get("content-type") || "audio/mpeg";
-                    await playAudio(buffer, mimeType, hookCtx);
+                if (da.ok) {
+                    const mimeType = da.headers["content-type"] || "audio/mpeg";
+                    await playAudio(da.data.buffer, mimeType, hookCtx);
                 } else {
-                    const errorText = await da.text();
-                    signal.throwIfAborted();
-                    alertError(errorText);
+                    alertError(Buffer.from(da.data).toString());
                 }
                 break;
             }
@@ -421,39 +418,35 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                 }
                 while (true) {
                     signal.throwIfAborted();
-                    const response = await fetch(
+                    const response = await globalFetch(
                         `https://api-inference.huggingface.co/models/${character.hfTTS.model}`,
                         {
-                            signal,
+                            abortSignal: signal,
                             method: "POST",
                             headers: {
                                 Authorization: "Bearer " + settings.secrets.huggingfaceKey,
                                 "Content-Type": "application/json",
                             },
-                            body: JSON.stringify({
+                            body: {
                                 inputs: text,
-                            }),
+                            },
+                            rawResponse: true,
                         },
                     );
                     signal.throwIfAborted();
 
-                    if (response.status === 503 && response.headers.get("content-type") === "application/json") {
-                        const json = await response.json();
-                        signal.throwIfAborted();
+                    if (response.status === 503 && response.headers["content-type"] === "application/json") {
+                        const json = JSON.parse(Buffer.from(response.data).toString());
                         if (json.estimated_time) {
                             await retryDelay(json.estimated_time * 1000, signal);
                             continue;
                         }
                     } else if (response.status >= 400) {
-                        const errorText = await response.text();
-                        signal.throwIfAborted();
-                        alertError(language.errors.httpError + `${errorText}`);
+                        alertError(language.errors.httpError + Buffer.from(response.data).toString());
                         return;
                     } else if (response.status === 200) {
-                        const buffer = await response.arrayBuffer();
-                        signal.throwIfAborted();
-                        const mimeType = response.headers.get("content-type") || "audio/wav";
-                        await playAudio(buffer, mimeType, hookCtx);
+                        const mimeType = response.headers["content-type"] || "audio/wav";
+                        await playAudio(response.data.buffer, mimeType, hookCtx);
                     } else {
                         alertError("Error fetching or decoding audio data");
                     }
@@ -640,15 +633,17 @@ export function getWebSpeechTTSVoices() {
 
 /** Returns ElevenLabs voice records for `src/lib/SideBars/CharConfig.svelte`. */
 export async function getElevenTTSVoices() {
-    const data = await fetch("https://api.elevenlabs.io/v1/voices", {
+    const res = await globalFetch("https://api.elevenlabs.io/v1/voices", {
+        method: "GET",
         headers: {
             "xi-api-key": settings.secrets.elevenLabKey || undefined,
         },
     });
-    const res = await data.json();
-
-    console.log(res);
-    return res.voices;
+    if (!res.ok) {
+        console.error("ElevenLabs voices:", res.status, res.data);
+        return [];
+    }
+    return res.data.voices;
 }
 
 /** Returns VOICEVOX speakers with JSON style lists and a None entry for `src/lib/SideBars/CharConfig.svelte`. */

@@ -23,6 +23,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/util", () => ({ selectSingleFile: vi.fn() }));
+// The update check and download go through `globalFetch`.
+vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/ts/stores.svelte", async () =>
     (await import("src/ts/tests/storesMock")).createStoresMock({ hotReloading: [] as string[] }),
 );

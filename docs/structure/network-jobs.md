@@ -173,7 +173,8 @@ The transport below retains this tab's in-memory log.
   `fakeSubscription`/`FakeNotification`. Typed shared double: `src/ts/network/tests/generationJobsMock.ts`.
 - Browser probe: `util/playwright/checkJobProtocol.mjs` (a real v3 plugin provider answers job callbacks,
   [test-harness](test-harness.md)). `slow`: none.
-- Not tested: `globalFetch` routing beyond `fetchNative` method/body handling.
+- `globalFetch`'s default content type per route (none for a GET): `src/ts/globalApiNativeFetch.test.ts`.
+- Not tested: `globalFetch` routing beyond `fetchNative` method/body handling and that default.
 
 ## Known Hazards
 

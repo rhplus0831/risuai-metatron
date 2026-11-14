@@ -40,32 +40,19 @@ round trips, credentials in the settings report and the request log, names and t
 three that need a decision or real providers are entries below. Wave 4 broke the rules of six areas one at a time to
 see whether a test fails; the tests it found missing were written the same day. The review's method, counts, and cost are in [its report](../reports/audits/wide-review-2026-11-14.md).
 
+The entry on thirteen remote calls of the tab that bypassed the request wrappers was fixed later the same day: the
+buffered calls go through `globalFetch`, and Stability's multipart form, the Chub download, and `#import=` card links
+through `fetchNative`, which keeps their bytes and streams; a GET through `globalFetch` no longer gets a default JSON
+content type, which would make a cross-origin plain fetch need a CORS preflight. The calls that need a provider key
+are in [manual checks](manual-checks.md#real-providers-and-external-services).
+
 ## Contents
 
-- [Network](#network): 1
 - [Plugins](#plugins): 1
 - [Rendering](#rendering): 1
 - [Selection](#selection): 1
 - [Server generation](#server-generation): 1
 - [Test tooling](#test-tooling): 1
-
-## Network
-
-### Thirteen remote calls of the tab bypass the request wrappers and the request log
-
-Text to speech (`src/ts/process/tts.ts:260`), image generation (`src/ts/process/stableDiff.ts:624`), and translation
-(`src/ts/translator/translator.ts:555`) call `fetch` directly in thirteen places, where the other remote calls of the
-tab go through the wrappers that choose the route (the browser or the server's proxy) and write the request log. Found
-2026-11-14 by the wide review (cut I5, P2) and confirmed by a second reader, who reproduced all thirteen and narrowed
-the consequence: such a call fails for a provider the browser cannot reach directly, where a wrapped call would work,
-and the request log does not show it; no failure of a real provider was shown.
-
-**Why it matters:** the rule about who makes requests from the tab (invariant P2) has thirteen exceptions that no
-guide lists, and a failure in one of them leaves nothing in the log to look at.
-
-**Suggested handling:** convert each call to the existing buffered or byte-capable helper, keeping its method,
-headers, body, response bytes, and cancellation; the Stability multipart call must keep its boundary header. Not done
-with the other fixes of the review, since it touches providers that cannot be exercised without real keys.
 
 ## Plugins
 

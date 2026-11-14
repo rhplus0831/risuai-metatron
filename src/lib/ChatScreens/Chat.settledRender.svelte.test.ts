@@ -9,6 +9,7 @@ import type { TransformContinueRequest, TransformRequest, TransformResponse } fr
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
 import * as globalApi from "src/ts/globalApi.svelte";
+import { globalFetchFromResponse } from "src/ts/tests/globalApiMock";
 import { pluginHooks } from "src/ts/plugins/pluginHooks";
 import { characterList } from "src/ts/storage/characterStore.svelte";
 import {
@@ -596,12 +597,14 @@ describe("confirmed text on remount", () => {
         settings.memoryTranslateMedia.useExperimentalGoogleTranslator = false;
         settings.memoryTranslateMedia.combineTranslation = false;
         const translatedInputs: string[] = [];
-        vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-            const url = new URL(String(input));
+        // The direct Google adapter goes through `globalFetch`; this stub answers as its transport.
+        const google = async (input: string) => {
+            const url = new URL(input);
             expect(url.hostname).toBe("translate.googleapis.com");
             translatedInputs.push(url.searchParams.get("q")!);
             return Response.json([[["Translated fresh display"]]]);
-        });
+        };
+        vi.spyOn(globalApi, "globalFetch").mockImplementation((url, arg) => globalFetchFromResponse(google, url, arg));
         const release = deferred<void>();
         answer = async (_body, result) => {
             await release.promise;

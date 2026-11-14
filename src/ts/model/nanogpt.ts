@@ -1,4 +1,5 @@
 import { auxFetch } from "../network/auxFetch";
+import { globalFetch } from "../globalApi.svelte";
 import { credentialStatusFor } from "./credentials";
 import type { ModelProfile } from "../../../shared/database.ts";
 import type { SecretPath } from "../../../shared/llmSecrets.ts";
@@ -17,7 +18,8 @@ import type { ModelGridItem } from "./modelGrid";
  * through `auxFetch` (`src/ts/network/auxFetch.ts`) with the edited profile, so the server sends that profile's bound
  * key, or the flat default key when it binds none. A refused binding does not fall back to a default or public
  * account: the server refuses the call (`server/src/llm/auxOps.ts` `planAuxOp`), and `getNanoGPTModels` answers an
- * empty list instead of the public one. Only `getNanoGPTModels` without any key set reads the public list directly.
+ * empty list instead of the public one. Only `getNanoGPTModels` without any key set reads the public list, through
+ * `globalFetch`.
  */
 
 const NANOGPT_KEY: SecretPath = { kind: "flat", field: "nanogptKey" };
@@ -197,7 +199,7 @@ export async function getNanoGPTSubscriptionModels(profile?: ModelProfile): Prom
 }
 
 /**
- * Reads the personalized list through `auxFetch` when a key is set, otherwise the public list with browser fetch.
+ * Reads the personalized list through `auxFetch` when a key is set, otherwise the public list through `globalFetch`.
  * Refused bindings return an empty list. JSON is mapped without checking HTTP status; absent data or a
  * fetch/parsing/mapping failure also yields an empty list, with no public fallback after a personalized failure.
  */
@@ -207,14 +209,15 @@ export async function getNanoGPTModels(profile?: ModelProfile): Promise<NanoGPTM
         const headers: Record<string, string> = { "Content-Type": "application/json" };
         const status = credentialStatusFor(profile, NANOGPT_KEY);
         if (status.state === "refused") return [];
-        const res = status.keySet
-            ? await auxFetch("nanogpt-models", NANOGPT_PERSONALIZED_MODELS_ENDPOINT + "?detailed=true", {
-                  method: "GET",
-                  profileId: profile?.id,
-                  headers,
-              })
-            : await fetch(NANOGPT_MODELS_ENDPOINT + "?detailed=true", { headers });
-        const json = await res.json();
+        const json = status.keySet
+            ? await (
+                  await auxFetch("nanogpt-models", NANOGPT_PERSONALIZED_MODELS_ENDPOINT + "?detailed=true", {
+                      method: "GET",
+                      profileId: profile?.id,
+                      headers,
+                  })
+              ).json()
+            : (await globalFetch(NANOGPT_MODELS_ENDPOINT + "?detailed=true", { method: "GET", headers })).data;
 
         const models: any[] = json?.data ?? [];
 

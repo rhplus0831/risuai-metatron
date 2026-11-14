@@ -14,6 +14,7 @@ import { isTransient } from "src/ts/parser/renderErrors";
 import type { CapturedTransform } from "src/ts/parser/transformClient";
 import * as transformClient from "src/ts/parser/transformClient";
 import { globalFetch } from "src/ts/globalApi.svelte";
+import { globalFetchFromResponse } from "src/ts/tests/globalApiMock";
 import { requestChatData } from "src/ts/process/request/request";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
@@ -24,7 +25,8 @@ const provider = vi.fn<typeof fetch>();
 beforeEach(() => {
     vi.clearAllMocks();
     provider.mockReset().mockImplementation(async () => Response.json([[["Translation"]]]));
-    vi.stubGlobal("fetch", provider);
+    // The direct Google adapter goes through `globalFetch`; `provider` stands in for its transport.
+    vi.mocked(globalFetch).mockImplementation((url, arg) => globalFetchFromResponse(provider, url, arg));
     installFlatDatabase({
         characters: [],
         enabledModules: [],
@@ -111,7 +113,9 @@ describe("translateHTML render lifetime", () => {
         await expect(translateHTML("<p>Google experimental fallback</p>", false, "", -1, false, null)).resolves.toBe(
             "<p>Translation</p>",
         );
-        expect(globalFetch).toHaveBeenCalledExactlyOnceWith(
+        expect(globalFetch).toHaveBeenCalledTimes(2);
+        expect(globalFetch).toHaveBeenNthCalledWith(
+            1,
             "https://translate.google.com/m?tl=ko&sl=en&q=Google%20experimental%20fallback",
             expect.objectContaining({ rawResponse: true }),
         );

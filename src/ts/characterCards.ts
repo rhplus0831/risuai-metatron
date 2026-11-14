@@ -34,6 +34,7 @@ import {
     BlankWriter,
     checkCharOrder,
     downloadFile,
+    fetchNative,
     LocalWriter,
     readImage,
     saveAsset,
@@ -780,7 +781,7 @@ export async function characterURLImport() {
             const url = new URL(location.href);
             url.searchParams.delete("charahub");
             window.history.replaceState(window.history.state, "", url.toString());
-            const chara = await fetch("https://api.chub.ai/api/characters/download", {
+            const chara = await fetchNative("https://api.chub.ai/api/characters/download", {
                 method: "POST",
                 body: JSON.stringify({
                     format: "tavern",
@@ -806,7 +807,8 @@ export async function characterURLImport() {
         window.history.replaceState(window.history.state, "", location.pathname + location.search);
         const url = hash.replace("#import=", "");
         try {
-            const res = await fetch(url, {
+            // `fetchNative` keeps the Response, so the card reaches the importer as its Blob without a whole-file copy.
+            const res = await fetchNative(url, {
                 method: "GET",
             });
             await importFile(getFileName(res), await res.blob());

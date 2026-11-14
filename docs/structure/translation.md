@@ -277,8 +277,9 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
   (`TranslatorPresetSettings.test.ts`): [settings tests](settings-i18n.md#tests); sentence grouping and style pruning:
   [rendering tests](cbs-rendering.md#tests).
 - Server translation uses `Echo`, a temporary store, and fake LLM requests and token counts.
-- `translateHtmlLifetime.test.ts` and `translateHtmlWorkers.test.ts` stub the Google `fetch`; the workers test holds
-  each answer, reading the open-request count at its peak.
+- `translateHtmlLifetime.test.ts` and `translateHtmlWorkers.test.ts` answer the direct Google adapter's `globalFetch`
+  from a `fetch`-shaped stub (`globalFetchFromResponse` in `src/ts/tests/globalApiMock.ts`); the workers test holds each
+  answer, reading the open-request count at its peak.
 - Not tested: mounted bilingual rendering.
 
 ## Known Hazards

@@ -77,3 +77,36 @@ export function createGlobalApiMock(overrides: ModuleMockOverrides<GlobalApiModu
     } satisfies GlobalApiModule;
     return { ...defaults, ...overrides } as GlobalApiModule;
 }
+
+type GlobalFetchArgs = NonNullable<Parameters<GlobalApiModule["globalFetch"]>[1]>;
+type GlobalFetchResult = Awaited<ReturnType<GlobalApiModule["globalFetch"]>>;
+
+/**
+ * Answers a `globalFetch` call from a fetch-shaped stub, reporting what it got the way `globalFetch` does: the body's
+ * bytes with `rawResponse`, otherwise its parsed JSON (a body that is not JSON fails, with its text as data), and a
+ * status 400 result carrying the error's text when the stub rejects. For a mocked `globalFetch`:
+ *
+ * ```ts
+ * vi.mocked(globalFetch).mockImplementation((url, arg) => globalFetchFromResponse(provider, url, arg));
+ * ```
+ */
+export async function globalFetchFromResponse(
+    answer: (url: string, init: RequestInit) => Promise<Response>,
+    url: string,
+    arg: GlobalFetchArgs = {},
+): Promise<GlobalFetchResult> {
+    let response: Response;
+    try {
+        response = await answer(url, { method: arg.method, headers: arg.headers, signal: arg.abortSignal });
+    } catch (error) {
+        return { ok: false, status: 400, headers: {}, data: `${error}` };
+    }
+    const reply = { ok: response.ok, status: response.status, headers: Object.fromEntries(response.headers) };
+    if (arg.rawResponse) return { ...reply, data: new Uint8Array(await response.arrayBuffer()) };
+    const text = await response.text();
+    try {
+        return { ...reply, data: JSON.parse(text) };
+    } catch {
+        return { ...reply, ok: false, data: text };
+    }
+}

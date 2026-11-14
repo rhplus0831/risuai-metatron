@@ -11,6 +11,8 @@ vi.mock("src/ts/process/request/request", async () =>
 );
 
 import { isTransient } from "src/ts/parser/renderErrors";
+import { globalFetch } from "src/ts/globalApi.svelte";
+import { globalFetchFromResponse } from "src/ts/tests/globalApiMock";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { translate, translateHTML } from "./translator";
 
@@ -61,7 +63,8 @@ beforeEach(() => {
             if (draining) request.answer();
         });
     });
-    vi.stubGlobal("fetch", provider);
+    // The direct Google adapter goes through `globalFetch`; `provider` stands in for its transport.
+    vi.mocked(globalFetch).mockImplementation((url, arg) => globalFetchFromResponse(provider, url, arg));
     installFlatDatabase({
         characters: [],
         enabledModules: [],

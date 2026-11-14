@@ -107,7 +107,20 @@ function character(ttsMode: string) {
     } as ClientCharacter;
 }
 const audioResponse = () => new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "audio/wav" } });
-const globalResponse = () => ({ ok: true, data: new Uint8Array([1, 2, 3]) });
+const globalResponse = () => ({
+    ok: true,
+    status: 200,
+    headers: { "content-type": "audio/wav" } as Record<string, string>,
+    data: new Uint8Array([1, 2, 3]),
+});
+const globalJson = (body: unknown, status: number) => ({
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { "content-type": "application/json" } as Record<string, string>,
+    data: new TextEncoder().encode(JSON.stringify(body)),
+});
+const globalSignal = (urlPart: string): AbortSignal =>
+    deps.globalFetch.mock.calls.findLast(([url]) => String(url).includes(urlPart))![1].abortSignal;
 
 beforeEach(() => {
     vi.clearAllMocks();
@@ -171,14 +184,14 @@ describe("sayTTS and stopTTS", () => {
                 await started.promise;
                 await vi.advanceTimersByTimeAsync(LLM_CALLBACK_TIMEOUT_MS - 1);
                 expect(next).not.toHaveBeenCalled();
-                expect(deps.fetch).not.toHaveBeenCalled();
+                expect(deps.globalFetch).not.toHaveBeenCalled();
                 await vi.advanceTimersByTimeAsync(1);
                 expect(seen).toEqual([{ text: "Hello", ttsMode: "elevenlab", characterId: "speaker" }]);
                 await work;
                 if (skip) {
-                    expect(deps.fetch).not.toHaveBeenCalled();
+                    expect(deps.globalFetch).not.toHaveBeenCalled();
                 } else {
-                    expect(JSON.parse(deps.fetch.mock.lastCall![1].body).text).toBe("Hello next");
+                    expect(deps.globalFetch.mock.lastCall![1].body.text).toBe("Hello next");
                 }
                 expect(sources).toHaveLength(skip ? 0 : 1);
                 expect(vi.getTimerCount()).toBe(0);
@@ -359,20 +372,21 @@ describe("sayTTS and stopTTS", () => {
     });
 
     it("prevents provider requests pending at Stop from starting audio, while allowing later speech", async () => {
-        const normal = deferred<Response>();
+        const normal = deferred<ReturnType<typeof globalResponse>>();
         const gain = deferred<ReturnType<typeof globalResponse>>();
-        deps.fetch.mockReturnValueOnce(normal.promise);
-        deps.globalFetch.mockReturnValueOnce(gain.promise);
+        deps.globalFetch.mockImplementation((url: string) =>
+            url.includes("elevenlabs") ? normal.promise : gain.promise,
+        );
         const work = Promise.all([
             sayTTS(character("elevenlab"), "pending"),
             sayTTS(character("gptsovits"), "pending gain"),
         ]);
-        await vi.waitFor(() => expect(deps.globalFetch).toHaveBeenCalledOnce());
-        expect(deps.fetch).toHaveBeenCalledOnce();
+        await vi.waitFor(() => expect(deps.globalFetch).toHaveBeenCalledTimes(2));
         stopTTS();
-        normal.resolve(audioResponse());
+        normal.resolve(globalResponse());
         gain.resolve(globalResponse());
         await work;
+        deps.globalFetch.mockImplementation(async () => globalResponse());
         expect(sources.filter((source) => source.start.mock.calls.length)).toHaveLength(0);
         for (const context of contexts) expect(context.close).toHaveBeenCalledOnce();
         await sayTTS(character("elevenlab"), "after stop");
@@ -391,9 +405,10 @@ describe("sayTTS and stopTTS", () => {
                 throw new DOMException("Request aborted", "AbortError");
             });
         });
-        deps.globalFetch.mockImplementationOnce(() => {
-            globalStarted.resolve(undefined);
-            return cancelled.promise.then(() => ({ ok: false, data: "Request aborted" }));
+        let globalCalls = 0;
+        deps.globalFetch.mockImplementation(() => {
+            if (++globalCalls === 2) globalStarted.resolve(undefined);
+            return cancelled.promise.then(() => ({ ok: false, status: 400, headers: {}, data: "Request aborted" }));
         });
         deps.auxFetch.mockImplementationOnce(() => {
             auxStarted.resolve(undefined);
@@ -402,11 +417,12 @@ describe("sayTTS and stopTTS", () => {
             });
         });
         deps.isSecretSet.mockReturnValue(true);
-        const speakers = [character("elevenlab"), character("gptsovits"), character("openai")];
+        const speakers = [character("VOICEVOX"), character("elevenlab"), character("gptsovits"), character("openai")];
         const work = Promise.all(speakers.map((speaker) => sayTTS(speaker, "pending speech")));
         const requestSignals = (): AbortSignal[] => [
             deps.fetch.mock.lastCall![1].signal,
-            deps.globalFetch.mock.lastCall![1].abortSignal,
+            globalSignal("elevenlabs"),
+            globalSignal("sovits.test"),
             deps.auxFetch.mock.lastCall![2].signal,
         ];
         await Promise.all([directStarted.promise, globalStarted.promise, auxStarted.promise]);
@@ -423,6 +439,7 @@ describe("sayTTS and stopTTS", () => {
             cancelled.resolve(undefined);
             await work;
         }
+        deps.globalFetch.mockImplementation(async () => globalResponse());
         expect(deps.alert).not.toHaveBeenCalled();
         expect(sources).toHaveLength(0);
 
@@ -444,21 +461,21 @@ describe("sayTTS and stopTTS", () => {
         const estimatedSeconds = 5;
         const speaker = character("huggingface");
         speaker.hfTTS = { language: "en", model: "test/speech-model" };
-        deps.fetch.mockResolvedValueOnce(Response.json({ estimated_time: estimatedSeconds }, { status: 503 }));
+        deps.globalFetch.mockResolvedValueOnce(globalJson({ estimated_time: estimatedSeconds }, 503));
         let finished = false;
         const work = sayTTS(speaker, "waiting for the model").then(() => {
             finished = true;
         });
         try {
             await vi.advanceTimersByTimeAsync(estimatedSeconds * 1000 - 1);
-            expect(deps.fetch).toHaveBeenCalledOnce();
+            expect(deps.globalFetch).toHaveBeenCalledOnce();
             expect(finished).toBe(false);
 
             stopTTS();
             await vi.advanceTimersByTimeAsync(0);
             expect(finished).toBe(true);
             await vi.advanceTimersByTimeAsync(estimatedSeconds * 1000 + 1);
-            expect(deps.fetch).toHaveBeenCalledOnce();
+            expect(deps.globalFetch).toHaveBeenCalledOnce();
             expect(sources).toHaveLength(0);
             expect(deps.alert).not.toHaveBeenCalled();
         } finally {
@@ -474,16 +491,16 @@ describe("sayTTS and stopTTS", () => {
         const speaker = character("huggingface");
         speaker.hfTTS = { language: "ja", model: "test/speech-model" };
         vi.mocked(runTranslator).mockResolvedValue("こんにちは");
-        deps.fetch
-            .mockResolvedValueOnce(Response.json({ estimated_time: 2 }, { status: 503 }))
-            .mockResolvedValueOnce(Response.json({ estimated_time: 3 }, { status: 503 }))
-            .mockResolvedValueOnce(audioResponse());
+        deps.globalFetch
+            .mockResolvedValueOnce(globalJson({ estimated_time: 2 }, 503))
+            .mockResolvedValueOnce(globalJson({ estimated_time: 3 }, 503))
+            .mockResolvedValueOnce(globalResponse());
         const work = sayTTS(speaker, "Hello");
         try {
             await vi.runAllTimersAsync();
             await work;
             expect(runTranslator).toHaveBeenCalledOnce();
-            expect(deps.fetch.mock.calls.map(([, init]) => JSON.parse(init.body).inputs)).toEqual([
+            expect(deps.globalFetch.mock.calls.map(([, init]) => init.body.inputs)).toEqual([
                 "こんにちは",
                 "こんにちは",
                 "こんにちは",

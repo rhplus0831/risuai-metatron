@@ -395,7 +395,10 @@ describe("PNG streaming entry points", () => {
             const fetch = vi.fn(async () => response);
             vi.stubGlobal("fetch", fetch);
             await b.cards.characterURLImport();
-            expect(fetch).toHaveBeenCalledExactlyOnceWith("https://example.test/linked.png", { method: "GET" });
+            expect(fetch).toHaveBeenCalledExactlyOnceWith(
+                "https://example.test/linked.png",
+                expect.objectContaining({ method: "GET" }),
+            );
         } else {
             const setConsumer = vi.fn();
             vi.stubGlobal("launchQueue", { setConsumer });

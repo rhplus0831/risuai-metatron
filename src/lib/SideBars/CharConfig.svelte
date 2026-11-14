@@ -56,6 +56,7 @@
     } from "../../ts/util";
     import Help from "../Others/Help.svelte";
     import { exportChar } from "src/ts/characterCards";
+    import { globalFetch } from "src/ts/globalApi.svelte";
     import {
         getElevenTTSVoices,
         getWebSpeechTTSVoices,
@@ -337,12 +338,13 @@
 
     async function getFishSpeechModels() {
         try {
-            const res = await fetch(`https://api.fish.audio/model?self=true`, {
+            const res = await globalFetch(`https://api.fish.audio/model?self=true`, {
+                method: "GET",
                 headers: {
                     Authorization: `Bearer ${settings.secrets.fishSpeechKey}`,
                 },
             });
-            const data = await res.json();
+            const data = res.ok ? res.data : {};
             console.log(data.items);
             console.log(currentCharacter);
 

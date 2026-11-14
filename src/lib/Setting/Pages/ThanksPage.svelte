@@ -1,6 +1,6 @@
 <script lang="ts">
     import { language } from "src/lang";
-    import { openURL } from "src/ts/globalApi.svelte";
+    import { globalFetch, openURL } from "src/ts/globalApi.svelte";
 
     interface supporters {
         I: string[];
@@ -16,10 +16,10 @@
     }
 
     async function loadSupporters() {
-        const supp = await fetch("https://sv.risuai.xyz/patreon/list");
+        const supp = await globalFetch("https://sv.risuai.xyz/patreon/list", { method: "GET" });
         if (!supp.ok) throw new Error(`supporter list: HTTP ${supp.status}`);
 
-        const list = (await supp.json()) as supporterL[];
+        const list = supp.data as supporterL[];
         const thanks: supporters = {
             //random names
             I: list.filter((v) => v.amount < 5).map((v) => v.name),

@@ -133,7 +133,8 @@ before the queue advances. See `alertQueue.ts`, `hotkey.ts`, and `AlertComp.svel
 - Vitest:
   `pnpm --silent test:agent src/ts/alert{Queue,Terminal,CardExport}.test.ts src/ts/{sourcemap,util,globalApiDisclosure}.test.ts src/ts/util/koreanSearch.test.ts`.
 - `AppendableBuffer`: run `src/ts/globalApiRetention.test.ts`, included in the [assets test command](assets.md#tests).
-- Typed shared doubles: `src/ts/tests/alertMock.ts` and `src/ts/tests/globalApiMock.ts`.
+- Typed shared doubles: `src/ts/tests/alertMock.ts` and `src/ts/tests/globalApiMock.ts` (with `globalFetchFromResponse`,
+  a `globalFetch` answer built from a `fetch`-shaped stub).
 - Browser specs:
   `pnpm --silent test:agent --e2e e2e/terminalNotice.spec.ts e2e/welcomeAndChatSettings.spec.ts e2e/personaBinding.spec.ts`;
   `e2e/pluginSandbox.spec.ts` checks the alert layer above a plugin's full-screen container
