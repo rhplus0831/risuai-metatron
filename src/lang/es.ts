@@ -1003,8 +1003,10 @@ export const languageSpanish = {
     select: "Seleccionar",
     options: "Opciones",
     alertContent: "Contenido de Alerta",
-    lowLevelAccessConfirm:
-        "Este contenido usa Acceso de Bajo Nivel. lo que significa que este contenido puede acceder al modelo de IA y a tu almacenamiento directamente. ¿Realmente deseas importar este contenido?",
+    lowLevelAccessImportQuestion:
+        "Este contenido usa Acceso de Bajo Nivel, lo que significa que puede acceder al modelo de IA y a tu almacenamiento directamente. ¿Importarlo con Acceso de Bajo Nivel o sin él? Sin él, las partes que lo necesitan no funcionarán; puedes activarlo más tarde en su configuración.",
+    lowLevelAccessImportWith: "Importar con Acceso de Bajo Nivel",
+    lowLevelAccessImportWithout: "Importar sin Acceso de Bajo Nivel",
     extractRegex: "Extraer Texto con Regex",
     runImgGen: "Ejecutar Generación de Imágenes",
     cutChat: "Cortar Chat",

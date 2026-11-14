@@ -995,8 +995,10 @@ export const languageVietnamese = {
     select: "Chọn",
     options: "Tùy chọn",
     alertContent: "Nội dung cảnh báo",
-    lowLevelAccessConfirm:
-        "Nội dung này sử dụng Truy cập cấp thấp. Điều đó có nghĩa là nội dung này có thể truy cập trực tiếp vào mô hình AI và bộ nhớ của bạn. Bạn có thực sự muốn nhập nội dung này không?",
+    lowLevelAccessImportQuestion:
+        "Nội dung này sử dụng Truy cập cấp thấp, nghĩa là nó có thể truy cập trực tiếp vào mô hình AI và bộ nhớ của bạn. Nhập kèm Truy cập cấp thấp hay không? Nếu không, các phần cần quyền này sẽ không hoạt động; bạn có thể bật lại sau trong phần cài đặt.",
+    lowLevelAccessImportWith: "Nhập kèm Truy cập cấp thấp",
+    lowLevelAccessImportWithout: "Nhập không kèm Truy cập cấp thấp",
     extractRegex: "Trích xuất văn bản bằng Regex",
     runImgGen: "Chạy tạo hình ảnh",
     cutChat: "Cắt trò chuyện",

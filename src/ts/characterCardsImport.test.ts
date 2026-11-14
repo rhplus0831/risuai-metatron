@@ -2,6 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { language } from "src/lang";
 import { cardV2, cardV3, characterBook, charx, nested, pngWithText } from "./storage/tests/importFixtures";
 import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
+import { lowLevelAccessAnswer, lowLevelAccessDialog } from "./tests/lowLevelAccessDialog";
 
 // `importCharacterProcess` creates its records through `addCharacter` over the real save adapter and
 // the real server store (`storeBackedServer.ts`). A JSON V2 card, an off-spec JSON card, a PNG
@@ -20,6 +21,8 @@ const { server, alerts, picker, assets } = vi.hoisted(() => ({
         normal: vi.fn(),
         normalWait: vi.fn(async () => undefined),
         confirm: vi.fn(async () => true),
+        // "0" imports a card that asks for low-level access with it (`lowLevelAccessAnswer`).
+        select: vi.fn(async (_msg: string[], _display?: string) => "0"),
         store: { set: vi.fn(), subscribe: vi.fn() },
     },
     /** The files the next `selectFileByDom` answers with. */
@@ -37,6 +40,7 @@ vi.mock("./alert", async () =>
         alertNormal: alerts.normal,
         alertNormalWait: alerts.normalWait,
         alertConfirm: alerts.confirm,
+        alertSelect: alerts.select,
         alertStore: alerts.store,
     }),
 );
@@ -265,11 +269,12 @@ describe("importCharacterProcess creates the character through addCharacter", ()
     });
 
     it.each([
-        ["V2", cardV2],
-        ["V3", cardV3],
+        ["V2", lowLevelAccessAnswer.cancel, cardV2],
+        ["V3", lowLevelAccessAnswer.cancel, cardV3],
+        ["V3", lowLevelAccessAnswer.escape, cardV3],
     ] as const)(
-        "a declined %s JSON card with V1 fields imports nothing and alerts nothing",
-        async (_version, makeCard) => {
+        "a declined %s JSON card with V1 fields imports nothing and alerts nothing (answer %j)",
+        async (_version, answer, makeCard) => {
             const { cards, ids, order, sync, record } = await boot();
             const before = ids();
             const beforeOrder = order();
@@ -279,11 +284,11 @@ describe("importCharacterProcess creates the character through addCharacter", ()
                 description: "V1 description",
                 first_mes: "V1 greeting",
             };
-            alerts.confirm.mockResolvedValueOnce(false);
+            alerts.select.mockResolvedValueOnce(answer);
 
             await cards.importCharacterProcess({ name: "declined.json", data: encode(card) });
 
-            expect(alerts.confirm).toHaveBeenCalledExactlyOnceWith(language.lowLevelAccessConfirm);
+            expect(alerts.select).toHaveBeenCalledExactlyOnceWith(...lowLevelAccessDialog());
             expect(ids()).toEqual(before);
             expect(order()).toEqual(beforeOrder);
             expect(alerts.error).not.toHaveBeenCalled();
@@ -291,6 +296,32 @@ describe("importCharacterProcess creates the character through addCharacter", ()
             expect(alerts.normalWait).not.toHaveBeenCalled();
             await sync.flushResources();
             expect(record("characterOrder")).toEqual(beforeOrder);
+        },
+    );
+
+    it.each([
+        ["JSON", "with", lowLevelAccessAnswer.with, true],
+        ["JSON", "without", lowLevelAccessAnswer.without, false],
+        ["PNG", "without", lowLevelAccessAnswer.without, false],
+    ] as const)(
+        "a %s card imported %s low-level access stores the chosen lowLevelAccess",
+        async (format, _choice, answer, expected) => {
+            const { cards, ids, added } = await boot();
+            const before = ids();
+            const card = cardV3("Privileged", {}, { lowLevelAccess: true });
+            alerts.select.mockResolvedValueOnce(answer);
+
+            await cards.importCharacterProcess(
+                format === "PNG"
+                    ? { name: "privileged.png", data: pngWithText({ ccv3: card }) }
+                    : { name: "privileged.json", data: encode(card) },
+            );
+
+            expect(alerts.select).toHaveBeenCalledExactlyOnceWith(...lowLevelAccessDialog());
+            const { character, record } = await added(before);
+            expect(character).toMatchObject({ name: "Privileged", lowLevelAccess: expected });
+            expect(record).toMatchObject({ name: "Privileged", lowLevelAccess: expected });
+            expect(alerts.error).not.toHaveBeenCalled();
         },
     );
 

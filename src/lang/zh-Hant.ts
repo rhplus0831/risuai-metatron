@@ -1039,7 +1039,10 @@ export const languageChineseTraditional = {
     select: "選擇",
     options: "選項",
     alertContent: "提示內容",
-    lowLevelAccessConfirm: "此內容使用低階存取，代表它能直接存取 AI 模型與您的儲存空間。確定要匯入此內容嗎？",
+    lowLevelAccessImportQuestion:
+        "此內容使用低階存取，代表它能直接存取 AI 模型與您的儲存空間。要允許低階存取並匯入嗎？若不允許而匯入，需要此權限的功能將無法運作，之後可在設定中開啟。",
+    lowLevelAccessImportWith: "允許低階存取並匯入",
+    lowLevelAccessImportWithout: "不使用低階存取匯入",
     extractRegex: "使用 Regex 擷取文字",
     runImgGen: "執行圖片生成",
     cutChat: "截斷對話",

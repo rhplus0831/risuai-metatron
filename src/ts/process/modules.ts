@@ -2,6 +2,7 @@ import { selectedCharacter, characterList } from "../storage/characterStore.svel
 import { settings, activePreset, readPresetFieldOf, type PresetScope } from "../storage/settingsViews.svelte";
 import { chatDisplayIds } from "../storage/chatBinding.svelte";
 import { language } from "src/lang";
+import { confirmLowLevelAccessImport } from "../lowLevelAccessImport";
 import {
     alertClear,
     alertConfirm,
@@ -382,7 +383,7 @@ export async function importModuleFile(file: Blob): Promise<RisuModule | null> {
         alertError(language.errors.noData);
         return null;
     }
-    if (module.lowLevelAccess && !(await alertConfirm(language.lowLevelAccessConfirm))) {
+    if (!(await confirmLowLevelAccessImport(module))) {
         return null;
     }
     if (!(await prepareModuleImport(module))) {
@@ -656,11 +657,8 @@ export async function importModule() {
             }
             importData.id = v4();
 
-            if (importData.lowLevelAccess) {
-                const conf = await alertConfirm(language.lowLevelAccessConfirm);
-                if (!conf) {
-                    return false;
-                }
+            if (!(await confirmLowLevelAccessImport(importData))) {
+                return false;
             }
             if (await prepareModuleImport(importData)) {
                 await addImportedModule(importData, { announce: false });

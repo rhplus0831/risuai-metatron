@@ -11,6 +11,7 @@ import {
 } from "../../shared/realmImport.ts";
 import { cardV2, cardV3 } from "./storage/tests/importFixtures";
 import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
+import { lowLevelAccessAnswer, lowLevelAccessDialog } from "./tests/lowLevelAccessDialog";
 
 /**
  * `downloadRisuHub` over the real records with the server's Realm import answered by the test (the
@@ -33,6 +34,8 @@ const { server, alerts } = vi.hoisted(() => {
         wait: vi.fn((msg: unknown) => alerts.show("wait")(msg)),
         clear: vi.fn(() => alerts.current?.set({ type: "none", msg: "" })),
         confirm: vi.fn(async () => true),
+        // "0" imports a card that asks for low-level access with it (`lowLevelAccessAnswer`).
+        select: vi.fn(async (_msg: string[], _display?: string) => "0"),
         input: vi.fn(async () => ""),
         realmTerms: vi.fn(async () => false),
         store: { set: vi.fn(), subscribe: vi.fn() },
@@ -49,6 +52,7 @@ vi.mock("./alert", async () =>
         alertNormal: alerts.normal,
         alertWait: alerts.wait,
         alertConfirm: alerts.confirm,
+        alertSelect: alerts.select,
         alertStore: alerts.store,
         alertInput: alerts.input,
         alertClear: alerts.clear,
@@ -217,6 +221,7 @@ beforeEach(() => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "log").mockImplementation(() => {});
     alerts.confirm.mockImplementation(async () => true);
+    alerts.select.mockImplementation(async () => lowLevelAccessAnswer.with);
     alerts.input.mockImplementation(async () => "");
 });
 afterEach(() => {
@@ -443,7 +448,7 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
         expect(b.commits()[0][1].body).toBe(JSON.stringify({ token: TOKEN }));
         expect(new Headers(b.commits()[0][1].headers).get("content-type")).toBe("application/json");
         expect(b.cancels()).toEqual([]);
-        expect(alerts.confirm).not.toHaveBeenCalled();
+        expect(alerts.select).not.toHaveBeenCalled();
         expect(b.globalFetch).not.toHaveBeenCalled();
         expect(b.saveAsset).not.toHaveBeenCalled();
         expect(alerts.store.set).toHaveBeenCalledWith({ type: "wait", msg: "Downloading..." });
@@ -494,15 +499,20 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
         expect(b.record("characters", id)).toMatchObject({ image: "assets/image-key.png" });
     });
 
-    it.each(["charx", "png"])(
-        "asks a %s card's lowLevelAccess before the commit, and keeps it on the character once accepted",
-        async (kind) => {
+    it.each([
+        ["charx", "with", lowLevelAccessAnswer.with, true],
+        ["png", "with", lowLevelAccessAnswer.with, true],
+        ["charx", "without", lowLevelAccessAnswer.without, false],
+        ["png", "without", lowLevelAccessAnswer.without, false],
+    ] as const)(
+        "asks a %s card's lowLevelAccess before the commit, and stores the answer (%s the access)",
+        async (kind, _choice, answer, stored) => {
             const b = await boot();
             const card = cardV3("Powerful", {}, { lowLevelAccess: true });
             const order: string[] = [];
-            alerts.confirm.mockImplementation(async () => {
+            alerts.select.mockImplementation(async () => {
                 order.push(`confirm ${b.commits().length}`);
-                return true;
+                return answer;
             });
             b.answer(
                 line(kind === "charx" ? charxPrepared(card) : pngPrepared(b64(card))),
@@ -510,14 +520,14 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
             );
             const before = b.ids();
             await b.cards.downloadRisuHub("powerful-id");
-            expect(alerts.confirm).toHaveBeenCalledExactlyOnceWith(language.lowLevelAccessConfirm);
+            expect(alerts.select).toHaveBeenCalledExactlyOnceWith(...lowLevelAccessDialog());
             // Asked once, before any commit was sent.
             expect(order).toEqual(["confirm 0"]);
             expect(b.commits()).toHaveLength(1);
             expect(b.cancels()).toEqual([]);
             expect(alerts.error).not.toHaveBeenCalled();
             expect(b.ids()).toHaveLength(before.length + 1);
-            expect(plain(b.character(b.ids().at(-1)!))).toMatchObject({ name: "Powerful", lowLevelAccess: true });
+            expect(plain(b.character(b.ids().at(-1)!))).toMatchObject({ name: "Powerful", lowLevelAccess: stored });
         },
     );
 
@@ -526,12 +536,12 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
         async (kind) => {
             const b = await boot();
             const card = cardV3("Declined", {}, { lowLevelAccess: true });
-            alerts.confirm.mockImplementation(async () => false);
+            alerts.select.mockImplementation(async () => lowLevelAccessAnswer.cancel);
             b.answer(line(kind === "charx" ? charxPrepared(card) : pngPrepared(b64(card))));
             const before = b.ids();
             const imports = b.imports();
             await b.cards.downloadRisuHub("declined-id");
-            expect(alerts.confirm).toHaveBeenCalledExactlyOnceWith(language.lowLevelAccessConfirm);
+            expect(alerts.select).toHaveBeenCalledExactlyOnceWith(...lowLevelAccessDialog());
             expect(b.commits()).toEqual([]);
             expect(b.cancels()).toHaveLength(1);
             expect(sent(b.cancels()[0])).toEqual({ token: TOKEN });
@@ -575,7 +585,7 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
             secret: true,
         });
         // The decrypted card's lowLevelAccess is asked too, after the password.
-        expect(alerts.confirm).toHaveBeenCalledExactlyOnceWith(language.lowLevelAccessConfirm);
+        expect(alerts.select).toHaveBeenCalledExactlyOnceWith(...lowLevelAccessDialog());
         expect(alerts.error).not.toHaveBeenCalled();
         expect(b.commits()).toHaveLength(1);
         expect(b.cancels()).toEqual([]);
@@ -596,7 +606,7 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
         expect(alerts.input).toHaveBeenCalledOnce();
         if (message) expect(alerts.error).toHaveBeenCalledExactlyOnceWith(message());
         else expect(alerts.error).not.toHaveBeenCalled();
-        expect(alerts.confirm).not.toHaveBeenCalled();
+        expect(alerts.select).not.toHaveBeenCalled();
         expect(b.commits()).toEqual([]);
         expect(b.cancels()).toHaveLength(1);
         expect(sent(b.cancels()[0])).toEqual({ token: TOKEN });
@@ -617,7 +627,7 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
         b.answer(line(pngPrepared(b64(tavern))), line(pngCommitted("assets/tavern.png")));
         const before = b.ids();
         await b.cards.downloadRisuHub("tavern-id");
-        expect(alerts.confirm).not.toHaveBeenCalled();
+        expect(alerts.select).not.toHaveBeenCalled();
         expect(alerts.error).not.toHaveBeenCalled();
         expect(b.saveAsset).not.toHaveBeenCalled();
         expect(alerts.normal).toHaveBeenCalledWith(language.importedCharacter);
@@ -712,9 +722,9 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
     describe("staged cancellation and commit retries", () => {
         it("sends one signed keepalive cancel synchronously on pagehide during a prompt, with no later normal cancel", async () => {
             const b = await boot();
-            let settlePrompt!: (accepted: boolean) => void;
-            alerts.confirm.mockReturnValueOnce(
-                new Promise<boolean>((resolve) => {
+            let settlePrompt!: (answer: string) => void;
+            alerts.select.mockReturnValueOnce(
+                new Promise<string>((resolve) => {
                     settlePrompt = resolve;
                 }),
             );
@@ -725,7 +735,7 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
             const before = b.ids();
             const importing = b.cards.downloadRisuHub("leaving-id");
             await vi.advanceTimersByTimeAsync(0);
-            expect(alerts.confirm).toHaveBeenCalledExactlyOnceWith(language.lowLevelAccessConfirm);
+            expect(alerts.select).toHaveBeenCalledExactlyOnceWith(...lowLevelAccessDialog());
             expect(b.commits()).toEqual([]);
             expect(b.cancels()).toEqual([]);
 
@@ -741,7 +751,7 @@ describe("the Realm import through the server (downloadRisuHub)", () => {
             expect(sent(request)).toEqual({ token: TOKEN });
             expect(b.cancels()).toHaveLength(1);
             window.dispatchEvent(new Event("pagehide"));
-            settlePrompt(false);
+            settlePrompt(lowLevelAccessAnswer.cancel);
             await importing;
             await vi.advanceTimersByTimeAsync(0);
             window.dispatchEvent(new Event("pagehide"));

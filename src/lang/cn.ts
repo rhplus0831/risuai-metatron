@@ -945,7 +945,10 @@ export const languageChinese = {
     select: "选择",
     options: "选项",
     alertContent: "警告内容",
-    lowLevelAccessConfirm: "此内容使用低层级访问，可直接访问 AI 模型和你的存储数据。你确定要导入吗？",
+    lowLevelAccessImportQuestion:
+        "此内容使用低层级访问，可直接访问 AI 模型和你的存储数据。是否允许低层级访问并导入？若不允许而导入，需要该权限的功能将无法使用，之后可在设置中开启。",
+    lowLevelAccessImportWith: "允许低层级访问并导入",
+    lowLevelAccessImportWithout: "不使用低层级访问导入",
     extractRegex: "使用正则表达式提取文字",
     runImgGen: "执行图像生成",
     cutChat: "分割聊天",

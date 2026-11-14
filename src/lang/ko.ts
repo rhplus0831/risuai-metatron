@@ -2131,8 +2131,10 @@ export const languageKorean = {
     select: "선택",
     options: "선택지",
     alertContent: "알림 내용",
-    lowLevelAccessConfirm:
-        "이 콘텐츠는 저수준 접근(Low Level Access) 권한을 사용합니다. 즉, AI 모델 호출과 저장소에 직접 접근할 수 있습니다. 정말로 가져오시겠습니까?",
+    lowLevelAccessImportQuestion:
+        "이 콘텐츠는 저수준 접근(Low Level Access) 권한을 사용합니다. 즉, AI 모델 호출과 저장소에 직접 접근할 수 있습니다. 저수준 접근을 허용하고 가져오시겠습니까? 허용하지 않고 가져오면 이 권한이 필요한 기능은 동작하지 않으며, 나중에 설정에서 켤 수 있습니다.",
+    lowLevelAccessImportWith: "저수준 접근 허용하고 가져오기",
+    lowLevelAccessImportWithout: "저수준 접근 없이 가져오기",
     extractRegex: "정규식으로 텍스트 추출",
     runImgGen: "이미지 생성 실행",
     cutChat: "채팅 잘라내기",
