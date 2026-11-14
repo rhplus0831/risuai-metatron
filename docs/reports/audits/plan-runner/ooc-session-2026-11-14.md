@@ -1,6 +1,6 @@
 # OOC Session Plan audit, 2026-11-14
 
-- Plan: `docs/plan/ooc-session.md`
+- Plan: `docs/plan/ooc-session.md`, archived: `git show 4699d470e:docs/plan/ooc-session.md`
 - Commit audited: `05b4378da` (`claude/ooc-session-brainstorm-0f9309`, on `dev` at `d2d1a76a7`); the corrected plan is
   committed with this report
 - Mode: `full`

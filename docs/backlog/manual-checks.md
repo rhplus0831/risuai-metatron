@@ -32,6 +32,7 @@ Checks that a finished plan left to a person, a device, a real provider, or a sc
 - [ ] **Per-Chat Memory (1, 3, 5)**: at phone width (about 360px), the chat memory panel in the sidebar and in the Chat settings dialog with its switch, mode, preset, and connection selects (1, 3, 5), and the memory settings page (3).
 - [ ] **Lore Budget Send Stop (2)**: at phone width (about 360px), the lore budget stop dialog and the Interaction page's "Stop a send when lorebook entries are left out" checkbox, in English and Korean.
 - [ ] **Generation Progress Window (3)**: at phone width (about 360px), the progress window starts as a pill, expands, and does not cover the chat header's buttons; with a memory run on the selected chat, the memory indicator and the window do not overlap and the memory indicator still expands and collapses.
+- [ ] **OOC Session (4, 5)**: on a phone (about 360px), the OOC panel fills the screen over the chat and the toggle settings popover fits; on a wide screen the panel sits beside the chat without a backdrop, Escape in the panel or the page closes it but Escape in the main composer does not, and Escape or a click outside closes only the settings popover.
 
 ## iOS Safari and the Home Screen app
 
@@ -99,6 +100,8 @@ Two tabs, two browsers, or a dropped connection:
 - [ ] **Chat Store and Structured Memory Sweep (B1)**: with two tabs on one chat, Record now inside a job shows the same memory task in both.
 - [ ] **Per-Chat Memory (1)**: two tabs on one chat, the memory switch toggled in one.
 - [ ] **Generation Progress Window (3, 4)**: a second browser or device lists the first one's job from its start with that client's name, opening the chat shows the Stop-other spinner in the stage color, and the row disappears at the end (3); with Half Streaming, the second device shows no partial text during the reply and the whole reply at the end (4).
+- [ ] **OOC Session (4)**: an answer's Markdown, code blocks, and display scripts render in the panel while it streams and once stored; a send in the main chat while an OOC answer streams; refresh shows the count of new messages and later questions carry no earlier exchange; attach chips feed the next question.
+- [ ] **OOC Session (4)**: a second browser or device shows the stored exchange once the answer ends.
 
 ## Real providers and external services
 
@@ -116,6 +119,7 @@ Two tabs, two browsers, or a dropped connection:
 - [ ] **Wide review request wrappers** ([found issues](found-issues.md), 2026-11-14): with real keys, through the default server route and with plain fetch on: ElevenLabs speech and its voice list, Hugging Face speech (including a 503 `estimated_time` wait), Stability image generation for each model (the multipart form and its boundary), and the Fish Speech model list in a character's TTS settings; a Chub import (`?charahub=`) and an `#import=` card link (through `fetchNative`, not run). The keyless calls (direct Google translation, the Horde and NanoGPT public model lists, the supporter list, and the plugin update check) were run against the real services on 2026-11-14, through the server proxy and with plain fetch.
 - [ ] **Structured Memory Reply-Only Recording (1)**: with a real `memory` model, a send and recording on a chat whose prompt expands the user's message, with the switch on and a preset whose instructions and custom frames use no CBS: the event reads as the reply, and request history shows no user text in the writer's call.
 - [ ] **Generation Progress Window (4)**: with Half Streaming on: a model with tools enabled, an image-output model, and a character with output escaping complete the send, with no count when the provider answered buffered; a plugin provider that streams is hidden and counted and one that does not is as before; a WebLLM model and a `mancer` model reply as before with no count; a plugin with an after-request replacer and a banned script set run neither for a reply Half Streaming streamed and both for a buffered one (tools on a Claude model).
+- [ ] **OOC Session (4, 5)**: with a community preset that has an OOC toggle on a real model: the panel offers to force the toggle on in the preset, the forced answer is out of character, a follow-up in the same segment carries the earlier exchange, and the chat's own toggle map wins over the preset's.
 
 ## The server process, Docker, and a production deployment
 
