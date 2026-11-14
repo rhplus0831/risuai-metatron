@@ -187,6 +187,11 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
   to fingerprints, task checks, and writer runs. The tab's HypaV3 `summarize` also passes the chat's named profile.
   Deleted named profiles refuse with `missingNamedProfile`, never fall back. Lua's own `memory`-mode request in
   `server/src/lua/bindings.ts` keeps the slot. Tokenization still follows the main model ([Invariants](#invariants)).
+- An input hook (`src/ts/process/inputHooks.ts` `runInputHook`, [chat pipeline](chat-pipeline.md#input-hooks)) is a tab
+  request in `otherAx` mode with the chat's `chatRef` and owner, so it runs on the chat's bound model preset; a hook
+  whose model is a profile passes it as `profileId`. It passes `tools: []` (no tool-call record in the chat), but the
+  plugins' replacers still run and the request history and fetch log record it. It asks for a buffered, single reply and
+  treats a stream or a `multiline` result as a failure.
 - The server builds a detached request context with profile roots, resolves the named credential, reforms the prompt
   from model flags, and dispatches by `LLMFormat`. A bound Vertex account populates `vertexCredential`; other bound keys
   replace `arg.key`. See [credential binding](#credentials).

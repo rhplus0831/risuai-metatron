@@ -136,6 +136,21 @@
   are kept in this browser's `localStorage`, not in settings.
 - The stored shapes, limits, and pure helpers both runtimes use are in `shared/ooc.ts` ([persistence](persistence.md)).
 
+### Input hooks
+
+- `src/ts/process/inputHooks.ts` `runInputHook`: one hook run over the composer's text, a tab request
+  ([LLM requests](llm-requests.md#flows)) that returns the trimmed reply or throws. Before its first await it captures
+  the chat's owner token and preset scope and pins the chat until the request returns. It appends no message.
+  - A prompt with a history slot builds the translator's history from the loaded chat's messages, the last one included
+    ([translation](translation.md#translator-pipeline-and-slots)); a chat that is not loaded is an error.
+  - A failure, a stream (cancelled first), and a `multiline` result throw; an empty reply returns `""`. An abort
+    surfaces as the signal's, which the caller tells from a failure by `signal.aborted`.
+- `src/ts/process/inputHookRuns.svelte.ts` `createInputHookRuns`: the screen's hook runs by chat, one per chat
+  (`begin(ref, kind)` returns null while the chat has one; `end` is idempotent), with a reactive `kindOf(ref)`. It holds
+  no controller: Stop is `sendAborts`'.
+- The hook list, its limits, and the request rows (`inputHookMessages`) are in `shared/inputHooks.ts`
+  ([persistence](persistence.md)).
+
 ### Inlays
 
 - `src/ts/process/files/inlays.ts`: server-backed inlays (`writeInlayImage`, `setInlayAsset`, `getInlayAsset`,
@@ -241,6 +256,7 @@ opened from the composer menu) calls it.
   hotkey calls `previewChat("previewPrompt")` for a server preview job. Display translation is a UI concern. Group
   continues use the server speaker loop.
 - An OOC question's prompt and answer: [OOC question](#ooc-question).
+- An input hook run ([Input hooks](#input-hooks)): a tab request on the auxiliary model, not a job.
 - Chat paging renders loaded messages only (`chatLoadInitialPages`, `chatLoadAdditionalPages`); it does not fetch
   history.
 

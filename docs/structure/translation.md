@@ -108,8 +108,11 @@ Partial edit is off on a row that shows a pair.
 - `shared/translation/historySlots.ts`: bounded source/translation history; `translatorHistoryCount`,
   `translatorHistoryMaxTokens`, `collectTranslatorHistory`, `translatorHistoryBlock`, `buildTranslatorHistory`.
 
-The pure pipeline serves both tab and server, so a new slot form reaches both. Only the server builds history; the tab's
-history slots fill in empty. CBS is never evaluated in a translator prompt.
+The pure pipeline serves both tab and server, so a new slot form reaches both. The server's translator builds history;
+the tab's translator fills its history slots in empty. The tab builds a history only for an input hook
+(`src/ts/process/inputHooks.ts` `runInputHook`, [chat pipeline](chat-pipeline.md#input-hooks)): the same builder and
+budget (`translatorHistoryMaxTokens`), with the tab's token counter under the chat's preset scope and no
+Chain-of-Thought exclusion. CBS is never evaluated in a translator prompt.
 
 ### Settings
 
