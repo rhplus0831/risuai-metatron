@@ -226,7 +226,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - HTML boundaries:
   - `ChatBody` sanitizes body HTML through `shownBody` and renders the fixed `LOADING_HTML` literal while translation
     loads; `BackgroundDom` and suggestions render sanitized parser output. Plugin panels render HTML sanitized with
-    DOMPurify by `setChatPanel` in `src/ts/plugins/apiV3/v3.svelte.ts`.
+    DOMPurify by `setChatPanel` in `src/ts/plugins/apiV3/v3.svelte.ts`; a `style` element in it needs the plugin's
+    `globalStyle` grant ([permission list](plugin-sandbox.md#permission-list)).
   - Custom GUI rendering uses `risuChatParser` with `renderMode: "gui"` to escape character/nickname, `bot`, and persona
     name substitutions before parsing the owner's template; ordinary prompt CBS keeps raw names. `renderGuiHtmlPart`
     whitelists tags and allows only `https` links.

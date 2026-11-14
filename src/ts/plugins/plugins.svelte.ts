@@ -11,6 +11,7 @@ import {
     onPluginWorkChange,
     pluginGuestsSettled,
     pluginWorkIdle,
+    reviewPluginPermissions,
 } from "./apiV3/v3.svelte";
 import { pluginCodeTranspiler } from "./apiV3/transpiler";
 import { onPermissionGrantsRemoved } from "./apiV3/permissionStore";
@@ -43,6 +44,7 @@ export async function createBlankPlugin() {
 
 Risuai.log("Hello from New Plugin!");
 `.trim(),
+        { skipPermissionReview: true },
     );
 }
 
@@ -128,7 +130,12 @@ export async function updatePlugin(plugin: RisuPlugin) {
 /**
  * Imports only scripts whose `//@api` tokens include `3.0`; otherwise reports
  * `pluginApiVersionUnsupported` and installs nothing. Updates preserve the internal name, which
- * identifies the record in `src/ts/storage/collectionStore.svelte.ts:upsertPlugin`.
+ * identifies the record in `src/ts/storage/collectionStore.svelte.ts:upsertPlugin`. Before the
+ * plugin is saved and loaded, the user is shown its permission list (`reviewPluginPermissions`, with
+ * the replaced version's grants checked) unless this is a hot reload or `skipPermissionReview`;
+ * the import goes on whatever the answer, and a failed save of the permissions is reported. When
+ * the installed plugin of that name changed while the list was open, nothing is installed or loaded:
+ * silently for an update whose plugin was removed, else with `pluginChangedDuringImport`.
  */
 export async function importPlugin(
     code: string | null = null,
@@ -137,6 +144,7 @@ export async function importPlugin(
         originalPluginName?: string;
         isHotReload?: boolean;
         isTypescript?: boolean;
+        skipPermissionReview?: boolean;
     } = {},
 ) {
     try {
@@ -367,6 +375,7 @@ export async function importPlugin(
         };
 
         const oldPluginIndex = (settings.plugins ?? []).findIndex((p: RisuPlugin) => p.name === pluginData.name);
+        const previousScript = settings.plugins?.[oldPluginIndex]?.script;
 
         if (originalPluginName && originalPluginName !== pluginData.name) {
             showError(
@@ -384,6 +393,29 @@ export async function importPlugin(
 
         // Replaces the installed plugin with this name, or installs it.
         if (oldPluginIndex !== -1 || !isUpdate || argu.isHotReload) {
+            if (!argu.isHotReload && !argu.skipPermissionReview) {
+                // The list is open across an await: the plugin of this name must stay as it was found.
+                const installedScript = () =>
+                    (settings.plugins ?? []).find((p: RisuPlugin) => p.name === pluginData.name)?.script;
+                const failure = await reviewPluginPermissions(pluginData, {
+                    previousScript,
+                    installing: true,
+                    stillCurrent: () => installedScript() === previousScript,
+                }).then(
+                    () => null,
+                    (error: unknown) => ({ error }),
+                );
+                const nowInstalled = installedScript();
+                if (nowInstalled !== previousScript) {
+                    // Removed meanwhile: an update is dropped, as the settings page drops one. Replaced
+                    // or installed meanwhile: this import would overwrite a script the user never saw.
+                    if (!(isUpdate && nowInstalled === undefined)) alertError(language.pluginChangedDuringImport);
+                    return;
+                }
+                if (failure) {
+                    alertError(language.pluginPermissionSaveError.replace("{error}", String(failure.error)));
+                }
+            }
             upsertPlugin(pluginData);
         }
 

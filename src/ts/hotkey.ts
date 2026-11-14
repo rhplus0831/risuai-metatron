@@ -116,7 +116,7 @@ export function initHotkey() {
         const alertCheckbox =
             alertStore.dialogVisible() &&
             get(alertStore).type === "ask" &&
-            get(alertStore).confirmCheckbox !== undefined &&
+            (get(alertStore).confirmCheckbox !== undefined || get(alertStore).confirmChecklist !== undefined) &&
             ev.target instanceof HTMLInputElement &&
             ev.target.type === "checkbox" &&
             ev.target.closest("[data-alert-dialog]");

@@ -17,8 +17,13 @@ import {
     loadPluginPermissions,
     recordPermissionGrants,
     refreshPluginPermissions,
+    getPermissionResetCount,
+    hasStandingGrant,
+    onPermissionGrantsRemoved,
     revokePermissionGrants,
     seedPluginPermissions,
+    setStandingPermissionGrants,
+    StalePermissionListError,
 } from "./permissionStore";
 
 let fake: FakeResourceServer;
@@ -369,6 +374,132 @@ describe("revokePermissionGrants", () => {
 
 // Live updates: another tab's or device's grant reaches this tab as a feed notice with the
 // committed revision. The fake's revisions are real tokens here, since the refresh compares them.
+describe("setStandingPermissionGrants", () => {
+    it("adds standing grants, removes the unchosen ones with their times, and counts a reset in one write", async () => {
+        fake.set("pluginPermissions", "main", {
+            grants: { h_db: true, h_mainDom: true, other_db: true },
+            lastGrantTime: { foo_db_lastGrantTime: 5, foo_mainDom_lastGrantTime: 6 },
+            standing: { h_mainDom: true },
+        });
+        const removals: [string[], string[]][] = [];
+        const off = onPermissionGrantsRemoved((keys, resets) => removals.push([[...keys], [...resets]]));
+        const puts = vi.spyOn(client, "putResource");
+
+        await setStandingPermissionGrants(
+            "foo",
+            ["h_db", "h_provider"],
+            (key) => key === "h_mainDom",
+            (key) => key === "foo_mainDom_lastGrantTime",
+            0,
+        );
+        off();
+
+        expect(puts).toHaveBeenCalledTimes(1);
+        puts.mockRestore();
+        expect(fake.data("pluginPermissions", "main")).toEqual({
+            grants: { h_db: true, h_provider: true, other_db: true },
+            lastGrantTime: { foo_db_lastGrantTime: 5 },
+            resets: { foo: 1 },
+            standing: { h_db: true, h_provider: true },
+        });
+        expect(hasStandingGrant("h_db")).toBe(true);
+        expect(hasStandingGrant("h_mainDom")).toBe(false);
+        expect(hasStandingGrant("other_db")).toBe(false);
+        // Loading the record reported nothing; the write reported the removed grant and the reset.
+        expect(removals).toEqual([[["h_mainDom"], ["foo"]]]);
+    });
+
+    it("counts a reset even when the list did not change", async () => {
+        fake.set("pluginPermissions", "main", { grants: {}, lastGrantTime: {}, resets: { foo: 2 } });
+        await loadPluginPermissions();
+        expect(getPermissionResetCount("foo")).toBe(2);
+        expect(getPermissionResetCount("constructor")).toBe(0);
+        await setStandingPermissionGrants(
+            "foo",
+            [],
+            () => false,
+            () => false,
+            2,
+        );
+        expect(fake.data("pluginPermissions", "main").resets).toEqual({ foo: 3 });
+    });
+
+    it("refuses a list opened before a reset of its plugin, seen on the fresh read or on a conflict", async () => {
+        // Another tab's reset this tab has not heard of yet: the write's fresh read finds it.
+        fake.set("pluginPermissions", "main", { grants: {}, lastGrantTime: {}, resets: { foo: 1 } });
+        await expect(
+            setStandingPermissionGrants(
+                "foo",
+                ["h_db"],
+                () => false,
+                () => false,
+                0,
+            ),
+        ).rejects.toBeInstanceOf(StalePermissionListError);
+
+        // The reset lands while this tab's write is on its way: the conflict read finds it.
+        const hold = holdNextPermissionWrite();
+        const saving = setStandingPermissionGrants(
+            "foo",
+            ["h_db"],
+            () => false,
+            () => false,
+            1,
+        );
+        await hold.entered;
+        fake.set("pluginPermissions", "main", { grants: {}, lastGrantTime: {}, resets: { foo: 2 } });
+        hold.release();
+        await expect(saving).rejects.toBeInstanceOf(StalePermissionListError);
+        expect(hold.statuses).toEqual([409]);
+        server.current = fake;
+        expect(fake.data("pluginPermissions", "main")).toEqual({ grants: {}, lastGrantTime: {}, resets: { foo: 2 } });
+
+        // Another plugin's reset and an unrelated consent do not make the list stale.
+        fake.set("pluginPermissions", "main", {
+            grants: { other_db: true },
+            lastGrantTime: {},
+            resets: { foo: 2, bar: 7 },
+        });
+        await setStandingPermissionGrants(
+            "foo",
+            ["h_db"],
+            () => false,
+            () => false,
+            2,
+        );
+        expect(fake.data("pluginPermissions", "main")).toMatchObject({
+            grants: { other_db: true, h_db: true },
+            resets: { foo: 3, bar: 7 },
+        });
+    });
+
+    it("keeps a standing mark through a later consent write and drops it when its grant is revoked", async () => {
+        await setStandingPermissionGrants(
+            "foo",
+            ["h_db"],
+            () => false,
+            () => false,
+            0,
+        );
+        await recordPermissionGrants({ grants: ["h_inlay"] });
+        expect(fake.data("pluginPermissions", "main").standing).toEqual({ h_db: true });
+
+        await revokePermissionGrants(
+            (key) => key === "h_db",
+            () => false,
+        );
+        expect(fake.data("pluginPermissions", "main")).toMatchObject({ grants: { h_inlay: true }, standing: {} });
+        expect(hasStandingGrant("h_db")).toBe(false);
+    });
+
+    it("ignores a standing mark that has no grant", async () => {
+        fake.set("pluginPermissions", "main", { grants: {}, lastGrantTime: {}, standing: { h_db: true } });
+        await loadPluginPermissions();
+        expect(hasStandingGrant("h_db")).toBe(false);
+        expect(hasPermissionGrant("h_db")).toBe(false);
+    });
+});
+
 describe("refreshPluginPermissions", () => {
     const EPOCH = "00000000-0000-4000-8000-000000000002";
     let counter = 0;

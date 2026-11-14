@@ -46,9 +46,12 @@ export interface AlertQueue extends Readable<alertData> {
     open(value: alertData): AlertDialog;
     /** Closes the shown dialog with `msg`, only while `expected` (when given) is the one shown. */
     answer(msg: string, expected?: alertData): void;
-    /** Updates the shown confirmation in place without queuing a second dialog. */
-    setConfirmChecked(checked: boolean, expected: alertData): void;
-    /** Answers a confirmation, carrying its checkbox state when present. */
+    /**
+     * Updates the shown confirmation in place without queuing a second dialog: its one checkbox, or
+     * with `id` that item of its checklist.
+     */
+    setConfirmChecked(checked: boolean, expected: alertData, id?: string): void;
+    /** Answers a confirmation, carrying its checkbox state, or its checklist's checked ids, when present. */
     answerConfirm(confirmed: boolean, expected?: alertData): void;
     /** Clears the status slot, only while `expected` (when given) is the status. A dialog stays. */
     clearStatus(expected?: alertData): void;
@@ -200,17 +203,29 @@ export function createAlertQueue(initial: alertData, options: { gapMs?: number }
         update: (change) => set(change(current)),
         open,
         answer,
-        setConfirmChecked(checked, expected) {
-            if (!headVisible || dialogs[0].data !== expected || !expected.confirmCheckbox) return;
-            expected.confirmCheckbox.checked = checked;
+        setConfirmChecked(checked, expected, id) {
+            if (!headVisible || dialogs[0].data !== expected) return;
+            const target =
+                id === undefined ? expected.confirmCheckbox : expected.confirmChecklist?.find((item) => item.id === id);
+            if (!target) return;
+            target.checked = checked;
             // Keep the dialog identity: keyboard gating must not treat this as a newly shown dialog.
             store.set(current);
         },
         answerConfirm(confirmed, expected) {
             if (!headVisible || (expected !== undefined && dialogs[0].data !== expected)) return;
-            const checkbox = dialogs[0].data.confirmCheckbox;
+            const { confirmCheckbox: checkbox, confirmChecklist: checklist } = dialogs[0].data;
             answer(
-                checkbox ? JSON.stringify({ confirmed, checked: checkbox.checked }) : confirmed ? "yes" : "no",
+                checklist
+                    ? JSON.stringify({
+                          confirmed,
+                          checked: checklist.filter((item) => item.checked).map((item) => item.id),
+                      })
+                    : checkbox
+                      ? JSON.stringify({ confirmed, checked: checkbox.checked })
+                      : confirmed
+                        ? "yes"
+                        : "no",
                 expected,
             );
         },

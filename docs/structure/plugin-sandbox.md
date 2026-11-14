@@ -130,6 +130,35 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - Idle scheduling and final checks: `queueDeferredCheck` JSDoc. Work that never ends defers reload
   ([Limitations](#limitations)).
 
+### Permission list
+
+The user allows permissions ahead of a plugin's first request through `reviewPluginPermissions`
+(`src/ts/plugins/apiV3/v3.svelte.ts`, JSDoc): one `alertConfirmWithChecklist` dialog listing every permission.
+
+- Opened by the Permissions button of a plugin's settings row, and by `importPlugin` before it saves and loads a new or
+  updated plugin (not for a hot reload or the blank template). An update checks the replaced script's grants; they move
+  to the new script only when the user confirms. The import goes on whatever the answer.
+- Confirming writes once (`setStandingPermissionGrants`): the checked permissions become `standing` grants of the
+  script, the unchecked ones are revoked (for a script of that name still running too), and the plugin's reset count
+  rises, so every tab reloads it as after a [reset](#state). The caller reloads this tab.
+- Declining writes nothing. Confirming writes nothing only when the list is already saved and no running script of the
+  name and no cached answer holds an unchecked permission.
+- A list that would write, opened before a reset of its plugin, is refused (`StalePermissionListError`): the write
+  compares the plugin's reset count with the one read when the list opened, on its fresh read and on every conflict
+  read. A reset, a removal, and another saved list all raise that count, in any tab.
+- A replacement of the script counts no reset, so each caller passes `stillCurrent`: a confirmed list whose plugin is no
+  longer installed with the script it was opened for is refused too. `importPlugin` then installs nothing over a plugin
+  that changed while the list was open (`pluginChangedDuringImport`; silent for an update whose plugin was removed).
+- A standing grant is not asked again `periodically`. It is bound to the script hash like any grant.
+- `getPluginPermission` shares one check among calls of a plugin for the same permission and reconfirm mode while it
+  decides, so calls repeated behind an open prompt open no second one.
+- `setChatPanel` HTML that carries a `style` element (HTML or SVG) needs `globalStyle`, asked once: the panel is
+  inserted into the main document, where the rules reach the whole app. Denied, the panel is shown without its `style`
+  elements. HTML without one asks nothing.
+- A `setChatPanel` call that waited applies only while it is the latest call for its panel id and its instance is not
+  unloading. Panel ids are one namespace over every plugin, and a removal (`unregisterUIPart`, unload) counts as a call
+  (`chatPanelCalls`).
+
 ### Job owner presence
 
 [Generation channels](server-generation.md#generation-channels) owns presence, deadlines and safe-boundary transfers;
@@ -161,12 +190,12 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   - `safeLocalStorage` (`SafeLocalStorage`) stays device-local (`localStorage` `safe_plugin_*`).
 - v3 permission grants live in the server-owned `pluginPermissions` resource (`permissionStore.ts`; its header names the
   only writers), outside the settings records: `grants` keyed by `<sha256 of the script>_<permission>`, `lastGrantTime`
-  by plugin name and permission, `resets` by plugin name.
+  by plugin name and permission, `resets` by plugin name, `standing` by grant key ([permission list](#permission-list)).
   - The script hash is taken from the script the plugin was loaded with, and answers are cached per plugin and
     permission for the page load (cleared on unload).
-  - Only the settings page revokes (`resetPluginPermissions`, `removeOrphanPluginPermissionGrants`); a revoked grant
-    drops its cached answer in every tab. A reset always bumps `resets`: every tab drops the plugin's answers, and a
-    prompt open across it (or an unload) answers `false`.
+  - Only the settings page revokes (`resetPluginPermissions`, `removeOrphanPluginPermissionGrants`, and the permission
+    list's unchecked rows); a revoked grant drops its cached answer in every tab. A reset always bumps `resets`: every
+    tab drops the plugin's answers, and a prompt open across it (or an unload) answers `false`.
   - A reset reloads the plugins here (the settings page calls `loadPlugins` after the revoke, even a failed one). Every
     tab that runs the plugin hears the `resets` change (`onPermissionGrantsRemoved`) and defers a forced reload, which a
     local load supersedes, so no running guest keeps a capability it obtained before the reset.
@@ -276,7 +305,8 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
 - `slow`: none.
 - `e2e/transformGolden.spec.ts`: edit hooks.
 - `e2e/settingsPages.spec.ts`: the page.
-- `e2e/pluginSandbox.spec.ts`: real-browser sandbox isolation and detached database reads.
+- `e2e/pluginSandbox.spec.ts`: real-browser sandbox isolation, detached database reads, and panel style consent (an SVG
+  `style` element is tested only here: happy-dom's parser drops it).
 - `SandboxHost` stub (`vi.mock` of `./factory`, most of `apiV3/`): the real API object is driven directly.
 - `guestBridge.test.ts`: the srcdoc's guest half over a fake window; it still logs its property initialization.
 - `sandboxActivity.test.ts`: a real `SandboxHost`, the guest simulated by window messages.

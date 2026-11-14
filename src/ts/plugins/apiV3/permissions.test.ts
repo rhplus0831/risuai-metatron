@@ -4,18 +4,38 @@ import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 // the plugin was loaded plus the permission, so one consent answers one permission of one plugin,
 // a plugin that rewrites its own database copy keeps its original grants, answers are cached per
 // (plugin, permission) for the page load and dropped on unload, and "periodically" asks again after
-// three days.
+// three days. A standing grant (the settings permission list's) is not asked again, calls behind an
+// open prompt share it, and a chat panel's style element needs `globalStyle`.
 
 type CapturedApi = Record<string, (...args: any[]) => any>;
 
-const { db, captured, grants, times, recorded, confirm } = vi.hoisted(() => ({
-    db: { characters: [] as any[], plugins: [] as any[], pluginCustomStorage: undefined as any },
-    captured: { api: null as CapturedApi | null },
-    grants: new Set<string>(),
-    times: new Map<string, number>(),
-    recorded: vi.fn(async () => undefined),
-    confirm: vi.fn(async () => true),
-}));
+const { db, captured, grants, standing, times, resets, recorded, confirm, checklist, savedStanding } = vi.hoisted(
+    () => ({
+        db: { characters: [] as any[], plugins: [] as any[], pluginCustomStorage: undefined as any },
+        captured: { api: null as CapturedApi | null },
+        grants: new Set<string>(),
+        standing: new Set<string>(),
+        times: new Map<string, number>(),
+        resets: new Map<string, number>(),
+        recorded: vi.fn(async () => undefined),
+        confirm: vi.fn(async () => true),
+        checklist: vi.fn(
+            async (
+                _msg: string,
+                _items: readonly { id: string; label: string; checked: boolean }[],
+            ): Promise<{ confirmed: boolean; checked: string[] }> => ({ confirmed: false, checked: [] }),
+        ),
+        savedStanding: vi.fn(
+            async (
+                _plugin: string,
+                _granted: readonly string[],
+                _removedGrants: (key: string) => boolean,
+                _removedTimes: (key: string) => boolean,
+                _expectedResets: number,
+            ) => undefined,
+        ),
+    }),
+);
 
 vi.mock("./factory", () => ({
     SandboxHost: class {
@@ -45,6 +65,7 @@ vi.mock("src/ts/globalApi.svelte", async () =>
 vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertConfirm: confirm,
+        alertConfirmWithChecklist: checklist,
     }),
 );
 vi.mock("src/ts/parser/parser.svelte", () => ({
@@ -55,13 +76,18 @@ vi.mock("src/ts/parser/parser.svelte", () => ({
 vi.mock("./permissionStore", async () =>
     (await import("./tests/permissionStoreMock")).createPermissionStoreMock({
         hasPermissionGrant: (key: string) => grants.has(key),
+        hasStandingGrant: (key: string) => grants.has(key) && standing.has(key),
         getLastGrantTime: (key: string) => times.get(key),
+        getPermissionResetCount: (plugin: string) => resets.get(plugin) ?? 0,
         recordPermissionGrants: recorded,
+        setStandingPermissionGrants: savedStanding,
     }),
 );
 vi.mock("src/ts/process/files/inlays", () => ({ getInlayAsset: vi.fn(async () => ({ name: "inlay" })) }));
 
-import { executePluginV3, getV3PluginInstance, loadV3Plugins } from "./v3.svelte";
+import { executePluginV3, getV3PluginInstance, loadV3Plugins, reviewPluginPermissions } from "./v3.svelte";
+import { chatPanelStore } from "src/ts/stores.svelte";
+import { StalePermissionListError } from "./permissionStore";
 import { language } from "src/lang";
 import { endJobChannel, handleChannelEvent } from "src/ts/network/jobChannel";
 import { requestChatData } from "src/ts/process/request/request";
@@ -87,7 +113,14 @@ async function makeApi(script = "script-a"): Promise<{ api: CapturedApi; plugin:
 
 beforeEach(() => {
     grants.clear();
+    standing.clear();
     times.clear();
+    resets.clear();
+    // Reset, not clear: a test's own answer must not reach the next one.
+    checklist.mockReset();
+    checklist.mockImplementation(async () => ({ confirmed: false, checked: [] }));
+    savedStanding.mockReset();
+    savedStanding.mockImplementation(async () => undefined);
     recorded.mockClear();
     confirm.mockClear();
     confirm.mockResolvedValue(true);
@@ -368,6 +401,305 @@ describe("periodic permissions", () => {
             },
             expect.any(Function),
         );
+    });
+
+    it("does not ask again for a standing grant however old its last grant time", async () => {
+        const { api, plugin } = await makeApi("script-standing");
+        grants.add("h(script-standing)_db");
+        standing.add("h(script-standing)_db");
+        times.set(`${plugin.name}_db_lastGrantTime`, Date.now() - 30 * 24 * 60 * 60 * 1000);
+        expect(await api.getDatabase()).not.toBeNull();
+
+        // No time at all: the settings list writes none.
+        grants.add("h(script-standing)_inlay");
+        standing.add("h(script-standing)_inlay");
+        expect(await api.readInlay("x")).toEqual({ name: "inlay" });
+        expect(confirm).not.toHaveBeenCalled();
+        expect(recorded).not.toHaveBeenCalled();
+    });
+});
+
+describe("calls behind an open prompt", () => {
+    it("share the one prompt and its answer", async () => {
+        let answer!: (allowed: boolean) => void;
+        confirm.mockImplementation(() => new Promise<boolean>((resolve) => (answer = resolve)));
+        const { api } = await makeApi("script-shared");
+
+        const first = api.requestPluginPermission("fetchLogs");
+        const second = api.requestPluginPermission("fetchLogs");
+        const logs = api.getFetchLogs();
+        await vi.waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
+        answer(true);
+
+        expect(await Promise.all([first, second])).toEqual([true, true]);
+        expect(await logs).toHaveLength(1);
+        expect(confirm).toHaveBeenCalledTimes(1);
+        expect(recorded).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("chat panel styles", () => {
+    const panel = (plugin: { name: string }) => chatPanelStore.find((entry) => entry.pluginName === plugin.name);
+    const styled = "<div><style>body{color:red}</style><p>panel</p></div>";
+
+    it("shows a panel without a style element without asking", async () => {
+        const { api, plugin } = await makeApi("script-panel-plain");
+        expect(api.setChatPanel('<p style="color:red">panel</p>')).toEqual({ id: `${plugin.name}:default` });
+        expect(panel(plugin)?.html).toBe('<p style="color:red">panel</p>');
+        expect(confirm).not.toHaveBeenCalled();
+    });
+
+    it("asks for globalStyle before showing a panel that carries a style element, and keeps it when allowed", async () => {
+        const { api, plugin } = await makeApi("script-panel-allowed");
+        const shown = api.setChatPanel(styled);
+        expect(panel(plugin)).toBeUndefined();
+
+        expect(await shown).toEqual({ id: `${plugin.name}:default` });
+        expect(confirm).toHaveBeenCalledExactlyOnceWith(language.globalStyleConsent.replace("{}", plugin.name));
+        expect(recorded).toHaveBeenCalledWith(
+            { grants: ["h(script-panel-allowed)_globalStyle"], lastGrantTime: undefined },
+            expect.any(Function),
+        );
+        expect(panel(plugin)?.html).toBe(styled);
+    });
+
+    // An SVG style element is covered by e2e/pluginSandbox.spec.ts: happy-dom's parser drops it.
+    it("shows the panel without its style element and rules when globalStyle is denied", async () => {
+        confirm.mockResolvedValue(false);
+        const { api, plugin } = await makeApi("script-panel-denied");
+
+        expect(await api.setChatPanel(styled)).toEqual({ id: `${plugin.name}:default` });
+        expect(confirm).toHaveBeenCalledTimes(1);
+        expect(panel(plugin)?.html).toBe("<div><p>panel</p></div>");
+
+        // The denial is cached: the next styled panel is stripped without a second prompt.
+        await api.setChatPanel(`<style>p{display:none}</style><p>again</p>`);
+        expect(confirm).toHaveBeenCalledTimes(1);
+        expect(panel(plugin)?.html).toBe("<p>again</p>");
+    });
+
+    it("lets a later call for the same panel win over one still waiting for consent", async () => {
+        let answer!: (allowed: boolean) => void;
+        confirm.mockImplementation(() => new Promise<boolean>((resolve) => (answer = resolve)));
+        const { api, plugin } = await makeApi("script-panel-order");
+
+        const waiting = api.setChatPanel(styled);
+        await vi.waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
+        api.setChatPanel("<p>newer</p>");
+        answer(true);
+        await waiting;
+        expect(panel(plugin)?.html).toBe("<p>newer</p>");
+
+        const removedWhileWaiting = api.setChatPanel(styled, { id: "other" });
+        api.setChatPanel(null, { id: "other" });
+        await removedWhileWaiting;
+        expect(chatPanelStore.find((entry) => entry.id === "other")).toBeUndefined();
+    });
+
+    it("keeps a panel removed, or set by another plugin, while an earlier call for its id waited for consent", async () => {
+        let answer!: (allowed: boolean) => void;
+        confirm.mockImplementation(() => new Promise<boolean>((resolve) => (answer = resolve)));
+        const first = await makeApi("script-panel-unregister");
+        const byId = (id: string) => chatPanelStore.find((entry) => entry.id === id);
+
+        const removed = first.api.setChatPanel(styled, { id: "removed" });
+        await vi.waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
+        first.api.unregisterUIPart("removed");
+        const shared = first.api.setChatPanel(styled, { id: "shared" });
+
+        // A second plugin of another name, loaded beside the first.
+        captured.api = null;
+        const other = { name: `perm-test-${++counter}`, script: "script-panel-other", version: "3.0" };
+        await executePluginV3(other as any);
+        captured.api!.setChatPanel("<p>theirs</p>", { id: "shared" });
+
+        answer(true);
+        await Promise.all([removed, shared]);
+        expect(byId("removed")).toBeUndefined();
+        expect(byId("shared")).toMatchObject({ pluginName: other.name, html: "<p>theirs</p>" });
+    });
+
+    it("shows nothing when the plugin unloads while consent is pending", async () => {
+        let answer!: (allowed: boolean) => void;
+        confirm.mockImplementation(() => new Promise<boolean>((resolve) => (answer = resolve)));
+        const { api, plugin } = await makeApi("script-panel-unload");
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        onTestFinished(() => warn.mockRestore());
+
+        const waiting = api.setChatPanel(styled);
+        await vi.waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
+        await loadV3Plugins([]);
+        answer(true);
+        expect(await waiting).toBeUndefined();
+        expect(panel(plugin)).toBeUndefined();
+    });
+});
+
+describe("reviewPluginPermissions", () => {
+    const plugin = { name: "review-plugin", displayName: "Review", script: "script-new" };
+    const checkedIds = () =>
+        checklist.mock.calls[0][1].filter((item: { checked: boolean }) => item.checked).map((item) => item.id);
+
+    it("checks the script's grants and the replaced version's, then saves the chosen ones as standing", async () => {
+        grants.add("h(script-new)_db");
+        grants.add("h(script-old)_provider");
+        grants.add("h(script-new)_mainDom");
+        checklist.mockResolvedValue({ confirmed: true, checked: ["db", "provider", "globalStyle"] });
+
+        expect(await reviewPluginPermissions(plugin, { previousScript: "script-old", installing: true })).toBe(true);
+
+        const [message, items] = checklist.mock.calls[0];
+        expect(message).toContain("Review");
+        expect(message).toContain(language.pluginPermissionsCarriedOver);
+        expect(message).toContain(language.pluginPermissionsInstallNote);
+        expect(items.map((item) => item.id)).toEqual([
+            "fetchLogs",
+            "db",
+            "dbWrite",
+            "mainDom",
+            "replacer",
+            "provider",
+            "sendChat",
+            "inlay",
+            "globalStyle",
+        ]);
+        expect(checkedIds()).toEqual(["db", "mainDom", "provider"]);
+
+        expect(savedStanding).toHaveBeenCalledTimes(1);
+        const [name, granted, removedGrants, removedTimes, expectedResets] = savedStanding.mock.calls[0];
+        expect(name).toBe("review-plugin");
+        expect(expectedResets).toBe(0);
+        expect(granted).toEqual(["h(script-new)_db", "h(script-new)_provider", "h(script-new)_globalStyle"]);
+        // Unchosen permissions of this script are revoked; chosen ones and other scripts' grants stay.
+        expect(removedGrants("h(script-new)_mainDom")).toBe(true);
+        expect(removedGrants("h(script-new)_db")).toBe(false);
+        expect(removedGrants("h(script-old)_provider")).toBe(false);
+        expect(removedGrants("h(script-old)_mainDom")).toBe(false);
+        expect(removedTimes("review-plugin_mainDom_lastGrantTime")).toBe(true);
+        expect(removedTimes("review-plugin_db_lastGrantTime")).toBe(false);
+    });
+
+    it("revokes an unchosen permission for the script of that name still running", async () => {
+        const { plugin: running } = await makeApi("script-running");
+        checklist.mockResolvedValue({ confirmed: true, checked: ["db"] });
+
+        expect(await reviewPluginPermissions({ name: running.name, script: "script-stored" })).toBe(true);
+
+        const [, granted, removedGrants] = savedStanding.mock.calls[0];
+        expect(granted).toEqual(["h(script-stored)_db"]);
+        expect(removedGrants("h(script-running)_mainDom")).toBe(true);
+        expect(removedGrants("h(script-running)_db")).toBe(false);
+    });
+
+    it("saves against the reset count read when the list was opened, not the one at its answer", async () => {
+        resets.set("review-plugin", 4);
+        checklist.mockImplementation(async () => {
+            // Another tab reset the plugin while the list was open.
+            resets.set("review-plugin", 5);
+            return { confirmed: true, checked: ["db"] };
+        });
+        await reviewPluginPermissions(plugin);
+        expect(savedStanding.mock.calls[0][4]).toBe(4);
+    });
+
+    it("saves nothing and reports a stale list when its target changed while the list was open", async () => {
+        const stillCurrent = vi.fn(() => false);
+        // Declining never asks whether the target is still current.
+        expect(await reviewPluginPermissions(plugin, { stillCurrent })).toBe(false);
+        expect(stillCurrent).not.toHaveBeenCalled();
+
+        checklist.mockResolvedValue({ confirmed: true, checked: ["db"] });
+        await expect(reviewPluginPermissions(plugin, { stillCurrent })).rejects.toThrow(
+            language.pluginPermissionsStale,
+        );
+        expect(savedStanding).not.toHaveBeenCalled();
+
+        stillCurrent.mockReturnValue(true);
+        expect(await reviewPluginPermissions(plugin, { stillCurrent })).toBe(true);
+    });
+
+    it("reports a list that a reset made stale in the user's language", async () => {
+        checklist.mockResolvedValue({ confirmed: true, checked: ["db"] });
+        savedStanding.mockRejectedValueOnce(new StalePermissionListError());
+        await expect(reviewPluginPermissions(plugin)).rejects.toThrow(language.pluginPermissionsStale);
+    });
+
+    it("saves an empty list while a running script of that name, or a cached answer, still holds a permission", async () => {
+        const { api, plugin: running } = await makeApi("script-running-grant");
+        grants.add("h(script-running-grant)_mainDom");
+        checklist.mockResolvedValue({ confirmed: true, checked: [] });
+        expect(await reviewPluginPermissions({ name: running.name, script: "script-stored-empty" })).toBe(true);
+        expect(savedStanding.mock.calls[0][2]("h(script-running-grant)_mainDom")).toBe(true);
+
+        // A consent whose save failed holds only as a cached answer.
+        grants.clear();
+        savedStanding.mockClear();
+        recorded.mockRejectedValueOnce(new Error("offline"));
+        const error = vi.spyOn(console, "error").mockImplementation(() => {});
+        onTestFinished(() => error.mockRestore());
+        expect(await api.requestPluginPermission("sendChat")).toBe(true);
+        expect(await reviewPluginPermissions({ name: running.name, script: "script-running-grant" })).toBe(true);
+        expect(savedStanding).toHaveBeenCalledTimes(1);
+        confirm.mockResolvedValue(false);
+        expect(await api.requestPluginPermission("sendChat")).toBe(false);
+    });
+
+    it("changes nothing when the user declines or confirms the list that is already saved", async () => {
+        grants.add("h(script-new)_db");
+        standing.add("h(script-new)_db");
+        expect(await reviewPluginPermissions(plugin)).toBe(false);
+        expect(checklist.mock.calls[0][0]).not.toContain(language.pluginPermissionsInstallNote);
+        // Declining a changed list saves nothing either.
+        grants.add("h(script-new)_mainDom");
+        checklist.mockResolvedValueOnce({ confirmed: false, checked: ["db"] });
+        expect(await reviewPluginPermissions(plugin)).toBe(false);
+        grants.delete("h(script-new)_mainDom");
+
+        checklist.mockResolvedValue({ confirmed: true, checked: ["db"] });
+        expect(await reviewPluginPermissions(plugin)).toBe(false);
+        expect(savedStanding).not.toHaveBeenCalled();
+    });
+
+    it("saves a prompt's grant as standing even when the checked list is unchanged", async () => {
+        grants.add("h(script-new)_db");
+        checklist.mockResolvedValue({ confirmed: true, checked: ["db"] });
+        expect(await reviewPluginPermissions(plugin)).toBe(true);
+        expect(savedStanding.mock.calls[0][1]).toEqual(["h(script-new)_db"]);
+    });
+
+    it("answers false to a prompt that was open when the list was saved, and records nothing for it", async () => {
+        let answer!: (allowed: boolean) => void;
+        confirm.mockImplementation(() => new Promise<boolean>((resolve) => (answer = resolve)));
+        const { api, plugin: running } = await makeApi("script-open-prompt");
+        const pending = api.requestPluginPermission("sendChat");
+        await vi.waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
+
+        checklist.mockResolvedValue({ confirmed: true, checked: ["db"] });
+        let saving!: () => void;
+        savedStanding.mockImplementationOnce(
+            () => new Promise<undefined>((resolve) => (saving = () => resolve(undefined))),
+        );
+        const review = reviewPluginPermissions({ name: running.name, script: "script-open-prompt" });
+        await vi.waitFor(() => expect(savedStanding).toHaveBeenCalledTimes(1));
+        // Answered while the save is still on its way: the list being saved already wins.
+        answer(true);
+        expect(await pending).toBe(false);
+        expect(recorded).not.toHaveBeenCalled();
+        saving();
+        expect(await review).toBe(true);
+    });
+
+    it("drops the plugin's cached answers when the list is saved, so a revoked permission asks again", async () => {
+        const { api, plugin: running } = await makeApi("script-cached");
+        expect(await api.requestPluginPermission("fetchLogs")).toBe(true);
+        expect(confirm).toHaveBeenCalledTimes(1);
+
+        checklist.mockResolvedValue({ confirmed: true, checked: ["db"] });
+        await reviewPluginPermissions({ name: running.name, script: "script-cached" });
+        grants.delete("h(script-cached)_fetchLogs");
+        confirm.mockResolvedValue(false);
+        expect(await api.requestPluginPermission("fetchLogs")).toBe(false);
+        expect(confirm).toHaveBeenCalledTimes(2);
     });
 });
 

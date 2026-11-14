@@ -15,6 +15,12 @@ const mocks = vi.hoisted(() => ({
     alertError: vi.fn(),
     alertConfirm: vi.fn(async (_message: string) => true),
     loadV3Plugins: vi.fn(async (_plugins: any[]) => {}),
+    reviewPluginPermissions: vi.fn(
+        async (
+            _plugin: { name: string; script: string },
+            _options?: { previousScript?: string; installing?: boolean; stillCurrent?: () => boolean },
+        ) => false,
+    ),
 }));
 
 vi.mock("src/ts/alert", async () =>
@@ -38,6 +44,7 @@ vi.mock("src/ts/stores.svelte", async () =>
 
 vi.mock("./apiV3/v3.svelte", () => ({
     loadV3Plugins: mocks.loadV3Plugins,
+    reviewPluginPermissions: mocks.reviewPluginPermissions,
 }));
 
 vi.mock("./apiV3/transpiler", () => ({
@@ -69,6 +76,8 @@ beforeEach(() => {
     settings.plugins = [];
     mocks.alertError.mockClear();
     mocks.loadV3Plugins.mockClear();
+    mocks.reviewPluginPermissions.mockClear();
+    mocks.reviewPluginPermissions.mockResolvedValue(false);
 });
 
 describe("importPlugin API version gate", () => {
@@ -101,6 +110,105 @@ describe("importPlugin API version gate", () => {
             enabled: true,
         });
         expect(mocks.loadV3Plugins).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe("importPlugin permission review", () => {
+    const body = (version: string) => script(`//@api 3.0\n//@version ${version}`);
+
+    const heldReview = () => {
+        let answer!: (saved: boolean) => void;
+        mocks.reviewPluginPermissions.mockImplementationOnce(
+            () => new Promise<boolean>((resolve) => (answer = resolve)),
+        );
+        return (saved: boolean) => answer(saved);
+    };
+
+    it("shows a new plugin's permission list before it is saved and loaded", async () => {
+        const answer = heldReview();
+        const importing = importPlugin(body("1.0.0"));
+        await vi.waitFor(() => expect(mocks.reviewPluginPermissions).toHaveBeenCalledTimes(1));
+        expect(settings.plugins).toEqual([]);
+        expect(mocks.loadV3Plugins).not.toHaveBeenCalled();
+        answer(true);
+        await importing;
+
+        expect(mocks.reviewPluginPermissions).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ name: "test_plugin", script: body("1.0.0") }),
+            { previousScript: undefined, installing: true, stillCurrent: expect.any(Function) },
+        );
+        expect(settings.plugins).toHaveLength(1);
+        expect(mocks.loadV3Plugins).toHaveBeenCalledTimes(1);
+    });
+
+    it("passes the replaced version's script on an update, so its grants can be carried over", async () => {
+        await importPlugin(body("1.0.0"));
+        mocks.reviewPluginPermissions.mockClear();
+
+        await importPlugin(body("2.0.0"), { isUpdate: true, originalPluginName: "test_plugin" });
+
+        expect(mocks.reviewPluginPermissions).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ script: body("2.0.0") }),
+            { previousScript: body("1.0.0"), installing: true, stillCurrent: expect.any(Function) },
+        );
+    });
+
+    it("drops an update whose plugin was removed while its permission list was open", async () => {
+        await importPlugin(body("1.0.0"));
+        mocks.loadV3Plugins.mockClear();
+        const answer = heldReview();
+        const updating = importPlugin(body("2.0.0"), { isUpdate: true, originalPluginName: "test_plugin" });
+        await vi.waitFor(() => expect(mocks.reviewPluginPermissions).toHaveBeenCalledTimes(2));
+        settings.plugins = [];
+        answer(false);
+        await updating;
+
+        expect(settings.plugins).toEqual([]);
+        expect(mocks.loadV3Plugins).not.toHaveBeenCalled();
+        expect(mocks.alertError).not.toHaveBeenCalled();
+    });
+
+    it("installs nothing over a plugin that was replaced while the permission list was open", async () => {
+        await importPlugin(body("1.0.0"));
+        mocks.loadV3Plugins.mockClear();
+        const answer = heldReview();
+        const updating = importPlugin(body("2.0.0"), { isUpdate: true, originalPluginName: "test_plugin" });
+        await vi.waitFor(() => expect(mocks.reviewPluginPermissions).toHaveBeenCalledTimes(2));
+        const stillCurrent = mocks.reviewPluginPermissions.mock.calls[1][1]!.stillCurrent!;
+        expect(stillCurrent()).toBe(true);
+        // Another tab finished a later update meanwhile.
+        settings.plugins = [{ ...settings.plugins[0], script: body("3.0.0"), versionOfPlugin: "3.0.0" }];
+        expect(stillCurrent()).toBe(false);
+        answer(false);
+        await updating;
+
+        expect(settings.plugins.map((p) => p.versionOfPlugin)).toEqual(["3.0.0"]);
+        expect(mocks.loadV3Plugins).not.toHaveBeenCalled();
+        expect(mocks.alertError).toHaveBeenCalledExactlyOnceWith(language.pluginChangedDuringImport);
+    });
+
+    it("installs the plugin and reports the error when saving the permissions fails", async () => {
+        mocks.reviewPluginPermissions.mockRejectedValueOnce(new Error("write failed"));
+
+        await importPlugin(body("1.0.0"));
+
+        expect(mocks.alertError).toHaveBeenCalledExactlyOnceWith(
+            language.pluginPermissionSaveError.replace("{error}", "Error: write failed"),
+        );
+        expect(settings.plugins).toHaveLength(1);
+        expect(mocks.loadV3Plugins).toHaveBeenCalledTimes(1);
+    });
+
+    it("asks nothing for a hot reload, a skipped review, or an update of a plugin that is not installed", async () => {
+        await importPlugin(body("1.0.0"), { isHotReload: true });
+        // A hot reload lists the plugin in `hotReloading`, which later tests read.
+        hotReloading.length = 0;
+        await importPlugin(body("1.0.1"), { skipPermissionReview: true });
+        settings.plugins = [];
+        await importPlugin(body("1.0.2"), { isUpdate: true });
+
+        expect(mocks.reviewPluginPermissions).not.toHaveBeenCalled();
+        expect(settings.plugins).toEqual([]);
     });
 });
 

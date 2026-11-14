@@ -26,6 +26,7 @@ globalThis.__sandboxProbe = {
         this.rootDocumentRequest = risuai.getRootDocument();
     },
     hideContainer() { return risuai.hideContainer(); },
+    setPanel(html, id) { this.panelRequest = risuai.setChatPanel(html, { id }); },
 };
 `;
 
@@ -261,6 +262,52 @@ test("plugin permission alerts paint above the full-screen plugin container", as
         if (await dialog.isVisible()) await dialog.getByRole("button", { name: "NO", exact: true }).click();
         await frame.evaluate(() => (globalThis as any).__sandboxProbe.rootDocumentRequest);
     }
+});
+
+test("a chat panel's style elements need globalStyle consent and are removed when it is denied", async ({
+    page,
+    sandbox: { frame },
+}) => {
+    const panelHtml = (id: string) =>
+        page.evaluate(async (id) => {
+            const { chatPanelStore } = await import("/src/ts/stores.svelte.ts");
+            return chatPanelStore.find((panel: { id: string }) => panel.id === id)?.html ?? null;
+        }, id);
+    const setPanel = (html: string, id: string) =>
+        frame.evaluate(([html, id]) => (globalThis as any).__sandboxProbe.setPanel(html, id), [html, id]);
+    const settled = () => frame.evaluate(() => (globalThis as any).__sandboxProbe.panelRequest);
+    const dialog = page.locator("[data-alert-dialog]");
+
+    await setPanel("<p>plain</p>", "plain");
+    await settled();
+    expect(await panelHtml("plain")).toBe("<p>plain</p>");
+    await expect(dialog).toBeHidden();
+
+    await setPanel("<div><style>body{outline:3px solid red}</style><p>html style</p></div>", "html-style");
+    try {
+        await expect(dialog).toBeVisible();
+        await expect(dialog).toContainText(pluginName);
+        expect(await panelHtml("html-style"), "nothing is shown while the prompt is open").toBeNull();
+        await dialog.getByRole("button", { name: "NO", exact: true }).click();
+        await expect(dialog).toBeHidden();
+    } finally {
+        if (await dialog.isVisible()) await dialog.getByRole("button", { name: "NO", exact: true }).click();
+    }
+    await settled();
+    expect(await panelHtml("html-style")).toBe("<div><p>html style</p></div>");
+
+    // The denial holds for the page load, so the SVG form is stripped without a second prompt.
+    await setPanel(
+        '<svg width="1" height="1"><style>body{outline:3px solid red}</style><circle r="1"></circle></svg><p>svg style</p>',
+        "svg-style",
+    );
+    await settled();
+    await expect(dialog).toBeHidden();
+    const svgPanel = await panelHtml("svg-style");
+    expect(svgPanel).toContain("<p>svg style</p>");
+    expect(svgPanel).toContain("<circle");
+    expect(svgPanel).not.toContain("style>");
+    expect(svgPanel).not.toContain("outline");
 });
 
 test("other windows cannot write plugin storage or get an RPC answer, while the real bridge round trips", async ({

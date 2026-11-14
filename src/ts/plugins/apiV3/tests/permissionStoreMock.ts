@@ -21,9 +21,13 @@ export function createPermissionStoreMock(overrides: Partial<PermissionStoreModu
         seedPluginPermissions: vi.fn<PermissionStoreModule["seedPluginPermissions"]>(),
         loadPluginPermissions: vi.fn<PermissionStoreModule["loadPluginPermissions"]>(async () => undefined),
         hasPermissionGrant: vi.fn<PermissionStoreModule["hasPermissionGrant"]>(() => false),
+        hasStandingGrant: vi.fn<PermissionStoreModule["hasStandingGrant"]>(() => false),
         getLastGrantTime: vi.fn<PermissionStoreModule["getLastGrantTime"]>(() => undefined),
+        getPermissionResetCount: vi.fn<PermissionStoreModule["getPermissionResetCount"]>(() => 0),
+        StalePermissionListError: class StalePermissionListError extends Error {},
         recordPermissionGrants: vi.fn<PermissionStoreModule["recordPermissionGrants"]>(async () => undefined),
         revokePermissionGrants: vi.fn<PermissionStoreModule["revokePermissionGrants"]>(async () => undefined),
+        setStandingPermissionGrants: vi.fn<PermissionStoreModule["setStandingPermissionGrants"]>(async () => undefined),
         refreshPluginPermissions: vi.fn<PermissionStoreModule["refreshPluginPermissions"]>(async () => undefined),
         onPermissionGrantsRemoved: vi.fn<PermissionStoreModule["onPermissionGrantsRemoved"]>(() => () => {}),
     } satisfies PermissionStoreModule;

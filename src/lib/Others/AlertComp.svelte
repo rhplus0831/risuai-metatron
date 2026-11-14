@@ -460,6 +460,22 @@
                         <span>{shown.confirmCheckbox.label}</span>
                     </label>
                 {/if}
+                {#if shown.confirmChecklist}
+                    <div class="mt-4 flex flex-col gap-2">
+                        {#each shown.confirmChecklist as item (item.id)}
+                            <label class="flex items-start gap-2 text-textcolor">
+                                <input
+                                    class="mt-1"
+                                    type="checkbox"
+                                    checked={item.checked}
+                                    onchange={(event) =>
+                                        alertStore.setConfirmChecked(event.currentTarget.checked, shown, item.id)}
+                                />
+                                <span>{item.label}</span>
+                            </label>
+                        {/each}
+                    </div>
+                {/if}
                 <div class="flex gap-2 w-full">
                     <Button
                         className="mt-4 grow"

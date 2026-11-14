@@ -46,6 +46,11 @@ through `fetchNative`, which keeps their bytes and streams; a GET through `globa
 content type, which would make a cross-origin plain fetch need a CORS preflight. The calls that need a provider key
 are in [manual checks](manual-checks.md#real-providers-and-external-services).
 
+The entry on a chat panel's `style` element was closed the same day by the owner's decision: a panel that carries one
+asks for the plugin's new `globalStyle` permission and is shown without it when declined
+([permission list](../structure/plugin-sandbox.md#permission-list)). The inline styles and class names it left open
+are the Plugins entry below.
+
 ## Contents
 
 - [Plugins](#plugins): 1
@@ -56,20 +61,22 @@ are in [manual checks](manual-checks.md#real-providers-and-external-services).
 
 ## Plugins
 
-### A plugin's chat panel can carry a style element that styles the whole app
+### A plugin's chat panel can cover the app with inline styles or app classes
 
-`setChatPanel` stores `DOMPurify.sanitize(content)` (`src/ts/plugins/apiV3/v3.svelte.ts`, the `setChatPanel` method),
-and `DefaultChatScreen.svelte` inserts the stored HTML with `{@html}`. DOMPurify keeps a nested `style` element, and
-selector scoping belongs to the chat trim step, which this path does not run. The call asks for no `mainDom` consent.
-Found 2026-11-14 by the wide review (cut I6, P1) and confirmed by a second reader: a panel of
-`<div><style>body{color:red}</style><p>panel</p></div>` put the `body` rule into the main document.
+`setChatPanel` (`src/ts/plugins/apiV3/v3.svelte.ts`) keeps inline `style` attributes in the sanitized HTML, and its
+`className` option is only stripped of markup before `DefaultChatScreen.svelte` puts it on the panel's `section`. A
+panel of `<div style="position:fixed;inset:0;z-index:9999">` would lie over the whole app, and a `className` naming
+app utility classes could do the same to the section itself. Neither needs a grant. Left open on 2026-11-14 when the
+panel's `style` elements were put behind the `globalStyle` permission (owner's decision: close the `style` element
+only). Not run in a browser.
 
-**Why it matters:** a plugin without any grant can restyle or hide any part of the app, which the `mainDom` consent is
-there to gate.
+**Why it matters:** a plugin without any grant can hide the app or imitate its controls, which `globalStyle` and
+`mainDom` are there to gate.
 
-**Suggested handling:** the owner's decision, since either way costs compatibility: forbid `style` elements in panels
-(closes it, and breaks a plugin that styles its panel this way), or scope a panel's styles to the panel and refuse
-imports there.
+**Suggested handling:** `contain: paint` on the panel's `section` confines fixed descendants and clips them to the
+panel, at the cost of panel content that is meant to overflow (a dropdown); check that cost with a real plugin first.
+For `className`, allow only classes of the plugin's own choosing that the app does not define, or drop the option's
+effect on position.
 
 ## Rendering
 

@@ -690,6 +690,20 @@ const btn = await Risuai.registerButton(
 await Risuai.unregisterUIPart(btn.id);
 ```
 
+### Chat Panel
+
+`setChatPanel` shows a block of HTML under the chat. The HTML is sanitized; `null` or an empty string removes the
+panel, and a second call with the same `id` replaces it:
+
+```javascript
+await Risuai.setChatPanel("<p>Status: ready</p>", { id: "status" });
+await Risuai.setChatPanel(null, { id: "status" });
+```
+
+The panel is part of the main document, so the rules of a `<style>` element in it (an SVG one too) apply to the whole
+app. HTML that carries one asks the user for the `'globalStyle'` permission first. If the user declines, the panel is
+still shown, without its `<style>` elements. A panel styled with inline `style` attributes needs no permission.
+
 ## Data Storage
 
 ### Plugin Arguments
@@ -1341,7 +1355,13 @@ if (granted) {
 }
 ```
 
-**Available permissions:** `'fetchLogs'`, `'db'`, `'dbWrite'`, `'mainDom'`, `'replacer'`
+**Available permissions:** `'fetchLogs'`, `'db'`, `'dbWrite'`, `'mainDom'`, `'replacer'`, `'provider'`, `'sendChat'`,
+`'inlay'`, `'globalStyle'`
+
+The user can also allow permissions ahead of time: the permission list is shown when a plugin is imported or updated
+and from Settings > Plugins > Permissions. A permission allowed there is not asked again, not even after three days,
+until the plugin's script changes; an update shows the list again with the previous version's permissions checked. So
+a call that needs consent may resolve without any prompt.
 
 `'dbWrite'` is requested automatically by `setDatabase`, `setDatabaseLite`, `setCharacter`, `setChar`,
 `setCharacterToIndex` and `setChatToIndex`, separately from `'db'`: a plugin that may read the database is still asked
@@ -1351,9 +1371,10 @@ target (the selected character and presets, or the character and chat at the giv
 was made, even if the user changes the selection while the prompt is open. A name that is not a permission answers
 `false` without a prompt.
 
-A grant is not permanent: the user can reset a plugin's permissions in Settings > Plugins, and removing a plugin
-revokes its grants. After a reset, `requestPluginPermission` and the APIs that need consent ask again; a prompt that
-was open during the reset answers `false`.
+A grant is not permanent: the user can reset a plugin's permissions or change its permission list in Settings >
+Plugins, and removing a plugin revokes its grants. After a reset, `requestPluginPermission` and the APIs that need
+consent ask again; a prompt that was open during the reset, or while the permission list was saved, answers `false`.
+Saving the permission list restarts the plugin.
 
 ### Fetch Logs
 

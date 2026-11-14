@@ -20,7 +20,7 @@
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
     import { hotReloadPluginFiles } from "src/ts/plugins/apiV3/developMode";
     import { safeBootOff } from "src/ts/safeBoot";
-    import { resetPluginPermissions } from "src/ts/plugins/apiV3/v3.svelte";
+    import { resetPluginPermissions, reviewPluginPermissions } from "src/ts/plugins/apiV3/v3.svelte";
     import PluginDataSettings from "./PluginDataSettings.svelte";
     import { deleteOwnedPluginStorage } from "src/ts/storage/pluginStorageStore.svelte";
     import { recordValueIdentity } from "src/ts/storage/records.svelte";
@@ -156,6 +156,40 @@
                         <PowerOffIcon />
                     {/if}
                 </button>
+
+                <button
+                    class="text-textcolor2 hover:text-textcolor cursor-pointer disabled:opacity-50"
+                    disabled={changingPermissions}
+                    onclick={async (event) => {
+                        event.stopPropagation();
+                        const { name, displayName, script } = plugin;
+                        changingPermissions = true;
+                        try {
+                            const current = settings.plugins?.find((entry) => entry.name === name);
+                            let saved = false;
+                            try {
+                                const reviewed = current?.script ?? script;
+                                saved = await reviewPluginPermissions(
+                                    { name, displayName, script: reviewed },
+                                    {
+                                        stillCurrent: () =>
+                                            settings.plugins?.find((entry) => entry.name === name)?.script === reviewed,
+                                    },
+                                );
+                            } catch (error) {
+                                // Restart running plugins so none keeps a capability the list no longer
+                                // allows, even when the save failed.
+                                await loadPlugins();
+                                throw error;
+                            }
+                            if (saved) await loadPlugins();
+                        } catch (error) {
+                            alertError(language.pluginPermissionSaveError.replace("{error}", String(error)));
+                        } finally {
+                            changingPermissions = false;
+                        }
+                    }}>{language.pluginPermissionsEdit}</button
+                >
 
                 <button
                     class="text-textcolor2 hover:text-textcolor cursor-pointer disabled:opacity-50"

@@ -36,6 +36,7 @@ import {
     alertClear,
     alertConfirm,
     alertConfirmWithCheckbox,
+    alertConfirmWithChecklist,
     alertError,
     alertErrorWait,
     alertInput,
@@ -523,6 +524,32 @@ describe("alert helpers over the queue", () => {
         expect(current()).toMatchObject({ msg: "Remove other?", confirmCheckbox: { checked: true } });
         holder.queue.answerConfirm(false, current());
         await expect(second).resolves.toEqual({ confirmed: false, checked: true });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(holder.queue.hasDialogs()).toBe(false);
+    });
+
+    it("returns a checklist confirmation's checked ids, changed one item at a time, on either answer", async () => {
+        const items = [
+            { id: "db", label: "Read the database", checked: true },
+            { id: "mainDom", label: "Access the main document", checked: false },
+        ];
+        const first = alertConfirmWithChecklist("Permissions?", items);
+        const second = alertConfirmWithChecklist("Permissions?", items);
+        expect(current()).toMatchObject({ type: "ask", msg: "Permissions?", confirmChecklist: items });
+        const shown = current();
+        holder.queue.setConfirmChecked(true, shown, "mainDom");
+        holder.queue.setConfirmChecked(false, shown, "db");
+        holder.queue.setConfirmChecked(true, shown, "unknown");
+        // Changing an item keeps the dialog's identity, which the key gate compares.
+        expect(current()).toBe(shown);
+        holder.queue.answerConfirm(true, shown);
+        await expect(first).resolves.toEqual({ confirmed: true, checked: ["mainDom"] });
+        // The caller's items are not changed, so the second dialog starts from them.
+        expect(items.map((item) => item.checked)).toEqual([true, false]);
+        await vi.advanceTimersByTimeAsync(0);
+        holder.queue.setConfirmChecked(true, current(), "mainDom");
+        holder.queue.answer("", current());
+        await expect(second).resolves.toEqual({ confirmed: false, checked: ["db", "mainDom"] });
         await vi.advanceTimersByTimeAsync(0);
         expect(holder.queue.hasDialogs()).toBe(false);
     });

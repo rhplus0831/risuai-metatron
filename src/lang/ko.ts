@@ -901,6 +901,27 @@ export const languageKorean = {
     pluginResetPermissionsConfirm:
         '"{name}" 플러그인의 권한을 초기화하시겠습니까? 이후 권한이 필요할 때 다시 허용 여부를 묻습니다.',
     pluginPermissionResetError: "플러그인 권한을 초기화하지 못했습니다: {error}",
+    pluginPermissionsEdit: "권한",
+    pluginPermissionsReview:
+        '"{name}" 플러그인의 권한\n\n체크한 권한은 플러그인 스크립트가 바뀔 때까지 묻지 않고 허용합니다. 체크하지 않은 권한은 플러그인이 처음 필요로 할 때 묻습니다. 저장하면 플러그인을 다시 시작합니다.\n\n이 권한으로 저장하시겠습니까?',
+    pluginPermissionsCarriedOver: "이전 버전에 허용했던 권한이 체크되어 있습니다.",
+    pluginPermissionsInstallNote: "어느 쪽을 선택해도 플러그인은 설치됩니다.",
+    pluginPermissionSaveError: "플러그인 권한을 저장하지 못했습니다: {error}",
+    pluginChangedDuringImport:
+        "권한 목록이 열려 있는 동안 설치된 플러그인이 다른 곳에서 변경되었습니다. 아무것도 설치하지 않았습니다.",
+    pluginPermissionsStale:
+        "이 목록이 열려 있는 동안 다른 곳에서 플러그인 권한이 초기화되었거나 변경되었습니다. 목록을 다시 열어 주세요.",
+    pluginPermissionNames: {
+        fetchLogs: "요청 로그 읽기",
+        db: "전체 데이터베이스 읽기",
+        dbWrite: "데이터베이스 수정 (캐릭터, 채팅, 모듈, 설정)",
+        mainDom: "메인 화면 DOM 접근",
+        replacer: "채팅 내용과 요청 본문 치환",
+        provider: "AI 모델 제공자로 동작",
+        sendChat: "사용자를 대신해 채팅 메시지 전송",
+        inlay: "인레이 에셋 읽기",
+        globalStyle: "채팅 패널의 스타일을 앱 전체에 적용",
+    },
     pluginRemove: "플러그인 삭제",
     pluginRemoveOrphanGrants: "미설치 플러그인의 남은 권한 정리",
     pluginRemoveOrphanGrantsConfirm:
@@ -3326,6 +3347,8 @@ export const languageKorean = {
         "플러그인 {}에서 인레이 에셋 접근 권한을 요청합니다. 첨부된 미디어 파일을 읽거나 수정할 수 있습니다. 허용하시겠습니까?",
     sendChatConsent:
         "플러그인 {}에서 사용자를 대신해 채팅 메시지를 전송하려고 합니다. 실제 AI 응답 요청이 발생합니다. 허용하시겠습니까?",
+    globalStyleConsent:
+        "플러그인 {}에서 채팅 패널의 스타일을 앱 전체에 적용하려고 합니다. 화면의 어느 부분이든 바꾸거나 가릴 수 있고 다른 호스트의 리소스를 불러올 수 있습니다. 거부하면 패널은 그 스타일 없이 표시됩니다. 허용하시겠습니까?",
     createFolderOnBranch: "채팅 분기 시 자동으로 폴더 생성",
     goToChat: "채팅으로 이동",
     duplicatePluginFoundUpdateIt:

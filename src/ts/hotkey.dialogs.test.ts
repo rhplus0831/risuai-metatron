@@ -8,7 +8,7 @@ vi.mock("src/ts/process/serverCommands", async () =>
 );
 
 import { initHotkey } from "./hotkey";
-import { alertConfirmWithCheckbox, openAlertDialog } from "./alert";
+import { alertConfirmWithCheckbox, alertConfirmWithChecklist, openAlertDialog } from "./alert";
 import { installFlatDatabaseWithChats } from "./storage/tests/installFlatDatabase";
 import { alertStore, settingsOpen } from "./stores.svelte";
 
@@ -104,6 +104,27 @@ it("Enter accepts a checkbox confirmation with its current state while the check
     // Check closure before awaiting so a broken hotkey fails without a timeout.
     expect(alertStore.dialogVisible()).toBe(false);
     await expect(question.value).resolves.toEqual({ confirmed: true, checked: false });
+});
+
+it("Enter accepts a checklist confirmation with its current items while one of its checkboxes is focused", async () => {
+    const field = document.createElement("input");
+    field.type = "checkbox";
+    const dialogElement = document.createElement("div");
+    dialogElement.setAttribute("data-alert-dialog", "");
+    dialogElement.append(field);
+    document.body.append(dialogElement);
+    const question = openAlertDialog(() =>
+        alertConfirmWithChecklist("Permissions?", [
+            { id: "db", label: "Read the database", checked: true },
+            { id: "mainDom", label: "Access the main document", checked: true },
+        ]),
+    );
+    dialogs.push(question.dialog!);
+    alertStore.setConfirmChecked(false, get(alertStore), "db");
+    field.focus();
+    stroke(field, "Enter");
+    expect(alertStore.dialogVisible()).toBe(false);
+    await expect(question.value).resolves.toEqual({ confirmed: true, checked: ["mainDom"] });
 });
 
 it.each(["input", "textarea"] as const)(

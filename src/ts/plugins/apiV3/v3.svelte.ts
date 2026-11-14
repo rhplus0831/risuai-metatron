@@ -124,7 +124,7 @@ import {
 } from "src/ts/stores.svelte";
 import { v4 } from "uuid";
 import { sleep } from "src/ts/util";
-import { alertConfirm, alertError, alertNormal, terminalNoticeShown } from "src/ts/alert";
+import { alertConfirm, alertConfirmWithChecklist, alertError, alertNormal, terminalNoticeShown } from "src/ts/alert";
 import { language } from "src/lang";
 import { checkCharOrder, fetchNative, getFetchLogs, globalFetch, readImage, saveAsset } from "src/ts/globalApi.svelte";
 import { changeColorScheme, updateColorScheme, updateTextThemeAndCSS, type ColorScheme } from "src/ts/gui/colorscheme";
@@ -137,10 +137,14 @@ import { getLLMCache, searchLLMCache } from "src/ts/translator/translator";
 import { hasher, risuChatParser, risuChatParserScoped, type CbsConditions } from "src/ts/parser/parser.svelte";
 import {
     getLastGrantTime,
+    getPermissionResetCount,
     hasPermissionGrant,
+    hasStandingGrant,
     onPermissionGrantsRemoved,
     recordPermissionGrants,
     revokePermissionGrants,
+    setStandingPermissionGrants,
+    StalePermissionListError,
 } from "./permissionStore";
 import { LLMFlags, LLMFormat, LLMProvider, LLMTokenizer, type LLMModel } from "src/ts/model/types";
 import { sendChat as processSendChat } from "src/ts/process/index.svelte";
@@ -708,7 +712,32 @@ const makeMenuUnloadCallback = (menuId: string, menuStore: MenuDef[]) => {
     };
 };
 
+/** Whether sanitized HTML carries a style element (HTML or SVG): inserted into the main document, its rules are app-wide. */
+const hasStyleElement = (html: string): boolean => {
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    return template.content.querySelector("style") !== null;
+};
+
+/** Sanitizes `content` without its style elements and their text; empty if one still survives. */
+const withoutStyleElements = (content: string): string => {
+    const html = DOMPurify.sanitize(content, { FORBID_TAGS: ["style"] });
+    return hasStyleElement(html) ? "" : html;
+};
+
+/**
+ * The count of calls per panel id, over every plugin (ids are one namespace): a `setChatPanel` that
+ * waited for consent applies only while its call is still the latest, and a removal counts as a call.
+ */
+const chatPanelCalls = new Map<string, number>();
+const claimChatPanel = (id: string): number => {
+    const call = (chatPanelCalls.get(id) ?? 0) + 1;
+    chatPanelCalls.set(id, call);
+    return call;
+};
+
 const removeChatPanel = (id: string) => {
+    claimChatPanel(id);
     const index = chatPanelStore.findIndex((item) => item.id === id);
     if (index !== -1) {
         chatPanelStore.splice(index, 1);
@@ -718,6 +747,7 @@ const removeChatPanel = (id: string) => {
 const removePluginChatPanels = (pluginName: string) => {
     for (let i = chatPanelStore.length - 1; i >= 0; i--) {
         if (chatPanelStore[i].pluginName === pluginName) {
+            claimChatPanel(chatPanelStore[i].id);
             chatPanelStore.splice(i, 1);
         }
     }
@@ -844,6 +874,7 @@ const pluginPermissions = [
     "provider",
     "sendChat",
     "inlay",
+    "globalStyle",
 ] as const;
 type PluginPermission = (typeof pluginPermissions)[number];
 
@@ -939,47 +970,144 @@ const permissionConsentTexts: Record<PluginPermission, () => string> = {
     provider: () => language.providerPermissionConsent,
     sendChat: () => language.sendChatConsent,
     inlay: () => language.inlayPermissionConsent,
+    globalStyle: () => language.globalStyleConsent,
 };
+
+/**
+ * The settings permission list for one plugin, asked on its settings row and when a plugin is imported
+ * or updated: one dialog with every permission, checked where `script` holds a grant, or where
+ * `previousScript` (the version an update replaces) held one. Confirming makes the checked ones standing
+ * grants of `script`, revokes the unchecked ones (for the scripts of this name still running too), and
+ * counts a reset, so every tab reloads the plugin; the caller reloads this tab's plugins. Answers whether
+ * the permissions were saved: declining changes nothing, and neither does confirming a list that is
+ * already saved while no running script of the name and no cached answer holds an unchecked permission.
+ * A list that a reset of the plugin (from any tab, a removal included) made stale while it was open is
+ * not saved and throws; so is a confirmed list whose `stillCurrent` answers false (the caller's target,
+ * replaced meanwhile without a reset). `installing` tells the user that declining does not cancel the
+ * import.
+ */
+export async function reviewPluginPermissions(
+    plugin: { name: string; displayName?: string; script: string },
+    {
+        previousScript,
+        installing = false,
+        stillCurrent,
+    }: { previousScript?: string; installing?: boolean; stillCurrent?: () => boolean } = {},
+): Promise<boolean> {
+    const { name, script } = plugin;
+    const openedAtResets = getPermissionResetCount(name);
+    const hash = await scriptHash(script);
+    const previousHash =
+        previousScript !== undefined && previousScript !== script ? await scriptHash(previousScript) : undefined;
+    const carriedOver = (permission: PluginPermission) =>
+        previousHash !== undefined && hasPermissionGrant(`${previousHash}_${permission}`);
+    const message =
+        language.pluginPermissionsReview.replace("{name}", plugin.displayName ?? name) +
+        (pluginPermissions.some(carriedOver) ? `\n\n${language.pluginPermissionsCarriedOver}` : "") +
+        (installing ? `\n\n${language.pluginPermissionsInstallNote}` : "");
+    const answer = await alertConfirmWithChecklist(
+        message,
+        pluginPermissions.map((permission) => ({
+            id: permission,
+            label: language.pluginPermissionNames[permission],
+            checked: hasPermissionGrant(`${hash}_${permission}`) || carriedOver(permission),
+        })),
+    );
+    if (!answer.confirmed) return false;
+    if (stillCurrent?.() === false) throw new Error(language.pluginPermissionsStale);
+    const chosen = pluginPermissions.filter((permission) => answer.checked.includes(permission));
+    // Capture before the next await: a reload can unload the old script while hashing runs.
+    const running = v3PluginInstances.filter((instance) => instance.name === name).map((instance) => instance.script);
+    const hashes = new Set([hash, ...(await Promise.all(running.map(scriptHash)))]);
+    // Read now, not when the dialog opened: grants and answers may have changed meanwhile.
+    const saved = pluginPermissions.every((permission) =>
+        chosen.includes(permission)
+            ? hasStandingGrant(`${hash}_${permission}`)
+            : ![...hashes].some((each) => hasPermissionGrant(`${each}_${permission}`)) &&
+              permissionAnswers.get(permissionAnswerKey(name, permission))?.granted !== true,
+    );
+    if (saved) return false;
+
+    permissionResetGenerations.set(name, (permissionResetGenerations.get(name) ?? 0) + 1);
+    forgetPluginPermissions(name);
+    const revoked = pluginPermissions.filter((permission) => !chosen.includes(permission));
+    const revokedGrants = new Set([...hashes].flatMap((each) => revoked.map((permission) => `${each}_${permission}`)));
+    const revokedTimes = new Set(revoked.map((permission) => `${name}_${permission}_lastGrantTime`));
+    try {
+        await setStandingPermissionGrants(
+            name,
+            chosen.map((permission) => `${hash}_${permission}`),
+            (key) => revokedGrants.has(key),
+            (key) => revokedTimes.has(key),
+            openedAtResets,
+        );
+    } catch (error) {
+        if (error instanceof StalePermissionListError) throw new Error(language.pluginPermissionsStale);
+        throw error;
+    } finally {
+        forgetPluginPermissions(name);
+    }
+    return true;
+}
+
+/** Checks still deciding, by plugin, permission, reset generation and reconfirm mode. */
+const pendingPermissionChecks = new Map<string, Promise<boolean>>();
 
 /**
  * Rejects unknown permission names before consulting grants or prompting. Known permissions use
  * page-cached answers until unload, reset, or revocation. On an uncached check, a grant in the
  * server-owned `pluginPermissions` resource avoids a prompt unless reconfirmation is required;
- * `"periodically"` asks again when the last grant is older than three days. A reset learned locally,
- * through a live update, or on a write
- * conflict invalidates pending consent; unload does too. Invalidated answers neither persist nor
- * remain cached, including while the consent write waits in the permission store's queue.
+ * `"periodically"` asks again when the last grant is older than three days, except for a standing
+ * grant (given from the settings permission list). A reset learned locally, through a live update,
+ * or on a write conflict invalidates pending consent; unload does too. Invalidated answers neither
+ * persist nor remain cached, including while the consent write waits in the permission store's queue.
+ * Calls of one plugin for the same permission and reconfirm mode share one check while it decides,
+ * so a plugin that repeats a call behind an open prompt opens no second prompt.
  */
-const getPluginPermission = async (
+const getPluginPermission = (
     plugin: PluginIdentity,
     permissionDesc: PluginPermission,
     reconfirm: boolean | "periodically" = false,
-) => {
-    if (!Object.hasOwn(permissionConsentTexts, permissionDesc)) return false;
+): Promise<boolean> => {
+    if (!Object.hasOwn(permissionConsentTexts, permissionDesc)) return Promise.resolve(false);
+    const answered = permissionAnswers.get(permissionAnswerKey(plugin.name, permissionDesc));
+    if (answered !== undefined) return Promise.resolve(answered.granted);
     const generation = permissionResetGenerations.get(plugin.name) ?? 0;
+    const pendingKey = [plugin.name, permissionDesc, generation, reconfirm].join("\u0000");
+    const pending = pendingPermissionChecks.get(pendingKey);
+    if (pending) return pending;
+    const check = decidePluginPermission(plugin, permissionDesc, reconfirm, generation).finally(() => {
+        if (pendingPermissionChecks.get(pendingKey) === check) pendingPermissionChecks.delete(pendingKey);
+    });
+    pendingPermissionChecks.set(pendingKey, check);
+    return check;
+};
+
+/** One uncached check of `getPluginPermission`, begun at reset generation `generation`. */
+const decidePluginPermission = async (
+    plugin: PluginIdentity,
+    permissionDesc: PluginPermission,
+    reconfirm: boolean | "periodically",
+    generation: number,
+) => {
     const isCurrent = () => generation === (permissionResetGenerations.get(plugin.name) ?? 0);
     const answerKey = permissionAnswerKey(plugin.name, permissionDesc);
-    const answered = permissionAnswers.get(answerKey);
-    if (answered !== undefined) {
-        return answered.granted;
-    }
-
-    let requiresReconfirm = false;
     const lastGrantTimeKey = plugin.name + "_" + permissionDesc + "_lastGrantTime";
 
+    const pluginHash = (await scriptHash(plugin.script)) + `_${permissionDesc}`;
+    if (!isCurrent()) return false;
+
+    let requiresReconfirm = false;
     if (reconfirm === "periodically") {
         const lastGrantTime = getLastGrantTime(lastGrantTimeKey);
         const now = Date.now();
-        if (!lastGrantTime || now - lastGrantTime > 3 * 24 * 60 * 60 * 1000) {
+        if (!hasStandingGrant(pluginHash) && (!lastGrantTime || now - lastGrantTime > 3 * 24 * 60 * 60 * 1000)) {
             //3 days
             requiresReconfirm = true;
         }
     } else if (reconfirm === true) {
         requiresReconfirm = true;
     }
-
-    const pluginHash = (await scriptHash(plugin.script)) + `_${permissionDesc}`;
-    if (!isCurrent()) return false;
 
     if (!requiresReconfirm && hasPermissionGrant(pluginHash)) {
         permissionAnswers.set(answerKey, { granted: true, grantKey: pluginHash });
@@ -3323,6 +3451,8 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
         ) => {
             if (refuseRegistration("setChatPanel")) return;
             const id = options.id || `${plugin.name}:default`;
+            // A call that waits for consent applies only while it is still the latest for its panel.
+            const call = claimChatPanel(id);
 
             if (content === null || content === "") {
                 removeChatPanel(id);
@@ -3333,24 +3463,30 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
                 throw new Error("content must be a string or null");
             }
 
-            const panel = {
-                id,
-                pluginName: plugin.name,
-                html: DOMPurify.sanitize(content),
-                className:
-                    typeof options.className === "string"
-                        ? DOMPurify.sanitize(options.className, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] })
-                        : undefined,
+            const className =
+                typeof options.className === "string"
+                    ? DOMPurify.sanitize(options.className, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] })
+                    : undefined;
+            const show = (html: string) => {
+                const panel = { id, pluginName: plugin.name, html, className };
+                const existingIndex = chatPanelStore.findIndex((item) => item.id === id);
+                if (existingIndex !== -1) {
+                    chatPanelStore[existingIndex] = panel;
+                } else {
+                    chatPanelStore.push(panel);
+                }
+                addPluginUnloadCallback(plugin.name, () => removePluginChatPanels(plugin.name));
+                return { id };
             };
 
-            const existingIndex = chatPanelStore.findIndex((item) => item.id === id);
-            if (existingIndex !== -1) {
-                chatPanelStore[existingIndex] = panel;
-            } else {
-                chatPanelStore.push(panel);
-            }
-            addPluginUnloadCallback(plugin.name, () => removePluginChatPanels(plugin.name));
-            return { id };
+            const html = DOMPurify.sanitize(content);
+            if (!hasStyleElement(html)) return show(html);
+            // The panel is inserted into the main document, where a style element's rules reach the whole app.
+            return getPluginPermission(identity, "globalStyle").then((allowed) => {
+                if (refuseRegistration("setChatPanel")) return;
+                if (chatPanelCalls.get(id) !== call) return { id };
+                return show(allowed ? html : withoutStyleElements(content));
+            });
         },
         registerMCP: (...[arg, getToolList, callTool]: Parameters<typeof registerMCPModule>) => {
             if (refuseRegistration("registerMCP")) return;

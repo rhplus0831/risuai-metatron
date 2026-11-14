@@ -70,6 +70,8 @@ export interface alertData {
     secret?: boolean;
     /** `ask`: optional checkbox; changed through the queue, never through store set/update. */
     confirmCheckbox?: { label: string; checked: boolean };
+    /** `ask`: optional list of checkboxes, each changed through the queue like `confirmCheckbox`. */
+    confirmChecklist?: { id: string; label: string; checked: boolean }[];
     /** `error`: a server job's failure (`alertJobError`): "Copy debug info" and "Open in request history". */
     jobFailure?: JobFailureInfo;
     /** `requestlogs`: the job the request history opens filtered to. */
@@ -405,6 +407,18 @@ export async function alertConfirmWithCheckbox(
     const checkbox = { label, checked };
     const result = await openDialog({ type: "ask", msg, confirmCheckbox: checkbox });
     return result.startsWith("{") ? JSON.parse(result) : { confirmed: false, checked: checkbox.checked };
+}
+
+/** One confirmation over a list of checkboxes, returning the answer and the checked ids, including on cancellation. */
+export async function alertConfirmWithChecklist(
+    msg: string,
+    items: readonly { id: string; label: string; checked: boolean }[],
+): Promise<{ confirmed: boolean; checked: string[] }> {
+    const checklist = items.map((item) => ({ ...item }));
+    const result = await openDialog({ type: "ask", msg, confirmChecklist: checklist });
+    return result.startsWith("{")
+        ? JSON.parse(result)
+        : { confirmed: false, checked: checklist.filter((item) => item.checked).map((item) => item.id) };
 }
 
 /**

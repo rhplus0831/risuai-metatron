@@ -133,6 +133,13 @@ describe("default normalizers", () => {
         accepts("pluginStorage", "main", { _safeLocalPluginStorage: { a: 1 } });
         accepts("pluginPermissions", "main", { grants: {}, lastGrantTime: {} });
         accepts("pluginPermissions", "main", { grants: { h_db: true }, lastGrantTime: { p_db_lastGrantTime: 1 } });
+        accepts("pluginPermissions", "main", { grants: { h_db: true }, lastGrantTime: {}, standing: { h_db: true } });
+        for (const standing of [{ h_db: false }, { h_db: 1 }, [], "h_db"]) {
+            expect(
+                () => kind("pluginPermissions").normalize({ grants: {}, lastGrantTime: {}, standing }, { id: "main" }),
+                JSON.stringify(standing),
+            ).toThrow(ResourceValidationError);
+        }
         // `characters` returns a copy with the shared defaults (`normalizeCharacter`);
         // the input is not changed.
         for (const [id, input] of [

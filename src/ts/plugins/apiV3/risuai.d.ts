@@ -1779,7 +1779,13 @@ interface RisuaiPluginAPI {
      */
     unregisterUIPart(id: string): Promise<void>;
 
-    /** Sets sanitized chat-panel HTML; null or an empty string removes the panel. */
+    /**
+     * Sets sanitized chat-panel HTML; null or an empty string removes the panel. HTML that carries a
+     * `style` element asks for the `globalStyle` permission first, since its rules reach the whole app:
+     * when it is declined the panel is shown without its `style` elements. Of calls for one panel id
+     * (a removal, or another plugin's call for that id, included), the latest wins, also over one
+     * still waiting for that answer.
+     */
     setChatPanel(content: string | null, options?: { id?: string; className?: string }): Promise<UIPartResponse>;
 
     // ========== MCP APIs ==========
@@ -2218,7 +2224,8 @@ interface RisuaiPluginAPI {
 
     /**
      * Requests permission for a specific action
-     * @param permission - Permission string (e.g. 'fetchLogs'|'db'|'dbWrite'|'mainDom')
+     * @param permission - 'fetchLogs' | 'db' | 'dbWrite' | 'mainDom' | 'replacer' | 'provider' |
+     * 'sendChat' | 'inlay' | 'globalStyle'; any other name answers false without a prompt
      * @returns True if permission granted, false otherwise
      */
     requestPluginPermission(permission: string): Promise<boolean>;

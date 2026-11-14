@@ -11,7 +11,8 @@ import { getResource, putResource, ResourceConflictError } from "../../storage/r
  * v3 plugin permission grants, kept in the server-owned `pluginPermissions` resource. The record is
  * outside the settings records, so no plugin database API, snapshot, or `pluginCustomStorage` write reaches
  * it; only the host's consent flow and the legacy browser-permission import (`browserLocalImport.ts`) call
- * `recordPermissionGrants`. Host resets persist per-plugin counts even without existing grants.
+ * `recordPermissionGrants`, and only the settings permission list calls `setStandingPermissionGrants`.
+ * Host resets persist per-plugin counts even without existing grants.
  * Record installs synchronously report removed grant keys and changed reset counts, invalidating
  * cached answers and pending consent across tabs. Queued writes check consent's optional validity
  * predicate before each attempt; renewals never restore keys removed since the call began, while
@@ -74,6 +75,15 @@ function copyGrants(source: PluginPermissionGrants | null | undefined): PluginPe
             }
         }
     }
+    if (source?.standing !== undefined) {
+        copy.standing = Object.create(null) as Record<string, true>;
+        for (const [key, value] of Object.entries(source.standing)) {
+            // A standing key without its grant is dropped: it must never grant by itself.
+            if (value === true && copy.grants[key] === true) {
+                copy.standing[key] = true;
+            }
+        }
+    }
     return copy;
 }
 
@@ -101,6 +111,32 @@ export async function loadPluginPermissions(): Promise<void> {
 
 export function hasPermissionGrant(key: string): boolean {
     return Object.hasOwn(current.data.grants, key);
+}
+
+/** Whether the grant was given from the settings permission list, so it is not asked again periodically. */
+export function hasStandingGrant(key: string): boolean {
+    return (
+        Object.hasOwn(current.data.grants, key) &&
+        current.data.standing !== undefined &&
+        Object.hasOwn(current.data.standing, key)
+    );
+}
+
+/** The plugin's persisted reset count as this tab last read it; 0 when it was never reset. */
+export function getPermissionResetCount(plugin: string): number {
+    return resetCount(current.data, plugin);
+}
+
+function resetCount(data: PluginPermissionGrants, plugin: string): number {
+    return data.resets !== undefined && Object.hasOwn(data.resets, plugin) ? data.resets[plugin] : 0;
+}
+
+/** A permission list opened before a reset of its plugin: saving it would undo that reset. */
+export class StalePermissionListError extends Error {
+    constructor() {
+        super("The plugin's permissions were reset while its permission list was open");
+        this.name = "StalePermissionListError";
+    }
 }
 
 export function getLastGrantTime(key: string): number | undefined {
@@ -179,40 +215,16 @@ export function recordPermissionGrants(
 }
 
 /**
- * Revokes matching grants and times against a fresh server read, including keys learned on a
- * conflict retry. Shares the write queue with consent and live updates. Naming a reset plugin
- * increments its persisted reset count against each attempt's fresh state and always writes,
- * even with no matching keys. Without a reset plugin, empty matches write nothing and reset
- * counts remain untouched.
+ * Rewrites the record against a fresh server read, again on each conflict. `change` edits the copy it
+ * is given and answers whether anything changed; an unchanged copy writes nothing, and a throw rejects
+ * the call without writing. Shares the write queue with consent and live updates.
  */
-export function revokePermissionGrants(
-    grants: (key: string) => boolean,
-    lastGrantTime: (key: string) => boolean,
-    resetPlugin?: string,
-): Promise<void> {
+function rewriteGrants(change: (next: PluginPermissionGrants) => boolean, failure: string): Promise<void> {
     const run = queue.then(async () => {
         installGrants(await fetchGrants());
         for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
             const next = copyGrants(current.data);
-            let changed = false;
-            if (resetPlugin !== undefined) {
-                const resets = (next.resets ??= Object.create(null) as Record<string, number>);
-                resets[resetPlugin] = (resets[resetPlugin] ?? 0) + 1;
-                changed = true;
-            }
-            for (const key of Object.keys(next.grants)) {
-                if (grants(key)) {
-                    delete next.grants[key];
-                    changed = true;
-                }
-            }
-            for (const key of Object.keys(next.lastGrantTime)) {
-                if (lastGrantTime(key)) {
-                    delete next.lastGrantTime[key];
-                    changed = true;
-                }
-            }
-            if (!changed) return;
+            if (!change(next)) return;
             try {
                 const saved = await putResource(
                     RESOURCE_KIND.pluginPermissions,
@@ -227,10 +239,83 @@ export function revokePermissionGrants(
                 installGrants(await fetchGrants());
             }
         }
-        throw new Error("Could not revoke the plugin permission grants");
+        throw new Error(failure);
     });
     queue = run.catch(() => {});
     return run;
+}
+
+/** Deletes the matching grants (with their standing marks) and times from `next`; answers whether any matched. */
+function removeGrants(
+    next: PluginPermissionGrants,
+    grants: (key: string) => boolean,
+    lastGrantTime: (key: string) => boolean,
+): boolean {
+    let changed = false;
+    for (const key of Object.keys(next.grants)) {
+        if (grants(key)) {
+            delete next.grants[key];
+            if (next.standing) delete next.standing[key];
+            changed = true;
+        }
+    }
+    for (const key of Object.keys(next.lastGrantTime)) {
+        if (lastGrantTime(key)) {
+            delete next.lastGrantTime[key];
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+function countReset(next: PluginPermissionGrants, plugin: string): void {
+    const resets = (next.resets ??= Object.create(null) as Record<string, number>);
+    resets[plugin] = (resets[plugin] ?? 0) + 1;
+}
+
+/**
+ * Revokes matching grants and times against a fresh server read, including keys learned on a
+ * conflict retry. Naming a reset plugin increments its persisted reset count against each
+ * attempt's fresh state and always writes, even with no matching keys. Without a reset plugin,
+ * empty matches write nothing and reset counts remain untouched.
+ */
+export function revokePermissionGrants(
+    grants: (key: string) => boolean,
+    lastGrantTime: (key: string) => boolean,
+    resetPlugin?: string,
+): Promise<void> {
+    return rewriteGrants((next) => {
+        const removed = removeGrants(next, grants, lastGrantTime);
+        if (resetPlugin !== undefined) countReset(next, resetPlugin);
+        return removed || resetPlugin !== undefined;
+    }, "Could not revoke the plugin permission grants");
+}
+
+/**
+ * The settings permission list's one write: removes the matching grants and times, adds `granted` as
+ * standing grants, and counts a reset for `plugin`, so every tab drops its answers for the plugin and
+ * reloads it with the new set. `expectedResets` is the plugin's reset count when the list was opened:
+ * a different count on the fresh read or a conflict read (a reset, a removal, or another list saved
+ * meanwhile) rejects with `StalePermissionListError` and writes nothing. Otherwise it always writes.
+ */
+export function setStandingPermissionGrants(
+    plugin: string,
+    granted: readonly string[],
+    removedGrants: (key: string) => boolean,
+    removedTimes: (key: string) => boolean,
+    expectedResets: number,
+): Promise<void> {
+    return rewriteGrants((next) => {
+        if (resetCount(next, plugin) !== expectedResets) throw new StalePermissionListError();
+        removeGrants(next, removedGrants, removedTimes);
+        const standing = (next.standing ??= Object.create(null) as Record<string, true>);
+        for (const key of granted) {
+            next.grants[key] = true;
+            standing[key] = true;
+        }
+        countReset(next, plugin);
+        return true;
+    }, "Could not save the plugin permissions");
 }
 
 /**

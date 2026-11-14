@@ -180,6 +180,12 @@ export const DEFAULT_RESOURCE_KINDS: readonly ResourceKind[] = [
                     throw new ResourceValidationError("pluginPermissions.resets values must be numbers");
                 }
             }
+            if (record.standing !== undefined) {
+                const standing = requireObject(record.standing, "pluginPermissions.standing");
+                if (!Object.values(standing).every((value) => value === true)) {
+                    throw new ResourceValidationError("pluginPermissions.standing values must be true");
+                }
+            }
             return record;
         },
     },

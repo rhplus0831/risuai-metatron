@@ -960,6 +960,27 @@ export const languageEnglish = {
     pluginResetPermissions: "Reset permissions",
     pluginResetPermissionsConfirm: 'Reset permissions for "{name}"? Permission requests will ask again.',
     pluginPermissionResetError: "Could not reset plugin permissions: {error}",
+    pluginPermissionsEdit: "Permissions",
+    pluginPermissionsReview:
+        'Permissions of "{name}"\n\nA checked permission is allowed without asking until the plugin\'s script changes. An unchecked one is asked when the plugin first needs it. Saving restarts the plugin.\n\nSave these permissions?',
+    pluginPermissionsCarriedOver: "The permissions the previous version was allowed are checked.",
+    pluginPermissionsInstallNote: "The plugin is installed whichever you answer.",
+    pluginPermissionSaveError: "Could not save plugin permissions: {error}",
+    pluginChangedDuringImport:
+        "The installed plugin changed elsewhere while its permission list was open. Nothing was installed.",
+    pluginPermissionsStale:
+        "The plugin's permissions were reset or changed elsewhere while this list was open. Open the list again.",
+    pluginPermissionNames: {
+        fetchLogs: "Read the request logs",
+        db: "Read the full database",
+        dbWrite: "Modify the database (characters, chats, modules, settings)",
+        mainDom: "Access the main document",
+        replacer: "Replace chat content and request bodies",
+        provider: "Act as an AI provider",
+        sendChat: "Send chat messages on your behalf",
+        inlay: "Read inlay assets",
+        globalStyle: "Apply its chat panel's styles to the whole app",
+    },
     pluginRemove: "Remove plugin",
     pluginRemoveOrphanGrants: "Remove grants of scripts no installed plugin has",
     pluginRemoveOrphanGrantsConfirm:
@@ -3697,6 +3718,8 @@ export const languageEnglish = {
         "Plugin {} is requesting permission to access the inlay, which may allow it to read, write or edit the inlay content. Do you want to allow this?",
     sendChatConsent:
         "Plugin {} is requesting permission to send chat messages on your behalf, which will trigger AI responses. Do you want to allow this?",
+    globalStyleConsent:
+        "Plugin {} is requesting permission to apply its chat panel's styles to the whole app, which can change or hide any part of the screen and load resources from other hosts. If you decline, the panel is shown without those styles. Do you want to allow this?",
     createFolderOnBranch: "Create Folder on Branch",
     hamburgerButtonBottom: "Move Menu Button to Bottom of Sidebar",
     partialBackupFirstConfirm:

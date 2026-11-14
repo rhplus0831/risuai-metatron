@@ -100,6 +100,11 @@ export type PluginPermissionGrants = {
     lastGrantTime: Record<string, number>;
     /** `<plugin name>` → reset count, invalidating consent begun before a reset even if no grant existed */
     resets?: Record<string, number>;
+    /**
+     * `<sha256 of the plugin script>_<permission>` → granted from the settings permission list: such a
+     * grant is not asked again periodically. A key here always has its `grants` key.
+     */
+    standing?: Record<string, true>;
 };
 
 /** Request header naming the database epoch a mutation was based on. */
