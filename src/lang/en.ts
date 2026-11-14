@@ -311,6 +311,8 @@ export const languageEnglish = {
             "With HypaV3 summarizing in the background, the meter's bar marks with a dashed line where the next send asks for a background summary, ahead of the point where it must summarize.",
         loreBudgetStop:
             "When the lorebook token limit leaves out an activated entry, a send, continue, or reroll from the chat screen stops before the model is called and asks what to do. Sends from plugins, auto mode, multisend, and commands are not stopped; the context meter warns after them. Entries marked `@@ignore_on_max_context` never cause a stop. A chat can turn this off.",
+        generationProgressWindow:
+            "A small window at the top right lists every reply being generated on the server, with its stage, the time elapsed, and, while the model streams, the tokens generated and the speed.",
         legacyMediaFindings:
             "If enabled, it will use the old method to find media assets, without using the additional search algorithm.",
         comfyWorkflow:
@@ -1894,6 +1896,18 @@ export const languageEnglish = {
     contextMeterFixedWarn: "Fixed Share Warning",
     contextMeterLookahead: "Mark the Background Summary Point",
     loreBudgetStop: "Stop a send when lorebook entries are left out",
+    generationProgressWindow: "Show the generation progress window",
+    generationProgress: {
+        collapse: "Collapse generation progress",
+        expand: "Expand generation progress",
+        character: "Character",
+        chat: "Chat",
+        anotherDevice: "Another device",
+        tokens: "≈{tokens} tokens",
+        tokensPerSecond: "tokens/s",
+        windowLabel: "Generation progress",
+        jobs: "{count} running",
+    },
     loreBudgetStopDialog: {
         title: "Lorebook entries were left out",
         notCalled: "The model was not called.",

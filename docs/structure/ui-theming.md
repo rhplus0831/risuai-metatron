@@ -37,6 +37,10 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `src/lib/ChatScreens/DefaultChatScreen.svelte`: home/playground/closed-chat selection, composers and menus, the row
   window, screenshots (`src/lib/ChatScreens/screenshotExport.ts`), and message jumps. The closed-chat branch is
   `src/lib/ChatScreens/ClosedChatScreen.svelte`; sending and rerolling belong to [chat pipeline](chat-pipeline.md).
+- The Stop-other button (`foreignStoppable`) shows while the screen's own Stop does not and the chat has a foreign mark
+  ([chat pipeline](chat-pipeline.md#state)) or a running feed job of another client (`foreignGeneration`,
+  [live updates](live-updates.md#feed-connection)). Its ring takes `chat-process-stage-<n>` from that job's stage, the
+  colors of the screen's own ring; a mark alone leaves it uncolored.
 - `src/lib/ChatScreens/messageJump.ts` `runMessageJump` and `messageJumpWindow`: jump decisions, testable without the
   screen. The chat column width and `metatron` card theme are in `src/styles.css`.
 - Screenshot capture uses `src/lib/ChatScreens/screenshotCapture.ts` `prepareScreenshotCapture`; preserve its source
@@ -162,6 +166,14 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `src/lib/UI/RefusedDataBanner.svelte`, `src/lib/UI/refusedData.ts`: the save adapter's refusal inventory as a chat
   banner and an app-level pill (`refusedItemsFor`), and Record Export (`refusedRecordExportText`). `App` mounts the
   `app` form beside reload and terminal notices, below alerts.
+- `src/lib/Others/GenerationProgressWindow.svelte`: the generation progress window `App` mounts after load, shown while
+  `ui.generationProgressWindow` is on and a non-preview job runs on the server. Rows come from
+  [live updates](live-updates.md#feed-connection) (the selected chat's first, then by start): names the tab holds, the
+  stage, elapsed seconds, retries, sequence parts, another client's name, and with `output` the "≈" count and speed. A
+  row opens its chat through `openPinnedChat`; there is no Stop button.
+- The window collapses to a pill (collapsed at mount below 768 px, in component memory only) and takes pointer events
+  only on itself. It shares the top right with `HypaV3Progress`: `App` passes `memoryProgressShown`, which moves the
+  window below the memory pill so the two never overlap; the memory overlay's expanded branch keeps its own container.
 - `src/lib/Mobile/MobileCharacters.svelte`: the list view of the character grid (`src/lib/Others/GridCatalog.svelte`).
   There is no separate mobile shell; small screens use the desktop layout.
 
@@ -276,7 +288,10 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `ChatBody.svelte.test.ts` mocks `ParseMarkdown` as deferred parses (`hoisted.parses`) the test settles by text.
 - `DefaultChatScreen.drafts.test.ts` mounts the screen with its children mocked; `tests/ChatsStub.svelte` stands in for
   `Chats` (`followsLatest`, `scrollToLatestMessage`, bindable `holding`, the props it got) for the notification reveal,
-  swiped-reroll alignment, and the held load-more skip.
+  swiped-reroll alignment, and the held load-more skip. `DefaultChatScreen.foreignProgress.test.ts` mounts it the same
+  way for the Stop-other ring of a feed job.
+- `GenerationProgressWindow.test.ts` drives the window from the real progress store with fake `Date` and intervals, and
+  mocks `openPinnedChat` at the module boundary.
 - `screenshotExport.test.ts` fakes canvases (happy-dom has no 2D context), counting sizes, draws, and releases.
 - `src/lib/UI/tests/`: `reactiveProps.svelte.ts` changes a mounted component's props from a `.test.ts` file;
   `LazyCharImageFixture.svelte` awaits the image as real consumers do. `ChatStyleProviderFixture.svelte`

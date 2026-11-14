@@ -691,6 +691,7 @@
   "contextMeterFixedWarn": 60,
   "contextMeterLookahead": true,
   "loreBudgetStop": true,
+  "generationProgressWindow": true,
   "formatversion": 5,
   "characterOrder": []
 }

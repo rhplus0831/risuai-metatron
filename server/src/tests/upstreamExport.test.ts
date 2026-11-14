@@ -631,6 +631,14 @@ describe("buildUpstreamDatabase: settings", () => {
         expect(excluded(report, "plugin-storage")).toMatchObject({ count: 5 });
     });
 
+    it("omits the generation progress window setting from upstream exports even when disabled", async () => {
+        const snapshot = await snapshotOf((writer) => {
+            seedLibrary(writer);
+            writer.put(SECTION_KIND.ui, "main", { generationProgressWindow: false });
+        });
+        expect(exportOf(snapshot).db).not.toHaveProperty("generationProgressWindow");
+    });
+
     it("omits the lore budget send warning from upstream exports even when disabled", async () => {
         const snapshot = await snapshotOf((writer) => {
             seedLibrary(writer);

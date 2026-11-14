@@ -60,6 +60,7 @@
     import { STRUCTURED_MEMORY_ALGORITHM } from "../shared/structuredMemory.ts";
     import { currentChatRef, selectedChat } from "./ts/storage/chatStore.svelte";
     import HypaV3Progress from "./lib/Others/HypaV3Progress.svelte";
+    import GenerationProgressWindow from "./lib/Others/GenerationProgressWindow.svelte";
     import PopupList from "./lib/UI/PopupList.svelte";
     import PopupEditor from "./lib/Others/PopupEditor.svelte";
     import IrisModal from "./lib/Others/IrisModal.svelte";
@@ -85,6 +86,9 @@
     let aprilFoolsPage = $state(0);
     /** The selected chat's memory run: a chat switch shows another chat's run without a new notice. */
     const memoryProgress = $derived(memoryProgressFor($memoryProgressStore, currentChatRef()));
+    const memoryProgressShown = $derived(
+        !!memoryProgress || legacyProgressShown($memoryProgressStore, $hypaV3ProgressStore, currentChatRef()),
+    );
 
     $effect(() => {
         if (settings.ui.keepSessionAlive !== "sound") {
@@ -354,8 +358,11 @@
     {/if}
     <SavePopupIconComp />
     <!-- The selected chat's own memory run, else the legacy overlay. -->
-    {#if memoryProgress || legacyProgressShown($memoryProgressStore, $hypaV3ProgressStore, currentChatRef())}
+    {#if memoryProgressShown}
         <HypaV3Progress entry={memoryProgress} />
+    {/if}
+    {#if $loadedStore}
+        <GenerationProgressWindow {memoryProgressShown} />
     {/if}
     {#if popupStore.children}
         <PopupList />

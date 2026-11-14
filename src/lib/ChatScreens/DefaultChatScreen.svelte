@@ -82,7 +82,8 @@
     import { followedJobs, followedJobsOf, loadingJobChats, stopChatJob } from "src/ts/process/serverCommands";
     import HandoffControls from "./HandoffControls.svelte";
     import { jobStages, jobRetries, chatStageOf } from "src/ts/process/jobStages";
-    import { abortGenerationJob } from "src/ts/network/generationJobs";
+    import { foreignGeneration } from "src/ts/process/generationProgress.svelte";
+    import { abortGenerationJob, generationClientId } from "src/ts/network/generationJobs";
     import { sleep } from "../../ts/util";
     import { language } from "../../lang";
     import { isExpTranslator, translate } from "../../ts/translator/translator";
@@ -898,9 +899,16 @@
         const ref = currentChatRef();
         return ref !== null && followedJobsOf($loadingJobChats, ref).length > 0;
     });
+    const foreignProgress = $derived.by(() => {
+        const ref = currentChatRef();
+        return ref ? foreignGeneration(ref.chaId, ref.chatId, generationClientId()) : null;
+    });
+    const foreignProcessStage = $derived(
+        foreignProgress?.stage ? GENERATION_STAGES.indexOf(foreignProgress.stage) + 1 : 0,
+    );
     const foreignStoppable = $derived.by(() => {
         const ref = currentChatRef();
-        return !stoppable && ref !== null && foreignJobChatKeys().has(chatStatusKey(ref));
+        return !stoppable && ref !== null && (foreignJobChatKeys().has(chatStatusKey(ref)) || foreignProgress !== null);
     });
     /**
      * The Stop button's `chat-process-stage-<n>`: 1 to 4 for the stage (`GENERATION_STAGES` order) of the selected
@@ -1491,7 +1499,7 @@
                             }}
                             style:height={inputHeight}
                         >
-                            <div class="loadmove"></div>
+                            <div class="loadmove chat-process-stage-{foreignProcessStage}"></div>
                             {#if loadingJobChat}
                                 <span class="ml-2 text-sm whitespace-nowrap" role="status"
                                     >{language.serverJob.chatLoading}</span

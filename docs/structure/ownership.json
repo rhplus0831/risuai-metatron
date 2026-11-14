@@ -257,6 +257,7 @@
     { "match": "src/ts/checkpoints/**", "guide": "chat-store" },
     { "match": "src/ts/storage/{resourceClient,bootCache,recordMerge,readDeadline}.ts", "guide": "resource-sync" },
     { "match": "src/ts/network/{eventFeed,socketLiveness}.ts", "guide": "live-updates" },
+    { "match": "src/ts/process/generationProgress.{svelte.ts,test.ts}", "guide": "live-updates" },
     {
       "match": "src/ts/storage/{draftJournal,journalEligibility,journalRecovery,recoveryDrafts.svelte}.ts",
       "guide": "draft-recovery"

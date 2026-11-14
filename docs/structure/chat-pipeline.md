@@ -221,6 +221,10 @@ in [network jobs](network-jobs.md#job-recovery).
   (`readChatGeneration`) for the visible chat when it is shown, on page recovery, and when a feed lock list names it,
   skipping a chat that is locked, followed, or in a local send. A job holds no message lock until its first `begin`, so
   a visible mark without a lock is asked again every `FOREIGN_JOB_RECHECK_MS` until the job is gone or locks a message.
+- The live-update feed's running job of another client for the chat (`foreignGeneration`,
+  [live updates](live-updates.md#feed-connection)) shows the same spinner and extra Stop from the job's admission, in
+  its stage's color. Like a mark it is advisory: neither makes `isChatBusy` true, and the server still refuses a
+  competing send.
 - `chatStore.svelte.ts` owns loaded chats and every write ([chat store](chat-store.md)); autosave does not.
 - Chats load on demand. Async operations pin and load their captured targets; unavailable chats are gone to synchronous
   readers, never an excuse to use another selection ([pins and eviction](chat-store.md#pins-and-eviction)).
