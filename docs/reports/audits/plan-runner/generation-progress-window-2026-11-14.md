@@ -1,6 +1,6 @@
 # Generation Progress Window Plan audit, 2026-11-14
 
-- Plan: `docs/plan/generation-progress-window.md`
+- Plan: `docs/plan/generation-progress-window.md`, archived: `git show 93fdb15c9:docs/plan/generation-progress-window.md`
 - Commit audited: `31a39b8ad` (`claude/message-send-progress-display-1fe737`, on `dev` at `d2d1a76a7`); the corrected
   plan is committed with this report
 - Mode: `full`
