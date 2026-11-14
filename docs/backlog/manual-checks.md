@@ -33,6 +33,7 @@ Checks that a finished plan left to a person, a device, a real provider, or a sc
 - [ ] **Lore Budget Send Stop (2)**: at phone width (about 360px), the lore budget stop dialog and the Interaction page's "Stop a send when lorebook entries are left out" checkbox, in English and Korean.
 - [ ] **Generation Progress Window (3)**: at phone width (about 360px), the progress window starts as a pill, expands, and does not cover the chat header's buttons; with a memory run on the selected chat, the memory indicator and the window do not overlap and the memory indicator still expands and collapses.
 - [ ] **OOC Session (4, 5)**: on a phone (about 360px), the OOC panel fills the screen over the chat and the toggle settings popover fits; on a wide screen the panel sits beside the chat without a backdrop, Escape in the panel or the page closes it but Escape in the main composer does not, and Escape or a click outside closes only the settings popover.
+- [ ] **Input Hooks (2, 4, 5)**: at phone width (about 360px), the Input Hooks settings page (2); the draft box with the on-screen keyboard open and the composer's height after a long hook result (4); a long BTW result in its panel (5); a Korean IME (also the desktop Japanese IME) composing in the draft box when Enter is pressed (4).
 
 ## iOS Safari and the Home Screen app
 
@@ -59,6 +60,7 @@ Checks that a finished plan left to a person, a device, a real provider, or a sc
 One tab:
 
 - [ ] **Translation**: the bilingual display.
+- [ ] **Input Hooks (2)**: the popup prompt editor writes back to the right hook after another hook was added or removed meanwhile.
 - [ ] **Request History and Diagnostics**: the full viewer and error-alert workflow across request sources; a restore leaving history unchanged.
 - [ ] **Large Asset Import and Export**: a 4,000-asset PNG import's request count and heap (3c); the lazy icons during folder drag (4b); Chrome's answer to a pre-body refusal (409/413/503) on `/api/import/module` and `/api/import/charx` (status or network error, and whether a reset keep-alive socket resends the POST).
 - [ ] **Open Bug Fixes**: P1 (the banner's failure alert, a notification click from an uncontrolled window); M1 (Stop during VITS playback); C8 (a tab return); C5 (the `.risum` drop).
@@ -122,6 +124,8 @@ Two tabs, two browsers, or a dropped connection:
 - [ ] **Generation Progress Window (4)**: with Half Streaming on: a model with tools enabled, an image-output model, and a character with output escaping complete the send, with no count when the provider answered buffered; a plugin provider that streams is hidden and counted and one that does not is as before; a WebLLM model and a `mancer` model reply as before with no count; a plugin with an after-request replacer and a banned script set run neither for a reply Half Streaming streamed and both for a buffered one (tools on a Claude model).
 - [ ] **OOC Session (4, 5)**: with a community preset that has an OOC toggle on a real model: the panel offers to force the toggle on in the preset, the forced answer is out of character, a follow-up in the same segment carries the earlier exchange, and the chat's own toggle map wins over the preset's.
 - [ ] **Structured Memory Greeting Source (1, 2, 3)**: with a real `memory` model: in a new chat whose greeting uses `{{user}}` and `{{char}}`, the writer's first request in request history starts with `[greeting] <name>:` and the names expanded, and the event's record holds `greeting` (1); in a long chat started after slice 1, the request log stops showing the greeting once the raw window has passed it, and still shows none after a greeting swipe (2); on a chat recorded before this plan, Fill gaps shows one call, records a greeting event, and the next request has no greeting once the window has passed it (3).
+- [ ] **Input Hooks (4, 5)**: with a real `otherAx` model, Send with a Draft hook chosen fills the draft box, the draft is edited, and Send Draft sends it; a reload with text in both boxes brings both back; Stop during a slow hook; a BTW prompt with a history slot (5).
+- [ ] **Input Hooks (6)**: with the LLM translator on the `message` target and a target language set, a Draft hook in translation mode: the sent row's translation toggle shows the typed text; with the chat's auto-translate on it shows without a toggle and bilingual display pairs the two; editing the message makes the translation stale; `translateBotOnly` on and off; with another translator or the `rendered` target the row shows no stored original.
 
 ## The server process, Docker, and a production deployment
 
