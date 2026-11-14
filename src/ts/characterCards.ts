@@ -5,7 +5,6 @@ import { writable, type Writable } from "svelte/store";
 import {
     alertCardExport,
     alertClear,
-    alertConfirm,
     alertError,
     alertInput,
     alertNormal,
@@ -26,6 +25,7 @@ import {
 import { importPreset } from "./storage/presets.svelte";
 import { blobToUint8Array, checkNullish, decryptBuffer, isKnownUri, selectFileByDom, sleep } from "./util";
 import { language } from "src/lang";
+import { confirmLowLevelAccessImport } from "./lowLevelAccessImport";
 import { v4 as uuidv4, v4 } from "uuid";
 import { changeChar } from "./characters";
 import {
@@ -631,14 +631,13 @@ async function importPngCharacter(
 }
 
 /**
- * Asks the `lowLevelAccess` confirmation for a card that asks for it (`extensions.risuai.lowLevelAccess`);
- * true when it does not ask, or the user accepts.
+ * Asks the `lowLevelAccess` question for a card that asks for it (`extensions.risuai.lowLevelAccess`,
+ * `confirmLowLevelAccessImport`); true when it does not ask, or the user imports it with or without the
+ * access. Without it, the flag on this card object is cleared, so the importers that build the
+ * character from this object afterwards store `lowLevelAccess: false`.
  */
 async function confirmCardLowLevelAccess(card: CharacterCardV2Risu | CharacterCardV3): Promise<boolean> {
-    if (!card?.data?.extensions?.risuai?.lowLevelAccess) {
-        return true;
-    }
-    return await alertConfirm(language.lowLevelAccessConfirm);
+    return await confirmLowLevelAccessImport(card?.data?.extensions?.risuai);
 }
 
 /** The alert for a CharX upload that failed; `Invalid character file` is `noData`. */
@@ -824,11 +823,8 @@ export async function characterURLImport() {
         stripImportedModuleMcp(importData);
         importData.id = v4();
 
-        if (importData.lowLevelAccess) {
-            const conf = await alertConfirm(language.lowLevelAccessConfirm);
-            if (!conf) {
-                return false;
-            }
+        if (!(await confirmLowLevelAccessImport(importData))) {
+            return false;
         }
         if (!(await prepareModuleImport(importData))) {
             return false;

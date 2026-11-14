@@ -3,13 +3,14 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { language } from "src/lang";
 import { cardV3, characterBook, charx } from "../storage/tests/importFixtures";
 import { bootMutations, plain } from "../storage/tests/mutationStoresHarness";
+import { lowLevelAccessAnswer, lowLevelAccessDialog } from "../tests/lowLevelAccessDialog";
 import type { RisuModule } from "./modules";
 
 // `importModule` creates its record through `addModule` for every file kind, over the real save
 // adapter and the real server store (`storeBackedServer.ts`): a `.risum` (written by
 // `exportModuleLegacy`, read by the real reader with the RPack map from disk), a CharX (the real
 // zip importer, converted by `convertCharacterToModule`; no character is created), a native module
-// JSON (its `lowLevelAccess` confirmation kept), a native lore file, an external lore file, and a
+// JSON (its `lowLevelAccess` question kept), a native lore file, an external lore file, and a
 // regex file. The collection holds the module with a fresh id and is on the server after one cycle.
 // A CharX whose converted module `addModule` refuses reports `noData` only, never success, and
 // inserts nothing.
@@ -29,6 +30,8 @@ const { server, alerts, picker } = vi.hoisted(() => {
         reload: vi.fn(),
         normalWait: vi.fn(async () => undefined),
         confirm: vi.fn(async () => true),
+        // "0" imports a module that asks for low-level access with it (`lowLevelAccessAnswer`).
+        select: vi.fn(async (_msg: string[], _display?: string) => "0"),
         store: { set: vi.fn(), subscribe: vi.fn() },
     };
     return {
@@ -48,6 +51,7 @@ vi.mock("../alert", async () =>
         alertNormal: alerts.normal,
         alertNormalWait: alerts.normalWait,
         alertConfirm: alerts.confirm,
+        alertSelect: alerts.select,
         alertReloadNotice: alerts.reload,
         alertStore: alerts.store,
         alertWait: alerts.wait,
@@ -281,7 +285,7 @@ describe("importModule adds the module through addModule", () => {
         expect(alerts.error).not.toHaveBeenCalled();
     });
 
-    it("native module JSON: a fresh id, the lowLevelAccess confirmation kept", async () => {
+    it("native module JSON: a fresh id, the lowLevelAccess question kept", async () => {
         const { imported, list, modules, sync, record } = await boot();
         const file = {
             type: "risuModule",
@@ -294,10 +298,10 @@ describe("importModule adds the module through addModule", () => {
         const { module } = await imported({ name: "native.json", data: encode(file) });
         expect(module.id).not.toBe("old");
         expect(module).toMatchObject({ name: "Native", description: "n", lowLevelAccess: true });
-        expect(alerts.confirm).toHaveBeenCalledWith(language.lowLevelAccessConfirm);
+        expect(alerts.select).toHaveBeenCalledWith(...lowLevelAccessDialog());
 
-        // Declined: nothing is added.
-        alerts.confirm.mockResolvedValueOnce(false);
+        // Cancelled: nothing is added.
+        alerts.select.mockResolvedValueOnce(lowLevelAccessAnswer.cancel);
         const before = list();
         picker.file = { name: "native.json", data: encode(file) };
         expect(await modules.importModule()).toBe(false);
@@ -457,6 +461,23 @@ describe("module imports remove MCP servers", () => {
         },
     );
 
+    it.each(
+        paths.flatMap((path) => [
+            [path, "with", lowLevelAccessAnswer.with, true],
+            [path, "without", lowLevelAccessAnswer.without, false],
+        ]) as [(typeof paths)[number], string, string, boolean][],
+    )("%s imports a module that asks for low-level access %s it", async (path, _choice, answer, stored) => {
+        const h = await boot();
+        alerts.select.mockResolvedValueOnce(answer);
+        await startImport(h, path, source({ lowLevelAccess: true }));
+        expect(alerts.select).toHaveBeenCalledExactlyOnceWith(...lowLevelAccessDialog());
+        expect(h.list()).toHaveLength(1);
+        expect(h.list()[0]).toMatchObject({ name: "Imported module", lowLevelAccess: stored });
+        await h.sync.flushResources();
+        expect(h.record("modules")).toEqual(h.list());
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
     it.each(paths)("%s imports a module without an MCP field without a removal toast", async (path) => {
         const h = await boot();
         await startImport(h, path, source());
@@ -476,9 +497,9 @@ describe("module imports remove MCP servers", () => {
 
     it.each(paths)("%s adds nothing and shows no removal toast when low-level access is declined", async (path) => {
         const h = await boot();
-        alerts.confirm.mockResolvedValueOnce(false);
+        alerts.select.mockResolvedValueOnce(lowLevelAccessAnswer.cancel);
         await startImport(h, path, source({ lowLevelAccess: true, mcp: { url: "https://module.example/mcp" } }));
-        expect(alerts.confirm).toHaveBeenCalledExactlyOnceWith(language.lowLevelAccessConfirm);
+        expect(alerts.select).toHaveBeenCalledExactlyOnceWith(...lowLevelAccessDialog());
         expect(h.list()).toEqual([]);
         await h.sync.flushResources();
         expect(h.record("modules")).toEqual([]);
@@ -879,6 +900,7 @@ describe("server module file imports", () => {
         expect(await modules.importModuleFile(new Blob([new Uint8Array(bytes)]))).toBeNull();
         expect(fetch).not.toHaveBeenCalled();
         expect(alerts.error).toHaveBeenCalledExactlyOnceWith(language.errors.noData);
+        expect(alerts.select).not.toHaveBeenCalled();
         expect(alerts.confirm).not.toHaveBeenCalled();
         expect(alerts.normal).not.toHaveBeenCalled();
         expect(list()).toEqual(before);
@@ -892,10 +914,11 @@ describe("server module file imports", () => {
         );
         const before = list();
         const fetch = vi.spyOn(server.current, "fetch");
-        alerts.confirm.mockResolvedValueOnce(false);
+        alerts.select.mockResolvedValueOnce(lowLevelAccessAnswer.cancel);
         picker.file = { name: "permission.risum", data: bytes };
         await modules.importModule();
-        expect(alerts.confirm).toHaveBeenCalledExactlyOnceWith(language.lowLevelAccessConfirm);
+        expect(alerts.select).toHaveBeenCalledExactlyOnceWith(...lowLevelAccessDialog());
+        expect(alerts.confirm).not.toHaveBeenCalled();
         expect(fetch).not.toHaveBeenCalled();
         expect(alerts.error).not.toHaveBeenCalled();
         expect(alerts.normal).not.toHaveBeenCalled();
@@ -934,10 +957,9 @@ describe("server module file imports", () => {
         const realFetch = server.current.fetch.bind(server.current);
         const fetch = vi.spyOn(server.current, "fetch").mockImplementation((url, init) => {
             if (url !== "/api/import/module") return realFetch(url, init);
-            expect(alerts.confirm.mock.calls).toEqual([
-                [language.lowLevelAccessConfirm],
-                [language.bootstrap.resetLorebookQuestion],
-            ]);
+            expect(alerts.select.mock.calls).toEqual([lowLevelAccessDialog()]);
+            expect(alerts.confirm.mock.calls).toEqual([[language.bootstrap.resetLorebookQuestion]]);
+            expect(alerts.select.mock.invocationCallOrder[0]).toBeLessThan(alerts.confirm.mock.invocationCallOrder[0]);
             return Promise.resolve(response);
         });
         const before = list();

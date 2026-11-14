@@ -4,6 +4,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { language } from "src/lang";
 import { cardV3, charx } from "./storage/tests/importFixtures";
 import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
+import { lowLevelAccessAnswer, lowLevelAccessDialog } from "./tests/lowLevelAccessDialog";
 
 const { server, alerts } = vi.hoisted(() => {
     // The alert helpers write the booted graph's `stores.svelte` `alertStore` as the real ones do
@@ -17,6 +18,8 @@ const { server, alerts } = vi.hoisted(() => {
         wait: vi.fn((msg: unknown) => alerts.show("wait")(msg)),
         clear: vi.fn(() => alerts.current?.set({ type: "none", msg: "" })),
         confirm: vi.fn(async () => true),
+        // "0" imports a card that asks for low-level access with it (`lowLevelAccessAnswer`).
+        select: vi.fn(async (_msg: string[], _display?: string) => "0"),
         store: { set: vi.fn(), subscribe: vi.fn() },
     };
     return { server: { current: null as any }, alerts };
@@ -31,6 +34,7 @@ vi.mock("./alert", async () =>
         alertNormal: alerts.normal,
         alertWait: alerts.wait,
         alertConfirm: alerts.confirm,
+        alertSelect: alerts.select,
         alertStore: alerts.store,
         alertClear: alerts.clear,
     }),
@@ -299,9 +303,13 @@ describe("CharX files through the server and real records", () => {
         },
     );
 
-    it.each([true, false])(
-        "asks a card's lowLevelAccess before its data URI assets are saved (accepted: %s)",
-        async (accepted) => {
+    it.each([
+        ["with", lowLevelAccessAnswer.with, true],
+        ["without", lowLevelAccessAnswer.without, false],
+        ["cancel", lowLevelAccessAnswer.cancel, null],
+    ] as const)(
+        "asks a card's lowLevelAccess before its data URI assets are saved (answer: %s)",
+        async (_choice, answer, stored) => {
             const b = await boot();
             const inline = Buffer.from("inline asset bytes");
             const card = cardV3(
@@ -318,7 +326,7 @@ describe("CharX files through the server and real records", () => {
                 },
                 { lowLevelAccess: true },
             );
-            alerts.confirm.mockImplementation(async () => accepted);
+            alerts.select.mockResolvedValueOnce(answer);
             // The fake server has no batch asset write: the queue answers content keys here.
             const assetQueue = await import("./storage/assetQueue");
             const saveAssets = vi.spyOn(assetQueue, "saveAssets").mockImplementation(async (items) => {
@@ -331,16 +339,16 @@ describe("CharX files through the server and real records", () => {
             const saved = () => saveAssets.mock.calls.filter(([items]) => (items as unknown[]).length > 0);
             const before = b.ids();
             const id = await b.cards.importCharacterProcess({ name: "local.charx", data: charx(card, {}) });
-            expect(alerts.confirm).toHaveBeenCalledExactlyOnceWith(language.lowLevelAccessConfirm);
+            expect(alerts.select).toHaveBeenCalledExactlyOnceWith(...lowLevelAccessDialog());
             expect(alerts.error).not.toHaveBeenCalled();
-            if (accepted) {
+            if (stored !== null) {
                 expect(saved()).toHaveLength(1);
                 const call = saveAssets.mock.calls.indexOf(saved()[0]);
                 expect(saveAssets.mock.invocationCallOrder[call]).toBeGreaterThan(
-                    alerts.confirm.mock.invocationCallOrder[0],
+                    alerts.select.mock.invocationCallOrder[0],
                 );
                 expect(b.character(id)).toMatchObject({
-                    lowLevelAccess: true,
+                    lowLevelAccess: stored,
                     additionalAssets: [["Inline", keyOf(inline), "png"]],
                 });
             } else {
@@ -492,11 +500,11 @@ describe("CharX files through the server and real records", () => {
         const before = b.ids();
         const zip = charx(cardV3("Declined", {}, { lowLevelAccess: true }));
         vi.spyOn(b.util, "selectSingleFileHandle").mockResolvedValue(new File([new Uint8Array(zip)], "declined.charx"));
-        alerts.confirm.mockResolvedValueOnce(false);
+        alerts.select.mockResolvedValueOnce(lowLevelAccessAnswer.cancel);
 
         await b.modules.importModule();
 
-        expect(alerts.confirm).toHaveBeenCalledExactlyOnceWith(language.lowLevelAccessConfirm);
+        expect(alerts.select).toHaveBeenCalledExactlyOnceWith(...lowLevelAccessDialog());
         expect(alerts.error).not.toHaveBeenCalled();
         expect(alerts.normal).not.toHaveBeenCalled();
         expect(b.ids()).toEqual(before);
@@ -504,6 +512,48 @@ describe("CharX files through the server and real records", () => {
         await b.sync.flushResources();
         expect(b.record("modules")).toEqual([]);
     });
+
+    it.each(["character import", "module dialog"])(
+        "%s of a CharX imported without low-level access keeps the embedded module's triggers without the access",
+        async (entry) => {
+            const b = await boot();
+            const before = b.ids();
+            const module = await b.modules.exportModuleLegacy({ ...embedded, lowLevelAccess: true } as any, {
+                saveData: false,
+                alertEnd: false,
+            });
+            const zip = charx(cardV3("Stripped", {}, { lowLevelAccess: true }), { "module.risum": module });
+            const file = new File([new Uint8Array(zip)], "stripped.charx");
+            alerts.select.mockResolvedValueOnce(lowLevelAccessAnswer.without);
+
+            if (entry === "module dialog") {
+                vi.spyOn(b.util, "selectSingleFileHandle").mockResolvedValue(file);
+                await b.modules.importModule();
+            } else {
+                await b.cards.importCharacterProcess({ name: file.name, data: file });
+            }
+
+            // Only the card's flag is asked; the embedded module's own flag is not carried over.
+            expect(alerts.select).toHaveBeenCalledExactlyOnceWith(...lowLevelAccessDialog());
+            expect(alerts.error).not.toHaveBeenCalled();
+            await b.sync.flushResources();
+            const trigger = [expect.objectContaining({ comment: "Embedded trigger" })];
+            if (entry === "module dialog") {
+                expect(b.ids()).toEqual(before);
+                expect(b.record("modules")).toEqual([
+                    expect.objectContaining({ name: "Stripped", lowLevelAccess: false, trigger }),
+                ]);
+            } else {
+                const id = b.ids().at(-1)!;
+                expect(b.ids()).toEqual([...before, id]);
+                expect(b.character(id)).toMatchObject({
+                    name: "Stripped",
+                    lowLevelAccess: false,
+                    triggerscript: trigger,
+                });
+            }
+        },
+    );
 
     it("the module dialog keeps the upload's alert without adding a second noData alert", async () => {
         const b = await boot();

@@ -2214,8 +2214,10 @@ export const languageEnglish = {
     select: "Select",
     options: "Options",
     alertContent: "Alert Content",
-    lowLevelAccessConfirm:
-        "This content uses Low Level Access. which means this content can access the AI model and your storage directly. Do you really want to import this content?",
+    lowLevelAccessImportQuestion:
+        "This content uses Low Level Access, which means it can access the AI model and your storage directly. Import it with Low Level Access, or without it? Without it, the parts that need it will not work; you can turn it on later in its settings.",
+    lowLevelAccessImportWith: "Import with Low Level Access",
+    lowLevelAccessImportWithout: "Import without Low Level Access",
     extractRegex: "Extract Text with Regex",
     runImgGen: "Run Image Generation",
     cutChat: "Cut Chat",

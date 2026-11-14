@@ -131,7 +131,7 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 
 `importCharacterProcess` dispatches by extension; format details stay in its source and reader comments. PNG imports
 stream chunks and upload assets in batches. A CharX/JPEG `File` or `Blob` goes to the server once; bytes or a stream use
-the in-tab importer in tests. Low-level-access confirmation and the final asset-key check happen before the character is
+the in-tab importer in tests. The low-level access question and the final asset-key check happen before the character is
 added (`src/ts/characterCards.ts`).
 
 ### Realm download
@@ -192,8 +192,11 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
   (`moduleLegacyExportIconUnsupported`); CharX carries the portrait.
 - `importCharacterCardSpec` maps a well-formed `extensions.depth_prompt` to the native field. `createBaseV2` omits
   emotions and additional assets; V3 is the full-fidelity export.
-- Cards and modules with low-level access require confirmation on import. A `.risum` asks before upload, and declining a
-  card imports nothing without falling through to the off-spec JSON reader.
+- Cards and modules with low-level access ask on import (`confirmLowLevelAccessImport`,
+  `src/ts/lowLevelAccessImport.ts`): import with it, without it, or cancel (Escape cancels). Without it clears the flag
+  on the object the record is later built from, so the record stores `lowLevelAccess: false`; importers must not re-read
+  the card or module after the question. A `.risum` asks before upload, and a cancelled card imports nothing without
+  falling through to the off-spec JSON reader.
 - A module file or link never brings an MCP server: `readModule`, `importModuleFile`, the module JSON branch of
   `importModule`, and `#import_module=` delete `mcp` (`stripImportedModuleMcp`); only `importMCPModule` adds one. The
   user-facing paths report a dropped field with one `moduleImportMcpDropped` toast that `addImportedModule` installs

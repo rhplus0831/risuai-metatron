@@ -1015,8 +1015,10 @@ export const languageGerman = {
     select: "Auswählen",
     options: "Optionen",
     alertContent: "Alarminhalt",
-    lowLevelAccessConfirm:
-        "Dieser Inhalt verwendet Low-Level-Zugriff. Das bedeutet, dass dieser Inhalt direkt auf das KI-Modell und Ihren Speicher zugreifen kann. Möchten Sie diesen Inhalt wirklich importieren?",
+    lowLevelAccessImportQuestion:
+        "Dieser Inhalt verwendet Low-Level-Zugriff. Das bedeutet, dass dieser Inhalt direkt auf das KI-Modell und Ihren Speicher zugreifen kann. Mit oder ohne Low-Level-Zugriff importieren? Ohne ihn funktionieren die Teile, die ihn benötigen, nicht; Sie können ihn später in den Einstellungen aktivieren.",
+    lowLevelAccessImportWith: "Mit Low-Level-Zugriff importieren",
+    lowLevelAccessImportWithout: "Ohne Low-Level-Zugriff importieren",
     extractRegex: "Text mit Regex extrahieren",
     runImgGen: "Bildgenerierung ausführen",
     cutChat: "Chat schneiden",

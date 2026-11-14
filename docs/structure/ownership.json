@@ -313,7 +313,10 @@
     { "match": "src/lib/Playground/PlaygroundMCP.svelte", "guide": "mcp" },
     { "match": "src/ts/process/{processzip,modules}.ts", "guide": "characters-modules" },
     { "match": "shared/{charxImport,moduleImport,rpack}.ts", "guide": "characters-modules" },
-    { "match": "src/ts/{characters,persona,pngChunk,interchangeability,assetList}.ts", "guide": "characters-modules" },
+    {
+      "match": "src/ts/{characters,persona,pngChunk,interchangeability,assetList,lowLevelAccessImport}.ts",
+      "guide": "characters-modules"
+    },
     { "match": "src/lib/SideBars/CharConfig.svelte", "guide": "characters-modules" },
     { "match": "src/lib/SideBars/LoreBook/**", "guide": "characters-modules" },
     { "match": "src/lib/Setting/Pages/Module/**", "guide": "characters-modules" },
@@ -361,6 +364,7 @@
     { "match": "src/ts/{alert,alertQueue,dragTypes,sourcemap,iris,licenses}*.ts", "guide": "global-api" },
     { "match": "src/lib/Others/{AlertComp,IrisModal,ReloadNotice,TerminalNotice}.svelte", "guide": "global-api" },
     { "match": "src/ts/tests/{alertMock,globalApiMock}.ts", "guide": "global-api" },
+    { "match": "src/ts/tests/lowLevelAccessDialog.ts", "guide": "characters-modules" },
     { "match": "src/ts/globalApiDisclosure.test.ts", "guide": "global-api" },
     { "match": "src/etc/Airisu.webp", "guide": "global-api" },
     { "match": "src/ts/setting/**", "guide": "settings-i18n" },
