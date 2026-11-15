@@ -6,7 +6,7 @@ devices ask to send a message or reload its plugins), then audited against the c
 to D3 are the owner's answers of 2026-11-15; D4 on are this plan's own and open to the owner's change. The relay's
 states, the place of the remote branch, Stop, the reload's completion, and D1, D3, D9, and D10 took their present form
 from the audit. M1 to M3 were read again in two further turns the same day, which reshaped Stop and the returned
-reports (R1 to R5, then S1 to S5); the corrections for S1 to S5, all P2, were applied without a further reading. Landed: 1 (`70069d83d`), 2 (`34c397120`), 3 (`388db8c4e`).
+reports (R1 to R5, then S1 to S5); the corrections for S1 to S5, all P2, were applied without a further reading. Landed: 1 (`70069d83d`), 2 (`34c397120`), 3 (`388db8c4e`), 4 (`67eff665d`).
 
 Sources: `FeedClient`, `EventFeedClientMessage`, `EventFeedFrame`, and `HandoffOffer` in `shared/events.ts`;
 `createEventSockets`, its `registrations` map, `send`, and `broadcast` in `server/src/routes/events.ts`; the handoff and
