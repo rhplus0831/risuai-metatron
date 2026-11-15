@@ -2590,8 +2590,9 @@ async function readReply(
     try {
         while (!job.signal.aborted && checkpointError === null) {
             const read = await reader.read();
-            if (read.value) {
-                lastChunk = read.value;
+            const chunk = typeof read.value === "string" ? { "0": read.value } : read.value;
+            if (chunk) {
+                lastChunk = chunk;
                 let result = lastChunk[Object.keys(lastChunk)[0]] ?? "";
                 options.onRaw?.(result);
                 if (options.removeIncompleteResponse) {

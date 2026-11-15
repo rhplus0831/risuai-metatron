@@ -57,7 +57,7 @@ are the Plugins entry below.
 - [Plugins](#plugins): 1
 - [Rendering](#rendering): 1
 - [Selection](#selection): 1
-- [Server generation](#server-generation): 2
+- [Server generation](#server-generation): 1
 - [Structured Memory](#structured-memory): 1
 - [Test tooling](#test-tooling): 2
 
@@ -170,21 +170,6 @@ for the length of the count.
 it to a worker thread." A size refusal before encoding at the shared gateway (`tokenizers/index.ts:19`) is the cheap
 bound; it was offered and not taken, since it also refuses legitimate large text. An exact count of a large text
 needs the encode off the serving thread, which is the worker design.
-
-### A streamed `OobaLegacy` reply is stored as its first character
-
-With Response Streaming on, `requestOobaLegacy` (`LLMFormat.OobaLegacy`, the `mancer` model) enqueues its cumulative
-text as a string, not a keyed map (`StreamResponseChunk`'s comment in `shared/llm/request.ts` says so). `readReply`
-reads `lastChunk[Object.keys(lastChunk)[0]]` (`server/src/prompt/runner.ts:2521`), which for a string is its first
-character, and the tail stores the remaining characters as one-character alternative samples. Found 2026-11-14 by the
-Generation Progress Window plan's audit (AUD-1); a probe outside the repository had the adapter emit `"Hello"` and
-`"Hello world."`, and the reader returned `"H"`.
-
-**Why it matters:** a `mancer` reply with Response Streaming on is stored as one character. Half Streaming stays off
-for this format until it is fixed (that plan's D26).
-
-**Suggested handling:** normalize a string snapshot to a one-key map at the job reader's boundary, leaving the
-adapter's other consumers as they are, with a regression test; then let Half Streaming apply to the format.
 
 ## Structured Memory
 

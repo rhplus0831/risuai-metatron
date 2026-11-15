@@ -794,6 +794,57 @@ describe("trigger stage chat copies", () => {
 });
 
 describe("a send", () => {
+    it("stores whole legacy string snapshots on send and continue without character candidates", async () => {
+        const profile = (await single("modelProfiles")).data.find((item: any) => item.id === profileId);
+        await patchPreset("modelProfiles", profileId, { customAPIFormat: LLMFormat.OobaLegacy });
+        const count = vi.spyOn(runnerTokens, "countLocal");
+        try {
+            for (const scenario of [
+                { kind: "send", prefix: "", snapshots: ["Hello", "Hello world."] },
+                { kind: "continue", prefix: "Prefix. ", snapshots: ["Hello", "Hello world."] },
+                { kind: "send", prefix: "", snapshots: [""] },
+            ]) {
+                const chaId = await seedCharacter({
+                    name: "Ann",
+                    messages: [
+                        { role: "user", data: "q", chatId: "u1" },
+                        ...(scenario.prefix ? [{ role: "char", data: scenario.prefix, chatId: "r1" }] : []),
+                    ],
+                });
+                const upstream = vi.spyOn(server.context.llmRequests, "runInJob").mockImplementationOnce(async () => {
+                    await socketOpen;
+                    return {
+                        type: "streaming",
+                        result: new ReadableStream({
+                            start(controller) {
+                                for (const text of scenario.snapshots) controller.enqueue(text);
+                                controller.close();
+                            },
+                        }),
+                    } as never;
+                });
+                count.mockClear();
+                try {
+                    const { terminal, events } = await job(scenario.kind, chaId);
+                    expect(terminal).toMatchObject({ type: "done" });
+                    const reply = (await readChat(chaId)).data.message.at(-1);
+                    expect(reply.data).toBe(scenario.prefix + scenario.snapshots.at(-1));
+                    expect(reply.candidates ?? []).toEqual([]);
+                    if (scenario.prefix) expect(reply.chatId).toBe("r1");
+                    expect(streamedTexts(events).map((chunk) => chunk.text)).toEqual(
+                        scenario.snapshots.map((text) => scenario.prefix + text),
+                    );
+                    if (scenario.snapshots[0]) expect(count.mock.calls[0][0]).toBe("Hello");
+                } finally {
+                    upstream.mockRestore();
+                }
+            }
+        } finally {
+            count.mockRestore();
+            await patchPreset("modelProfiles", profileId, profile);
+        }
+    });
+
     it(
         "reports growing counts of the raw first stream value before trimming and without the continue prefix",
         async () => {
