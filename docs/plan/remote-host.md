@@ -177,8 +177,11 @@ that gives it to `self-host-server`), `server/src/remoteCommands.ts` (the regist
   carries `attempted`, and the host derives `requestUncertain` from it. The post carries `uncertain` beside the command
   (the send's own `requestUncertain`), outside the identity: a command created or re-posted with it has `attempted`
   set, so a relay that forgot a command does not clear what its sender still knows.
-- **Cancellation is sticky.** `stopRequested` stays on the command, and every read, state acknowledgement, and
-  notification of it carries the flag. The registry is synchronous, so a cancel and a read of a `queued` command are
+- **Cancellation is sticky until the next Send.** `stopRequested` stays on the command, and every read, state
+  acknowledgement, and notification of it carries the flag, until the sender posts the command again: the sender
+  re-posts only for a new Send (slice 4), so a matching re-post of an open command clears `stopRequested` and notifies
+  the target again, and the Send after a Stop that ended uncertain runs as `attempted`. A host's run already aborted
+  stays aborted. The registry is synchronous, so a cancel and a read of a `queued` command are
   ordered: the cancel first closes it and no body leaves; the read first delivers it with the stop still to come. A
   cancel of an id the registry does not hold stores nothing and answers 404 `unknownCommand`, which certifies nothing:
   the command may have been forgotten after it ran, or its post may still be on its way.
@@ -188,8 +191,8 @@ that gives it to `self-host-server`), `server/src/remoteCommands.ts` (the regist
 - **Routes**, mounted explicitly in `server/src/app.ts`, each with the generation routes' pattern copied (the
   authenticated limiter, `auth.checkAuth`, `no-store`, the `x-resource-epoch` comparison answering 412):
   - `POST /api/remote-commands` `{ clientId, target, commandId, command, uncertain? }`. An existing `commandId` is
-    looked up before the target. A matching command answers its state and, in `delivered`, `running`, or `uncertain`,
-    notifies its target again; a command whose action fields differ is a 409. A matching command closed as `expired`,
+    looked up before the target. A matching command clears `stopRequested`, answers its state and, in `delivered`,
+    `running`, or `uncertain`, notifies its target again; a command whose action fields differ is a 409. A matching command closed as `expired`,
     `cancelled`, or `refused` is replaced by the post, as a new command: no run started under that entry, and
     the sender is asking again (a Send after a Stop that ended uncertain). The command keeps its first target while
     that target is a registered host; when it is not, a re-post naming another host moves the command there, with
