@@ -64,6 +64,8 @@ The transport below retains this tab's in-memory log.
   `hostTargets` in `handoff.ts` picks its newest host registration) and `remoteSendFallback` (on); `remoteSendEligible`,
   `sendChatRemotely`, `receiveRemoteCommandState` (the feed's `remoteCommandState` frames) and `reconcileRemoteSends`
   (each same-epoch hello). The module header owns the contract; see [Remote send](#remote-send).
+- Remote send UI: Settings → Display (`RemoteHostControls.svelte`) edits the three preferences and lists `hostTargets`;
+  the composer's `RemoteSendMarker.svelte` names the host and whether it is connected ([UI](ui-theming.md#composer)).
 
 ### Job channel
 
@@ -125,10 +127,10 @@ The transport below retains this tab's in-memory log.
   `uncertain` without a frame ends uncertain after `REMOTE_COMMAND_PICKUP_MS`. An `uncertain` ends the send; a later
   result is ignored.
 - Definite (no connected host of the name, `targetUnavailable`, `targetFull`, 413, `expired`, `refused`): the fallback
-  (`sendChatOnServer` with the same ids) when it is on and the send is not marked, else a toast; a marked send stays
-  uncertain. `commandChanged` keeps it uncertain. A `done` result's notices are one toast; the chat is read
-  (`readRecoveringChat`); a failed result's `loreStop` goes to the caller, else its errors or the "shown on the host"
-  line, each once per command id.
+  (`sendChatOnServer` with the same ids, after a `fallback` toast with the reason) when it is on and the send is not
+  marked, else a toast; a marked send stays uncertain. `commandChanged` keeps it uncertain. A `done` result's notices
+  are one toast; the chat is read (`readRecoveringChat`); a failed result's `loreStop` goes to the caller, else its
+  errors or the "shown on the host" line, each once per command id.
 - Uncertain: an `uncertain` state, `forgotten`, a status of `unknownCommand`, a post or status read without an answer,
   `cancelled` without a Stop, or the host absent from presence for 60 s.
 - Stop after the post: the relay cancel (its answer is not read) and, at once, `sendChatOnServer` with the aborted

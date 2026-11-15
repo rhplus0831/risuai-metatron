@@ -432,7 +432,14 @@ async function runRemoteSend(arg: EligibleSend): Promise<ServerSendResult> {
                 toast(`${reasonText} ${language.serverJob.remoteSend.uncertain}`);
                 return refusal(true);
             }
-            if (!arg.signal?.aborted && get(remoteSendFallback)) return modules.sendChatOnServer(arg);
+            if (!arg.signal?.aborted && get(remoteSendFallback)) {
+                modules.alertToast(
+                    language.serverJob.remoteSend.fallback
+                        .replace("{host}", () => hostName)
+                        .replace("{reason}", () => reasonText),
+                );
+                return modules.sendChatOnServer(arg);
+            }
             toast(reasonText);
             return refusal(false);
         };

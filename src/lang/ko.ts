@@ -1343,6 +1343,27 @@ export const languageKorean = {
         remoteSend: {
             unnamed: "이름 없는 호스트",
             failed: "{host} 호스트를 통한 원격 전송: {reason}",
+            fallback: "{host} 호스트를 통한 원격 전송: {reason} 대신 이 기기에서 전송합니다.",
+            settings: {
+                title: "원격 전송",
+                connectedHosts: "연결된 호스트",
+                host: "{name}",
+                hostTabs: "{name} (탭 {count}개)",
+                useHost: "사용",
+                noHosts: "연결된 호스트가 없습니다.",
+                enabled: "원격 호스트를 통해 전송",
+                help: "입력창의 전송과 초안 전송을 지정한 호스트 탭에서 실행합니다. 해당 탭을 원격 호스트 모드로 열어 두세요. 그 밖의 전송은 이 기기에서 실행합니다.",
+                hostName: "호스트 이름",
+                hostHelp:
+                    "호스트 브라우저의 클라이언트 이름을 입력하세요. 같은 이름으로 연결된 호스트 탭 중 가장 최근에 등록된 탭을 사용합니다. 지금 연결되어 있지 않은 호스트 이름도 입력할 수 있습니다.",
+                fallback: "호스트가 전송을 맡을 수 없으면 이 기기에서 전송",
+                fallbackHelp:
+                    "호스트가 전송을 맡지 않았음이 확실할 때만 이 기기에서 대신 전송합니다. 결과를 확인할 수 없는 전송은 이 기기에서 다시 실행하지 않습니다.",
+            },
+            marker: {
+                connected: "{host} 호스트를 통해 전송 · 연결됨",
+                disconnected: "{host} 호스트를 통해 전송 · 연결되지 않음",
+            },
             uncertain: "아직 결과를 확인할 수 없습니다. 같은 요청으로 다시 시도하려면 내용을 바꾸지 않고 전송하세요.",
             commandChanged:
                 "이 요청 ID는 다른 원격 작업에 사용되었으며 결과를 확인할 수 없습니다. 새 요청을 보내려면 내용을 변경하세요.",

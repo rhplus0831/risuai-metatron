@@ -1955,6 +1955,27 @@ export const languageEnglish = {
         remoteSend: {
             unnamed: "Unnamed host",
             failed: "Remote send through {host}: {reason}",
+            fallback: "Remote send through {host}: {reason} Sending from this device instead.",
+            settings: {
+                title: "Remote send",
+                connectedHosts: "Connected hosts",
+                host: "{name}",
+                hostTabs: "{name} ({count} tabs)",
+                useHost: "Use",
+                noHosts: "No hosts connected.",
+                enabled: "Send through a remote host",
+                help: "The composer's Send and Send Draft go to the named host tab. Keep that tab open in Remote Host Mode. Other sends stay on this device.",
+                hostName: "Host name",
+                hostHelp:
+                    "Use the host browser's client name. The newest connected host tab with that name is used. You can also enter a host that is offline now.",
+                fallback: "Send from this device if the host cannot take the send",
+                fallbackHelp:
+                    "Only falls back when the host certainly did not take the send. A send whose outcome is unknown is never run again on this device.",
+            },
+            marker: {
+                connected: "Sends go through {host} · Connected",
+                disconnected: "Sends go through {host} · Not connected",
+            },
             uncertain: "The outcome is still unknown. Retry unchanged text to keep the same request.",
             commandChanged:
                 "This request id belongs to another remote action. Its outcome is unknown. Change the text before sending a new request.",

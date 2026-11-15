@@ -53,8 +53,10 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   button goes in the composer row; popup behavior follows
   [Dialogs, popovers, and portals](#dialogs-popovers-and-portals).
 - `src/lib/ChatScreens/composerPlaceholder.ts` owns the main placeholder. `DefaultChatScreen.svelte` also handles
-  incomplete chat bindings, the Stop button's `processStage` ring, and the loading label beside Stop while a discovered
-  job's chat loads.
+  incomplete chat bindings, the Stop button's `processStage` ring (the chat's foreign job's stage when it has no own
+  staged job, as during a remote send), and the loading label beside Stop while a discovered job's chat loads.
+- `src/lib/ChatScreens/RemoteSendMarker.svelte`, above the composer row (never the playground): while remote sending is
+  on and the tab is not a host, the named host and whether it is connected ([remote send](network-jobs.md#remote-send)).
 - The draft box sits under the composer row for a chat with a Draft hook chosen or draft text left (never the
   playground; read-only while the binding is incomplete): a labelled textarea bound to `composer.draft` and Send Draft,
   disabled while the draft is blank or the chat is busy or runs a hook. Stop carries a status label while a Draft hook

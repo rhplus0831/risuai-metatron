@@ -103,7 +103,9 @@ Each module's rules are in its header or on its exports, and each component's in
 These live in `src/lib/Setting/Pages/`. `Display/HandoffToggles.svelte` edits device stores in
 `src/ts/network/handoff.ts`, using `serverJob.handoff` strings; its custom registry item belongs to the notification
 section. `Display/RemoteHostControls.svelte` (item `display.remoteHost`, the same section) switches the device-local
-Remote Host Mode in `src/ts/network/remoteHost.ts`, with `serverJob.remoteHost` strings.
+Remote Host Mode in `src/ts/network/remoteHost.ts`, with `serverJob.remoteHost` strings, and below it edits remote
+sending (`remoteSend`, `remoteSendHost`, `remoteSendFallback` in `src/ts/network/remoteSend.ts`) beside one row per
+connected host name (`hostTargets`), with `serverJob.remoteSend.settings` strings.
 
 - Declarative: `AccessibilitySettings`, `InteractionSettings`, `AdvancedSettings`, and `StorageSettings` (the header
   array, then `SettingsSections`), `DisplaySettings` (sectioned per tab), `ChatFormatSettings`, and `LanguageSettings`

@@ -324,7 +324,7 @@ const definiteAnswers = [
     { label: "a host refusal", reason: "The host is busy with this chat.", answer: "refused" },
 ] as const;
 it.each(definiteAnswers)(
-    "falls back for $label only when enabled and the send is unmarked",
+    "falls back for $label, with a notice, only when enabled and the send is unmarked",
     async ({ answer, reason }) => {
         for (const fallback of [false, true])
             for (const marked of [false, true]) {
@@ -358,7 +358,10 @@ it.each(definiteAnswers)(
                     expect(stubs.local).toHaveBeenCalledExactlyOnceWith(
                         expect.objectContaining({ ...input, requestId, requestUncertain: false }),
                     );
-                    silent();
+                    expect(stubs.toast).toHaveBeenCalledExactlyOnceWith(
+                        `Remote send through Desk: ${reason} Sending from this device instead.`,
+                    );
+                    expect(stubs.error).not.toHaveBeenCalled();
                 } else {
                     await ended(sending, false, { ...endRefused, settled: !marked, requestUncertain: marked }, marked);
                     expect(stubs.local).not.toHaveBeenCalled();

@@ -86,6 +86,7 @@
     import { draftHookOf, type InputHook } from "../../../shared/inputHooks.ts";
     import { followedJobs, followedJobsOf, loadingJobChats, stopChatJob } from "src/ts/process/serverCommands";
     import HandoffControls from "./HandoffControls.svelte";
+    import RemoteSendMarker from "./RemoteSendMarker.svelte";
     import InputHookPicker from "./InputHookPicker.svelte";
     import { jobStages, jobRetries, chatStageOf } from "src/ts/process/jobStages";
     import { foreignGeneration } from "src/ts/process/generationProgress.svelte";
@@ -1119,12 +1120,13 @@
     });
     /**
      * The Stop button's `chat-process-stage-<n>`: 1 to 4 for the stage (`GENERATION_STAGES` order) of the selected
-     * chat's newest staged job, else 0. Another chat's job never colors it.
+     * chat's newest own staged job, falling back to its foreign job's stage while a remote send runs, else 0.
+     * Another chat's job never colors it.
      */
     const processStage = $derived.by(() => {
         const ref = currentChatRef();
         const stage = ref ? chatStageOf($jobStages, ref) : null;
-        return stage === null ? 0 : GENERATION_STAGES.indexOf(stage) + 1;
+        return stage === null ? foreignProcessStage : GENERATION_STAGES.indexOf(stage) + 1;
     });
 
     /**
@@ -1622,6 +1624,9 @@
                             </div>
                         </section>
                     </div>
+                {/if}
+                {#if currentCharacter?.chaId !== "§playground"}
+                    <RemoteSendMarker />
                 {/if}
                 <div class="relative flex items-stretch w-full">
                     {#if settings.ui.useChatSticker && currentCharacter.type !== "group"}

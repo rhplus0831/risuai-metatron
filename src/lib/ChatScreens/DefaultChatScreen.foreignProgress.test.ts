@@ -37,6 +37,7 @@ for (const child of [
 import { language } from "src/lang";
 import { resetChatStatusForTests } from "src/ts/process/chatStatus.svelte";
 import { noteGenerationFrame, resetGenerationProgress } from "src/ts/process/generationProgress.svelte";
+import { dropJobStage, resetJobStagesForTests, setJobStage } from "src/ts/process/jobStages";
 import { followedJobs } from "src/ts/process/serverCommands";
 import { selectChat } from "src/ts/storage/chatStore.svelte";
 import { pageDraftJournal } from "src/ts/storage/draftJournal";
@@ -73,6 +74,7 @@ beforeEach(async () => {
     vi.stubGlobal("IDBKeyRange", IDBKeyRange);
     Object.defineProperty(navigator, "locks", { value: createFakeLockManager(), configurable: true });
     resetGenerationProgress();
+    resetJobStagesForTests();
     resetChatStatusForTests();
     followedJobs.set(new Map());
     installFlatDatabaseWithChats({
@@ -122,6 +124,7 @@ afterEach(async () => {
     await settle(pageDraftJournal().close());
     target?.remove();
     resetGenerationProgress();
+    resetJobStagesForTests();
     resetChatStatusForTests();
     followedJobs.set(new Map());
     vi.clearAllTimers();
@@ -162,4 +165,35 @@ it("shows Stop-other with the foreign job's stage and hides it for this tab, ano
     noteGenerationFrame({ state: "ended", jobId: entry.jobId, characterId: "c", chatId: "k" });
     flushSync();
     expect(stopOther()).toBeNull();
+});
+
+it("uses the chat's foreign stage for Stop until this screen has its own staged job", () => {
+    const stop = () => target.querySelector<HTMLButtonElement>('button[aria-labelledby="cancel"]');
+    followedJobs.set(new Map([["own-job", "c\u0000k"]]));
+    setJobStage("other-chat-job", { chaId: "c", chatId: "other-chat" }, "finishing");
+    flushSync();
+    expect(stop()).not.toBeNull();
+    expect(stop()!.querySelector(".chat-process-stage-0")).not.toBeNull();
+
+    for (const [stage, ring] of [
+        ["preparing", 1],
+        ["memory", 2],
+        ["generating", 3],
+        ["finishing", 4],
+    ] as const) {
+        noteGenerationFrame({ ...entry, state: "running", stage });
+        flushSync();
+        expect(stop()!.querySelector(`.chat-process-stage-${ring}`)).not.toBeNull();
+    }
+
+    setJobStage("own-job", { chaId: "c", chatId: "k" }, "memory");
+    flushSync();
+    expect(stop()!.querySelector(".chat-process-stage-2")).not.toBeNull();
+    dropJobStage("own-job");
+    flushSync();
+    expect(stop()!.querySelector(".chat-process-stage-4")).not.toBeNull();
+
+    noteGenerationFrame({ state: "ended", jobId: entry.jobId, characterId: "c", chatId: "k" });
+    flushSync();
+    expect(stop()!.querySelector(".chat-process-stage-0")).not.toBeNull();
 });
