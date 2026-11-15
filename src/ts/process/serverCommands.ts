@@ -18,7 +18,8 @@ import type {
 } from "../../../shared/jobs.ts";
 import { language } from "src/lang";
 import { get, readonly, writable } from "svelte/store";
-import { alertConfirm, alertError, alertJobError, alertToast } from "../alert";
+import { alertConfirm, alertError, alertJobError, alertToast, errorReportText, jobErrorText } from "../alert";
+import type { SendReport } from "../../../shared/remoteCommands.ts";
 import {
     abortGenerationJob,
     applyGenerationEvent,
@@ -161,6 +162,9 @@ type FollowLifecycle = {
     loreStopCaller: boolean;
     /** Error codes shown by the waiting caller; copied only when this lifecycle is created. */
     callerErrorCodes: ReadonlySet<GenerationErrorCode>;
+    reports?: SendReport[];
+    /** An error was actually submitted for display by this lifecycle. */
+    errorShown: boolean;
     everOwner: boolean;
     attemptOwner: boolean;
     role: GenerationFollow["role"];
@@ -358,6 +362,21 @@ export function followJobToEnd(
     initialStatus?: GenerationStatus,
     options: { ticket?: string; loreStopCaller?: boolean; callerErrorCodes?: readonly GenerationErrorCode[] } = {},
 ): Promise<GenerationTerminalEvent | "lost"> {
+    return followLifecycle(jobId, ref, initialStatus, options).promise;
+}
+
+/** Retains reporting evidence for joined callers even after the lifecycle leaves `following`. */
+function followLifecycle(
+    jobId: string,
+    ref?: ChatRef,
+    initialStatus?: GenerationStatus,
+    options: {
+        ticket?: string;
+        loreStopCaller?: boolean;
+        callerErrorCodes?: readonly GenerationErrorCode[];
+        reports?: SendReport[];
+    } = {},
+): FollowLifecycle {
     if (initialStatus?.state === "ended" && initialStatus.terminal) replayedStatuses.set(jobId, initialStatus);
     const existing = following.get(jobId);
     if (existing) {
@@ -371,13 +390,15 @@ export function followJobToEnd(
             // A replay keeps the socket for its final hydration and applied terminal.
             if (options.ticket) existing.active?.close();
         }
-        return existing.promise;
+        return existing;
     }
     const lifecycle: FollowLifecycle = {
         promise: undefined!,
         creator: !options.ticket,
         loreStopCaller: options.loreStopCaller === true,
         callerErrorCodes: new Set(options.callerErrorCodes),
+        reports: options.reports,
+        errorShown: false,
         everOwner: false,
         attemptOwner: false,
         role: null,
@@ -473,7 +494,7 @@ export function followJobToEnd(
             if (typeof result !== "string" && target !== "lost") clearForeignJob(target, jobId);
             if (!lifecycle.creator && !lifecycle.everOwner) return end;
             if (result !== "gone") {
-                reportEnd(end, jobId, lifecycle.creator, lifecycle.loreStopCaller, lifecycle.callerErrorCodes);
+                lifecycle.errorShown = reportEnd(end, jobId, lifecycle);
             }
             if (target !== "lost") {
                 if (end === "lost") {
@@ -521,7 +542,7 @@ export function followJobToEnd(
             release?.();
         }
     })().then(resolveFollow, rejectFollow);
-    return lifecycle.promise;
+    return lifecycle;
 }
 
 /**
@@ -943,22 +964,31 @@ async function followOnce(
  * already running, a call that did not ask for the stop) it is an error like any other, and so is a
  * coded end whose `lore` does not parse.
  * An error whose code is in the lifecycle's `callerErrorCodes` is also shown by its waiting caller.
+ * Returns whether this lifecycle submitted an error for display on this tab.
  */
 function reportEnd(
     end: GenerationTerminalEvent | "lost",
     jobId: string,
-    creator: boolean,
-    loreStopCaller: boolean,
-    callerErrorCodes: ReadonlySet<GenerationErrorCode>,
-) {
+    { creator, loreStopCaller, callerErrorCodes, reports }: FollowLifecycle,
+): boolean {
+    let errorShown = false;
+    const error = (text: string) => {
+        const shown = reportError(text, reports);
+        // A done's sequence warning is collected, but is not a failed job shown elsewhere.
+        errorShown = shown && (end === "lost" || end.type === "error");
+    };
+    const notice = (text: string) => {
+        if (reports) reports.push({ kind: "notice", text });
+        else alertToast(text);
+    };
     if (end === "lost") {
-        alertError(language.serverJob.lost);
+        error(language.serverJob.lost);
         recordClientEvent({ kind: "notice", notice: "serverJobLost" });
     } else if (end.type === "done" && end.sequence?.stopped) {
         const { sent, total, stopped } = end.sequence;
         const reasons = language.serverJob.sequenceReasons;
         const reason = Object.hasOwn(reasons, stopped) ? reasons[stopped as keyof typeof reasons] : stopped;
-        alertError(
+        error(
             language.serverJob.sequenceStopped.replace(
                 /\{(sent|total|reason)\}/g,
                 (_, key: "sent" | "total" | "reason") => String({ sent, total, reason }[key]),
@@ -977,9 +1007,16 @@ function reportEnd(
             }
         });
     } else if (end.type === "error" && end.reason === "aborted" && end.abortedBy === "other") {
-        alertToast(language.serverJob.stoppedElsewhere);
+        notice(language.serverJob.stoppedElsewhere);
     } else if (end.type === "error" && end.reason !== "aborted") {
-        alertJobError(jobId, end);
+        const text = jobErrorText(end);
+        if (text !== null) {
+            if (reports) reports.push({ kind: "error", text });
+            else {
+                alertJobError(jobId, end);
+                errorShown = true;
+            }
+        }
     }
     if (end !== "lost" && end.type === "done") {
         const names = [...new Set(end.skipped?.map((hook) => hook.name) ?? [])].filter((name) => name !== "chatOutput");
@@ -987,8 +1024,21 @@ function reportEnd(
         if (names.length > 0) notices.push(language.serverJob.hooksSkipped.replace("{hooks}", () => names.join(", ")));
         if (creator && end.missed?.length) notices.push(language.serverJob.handoff.missedCallback);
         // One toast preserves both messages; its plain-text rendering needs a space separator.
-        if (notices.length) alertToast(notices.join(" "));
+        if (notices.length) notice(notices.join(" "));
     }
+    return errorShown;
+}
+
+/** Collects a report or submits it for display; suppressed messages do neither. */
+function reportError(message: string, reports?: SendReport[]): boolean {
+    const text = errorReportText(message);
+    if (text === null) return false;
+    if (reports) {
+        reports.push({ kind: "error", text });
+        return false;
+    }
+    alertError(message);
+    return true;
 }
 
 /** Attaches again to this tab's saved server jobs after a reload, each through its one lifecycle. */
@@ -1091,9 +1141,14 @@ export type ServerJobResult = {
     loreStopFollow?: boolean;
     /** This call installed its nonempty `callerErrorCodes`; matching terminal errors raised no alert. */
     callerErrorFollow?: true;
+    /** Another lifecycle actually submitted this job's error for display. */
+    reportShownElsewhere?: true;
 };
 
 type ServerJobOptions = {
+    /** Ignore this tab's preferred-handoff setting for this create only. */
+    noHandoffPreference?: boolean;
+    reports?: SendReport[];
     onStart?: () => void;
     signal?: AbortSignal;
     identity?: { presetId: string | null; modelPresetId: string | null; personaId: string | null };
@@ -1106,6 +1161,7 @@ async function runPinnedServerJob(
     request: ServerJobRequest,
     options: ServerJobOptions,
 ): Promise<ServerJobResult> {
+    const errorReport = (message: string) => reportError(message, options.reports);
     let previousCancel: Promise<GenerationCreateResult> | undefined;
     const cancelPrevious = () => {
         if (request.requestId && request.requestUncertain) {
@@ -1126,7 +1182,7 @@ async function runPinnedServerJob(
         // the chat's complete binding or not at all.
         const binding = chatBinding(ref);
         if (!binding?.ok) {
-            alertError(chatBindingRefusalText(chatBindingProblems(binding)));
+            errorReport(chatBindingRefusalText(chatBindingProblems(binding)));
             return refused;
         }
         const { presetId, modelPresetId, personaId } = options.identity ?? chatContextIds(binding.ids);
@@ -1147,39 +1203,39 @@ async function runPinnedServerJob(
                         (item.kind === "order" && item.chaId === ref.chaId),
                 )
             ) {
-                alertError(language.serverJob.refusedDraft);
+                errorReport(language.serverJob.refusedDraft);
                 return refused;
             }
             try {
                 const { discarded, refused: refusedKeys } = await flushResources();
                 if (discarded.length > 0) {
-                    alertError(language.serverJob.discarded[request.label]);
+                    errorReport(language.serverJob.discarded[request.label]);
                     return refused;
                 }
                 if (
                     refusedKeys.includes(`chats/${ref.chaId}/${ref.chatId}`) ||
                     refusedKeys.includes(`chats/${ref.chaId}`)
                 ) {
-                    alertError(language.serverJob.refusedDraft);
+                    errorReport(language.serverJob.refusedDraft);
                     return refused;
                 }
             } catch (error) {
                 if (error instanceof GenerationBlockedError) {
                     // The chat or character is being generated (another tab's job): the same notice as a
                     // busy chat, unless this flush's conflict recovery has just shown it.
-                    if (generatingNoticeCount() === notices) {
-                        alertError(language.chatGenerating);
+                    if (options.reports || generatingNoticeCount() === notices) {
+                        errorReport(language.chatGenerating);
                     }
                     return { ...refused, blockedChats: error.chats };
                 }
-                alertError(withError(language.serverJob.saveFailed, error));
+                errorReport(withError(language.serverJob.saveFailed, error));
                 return refused;
             }
             let current: boolean;
             try {
                 current = await refreshStaleChat(ref);
             } catch (error) {
-                alertError(withError(language.serverJob.chatLoadFailed, error));
+                errorReport(withError(language.serverJob.chatLoadFailed, error));
                 return refused;
             }
             if (current) {
@@ -1190,7 +1246,7 @@ async function runPinnedServerJob(
         try {
             target = await ensureChatLoaded(ref);
         } catch (error) {
-            alertError(withError(language.serverJob.chatLoadFailed, error));
+            errorReport(withError(language.serverJob.chatLoadFailed, error));
             return refused;
         }
         if (!target || options.signal?.aborted) {
@@ -1198,7 +1254,7 @@ async function runPinnedServerJob(
         }
         const chatRevision = heldChatRevision(ref);
         if (chatRevision === null) {
-            alertError(language.serverJob.chatNotSaved);
+            errorReport(language.serverJob.chatNotSaved);
             return refused;
         }
         return {
@@ -1235,7 +1291,7 @@ async function runPinnedServerJob(
                   {
                       kind: request.kind,
                       requestId: request.requestId,
-                      ...(get(preferHandoff) ? { handoff: "prefer" } : {}),
+                      ...(!options.noHandoffPreference && get(preferHandoff) ? { handoff: "prefer" } : {}),
                       context: (prepared as { context: GenerationContext }).context,
                       ...(request.command ? { command: request.command } : {}),
                   } as Parameters<typeof createGenerationJob>[0],
@@ -1251,7 +1307,7 @@ async function runPinnedServerJob(
             cancelled = created.cancelled === true;
             if (!created.owned && created.status?.state === "running") noteForeignJob(ref, jobId);
             if (!created.owned && created.status?.state === "running" && !cancelled) {
-                alertError(language.chatGenerating);
+                errorReport(language.chatGenerating);
                 return { ...refused, blockedChats: [ref], requestUncertain: true };
             }
             if (!created.owned || created.status === null) {
@@ -1277,39 +1333,39 @@ async function runPinnedServerJob(
                 error.status === 503 &&
                 ["The server is not accepting generations now", "The server is shutting down"].includes(error.message));
         if (requestUncertain && !admissionRefused) {
-            if (!options.signal?.aborted) alertError(language.serverJob.lost);
+            if (!options.signal?.aborted) errorReport(language.serverJob.lost);
             return { outcome: "unknown", terminal: null, requestUncertain: true };
         }
         if (error instanceof ChatBindingRefusedError) {
             if (error.code === "chatBindingMismatch") {
                 // The server holds a newer binding than this tab: read the chat again, and the user sends again.
                 void loadChat(ref).catch((loadError) => console.error("[Generation]", loadError));
-                alertError(language.chatBinding.mismatch);
+                errorReport(language.chatBinding.mismatch);
             } else {
-                alertError(chatBindingRefusalText(error.problems));
+                errorReport(chatBindingRefusalText(error.problems));
             }
             return refusal;
         }
         if (error instanceof ChatLoreOverrideOrphanedError) {
-            alertError(chatLoreOverrideRefusalText(error.entries));
+            errorReport(chatLoreOverrideRefusalText(error.entries));
             return refusal;
         }
         if (memoryRebuilding) {
-            alertError(language.serverJob.memoryRebuilding);
+            errorReport(language.serverJob.memoryRebuilding);
             return refusal;
         }
         if (error instanceof GenerationBusyError) {
             if (requestUncertain) {
                 // Identity replay precedes busy lookup, so this job belongs to another action.
                 noteForeignJob(ref, error.jobId);
-                alertError(language.chatGenerating);
+                errorReport(language.chatGenerating);
                 return { ...refusal, blockedChats: [ref] };
             }
             // This tab's own job (one a reload lost track of): follow it instead; another's is busy.
             const owned = await readGenerationJob(error.jobId, { deadlineMs: STEP_DEADLINE_MS }).catch(() => null);
             if (!owned) {
                 noteForeignJob(ref, error.jobId);
-                alertError(language.chatGenerating);
+                errorReport(language.chatGenerating);
                 // Another tab's job runs in this chat, with or without a lock this tab knows of yet.
                 return { ...refused, blockedChats: [ref] };
             }
@@ -1317,7 +1373,7 @@ async function runPinnedServerJob(
             outcome = "followed";
         } else {
             if (error instanceof ResourceRequestError && error.message === "requestCancelled") return refused;
-            alertError(
+            errorReport(
                 error instanceof ResourceRequestError && error.message === "requestIdReused"
                     ? language.serverJob.requestIdReused
                     : errorText(error),
@@ -1361,16 +1417,19 @@ async function runPinnedServerJob(
         // stop it asked for. The mark belongs to the lifecycle this call creates: one that already
         // follows the job reports its end as it was created to, so it is checked before following
         // (a lifecycle removes itself before its promise resolves).
-        const loreStopFollow =
-            request.context?.stopOverLoreBudget === true && outcome !== "followed" && !following.has(jobId);
-        const callerErrorFollow = !!request.callerErrorCodes?.length && outcome !== "followed" && !following.has(jobId);
-        const terminal = await followJobToEnd(jobId, ref, initialStatus, {
+        const ownFollow = outcome !== "followed" && !following.has(jobId);
+        const loreStopFollow = request.context?.stopOverLoreBudget === true && ownFollow;
+        const callerErrorFollow = !!request.callerErrorCodes?.length && ownFollow;
+        const lifecycle = followLifecycle(jobId, ref, initialStatus, {
             loreStopCaller: loreStopFollow,
+            ...(ownFollow ? { reports: options.reports } : {}),
             ...(callerErrorFollow ? { callerErrorCodes: request.callerErrorCodes } : {}),
         });
+        const terminal = await lifecycle.promise;
         return {
             outcome,
             terminal,
+            ...(!ownFollow && lifecycle.errorShown ? { reportShownElsewhere: true as const } : {}),
             requestUncertain: outcome !== "followed" && terminal === "lost",
             ...(loreStopFollow ? { loreStopFollow: true } : {}),
             ...(callerErrorFollow ? { callerErrorFollow: true } : {}),

@@ -6,7 +6,7 @@ import {
     replaceConnectedClients,
     replaceHandoffOffers,
 } from "./handoff";
-import { hostMode } from "./remoteHost";
+import { hostMode, receiveHostCommand, recoverHostCommands } from "./remoteHost";
 import { get, readonly, writable } from "svelte/store";
 import { noteGenerationFrame, replaceGenerations, resetGenerationProgress } from "../process/generationProgress.svelte";
 import { generationClientId } from "./generationJobs";
@@ -417,6 +417,7 @@ function receive(gen: number, ws: WebSocket, frame: EventFeedFrame, connectAttem
                 epochMismatch(frame.epoch);
                 return;
             }
+            recoverHostCommands(frame.epoch);
             rerollInPlace = frame.rerollInPlace === true;
             replaceFeedLocks(Array.isArray(frame.streaming) ? frame.streaming : []);
             replaceHandoffOffers(frame.handoffs ?? []);
@@ -448,6 +449,9 @@ function receive(gen: number, ws: WebSocket, frame: EventFeedFrame, connectAttem
                     noteRemoteStreaming(frame.streaming, frame.changes);
                 }
             }
+            return;
+        case "remoteCommand":
+            if (frame.epoch === loaded) receiveHostCommand(frame);
             return;
         case "handoff":
             if (frame.epoch === loaded) receiveHandoffOffer(frame);

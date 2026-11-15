@@ -1,4 +1,5 @@
 import type { GenerationKind } from "../../../shared/jobs.ts";
+import type { SendReport } from "../../../shared/remoteCommands.ts";
 import type { LoreBudgetStop } from "../../../shared/contextReport.ts";
 import type { PluginCallContext } from "../plugins/apiV3/pluginContext";
 import { type ChatRef, chatEntry, currentChatRef, pinChat } from "../storage/chatStore.svelte";
@@ -19,6 +20,12 @@ import { runServerJob, type ServerCommandOutcome } from "./serverCommands";
 export type ServerSendArg = {
     target?: ChatRef;
     signal?: AbortSignal;
+    /** Keeps this send on this tab: runSend must never route it to a remote host. */
+    localOnly?: boolean;
+    /** Omit preferred handoff for this create, without changing the tab's preference. */
+    noHandoffPreference?: boolean;
+    /** Caller-owned sink for admission and own-follow reports; none of them is shown on this tab. */
+    reports?: SendReport[];
     continue?: boolean;
     continueMessageId?: string;
     rerollMessageId?: string;
@@ -64,6 +71,8 @@ export type ServerSendResult = {
     /** Whether the chat read for a replay without a usable owner terminal succeeded. */
     reconciled?: boolean;
     result?: unknown;
+    /** An existing follow actually submitted the job's error for display on this tab. */
+    reportShownElsewhere?: true;
     refusal?: ServerSendRefusal;
     blockedChats?: readonly ChatRef[];
     /**
@@ -123,43 +132,48 @@ async function sendPinned(
                 ? "continue"
                 : "send";
     const input = kind === "preview" || kind === "previewPrompt" || kind === "reroll" ? "" : (arg.input ?? "");
-    const { outcome, terminal, blockedChats, requestUncertain, reconciled, loreStopFollow } = await runServerJob(
-        char,
-        ref,
-        {
-            kind,
-            label: "send",
-            requestId: arg.requestId,
-            requestUncertain: arg.requestUncertain,
-            context: {
-                input,
-                ...(kind === "reroll"
+    const { outcome, terminal, blockedChats, requestUncertain, reconciled, loreStopFollow, reportShownElsewhere } =
+        await runServerJob(
+            char,
+            ref,
+            {
+                kind,
+                label: "send",
+                requestId: arg.requestId,
+                requestUncertain: arg.requestUncertain,
+                context: {
+                    input,
+                    ...(kind === "reroll"
+                        ? {
+                              rerollMessageId: arg.rerollMessageId,
+                              ...(arg.speakerChaId ? { speakerChaId: arg.speakerChaId } : {}),
+                          }
+                        : {}),
+                    ...(input !== "" && arg.userMessageId ? { userMessageId: arg.userMessageId } : {}),
+                    ...(input !== "" && arg.userMessageId && arg.inputOriginal !== undefined
+                        ? { inputOriginal: arg.inputOriginal }
+                        : {}),
+                    ...(kind === "continue" && arg.continueMessageId
+                        ? { continueMessageId: arg.continueMessageId }
+                        : {}),
+                    ...(arg.stopOverLoreBudget === true ? { stopOverLoreBudget: true } : {}),
+                },
+            },
+            {
+                signal: arg.signal,
+                noHandoffPreference: arg.noHandoffPreference,
+                reports: arg.reports,
+                ...(arg.pluginContext
                     ? {
-                          rerollMessageId: arg.rerollMessageId,
-                          ...(arg.speakerChaId ? { speakerChaId: arg.speakerChaId } : {}),
+                          identity: {
+                              presetId: arg.pluginContext.presetId || null,
+                              modelPresetId: arg.pluginContext.modelPresetId || null,
+                              personaId: arg.pluginContext.personaId || null,
+                          },
                       }
                     : {}),
-                ...(input !== "" && arg.userMessageId ? { userMessageId: arg.userMessageId } : {}),
-                ...(input !== "" && arg.userMessageId && arg.inputOriginal !== undefined
-                    ? { inputOriginal: arg.inputOriginal }
-                    : {}),
-                ...(kind === "continue" && arg.continueMessageId ? { continueMessageId: arg.continueMessageId } : {}),
-                ...(arg.stopOverLoreBudget === true ? { stopOverLoreBudget: true } : {}),
             },
-        },
-        {
-            signal: arg.signal,
-            ...(arg.pluginContext
-                ? {
-                      identity: {
-                          presetId: arg.pluginContext.presetId || null,
-                          modelPresetId: arg.pluginContext.modelPresetId || null,
-                          personaId: arg.pluginContext.personaId || null,
-                      },
-                  }
-                : {}),
-        },
-    );
+        );
     if (outcome === "refused") {
         return {
             ok: false,
@@ -172,7 +186,14 @@ async function sendPinned(
     }
     if (outcome === "followed") {
         // A followed job is this tab's other action: this send's input did not reach it.
-        return { ok: false, outcome, settled: terminal !== "lost", refusal: "definite", requestUncertain: false };
+        return {
+            ok: false,
+            outcome,
+            settled: terminal !== "lost",
+            refusal: "definite",
+            requestUncertain: false,
+            ...(reportShownElsewhere ? { reportShownElsewhere } : {}),
+        };
     }
     if (outcome === "unknown") {
         return { ok: false, outcome, settled: false, refusal: "ambiguous", requestUncertain: true };
@@ -185,6 +206,7 @@ async function sendPinned(
             settled: terminal !== "lost" && !requestUncertain,
             requestUncertain: terminal === "lost" || requestUncertain === true,
             ...(reconciled !== undefined ? { reconciled } : {}),
+            ...(reportShownElsewhere ? { reportShownElsewhere } : {}),
             ...(loreStop ? { loreStop } : {}),
         };
     }

@@ -1,6 +1,7 @@
 import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { loreBudgetTerminal } from "./tests/loreBudgetStopFixture";
+import type { SendReport } from "../../../shared/remoteCommands.ts";
 import type { GenerationEvent, GenerationStatus, GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import type { createFollowStub } from "../network/tests/generationJobsMock";
 import { ResourceEpochMismatchError, ResourceRequestError } from "../storage/resourceClient";
@@ -915,6 +916,171 @@ describe("runServerJob", () => {
         options: Parameters<Module["runServerJob"]>[3] = {},
         kind = "send" as const,
     ) => commands.runServerJob(char, ref, { kind, label: "send", context }, options);
+
+    it.each([
+        { name: "job error", terminal: failed, expected: [{ kind: "error", text: "boom" }] },
+        {
+            name: "skipped hooks and missed callbacks",
+            terminal: {
+                ...done,
+                skipped: [
+                    { name: "editoutput" },
+                    { name: "editoutput" },
+                    { name: "chatOutput", payload: { messageId: "reply", speakerId: "c" } },
+                ],
+                missed: [{ name: "chatOutput", payload: { messageId: "reply", speakerId: "c" } }],
+            },
+            expected: [{ kind: "notice", text: "hooks skipped: editoutput output callback missed" }],
+        },
+        {
+            name: "stopped elsewhere notice",
+            terminal: {
+                type: "error",
+                epoch: EPOCH,
+                reason: "aborted",
+                abortedBy: "other",
+                status: 499,
+                message: "aborted",
+            },
+            expected: [{ kind: "notice", text: "stopped elsewhere" }],
+        },
+    ] satisfies { name: string; terminal: GenerationTerminalEvent; expected: SendReport[] }[])(
+        "collects its own $name without showing it on the host",
+        async ({ terminal, expected }) => {
+            const reports: SendReport[] = [];
+            stubs.create.mockResolvedValueOnce({ outcome: "created", jobId: "j" });
+            const run = send({}, { reports });
+            await whenAttached(1);
+            endWith(follows()[0], terminal);
+            const result = await run;
+            expect(result).toMatchObject({ outcome: "started", terminal });
+            expect(result).not.toHaveProperty("reportShownElsewhere");
+            expect(reports).toEqual(expected);
+            expect(stubs.alertError).not.toHaveBeenCalled();
+            expect(stubs.alertJobError).not.toHaveBeenCalled();
+            expect(stubs.alertToast).not.toHaveBeenCalled();
+        },
+    );
+
+    it("collects a lost follow as an error while leaving the request uncertain", async () => {
+        const reports: SendReport[] = [];
+        stubs.create.mockResolvedValueOnce({ outcome: "created", jobId: "j" });
+        stubs.read.mockResolvedValue(status);
+        const run = send({}, { reports });
+        for (let attach = 0; attach < 5; attach++) {
+            await whenAttached(attach + 1);
+            follows()[attach].end(null);
+        }
+        expect(await run).toMatchObject({ outcome: "started", terminal: "lost", requestUncertain: true });
+        expect(reports).toEqual([{ kind: "error", text: "job lost" }]);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+        expect(stubs.alertJobError).not.toHaveBeenCalled();
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+    });
+
+    it("collects admission refusal text from a discarded save and a server refusal without alerting", async () => {
+        const reports: SendReport[] = [];
+        stubs.flush.mockResolvedValueOnce({ discarded: ["chats/c/k"], refused: [] });
+        expect(await send({}, { reports })).toMatchObject({ outcome: "refused", requestUncertain: false });
+        expect(stubs.create).not.toHaveBeenCalled();
+        expect(reports).toEqual([{ kind: "error", text: "discarded: send" }]);
+        reports.length = 0;
+        stubs.create.mockRejectedValueOnce(
+            new ResourceRequestError(503, "The server is not accepting generations now"),
+        );
+        expect(await send({}, { reports })).toMatchObject({ outcome: "refused", requestUncertain: false });
+        expect(reports).toEqual([{ kind: "error", text: "The server is not accepting generations now" }]);
+        expect(stubs.alertError).not.toHaveBeenCalled();
+        expect(stubs.alertJobError).not.toHaveBeenCalled();
+        expect(stubs.alertToast).not.toHaveBeenCalled();
+    });
+
+    it("collects a blocked flush even when the save layer already showed its generation notice", async () => {
+        const reports: SendReport[] = [];
+        stubs.notices.mockReturnValueOnce(0).mockReturnValue(1);
+        stubs.flush.mockRejectedValueOnce(new BlockedError([ref]));
+        expect(await send({}, { reports })).toMatchObject({
+            outcome: "refused",
+            blockedChats: [ref],
+            requestUncertain: false,
+        });
+        expect(reports).toEqual([{ kind: "error", text: "generating" }]);
+        expect(stubs.create).not.toHaveBeenCalled();
+        expect(stubs.alertError).not.toHaveBeenCalled();
+    });
+
+    it("omits preferred handoff for a host create while preserving this tab's preference", async () => {
+        const { preferHandoff } = await import("../network/handoff");
+        preferHandoff.set(true);
+        stubs.create.mockResolvedValueOnce({ outcome: "created", jobId: "j" });
+        const run = send({}, { noHandoffPreference: true, reports: [] });
+        await whenAttached(1);
+        expect(stubs.create.mock.calls[0][0]).not.toHaveProperty("handoff");
+        expect(get(preferHandoff)).toBe(true);
+        endWith(follows()[0], done);
+        expect(await run).toMatchObject({ outcome: "started", terminal: done });
+    });
+
+    it("marks another follow's displayed error without marking its done, stop or caller-owned lore stop", async () => {
+        for (const [terminal, shown, loreStopCaller] of [
+            [failed, true, false],
+            [done, false, false],
+            [{ type: "error", epoch: EPOCH, reason: "aborted", status: 499, message: "aborted" }, false, false],
+            [loreBudgetTerminal(EPOCH), false, true],
+        ] as const) {
+            stubs.alertJobError.mockClear();
+            const reports: SendReport[] = [];
+            const prior = commands.followJobToEnd("j", ref, undefined, { loreStopCaller });
+            await whenAttached(follows().length + 1);
+            stubs.create.mockResolvedValueOnce({ outcome: "replayed", jobId: "j", owned: true, status });
+            const run = send({}, { reports });
+            await drainContinuations();
+            endWith(follows().at(-1)!, terminal);
+            await prior;
+            const result = await run;
+            expect(result).toMatchObject({ outcome: "replayed", terminal });
+            if (shown) {
+                expect(result).toHaveProperty("reportShownElsewhere", true);
+                expect(stubs.alertJobError).toHaveBeenCalledExactlyOnceWith("j", failed);
+            } else {
+                expect(result).not.toHaveProperty("reportShownElsewhere");
+                expect(stubs.alertJobError).not.toHaveBeenCalled();
+            }
+            expect(reports).toEqual([]);
+        }
+    });
+
+    it("keeps handoff attribution, maintenance restoration and gone-job recovery notices on the host", async () => {
+        const reports: SendReport[] = [];
+        stubs.create.mockResolvedValue({ outcome: "created", jobId: "j" });
+        const run = send({}, { reports });
+        await whenAttached(1);
+        follows()[0].onEvent({ type: "handoff", epoch: EPOCH, owner: "other" });
+        expect(stubs.alertToast).toHaveBeenCalledExactlyOnceWith("taken by another device");
+        const maintenance: GenerationTerminalEvent = {
+            type: "error",
+            epoch: EPOCH,
+            reason: "maintenance",
+            status: 503,
+            message: "The server is under maintenance",
+        };
+        endWith(follows()[0], maintenance);
+        await run;
+        await drainContinuations();
+        expect(stubs.restored).toHaveBeenCalledTimes(1);
+        expect(stubs.alertJobError).toHaveBeenCalledWith("j", maintenance, expect.any(Number));
+        expect(reports).toEqual([]);
+        stubs.alertToast.mockClear();
+        stubs.alertJobError.mockClear();
+        stubs.read.mockResolvedValue(null);
+        const gone = send({}, { reports });
+        await whenAttached(2);
+        follows()[1].end(null);
+        expect(await gone).toMatchObject({ terminal: "lost" });
+        expect(stubs.alertToast).toHaveBeenCalledExactlyOnceWith("ended away");
+        expect(stubs.alertJobError).not.toHaveBeenCalled();
+        expect(reports).toEqual([]);
+    });
 
     const oocEnd: Extract<GenerationTerminalEvent, { type: "error" }> = {
         type: "error",

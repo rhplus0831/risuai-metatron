@@ -51,10 +51,15 @@ The transport below retains this tab's in-memory log.
 - `src/ts/network/handoff.ts`: local preferences, offers, acceptance, presence and manual requests; module contract,
   `replaceHandoffOffers`, `receiveHandoffOffer`, `setHandoffWork`, `connectedClients`, `handoffTargets`, `handOffJob`.
   `src/lib/Others/HandoffStatus.svelte` renders worker progress.
-- `src/ts/network/remoteHost.ts`: Remote Host Mode, a device-local preference (`hostMode`, `localStorage`
-  `risu-remote-host`, built with `handoff.ts`'s `preference`) and the host's recent command list (`hostCommandLog`,
-  `noteHostCommand`, newest ten). The mode joins the feed registration as `host`. While it is on, `jobChannel.ts`
-  `applyEffect` skips the `tts` and `notification` notices (an unattended PC); the completion Web Push is unchanged.
+- `src/ts/network/remoteHost.ts`: device-local `hostMode` (`localStorage` `risu-remote-host`, `preference`) and the
+  newest ten acknowledged command states (`hostCommandLog`, `noteHostCommand`). The mode joins feed registration as
+  `host`; `jobChannel.ts` skips `tts` and `notification` notices while it is on. Completion Web Push is unchanged.
+- `receiveHostCommand` reads a relay command over authenticated HTTP, holds plugin work through startup and the send,
+  pins and selects its chat, and runs `sendChat` with the sender's ids and returned reports. Duplicate frames stop the
+  active run or repeat its latest report. No composer or draft state enters the host's send.
+- Relay reads and serialized state reports use `/api/remote-commands`, the resource epoch and the read's attempt. Newer
+  states replace queued retries; transient failures retry with bounded waits for the open-command lifetime. Report texts
+  shrink to the body cap; acknowledged states enter the lock screen list.
 
 ### Job channel
 
@@ -99,6 +104,10 @@ The transport below retains this tab's in-memory log.
   `epochMismatch` and resource sync's restore halt.
 - `handoff.ts` holds plugin work through `pluginsStarted` and takeover; the follow holds it through attach and, when
   needed, terminal application and late listeners.
+- `remoteHost.ts` saves `{ commandId, epoch, attempt }` in `sessionStorage` `risu-remote-host-commands` before sending.
+  Final acceptance or a permanently closed/lost attempt removes it. The feed's first matching hello calls
+  `recoverHostCommands` even with host mode off: saved attempts report `uncertain` before the same id can be read again;
+  other epochs are discarded.
 
 ### Job callbacks
 

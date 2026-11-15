@@ -29,6 +29,12 @@ export function createAlertMock(overrides: Partial<AlertModule> = {}): AlertModu
         })) as unknown as AlertModule["openAlertDialog"],
         alertError: vi.fn<AlertModule["alertError"]>(),
         alertJobError: vi.fn<AlertModule["alertJobError"]>(),
+        jobErrorText: vi.fn<AlertModule["jobErrorText"]>((end) =>
+            end.message.trim() === "{}" ? null : end.message.trim(),
+        ),
+        errorReportText: vi.fn<AlertModule["errorReportText"]>((message) =>
+            message.trim() === "{}" ? null : message.trim(),
+        ),
         waitAlert: vi.fn(async () => {}),
         terminalNotice: readable<string | null>(null),
         alertTerminal: vi.fn(async (_msg: string) => {}),

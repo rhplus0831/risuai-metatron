@@ -38,6 +38,7 @@ type SendChatArg = ServerSendArg & {
         requestUncertain: boolean;
         reconciled?: boolean;
         loreStop?: ServerSendResult["loreStop"];
+        reportShownElsewhere?: true;
     }) => void;
 };
 
@@ -132,8 +133,18 @@ async function runSend(arg: SendChatArg): Promise<{ ok: boolean; result?: unknow
         return { ok: false };
     }
     try {
-        const { ok, result, refusal, settled, blockedChats, outcome, requestUncertain, reconciled, loreStop } =
-            await sendChatOnServer(target ? { ...arg, target } : arg);
+        const {
+            ok,
+            result,
+            refusal,
+            settled,
+            blockedChats,
+            outcome,
+            requestUncertain,
+            reconciled,
+            loreStop,
+            reportShownElsewhere,
+        } = await sendChatOnServer(target ? { ...arg, target } : arg);
         if (refusal) {
             arg.onServerRefused?.(refusal === "ambiguous");
         }
@@ -144,6 +155,7 @@ async function runSend(arg: SendChatArg): Promise<{ ok: boolean; result?: unknow
             requestUncertain: requestUncertain ?? !settled,
             ...(reconciled !== undefined ? { reconciled } : {}),
             ...(loreStop ? { loreStop } : {}),
+            ...(reportShownElsewhere ? { reportShownElsewhere } : {}),
         });
         return { ok, result };
     } finally {

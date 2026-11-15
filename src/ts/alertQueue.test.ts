@@ -41,6 +41,7 @@ import {
     alertErrorWait,
     alertInput,
     alertJobError,
+    jobErrorText,
     alertNormal,
     alertNormalWait,
     alertRequestData,
@@ -440,6 +441,29 @@ describe("alert helpers over the queue", () => {
     });
     afterEach(() => {
         vi.restoreAllMocks();
+    });
+
+    it("formats collected job errors with the displayed text without opening a dialog", () => {
+        const base = {
+            type: "error" as const,
+            epoch: "e",
+            reason: "failed" as const,
+            status: 500,
+            message: "  provider failed  ",
+        };
+        expect(jobErrorText(base)).toBe("provider failed");
+        expect(jobErrorText({ ...base, message: " {} " })).toBeNull();
+        expect(jobErrorText({ ...base, message: "windowChanged", code: "memoryRecordSkipped" })).toBe(
+            "Recording stopped: the chat changed during recording",
+        );
+        expect(jobErrorText({ ...base, message: "provider failed", sequence: { sent: 1, total: 3 } })).toBe(
+            "/multisend stopped after 1 of 3 parts: provider failed",
+        );
+        expect(jobErrorText({ ...base, message: "aborted", reason: "aborted", sequence: { sent: 1, total: 3 } })).toBe(
+            "aborted",
+        );
+        expect(current()).toEqual(none);
+        expect(holder.queue.hasDialogs()).toBe(false);
     });
 
     it("translates skipped recording reasons in the job-error dialog and hides unknown tokens", async () => {

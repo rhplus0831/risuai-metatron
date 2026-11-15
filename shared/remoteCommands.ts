@@ -1,3 +1,5 @@
+import type { LoreBudgetStop } from "./contextReport.ts";
+
 /** Commands are relayed by HTTP and retained only in the server process. */
 export const REMOTE_COMMANDS_PATH = "/api/remote-commands";
 
@@ -51,6 +53,25 @@ export type RemoteCommandFrameState = RemoteCommandState | "forgotten";
 export const REMOTE_COMMAND_REFUSAL_CODES = ["stopped", "pluginsOff", "chatMissing", "busy"] as const;
 export type RemoteCommandRefusalCode = (typeof REMOTE_COMMAND_REFUSAL_CODES)[number];
 export type RemoteCommandResult = Record<string, unknown>;
+
+/** A send's caller-owned reports survive even when the send throws. */
+export type SendReport = { kind: "error" | "notice"; text: string };
+
+/** The host's send outcome, including reports returned to the sending device. */
+export type RemoteSendResult = {
+    ok: boolean;
+    refusal?: "definite" | "ambiguous";
+    settled: boolean;
+    outcome: "started" | "replayed" | "followed" | "refused" | "unknown";
+    requestUncertain: boolean;
+    reconciled?: boolean;
+    blockedChats: { chaId: string; chatId: string }[];
+    loreStop?: { lore: LoreBudgetStop; message: string };
+    reports: SendReport[];
+    reportShownElsewhere?: true;
+    /** Report texts were shortened to fit the relay's body limit. */
+    truncated?: true;
+};
 
 export const REMOTE_COMMAND_ERRORS = {
     targetUnavailable: "targetUnavailable",

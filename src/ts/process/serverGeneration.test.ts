@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loreBudgetStopFixture, loreBudgetTerminal } from "./tests/loreBudgetStopFixture";
+import type { SendReport } from "../../../shared/remoteCommands.ts";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 
 // `sendChatOnServer`, the flag branch's adapter over `runServerJob`: the job kind from the send
@@ -25,6 +26,7 @@ const stubs = vi.hoisted(() => ({
             requestUncertain?: boolean;
             reconciled?: boolean;
             loreStopFollow?: boolean;
+            reportShownElsewhere?: true;
         }>
     >(),
     findChat: vi.fn<() => unknown>(),
@@ -100,6 +102,30 @@ const seededCharacters = () => [
 ];
 
 describe("sendChatOnServer", () => {
+    it("passes the caller's reports sink and host handoff override to the job runner", async () => {
+        const reports: SendReport[] = [];
+        started(done());
+        await send({ target: ref, input: "hello", reports, noHandoffPreference: true });
+        expect(lastOptions().reports).toBe(reports);
+        expect(lastOptions().noHandoffPreference).toBe(true);
+    });
+
+    it("returns the displayed-elsewhere mark for a joined job without inventing it for other ends", async () => {
+        for (const outcome of ["started", "replayed", "followed"]) {
+            for (const shown of [false, true]) {
+                stubs.run.mockResolvedValueOnce({
+                    outcome,
+                    terminal: { type: "error", epoch: EPOCH, reason: "failed", status: 500, message: "boom" },
+                    ...(shown ? { reportShownElsewhere: true } : {}),
+                });
+                const result = await send({ target: ref, reports: [] });
+                expect(result).toMatchObject({ ok: false, settled: true, outcome });
+                if (shown) expect(result).toHaveProperty("reportShownElsewhere", true);
+                else expect(result).not.toHaveProperty("reportShownElsewhere");
+            }
+        }
+    });
+
     it("forwards the original with send, group and Continue input, and omits it from previews and rerolls", async () => {
         const inputOriginal = "  원문\n 그대로  ";
         for (const [arg, kind, context] of [

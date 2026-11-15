@@ -36,8 +36,12 @@
 - `src/ts/process/index.svelte.ts`: the send and preview API (`sendChat`, `previewChat`, `previewChatReport`).
 - `shared/openai.ts`: shared prompt message and media types (`OpenAIChat`, `MultiModal`).
 - `src/ts/process/serverGeneration.ts`: the send as a server job (`sendChatOnServer`, `ServerSendResult`).
+  `ServerSendArg.localOnly` keeps host commands on this tab; `noHandoffPreference` omits the tab's preferred-handoff
+  setting for that create. `reports` is a caller-owned `SendReport[]` sink that survives throws.
 - `src/ts/process/serverCommands.ts`: tab job admission, follows and recovery (`runServerJob`, `followJobToEnd`,
-  `refreshChatAfterPush`).
+  `refreshChatAfterPush`). A reports sink collects admission refusals and a newly created own-job follow's errors and
+  completion notices. Existing follows retain their reporting; `reportShownElsewhere` reaches `ServerSendResult` and
+  `sendChat.onEnd` only when that lifecycle actually submitted an error for display.
 - `src/ts/network/generationJobs.ts`: job transport (`createGenerationJob`, `stopChatGeneration`,
   `followGenerationJob`); protocol details are in [network jobs](network-jobs.md).
 - `src/ts/process/localSends.ts`: the tab's send registry (`localSends`, `beginLocalSend`, `isLocalSend`,
@@ -238,6 +242,9 @@ in [network jobs](network-jobs.md#job-recovery).
   recovery rules live in `composerDrafts.svelte.ts` and [draft recovery](draft-recovery.md).
 - A lore budget stop is a job's `error` terminal (`loreOverBudget`), not a create refusal. Its repeat takes a fresh
   `requestId`, since the stopped one replays the stop.
+- Returned reports use `alert.ts`'s `jobErrorText` and `errorReportText`, without debug info or network hints.
+  Caller-owned lore stops still return `loreStop`. Maintenance restore alerts, handoff/recovery notices, save-layer
+  notices and dialogs during the job remain on the executing tab.
 
 ### Reply and recovery
 

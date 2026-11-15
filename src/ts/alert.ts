@@ -148,6 +148,16 @@ export function alertError(msg: string | Error) {
  * `at`: when the tab received the job's end.
  */
 export function alertJobError(jobId: string, end: JobFailureInfo["end"], at: number = Date.now()) {
+    const message = jobErrorText(end);
+    if (message === null) return;
+    const data = errorAlert(message);
+    if (data) {
+        void openDialog({ ...data, jobFailure: { jobId, at, end } });
+    }
+}
+
+/** A job's main error message, without its network hint or debug info; null for an ignored message. */
+export function jobErrorText(end: JobFailureInfo["end"]): string | null {
     let translated = end.message;
     if (end.code === "memoryRecordSkipped") {
         const reasons = language.memoryTasks.reasons;
@@ -163,10 +173,13 @@ export function alertJobError(jobId: string, end: JobFailureInfo["end"], at: num
                       String({ sent: end.sequence!.sent, total: end.sequence!.total, reason: translated }[key]),
               )
             : translated;
-    const data = errorAlert(message);
-    if (data) {
-        void openDialog({ ...data, jobFailure: { jobId, at, end } });
-    }
+    return errorReportText(message);
+}
+
+/** The main text an error alert displays, or null when that message is suppressed. */
+export function errorReportText(message: string): string | null {
+    const text = message.trim();
+    return text === "{}" ? null : text;
 }
 
 /** The `error` alert of `msg` (known errors get their hint), or null for one that is not shown. */
@@ -188,13 +201,9 @@ function errorAlert(msg: string | Error): alertData | null {
         }
     }
 
-    msg = msg.trim();
-
-    const ignoredErrors = ["{}"];
-
-    if (ignoredErrors.includes(msg)) {
-        return null;
-    }
+    const text = errorReportText(msg);
+    if (text === null) return null;
+    msg = text;
 
     let submsg = "";
 
