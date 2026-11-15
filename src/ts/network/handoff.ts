@@ -105,6 +105,18 @@ export function handoffTargets(clients: readonly FeedClient[], selfId: string) {
     return [...groups.values()];
 }
 
+/** Each name targets its newest connected host; workers without host mode are not eligible. */
+export function hostTargets(clients: readonly FeedClient[], selfId: string) {
+    const groups = new Map<string, { name: string; clientId: string; count: number }>();
+    for (const client of clients) {
+        if (client.host !== true || client.clientId === selfId) continue;
+        const group = groups.get(client.name);
+        if (group) group.count++;
+        else groups.set(client.name, { name: client.name, clientId: client.clientId, count: 1 });
+    }
+    return [...groups.values()];
+}
+
 export function registration(selfId: string, host: boolean): EventFeedClientMessage {
     return {
         type: "register",

@@ -7,6 +7,7 @@ import {
     replaceHandoffOffers,
 } from "./handoff";
 import { hostMode, receiveHostCommand, recoverHostCommands } from "./remoteHost";
+import { receiveRemoteCommandState, reconcileRemoteSends } from "./remoteSend";
 import { get, readonly, writable } from "svelte/store";
 import { noteGenerationFrame, replaceGenerations, resetGenerationProgress } from "../process/generationProgress.svelte";
 import { generationClientId } from "./generationJobs";
@@ -55,6 +56,8 @@ import {
  * does not fit, the lock is installed by id and the row arrives locked with the read. A `hello`
  * replaces the feed's whole lock set with the server's snapshot before reconciliation starts.
  * Handoff offers go to `handoff.ts`: hello replaces them, and open/closed frames update one job.
+ * Remote command bodies go to the host over HTTP; sender state frames wake `remoteSend.ts`,
+ * which reads the result over HTTP and reconciles waiting commands after each same-epoch hello.
  * Hello and `clients` replace presence there. The tab registers after each same-epoch hello and
  * when its name, worker preference or host mode changes; retiring a connection or an epoch mismatch clears presence.
  *
@@ -431,6 +434,7 @@ function receive(gen: number, ws: WebSocket, frame: EventFeedFrame, connectAttem
             connectedGeneration = gen;
             connected.set(true);
             registerClient();
+            reconcileRemoteSends(frame.epoch);
             void reconcile(gen, ws, hello, frame.digest, frame.cursor, connectAttempt);
             return;
         case "clients":
@@ -452,6 +456,9 @@ function receive(gen: number, ws: WebSocket, frame: EventFeedFrame, connectAttem
             return;
         case "remoteCommand":
             if (frame.epoch === loaded) receiveHostCommand(frame);
+            return;
+        case "remoteCommandState":
+            if (frame.epoch === loaded) receiveRemoteCommandState(frame);
             return;
         case "handoff":
             if (frame.epoch === loaded) receiveHandoffOffer(frame);

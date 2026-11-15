@@ -1952,6 +1952,25 @@ export const languageEnglish = {
             requestFailed: "Could not hand off this job: {error}",
             unnamed: "Unnamed worker",
         },
+        remoteSend: {
+            unnamed: "Unnamed host",
+            failed: "Remote send through {host}: {reason}",
+            uncertain: "The outcome is still unknown. Retry unchanged text to keep the same request.",
+            commandChanged:
+                "This request id belongs to another remote action. Its outcome is unknown. Change the text before sending a new request.",
+            shownElsewhere: "The send's error was shown on host {host}.",
+            reasons: {
+                targetUnavailable: "The chosen host is not connected.",
+                targetFull: "The host's command queue is full.",
+                tooLarge: "The send exceeds the remote command size limit.",
+                expired: "The host did not pick up the send in time.",
+                stopped: "The host stopped before attempting the send.",
+                pluginsOff: "Plugins are disabled on the host.",
+                chatMissing: "The chat is unavailable on the host.",
+                busy: "The host is busy with this chat.",
+                refused: "The host refused the send before attempting it.",
+            },
+        },
         remoteHost: {
             label: "Remote Host Mode",
             help: "This browser runs sends and plugin reloads requested by your other devices. Keep this tab open; host mode locks its screen. Keep it in a window of its own, rather than a background tab, to prevent browser throttling.",

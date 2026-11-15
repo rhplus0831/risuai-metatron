@@ -60,6 +60,10 @@ The transport below retains this tab's in-memory log.
 - Relay reads and serialized state reports use `/api/remote-commands`, the resource epoch and the read's attempt. Newer
   states replace queued retries; transient failures retry with bounded waits for the open-command lifetime. Report texts
   shrink to the body cap; acknowledged states enter the lock screen list.
+- `src/ts/network/remoteSend.ts`: the sender's side. Device-local `remoteSend` (off), `remoteSendHost` (a name;
+  `hostTargets` in `handoff.ts` picks its newest host registration) and `remoteSendFallback` (on); `remoteSendEligible`,
+  `sendChatRemotely`, `receiveRemoteCommandState` (the feed's `remoteCommandState` frames) and `reconcileRemoteSends`
+  (each same-epoch hello). The module header owns the contract; see [Remote send](#remote-send).
 
 ### Job channel
 
@@ -108,6 +112,29 @@ The transport below retains this tab's in-memory log.
   Final acceptance or a permanently closed/lost attempt removes it. The feed's first matching hello calls
   `recoverHostCommands` even with host mode off: saved attempts report `uncertain` before the same id can be read again;
   other epochs are discarded.
+
+### Remote send
+
+- `runSend` (`src/ts/process/index.svelte.ts`) routes an eligible send to `sendChatRemotely` after `beginLocalSend`:
+  input, `userMessageId` and `requestId`, not in host mode, not `localOnly`, with no continue, reroll, speaker, preview
+  or plugin context. The reservation covers the remote wait and a fallback. It pins the chat, runs `prepareServerJob`
+  (the job preflight of `serverCommands.ts`), and posts the command with the request id as its id (`uncertain` when the
+  send is marked `requestUncertain`); a retry goes to the host it went to while that host stays connected.
+- The waiter is installed before the post. Frames are wakeups for status reads; a status is also read every
+  `REMOTE_COMMAND_PICKUP_MS` and after each hello. The post's own open answer is never an outcome, and a re-posted
+  `uncertain` without a frame ends uncertain after `REMOTE_COMMAND_PICKUP_MS`. An `uncertain` ends the send; a later
+  result is ignored.
+- Definite (no connected host of the name, `targetUnavailable`, `targetFull`, 413, `expired`, `refused`): the fallback
+  (`sendChatOnServer` with the same ids) when it is on and the send is not marked, else a toast; a marked send stays
+  uncertain. `commandChanged` keeps it uncertain. A `done` result's notices are one toast; the chat is read
+  (`readRecoveringChat`); a failed result's `loreStop` goes to the caller, else its errors or the "shown on the host"
+  line, each once per command id.
+- Uncertain: an `uncertain` state, `forgotten`, a status of `unknownCommand`, a post or status read without an answer,
+  `cancelled` without a Stop, or the host absent from presence for 60 s.
+- Stop after the post: the relay cancel (its answer is not read) and, at once, `sendChatOnServer` with the aborted
+  signal, `requestUncertain` and a discarded `reports` sink, which cancels the generation by request id
+  (`cancelGenerationRequest`) and creates nothing. A settled answer ends the send; otherwise it waits for the host's
+  closed state. A stopped send never falls back and shows no host report.
 
 ### Job callbacks
 
@@ -207,6 +234,9 @@ The transport below retains this tab's in-memory log.
   now: a tab duplicated after its page released the id on `pagehide` and before the next page claimed it shares the id
   with that page, and a tab killed without `pagehide` (and not reported as `wasDiscarded`) mints a new id on return and
   loses reload recovery of its jobs. Decision: U1, [audit](../reports/audits/job-protocol-2026-10-29.md).
+- A remote send ends uncertain whenever its state cannot be established (a status read that races the post, the sender's
+  own feed down for 60 s, a host result after the end). The draft keeps its ids and the next Send re-posts the command.
+  A Stop whose chat has left the list sends no generation cancel. Decision: Remote Host plan (slice 4).
 - A notification click whose route is `/` (a payload without a chat route, `safeRoute` in `public/sw.js`) focuses an
   existing window or opens `/` if none exists. Whether the enable button keeps its user activation when it waits behind
   a reconcile, and whether `navigator.serviceWorker.ready` names the old worker during an upgrade, are browser behaviors

@@ -591,7 +591,7 @@ const chatReads = new Map<string, Promise<boolean>>();
  * needs (`finishIdleChatRefresh` adopts only a stale or noticed chat). Reads of one chat therefore
  * never overlap, and the newest always sees the server's newest copy. A read that throws is false.
  */
-function readRecoveringChat(ref: ChatRef): Promise<boolean> {
+export function readRecoveringChat(ref: ChatRef): Promise<boolean> {
     const key = chatKeyOf(ref);
     const previous = chatReads.get(key) ?? Promise.resolve(false);
     const read = previous.then(async () => {
@@ -1154,6 +1154,113 @@ type ServerJobOptions = {
     identity?: { presetId: string | null; modelPresetId: string | null; personaId: string | null };
 };
 
+/**
+ * Saves pending writes and refreshes a pinned chat before dispatch, retaining the binding captured
+ * before the first await. Local jobs and remote sends share the same refusal and reporting rules.
+ * The caller owns the pin and any cancellation of an earlier uncertain request.
+ */
+export async function prepareServerJob(ref: ChatRef, request: ServerJobRequest, options: ServerJobOptions = {}) {
+    const errorReport = (message: string) => reportError(message, options.reports);
+    const refused = {
+        outcome: "refused" as const,
+        terminal: null,
+        requestUncertain: request.requestUncertain === true,
+    };
+    // The send guard: every job of a chat (send, continue, reroll, group, preview, command) runs on
+    // the chat's complete binding or not at all.
+    const binding = chatBinding(ref);
+    if (!binding?.ok) {
+        errorReport(chatBindingRefusalText(chatBindingProblems(binding)));
+        return refused;
+    }
+    const { presetId, modelPresetId, personaId } = options.identity ?? chatContextIds(binding.ids);
+    const client = {
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        browserLanguage: navigator.language,
+    };
+    const notices = generatingNoticeCount();
+    // Saved first; then a chat this tab knows is behind the server (a job's chat patch that did not
+    // fit, a stale acknowledgement, a live notice) is read whole, so the job is not created on its
+    // old revision. A change made while that read was in flight is saved and the read tried once
+    // more; a chat still behind then goes as it is, and the server refuses its old revision.
+    for (let attempt = 0; attempt < 2; attempt++) {
+        if (
+            refusedItems().some(
+                (item) =>
+                    (item.kind === "chat" && item.chaId === ref.chaId && item.chatId === ref.chatId) ||
+                    (item.kind === "order" && item.chaId === ref.chaId),
+            )
+        ) {
+            errorReport(language.serverJob.refusedDraft);
+            return refused;
+        }
+        try {
+            const { discarded, refused: refusedKeys } = await flushResources();
+            if (discarded.length > 0) {
+                errorReport(language.serverJob.discarded[request.label]);
+                return refused;
+            }
+            if (
+                refusedKeys.includes(`chats/${ref.chaId}/${ref.chatId}`) ||
+                refusedKeys.includes(`chats/${ref.chaId}`)
+            ) {
+                errorReport(language.serverJob.refusedDraft);
+                return refused;
+            }
+        } catch (error) {
+            if (error instanceof GenerationBlockedError) {
+                // The chat or character is being generated (another tab's job): the same notice as a
+                // busy chat, unless this flush's conflict recovery has just shown it.
+                if (options.reports || generatingNoticeCount() === notices) {
+                    errorReport(language.chatGenerating);
+                }
+                return { ...refused, blockedChats: error.chats };
+            }
+            errorReport(withError(language.serverJob.saveFailed, error));
+            return refused;
+        }
+        let current: boolean;
+        try {
+            current = await refreshStaleChat(ref);
+        } catch (error) {
+            errorReport(withError(language.serverJob.chatLoadFailed, error));
+            return refused;
+        }
+        if (current) {
+            break;
+        }
+    }
+    let target;
+    try {
+        target = await ensureChatLoaded(ref);
+    } catch (error) {
+        errorReport(withError(language.serverJob.chatLoadFailed, error));
+        return refused;
+    }
+    if (!target || options.signal?.aborted) {
+        return refused;
+    }
+    const chatRevision = heldChatRevision(ref);
+    if (chatRevision === null) {
+        errorReport(language.serverJob.chatNotSaved);
+        return refused;
+    }
+    return {
+        context: {
+            characterId: ref.chaId,
+            chatId: ref.chatId,
+            presetId,
+            modelPresetId,
+            personaId,
+            mode: request.kind,
+            input: "",
+            chatRevision,
+            client,
+            ...request.context,
+        },
+    };
+}
+
 /** Runs the pinned job and installs caller-owned error reporting only on a new, own-job follow. */
 async function runPinnedServerJob(
     char: AnyClientCharacter,
@@ -1172,109 +1279,9 @@ async function runPinnedServerJob(
     };
     options.signal?.addEventListener("abort", cancelPrevious, { once: true });
     if (options.signal?.aborted) cancelPrevious();
-    const prepare = async () => {
-        const refused = {
-            outcome: "refused" as const,
-            terminal: null,
-            requestUncertain: request.requestUncertain === true,
-        };
-        // The send guard: every job of a chat (send, continue, reroll, group, preview, command) runs on
-        // the chat's complete binding or not at all.
-        const binding = chatBinding(ref);
-        if (!binding?.ok) {
-            errorReport(chatBindingRefusalText(chatBindingProblems(binding)));
-            return refused;
-        }
-        const { presetId, modelPresetId, personaId } = options.identity ?? chatContextIds(binding.ids);
-        const client = {
-            viewport: { width: window.innerWidth, height: window.innerHeight },
-            browserLanguage: navigator.language,
-        };
-        const notices = generatingNoticeCount();
-        // Saved first; then a chat this tab knows is behind the server (a job's chat patch that did not
-        // fit, a stale acknowledgement, a live notice) is read whole, so the job is not created on its
-        // old revision. A change made while that read was in flight is saved and the read tried once
-        // more; a chat still behind then goes as it is, and the server refuses its old revision.
-        for (let attempt = 0; attempt < 2; attempt++) {
-            if (
-                refusedItems().some(
-                    (item) =>
-                        (item.kind === "chat" && item.chaId === ref.chaId && item.chatId === ref.chatId) ||
-                        (item.kind === "order" && item.chaId === ref.chaId),
-                )
-            ) {
-                errorReport(language.serverJob.refusedDraft);
-                return refused;
-            }
-            try {
-                const { discarded, refused: refusedKeys } = await flushResources();
-                if (discarded.length > 0) {
-                    errorReport(language.serverJob.discarded[request.label]);
-                    return refused;
-                }
-                if (
-                    refusedKeys.includes(`chats/${ref.chaId}/${ref.chatId}`) ||
-                    refusedKeys.includes(`chats/${ref.chaId}`)
-                ) {
-                    errorReport(language.serverJob.refusedDraft);
-                    return refused;
-                }
-            } catch (error) {
-                if (error instanceof GenerationBlockedError) {
-                    // The chat or character is being generated (another tab's job): the same notice as a
-                    // busy chat, unless this flush's conflict recovery has just shown it.
-                    if (options.reports || generatingNoticeCount() === notices) {
-                        errorReport(language.chatGenerating);
-                    }
-                    return { ...refused, blockedChats: error.chats };
-                }
-                errorReport(withError(language.serverJob.saveFailed, error));
-                return refused;
-            }
-            let current: boolean;
-            try {
-                current = await refreshStaleChat(ref);
-            } catch (error) {
-                errorReport(withError(language.serverJob.chatLoadFailed, error));
-                return refused;
-            }
-            if (current) {
-                break;
-            }
-        }
-        let target;
-        try {
-            target = await ensureChatLoaded(ref);
-        } catch (error) {
-            errorReport(withError(language.serverJob.chatLoadFailed, error));
-            return refused;
-        }
-        if (!target || options.signal?.aborted) {
-            return refused;
-        }
-        const chatRevision = heldChatRevision(ref);
-        if (chatRevision === null) {
-            errorReport(language.serverJob.chatNotSaved);
-            return refused;
-        }
-        return {
-            context: {
-                characterId: ref.chaId,
-                chatId: ref.chatId,
-                presetId,
-                modelPresetId,
-                personaId,
-                mode: request.kind,
-                input: "",
-                chatRevision,
-                client,
-                ...request.context,
-            },
-        };
-    };
-    let prepared: Awaited<ReturnType<typeof prepare>>;
+    let prepared: Awaited<ReturnType<typeof prepareServerJob>>;
     try {
-        prepared = await prepare();
+        prepared = await prepareServerJob(ref, request, options);
     } finally {
         options.signal?.removeEventListener("abort", cancelPrevious);
     }

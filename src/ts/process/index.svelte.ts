@@ -5,12 +5,14 @@ import type { OpenAIChat } from "../../../shared/openai.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { sendChatOnServer, type ServerSendArg, type ServerSendResult } from "./serverGeneration";
 import { beginLocalSend } from "./localSends";
+import { remoteSendEligible, sendChatRemotely } from "../network/remoteSend";
 
 /**
  * The tab's side of a send: the generation runs as a server job (`sendChatOnServer`;
  * `server/src/prompt/runner.ts` assembles and requests). Each send holds its chat's entry in the
  * local send registry (`localSends.ts`), so different chats send at the same time and one chat runs
- * one send; a preview returns its result to its caller (`previewChat`).
+ * one send; a preview returns its result to its caller (`previewChat`). Eligible composer sends
+ * can use a remote host; the same reservation covers that wait and any local fallback.
  * `sendChat` returns success; `previewChat` returns formatted messages or a request body, or null
  * without a usable preview result. This module neither assembles prompts nor calls providers.
  */
@@ -133,6 +135,7 @@ async function runSend(arg: SendChatArg): Promise<{ ok: boolean; result?: unknow
         return { ok: false };
     }
     try {
+        const sendArg = target ? { ...arg, target } : arg;
         const {
             ok,
             result,
@@ -144,7 +147,7 @@ async function runSend(arg: SendChatArg): Promise<{ ok: boolean; result?: unknow
             reconciled,
             loreStop,
             reportShownElsewhere,
-        } = await sendChatOnServer(target ? { ...arg, target } : arg);
+        } = await (remoteSendEligible(sendArg) ? sendChatRemotely(sendArg) : sendChatOnServer(sendArg));
         if (refusal) {
             arg.onServerRefused?.(refusal === "ambiguous");
         }

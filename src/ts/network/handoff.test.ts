@@ -70,6 +70,25 @@ afterEach(() => {
     vi.useRealTimers();
 });
 
+it("targets the newest other host per name and counts only connected hosts", () => {
+    expect(
+        handoff.hostTargets(
+            [
+                { clientId: "self", name: "Desk", worker: true, host: true },
+                { clientId: "worker", name: "Desk", worker: true },
+                { clientId: "newest", name: "Desk", worker: false, host: true },
+                { clientId: "disabled", name: "Desk", worker: true, host: false },
+                { clientId: "older", name: "Desk", worker: true, host: true },
+                { clientId: "tablet", name: "Tablet", worker: false, host: true },
+            ],
+            "self",
+        ),
+    ).toEqual([
+        { name: "Desk", clientId: "newest", count: 2 },
+        { name: "Tablet", clientId: "tablet", count: 1 },
+    ]);
+});
+
 it("reminds the requester at ten seconds only while its requested offer remains open", async () => {
     const open = offer("waiting", { reason: "requested", target: "worker" });
     const taken = offer("taken", { reason: "requested", target: "worker" });

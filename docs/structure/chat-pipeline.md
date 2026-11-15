@@ -39,9 +39,10 @@
   `ServerSendArg.localOnly` keeps host commands on this tab; `noHandoffPreference` omits the tab's preferred-handoff
   setting for that create. `reports` is a caller-owned `SendReport[]` sink that survives throws.
 - `src/ts/process/serverCommands.ts`: tab job admission, follows and recovery (`runServerJob`, `followJobToEnd`,
-  `refreshChatAfterPush`). A reports sink collects admission refusals and a newly created own-job follow's errors and
-  completion notices. Existing follows retain their reporting; `reportShownElsewhere` reaches `ServerSendResult` and
-  `sendChat.onEnd` only when that lifecycle actually submitted an error for display.
+  `refreshChatAfterPush`; `prepareServerJob` and `readRecoveringChat` also serve the remote send). A reports sink
+  collects admission refusals and a newly created own-job follow's errors and completion notices. Existing follows
+  retain their reporting; `reportShownElsewhere` reaches `ServerSendResult` and `sendChat.onEnd` only when that
+  lifecycle actually submitted an error for display.
 - `src/ts/network/generationJobs.ts`: job transport (`createGenerationJob`, `stopChatGeneration`,
   `followGenerationJob`); protocol details are in [network jobs](network-jobs.md).
 - `src/ts/process/localSends.ts`: the tab's send registry (`localSends`, `beginLocalSend`, `isLocalSend`,
@@ -180,7 +181,8 @@
 
 In `DefaultChatScreen.svelte`: `send`/`sendContinue` → `sendMain` → `sendChatMain` → `sendChat` → `sendChatOnServer` →
 `runServerJob` (`serverCommands.ts`). The screen functions' comments hold the order of the checks and the auto mode
-(`runAutoMode`).
+(`runAutoMode`). With remote sending on, `runSend` hands an eligible send to a host tab instead, under the same
+reservation and with the same end shapes ([remote send](network-jobs.md#remote-send)).
 
 - The screen checks only the target chat's own work (`isChatBusy`, alert `chatGenerating`): switching chats or
   characters mid-send is allowed. Its checks, an incomplete binding (`chatBinding(ref)`,

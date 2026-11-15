@@ -196,6 +196,8 @@
 - `startResourceSync` connects the chat module (`chatJournal.setListener`, `setConflictListener`).
 - The adapter alone writes mutation rows; `journalRecovery.ts` moves and releases them.
 - `composerDrafts.svelte.ts` is the composer API's only caller.
+- A remote send ([network jobs](network-jobs.md#remote-send)) ends with the local send's shapes, so a hand-off row's
+  restore and its retained request id follow the same rules; the relay command id is that request id.
 - `bootCache.ts` `holdsCredential` also decides eligibility: a change there moves the journal's boundary.
 
 ## Invariants
