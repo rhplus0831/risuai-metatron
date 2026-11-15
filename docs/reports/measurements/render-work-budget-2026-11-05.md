@@ -34,13 +34,13 @@ landed, with the same command, and the acceptance verdicts.
 - Counts are invocations from CDP precise coverage with `detailed: true` (async resumptions excluded), over the
   scenario's measured phase only. Timings and the trace come from the separate `profile` scenario, which runs without
   coverage.
-- Kept out of git (13.5 MB of traces, a 51 MB JSON): the traces `profile-30.json.gz` (723,534 bytes, SHA-256
-  `8b8c9057…`), `profile-150.json.gz` (2,619,597 bytes, `388df0d7…`), `profile-600.json.gz` (10,186,497 bytes,
-  `f1bbd3cc…`) and the run's JSON (`1d1f1e24…`) are in the main checkout's git directory under
-  plan-runner/render-work-budget/5a-baseline/. The after run's traces `profile-30.json.gz` (737,195 bytes,
-  `30acf90e…`), `profile-150.json.gz` (2,818,161 bytes, `d0e5d029…`), `profile-600.json.gz` (9,715,467 bytes,
-  `9ed1f423…`) and its JSON (50,077,139 bytes, `df7df213…`) are under plan-runner/render-work-budget/5b-after/; a first
-  after run on the same source before the driver change is under 5b-first-run/. Rerun the command for fresh copies.
+- Kept out of git (13.5 MB of traces, a 51 MB JSON per run) and deleted on 2026-11-16: the baseline run's traces
+  `profile-30.json.gz` (723,534 bytes, SHA-256 `8b8c9057…`), `profile-150.json.gz` (2,619,597 bytes, `388df0d7…`),
+  `profile-600.json.gz` (10,186,497 bytes, `f1bbd3cc…`) and its JSON (`1d1f1e24…`); the after run's traces
+  `profile-30.json.gz` (737,195 bytes, `30acf90e…`), `profile-150.json.gz` (2,818,161 bytes, `d0e5d029…`),
+  `profile-600.json.gz` (9,715,467 bytes, `9ed1f423…`) and its JSON (50,077,139 bytes, `df7df213…`); and a first after
+  run on the same source before the driver change. The figures above are all that remain; rerun the command for fresh
+  traces.
 
 ## Scenarios
 
