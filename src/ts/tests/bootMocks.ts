@@ -125,6 +125,8 @@ export function createBootMock<K extends keyof BootModules>(
             })),
             handlePluginInstallViaPlugin: vi.fn<BootModules["plugins"]["handlePluginInstallViaPlugin"]>(),
             checkPluginUpdate: vi.fn<BootModules["plugins"]["checkPluginUpdate"]>(),
+            reloadPluginsWhenIdle: vi.fn<BootModules["plugins"]["reloadPluginsWhenIdle"]>(async () => "applied"),
+            bootPluginLoadOutcome: Promise.resolve("applied"),
             allowedDbKeys: [],
         },
         permissionStore: {

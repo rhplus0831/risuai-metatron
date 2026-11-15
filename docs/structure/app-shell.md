@@ -101,7 +101,8 @@
 3. Boot maintenance and chat initialization run before the safe-boot content stage and presentation setup. Then the save
    adapter and remote-record watchers start, followed by URL/share imports, legacy-data migration, the event feed, and
    plugin loading. The ordering matters: imports can await save acknowledgements and consume link query/hash data before
-   the router canonicalizes the URL.
+   the router canonicalizes the URL. `bootPluginLoadOutcome` is the plugin load's outcome (boot goes on after a
+   failure), which a Remote Host `page` reload reports ([network jobs](network-jobs.md#generation-job-client)).
 4. `loadedStore` is set only after records, maintenance, and theme setup. The safe-boot settle window and router start
    next; notifications, job resume, observers, and remaining startup hooks follow. `startResourceSync()` and
    `startRouter()` each run once.

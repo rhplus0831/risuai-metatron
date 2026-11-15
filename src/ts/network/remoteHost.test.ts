@@ -1,6 +1,10 @@
 import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { RemoteCommandReadAnswer, RemoteCommandStateBody } from "../../../shared/remoteCommands.ts";
+import type {
+    PluginReloadOutcome,
+    RemoteCommandReadAnswer,
+    RemoteCommandStateBody,
+} from "../../../shared/remoteCommands.ts";
 import type { ServerSendArg } from "../process/serverGeneration";
 import { warmModules } from "../storage/tests/mutationStoresHarness";
 
@@ -12,6 +16,11 @@ const stubs = vi.hoisted(() => ({
     fetch: vi.fn<typeof import("../storage/serverAuth").authFetch>(),
     send: vi.fn<Send>(),
     started: vi.fn<() => Promise<void>>(),
+    reloadPlugins: vi.fn<typeof import("../plugins/plugins.svelte").reloadPluginsWhenIdle>(),
+    bootOutcome: Promise.resolve<PluginReloadOutcome>("applied"),
+    flush: vi.fn<typeof import("../storage/resourceSync.svelte").flushResources>(),
+    confirm: vi.fn<typeof import("../alert").alertConfirm>(),
+    select: vi.fn<typeof import("../alert").alertSelect>(),
     hold: vi.fn<() => () => void>(),
     release: vi.fn(),
     unpin: vi.fn(),
@@ -38,11 +47,23 @@ vi.mock("../storage/chatStore.svelte", async () =>
         selectChat: stubs.selectChat,
     }),
 );
-vi.mock("../plugins/plugins.svelte", async () =>
-    (await import("../tests/bootMocks")).createBootMock("plugins", { pluginsStarted: stubs.started }),
-);
+vi.mock("../plugins/plugins.svelte", async () => ({
+    ...(await import("../tests/bootMocks")).createBootMock("plugins", {
+        pluginsStarted: stubs.started,
+        reloadPluginsWhenIdle: stubs.reloadPlugins,
+    }),
+    get bootPluginLoadOutcome() {
+        return stubs.bootOutcome;
+    },
+}));
+vi.mock("../storage/resourceSync.svelte", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../storage/resourceSync.svelte")>()),
+    flushResources: stubs.flush,
+}));
 vi.mock("../stores.svelte", async () => (await import("../tests/storesMock")).createStoresMock());
-vi.mock("../alert", async () => (await import("../tests/alertMock")).createAlertMock());
+vi.mock("../alert", async () =>
+    (await import("../tests/alertMock")).createAlertMock({ alertConfirm: stubs.confirm, alertSelect: stubs.select }),
+);
 vi.mock("../process/serverCommands", async () =>
     (await import("../process/tests/serverCommandsMock")).createServerCommandsMock(),
 );
@@ -91,6 +112,7 @@ beforeAll(
                 import("./remoteHost"),
                 import("../process/index.svelte"),
                 import("../plugins/plugins.svelte"),
+                import("../storage/resourceSync.svelte"),
                 import("../safeBoot"),
                 import("../storage/tests/installFlatDatabase"),
             ]),
@@ -132,13 +154,23 @@ beforeEach(async () => {
         return true;
     });
     stubs.started.mockReset().mockResolvedValue(undefined);
+    stubs.reloadPlugins.mockReset().mockResolvedValue("applied");
+    stubs.bootOutcome = Promise.resolve("applied");
+    stubs.flush.mockReset().mockResolvedValue({ discarded: [], refused: [] });
+    stubs.confirm.mockReset().mockResolvedValue(true);
+    stubs.select.mockReset().mockResolvedValue("1");
     stubs.hold.mockReset().mockImplementation(() => stubs.release);
     stubs.pin.mockReset().mockImplementation(() => stubs.unpin);
     stubs.entry.mockReset().mockReturnValue({ id: target.chatId, name: "Chat", fmIndex: -1 });
     const { installFlatDatabase } = await import("../storage/tests/installFlatDatabase");
     installFlatDatabase({ characters: [{ chaId: target.chaId, name: "Character", type: "character" }] });
     // Warm dynamic boundaries before driving gates, including the real selection and local-send stores.
-    await Promise.all([import("../process/index.svelte"), import("../plugins/plugins.svelte"), import("../safeBoot")]);
+    await Promise.all([
+        import("../process/index.svelte"),
+        import("../plugins/plugins.svelte"),
+        import("../storage/resourceSync.svelte"),
+        import("../safeBoot"),
+    ]);
     host = await import("./remoteHost");
     host.hostMode.set(true);
 });
@@ -366,5 +398,176 @@ describe("remote host sends", () => {
         expect(stubs.fetch.mock.calls.every(([, init]) => init?.method === "POST")).toBe(true);
         expect(sessionStorage.getItem(savedKey)).toBeNull();
         expect(get(host.hostCommandLog)[0]).toMatchObject({ commandId: "command-7", state: "uncertain" });
+    });
+});
+
+describe("remote host reloads", () => {
+    it.each(["applied", "failed", "pluginsOff"] as const)(
+        "reports running then done with %s for a plugins reload, without a work hold or duplicate execution",
+        async (outcome) => {
+            read.command = { type: "reload", mode: "plugins" };
+            const loading = deferred<PluginReloadOutcome>();
+            stubs.reloadPlugins.mockReturnValue(loading.promise);
+            try {
+                await deliver();
+                expect(reports()).toEqual([{ clientId: "host-client", attempt: 7, state: "running" }]);
+                expect(stubs.hold).not.toHaveBeenCalled();
+                expect(stubs.reloadPlugins).toHaveBeenCalledTimes(1);
+                await deliver();
+                expect(reports()).toEqual([
+                    { clientId: "host-client", attempt: 7, state: "running" },
+                    { clientId: "host-client", attempt: 7, state: "running" },
+                ]);
+                loading.resolve(outcome);
+                await drain();
+                expect(reports()).toEqual([
+                    { clientId: "host-client", attempt: 7, state: "running" },
+                    { clientId: "host-client", attempt: 7, state: "running" },
+                    { clientId: "host-client", attempt: 7, state: "done", result: { outcome } },
+                ]);
+                await deliver();
+                expect(stubs.fetch.mock.calls.filter(([, init]) => init?.method === "GET")).toHaveLength(1);
+                expect(stubs.reloadPlugins).toHaveBeenCalledTimes(1);
+                expect(stubs.hold).not.toHaveBeenCalled();
+                expect(stubs.send).not.toHaveBeenCalled();
+                expect(get(host.hostCommandLog)[0]).toMatchObject({ type: "reload", state: "done" });
+            } finally {
+                loading.resolve(outcome);
+                await drain();
+            }
+        },
+    );
+
+    it.each(["applied", "failed", "pluginsOff"] as const)(
+        "saves a page reload across boot and reports %s once after the boot load, retaining the id until accepted",
+        async (outcome) => {
+            read.command = { type: "reload", mode: "page" };
+            const flush = deferred<Awaited<ReturnType<typeof stubs.flush>>>();
+            const boot = deferred<PluginReloadOutcome>();
+            const accepted = deferred<Response>();
+            const reload = vi.spyOn(location, "reload").mockImplementation(() => {});
+            stubs.flush.mockReturnValue(flush.promise);
+            try {
+                await deliver();
+                const saved = sessionStorage.getItem(savedKey);
+                expect(JSON.parse(saved!)).toEqual([
+                    { commandId: "command-7", epoch: EPOCH, attempt: 7, kind: "page" },
+                ]);
+                expect(reports()).toEqual([{ clientId: "host-client", attempt: 7, state: "running" }]);
+                expect(stubs.flush).toHaveBeenCalledTimes(1);
+                expect(reload).not.toHaveBeenCalled();
+                expect(stubs.hold).not.toHaveBeenCalled();
+                // A normal flush completes; a stuck write is bounded by the pending fake deadline.
+                if (outcome === "applied") flush.resolve({ discarded: [], refused: [] });
+                else await vi.runOnlyPendingTimersAsync();
+                await drain();
+                expect(reload).toHaveBeenCalledTimes(1);
+                expect(sessionStorage.getItem(savedKey)).toBe(saved);
+
+                // A navigation creates a new module lifetime but preserves sessionStorage.
+                vi.resetModules();
+                stubs.bootOutcome = boot.promise;
+                host = await import("./remoteHost");
+                states.length = 0;
+                stubs.fetch.mockReset().mockImplementation(async (url, init) => {
+                    expect(url).toBe(`/api/remote-commands/${frame.commandId}/state`);
+                    expect(init?.method).toBe("POST");
+                    states.push(JSON.parse(String(init?.body)) as RemoteCommandStateBody);
+                    return accepted.promise;
+                });
+                host.hostMode.set(false);
+                host.recoverHostCommands(EPOCH);
+                host.hostMode.set(true);
+                // Registration may immediately re-notify this id, before recovery's imports resolve.
+                host.receiveHostCommand(frame);
+                await drain();
+                expect(reports()).toEqual([]);
+                expect(stubs.fetch).not.toHaveBeenCalled();
+                expect(sessionStorage.getItem(savedKey)).toBe(saved);
+                boot.resolve(outcome);
+                await drain();
+                expect(reports()).toEqual([
+                    { clientId: "host-client", attempt: 7, state: "done", result: { outcome } },
+                ]);
+                expect(sessionStorage.getItem(savedKey)).toBe(saved);
+                accepted.resolve(Response.json({ state: "done", attempt: 7, stopRequested: false }));
+                await drain();
+                expect(sessionStorage.getItem(savedKey)).toBeNull();
+                host.recoverHostCommands(EPOCH);
+                await deliver();
+                expect(stubs.fetch).toHaveBeenCalledTimes(1);
+                expect(reports()).toEqual([
+                    { clientId: "host-client", attempt: 7, state: "done", result: { outcome } },
+                ]);
+                expect(reload).toHaveBeenCalledTimes(1);
+                expect(stubs.reloadPlugins).not.toHaveBeenCalled();
+            } finally {
+                flush.resolve({ discarded: [], refused: [] });
+                boot.resolve(outcome);
+                accepted.resolve(Response.json({ state: "done", attempt: 7, stopRequested: false }));
+                await drain();
+            }
+        },
+    );
+
+    it("reports notReloaded without navigating when the page reload id cannot be saved", async () => {
+        read.command = { type: "reload", mode: "page" };
+        vi.spyOn(console, "warn").mockImplementation(() => {});
+        vi.spyOn(sessionStorage, "setItem").mockImplementation(() => {
+            throw new Error("storage unavailable");
+        });
+        const reload = vi.spyOn(location, "reload").mockImplementation(() => {});
+        await deliver();
+        expect(reports()).toEqual([
+            { clientId: "host-client", attempt: 7, state: "done", result: { outcome: "notReloaded" } },
+        ]);
+        await deliver();
+        expect(stubs.fetch.mock.calls.filter(([, init]) => init?.method === "GET")).toHaveLength(1);
+        expect(reload).not.toHaveBeenCalled();
+        expect(stubs.flush).not.toHaveBeenCalled();
+    });
+
+    it.each(["page", undefined] as const)("confirms a page reload before posting with mode %s", async (mode) => {
+        // No running job is required for confirmation, including when page mode comes from the chooser.
+        stubs.fetch.mockImplementation(async (_url, init) =>
+            Response.json(
+                init?.method === "POST"
+                    ? { state: "queued", attempted: false, stopRequested: false, attempt: 0 }
+                    : {
+                          state: "done",
+                          attempted: true,
+                          stopRequested: false,
+                          attempt: 1,
+                          result: { outcome: "applied" },
+                      },
+            ),
+        );
+        const confirmed = deferred<boolean>();
+        stubs.confirm.mockReturnValueOnce(confirmed.promise);
+        const targetHost = { clientId: "desk", name: "Desk" };
+        const requesting = host.requestHostReload(targetHost, mode);
+        try {
+            await drain();
+            expect(stubs.confirm).toHaveBeenCalledTimes(1);
+            expect(stubs.fetch).not.toHaveBeenCalled();
+            confirmed.resolve(false);
+            await requesting;
+            expect(stubs.fetch).not.toHaveBeenCalled();
+        } finally {
+            confirmed.resolve(false);
+            await requesting;
+        }
+
+        await host.requestHostReload(targetHost, mode);
+        expect(stubs.confirm).toHaveBeenCalledTimes(2);
+        const posts = stubs.fetch.mock.calls.filter(([, init]) => init?.method === "POST");
+        expect(posts).toHaveLength(1);
+        expect(posts[0]![0]).toBe("/api/remote-commands");
+        expect(JSON.parse(String(posts[0]![1]?.body))).toEqual({
+            clientId: "host-client",
+            target: "desk",
+            commandId: expect.any(String),
+            command: { type: "reload", mode: "page" },
+        });
     });
 });

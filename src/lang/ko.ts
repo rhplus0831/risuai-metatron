@@ -1382,6 +1382,32 @@ export const languageKorean = {
         },
         remoteHost: {
             label: "원격 호스트 모드",
+            reload: "플러그인 새로고침",
+            reloadPending: "새로고침 결과 기다리는 중…",
+            reloadPluginsMode: "작업이 끝나면 플러그인 새로고침",
+            reloadPageMode: "호스트 페이지 새로고침",
+            reloadChoose: "{name}의 플러그인 새로고침",
+            reloadHelp:
+                "플러그인 새로고침은 플러그인 작업이 끝날 때까지 기다립니다. 페이지 새로고침은 해당 작업을 중단할 수 있습니다. safeLocalStorage에 저장된 플러그인 설정은 브라우저마다 별개입니다. 다른 기기에서 변경해도 호스트의 설정은 바뀌지 않습니다.",
+            reloadPageConfirm:
+                "{name}의 페이지를 새로고침할까요? 다른 기기에서 넘겨받은 작업을 포함해 호스트에서 실행 중인 작업이 중단됩니다. 진행 중인 콜백이 유실되어 작업이 실패할 수 있습니다.",
+            reloadPageBusyConfirm:
+                "{name}에서 시작한 작업이 실행 중입니다. 페이지를 새로고침할까요? 다른 기기에서 넘겨받은 작업을 포함해 호스트에서 실행 중인 작업이 중단됩니다. 진행 중인 콜백이 유실되어 작업이 실패할 수 있습니다.",
+            unnamedHost: "이름 없는 호스트",
+            reloadOutcome: "{name}: {outcome}",
+            reloadApplied: "플러그인 로더 실행이 완료되었습니다.",
+            reloadFailed: "호스트의 플러그인 로더 실행이 실패했습니다.",
+            reloadPluginsOff: "호스트의 이번 페이지 로드에서는 안전 부팅으로 플러그인이 꺼져 있습니다.",
+            reloadNotReloaded:
+                "호스트가 새로고침 복구 정보를 저장하거나 페이지를 새로고침하지 못했습니다. 페이지는 새로고침되지 않았습니다.",
+            reloadUnavailable: "호스트에 더 이상 연결할 수 없습니다.",
+            reloadRejected: "새로고침 요청이 거절되었습니다.",
+            reloadRefused: "호스트가 새로고침을 거절했습니다: {reason}",
+            reloadStopped: "요청이 중단되었습니다.",
+            reloadExpired: "호스트가 읽기 전에 요청이 만료되었습니다.",
+            reloadUncertain: "새로고침 결과를 확인할 수 없습니다.",
+            reloadNoAnswer:
+                "제한 시간 내에 새로고침 결과를 받지 못했습니다. 호스트에서 요청이 나중에 완료될 수 있습니다.",
             help: "다른 기기에서 요청한 메시지 전송과 플러그인 새로고침을 이 브라우저에서 실행합니다. 탭을 열어 두세요. 호스트 모드에서는 이 탭의 화면이 잠깁니다. 브라우저의 백그라운드 탭 실행 제한을 피하려면 별도 창에 열어 두세요.",
             title: "원격 호스트 모드",
             clientName: "이 브라우저의 클라이언트 이름",

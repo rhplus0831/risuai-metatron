@@ -57,6 +57,15 @@ The transport below retains this tab's in-memory log.
 - `receiveHostCommand` reads a relay command over authenticated HTTP, holds plugin work through startup and the send,
   pins and selects its chat, and runs `sendChat` with the sender's ids and returned reports. Duplicate frames stop the
   active run or repeat its latest report. No composer or draft state enters the host's send.
+- A `reload` command (`mode` `plugins` or `page`) holds no plugin work. `plugins` reports `running`, awaits
+  `reloadPluginsWhenIdle` ([deferred reload](plugin-sandbox.md#deferred-reload)) and reports `done` with its `outcome`.
+  `page` saves its id (no save: `done` `notReloaded`, no reload), reports `running`, flushes with a bound and reloads;
+  the next page reports `done` with `bootPluginLoadOutcome`. A reload id runs once per page: recovery reserves it before
+  any await, and a later frame only repeats its report, never a second read (which would supersede the saved attempt).
+- `requestHostReload` is the requester: it offers the two modes, always confirms `page` (progress names a job's creator,
+  not a takeover's owner), posts a new command id and polls its status (state frames reach only `remoteSend.ts`'s
+  waiters) for up to two minutes, then shows one outcome toast. Settings → Display host rows and Settings → Plugins
+  offer it.
 - Relay reads and serialized state reports use `/api/remote-commands`, the resource epoch and the read's attempt. Newer
   states replace queued retries; transient failures retry with bounded waits for the open-command lifetime. Report texts
   shrink to the body cap; acknowledged states enter the lock screen list.
@@ -110,10 +119,11 @@ The transport below retains this tab's in-memory log.
   `epochMismatch` and resource sync's restore halt.
 - `handoff.ts` holds plugin work through `pluginsStarted` and takeover; the follow holds it through attach and, when
   needed, terminal application and late listeners.
-- `remoteHost.ts` saves `{ commandId, epoch, attempt }` in `sessionStorage` `risu-remote-host-commands` before sending.
-  Final acceptance or a permanently closed/lost attempt removes it. The feed's first matching hello calls
-  `recoverHostCommands` even with host mode off: saved attempts report `uncertain` before the same id can be read again;
-  other epochs are discarded.
+- `remoteHost.ts` saves `{ commandId, epoch, attempt, kind? }` in `sessionStorage` `risu-remote-host-commands` before
+  sending or reloading (`kind` is a reload's mode). Final acceptance or a permanently closed/lost attempt removes it.
+  The feed's first matching hello calls `recoverHostCommands` even with host mode off: a saved send or `plugins` reload
+  reports `uncertain` before the same id can be read again, a saved `page` reload reports `done` after the boot's plugin
+  load (not after resumed jobs or idle); other epochs are discarded.
 
 ### Remote send
 

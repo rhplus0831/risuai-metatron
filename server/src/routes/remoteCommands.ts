@@ -29,6 +29,16 @@ function parsePost(value: unknown): RemoteCommandPostBody | null {
         return null;
     if (value.uncertain !== undefined && typeof value.uncertain !== "boolean") return null;
     const command = value.command;
+    if (isPlainObject(command) && command.type === "reload") {
+        if (command.mode !== "plugins" && command.mode !== "page") return null;
+        return {
+            clientId: value.clientId,
+            target: value.target,
+            commandId: value.commandId,
+            command: { type: "reload", mode: command.mode },
+            ...(value.uncertain !== undefined ? { uncertain: value.uncertain } : {}),
+        };
+    }
     if (
         !isPlainObject(command) ||
         command.type !== "send" ||

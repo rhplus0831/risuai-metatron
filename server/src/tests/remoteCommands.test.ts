@@ -5,6 +5,7 @@ import { WebSocket } from "ws";
 import { projectServerEvent, type DiagnosticEventInput } from "../../../shared/diagnostics.ts";
 import type { EventFeedFrame } from "../../../shared/events.ts";
 import type {
+    RemoteCommand,
     RemoteCommandPostBody,
     RemoteCommandState,
     RemoteCommandStateBody,
@@ -13,7 +14,8 @@ import { createRemoteCommands, type RemoteCommandOutcome, type RemoteCommands } 
 import { allowListenerOrigin, createResourceTestClient, json } from "./testSupport.ts";
 
 const path = "/api/remote-commands";
-const post = (commandId = "send-1", target = "desk"): RemoteCommandPostBody => ({
+type SendPostBody = RemoteCommandPostBody & { command: Extract<RemoteCommand, { type: "send" }> };
+const post = (commandId = "send-1", target = "desk"): SendPostBody => ({
     clientId: "phone",
     target,
     commandId,
@@ -82,6 +84,45 @@ describe("remote commands over HTTP", () => {
         expect(response.headers.get("cache-control")).toBe("no-store");
         expect(await response.json()).toEqual(body);
     }
+
+    it("accepts reloads without requestId and identifies retries by type and mode", async () => {
+        for (const mode of ["plugins", "page"] as const) {
+            const body: RemoteCommandPostBody = {
+                clientId: "phone",
+                target: "desk",
+                commandId: `reload-${mode}`,
+                command: { type: "reload", mode },
+            };
+            const queued = { state: "queued", attempted: false, stopRequested: false, attempt: 0 };
+            await answer(await client.json(path, body), 200, queued);
+            await answer(await client.json(path, body), 200, queued);
+            await answer(
+                await client.json(path, {
+                    ...body,
+                    command: { type: "reload", mode: mode === "plugins" ? "page" : "plugins" },
+                }),
+                409,
+                { error: "commandChanged" },
+            );
+            await answer(await client.json(path, post(body.commandId)), 409, { error: "commandChanged" });
+            await answer(await client.request(`${path}/${body.commandId}?clientId=desk`), 200, {
+                state: "delivered",
+                attempted: false,
+                stopRequested: false,
+                attempt: 1,
+                command: { type: "reload", mode },
+            });
+        }
+    });
+
+    it("rejects an invalid reload mode without relaxing send validation", async () => {
+        for (const command of [
+            { type: "reload", mode: "everything" },
+            { ...post().command, requestId: undefined },
+        ]) {
+            await answer(await client.json(path, { ...post(), command }), 400, { error: "Invalid remote command" });
+        }
+    });
 
     it("delivers the body only to the target and reports its result only to the sender", async () => {
         await answer(await client.json(path, post("absent", "offline")), 404, { error: "targetUnavailable" });

@@ -25,6 +25,9 @@
     import { deleteOwnedPluginStorage } from "src/ts/storage/pluginStorageStore.svelte";
     import { recordValueIdentity } from "src/ts/storage/records.svelte";
     import type { RisuPlugin } from "src/ts/plugins/plugins.svelte";
+    import { generationClientId } from "src/ts/network/generationJobs";
+    import { connectedClients, hostTargets } from "src/ts/network/handoff";
+    import { hostReloadPending, requestHostReload } from "src/ts/network/remoteHost";
 
     /**
      * Edits the persisted plugin list and arguments. Legacy entries stay visible with the
@@ -36,6 +39,8 @@
     let showParams = $state([]);
     let showPluginData = $state(false);
     let changingPermissions = $state(false);
+    const selfId = generationClientId();
+    const hosts = $derived(hostTargets($connectedClients, selfId));
 
     const popupEditorContexts = new Map<string, { row: symbol }>();
     function pluginArgumentContext(plugin: RisuPlugin, index: number, arg: string) {
@@ -52,6 +57,39 @@
 </script>
 
 <h2 class="mb-2 text-2xl font-bold mt-2">{language.plugin}</h2>
+
+{#if hosts.length > 0}
+    <section class="mb-4 flex flex-col gap-2 text-textcolor">
+        <h3 class="text-base font-medium">{language.serverJob.remoteHost.reload}</h3>
+        <ul class="flex flex-col gap-2">
+            {#each hosts as host (host.name)}
+                <li class="flex flex-wrap items-center gap-2 rounded-md border border-darkborderc px-3 py-2">
+                    <span class="min-w-0 grow break-words">
+                        {(host.count > 1
+                            ? language.serverJob.remoteSend.settings.hostTabs
+                            : language.serverJob.remoteSend.settings.host
+                        ).replace(/\{(name|count)\}/g, (_, field) =>
+                            field === "name"
+                                ? host.name || language.serverJob.remoteHost.unnamedHost
+                                : String(host.count),
+                        )}
+                    </span>
+                    <button
+                        type="button"
+                        class="shrink-0 rounded-md border border-darkborderc px-2 py-1 hover:bg-darkbutton disabled:opacity-50"
+                        disabled={$hostReloadPending.has(host.clientId)}
+                        onclick={() => requestHostReload(host)}
+                    >
+                        {$hostReloadPending.has(host.clientId)
+                            ? language.serverJob.remoteHost.reloadPending
+                            : language.serverJob.remoteHost.reload}
+                    </button>
+                </li>
+            {/each}
+        </ul>
+        <p class="text-sm text-textcolor2">{language.serverJob.remoteHost.reloadHelp}</p>
+    </section>
+{/if}
 
 <button class="rounded bg-darkbutton p-2 mb-4 text-textcolor" onclick={() => (showPluginData = !showPluginData)}>
     {showPluginData ? language.goback : language.pluginData}

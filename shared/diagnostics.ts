@@ -584,7 +584,7 @@ export function diagnosticModel(modelId: string | null | undefined): string | nu
 const SCHEMAS: Record<DiagnosticEventKind, Record<string, Check>> = {
     remoteCommand: {
         commandId: id,
-        command: oneOf(["send"]),
+        command: oneOf(["send", "reload"]),
         state: oneOf([...REMOTE_COMMAND_STATES, "forgotten"]),
         bytes: count,
     },

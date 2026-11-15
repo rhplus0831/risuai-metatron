@@ -3,7 +3,7 @@
     import CheckInput from "src/lib/UI/GUI/CheckInput.svelte";
     import { generationClientId } from "src/ts/network/generationJobs";
     import { connectedClients, hostTargets } from "src/ts/network/handoff";
-    import { hostMode } from "src/ts/network/remoteHost";
+    import { hostMode, hostReloadPending, requestHostReload } from "src/ts/network/remoteHost";
     import { remoteSend, remoteSendHost, remoteSendFallback } from "src/ts/network/remoteSend";
 
     const selfId = generationClientId();
@@ -22,7 +22,7 @@
         <ul class="flex flex-col gap-2">
             {#each hosts as host (host.name)}
                 <li
-                    class="flex items-center gap-2 border border-darkborderc rounded-md px-3 py-2"
+                    class="flex flex-wrap items-center gap-2 border border-darkborderc rounded-md px-3 py-2"
                     class:bg-darkbutton={$remoteSendHost === host.name}
                 >
                     <span class="min-w-0 grow break-words">
@@ -41,9 +41,20 @@
                     >
                         {language.serverJob.remoteSend.settings.useHost}
                     </button>
+                    <button
+                        type="button"
+                        class="shrink-0 rounded-md border border-darkborderc px-2 py-1 hover:bg-darkbutton disabled:opacity-50"
+                        disabled={$hostReloadPending.has(host.clientId)}
+                        onclick={() => requestHostReload(host)}
+                    >
+                        {$hostReloadPending.has(host.clientId)
+                            ? language.serverJob.remoteHost.reloadPending
+                            : language.serverJob.remoteHost.reload}
+                    </button>
                 </li>
             {/each}
         </ul>
+        <p class="text-sm text-textcolor2">{language.serverJob.remoteHost.reloadHelp}</p>
     {:else}
         <p class="text-sm text-textcolor2">{language.serverJob.remoteSend.settings.noHosts}</p>
     {/if}

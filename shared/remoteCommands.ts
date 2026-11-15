@@ -9,20 +9,31 @@ export const REMOTE_COMMAND_PICKUP_MS = 30_000;
 export const REMOTE_COMMAND_CLOSED_KEEP_MS = 10 * 60_000;
 export const REMOTE_COMMAND_OPEN_DROP_MS = 40 * 60_000;
 
-export type RemoteCommand = {
-    type: "send";
-    chaId: string;
-    chatId: string;
-    input: string;
-    userMessageId: string;
-    requestId: string;
-    inputOriginal?: string;
-    stopOverLoreBudget?: boolean;
-};
+export type RemoteReloadMode = "plugins" | "page";
+
+export type RemoteCommand =
+    | {
+          type: "send";
+          chaId: string;
+          chatId: string;
+          input: string;
+          userMessageId: string;
+          requestId: string;
+          inputOriginal?: string;
+          stopOverLoreBudget?: boolean;
+      }
+    | { type: "reload"; mode: RemoteReloadMode };
+
+/** `applied` means the loader completed, not that every guest finished startup. */
+export type PluginReloadOutcome = "applied" | "failed" | "pluginsOff";
+/** `notReloaded` is a page reload that could not safely persist its recovery marker or navigate. */
+export type RemoteReloadResult = { outcome: PluginReloadOutcome | "notReloaded" };
 
 /** Only action fields identify a retry; the first accepted body's other fields stand. */
 export function remoteCommandAction(command: RemoteCommand) {
     switch (command.type) {
+        case "reload":
+            return { type: command.type, mode: command.mode };
         case "send":
             return {
                 type: command.type,

@@ -129,6 +129,11 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   - every sandbox idle (`SandboxHost.isIdle`).
 - Idle scheduling and final checks: `queueDeferredCheck` JSDoc. Work that never ends defers reload
   ([Limitations](#limitations)).
+- `reloadPluginsWhenIdle` (a host's remote `plugins` reload) asks for one deferred reload even with an unchanged
+  signature and resolves `applied` (the loader completed, not every guest's startup), `failed`, or at once `pluginsOff`
+  under safe boot. Every load, local or deferred, takes the waiters pending at its `applyPluginLoad` start, so a local
+  load satisfies them and leaves no second reload; a later request waits for the next load. `bootPluginLoadOutcome` is
+  the boot load's outcome, read by a host's `page` reload.
 
 ### Permission list
 

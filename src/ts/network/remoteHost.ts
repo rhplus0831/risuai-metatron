@@ -9,6 +9,10 @@ import {
     type RemoteCommandRefusalCode,
     type RemoteCommandStateAnswer,
     type RemoteCommandStateBody,
+    type RemoteCommandPostBody,
+    type RemoteCommandStatusAnswer,
+    type RemoteReloadMode,
+    type RemoteReloadResult,
     type RemoteSendResult,
     type SendReport,
 } from "../../../shared/remoteCommands.ts";
@@ -43,16 +47,20 @@ export function noteHostCommand(entry: HostCommandEntry): void {
 /**
  * Commands contain no composer state. Each run owns its abort controller before its first await;
  * duplicate frames only stop it or repeat its latest report. HTTP bodies and state reports carry
- * the loaded epoch and the read's attempt. Plugin, send and selection modules load only inside a
- * run, keeping the feed's imports free of the send/job-channel and plugin/feed cycles.
+ * the loaded epoch and the read's attempt. Plugin, send, store, alert and selection modules load
+ * only inside a run or request, keeping the feed's imports free of send/job-channel and plugin/feed
+ * cycles. Reload ids stay reserved for this page, including recoveries before registration.
  */
 const SAVED_COMMANDS_KEY = "risu-remote-host-commands";
 const REQUEST_DEADLINE_MS = 15_000;
 const REPORT_MARGIN_BYTES = 4096;
-type SavedCommand = { commandId: string; epoch: string; attempt: number };
+const PAGE_REPORT_WAIT_MS = 2_000;
+const PAGE_FLUSH_WAIT_MS = 3_000;
+const RELOAD_OUTCOME_WAIT_MS = 120_000;
+type SavedCommand = { commandId: string; epoch: string; attempt: number; kind?: RemoteReloadMode };
 type StateReport =
     | { state: "running" }
-    | { state: "uncertain" | "done"; result?: RemoteSendResult }
+    | { state: "uncertain" | "done"; result?: RemoteSendResult | RemoteReloadResult }
     | { state: "refused"; code: RemoteCommandRefusalCode };
 type PreparedReport = { report: StateReport; body: string };
 type Transport = Awaited<ReturnType<typeof loadTransport>>;
@@ -74,6 +82,7 @@ type HostRun = {
     reporter?: Reporter;
 };
 const runs = new Map<string, HostRun>();
+const reloads = new Map<string, HostRun>();
 const recoveries = new Map<string, Promise<void>>();
 const recoveredEpochs = new Set<string>();
 let epochHalted = false;
@@ -94,7 +103,8 @@ function savedCommands(): SavedCommand[] {
                 typeof entry.commandId === "string" &&
                 typeof entry.epoch === "string" &&
                 Number.isSafeInteger(entry.attempt) &&
-                entry.attempt > 0,
+                entry.attempt > 0 &&
+                (entry.kind === undefined || entry.kind === "plugins" || entry.kind === "page"),
         );
     } catch {
         return [];
@@ -105,14 +115,16 @@ function writeSaved(entries: SavedCommand[]) {
     try {
         if (entries.length) sessionStorage.setItem(SAVED_COMMANDS_KEY, JSON.stringify(entries));
         else sessionStorage.removeItem(SAVED_COMMANDS_KEY);
+        return true;
     } catch {
         // Storage can be unavailable; the live run still reports its outcome.
         console.warn("[Remote host] Could not persist command ids");
+        return false;
     }
 }
 
 function rememberCommand(saved: SavedCommand) {
-    writeSaved([...savedCommands().filter((entry) => entry.commandId !== saved.commandId), saved]);
+    return writeSaved([...savedCommands().filter((entry) => entry.commandId !== saved.commandId), saved]);
 }
 
 function forgetCommand(saved: SavedCommand) {
@@ -124,8 +136,8 @@ function forgetCommand(saved: SavedCommand) {
     );
 }
 
-function noteState(commandId: string, state: RemoteCommandFrameState, code?: string) {
-    noteHostCommand({ commandId, type: "send", state, ...(code ? { code } : {}), at: Date.now() });
+function noteState(commandId: string, state: RemoteCommandFrameState, code?: string, type = "send") {
+    noteHostCommand({ commandId, type, state, ...(code ? { code } : {}), at: Date.now() });
 }
 
 function reporterFor(saved: SavedCommand, transport: Transport, controller?: AbortController): Reporter {
@@ -172,7 +184,7 @@ function prepareReport(reporter: Reporter, report: StateReport): PreparedReport 
     let json = JSON.stringify(body);
     while (encoder.encode(json).byteLength > limit) {
         const result = "result" in copy ? copy.result : undefined;
-        if (!result) return null;
+        if (!result || !("reports" in result)) return null;
         result.truncated = true;
         const longest = result.reports.reduce<SendReport | undefined>(
             (held, report) =>
@@ -249,6 +261,7 @@ async function pumpReports(reporter: Reporter) {
                     reporter.saved.commandId,
                     accepted.state,
                     current.report.state === "refused" ? current.report.code : undefined,
+                    reporter.saved.kind ? "reload" : "send",
                 );
                 if (accepted.superseded || ["done", "uncertain", "refused"].includes(accepted.state)) {
                     forgetCommand(reporter.saved);
@@ -259,9 +272,10 @@ async function pumpReports(reporter: Reporter) {
             }
             if (!response.ok && response.status !== 429 && response.status < 500) {
                 const state = REMOTE_COMMAND_STATES.includes(answer?.state) ? answer.state : undefined;
-                if (state) noteState(reporter.saved.commandId, state);
+                const type = reporter.saved.kind ? "reload" : "send";
+                if (state) noteState(reporter.saved.commandId, state, undefined, type);
                 else if (response.status === 404 || response.status === 410)
-                    noteState(reporter.saved.commandId, "forgotten");
+                    noteState(reporter.saved.commandId, "forgotten", undefined, type);
                 console.info("[Remote host] State report refused", reporter.saved.commandId, response.status);
                 if (
                     response.status === 404 ||
@@ -293,10 +307,19 @@ export function recoverHostCommands(epoch: string): void {
     const saved = savedCommands().filter((entry) => entry.epoch === epoch);
     writeSaved(saved);
     for (const entry of saved) {
+        const run: HostRun = { commandId: entry.commandId, epoch, controller: new AbortController() };
+        // Reserve before loading any modules: registration can immediately repeat this id's frame.
+        if (entry.kind) reloads.set(entry.commandId, run);
         const recovery = (async () => {
             const transport = await loadTransport();
-            const reporter = reporterFor(entry, transport);
-            queueReport(reporter, { state: "uncertain" });
+            const reporter = (run.reporter = reporterFor(entry, transport));
+            if (entry.kind === "page") {
+                const { bootPluginLoadOutcome } = await import("../plugins/plugins.svelte");
+                const outcome = await bootPluginLoadOutcome;
+                queueReport(reporter, { state: "done", result: { outcome } });
+            } else {
+                queueReport(reporter, { state: "uncertain" });
+            }
             await finishReports(reporter);
         })()
             .catch(() => {
@@ -312,7 +335,7 @@ export function recoverHostCommands(epoch: string): void {
 /** A frame is only a wakeup; the command body is read through the authenticated HTTP relay. */
 export function receiveHostCommand(frame: Extract<EventFeedFrame, { type: "remoteCommand" }>): void {
     if (!get(hostMode) || epochHalted || frame.epoch !== getResourceEpoch()) return;
-    const existing = runs.get(frame.commandId);
+    const existing = reloads.get(frame.commandId) ?? runs.get(frame.commandId);
     if (existing) {
         if (frame.stop) existing.controller.abort();
         if (existing.reporter) repeatReport(existing.reporter);
@@ -363,15 +386,30 @@ async function runHostCommand(run: HostRun) {
     }
     const read = answer as RemoteCommandReadAnswer;
     if (!read?.command || !Number.isSafeInteger(read.attempt) || read.attempt <= 0) return;
-    noteState(run.commandId, "delivered");
+    noteState(run.commandId, "delivered", undefined, read.command.type);
     if (read.stopRequested) run.controller.abort();
-    const saved = { commandId: run.commandId, epoch: run.epoch, attempt: read.attempt };
+    const saved: SavedCommand = {
+        commandId: run.commandId,
+        epoch: run.epoch,
+        attempt: read.attempt,
+        ...(read.command.type === "reload" ? { kind: read.command.mode } : {}),
+    };
     const reporter = (run.reporter = reporterFor(saved, transport, run.controller));
+    const refuse = (code: RemoteCommandRefusalCode) =>
+        queueReport(reporter, read.attempted ? { state: "uncertain" } : { state: "refused", code });
+    if (read.command.type === "reload") {
+        reloads.set(run.commandId, run);
+        try {
+            if (run.controller.signal.aborted) return refuse("stopped");
+            await runHostReload(run, reporter, read.command.mode, refuse);
+        } finally {
+            await finishReports(reporter);
+        }
+        return;
+    }
     const reports: SendReport[] = [];
     let releasePlugins: (() => void) | undefined;
     let releaseChat: (() => void) | undefined;
-    const refuse = (code: RemoteCommandRefusalCode) =>
-        queueReport(reporter, read.attempted ? { state: "uncertain" } : { state: "refused", code });
     try {
         const [{ safeBootOff }, chats, characters, { isLocalSend }] = await Promise.all([
             import("../safeBoot"),
@@ -456,5 +494,179 @@ async function runHostCommand(run: HostRun) {
         } finally {
             releaseChat?.();
         }
+    }
+}
+
+/** Bounds both the exchange and its response body, even if the underlying work ignores abort. */
+async function settleWithin<T>(work: Promise<T>, milliseconds: number): Promise<T | undefined> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race([
+            work.catch(() => undefined),
+            new Promise<undefined>((resolve) => {
+                timer = setTimeout(() => resolve(undefined), Math.max(0, milliseconds));
+            }),
+        ]);
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+async function runHostReload(
+    run: HostRun,
+    reporter: Reporter,
+    mode: RemoteReloadMode,
+    refuse: (code: RemoteCommandRefusalCode) => void,
+) {
+    try {
+        if (mode === "plugins") {
+            const { reloadPluginsWhenIdle } = await import("../plugins/plugins.svelte");
+            if (epochHalted || run.epoch !== getResourceEpoch()) return;
+            if (run.controller.signal.aborted) return refuse("stopped");
+            rememberCommand(reporter.saved);
+            queueReport(reporter, { state: "running" });
+            // Holding plugin work here would prevent the deferred reload from ever becoming idle.
+            const outcome = await reloadPluginsWhenIdle();
+            queueReport(reporter, { state: "done", result: { outcome } });
+            return;
+        }
+        if (!rememberCommand(reporter.saved)) {
+            queueReport(reporter, { state: "done", result: { outcome: "notReloaded" } });
+            return;
+        }
+        queueReport(reporter, { state: "running" });
+        await settleWithin(finishReports(reporter), PAGE_REPORT_WAIT_MS);
+        await settleWithin(
+            import("../storage/resourceSync.svelte").then(({ flushResources }) => flushResources()),
+            PAGE_FLUSH_WAIT_MS,
+        );
+        if (epochHalted || run.epoch !== getResourceEpoch()) return;
+        location.reload();
+    } catch {
+        queueReport(reporter, {
+            state: "done",
+            result: { outcome: mode === "page" ? "notReloaded" : "failed" },
+        });
+    }
+}
+
+const reloadRequests = writable<ReadonlySet<string>>(new Set());
+export const hostReloadPending = readonly(reloadRequests);
+
+/**
+ * Requests a reload of the row's selected client id. With no mode, offers the two reload modes.
+ * Polling is independent of the send adapter's frame waiters. One outcome toast is shown per request;
+ * a timeout leaves the command alone because it may still be waiting for plugin work to become idle.
+ */
+export async function requestHostReload(
+    host: { clientId: string; name: string },
+    mode?: RemoteReloadMode,
+): Promise<void> {
+    const { clientId, name } = host;
+    if (get(reloadRequests).has(clientId)) return;
+    reloadRequests.update((pending) => new Set([...pending, clientId]));
+    try {
+        const [{ alertSelect, alertConfirm, alertToast }, { language }] = await Promise.all([
+            import("../alert"),
+            import("../../lang"),
+        ]);
+        const labels = language.serverJob.remoteHost;
+        const hostName = name || labels.unnamedHost;
+        if (mode === undefined) {
+            const choice = await alertSelect(
+                [labels.reloadPluginsMode, labels.reloadPageMode, language.cancel],
+                labels.reloadChoose.replace("{name}", () => hostName),
+            );
+            if (choice !== "0" && choice !== "1") return;
+            mode = choice === "0" ? "plugins" : "page";
+        }
+        if (mode === "page") {
+            const { runningGenerations } = await import("../process/generationProgress.svelte");
+            // Progress identifies a job's creator; takeover does not change that id. Always confirm.
+            const createdHere = runningGenerations().some((job) => job.clientId === clientId);
+            const message = createdHere ? labels.reloadPageBusyConfirm : labels.reloadPageConfirm;
+            if (!(await alertConfirm(message.replace("{name}", () => hostName)))) return;
+        }
+        let message = labels.reloadNoAnswer;
+        try {
+            const epoch = getResourceEpoch();
+            if (!epoch || epochHalted) return;
+            const [transport, { v4 }] = await Promise.all([loadTransport(), import("uuid")]);
+            const commandId = v4();
+            const body: RemoteCommandPostBody = {
+                clientId: transport.clientId,
+                target: clientId,
+                commandId,
+                command: { type: "reload", mode },
+            };
+            const deadline = Date.now() + RELOAD_OUTCOME_WAIT_MS;
+            const post = await settleWithin(
+                relayRequest(transport, epoch, REMOTE_COMMANDS_PATH, JSON.stringify(body)),
+                REQUEST_DEADLINE_MS,
+            );
+            if (post && !post.response.ok && post.response.status < 500 && post.response.status !== 429) {
+                message = post.answer?.error === "targetUnavailable" ? labels.reloadUnavailable : labels.reloadRejected;
+            } else {
+                let delay = 500;
+                while (!epochHalted && epoch === getResourceEpoch() && Date.now() < deadline) {
+                    const status = await settleWithin(
+                        relayRequest(
+                            transport,
+                            epoch,
+                            `${REMOTE_COMMANDS_PATH}/${encodeURIComponent(commandId)}/status?clientId=${encodeURIComponent(transport.clientId)}`,
+                        ),
+                        Math.min(REQUEST_DEADLINE_MS, deadline - Date.now()),
+                    );
+                    if (status?.response.ok) {
+                        const answer = status.answer as RemoteCommandStatusAnswer;
+                        if (answer?.state === "done") {
+                            const outcome = answer.result?.outcome;
+                            message =
+                                outcome === "applied"
+                                    ? labels.reloadApplied
+                                    : outcome === "failed"
+                                      ? labels.reloadFailed
+                                      : outcome === "pluginsOff"
+                                        ? labels.reloadPluginsOff
+                                        : outcome === "notReloaded"
+                                          ? labels.reloadNotReloaded
+                                          : labels.reloadUncertain;
+                            break;
+                        }
+                        if (answer?.state === "refused") {
+                            const reason =
+                                answer.code === "stopped"
+                                    ? labels.reloadStopped
+                                    : answer.code === "pluginsOff"
+                                      ? labels.reloadPluginsOff
+                                      : labels.reloadRejected;
+                            message = labels.reloadRefused.replace("{reason}", () => reason);
+                            break;
+                        }
+                        if (answer?.state === "expired") {
+                            message = labels.reloadExpired;
+                            break;
+                        }
+                        if (answer?.state === "uncertain" || answer?.state === "cancelled") {
+                            message = labels.reloadUncertain;
+                            break;
+                        }
+                    } else if (status?.response.status === 404 && status.answer?.error === "unknownCommand") {
+                        message = labels.reloadUncertain;
+                        break;
+                    }
+                    await new Promise((resolve) =>
+                        setTimeout(resolve, Math.max(0, Math.min(delay, deadline - Date.now()))),
+                    );
+                    delay = Math.min(delay * 2, 5_000);
+                }
+            }
+        } catch {
+            // No reply is not a certificate that a deferred reload never started.
+        }
+        if (!epochHalted)
+            alertToast(labels.reloadOutcome.replace("{name}", () => hostName).replace("{outcome}", () => message));
+    } finally {
+        reloadRequests.update((pending) => new Set([...pending].filter((id) => id !== clientId)));
     }
 }

@@ -20,6 +20,7 @@ import { onRemoteRecordApplied } from "../storage/resourceSync.svelte";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
 import { safeBootOff } from "../safeBoot";
 import type { GuestStartup } from "./apiV3/factory";
+import type { PluginReloadOutcome } from "../../../shared/remoteCommands.ts";
 import type { RisuPlugin, ProviderPluginCustomLink } from "../../../shared/plugins.ts";
 
 /**
@@ -488,6 +489,12 @@ function loadSignature(plugins: readonly RisuPlugin[]): string {
 /** The running load signature: null before the first load, during replacement, or after a failed replacement. */
 let appliedSignature: string | null = null;
 let pendingLocalLoads = 0;
+const reloadWaiters: ((outcome: PluginReloadOutcome) => void)[] = [];
+let resolveBootPluginLoad!: (outcome: PluginReloadOutcome) => void;
+/** The boot loader's outcome, independent of guest startup and resumed jobs. */
+export const bootPluginLoadOutcome = new Promise<PluginReloadOutcome>((resolve) => {
+    resolveBootPluginLoad = resolve;
+});
 /**
  * Names of the plugins of the most recent load, recorded at its start so a permission reset arriving
  * while that load runs still counts as a reset of a running plugin.
@@ -496,12 +503,20 @@ let runningPluginNames = new Set<string>();
 
 /** Clears and reloads the hooks with `plugins`; runs on the `pluginReload` chain only. */
 async function applyPluginLoad(plugins: RisuPlugin[], capture?: (plugins: RisuPlugin[]) => void) {
-    appliedSignature = null;
-    runningPluginNames = new Set(plugins.map((plugin) => plugin.name));
-    clearPluginHooks();
-    await loadV3Plugins(plugins);
-    capture?.(plugins);
-    appliedSignature = loadSignature(plugins);
+    // Requests arriving after this point belong to the next load, including a local replacement.
+    const waiters = reloadWaiters.splice(0);
+    try {
+        appliedSignature = null;
+        runningPluginNames = new Set(plugins.map((plugin) => plugin.name));
+        clearPluginHooks();
+        await loadV3Plugins(plugins);
+        capture?.(plugins);
+        appliedSignature = loadSignature(plugins);
+        for (const resolve of waiters) resolve("applied");
+    } catch (error) {
+        for (const resolve of waiters) resolve("failed");
+        throw error;
+    }
 }
 
 /**
@@ -606,6 +621,19 @@ function requestDeferredReload() {
     queueDeferredCheck();
 }
 
+/**
+ * Forces a reload once plugin work is idle. A local load starting first also satisfies the request.
+ * `applied` means `applyPluginLoad` resolved, not that every guest finished startup. Completion is
+ * captured inside the load chain, before its errors are swallowed; later requests wait for another load.
+ */
+export function reloadPluginsWhenIdle(): Promise<PluginReloadOutcome> {
+    if (safeBootOff("plugins")) return Promise.resolve("pluginsOff");
+    return new Promise((resolve) => {
+        reloadWaiters.push(resolve);
+        requestDeferredReload();
+    });
+}
+
 function loadablePlugins(): RisuPlugin[] {
     return safeStructuredClone(settings.plugins).filter((p: RisuPlugin) => p.enabled && p.version === "3.0");
 }
@@ -617,7 +645,8 @@ function loadablePlugins(): RisuPlugin[] {
  * idleness inside the chain, synchronously up to `clearPluginHooks`; when work resumed it waits again
  * (a forced request stays forced). It loads the list as it is then and skips a matching signature,
  * except once after a permission reset of a running plugin, which forces the reload with an unchanged
- * signature. A local load supersedes the deferred request, forced or not, and safe boot cancels it.
+ * signature or while explicit reload waiters are pending. A local load supersedes the deferred
+ * request and takes its waiters at load start; safe boot cancels deferred work.
  */
 function queueDeferredCheck() {
     if (!deferredWanted || deferredQueued || deferredCheckQueued) {
@@ -642,7 +671,7 @@ function queueDeferredCheck() {
                 return;
             }
             const plugins = loadablePlugins();
-            if (!deferredForced && loadSignature(plugins) === appliedSignature) {
+            if (!deferredForced && reloadWaiters.length === 0 && loadSignature(plugins) === appliedSignature) {
                 return;
             }
             deferredForced = false;
@@ -692,8 +721,10 @@ export async function loadPluginsForBoot() {
         await reloadPlugins((plugins) => {
             guests = captureBootGuests(plugins);
         });
+        resolveBootPluginLoad(safeBootOff("plugins") ? "pluginsOff" : "applied");
         return guests;
     } catch (error) {
+        resolveBootPluginLoad("failed");
         guests.stopFollowingGuests();
         throw error;
     }

@@ -1994,6 +1994,31 @@ export const languageEnglish = {
         },
         remoteHost: {
             label: "Remote Host Mode",
+            reload: "Reload plugins",
+            reloadPending: "Waiting for reload…",
+            reloadPluginsMode: "Reload plugins when idle",
+            reloadPageMode: "Reload the host page",
+            reloadChoose: "Reload plugins on {name}",
+            reloadHelp:
+                "Plugin reload waits for plugin work to finish. Page reload can interrupt that work. A plugin setting kept in safeLocalStorage belongs to each browser: changing it on another device does not change it on the host.",
+            reloadPageConfirm:
+                "Reload the page on {name}? This interrupts any job the host is running, including jobs taken over from another device. A callback in progress can be lost and its job can fail.",
+            reloadPageBusyConfirm:
+                "There are running jobs created by {name}. Reload its page? This interrupts jobs the host is running, including jobs taken over from another device. A callback in progress can be lost and its job can fail.",
+            unnamedHost: "Unnamed host",
+            reloadOutcome: "{name}: {outcome}",
+            reloadApplied: "The plugin loader completed.",
+            reloadFailed: "The plugin loader failed on the host.",
+            reloadPluginsOff: "Plugins are off for this page load on the host (safe boot).",
+            reloadNotReloaded:
+                "The host could not save its reload recovery marker or reload its page. The page was not reloaded.",
+            reloadUnavailable: "The host is no longer available.",
+            reloadRejected: "The reload request was rejected.",
+            reloadRefused: "The host refused the reload: {reason}",
+            reloadStopped: "The request was stopped.",
+            reloadExpired: "The request expired before the host read it.",
+            reloadUncertain: "The reload outcome is unknown.",
+            reloadNoAnswer: "No reload outcome arrived in time. The host may still complete the request.",
             help: "This browser runs sends and plugin reloads requested by your other devices. Keep this tab open; host mode locks its screen. Keep it in a window of its own, rather than a background tab, to prevent browser throttling.",
             title: "Remote Host Mode",
             clientName: "This browser's client name",

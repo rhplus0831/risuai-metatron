@@ -59,7 +59,7 @@ vi.mock("src/ts/storage/resourceSync.svelte", async (importOriginal) => ({
 
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
-import { loadPlugins } from "./plugins.svelte";
+import { loadPlugins, reloadPluginsWhenIdle } from "./plugins.svelte";
 import { pluginHooks } from "./pluginHooks";
 
 installFlatDatabase({ characters: [], plugins: [] });
@@ -355,4 +355,184 @@ describe("the reload after a permission reset", () => {
         await settle();
         expect(loads()).toEqual([["reset-local"], ["reset-local"]]);
     });
+});
+
+describe("explicit deferred plugin reloads", () => {
+    it("forces an unchanged signature once, waits for idle, and resolves only after the load", async () => {
+        settings.plugins = [plugin("forced")];
+        await loadPlugins();
+        mocks.idle = false;
+        const gate = deferred<void>();
+        mocks.loadV3Plugins.mockImplementationOnce(() => gate.promise);
+        const outcomes: string[] = [];
+        void reloadPluginsWhenIdle().then((outcome) => outcomes.push(outcome));
+        try {
+            workChanged();
+            await settle();
+            expect(loads()).toEqual([["forced"]]);
+            expect(outcomes).toEqual([]);
+
+            mocks.idle = true;
+            workChanged();
+            await settle();
+            expect(loads()).toEqual([["forced"], ["forced"]]);
+            expect(outcomes).toEqual([]);
+            gate.resolve();
+            await settle();
+            expect(outcomes).toEqual(["applied"]);
+
+            workChanged();
+            remoteChange();
+            await settle();
+            expect(loads()).toEqual([["forced"], ["forced"]]);
+        } finally {
+            gate.resolve();
+            mocks.idle = true;
+            workChanged();
+            await settle();
+        }
+    });
+
+    it("resolves from a superseding local load without a second reload", async () => {
+        settings.plugins = [plugin("superseded")];
+        await loadPlugins();
+        mocks.idle = false;
+        const outcomes: string[] = [];
+        void reloadPluginsWhenIdle().then((outcome) => outcomes.push(outcome));
+        await settle();
+        expect(outcomes).toEqual([]);
+
+        const gate = deferred<void>();
+        mocks.loadV3Plugins.mockImplementationOnce(() => gate.promise);
+        const local = loadPlugins();
+        try {
+            await settle();
+            expect(loads()).toEqual([["superseded"], ["superseded"]]);
+            expect(outcomes).toEqual([]);
+            gate.resolve();
+            await local;
+            await settle();
+            expect(outcomes).toEqual(["applied"]);
+            mocks.idle = true;
+            workChanged();
+            await settle();
+            expect(loads()).toEqual([["superseded"], ["superseded"]]);
+        } finally {
+            gate.resolve();
+            await local;
+            mocks.idle = true;
+            workChanged();
+            await settle();
+        }
+    });
+
+    it("keeps a request made after a load began pending until the next load completes", async () => {
+        settings.plugins = [plugin("next-load")];
+        await loadPlugins();
+        const first = deferred<void>();
+        const next = deferred<void>();
+        mocks.loadV3Plugins.mockImplementationOnce(() => first.promise).mockImplementationOnce(() => next.promise);
+        const local = loadPlugins();
+        const outcomes: string[] = [];
+        try {
+            await settle();
+            expect(loads()).toEqual([["next-load"], ["next-load"]]);
+            void reloadPluginsWhenIdle().then((outcome) => outcomes.push(outcome));
+            await settle();
+            expect(outcomes).toEqual([]);
+            first.resolve();
+            await local;
+            await settle();
+            expect(loads()).toEqual([["next-load"], ["next-load"], ["next-load"]]);
+            expect(outcomes).toEqual([]);
+            next.resolve();
+            await settle();
+            expect(outcomes).toEqual(["applied"]);
+            workChanged();
+            await settle();
+            expect(loads()).toHaveLength(3);
+        } finally {
+            first.resolve();
+            next.resolve();
+            await local;
+            await settle();
+        }
+    });
+
+    it("resolves failed when the deferred load rejects", async () => {
+        vi.spyOn(console, "error").mockImplementation(() => {});
+        settings.plugins = [plugin("failing")];
+        await loadPlugins();
+        const gate = deferred<void>();
+        mocks.loadV3Plugins.mockImplementationOnce(() => gate.promise);
+        const outcomes: string[] = [];
+        void reloadPluginsWhenIdle().then((outcome) => outcomes.push(outcome));
+        try {
+            await settle();
+            expect(loads()).toEqual([["failing"], ["failing"]]);
+            expect(outcomes).toEqual([]);
+            gate.reject(new Error("loader failed"));
+            await settle();
+            expect(outcomes).toEqual(["failed"]);
+        } finally {
+            gate.resolve();
+            await settle();
+        }
+    });
+});
+
+describe("reload outcomes on a fresh boot", () => {
+    // Boot outcomes belong to one page lifetime; use that page's settings and safe-boot modules too.
+    async function freshBoot(safe = false) {
+        vi.resetModules();
+        history.replaceState(null, "", safe ? "/?safe=plugins" : "/");
+        localStorage.clear();
+        const { beginSafeBoot } = await import("../safeBoot");
+        beginSafeBoot();
+        (await import("../storage/tests/installFlatDatabase")).installFlatDatabase({ characters: [], plugins: [] });
+        return import("./plugins.svelte");
+    }
+
+    afterEach(() => history.replaceState(null, "", "/"));
+
+    it("answers pluginsOff immediately under safe boot without waiting for idle or loading", async () => {
+        const plugins = await freshBoot(true);
+        mocks.idle = false;
+        const outcomes: string[] = [];
+        void plugins.reloadPluginsWhenIdle().then((outcome) => outcomes.push(outcome));
+        await settle();
+        expect(outcomes).toEqual(["pluginsOff"]);
+        expect(loads()).toEqual([]);
+    });
+
+    it.each(["applied", "failed", "pluginsOff"] as const)(
+        "publishes the boot plugin load outcome %s",
+        async (outcome) => {
+            const plugins = await freshBoot(outcome === "pluginsOff");
+            const outcomes: string[] = [];
+            void plugins.bootPluginLoadOutcome.then((result) => outcomes.push(result));
+            await settle();
+            expect(outcomes).toEqual([]);
+            const gate = deferred<void>();
+            mocks.loadV3Plugins.mockImplementationOnce(() => gate.promise);
+            // A failed boot load is accounted for even though its caller handles the rejection.
+            const boot = plugins.loadPluginsForBoot().catch(() => undefined);
+            try {
+                await settle();
+                if (outcome !== "pluginsOff") {
+                    expect(loads()).toEqual([[]]);
+                    expect(outcomes).toEqual([]);
+                }
+                if (outcome === "failed") gate.reject(new Error("boot loader failed"));
+                else gate.resolve();
+                await boot;
+                await settle();
+                expect(outcomes).toEqual([outcome]);
+                if (outcome === "pluginsOff") expect(loads()).toEqual([]);
+            } finally {
+                gate.resolve();
+                await boot;
+            }
+        },
+    );
 });
