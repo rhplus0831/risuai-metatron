@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { MAX_OOC_EXCHANGES, oocPrune, oocTail, oocToggleValues, type OocExchange, type OocLog } from "./ooc.ts";
+import {
+    MAX_OOC_EXCHANGES,
+    oocLogError,
+    oocPrune,
+    oocTail,
+    oocToggleValues,
+    type OocExchange,
+    type OocLog,
+} from "./ooc.ts";
 
 const exchange = (id: string, segment: string, time: number, extra: Partial<OocExchange> = {}): OocExchange => ({
     id,
@@ -45,14 +53,23 @@ describe("oocToggleValues", () => {
     });
 });
 
-const fullLog = (): OocLog =>
+const fullLog = (size = MAX_OOC_EXCHANGES): OocLog =>
     Object.fromEntries(
-        Array.from({ length: MAX_OOC_EXCHANGES }, (_, time) => {
+        Array.from({ length: size }, (_, time) => {
             const id = `e-${time}`;
             return [id, exchange(id, "previous", time)];
         }).reverse(),
     );
 const currentSegment = { id: "current", anchorMessageId: null };
+
+describe("oocLogError", () => {
+    it("accepts 216 stored exchanges and refuses 217", () => {
+        const log = fullLog(216);
+        expect(oocLogError(log)).toBeNull();
+        log.extra = exchange("extra", "previous", 216);
+        expect(oocLogError(log)).toBe("chat.oocLog holds at most 216 exchanges");
+    });
+});
 
 describe("oocPrune", () => {
     it("removes only enough exchanges for one more, oldest first, and removes none when there is room", () => {

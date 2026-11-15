@@ -558,6 +558,45 @@ describe("OOC segments and attachments", () => {
         expect(m.ooc.readOocState(ref).picks).toEqual([]);
     });
 
+    it("prunes a stored log above 200 for a new question and refuses it when no entries are removable", async () => {
+        const entries: OocLog = Object.fromEntries(
+            Array.from({ length: MAX_OOC_EXCHANGES + 1 }, (_, i) => {
+                const entry = exchange(`old-${i}`, "earlier", i);
+                return [entry.id, entry];
+            }),
+        );
+        const segment = { id: "current", anchorMessageId: "newest" };
+        seed({ oocSegment: segment, oocLog: entries });
+        const result = await m.ooc.askOoc(ref, "Next question");
+        expect(result).toMatchObject({ status: "done" });
+        if (result.status !== "done") throw new Error("Question did not finish");
+        expect(log()).toEqual({
+            ...Object.fromEntries(Object.entries(entries).slice(2)),
+            [result.exchangeId!]: expect.objectContaining({
+                question: "Next question",
+                answer: "Buffered answer",
+                segment: "current",
+            }),
+        });
+        expect(Object.keys(log())).toHaveLength(MAX_OOC_EXCHANGES);
+        expect(io.job).toHaveBeenCalledTimes(1);
+        expect(io.request).toHaveBeenCalledTimes(1);
+        acknowledge();
+
+        const protectedEntries = Object.fromEntries(
+            Object.entries(entries).map(([id, entry]) => [id, { ...entry, segment: "current" }]),
+        );
+        seed({ oocSegment: segment, oocLog: protectedEntries });
+        io.job.mockClear();
+        io.request.mockClear();
+        expect(await m.ooc.askOoc(ref, "No room")).toMatchObject({ status: "refused", error: { kind: "pruneFull" } });
+        expect(log()).toEqual(protectedEntries);
+        expect(m.chat.takeChatWork(new Set()).groups).toEqual([]);
+        expect(m.ooc.readOocState(ref)).toMatchObject({ busy: false, error: { kind: "pruneFull" } });
+        expect(io.job).not.toHaveBeenCalled();
+        expect(io.request).not.toHaveBeenCalled();
+    });
+
     it("refuses a full log when every earlier exchange is picked and the rest are current", async () => {
         const entries: OocLog = Object.fromEntries(
             Array.from({ length: MAX_OOC_EXCHANGES - 1 }, (_, i) => {

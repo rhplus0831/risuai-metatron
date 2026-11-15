@@ -2,11 +2,12 @@ import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { tick } from "svelte";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { RESOURCE_EPOCH_HEADER, RESOURCE_KIND } from "../../../../shared/resources.ts";
-import { SAVE_DEBOUNCE_MS, warmMutationGraph } from "./mutationStoresHarness";
+import { plain, SAVE_DEBOUNCE_MS, warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 import { createFakeLockManager } from "./fakeLockManager";
 import { translationSourceHash } from "../../../../shared/translation/hash.ts";
 import type { ChatOp } from "../../../../shared/chats.ts";
+import { MAX_OOC_EXCHANGES, oocPrune, type OocExchange } from "../../../../shared/ooc.ts";
 
 // The save adapter (`resourceSync.svelte.ts`) together with the chat module (`chatStore.svelte.ts`)
 // against the real server store: mixed batches, the request caps, quarantine, conflicts, deferral,
@@ -374,6 +375,67 @@ describe("boot and mixed batches", () => {
 });
 
 describe("the flush barrier", () => {
+    it("saves a 201-entry OOC merge from concurrent pruned writers and the note queued behind it", async () => {
+        const segment = { id: "current", anchorMessageId: "c" };
+        const exchange = (id: string, time: number): OocExchange => ({
+            id,
+            segment: "earlier",
+            anchorMessageId: "c",
+            question: id,
+            time,
+        });
+        const initial = Object.fromEntries(
+            Array.from({ length: MAX_OOC_EXCHANGES }, (_, i) => [`old-${i}`, exchange(`old-${i}`, i)]),
+        );
+        const { fake, sync, chat } = await boot((fake) =>
+            fake.chatBatch([
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: fake.chat("c", "k")!.revision,
+                    ops: [{ op: "meta", set: { oocLog: initial, oocSegment: segment } }],
+                },
+            ]),
+        );
+        try {
+            const baseRevision = fake.chat("c", "k")!.revision;
+            const removalsA = oocPrune(initial, segment, [])!;
+            const removalsB = oocPrune(plain(chat.findChat(refK)!.oocLog), segment, [])!;
+            expect(removalsA).toEqual(["old-0"]);
+            expect(removalsB).toEqual(removalsA);
+            const a = { ...exchange("A", 1000), segment: "current" };
+            const b = { ...exchange("B", 1001), segment: "current" };
+            // The first writer lands while the tab still holds the same full-log revision.
+            fake.chatBatch([
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision,
+                    ops: [{ op: "meta", merge: { oocLog: { A: a } }, mergeUnset: { oocLog: removalsA } }],
+                },
+            ]);
+            chat.mergeChatMeta(refK, "oocLog", { B: b }, removalsB);
+            fake.holdNextBatch = true;
+            const saving = sync.flushResources();
+            await vi.waitFor(() => expect(fake.releaseBatch).not.toBeNull());
+            chat.setChatMeta(refK, { note: "queued behind the OOC merge" });
+            fake.releaseBatch!();
+            expect(await saving).toEqual({ discarded: [], refused: [] });
+            expect(Object.keys(fake.chat("c", "k")!.data.oocLog)).toHaveLength(201);
+            expect(fake.chat("c", "k")!.data.oocLog).toEqual({
+                ...Object.fromEntries(Object.entries(initial).filter(([id]) => id !== "old-0")),
+                A: a,
+                B: b,
+            });
+            expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
+            expect(fake.chat("c", "k")!.data.note).toBe("queued behind the OOC merge");
+            expect(sync.refusedItems()).toEqual([]);
+            expect(alerts.error).not.toHaveBeenCalled();
+        } finally {
+            sync.stopResourceSync();
+        }
+    });
+
     it("waits for chat work already in flight", async () => {
         const { fake, sync, chat } = await boot();
         fake.holdNextBatch = true;

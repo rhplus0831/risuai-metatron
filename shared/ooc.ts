@@ -32,8 +32,11 @@ export type OocTailRow = { id: string; role: "user" | "char"; data: string };
 /** Maximum size of one exchange as serialized JSON in UTF-8 bytes. */
 export const MAX_OOC_EXCHANGE_BYTES = 256 * 1024;
 
-/** Maximum number of exchanges stored in one chat's log. */
+/** Target maximum number of exchanges after pruning for a new question. */
 export const MAX_OOC_EXCHANGES = 200;
+
+/** Concurrent writers may each add an exchange after pruning the same full log. */
+export const OOC_LOG_CONCURRENCY_SLACK = 16;
 
 /** Maximum exchange and segment id length in UTF-16 units. */
 export const MAX_OOC_ID_LENGTH = 256;
@@ -178,8 +181,9 @@ export function oocLogError(value: unknown): string | null {
         return "chat.oocLog must be a plain object";
     }
     const entries = Object.entries(value);
-    if (entries.length > MAX_OOC_EXCHANGES) {
-        return `chat.oocLog holds at most ${MAX_OOC_EXCHANGES} exchanges`;
+    const maxExchanges = MAX_OOC_EXCHANGES + OOC_LOG_CONCURRENCY_SLACK;
+    if (entries.length > maxExchanges) {
+        return `chat.oocLog holds at most ${maxExchanges} exchanges`;
     }
     for (const [id, exchange] of entries) {
         const error = oocExchangeError(id, exchange);

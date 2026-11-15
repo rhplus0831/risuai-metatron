@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { CHAT_META_FORBIDDEN_KEYS, MAX_TOOL_CALL_RECORD_BYTES } from "../../../shared/chats.ts";
-import { MAX_OOC_EXCHANGE_BYTES, MAX_OOC_EXCHANGES } from "../../../shared/ooc.ts";
+import { MAX_OOC_EXCHANGE_BYTES, MAX_OOC_EXCHANGES, OOC_LOG_CONCURRENCY_SLACK } from "../../../shared/ooc.ts";
 import { assertPatchableMetaKeys, normalizeChatMeta, normalizeMessage, normalizeMessageList } from "../data/chats.ts";
 import {
     countChatOperations,
@@ -31,7 +31,7 @@ describe("normalizeChatMeta", () => {
             "an OOC log above the exchange count limit",
             {
                 oocLog: Object.fromEntries(
-                    Array.from({ length: MAX_OOC_EXCHANGES + 1 }, (_, index) => {
+                    Array.from({ length: MAX_OOC_EXCHANGES + OOC_LOG_CONCURRENCY_SLACK + 1 }, (_, index) => {
                         const id = `q-${index}`;
                         return [id, { ...oocExchange, id }];
                     }),

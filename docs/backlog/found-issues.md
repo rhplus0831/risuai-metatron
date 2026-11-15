@@ -53,7 +53,7 @@ are the Plugins entry below.
 
 ## Contents
 
-- [Chat store](#chat-store): 2
+- [Chat store](#chat-store): 1
 - [Plugins](#plugins): 1
 - [Rendering](#rendering): 1
 - [Selection](#selection): 1
@@ -76,22 +76,6 @@ guide may repeat the plan's absolute claim.
 
 **Suggested handling:** list the callers of `replaceChat` and of the reconciliation that build the next chat from a
 partial field list before treating this as a bug; if one exists, carry unknown metadata through it.
-
-### Two devices asking in a full OOC log at once can block the chat's other saves
-
-`askOoc` prunes the oldest exchanges with `oocPrune` so that one more fits `MAX_OOC_EXCHANGES` (200), then merges the
-new exchange into `oocLog` (`src/ts/ooc/oocSession.svelte.ts:210`). Two devices that each do this on a full log at the
-same time each remove a different exchange or the same one, and the second merge can leave 201 entries, which
-`normalizeChatMeta` refuses (`server/src/data/chats.ts`, the `oocLogError` check). The OOC Session plan's slice 3
-session reported that the refused write also holds the chat's other pending saves; that part was read, not run. The
-`chat-pipeline` guide's OOC Session limitations record the refusal.
-
-**Why it matters:** a rare race on a full log can stop unrelated edits of the same chat from being stored until the
-refused write is cleared.
-
-**Suggested handling:** reproduce with two clients first; then either let the server prune the oldest exchanges of
-earlier segments when a merge would pass the limit, or have the tab drop only its refused OOC entry and keep the rest of
-the queue.
 
 ## Plugins
 
