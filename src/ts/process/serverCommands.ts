@@ -1331,10 +1331,13 @@ async function runPinnedServerJob(
         const refusal = { ...refused, requestUncertain };
         const memoryRebuilding =
             error instanceof ResourceRequestError && error.status === 409 && error.message === "memoryRebuilding";
+        // With an earlier uncertainty kept, these still say why this create was refused. A stale revision
+        // or a binding mismatch is among them: it leaves the request id usable by its other creator.
         const admissionRefused =
             error instanceof GenerationBusyError ||
             memoryRebuilding ||
-            (error instanceof ChatBindingRefusedError && error.code === "chatBindingIncomplete") ||
+            error instanceof GenerationStaleError ||
+            error instanceof ChatBindingRefusedError ||
             error instanceof ChatLoreOverrideOrphanedError ||
             (error instanceof ResourceRequestError &&
                 error.status === 503 &&

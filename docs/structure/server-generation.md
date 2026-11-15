@@ -108,7 +108,8 @@ refusal the memory step recovered from or outlived replaces no later error.
   any authenticated tab or device.
 - A retry's auth, limiter or body-reader failure happens before lookup. After an unanswered create, only a decoded
   success/replay or a refusal fencing the delayed original resolves it: `requestCancelled`, `requestIdReused`, `stale`,
-  `chatBindingMismatch` and 404.
+  `chatBindingMismatch` and 404. `stale` and `chatBindingMismatch` fence only copies of that frozen request: they do not
+  resolve an uncertainty the caller brought to the create, since a remote host may create under the id later.
 - A refusal installs no identity, so after one the original can still be admitted: the 503s, `chatBusy`,
   `memoryRebuilding`, `chatBindingIncomplete` and `chatLoreOverrideOrphaned` keep the request uncertain, as do 412, 429,
   auth/body-limit errors and generic errors. This does not bypass the shared limiter or promise connectivity after the

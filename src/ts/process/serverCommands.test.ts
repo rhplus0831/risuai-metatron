@@ -1579,6 +1579,23 @@ describe("runServerJob", () => {
         },
     );
 
+    it("keeps an earlier uncertainty through a stale or binding-mismatch refusal and shows the refusal's own text", async () => {
+        // Another creator of the request id (a remote host) may still admit it: this refusal must not release the id.
+        const { GenerationCreateError, GenerationStaleError } = await import("../network/generationJobs");
+        const kept = { outcome: "refused", terminal: null, requestUncertain: true };
+        stubs.create.mockRejectedValueOnce(new GenerationCreateError(new GenerationStaleError(), true));
+        expect(await send({ input: "hi" })).toEqual(kept);
+        expect(stubs.alertError).toHaveBeenLastCalledWith("The chat changed on the server; reload it and send again");
+        stubs.create.mockRejectedValueOnce(
+            new GenerationCreateError(new BindingRefusedError("chatBindingMismatch"), true),
+        );
+        expect(await send({ input: "hi" })).toEqual(kept);
+        expect(stubs.loadChat).toHaveBeenCalledExactlyOnceWith(ref);
+        expect(stubs.alertError).toHaveBeenLastCalledWith("binding changed");
+        expect(stubs.alertError).toHaveBeenCalledTimes(2);
+        expect(follows()).toHaveLength(0);
+    });
+
     it("reports `unknown` for a create request without an answer and `refused` for an answered refusal, alerting once each", async () => {
         const { GenerationCreateError, GenerationStaleError } = await import("../network/generationJobs");
         const uncertain = { outcome: "unknown", terminal: null, requestUncertain: true };

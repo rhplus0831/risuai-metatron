@@ -243,6 +243,8 @@ in [network jobs](network-jobs.md#job-recovery).
   tied to the same frozen body can fence it. State-dependent refusals do not: `503`, `chatBusy`,
   `chatBindingIncomplete`, `chatLoreOverrideOrphaned`, and `409 memoryRebuilding`. See `serverCommands.ts`
   `admissionRefused`; the server admission codes are listed in [generation](server-generation.md#generation-admission).
+- `stale` and `chatBindingMismatch` fence only this tab's frozen request. A send already marked uncertain keeps its
+  request id through one (`registryRefusal`): a remote host may still create under that id.
 - The ordinary composer's request id survives only while the create or follow outcome is uncertain. Draft and message-id
   recovery rules live in `composerDrafts.svelte.ts` and [draft recovery](draft-recovery.md).
 - A lore budget stop is a job's `error` terminal (`loreOverBudget`), not a create refusal. Its repeat takes a fresh

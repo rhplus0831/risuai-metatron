@@ -467,10 +467,15 @@ function validCancelled(value: unknown): value is GenerationCancelled {
     );
 }
 
-/** Registry identity evidence or a permanent chat refusal resolves earlier create uncertainty. */
-function registryRefusal(status: number, body: FailureBody): boolean {
+/**
+ * Registry identity evidence or a permanent chat refusal resolves earlier create uncertainty. A stale
+ * revision or binding fences only the copies of this frozen request, so it resolves nothing the caller
+ * brought in (`prior`): another creator of the id, a remote host, prepares again with newer values.
+ */
+function registryRefusal(status: number, body: FailureBody, prior: boolean): boolean {
     if (status === 409) {
-        return ["stale", "chatBindingMismatch", "requestIdReused", "requestCancelled"].includes(body.error ?? "");
+        if (["requestIdReused", "requestCancelled"].includes(body.error ?? "")) return true;
+        return !prior && ["stale", "chatBindingMismatch"].includes(body.error ?? "");
     }
     return status === 404 && body.error === "Chat not found";
 }
@@ -535,7 +540,7 @@ async function exchange<T>(options: {
         try {
             failAnswer(answer.status, body);
         } catch (error) {
-            if (options.cancelling || (uncertain && !registryRefusal(answer.status, body))) {
+            if (options.cancelling || (uncertain && !registryRefusal(answer.status, body, options.uncertain))) {
                 throw new GenerationCreateError(error, true);
             }
             throw error;

@@ -444,6 +444,32 @@ describe("the requests", () => {
     );
 
     it.each([
+        { error: "stale", uncertain: true },
+        { error: "chatBindingMismatch", uncertain: true },
+        { error: "requestCancelled", uncertain: false },
+        { error: "requestIdReused", uncertain: false },
+    ])(
+        "keeps uncertainty=$uncertain when the caller's earlier attempt was uncertain and the create answers 409 $error",
+        async ({ error, uncertain }) => {
+            // A stale revision or binding fences only this frozen request. The id's other creator, a remote
+            // host, prepares again with newer values, so only the registry's identity answers settle it.
+            stubs.fetch.mockResolvedValueOnce(json(409, { error }));
+            const failure = await transport
+                .createGenerationJob(
+                    { ...body, requestId: "same-request", hooks: NO_GENERATION_HOOKS },
+                    { requestUncertain: true },
+                )
+                .then(
+                    () => undefined,
+                    (thrown: unknown) => thrown,
+                );
+            expect(failure).toBeInstanceOf(Error);
+            expect(failure instanceof transport.GenerationCreateError && failure.uncertain).toBe(uncertain);
+            expect(stubs.fetch).toHaveBeenCalledTimes(1);
+        },
+    );
+
+    it.each([
         ["lookup", "authentication"],
         ["lookup", "fetch"],
         ["lookup", "body"],
