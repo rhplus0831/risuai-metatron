@@ -2158,11 +2158,13 @@
             {#if chatPanelStore.length > 0}
                 <div class="chat-screen-content-width mx-4 my-2 flex flex-col gap-2">
                     {#each chatPanelStore as panel (panel.id)}
+                        <!-- Keep plugin positioning inside the panel and plugin attributes off its containment boundary. -->
                         <section
-                            class={`rounded-md border border-darkborderc bg-darkbg/80 p-3 text-textcolor ${panel.className ?? ""}`}
-                            data-plugin-chat-panel={panel.id}
+                            class="contain-paint rounded-md border border-darkborderc bg-darkbg/80 p-3 text-textcolor"
                         >
-                            {@html panel.html}
+                            <div class={panel.className ?? ""} data-plugin-chat-panel={panel.id}>
+                                {@html panel.html}
+                            </div>
                         </section>
                     {/each}
                 </div>

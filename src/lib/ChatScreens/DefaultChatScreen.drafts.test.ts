@@ -251,6 +251,35 @@ async function mountComposer({
     return { target, input, type, click, menuItem, menu, hide, journal };
 }
 
+it("keeps plugin panel classes and attributes on the HTML wrapper inside the section", async () => {
+    const { target } = await mountComposer();
+    const { chatPanelStore } = await import("src/ts/stores.svelte");
+    const className = "fixed inset-0 z-50 contain-none";
+    chatPanelStore.push({
+        id: "positioned-panel",
+        pluginName: "UnprivilegedPanel",
+        className,
+        html: "<p>Plugin panel content</p>",
+    });
+    flushSync();
+    try {
+        const wrapper = target.querySelector<HTMLElement>('[data-plugin-chat-panel="positioned-panel"]')!;
+        expect(wrapper).not.toBeNull();
+        const section = wrapper.closest("section")!;
+        expect(section).not.toBeNull();
+        expect(wrapper.parentElement).toBe(section);
+        expect(wrapper.querySelector("p")?.textContent).toBe("Plugin panel content");
+        expect(section.hasAttribute("data-plugin-chat-panel")).toBe(false);
+        for (const token of className.split(" ")) {
+            expect(wrapper.classList.contains(token)).toBe(true);
+            expect(section.classList.contains(token)).toBe(false);
+        }
+    } finally {
+        chatPanelStore.splice(0);
+        flushSync();
+    }
+});
+
 it("reveals the latest message once after a notification request and clears the request before the tick", async () => {
     await mountComposer();
     const { ShowLatestMessageStore } = await import("src/ts/stores.svelte");

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Frame } from "@playwright/test";
 import { expect, settle, test as base, type Page } from "./fixtures";
-import { isolateContext, openApp } from "../util/playwright/stack.mjs";
+import { isolateContext, openApp, openCharacterChat } from "../util/playwright/stack.mjs";
 
 // The real v3 plugin sandbox keeps an opaque origin, rejects other windows, and reads unloaded chats.
 // Covers src/ts/plugins/apiV3/factory.ts and src/ts/plugins/apiV3/v3.svelte.ts against the dev stack.
@@ -26,15 +26,16 @@ globalThis.__sandboxProbe = {
         this.rootDocumentRequest = risuai.getRootDocument();
     },
     hideContainer() { return risuai.hideContainer(); },
-    setPanel(html, id) { this.panelRequest = risuai.setChatPanel(html, { id }); },
+    setPanel(html, id, className) { this.panelRequest = risuai.setChatPanel(html, { id, className }); },
 };
 `;
 
 type Api = (path: string, body?: unknown) => Promise<any>;
 type Sandbox = { frame: Frame; chaId: string; api: Api };
 
-const test = base.extend<{ sandbox: Sandbox }>({
-    sandbox: async ({ page, baseURL }, use) => {
+const test = base.extend<{ sandbox: Sandbox; grantDatabase: boolean }>({
+    grantDatabase: [true, { option: true }],
+    sandbox: async ({ page, baseURL, grantDatabase }, use) => {
         await isolateContext(page.context());
         let auth = "";
         let epoch = "";
@@ -104,10 +105,10 @@ const test = base.extend<{ sandbox: Sandbox }>({
                     id: "main",
                     baseRevision: permissions.revision,
                     data: {
-                        grants: { ...permissions.data.grants, [grant]: true },
+                        grants: { ...permissions.data.grants, ...(grantDatabase ? { [grant]: true } : {}) },
                         lastGrantTime: {
                             ...permissions.data.lastGrantTime,
-                            [`${pluginName}_db_lastGrantTime`]: Date.now(),
+                            ...(grantDatabase ? { [`${pluginName}_db_lastGrantTime`]: Date.now() } : {}),
                         },
                     },
                 },
@@ -308,6 +309,57 @@ test("a chat panel's style elements need globalStyle consent and are removed whe
     expect(svgPanel).toContain("<circle");
     expect(svgPanel).not.toContain("style>");
     expect(svgPanel).not.toContain("outline");
+});
+
+test.describe("unprivileged chat panels", () => {
+    test.use({ grantDatabase: false });
+
+    test("fixed HTML and app classes stay inside the panel without consent", async ({
+        page,
+        sandbox: { frame, chaId, api },
+    }) => {
+        await openCharacterChat(page, chaId);
+        const panel = page.locator('[data-plugin-chat-panel="confined"]');
+        const dialog = page.locator("[data-alert-dialog]");
+        await frame.evaluate(() => (globalThis as any).__sandboxProbe.setPanel("<p>Panel content</p>", "confined"));
+        await expect(panel).toBeVisible();
+        const before = await panel.evaluate((element) => element.closest("section")!.getBoundingClientRect().toJSON());
+        const outside = { x: 8, y: 8 };
+        expect(outside.x < before.x || outside.y < before.y).toBe(true);
+
+        await frame.evaluate(() =>
+            (globalThis as any).__sandboxProbe.setPanel(
+                '<div style="position: fixed; inset: 0; z-index: 9999">Positioned panel content</div>',
+                "confined",
+                "fixed inset-0 z-50",
+            ),
+        );
+        await expect(panel).toContainText("Positioned panel content");
+        await expect(dialog).toBeHidden();
+        await frame.evaluate(() => (globalThis as any).__sandboxProbe.panelRequest);
+        expect((await api("/api/resources/pluginPermissions/main")).data.grants).toEqual({});
+
+        const layout = await panel.evaluate((element, point) => {
+            const section = element.closest("section")!;
+            const rect = section.getBoundingClientRect();
+            const hit = document.elementFromPoint(point.x, point.y);
+            return {
+                hitPanel: hit !== null && section.contains(hit),
+                pointOutside:
+                    point.x < rect.left || point.x >= rect.right || point.y < rect.top || point.y >= rect.bottom,
+                width: rect.width,
+                height: rect.height,
+                viewportWidth: innerWidth,
+                viewportHeight: innerHeight,
+            };
+        }, outside);
+        expect.soft(layout.hitPanel, "the panel cannot intercept a hit outside its original section").toBe(false);
+        expect.soft(layout.pointOutside, "the section still excludes the outside point").toBe(true);
+        expect.soft(layout.width, "the section stays narrower than the viewport").toBeLessThan(layout.viewportWidth);
+        expect.soft(layout.height, "the section stays shorter than the viewport").toBeLessThan(layout.viewportHeight);
+        expect(layout.width).toBeGreaterThan(0);
+        expect(layout.height).toBeGreaterThan(0);
+    });
 });
 
 test("other windows cannot write plugin storage or get an RPC answer, while the real bridge round trips", async ({

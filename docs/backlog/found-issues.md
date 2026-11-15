@@ -54,7 +54,6 @@ are the Plugins entry below.
 ## Contents
 
 - [Chat store](#chat-store): 1
-- [Plugins](#plugins): 1
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 1
 
@@ -74,25 +73,6 @@ guide may repeat the plan's absolute claim.
 
 **Suggested handling:** list the callers of `replaceChat` and of the reconciliation that build the next chat from a
 partial field list before treating this as a bug; if one exists, carry unknown metadata through it.
-
-## Plugins
-
-### A plugin's chat panel can cover the app with inline styles or app classes
-
-`setChatPanel` (`src/ts/plugins/apiV3/v3.svelte.ts`) keeps inline `style` attributes in the sanitized HTML, and its
-`className` option is only stripped of markup before `DefaultChatScreen.svelte` puts it on the panel's `section`. A
-panel of `<div style="position:fixed;inset:0;z-index:9999">` would lie over the whole app, and a `className` naming
-app utility classes could do the same to the section itself. Neither needs a grant. Left open on 2026-11-14 when the
-panel's `style` elements were put behind the `globalStyle` permission (owner's decision: close the `style` element
-only). Not run in a browser.
-
-**Why it matters:** a plugin without any grant can hide the app or imitate its controls, which `globalStyle` and
-`mainDom` are there to gate.
-
-**Suggested handling:** `contain: paint` on the panel's `section` confines fixed descendants and clips them to the
-panel, at the cost of panel content that is meant to overflow (a dropdown); check that cost with a real plugin first.
-For `className`, allow only classes of the plugin's own choosing that the app does not define, or drop the option's
-effect on position.
 
 ## Rendering
 
