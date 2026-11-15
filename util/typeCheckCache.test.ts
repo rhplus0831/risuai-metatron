@@ -109,7 +109,7 @@ describe("workingTreeFiles", () => {
     it("lists a tracked file by its content on disk and an untracked file, and leaves the index alone", () => {
         const root = repository();
         const staged = idOf(root, "src/tracked.ts");
-        write(root, "src/tracked.ts", "export const a = 2;\n");
+        write(root, "src/tracked.ts", "export const a = 22;\n");
         write(root, "e2e/untracked.ts", "export const b = 1;\n");
 
         const listed = workingTreeFiles(root);
@@ -126,7 +126,7 @@ describe("workingTreeFiles", () => {
     it("gives a different tree id for different content and the same one for the same content", () => {
         const root = repository();
         const first = workingTreeFiles(root)?.tree;
-        write(root, "src/tracked.ts", "export const a = 2;\n");
+        write(root, "src/tracked.ts", "export const a = 22;\n");
         const second = workingTreeFiles(root)?.tree;
         write(root, "src/tracked.ts", "export const a = 1;\n");
 

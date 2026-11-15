@@ -58,7 +58,7 @@ are the Plugins entry below.
 - [Rendering](#rendering): 1
 - [Selection](#selection): 1
 - [Server generation](#server-generation): 1
-- [Test tooling](#test-tooling): 2
+- [Test tooling](#test-tooling): 1
 
 ## Chat store
 
@@ -168,15 +168,3 @@ open (0 of 10 cases), and passed once the run answered the dialog. The handoff i
 
 **Suggested handling:** seed the `dbWrite` grant with the `replacer` grant in the fixture, or have the driver answer
 the dialog.
-
-### The working-tree listing test can see the staged blob under load
-
-`util/typeCheckCache.test.ts:109` ("lists a tracked file by its content on disk ...") stages `src/tracked.ts`, rewrites
-it with content of the same length, and expects a new blob id. Under whole-suite load both writes can land in the same
-mtime tick, so git's racy-stat cache reports the staged blob: it failed once with `expected '100644 cc798ff…' not to
-be '100644 cc798ff…'` in the OOC Session slice 1 whole-suite run (2026-11-14) and passed when run alone.
-
-**Why it matters:** a whole-suite gate failure unrelated to the change under test.
-
-**Suggested handling:** rewrite with content of a different length, or move the file's mtime explicitly
-(`utimesSync`) before listing.
