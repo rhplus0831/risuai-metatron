@@ -45,8 +45,14 @@ function parsePost(value: unknown): RemoteCommandPostBody | null {
         command.requestId !== value.commandId ||
         !isValidResourceId(command.chaId) ||
         !isValidResourceId(command.chatId) ||
-        !isValidResourceId(command.userMessageId) ||
         typeof command.input !== "string" ||
+        (command.userMessageId !== undefined && !isValidResourceId(command.userMessageId)) ||
+        (command.input !== "" && command.userMessageId === undefined) ||
+        (command.continue !== undefined && typeof command.continue !== "boolean") ||
+        (command.continueMessageId !== undefined && !isValidResourceId(command.continueMessageId)) ||
+        (command.rerollMessageId !== undefined && !isValidResourceId(command.rerollMessageId)) ||
+        (command.speakerChaId !== undefined && !isValidResourceId(command.speakerChaId)) ||
+        (command.rerollMessageId !== undefined && command.continue === true) ||
         (command.inputOriginal !== undefined && typeof command.inputOriginal !== "string") ||
         (command.stopOverLoreBudget !== undefined && typeof command.stopOverLoreBudget !== "boolean")
     )
@@ -57,8 +63,12 @@ function parsePost(value: unknown): RemoteCommandPostBody | null {
         requestId: value.commandId,
         chaId: command.chaId,
         chatId: command.chatId,
-        userMessageId: command.userMessageId,
         input: command.input,
+        ...(command.userMessageId !== undefined ? { userMessageId: command.userMessageId } : {}),
+        ...(command.continue === true ? { continue: true } : {}),
+        ...(command.continueMessageId !== undefined ? { continueMessageId: command.continueMessageId } : {}),
+        ...(command.rerollMessageId !== undefined ? { rerollMessageId: command.rerollMessageId } : {}),
+        ...(command.speakerChaId !== undefined ? { speakerChaId: command.speakerChaId } : {}),
         ...(command.inputOriginal !== undefined ? { inputOriginal: command.inputOriginal } : {}),
         ...(command.stopOverLoreBudget !== undefined ? { stopOverLoreBudget: command.stopOverLoreBudget } : {}),
     };
@@ -102,6 +112,7 @@ function parseState(value: unknown): RemoteCommandStateBody | null {
  * All five HTTP routes require JWT, the authenticated limiter, and the current resource epoch.
  * Every answer is no-store; every POST caps its body after authentication. Bodies travel only here,
  * and the registry never executes them. Non-participants see the same 404 as an unknown command.
+ * A host read declares its command contract version before receiving action fields it must preserve.
  */
 export function registerRemoteCommandRoutes(
     app: Hono<AppEnv>,
@@ -151,7 +162,7 @@ export function registerRemoteCommandRoutes(
         const clientId = c.req.query("clientId");
         if (!commandId(id) || !isValidResourceId(clientId))
             return c.json({ error: "Invalid command or client id" }, 400);
-        const result = commands.read(id, clientId);
+        const result = commands.read(id, clientId, Number(c.req.query("contractVersion") ?? 1));
         return result.ok ? c.json(result.body) : c.json(result.body, result.status);
     });
 

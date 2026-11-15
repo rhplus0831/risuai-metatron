@@ -7,7 +7,9 @@ import {
     REMOTE_COMMAND_OPEN_DROP_MS,
     REMOTE_COMMAND_PICKUP_MS,
     REMOTE_COMMAND_ERRORS,
+    REMOTE_COMMAND_CONTRACT_VERSION,
     remoteCommandAction,
+    remoteCommandNeedsActionSupport,
 } from "../../shared/remoteCommands.ts";
 import type {
     RemoteCommand,
@@ -77,7 +79,8 @@ function failure(
 }
 
 /**
- * Synchronous, process-local relay. Only a target's HTTP read delivers a command. Closing removes
+ * Synchronous, process-local relay. Only a target's compatible HTTP read delivers a command. An
+ * unsupported action is refused before delivery, or stays uncertain if already attempted. Closing removes
  * the body but keeps its content-free identity; absence never certifies that no job ran. Every
  * access sweeps obsolete epochs and deadlines. One unref'd timer handles the next deadline even
  * when no client polls. A new attempt's first report renews the deadline even with the same state;
@@ -261,11 +264,21 @@ export function createRemoteCommands(options: {
             return { ok: true, body: statusAnswer(entry) };
         },
 
-        read(id: string, clientId: string): RemoteCommandOutcome<RemoteCommandReadAnswer> {
+        read(id: string, clientId: string, contractVersion = 1): RemoteCommandOutcome<RemoteCommandReadAnswer> {
             sweep();
             const entry = entries.get(id);
             if (!entry || entry.target !== clientId) return failure(404, REMOTE_COMMAND_ERRORS.unknownCommand);
             if (!isOpen(entry)) return failure(410, "commandClosed", entry.state);
+            if (
+                remoteCommandNeedsActionSupport(entry.command!) &&
+                (!Number.isSafeInteger(contractVersion) || contractVersion < REMOTE_COMMAND_CONTRACT_VERSION)
+            ) {
+                entry.code = "unsupported";
+                entry.result = undefined;
+                transition(entry, entry.attempted ? "uncertain" : "refused");
+                schedule();
+                return failure(410, "unsupported", entry.state);
+            }
             entry.attempt++;
             if (entry.state === "queued") transition(entry, "delivered");
             schedule();

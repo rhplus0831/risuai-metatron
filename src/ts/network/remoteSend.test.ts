@@ -291,6 +291,63 @@ it("refuses a discarded or refused write without posting or falling back", async
     }
 });
 
+it("routes caller-owned Continue and in-place rerolls remotely with their action fields, but keeps id-less actions local", async () => {
+    const actions: [SendArg, Record<string, unknown>][] = [
+        [
+            { continue: true, continueMessageId: "last-reply", input: undefined, userMessageId: undefined },
+            { input: "", continue: true, continueMessageId: "last-reply" },
+        ],
+        [{ continue: true }, { input: "reviewed input", userMessageId: "message", continue: true }],
+        [
+            { rerollMessageId: "reply", input: "", userMessageId: undefined },
+            { input: "", rerollMessageId: "reply" },
+        ],
+        [
+            { rerollMessageId: "reply", speakerChaId: "speaker", input: undefined, userMessageId: undefined },
+            { input: "", rerollMessageId: "reply", speakerChaId: "speaker" },
+        ],
+    ];
+    postAnswer = () => Response.json(state("done", success));
+    for (const [action, fields] of actions) {
+        clearCalls();
+        expect(remote.remoteSendEligible({ ...input, ...action })).toBe(true);
+        await ended(start(action), true, endSuccess);
+        expect(posts()).toEqual([
+            {
+                clientId: "sender",
+                target: "host",
+                commandId: "request",
+                command: {
+                    type: "send",
+                    ...target,
+                    inputOriginal: "  original\ninput  ",
+                    requestId: "request",
+                    stopOverLoreBudget: true,
+                    ...fields,
+                },
+            },
+        ]);
+        expect(stubs.local).not.toHaveBeenCalled();
+
+        clearCalls();
+        const idless = { ...action, requestId: undefined };
+        expect(remote.remoteSendEligible({ ...input, ...idless })).toBe(false);
+        await ended(start(idless), true, endSuccess);
+        expect(posts()).toEqual([]);
+        expect(stubs.local).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ ...input, ...idless }));
+    }
+    for (const action of [
+        { input: "", userMessageId: undefined, requestId: undefined },
+        { continue: true, userMessageId: undefined },
+    ]) {
+        clearCalls();
+        expect(remote.remoteSendEligible({ ...input, ...action })).toBe(false);
+        await ended(start(action), true, endSuccess);
+        expect(posts()).toEqual([]);
+        expect(stubs.local).toHaveBeenCalledTimes(1);
+    }
+});
+
 it("refuses a second send throughout the remote wait and the fallback, then releases the reservation", async () => {
     const fallback = deferred<ServerSendResult>();
     stubs.local.mockReturnValueOnce(fallback.promise);
@@ -322,6 +379,11 @@ const definiteAnswers = [
     { label: "413", reason: "The send exceeds the remote command size limit.", answer: "tooLarge" },
     { label: "an expired command", reason: "The host did not pick up the send in time.", answer: "expired" },
     { label: "a host refusal", reason: "The host is busy with this chat.", answer: "refused" },
+    {
+        label: "an unsupported action",
+        reason: "The host is running an older version. Reload the host tab to run this action.",
+        answer: "unsupported",
+    },
 ] as const;
 it.each(definiteAnswers)(
     "falls back for $label, with a notice, only when enabled and the send is unmarked",
@@ -340,23 +402,30 @@ it.each(definiteAnswers)(
                           : answer === "tooLarge"
                             ? Response.json({ error: "bodyTooLarge" }, { status: 413 })
                             : Response.json(state("queued"));
-                const sending = start({ requestId, requestUncertain: marked });
+                const sendArg = {
+                    requestId,
+                    requestUncertain: marked,
+                    ...(answer === "unsupported" ? { continue: true } : {}),
+                };
+                const sending = start(sendArg);
                 await drain();
-                if (answer === "expired" || answer === "refused") {
+                if (answer === "expired" || answer === "refused" || answer === "unsupported") {
+                    const refusedState = answer === "expired" ? "expired" : "refused";
+                    const code = answer === "unsupported" ? "unsupported" : "busy";
                     statusAnswer = () =>
-                        Response.json({ ...state(answer), ...(answer === "refused" ? { code: "busy" } : {}) });
+                        Response.json({ ...state(refusedState), ...(refusedState === "refused" ? { code } : {}) });
                     remote.receiveRemoteCommandState({
                         type: "remoteCommandState",
                         epoch: EPOCH,
                         commandId: requestId,
-                        state: answer,
-                        ...(answer === "refused" ? { code: "busy" } : {}),
+                        state: refusedState,
+                        ...(refusedState === "refused" ? { code } : {}),
                     });
                 }
                 if (fallback && !marked) {
                     await ended(sending, true, endSuccess);
                     expect(stubs.local).toHaveBeenCalledExactlyOnceWith(
-                        expect.objectContaining({ ...input, requestId, requestUncertain: false }),
+                        expect.objectContaining({ ...input, ...sendArg, requestUncertain: false }),
                     );
                     expect(stubs.toast).toHaveBeenCalledExactlyOnceWith(
                         `Remote send through Desk: ${reason} Sending from this device instead.`,
@@ -880,6 +949,44 @@ it("re-posts the same request as uncertain to its original connected host after 
     expect(stubs.local).toHaveBeenCalledTimes(1);
 });
 
+it("forgets a non-retryable action's host after an uncertain result or a thrown send", async () => {
+    const otherHost = { ...hostClient, clientId: "other-host", name: "Other" };
+    handoff.replaceConnectedClients([hostClient, otherHost]);
+    for (const action of [
+        { input: undefined, userMessageId: undefined, rerollMessageId: "reply" },
+        { continue: true },
+    ]) {
+        for (const ending of ["uncertain", "throw"]) {
+            clearCalls();
+            remote.remoteSendHost.set("Desk");
+            const arg = { ...input, ...action };
+            if (ending === "throw") {
+                postAnswer = () => Response.json(state("done", success));
+                stubs.read.mockRejectedValueOnce(new Error("chat read failed"));
+                await expect(remote.sendChatRemotely(arg)).rejects.toThrow("chat read failed");
+            } else {
+                postAnswer = () => Promise.reject(new Error("post answer lost"));
+                expect(await remote.sendChatRemotely(arg)).toMatchObject({
+                    ok: false,
+                    outcome: "unknown",
+                    settled: false,
+                    requestUncertain: true,
+                });
+            }
+            expect(posts()).toHaveLength(1);
+            expect(posts()[0].target).toBe("host");
+
+            // Reusing the id at the adapter boundary exposes whether it retained the old host.
+            // The screen itself gives these actions a fresh id on every press.
+            remote.remoteSendHost.set("Other");
+            postAnswer = () => Response.json(state("done", success));
+            expect(await remote.sendChatRemotely(arg)).toMatchObject(endSuccess);
+            expect(posts()).toHaveLength(2);
+            expect(posts()[1].target).toBe("other-host");
+        }
+    }
+});
+
 it("ends uncertain only after the host has been continuously absent for sixty seconds", async () => {
     for (const fallback of [false, true]) {
         clearCalls();
@@ -903,13 +1010,9 @@ it("ends uncertain only after the host has been continuously absent for sixty se
     }
 });
 
-it("keeps host, local-only and non-composer sends on the server path", async () => {
+it("keeps host, local-only, preview, plugin and id-less sends on the server path", async () => {
     const excluded: [string, SendArg][] = [
         ["localOnly", { localOnly: true }],
-        ["continue", { continue: true }],
-        ["continueMessageId", { continueMessageId: "previous" }],
-        ["rerollMessageId", { rerollMessageId: "previous" }],
-        ["speakerChaId", { speakerChaId: "speaker" }],
         ["preview", { preview: true }],
         ["previewPrompt", { previewPrompt: true }],
         [
@@ -923,7 +1026,6 @@ it("keeps host, local-only and non-composer sends on the server path", async () 
                 },
             },
         ],
-        ["input", { input: undefined }],
         ["userMessageId", { userMessageId: undefined }],
         ["requestId", { requestId: undefined }],
         ["host mode", {}],

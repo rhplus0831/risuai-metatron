@@ -1133,6 +1133,9 @@
      * Sends in `target` (default: the selected chat now), captured by the caller before its awaits.
      * `serverInput`: the input a server job appends (its user message is not part of the reroll).
      * `rerollTarget`: regenerates the named carrier in place, without recording a removed bundle.
+     * Without input, Continue names the last message seen now; it and in-place rerolls get a fresh
+     * request id for remote eligibility on every call. Other no-input sends stay local. With input,
+     * Continue uses the input's fresh ids and continues the user message its job appends.
      * `ran`: false for a refusal or an ambiguous create (the job may exist); it does not prove no job ran.
      * `ok`: whether it ran to a reply (`sendChat`'s result: false for a failed, lost, or stopped job too).
      * `settled`: nothing of the send writes to the chat any more (`sendChat`'s `onEnd`; false when it threw).
@@ -1201,6 +1204,8 @@
                 signal,
                 continue: continued,
                 ...sendInput,
+                ...(!serverInput && ((continued && anchor !== null) || rerollTarget) ? { requestId: v4() } : {}),
+                ...(!serverInput && continued && anchor !== null ? { continueMessageId: anchor } : {}),
                 ...rerollTarget,
                 ...(options.askLoreStop && wantsLoreBudgetStop(target) ? { stopOverLoreBudget: true } : {}),
                 onServerRefused: () => {

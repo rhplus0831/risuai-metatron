@@ -94,10 +94,15 @@ bodies or ids answer 400; a non-participant sees 404 `unknownCommand`. Every POS
 Shutdown refuses admission and clears the registry.
 
 - `POST /api/remote-commands` accepts `{ clientId, target, commandId, command, uncertain? }`; a send's `requestId` must
-  equal `commandId`. Answers state, attempted, stopRequested, attempt, and optional code/result. New targets must be
-  registered hosts (404 `targetUnavailable`); 16 open commands per target (409 `targetFull`).
-- `GET /api/remote-commands/:id?clientId=` is target-only: an open command's body, state, attempted, stopRequested and
-  incremented attempt. It changes queued to delivered; a closed command answers 410 without a body.
+  equal `commandId`; its `userMessageId` is required with a nonempty input, and its optional `continue` (kept only when
+  true), `continueMessageId`, `rerollMessageId` (never with `continue`) and `speakerChaId` join the action identity.
+  Answers state, attempted, stopRequested, attempt, and optional code/result. New targets must be registered hosts (404
+  `targetUnavailable`); 16 open commands per target (409 `targetFull`).
+- `GET /api/remote-commands/:id?clientId=&contractVersion=` is target-only: an open command's body, state, attempted,
+  stopRequested and incremented attempt. It changes queued to delivered; a closed command answers 410 without a body. A
+  send with `continue`, `continueMessageId`, `rerollMessageId` or `speakerChaId` needs `contractVersion` 2
+  (`remoteCommandNeedsActionSupport`); a read without it delivers nothing, closes the command `refused` with code
+  `unsupported` (`uncertain` when attempted), and answers 410 `unsupported`.
 - `POST /api/remote-commands/:id/state` is target-only: `{ clientId, attempt, state, code?, result? }`. Reports may be
   running, uncertain, done, or refused with a checked code. A lower attempt answers `superseded: true` without changes;
   a future attempt or disallowed transition answers 409 `invalidTransition`. A repeated closed report is idempotent. The

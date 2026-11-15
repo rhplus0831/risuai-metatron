@@ -4,6 +4,7 @@ import {
     REMOTE_COMMAND_OPEN_DROP_MS,
     REMOTE_COMMAND_STATES,
     REMOTE_COMMANDS_PATH,
+    REMOTE_COMMAND_CONTRACT_VERSION,
     type RemoteCommandFrameState,
     type RemoteCommandReadAnswer,
     type RemoteCommandRefusalCode,
@@ -47,7 +48,8 @@ export function noteHostCommand(entry: HostCommandEntry): void {
 /**
  * Commands contain no composer state. Each run owns its abort controller before its first await;
  * duplicate frames only stop it or repeat its latest report. HTTP bodies and state reports carry
- * the loaded epoch and the read's attempt. Plugin, send, store, alert and selection modules load
+ * the loaded epoch and the read's attempt. Reads declare support for Continue and in-place reroll
+ * fields, which pass unchanged to the send. Plugin, send, store, alert and selection modules load
  * only inside a run or request, keeping the feed's imports free of send/job-channel and plugin/feed
  * cycles. Reload ids stay reserved for this page, including recoveries before registration.
  */
@@ -375,7 +377,7 @@ async function runHostCommand(run: HostRun) {
     const { response, answer } = await relayRequest(
         transport,
         run.epoch,
-        `${REMOTE_COMMANDS_PATH}/${encodeURIComponent(run.commandId)}?clientId=${encodeURIComponent(transport.clientId)}`,
+        `${REMOTE_COMMANDS_PATH}/${encodeURIComponent(run.commandId)}?clientId=${encodeURIComponent(transport.clientId)}&contractVersion=${REMOTE_COMMAND_CONTRACT_VERSION}`,
     );
     if (!response.ok) {
         if (response.status === 404 || response.status === 410) {
@@ -457,6 +459,10 @@ async function runHostCommand(run: HostRun) {
             inputOriginal: command.inputOriginal,
             userMessageId: command.userMessageId,
             requestId: command.requestId,
+            continue: command.continue === true,
+            continueMessageId: command.continueMessageId,
+            rerollMessageId: command.rerollMessageId,
+            speakerChaId: command.speakerChaId,
             stopOverLoreBudget: command.stopOverLoreBudget,
             signal: run.controller.signal,
             localOnly: true,

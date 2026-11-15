@@ -1989,6 +1989,7 @@ export const languageEnglish = {
                 pluginsOff: "Plugins are disabled on the host.",
                 chatMissing: "The chat is unavailable on the host.",
                 busy: "The host is busy with this chat.",
+                unsupported: "The host is running an older version. Reload the host tab to run this action.",
                 refused: "The host refused the send before attempting it.",
             },
         },

@@ -223,6 +223,9 @@ reservation and with the same end shapes ([remote send](network-jobs.md#remote-s
 - `reroll`/`unReroll` switch the newest reply's `candidates`, then the bundle history; past the last, a one-reply tail
   rerolls [in place](server-generation.md#reroll-in-place) while the current `hello` allows it (`serverRerollsInPlace`),
   else the tail is removed and sent again.
+- With remote sending on, the in-place reroll and Continue go through the host (a fresh request id per press; a Continue
+  without input names the message it continues); the removal reroll always runs on this tab, since its bundle history
+  cannot be kept through a host ([remote send](network-jobs.md#remote-send)).
 - `rerollHistory.ts` owns guarded tab restoration; [chat store](chat-store.md#by-id-ops) owns by-id writes; the
   [server job](server-generation.md#reroll-in-place) commits an in-place reroll.
 

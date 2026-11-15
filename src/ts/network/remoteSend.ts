@@ -17,7 +17,8 @@ import { connectedClients, hostTargets, preference } from "./handoff";
 import { hostMode } from "./remoteHost";
 
 /**
- * Routes ordinary composer sends through a host under the caller's local-send reservation. The chat
+ * Routes composer sends, Continue and in-place rerolls with caller-owned request ids through a host
+ * under the caller's local-send reservation. Continue and sends without input never retain retry state. The chat
  * stays pinned through preflight, relay reconciliation and any definite-failure fallback. Frames are
  * wakeups for HTTP status reads, never results; an uncertain transition cannot be upgraded by a later
  * result. Stop cancels both the command and the generation request without creating a local job.
@@ -29,26 +30,23 @@ export const remoteSendFallback = preference<boolean>("risu-remote-send-fallback
 
 const REQUEST_DEADLINE_MS = 15_000;
 const HOST_ABSENCE_MS = 60_000;
-type EligibleSend = ServerSendArg & { input: string; userMessageId: string; requestId: string };
+type EligibleSend = ServerSendArg & { requestId: string };
 type StateFrame = Extract<EventFeedFrame, { type: "remoteCommandState" }>;
 type Waiter = { epoch: string; frame: (frame: StateFrame) => void; reconcile: () => void };
 type RememberedCommand = { epoch: string; hostId?: string; hostName: string; shown: Set<string> };
 const waiters = new Map<string, Waiter>();
 const commands = new Map<string, RememberedCommand>();
 
-/** Remote sending must be enabled; host work, previews and non-composer actions stay local. */
+/** Caller-owned request ids admit screen sends; nonempty input also needs its user message id.
+ * Host work, previews, plugin sends and callers without request ids stay local.
+ */
 export function remoteSendEligible(arg: ServerSendArg): arg is EligibleSend {
     return (
         get(remoteSend) &&
         !get(hostMode) &&
         !arg.localOnly &&
-        typeof arg.input === "string" &&
-        !!arg.userMessageId &&
         !!arg.requestId &&
-        arg.continue !== true &&
-        !arg.continueMessageId &&
-        !arg.rerollMessageId &&
-        !arg.speakerChaId &&
+        (!arg.input || !!arg.userMessageId) &&
         !arg.preview &&
         !arg.previewPrompt &&
         !arg.pluginContext
@@ -354,10 +352,14 @@ async function waitForHost(
 
 /** Returns the same refusal and completion contract as the local send, without touching composer state. */
 export async function sendChatRemotely(arg: EligibleSend): Promise<ServerSendResult> {
-    const result = await runRemoteSend(arg);
-    // Only a retryable request needs to retain its host and already displayed reports.
-    if (result.settled && !result.requestUncertain) commands.delete(arg.requestId);
-    return result;
+    try {
+        const result = await runRemoteSend(arg);
+        if (result.settled && !result.requestUncertain) commands.delete(arg.requestId);
+        return result;
+    } finally {
+        // These actions get a fresh request id on each press, whatever their previous outcome.
+        if (!arg.input || arg.continue === true) commands.delete(arg.requestId);
+    }
 }
 
 async function runRemoteSend(arg: EligibleSend): Promise<ServerSendResult> {
@@ -452,9 +454,13 @@ async function runRemoteSend(arg: EligibleSend): Promise<ServerSendResult> {
                 type: "send",
                 chaId: ref.chaId,
                 chatId: ref.chatId,
-                input: arg.input,
-                userMessageId: arg.userMessageId,
+                input: arg.input ?? "",
                 requestId: arg.requestId,
+                ...(arg.userMessageId !== undefined ? { userMessageId: arg.userMessageId } : {}),
+                ...(arg.continue === true ? { continue: true } : {}),
+                ...(arg.continueMessageId !== undefined ? { continueMessageId: arg.continueMessageId } : {}),
+                ...(arg.rerollMessageId !== undefined ? { rerollMessageId: arg.rerollMessageId } : {}),
+                ...(arg.speakerChaId !== undefined ? { speakerChaId: arg.speakerChaId } : {}),
                 ...(arg.inputOriginal !== undefined ? { inputOriginal: arg.inputOriginal } : {}),
                 ...(arg.stopOverLoreBudget !== undefined ? { stopOverLoreBudget: arg.stopOverLoreBudget } : {}),
             },

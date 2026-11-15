@@ -181,6 +181,32 @@ afterEach(async () => {
 });
 
 describe("remote host sends", () => {
+    it("passes Continue and in-place reroll fields from a command frame to the local send unchanged", async () => {
+        for (const action of [
+            { input: "", userMessageId: undefined, continue: true as const, continueMessageId: "last-reply" },
+            { input: "continued input", userMessageId: "draft-message", continue: true as const },
+            { input: "", userMessageId: undefined, rerollMessageId: "reply", speakerChaId: "speaker" },
+        ]) {
+            stubs.send.mockClear();
+            read.command = { type: "send", ...target, requestId: "sender-request", ...action };
+            await deliver();
+            expect(stubs.send).toHaveBeenCalledExactlyOnceWith(
+                -1,
+                expect.objectContaining({
+                    target,
+                    requestId: "sender-request",
+                    localOnly: true,
+                    continue: action.continue === true,
+                    continueMessageId: action.continueMessageId,
+                    rerollMessageId: action.rerollMessageId,
+                    speakerChaId: action.speakerChaId,
+                    input: action.input,
+                    userMessageId: action.userMessageId,
+                }),
+            );
+        }
+    });
+
     it("waits for plugins under a hold, selects the chat and runs the sender's local-only request once", async () => {
         const startup = deferred();
         const sending = deferred<boolean>();
@@ -192,7 +218,7 @@ describe("remote host sends", () => {
         try {
             await deliver();
             expect(stubs.fetch).toHaveBeenCalledWith(
-                "/api/remote-commands/command-7?clientId=host-client",
+                "/api/remote-commands/command-7?clientId=host-client&contractVersion=2",
                 expect.objectContaining({ method: "GET", headers: { "x-resource-epoch": EPOCH } }),
             );
             expect(stubs.hold).toHaveBeenCalledTimes(1);

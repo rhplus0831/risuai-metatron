@@ -66,6 +66,9 @@ The transport below retains this tab's in-memory log.
   not a takeover's owner), posts a new command id and polls its status (state frames reach only `remoteSend.ts`'s
   waiters) for up to two minutes, then shows one outcome toast. Settings → Display host rows and Settings → Plugins
   offer it.
+- A send command's `continue`, `continueMessageId`, `rerollMessageId` and `speakerChaId` pass unchanged to `sendChat`
+  beside its input and ids. The read declares `contractVersion` (`REMOTE_COMMAND_CONTRACT_VERSION`); the relay refuses
+  those fields to a read without it (an older host would run them as a plain send).
 - Relay reads and serialized state reports use `/api/remote-commands`, the resource epoch and the read's attempt. Newer
   states replace queued retries; transient failures retry with bounded waits for the open-command lifetime. Report texts
   shrink to the body cap; acknowledged states enter the lock screen list.
@@ -127,20 +130,33 @@ The transport below retains this tab's in-memory log.
 
 ### Remote send
 
-- `runSend` (`src/ts/process/index.svelte.ts`) routes an eligible send to `sendChatRemotely` after `beginLocalSend`:
-  input, `userMessageId` and `requestId`, not in host mode, not `localOnly`, with no continue, reroll, speaker, preview
-  or plugin context. The reservation covers the remote wait and a fallback. It pins the chat, runs `prepareServerJob`
-  (the job preflight of `serverCommands.ts`), and posts the command with the request id as its id (`uncertain` when the
-  send is marked `requestUncertain`); a retry goes to the host it went to while that host stays connected.
+- `runSend` (`src/ts/process/index.svelte.ts`) routes an eligible send to `sendChatRemotely` after `beginLocalSend`: a
+  caller-owned `requestId` (with `userMessageId` when there is input), not in host mode, not `localOnly`, with no
+  preview or plugin context. The screen's Send, Send Draft, Continue and in-place reroll carry one (`sendChatMain` mints
+  a fresh id per press for a Continue without input and an in-place reroll); auto mode, an empty Send, the removal
+  reroll and the other `sendChat` callers carry none and stay local. The reservation covers the remote wait and a
+  fallback.
+- The adapter pins the chat, runs `prepareServerJob` (the job preflight of `serverCommands.ts`), and posts the command
+  with the request id as its id (`uncertain` when the send is marked `requestUncertain`); a retry goes to the host it
+  went to while that host stays connected.
+- A Continue without input names the message it continues (`continueMessageId`, the chat's last message when pressed),
+  so a message that lands before the host runs is not continued instead. A Continue with input names nothing: its job
+  appends the user message and continues it. A Continue or reroll is never retried under its request id (each press is a
+  new command, as locally); the adapter forgets such a command at its end.
+- The removal reroll stays local: its bundle history cannot be kept through a host. An uncertain end leaves the host's
+  later replies unrecorded, so Undo loses the removed bundle; Undo (`rerollHistory.back`) has no settlement guard while
+  the host's job may still write; and a host `busy` refusal is settled without `blockedChats`, so restoration could
+  write the removed replies beside the host's other send.
 - The waiter is installed before the post. Frames are wakeups for status reads; a status is also read every
   `REMOTE_COMMAND_PICKUP_MS` and after each hello. The post's own open answer is never an outcome, and a re-posted
   `uncertain` without a frame ends uncertain after `REMOTE_COMMAND_PICKUP_MS`. An `uncertain` ends the send; a later
   result is ignored.
-- Definite (no connected host of the name, `targetUnavailable`, `targetFull`, 413, `expired`, `refused`): the fallback
-  (`sendChatOnServer` with the same ids, after a `fallback` toast with the reason) when it is on and the send is not
-  marked, else a toast; a marked send stays uncertain. `commandChanged` keeps it uncertain. A `done` result's notices
-  are one toast; the chat is read (`readRecoveringChat`); a failed result's `loreStop` goes to the caller, else its
-  errors or the "shown on the host" line, each once per command id.
+- Definite (no connected host of the name, `targetUnavailable`, `targetFull`, 413, `expired`, `refused`, including the
+  relay's `unsupported` for a host on an older contract): the fallback (`sendChatOnServer` with the same ids, after a
+  `fallback` toast with the reason) when it is on and the send is not marked, else a toast; a marked send stays
+  uncertain. `commandChanged` keeps it uncertain. A `done` result's notices are one toast; the chat is read
+  (`readRecoveringChat`); a failed result's `loreStop` goes to the caller, else its errors or the "shown on the host"
+  line, each once per command id.
 - Uncertain: an `uncertain` state, `forgotten`, a status of `unknownCommand`, a post or status read without an answer,
   `cancelled` without a Stop, or the host absent from presence for 60 s.
 - Stop after the post: the relay cancel (its answer is not read) and, at once, `sendChatOnServer` with the aborted

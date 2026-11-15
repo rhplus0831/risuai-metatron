@@ -1,7 +1,10 @@
 import type { LoreBudgetStop } from "./contextReport.ts";
 
-/** Commands are relayed by HTTP and retained only in the server process. */
+/** Commands are relayed by HTTP and retained only in the server process; reads declare action support. */
 export const REMOTE_COMMANDS_PATH = "/api/remote-commands";
+
+/** Version 2 hosts preserve Continue and in-place reroll action fields. */
+export const REMOTE_COMMAND_CONTRACT_VERSION = 2;
 
 export const MAX_OPEN_COMMANDS_PER_TARGET = 16;
 export const MAX_REMOTE_COMMAND_BODY_BYTES = 1024 * 1024;
@@ -17,12 +20,28 @@ export type RemoteCommand =
           chaId: string;
           chatId: string;
           input: string;
-          userMessageId: string;
+          /** Required when input is nonempty. */
+          userMessageId?: string;
           requestId: string;
+          continue?: true;
+          continueMessageId?: string;
+          rerollMessageId?: string;
+          speakerChaId?: string;
           inputOriginal?: string;
           stopOverLoreBudget?: boolean;
       }
     | { type: "reload"; mode: RemoteReloadMode };
+
+/** Older hosts would turn these actions into ordinary sends. */
+export function remoteCommandNeedsActionSupport(command: RemoteCommand): boolean {
+    return (
+        command.type === "send" &&
+        (command.continue === true ||
+            command.continueMessageId !== undefined ||
+            command.rerollMessageId !== undefined ||
+            command.speakerChaId !== undefined)
+    );
+}
 
 /** `applied` means the loader completed, not that every guest finished startup. */
 export type PluginReloadOutcome = "applied" | "failed" | "pluginsOff";
@@ -41,6 +60,10 @@ export function remoteCommandAction(command: RemoteCommand) {
                 chatId: command.chatId,
                 input: command.input,
                 userMessageId: command.userMessageId,
+                ...(command.continue === true ? { continue: true } : {}),
+                ...(command.continueMessageId !== undefined ? { continueMessageId: command.continueMessageId } : {}),
+                ...(command.rerollMessageId !== undefined ? { rerollMessageId: command.rerollMessageId } : {}),
+                ...(command.speakerChaId !== undefined ? { speakerChaId: command.speakerChaId } : {}),
             };
     }
 }
@@ -61,7 +84,7 @@ export const REMOTE_COMMAND_STATES = [
 ] as const;
 export type RemoteCommandState = (typeof REMOTE_COMMAND_STATES)[number];
 export type RemoteCommandFrameState = RemoteCommandState | "forgotten";
-export const REMOTE_COMMAND_REFUSAL_CODES = ["stopped", "pluginsOff", "chatMissing", "busy"] as const;
+export const REMOTE_COMMAND_REFUSAL_CODES = ["stopped", "pluginsOff", "chatMissing", "busy", "unsupported"] as const;
 export type RemoteCommandRefusalCode = (typeof REMOTE_COMMAND_REFUSAL_CODES)[number];
 export type RemoteCommandResult = Record<string, unknown>;
 

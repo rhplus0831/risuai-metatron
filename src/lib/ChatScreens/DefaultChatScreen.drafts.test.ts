@@ -1397,6 +1397,118 @@ it("clears a refused attempt's stored request id while keeping its text and mess
     }
 });
 
+it("gives each empty-input Continue a fresh request and the current last message, while text Continue carries draft ids without a target", async () => {
+    const ui = await mountComposer();
+    const sends = vi
+        .spyOn(await import("src/ts/process/index.svelte"), "sendChat")
+        .mockImplementation(async (_index, arg) => {
+            arg?.onEnd?.({ settled: false, outcome: "unknown", requestUncertain: true, blockedChats: [] });
+            return false;
+        });
+    const chat = await import("src/ts/storage/chatStore.svelte");
+    for (const [index, messageId] of ["a-answer", "a-answer", "new-answer"].entries()) {
+        if (messageId === "new-answer") {
+            chat.appendMessage({ chaId: "c", chatId: "a" }, { role: "char", data: "Later reply", chatId: messageId });
+            flushSync();
+        }
+        ui.menu();
+        ui.click(ui.menuItem(language.continueResponse));
+        await until(() => sends.mock.calls.length === index + 1);
+        await drive(Promise.resolve());
+        const arg = sends.mock.calls[index][1]!;
+        expect(arg).toMatchObject({
+            target: { chaId: "c", chatId: "a" },
+            continue: true,
+            continueMessageId: messageId,
+        });
+        expect(arg.requestId).toEqual(expect.any(String));
+        expect(arg.requestId).not.toBe("");
+        expect(arg.userMessageId).toBeUndefined();
+        expect(arg.input ?? "").toBe("");
+        ui.menu();
+    }
+    expect(new Set(sends.mock.calls.map(([, arg]) => arg!.requestId)).size).toBe(3);
+
+    ui.type("Continue this draft");
+    ui.menu();
+    ui.click(ui.menuItem(language.continueResponse));
+    await until(() => sends.mock.calls.length === 4);
+    await drive(Promise.resolve());
+    const withText = sends.mock.calls[3][1]!;
+    expect(withText).toMatchObject({
+        continue: true,
+        input: "Continue this draft",
+        userMessageId: expect.any(String),
+        requestId: expect.any(String),
+    });
+    expect(withText.continueMessageId).toBeUndefined();
+    expect(await drive(ui.journal.readComposer(a))).toMatchObject({
+        input: "Continue this draft",
+        userMessageId: withText.userMessageId,
+    });
+});
+
+it("gives each in-place Reroll a fresh request with its reply and speaker, but gives a removal reroll no request", async () => {
+    const ui = await mountComposer({
+        configureChat: (chat) => {
+            chat.message[1].saying = "speaker";
+        },
+    });
+    const inPlace = vi.spyOn(await import("src/ts/network/eventFeed"), "serverRerollsInPlace").mockReturnValue(true);
+    const sends = vi
+        .spyOn(await import("src/ts/process/index.svelte"), "sendChat")
+        .mockImplementation(async (_index, arg) => {
+            arg?.onEnd?.({ settled: true, outcome: "refused", requestUncertain: false, blockedChats: [] });
+            return false;
+        });
+    for (let index = 0; index < 2; index++) {
+        ui.click(ui.target.querySelector(".button-icon-reroll"));
+        await until(() => sends.mock.calls.length === index + 1);
+        await drive(Promise.resolve());
+        expect(sends.mock.calls[index][1]).toMatchObject({
+            target: { chaId: "c", chatId: "a" },
+            rerollMessageId: "a-answer",
+            speakerChaId: "speaker",
+            requestId: expect.any(String),
+        });
+    }
+    expect(sends.mock.calls[0][1]!.requestId).not.toBe(sends.mock.calls[1][1]!.requestId);
+    inPlace.mockReturnValue(false);
+    ui.click(ui.target.querySelector(".button-icon-reroll"));
+    await until(() => sends.mock.calls.length === 3);
+    await drive(Promise.resolve());
+    expect(sends.mock.calls[2][1]!.requestId).toBeUndefined();
+    expect(sends.mock.calls[2][1]!.rerollMessageId).toBeUndefined();
+});
+
+it("sends empty Send and auto mode locally without request ids", async () => {
+    const ui = await mountComposer({
+        configureCharacter: (character) => {
+            // The Auto mode menu item is available only for group characters.
+            Object.assign(character, { type: "group", characters: [], characterTalks: [], characterActive: [] });
+        },
+    });
+    const sends = vi
+        .spyOn(await import("src/ts/process/index.svelte"), "sendChat")
+        .mockImplementation(async (_index, arg) => {
+            arg?.onEnd?.({ settled: true, outcome: "refused", requestUncertain: false, blockedChats: [] });
+            return false;
+        });
+    ui.click(ui.target.querySelector(".button-icon-send"));
+    await until(() => sends.mock.calls.length === 1);
+    await drive(Promise.resolve());
+    ui.menu();
+    ui.click(ui.menuItem(language.autoMode));
+    await until(() => sends.mock.calls.length === 2);
+    await drive(Promise.resolve());
+    for (const [, arg] of sends.mock.calls) {
+        expect(arg!.continue).toBe(false);
+        expect(arg!.requestId).toBeUndefined();
+        expect(arg!.userMessageId).toBeUndefined();
+        expect(arg!.continueMessageId).toBeUndefined();
+    }
+});
+
 it("journals Continue's text and message id without a request id, including after an uncertain outcome", async () => {
     const { target, input, type, click, menu, menuItem, journal } = await mountComposer();
     await useHttpCreation();

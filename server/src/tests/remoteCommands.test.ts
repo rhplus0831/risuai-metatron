@@ -85,6 +85,198 @@ describe("remote commands over HTTP", () => {
         expect(await response.json()).toEqual(body);
     }
 
+    it("includes every action field in retry identity while keeping plain-send identity unchanged", async () => {
+        const actions = [
+            [{ continue: true }, { continue: false }],
+            [
+                { continue: true, continueMessageId: "reply-a" },
+                { continue: true, continueMessageId: "reply-b" },
+            ],
+            [{ rerollMessageId: "reply-a" }, { rerollMessageId: "reply-b" }],
+            [
+                { rerollMessageId: "reply-a", speakerChaId: "speaker-a" },
+                { rerollMessageId: "reply-a", speakerChaId: "speaker-b" },
+            ],
+        ];
+        const queued = { state: "queued", attempted: false, stopRequested: false, attempt: 0 };
+        for (const [index, [original, changed]] of actions.entries()) {
+            const body = post(`action-${index}`);
+            const command = { ...body.command, ...original };
+            await answer(await client.json(path, { ...body, command }), 200, queued);
+            await answer(await client.json(path, { ...body, command }), 200, queued);
+            await answer(await client.json(path, { ...body, command: { ...body.command, ...changed } }), 409, {
+                error: "commandChanged",
+            });
+        }
+        const plain = post("plain");
+        await answer(await client.json(path, plain), 200, queued);
+        await answer(
+            await client.json(path, {
+                ...plain,
+                command: {
+                    ...plain.command,
+                    continue: false,
+                    inputOriginal: "another original",
+                    stopOverLoreBudget: false,
+                },
+            }),
+            200,
+            queued,
+        );
+    });
+
+    it("rejects invalid action fields and requires a user message id only for nonempty input", async () => {
+        for (const invalid of [
+            { continue: "true" },
+            { continueMessageId: "" },
+            { rerollMessageId: "" },
+            { speakerChaId: "" },
+            { continue: true, rerollMessageId: "reply" },
+            { userMessageId: undefined },
+            { input: "", userMessageId: "" },
+        ]) {
+            await answer(await client.json(path, { ...post(), command: { ...post().command, ...invalid } }), 400, {
+                error: "Invalid remote command",
+            });
+        }
+        const body: SendPostBody = {
+            ...post(),
+            command: {
+                type: "send",
+                requestId: "send-1",
+                chaId: "character",
+                chatId: "chat",
+                input: "",
+                continue: true,
+                continueMessageId: "reply",
+            },
+        };
+        await answer(await client.json(path, body), 200, {
+            state: "queued",
+            attempted: false,
+            stopRequested: false,
+            attempt: 0,
+        });
+        await answer(await client.request(`${path}/send-1?clientId=desk&contractVersion=2`), 200, {
+            state: "delivered",
+            attempted: false,
+            stopRequested: false,
+            attempt: 1,
+            command: body.command,
+        });
+    });
+
+    it("withholds each action field from older hosts, notifies the sender, and delivers to v2 hosts", async () => {
+        const sender = new WebSocket(host.url);
+        try {
+            const registered = new Promise<void>((resolve) => {
+                sender.on("message", (raw) => {
+                    const frame = JSON.parse(String(raw)) as EventFeedFrame;
+                    if (frame.type === "clients" && frame.clients.some((entry) => entry.clientId === "phone"))
+                        resolve();
+                });
+            });
+            await new Promise<void>((resolve, reject) => {
+                sender.once("open", resolve);
+                sender.once("error", reject);
+            });
+            sender.send(
+                JSON.stringify({ type: "register", clientId: "phone", name: "Phone", worker: false, host: false }),
+            );
+            await registered;
+            for (const [index, action] of [
+                { continue: true as const },
+                { continueMessageId: "reply" },
+                { rerollMessageId: "reply" },
+                { speakerChaId: "speaker" },
+            ].entries()) {
+                const old = post(`old-${index}`);
+                old.command = { ...old.command, ...action };
+                expect((await client.json(path, old)).status).toBe(200);
+                const notified = new Promise<EventFeedFrame>((resolve) => {
+                    const receive = (raw: unknown) => {
+                        const frame = JSON.parse(String(raw)) as EventFeedFrame;
+                        if (
+                            frame.type === "remoteCommandState" &&
+                            frame.commandId === old.commandId &&
+                            frame.state === "refused"
+                        ) {
+                            sender.off("message", receive);
+                            resolve(frame);
+                        }
+                    };
+                    sender.on("message", receive);
+                });
+                await answer(await client.request(`${path}/${old.commandId}?clientId=desk`), 410, {
+                    error: "unsupported",
+                    state: "refused",
+                });
+                await answer(await client.request(`${path}/${old.commandId}/status?clientId=phone`), 200, {
+                    state: "refused",
+                    code: "unsupported",
+                    attempted: false,
+                    stopRequested: false,
+                    attempt: 0,
+                });
+                expect(await notified).toEqual({
+                    type: "remoteCommandState",
+                    epoch: client.epoch,
+                    commandId: old.commandId,
+                    state: "refused",
+                    code: "unsupported",
+                });
+                await answer(await client.request(`${path}/${old.commandId}?clientId=desk&contractVersion=2`), 410, {
+                    error: "commandClosed",
+                    state: "refused",
+                });
+                const current = post(`v2-${index}`);
+                current.command = { ...current.command, ...action };
+                expect((await client.json(path, current)).status).toBe(200);
+                await answer(
+                    await client.request(`${path}/${current.commandId}?clientId=desk&contractVersion=2`),
+                    200,
+                    {
+                        state: "delivered",
+                        attempted: false,
+                        stopRequested: false,
+                        attempt: 1,
+                        command: current.command,
+                    },
+                );
+            }
+            const plain = post("plain");
+            expect((await client.json(path, plain)).status).toBe(200);
+            await answer(await client.request(`${path}/plain?clientId=desk`), 200, {
+                state: "delivered",
+                attempted: false,
+                stopRequested: false,
+                attempt: 1,
+                command: plain.command,
+            });
+        } finally {
+            sender.terminate();
+        }
+    });
+
+    it("keeps an already attempted action uncertain when an older host reads it", async () => {
+        const body = post();
+        body.command.rerollMessageId = "reply";
+        expect((await client.json(path, body)).status).toBe(200);
+        expect((await client.request(`${path}/send-1?clientId=desk&contractVersion=2`)).status).toBe(200);
+        expect((await client.json(`${path}/send-1/state`, report("running"))).status).toBe(200);
+        await answer(await client.request(`${path}/send-1?clientId=desk`), 410, {
+            error: "unsupported",
+            state: "uncertain",
+        });
+        await answer(await client.request(`${path}/send-1/status?clientId=phone`), 200, {
+            state: "uncertain",
+            code: "unsupported",
+            attempted: true,
+            stopRequested: false,
+            attempt: 1,
+        });
+    });
+
     it("accepts reloads without requestId and identifies retries by type and mode", async () => {
         for (const mode of ["plugins", "page"] as const) {
             const body: RemoteCommandPostBody = {
