@@ -309,10 +309,15 @@ try {
                 id: "main",
                 baseRevision: records.pluginPermissions.revision,
                 data: {
-                    grants: { ...records.pluginPermissions.data.grants, [`${hash}_replacer`]: true },
+                    grants: {
+                        ...records.pluginPermissions.data.grants,
+                        [`${hash}_replacer`]: true,
+                        [`${hash}_dbWrite`]: true,
+                    },
                     lastGrantTime: {
                         ...records.pluginPermissions.data.lastGrantTime,
                         [`${pluginName}_replacer_lastGrantTime`]: Date.now(),
+                        [`${pluginName}_dbWrite_lastGrantTime`]: Date.now(),
                     },
                 },
             },
