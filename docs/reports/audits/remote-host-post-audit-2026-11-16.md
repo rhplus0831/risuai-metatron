@@ -93,6 +93,25 @@ What came back clean:
 The entry already recorded from the plan's run (a host's `uncertain` report leaves the relay's `attempted` false) is
 still present, and three cuts saw it; none found a second path with the same effect.
 
+## Fixes
+
+The owner asked for the findings to be filed and fixed the same day. The session that ran the audit made the fixes
+(commits `cffaecfeb`, `5f655810c`, `99b948198`, `922e204a2`), each with a regression test that was run against its
+fix reverted, and then steered the two verifiers whose cuts the fixes touch to read them again in their own threads
+(R: 23 minutes, 5.3 M tokens; L: 8 minutes, 4.0 M tokens).
+
+- Fixed: L-2, R-1, R-2, R-3, S-1, C-1, C-2, and the entry the plan's run had left (an `uncertain` report now marks
+  the command attempted).
+- The relay's verifier found two gaps in the first fix, both fixed before it was committed: a reload recovery's
+  result-less `uncertain` still erased a stored result, and a result could exceed the reserved size because JSON
+  numbers grow when parsed (`1e20`), which put the retained bytes above the new bound.
+- It also showed that the relay's identity still differs from the generation's for field combinations no caller
+  sends. That is recorded in [found issues](../../backlog/found-issues.md#remote-commands), with L-1.
+- The lifecycle's verifier found nothing new: its probe of the dropped request id fails where it should, and the
+  next Send ends with one generation whether the host never created, is running, or has ended.
+- The leave control above the alert layer was not looked at in a browser; it is in
+  [manual checks](../../backlog/manual-checks.md).
+
 ## Notes for the next audit of this kind
 
 - Cutting by contract boundary found what the pre-run audit and seven slice challenges had not: both real findings

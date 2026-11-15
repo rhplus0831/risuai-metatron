@@ -107,6 +107,7 @@ Two tabs, two browsers, or a dropped connection:
 - [ ] **OOC Session (4)**: an answer's Markdown, code blocks, and display scripts render in the panel while it streams and once stored; a send in the main chat while an OOC answer streams; refresh shows the count of new messages and later questions carry no earlier exchange; attach chips feed the next question.
 - [ ] **OOC Session (4)**: a second browser or device shows the stored exchange once the answer ends.
 - [ ] **Remote Host (2)**: a plugin's full-screen UI (z-index 1000) stays under the host mode screen (`z-1050`) and cannot be reached while host mode is on.
+- [ ] **Remote Host (post-audit fix)**: on a host tab with a dialog or a wait/progress overlay open, the second "Leave host mode" control shows at the top right above the overlay, covers none of the dialog's buttons, and one click leaves the mode with the overlay still shown.
 
 ## Real providers and external services
 
