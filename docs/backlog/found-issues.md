@@ -71,10 +71,22 @@ contract boundary, then a second reader that tried to refute each P1 and P2): ei
 ones each reproduced by a probe test kept with the review material outside the repository. The method, the cost, and
 the ratings are in [its report](../reports/audits/remote-host-post-audit-2026-11-16.md).
 
+Seven of the eight were fixed the same day by the session that ran the audit, each with a regression test that was
+run against its fix reverted, together with the Remote commands entry the plan's run had left (a host's `uncertain`
+report now marks the command attempted): a marked send keeps its request id through a `stale` or
+`chatBindingMismatch` refusal, the relay ignores a late `running` of an attempt already reported `uncertain`, the
+relay has a total bound on entries and retained bytes, the speaker left the relay's identity, a shortened report text
+no longer ends inside a surrogate pair, a leave control sits above the alert layer while an overlay covers the host
+lock screen, and the help text names Continue and the reroll of a single reply. The send preflight's unbounded wait
+predates the plan and is the Network jobs entry below. The two verifiers whose cuts the fixes touch read them again:
+the relay's reader found that a reload recovery's result-less `uncertain` still erased a stored result and that a
+result could grow past the body cap when parsed (both fixed with tests), and that the relay's identity still differs
+from the generation's for field combinations no caller sends, which is the Remote commands entry below.
+
 ## Contents
 
 - [Network jobs](#network-jobs): 1
-- [Remote commands](#remote-commands): 8
+- [Remote commands](#remote-commands): 1
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 1
 
@@ -102,128 +114,23 @@ abort the shared write or count it as saved: it may be committed, and other call
 
 ## Remote commands
 
-### A host's `uncertain` report leaves the relay's `attempted` false
+### The relay's identity differs from the generation's for fields a send does not use
 
-The relay's `report` sets `entry.attempted` only for a `running` report (`server/src/remoteCommands.ts`, the `report`
-method). The host queues `running` and calls `sendChat` without waiting for that report to be accepted
-(`src/ts/network/remoteHost.ts`, `runHostCommand`), and its reload recovery reports `{ state: "uncertain" }`
-(`recoverHostCommands`). If the host page reloads after a create went unanswered but before `running` reached the
-relay, the relay keeps `attempted: false`. The re-delivery at the next registration then runs the command without
-`requestUncertain`, a refusal inside `sendChat` (flush or binding) is reported `done` with a definite refusal, and the
-sender drops its request id while the first create may still run. Found 2026-11-16 by the challenge of the Remote Host
-plan's slice 4; a relay probe reproduced the state (`uncertain`, attempt 2, `attempted` false).
+`remoteCommandAction` (`shared/remoteCommands.ts`) hashes `input`, `userMessageId`, `continue`, and
+`continueMessageId` as posted, and the route accepts combinations in which one of them has no effect. `sendChatOnServer`
+(`src/ts/process/serverGeneration.ts`) drops or normalizes those, so the generation's `requestFingerprint` is the same
+where the relay sees a changed command: `continueMessageId` on a plain send, `userMessageId` on a Continue without
+input, `input` or `userMessageId` on a reroll, and `continue` absent or true in a group chat. The relay answers 409
+`commandChanged` to a re-post that the generation would replay. Found 2026-11-16 by the re-reading of the Remote Host
+post-audit's fixes (R-6); the speaker, the one field of this kind the audit first named, was taken out of the identity
+the same day. No caller that ships posts one id with such a change, and the relay errs on the strict side: the sender
+keeps a `commandChanged` send uncertain.
 
-**Why it matters:** a possible duplicate generation on a narrow timing. The sender's adapter guards against it only when
-it sees the `uncertain` frame first.
+**Why it matters:** two definitions of "the same request"; a future caller that retries with a normalized field would
+be refused.
 
-**Suggested handling:** in the relay, let an `uncertain` report (or any report after `delivered`) set `attempted`, with a
-registry test in `server/src/tests/remoteCommands.test.ts`.
-
-### A stale local retry drops the request id a host can still create under
-
-`registryRefusal` (`src/ts/network/generationJobs.ts`) takes a `409` with `stale` or `chatBindingMismatch` as proof
-that an earlier uncertain create was not admitted, so `runServerJob` ends the retry as a definite refusal and
-`createSendDrafts`' `settle` (`src/ts/process/sendDraft.ts`) drops the draft's request id. That held while one tab was
-the only creator of a request id: the answer fences every copy of that tab's frozen request. A remote command's host
-is a second creator, which runs its own preflight later and creates under the same id with the chat's current
-revision; a stale refusal leaves no tombstone. The path: a remote send ends uncertain while the host has read the
-command and not yet created (it waits for plugin startup, or its tab is throttled); the user turns remote sending off
-and sends the same text, which goes to a local create with the old id; a chat write lands between that create's
-revision capture and its admission, or a binding change is learned during its preflight; the refusal is shown as
-definite; the next Send has a new id and runs; the host's create under the old id then runs too. Found 2026-11-16 by
-the Remote Host post-audit (L-2, filed P1): one probe drove `runSend` to the dropped id, a second drove the server's
-generation routes to two admitted jobs.
-
-**Why it matters:** a second reply appended to the chat and a second provider charge for one message. A Stop before
-the retry closes it (the cancel leaves a tombstone for the id), but nothing asks the user to press it.
-
-**Suggested handling:** take `stale` and `chatBindingMismatch` out of the refusals that resolve an earlier
-uncertainty, so a marked request keeps its id and the next Send retries it with a fresh revision.
-
-### The relay accepts a `running` report after `uncertain` and erases the result
-
-`report` in `server/src/remoteCommands.ts` fences reports of an older read by their attempt number and does not order
-the reports of one attempt. An open command that is `uncertain` accepts a later `running` of the same attempt: the
-state goes back, `entry.result` (with the send's reports) is cleared, and the 40-minute drop starts again. The host
-abandons a report after its request deadline and sends the next (`pumpReports` in `src/ts/network/remoteHost.ts`), so
-an abandoned `running` that still reaches the server after the `uncertain` does this. A sender that saw the
-`uncertain` frame ends uncertain without the reports; one that missed it waits on `running` until the command is
-forgotten. Found 2026-11-16 by the Remote Host post-audit (R-1): a probe ran the real reporter against the real
-registry, and a second sent the abandoned request through the route after the later report.
-
-**Why it matters:** the returned error is lost, and a sender can stay busy for up to 40 minutes after the host's run
-ended. It needs the abandoned request to arrive after the later one, which a proxy in front of the server that keeps
-forwarding it can do.
-
-**Suggested handling:** in `report`, acknowledge a `running` that arrives for an attempt already reported `uncertain`
-without changing the state, the result, or the deadline. A `running` of a newer read stays accepted.
-
-### The relay has no total cap on retained commands
-
-`post` in `server/src/remoteCommands.ts` counts open commands per target (`MAX_OPEN_COMMANDS_PER_TARGET`) and the
-route caps each body (`MAX_REMOTE_COMMAND_BODY_BYTES`). Nothing bounds the whole registry: a closed command keeps its
-`result`, an object of up to the body cap, for `REMOTE_COMMAND_CLOSED_KEEP_MS`, and closing frees the target's open
-slot; a feed socket can register under another client id as a host and get sixteen more open commands, and a target
-that left keeps its open commands until their own deadlines. Found 2026-11-16 by the Remote Host post-audit (R-2): a
-probe through the routes and the limiter kept 6,660 closed entries inside one ten-minute window, which at the body
-cap is about 6.5 GiB of results.
-
-**Why it matters:** an authenticated caller can exhaust the server's memory. The same caller can already fill the
-disk through routes without a total quota, and a plugin's sandbox cannot make these requests (no `risu-auth` header),
-so this is a bound the relay should have, not a new power.
-
-**Suggested handling:** refuse a new command id when the registry holds a total number of entries, open and closed,
-or a total of retained body and result bytes; refuse the new post, never evict an accepted command or its result.
-
-### The relay's command identity includes the speaker and the generation's does not
-
-`remoteCommandAction` (`shared/remoteCommands.ts`) includes `speakerChaId`, so the relay answers 409 `commandChanged`
-to a re-post of an id with another speaker. `requestFingerprint` (`server/src/jobs/generationJobs.ts`) leaves the
-speaker out, so the same two creates are one request and the second is a replay of the first. The plan's slice 1 says
-the relay's identity is the fields the fingerprint compares. Found 2026-11-16 by the Remote Host post-audit (R-3). No
-caller that ships posts one id with two speakers: the screen gives an in-place reroll a new id at each press.
-
-**Why it matters:** two definitions of "the same request" that can drift further apart.
-
-**Suggested handling:** leave `speakerChaId` out of `remoteCommandAction`, so the first accepted body stands as it
-does for `inputOriginal`.
-
-### A report's text can be cut inside a surrogate pair
-
-`prepareReport` in `src/ts/network/remoteHost.ts` halves the longest report text with `text.slice(0, length / 2)` until
-the state report fits the body cap. A cut between the two halves of a surrogate pair leaves a lone surrogate at the
-end of the text the sender shows. Found 2026-11-16 by the Remote Host post-audit (S-1).
-
-**Why it matters:** a replacement character at the end of a shortened error text; cosmetic.
-
-**Suggested handling:** drop a trailing high surrogate after the cut.
-
-### A status overlay covers "Leave host mode"
-
-The alert layer (`src/lib/Others/AlertComp.svelte`, `z-1100`) is above the host lock screen
-(`src/lib/Others/RemoteHostScreen.svelte`, `z-1050`), as the plan's slice 2 asks, so a person at the PC can answer a
-dialog. Every queued dialog can be dismissed (a button or Escape). A `wait` or `progress` overlay has no button, and
-host mode's shortcut gate in `src/ts/hotkey.ts` returns before the Escape that replaces a progress overlay with a
-toast. While such an overlay is shown, the lock screen's only control cannot be clicked. It is reachable when a tab
-that shows one becomes a host through another tab of the same browser (the preference follows the browser), or when
-an overlay's work never ends. Found 2026-11-16 by the Remote Host post-audit (C-1); a probe mounted both components
-and read the stacking, and a second pressed Escape on every alert kind in host mode.
-
-**Why it matters:** D6 of the plan says the mode stays one click from leaving. Another tab of the browser or a page
-reload still leaves it.
-
-**Suggested handling:** show a leave control above the alert layer while an overlay covers the lock screen, without
-answering or discarding the overlay.
-
-### The remote send help text leaves out Continue and the in-place reroll
-
-The `remoteSend.settings.help` text in `src/lang/en.ts` and `src/lang/ko.ts` says the composer's Send and Send Draft go to the
-host and other sends stay on the device. Since the plan's slice 7, Continue and the in-place reroll go to the host
-too (`remoteSendEligible` in `src/ts/network/remoteSend.ts`). Found 2026-11-16 by the Remote Host post-audit (C-2).
-
-**Why it matters:** the settings page describes the routing wrongly.
-
-**Suggested handling:** name Continue and the in-place reroll in both strings.
+**Suggested handling:** refuse the field combinations that have no effect in the route's validation, or normalize the
+command before `remoteCommandAction`, and state the group Continue rule.
 
 ## Rendering
 
