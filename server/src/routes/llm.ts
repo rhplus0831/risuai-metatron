@@ -47,6 +47,7 @@ const BOOLEAN_ARGS = [
     "imageResponse",
     "previewBody",
     "rememberToolUsage",
+    "allowConfiguredTools",
 ] as const;
 const NUMBER_ARGS = ["temperature", "maxTokens", "PresensePenalty", "frequencyPenalty"] as const;
 const STRING_ARGS = ["chatId", "schema", "extractJson", "staticModel"] as const;

@@ -1066,7 +1066,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
                     reportRetry,
                     loaded: scope.request,
                     mode,
-                    arg: attemptArg,
+                    arg: { ...attemptArg, allowConfiguredTools: meta?.toolSet !== null },
                     source,
                     chatRef: arg.chatRef ?? ref,
                     messageId: meta?.messageId ?? null,

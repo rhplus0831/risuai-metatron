@@ -100,6 +100,7 @@ interface requestDataArgument {
     requestIds?: ChatContextIds;
     escape?: boolean;
     tools?: MCPTool[];
+    allowConfiguredTools?: boolean;
     rememberToolUsage?: boolean;
     blockPlugins?: boolean;
 }
@@ -436,6 +437,7 @@ async function requestPinnedChatData(
             {
                 ...arg,
                 tools: tools,
+                ...(arg.tools === undefined && tools.length === 0 ? { allowConfiguredTools: true } : {}),
             },
             model,
             abortSignal,

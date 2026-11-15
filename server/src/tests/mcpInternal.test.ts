@@ -370,6 +370,20 @@ function setup(options: { attached?: boolean; embeddings?: EmbeddingsService; le
     };
 }
 
+it("disables configured tools for a null detached tool set and allows them for an ordinary send", async () => {
+    const s = setup();
+    const arg = { formated: [{ role: "user", content: "go" }], bias: {} } as const;
+    await s.bindings.services.request(arg as never, "model", s.ctx, "mcp", { toolSet: null });
+    expect(s.log.requests.at(-1)!.arg.allowConfiguredTools).toBe(false);
+    expect(s.log.requests.at(-1)!.tools.descriptors).toEqual([]);
+
+    await s.bindings.services.request(arg as never, "model", s.ctx, "send", {
+        toolSet: { descriptors: [], routes: new Map() },
+    });
+    expect(s.log.requests.at(-1)!.arg.allowConfiguredTools).toBe(true);
+    expect(s.log.requests.at(-1)!.tools.descriptors).toEqual([]);
+});
+
 it("reuses a prepared tool set, including an empty set, and lists only when none was supplied", async () => {
     const create = jobTools.createJobTools;
     const lists: MockInstance<jobTools.JobTools["list"]>[] = [];

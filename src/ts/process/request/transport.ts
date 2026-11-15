@@ -205,6 +205,7 @@ export async function requestServer(
         args.chatRef = { chaId: chatRef.chaId, chatId: chatRef.chatId };
     }
     const requestArgs = JSON.parse(JSON.stringify(args)) as RequestArgs;
+    if (arg.tools === undefined) requestArgs.allowConfiguredTools ??= true;
     const body: Omit<LlmRequestBody, "toolRecords"> = {
         clientId: generationClientId(),
         mode: model,

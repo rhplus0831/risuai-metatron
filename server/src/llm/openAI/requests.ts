@@ -829,44 +829,40 @@ export async function requestHTTPOpenAI(
                     }
                     try {
                         const functionArgs = toolCall.function.arguments ? JSON.parse(toolCall.function.arguments) : {};
-                        if (arg.tools && arg.tools.length > 0) {
-                            const tool = arg.tools.find((t) => t.name === toolCall.function.name);
-                            if (!tool) {
+                        const tool = arg.tools?.find((t) => t.name === toolCall.function.name);
+                        if (!tool) {
+                            messages.push({
+                                role: "tool",
+                                content: "No tool found with name: " + toolCall.function.name,
+                                tool_call_id: toolCall.id,
+                            });
+                        } else {
+                            const parsed = functionArgs;
+                            const x = (await arg.ctx.tools.call(tool.name, parsed)).filter((m) => m.type === "text");
+                            if (x.length > 0) {
                                 messages.push({
                                     role: "tool",
-                                    content: "No tool found with name: " + toolCall.function.name,
+                                    content: x[0].text,
                                     tool_call_id: toolCall.id,
                                 });
-                            } else {
-                                const parsed = functionArgs;
-                                const x = (await arg.ctx.tools.call(tool.name, parsed)).filter(
-                                    (m) => m.type === "text",
-                                );
-                                if (x.length > 0) {
-                                    messages.push({
-                                        role: "tool",
-                                        content: x[0].text,
-                                        tool_call_id: toolCall.id,
-                                    });
-                                    if (arg.rememberToolUsage) {
-                                        callCodes.push(
-                                            await arg.ctx.tools.encode({
-                                                call: {
-                                                    id: toolCall.id,
-                                                    name: toolCall.function.name,
-                                                    arg: toolCall.function.arguments,
-                                                },
-                                                response: x,
-                                            }),
-                                        );
-                                    }
-                                } else {
-                                    messages.push({
-                                        role: "tool",
-                                        content: "Tool call failed with no text response",
-                                        tool_call_id: toolCall.id,
-                                    });
+                                if (arg.rememberToolUsage) {
+                                    callCodes.push(
+                                        await arg.ctx.tools.encode({
+                                            call: {
+                                                id: toolCall.id,
+                                                name: toolCall.function.name,
+                                                arg: toolCall.function.arguments,
+                                            },
+                                            response: x,
+                                        }),
+                                    );
                                 }
+                            } else {
+                                messages.push({
+                                    role: "tool",
+                                    content: "Tool call failed with no text response",
+                                    tool_call_id: toolCall.id,
+                                });
                             }
                         }
                     } catch (error) {
@@ -1269,44 +1265,42 @@ function wrapToolStream(
                             }
                             try {
                                 const functionArgs = JSON.parse(toolCall.function.arguments);
-                                if (arg.tools && arg.tools.length > 0) {
-                                    const tool = arg.tools.find((t) => t.name === toolCall.function.name);
-                                    if (!tool) {
+                                const tool = arg.tools?.find((t) => t.name === toolCall.function.name);
+                                if (!tool) {
+                                    messages.push({
+                                        role: "tool",
+                                        content: "No tool found with name: " + toolCall.function.name,
+                                        tool_call_id: toolCall.id,
+                                    });
+                                } else {
+                                    const parsed = functionArgs;
+                                    const x = (await arg.ctx.tools.call(tool.name, parsed)).filter(
+                                        (m) => m.type === "text",
+                                    );
+                                    if (x.length > 0) {
                                         messages.push({
                                             role: "tool",
-                                            content: "No tool found with name: " + toolCall.function.name,
+                                            content: x[0].text,
                                             tool_call_id: toolCall.id,
                                         });
-                                    } else {
-                                        const parsed = functionArgs;
-                                        const x = (await arg.ctx.tools.call(tool.name, parsed)).filter(
-                                            (m) => m.type === "text",
-                                        );
-                                        if (x.length > 0) {
-                                            messages.push({
-                                                role: "tool",
-                                                content: x[0].text,
-                                                tool_call_id: toolCall.id,
-                                            });
-                                            if (arg.rememberToolUsage) {
-                                                callCodes.push(
-                                                    await arg.ctx.tools.encode({
-                                                        call: {
-                                                            id: toolCall.id,
-                                                            name: toolCall.function.name,
-                                                            arg: toolCall.function.arguments,
-                                                        },
-                                                        response: x,
-                                                    }),
-                                                );
-                                            }
-                                        } else {
-                                            messages.push({
-                                                role: "tool",
-                                                content: "Tool call failed with no text response",
-                                                tool_call_id: toolCall.id,
-                                            });
+                                        if (arg.rememberToolUsage) {
+                                            callCodes.push(
+                                                await arg.ctx.tools.encode({
+                                                    call: {
+                                                        id: toolCall.id,
+                                                        name: toolCall.function.name,
+                                                        arg: toolCall.function.arguments,
+                                                    },
+                                                    response: x,
+                                                }),
+                                            );
                                         }
+                                    } else {
+                                        messages.push({
+                                            role: "tool",
+                                            content: "Tool call failed with no text response",
+                                            tool_call_id: toolCall.id,
+                                        });
                                     }
                                 }
                             } catch (error) {

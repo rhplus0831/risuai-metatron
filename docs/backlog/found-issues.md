@@ -57,7 +57,7 @@ are the Plugins entry below.
 - [Plugins](#plugins): 1
 - [Rendering](#rendering): 1
 - [Selection](#selection): 1
-- [Server generation](#server-generation): 4
+- [Server generation](#server-generation): 3
 - [Structured Memory](#structured-memory): 1
 - [Test tooling](#test-tooling): 2
 
@@ -170,22 +170,6 @@ for the length of the count.
 it to a worker thread." A size refusal before encoding at the shared gateway (`tokenizers/index.ts:19`) is the cheap
 bound; it was offered and not taken, since it also refuses legitimate large text. An exact count of a large text
 needs the encode off the serving thread, which is the worker design.
-
-### A model's tool call runs even when the request offered no tools
-
-The buffered Anthropic path calls `arg.ctx.tools.call(content.name, content.input)` for every returned `tool_use`
-block without checking that the name was among the tools the request offered (`server/src/llm/anthropic.ts:1166`).
-The tab's callback (`src/ts/process/request/transport.ts:472`) dispatches it through `callTool` in
-`src/ts/process/mcp/mcp.ts`, which finds a matching tool on its own; some of those tools write chat variables
-(`graphmem.ts`). The OpenAI Responses adapter also adds the configured web search whatever `arg.tools` holds
-(`server/src/llm/openAI/responses.ts`, near line 340). Found 2026-11-14 by the challenger of the OOC Session plan's
-slice 3, whose answer request passes `tools: []`; not reproduced with a provider.
-
-**Why it matters:** "no tools" is a caller contract the lower layers do not enforce, so an OOC answer (or any request
-made without tools) can still run a tool that writes the chat if a provider returns a call it was not offered.
-
-**Suggested handling:** refuse a call whose name is not in the offered list at the dispatch boundary, and leave the
-web search out when the caller passed an empty tool list.
 
 ### A reply containing a tokenizer special token can fail the job at the auto-continue count
 

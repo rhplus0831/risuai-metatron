@@ -19,6 +19,7 @@ const stubs = vi.hoisted(() => ({
     alertError: vi.fn(),
     appendFetchLog: vi.fn(),
     callTool: vi.fn<typeof import("../../mcp/mcp").callTool>(),
+    getTools: vi.fn<typeof import("../../mcp/mcp").getTools>(),
     decodeToolCall: vi.fn<(inner: string) => Promise<unknown>>(),
     encodeToolCall: vi.fn<(record: unknown) => Promise<string>>(),
     saveInlayedSignature: vi.fn<(id: string, signature: unknown) => Promise<string>>(),
@@ -64,6 +65,7 @@ vi.mock("src/ts/model/modellist", async () => {
         flags: id === "with-images" ? [3] : [],
     });
     return {
+        LLMFormat: { Plugin: -1, WebLLM: -2 },
         LLMFlags: { hasImageInput: 3 },
         getModelInfo: (id: string) => infoOf(id),
         getModelInfoForMode: (mode: string, scope?: { presetId: string; modelPresetId: string }) => {
@@ -78,19 +80,31 @@ vi.mock("src/ts/network/generationJobs", async () =>
         generationClientId: () => "tab-1",
     }),
 );
-vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParserScoped: stubs.parserScoped }));
+vi.mock("src/ts/parser/parser.svelte", () => ({
+    risuChatParserScoped: stubs.parserScoped,
+    risuEscape: (text: string) => text,
+    risuUnescape: (text: string) => text,
+}));
 vi.mock("src/ts/plugins/apiV3/pluginContext", async () => {
     // The capture is the real display rule over the real records and selection: the chat's bound ids
     // where they exist, else the selected ones.
     const { chatDisplayIds } = await import("src/ts/storage/chatBinding.svelte");
     return {
+        invokeHook: async (fn: (...args: unknown[]) => unknown, _context: unknown, ...args: unknown[]) => fn(...args),
         capturePluginContext: (chatRef: { chaId: string; chatId: string } | null) =>
             chatRef ? { chatRef, ...chatDisplayIds(chatRef) } : undefined,
     };
 });
 vi.mock("src/ts/plugins/pluginHooks", () => ({
-    pluginHooks: { providerOptions: new Map([["legacy", { tokenizer: "llama" }]]) },
+    pluginHooks: {
+        providerOptions: new Map([["legacy", { tokenizer: "llama" }]]),
+        replacerbeforeRequest: new Set(),
+        replacerafterRequest: new Set(),
+    },
 }));
+vi.mock("src/ts/process/transformers", () => ({ runTransformers: vi.fn() }));
+vi.mock("src/ts/process/templates/chatTemplate", () => ({ applyChatTemplate: vi.fn() }));
+vi.mock("src/ts/process/stringlize", () => ({ unstringlizeChat: vi.fn() }));
 vi.mock("src/ts/storage/serverAuth", () => ({
     authFetch: (path: string, init?: RequestInit) => stubs.fetch(path, init),
 }));
@@ -116,6 +130,7 @@ vi.mock("../../files/inlays", () => ({
     setInlayAsset: stubs.setInlayAsset,
 }));
 vi.mock("../../mcp/mcp", () => ({
+    getTools: stubs.getTools,
     callTool: stubs.callTool,
     decodeToolCall: stubs.decodeToolCall,
     encodeToolCall: stubs.encodeToolCall,
@@ -127,6 +142,7 @@ import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from 
 import { activeMainProfile } from "src/ts/storage/settingsViews.svelte";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../../shared/presets";
 import { requestServer } from "../transport";
+import { requestChatData } from "../request";
 import { chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
 import {
     assembleChats,
@@ -285,6 +301,7 @@ beforeEach(() => {
         path.endsWith("/answer") ? Response.json({ accepted: true }) : sseResponse([accepted, success]),
     );
     stubs.callTool.mockResolvedValue([{ type: "text", text: "tool says" }]);
+    stubs.getTools.mockResolvedValue([]);
     stubs.decodeToolCall.mockResolvedValue(undefined);
     stubs.encodeToolCall.mockResolvedValue("<tool_call>x</tool_call>");
     stubs.saveInlayedSignature.mockResolvedValue("sig");
@@ -313,6 +330,19 @@ afterEach(() => {
 });
 
 describe("the request body", () => {
+    it("preserves configured-tool intent for omitted, automatic empty, and explicit empty tool lists", async () => {
+        // A direct transport caller may omit its list; the outer request discovers one first.
+        expect(await requestServer(baseArg() as never, "model", null, modelInfo)).toMatchObject({ type: "success" });
+        expect(await requestChatData(baseArg(), "model")).toMatchObject({ type: "success" });
+        expect(stubs.getTools).toHaveBeenCalledTimes(1);
+        expect(await requestChatData({ ...baseArg(), tools: [] }, "model")).toMatchObject({ type: "success" });
+        expect(stubs.getTools).toHaveBeenCalledTimes(1);
+
+        const bodies = stubs.fetch.mock.calls.map(([, init]) => JSON.parse(init!.body as string) as LlmRequestBody);
+        expect(bodies.map((body) => body.tools)).toEqual([[], [], []]);
+        expect(bodies.map((body) => body.arg.allowConfiguredTools)).toEqual([true, true, undefined]);
+    });
+
     it("captures the ids, the tokenizer scope, and the arguments before the flush, so a selection change while saving does not move the request", async () => {
         let release!: () => void;
         stubs.flush.mockReturnValue(new Promise<void>((resolve) => (release = resolve)));
@@ -449,6 +479,7 @@ describe("the request body", () => {
             bias: {},
             useStreaming: false,
             profileId: "step-profile",
+            allowConfiguredTools: true,
         });
         expect(body.arg).not.toHaveProperty("requestIds");
         expect(body.arg).not.toHaveProperty("chatRef");

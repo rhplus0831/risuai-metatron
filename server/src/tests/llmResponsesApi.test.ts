@@ -164,6 +164,21 @@ describe("OpenAI Responses API helpers", () => {
         Object.assign(db, settings());
     });
 
+    it("suppresses configured search only for an explicitly empty tool list", async () => {
+        db.modelTools = ["search"];
+        for (const [args, expected] of [
+            [{ tools: [] }, undefined],
+            [{ tools: undefined }, [{ type: "web_search_preview" }]],
+            [{ tools: [], allowConfiguredTools: true }, [{ type: "web_search_preview" }]],
+        ] as const) {
+            const result = await requestOpenAIResponseAPI(baseArg({ ...args, previewBody: true }));
+            expect(result.type).toBe("success");
+            expect(JSON.parse(result.result as string).body.tools).toEqual(expected);
+        }
+        expect(transport.fetchBuffered).not.toHaveBeenCalled();
+        expect(transport.fetchStream).not.toHaveBeenCalled();
+    });
+
     it("builds a Responses request body for text, developer role, multimodal input, tools, and model parameters", async () => {
         db.modelTools = ["search"];
         const sourceMessages = baseArg().formated;

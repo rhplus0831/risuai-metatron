@@ -100,6 +100,8 @@ export type RequestArgs = {
      */
     profileId?: string;
     rememberToolUsage?: boolean;
+    /** An automatically listed empty MCP set still permits configured provider tools. */
+    allowConfiguredTools?: boolean;
 };
 
 export const REQUEST_ARG_KEYS = [
@@ -125,6 +127,7 @@ export const REQUEST_ARG_KEYS = [
     "staticModel",
     "profileId",
     "rememberToolUsage",
+    "allowConfiguredTools",
 ] as const satisfies readonly (keyof RequestArgs)[];
 
 export type LlmRequestBody = {

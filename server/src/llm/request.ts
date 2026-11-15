@@ -63,7 +63,7 @@ export type ToolCall = {
 /** The client's `RequestDataArgumentExtended`, built from the request body and the context. */
 export interface RequestDataArgumentExtended extends RequestArgs {
     ctx: RequestContext;
-    tools: ToolDescriptor[];
+    tools?: ToolDescriptor[];
     aiModel: string;
     multiGen?: boolean;
     abortSignal?: AbortSignal | null;
@@ -489,7 +489,7 @@ export function resolveJobRequestModel(
  * `server/src/llm/messages.ts` unknown-model failure.
  */
 export async function requestChatDataMain(
-    arg: RequestArgs & { tools: ToolDescriptor[] },
+    arg: RequestArgs & { tools?: ToolDescriptor[] },
     model: ModelModeExtended,
     ctx: RequestContext,
 ): Promise<requestDataResponse> {
@@ -499,9 +499,20 @@ export async function requestChatDataMain(
     }
     const { db, profile, aiModel } = resolved;
     const getModelInfo = ctx.getModelInfo;
+    const tools = ctx.tools;
+    const offeredNames = new Set(arg.tools?.map((tool) => tool.name));
     ctx = {
         ...ctx,
         db,
+        tools: {
+            ...tools,
+            call: async (name, args) => {
+                if (!offeredNames.has(name)) {
+                    return [{ type: "text", text: `Tool ${name} not found on any MCP` }];
+                }
+                return tools.call(name, args);
+            },
+        },
         // Dynamic and plugin descriptors keep the context's resolution rules. Clone the result
         // before adapters change its format, internal id, or flags, including a captured plugin model.
         getModelInfo: (id) => structuredClone(getModelInfo(id, db)),

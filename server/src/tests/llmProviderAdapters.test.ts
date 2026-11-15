@@ -545,6 +545,99 @@ afterEach(() => {
 });
 
 describe("the server provider adapters", () => {
+    it.each([
+        { label: "no tools", tools: [] },
+        { label: "another tool", tools: [ROLL_DICE] },
+    ])("Anthropic refuses an unoffered tool with $label and completes its follow-up", async ({ tools }) => {
+        let requests = 0;
+        const recorded = await run({
+            settings: { preset: { aiModel: "claude-sonnet-4-5-20250929" } },
+            arg: prompt(),
+            tools,
+            upstream: () =>
+                json({
+                    content:
+                        ++requests === 1
+                            ? [{ type: "tool_use", id: "unoffered", name: "writeChat", input: { value: "bad" } }]
+                            : [{ type: "text", text: "Handled." }],
+                }),
+        });
+
+        expect(recorded.toolCalls).toEqual([]);
+        expect(recorded.calls).toHaveLength(2);
+        expect(recorded.calls[1].body).toMatchObject({
+            messages: expect.arrayContaining([
+                {
+                    role: "user",
+                    content: [
+                        {
+                            type: "tool_result",
+                            tool_use_id: "unoffered",
+                            content: [{ type: "text", text: "Tool writeChat not found on any MCP" }],
+                        },
+                    ],
+                },
+            ]),
+        });
+        expect(recorded.result).toEqual({ type: "success", result: "Handled." });
+    });
+
+    it.each([false, true])(
+        "Chat Completions answers an unoffered call with an empty tool list, streaming=%s",
+        async (streaming) => {
+            let requests = 0;
+            const recorded = await run({
+                settings: { preset: { aiModel: "reverse_proxy" }, providers: { useStreaming: streaming } },
+                arg: { ...prompt(), useStreaming: streaming },
+                tools: [],
+                upstream: () => {
+                    const first = ++requests === 1;
+                    const toolCall = {
+                        id: "unoffered",
+                        type: "function",
+                        function: { name: "writeChat", arguments: "{}" },
+                    };
+                    return streaming
+                        ? sse([
+                              {
+                                  choices: [
+                                      {
+                                          delta: first
+                                              ? { tool_calls: [{ index: 0, ...toolCall }] }
+                                              : { content: "Handled." },
+                                      },
+                                  ],
+                              },
+                              "[DONE]",
+                          ])
+                        : json({
+                              choices: [
+                                  {
+                                      message: first
+                                          ? { role: "assistant", content: "", tool_calls: [toolCall] }
+                                          : { role: "assistant", content: "Handled." },
+                                  },
+                              ],
+                          });
+                },
+            });
+
+            expect(recorded.toolCalls).toEqual([]);
+            expect(recorded.calls).toHaveLength(2);
+            expect(recorded.calls[1].body).toMatchObject({
+                messages: expect.arrayContaining([
+                    {
+                        role: "tool",
+                        content: "No tool found with name: writeChat",
+                        tool_call_id: "unoffered",
+                    },
+                ]),
+            });
+            if (streaming) expect(recorded.chunks.at(-1)).toMatchObject({ "0": expect.stringContaining("Handled.") });
+            else expect(recorded.result).toEqual({ type: "success", result: expect.stringContaining("Handled.") });
+        },
+    );
+
     it("reformats empty and all-system prompts with first-system support and restores the system block at the adapter", async () => {
         const replacements = {
             systemContentReplacement: "system: {{slot}}",

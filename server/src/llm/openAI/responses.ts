@@ -337,7 +337,7 @@ async function buildResponsesBody(arg: RequestDataArgumentExtended): Promise<Rec
             })),
         );
     }
-    if (db.modelTools.includes("search")) {
+    if ((arg.tools?.length !== 0 || arg.allowConfiguredTools === true) && db.modelTools.includes("search")) {
         tools.push({ type: "web_search_preview" });
     }
 
