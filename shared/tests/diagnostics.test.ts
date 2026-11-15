@@ -99,6 +99,7 @@ describe("projectDiagnosticEvent", () => {
             "bootCache",
             "push",
             "notice",
+            "remoteCommand",
         ]);
     });
 

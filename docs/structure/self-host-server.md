@@ -49,6 +49,8 @@ A module's contract is its doc comments; an entry names its path, role, and iden
 
 - `server/src/push/pushService.ts` Web Push for completions: `createPushService`, `completionTopic`, `PushService`,
   `MAX_PUSH_SUBSCRIPTIONS`.
+- `server/src/remoteCommands.ts` `createRemoteCommands`: the process-local command registry, deadlines and retry
+  identity. `shared/remoteCommands.ts` owns the HTTP contract, states, refusal codes, action identity and caps.
 - `server/src/data/orderedWriter.ts` the auxiliary-write scheduler: `createOrderedWriter`, `OrderedWriter`.
 - `server/src/data/durableWrite.ts` durable file publication and directory creation: `writeFileDurable`,
   `writeFileDurableSync`, `mkdirDurable`, `mkdirDurableSync`, `syncDir`.
@@ -78,11 +80,41 @@ Route lookup order:
    `server/src/http/staticCache.ts` `serveCachedIndex`.
 2. Other `dist/*` GET/HEAD: `server/src/http/staticCache.ts` `createStaticCache`, then `serveStatic` in `app.ts`.
 3. Route families and their owners:
-   - This guide: [proxy](#proxy-routes), [push](#push-routes),
+   - This guide: [proxy](#proxy-routes), [push](#push-routes), [remote commands](#remote-command-routes),
      [request history and diagnostics](#request-history-and-diagnostics-routes), [auth](#auth-routes), and
      [storage](#storage-routes).
    - [Server resources](server-resources.md#files), [server generation](server-generation.md#files),
      [live-update feed](live-update-feed.md#files), and [structured memory](structured-memory/README.md).
+
+### Remote-command routes
+
+`server/src/routes/remoteCommands.ts` mounts `REMOTE_COMMANDS_PATH` (`/api/remote-commands`). All five routes use the
+authenticated limiter, JWT, `no-store`, and `x-resource-epoch` (412 `EpochMismatch` with the current epoch). Malformed
+bodies or ids answer 400; a non-participant sees 404 `unknownCommand`. Every POST has a 1 MiB body cap after auth.
+Shutdown refuses admission and clears the registry.
+
+- `POST /api/remote-commands` accepts `{ clientId, target, commandId, command, uncertain? }`; a send's `requestId` must
+  equal `commandId`. Answers state, attempted, stopRequested, attempt, and optional code/result. New targets must be
+  registered hosts (404 `targetUnavailable`); 16 open commands per target (409 `targetFull`).
+- `GET /api/remote-commands/:id?clientId=` is target-only: an open command's body, state, attempted, stopRequested and
+  incremented attempt. It changes queued to delivered; a closed command answers 410 without a body.
+- `POST /api/remote-commands/:id/state` is target-only: `{ clientId, attempt, state, code?, result? }`. Reports may be
+  running, uncertain, done, or refused with a checked code. A lower attempt answers `superseded: true` without changes;
+  a future attempt or disallowed transition answers 409 `invalidTransition`. A repeated closed report is idempotent. The
+  answer includes state, stopRequested and attempt.
+- `POST /api/remote-commands/:id/cancel` takes `{ clientId }`, sender-only: queued closes cancelled; an open command
+  already read gets stopRequested, carried by every read, answer, and notice until the next matching post, and another
+  target notice. Closed commands stay closed. Answers state, stopRequested and attempt; an unknown id stores nothing.
+  The relay never cancels a generation itself.
+- `GET /api/remote-commands/:id/status?clientId=` is sender-only and returns the post's status shape. A missing id
+  answers 404 `unknownCommand`; absence proves nothing about a generation.
+
+Before host lookup, a changed action or another sender answers 409 `commandChanged`, even after the body was deleted.
+Open entries keep the first body and sender, and keep their target while it remains a host; otherwise a retry may move
+to a host within its cap. The sender re-posts only for a new Send, so a matching post of an open entry clears
+stopRequested before notifying the target again (a host's run already aborted stays aborted). Expired, cancelled and
+refused entries can be replaced by a matching post; done returns its retained result. `uncertain: true` preserves
+attempted knowledge on admission or an open retry. The relay never executes a command.
 
 ### Rate limits
 
@@ -187,7 +219,8 @@ deletes past-grace candidates; its batches and synchronous turn are `sweep`'s co
 in its own `limitedBody(<cap>)`, as `server/src/routes/auth.ts` and `server/src/routes/push.ts` do, and is added to
 `ownLimit` in `server/src/app.ts` (and the cap list in the comment above it), which skips the global cap. Cap owners:
 [resources](server-resources.md#files), [generation](server-generation.md#files), [storage](#storage-routes),
-[auth](#auth-routes), [push](#push-routes), and [diagnostics](#request-history-and-diagnostics-routes).
+[auth](#auth-routes), [push](#push-routes), [remote commands](#remote-command-routes) (1 MiB per POST), and
+[diagnostics](#request-history-and-diagnostics-routes).
 
 - A route that never reads its body (the snapshot restore) refuses an over-cap one only by its declared length.
 - A route must finish reading before it exposes a streamed response, as every capped route does: a later overflow cannot
@@ -302,6 +335,14 @@ and the jobs' parts are in [store state](server-resources.md#process-memory) and
 - The thumbnail service (`thumbnails`): its single flights, generation slots and wait queue, per-key locks, and the
   loaded encoder. A restart loses only work in flight; the disk cache stays.
 - The asset mark's last report, run identity, and export holds.
+- Remote commands: queued, delivered, running and uncertain are open; done, refused, expired and cancelled are closed.
+  Only a body read delivers; running or an uncertain post makes attempted sticky. Refusal after an attempt remains
+  uncertain. Every open body read increments attempt, guarding against stale state reports. Closing deletes the body but
+  retains its type and SHA-256 action identity. Results are opaque JSON objects bounded by the POST cap.
+- The command registry expires queued pickup after 30 s, retains closed entries 10 minutes, and forgets open entries 40
+  minutes after the last state change, notifying the sender with forgotten. One unref'd timer and access-time sweeps
+  enforce deadlines; every access silently drops other epochs. Shutdown clears all entries and the timer. Frames carry
+  only command identity/state; bodies travel by HTTP and never reach durable storage.
 
 ## Coupling
 
@@ -380,7 +421,10 @@ belong to [test-harness](test-harness.md); `slow` and `e2e` memberships are in i
   guides: a temporary root with a minimal `dist/index.html`, or a reused one for a restart, with injected kinds, clocks,
   limits, and services. `testRestoreRunner` stages a restore in process, so a gate test starts no worker.
 - `createServerContext`'s test seams include `generationRunner`, `scriptWorkerOptions`, `routeLimits`, `cbsTimeLimits`,
-  `realmStagingTimer`, `memoryTaskOptions`, `thumbnailOptions`, and `restore`.
+  `realmStagingTimer`, `memoryTaskOptions`, `remoteCommandOptions`, `thumbnailOptions`, and `restore`.
+- Remote commands: `pnpm --silent test:agent server/src/tests/{remoteCommands,events}.test.ts` (the registry's states,
+  deadlines on fake timers, caps, and epoch rule, and the routes; the `host` flag, addressed delivery, and the repeat on
+  registration). `remoteCommandOptions` passes clock and cap overrides through `createTestServer`.
 - `assetVerification.test.ts` uses injected hashers and latches to hold file reads while fake timers control the queue.
 - Boot, auth, limits, shutdown:
   `pnpm --silent test:agent server/src/tests/{app,listenConfig,shutdown,shutdownAdmission}.test.ts`.

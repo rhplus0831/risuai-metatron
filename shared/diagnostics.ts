@@ -3,6 +3,7 @@ import { LLMFormat } from "./llm.ts";
 import { BASE_LLM_MODELS } from "./llm/models.ts";
 import { REQUEST_SOURCES } from "./llm/request.ts";
 import { isProviderCode, PROVIDER_CODE_PATTERN } from "./requestHistory.ts";
+import { REMOTE_COMMAND_STATES } from "./remoteCommands.ts";
 
 export { isProviderCode, PROVIDER_CODE_PATTERN };
 
@@ -13,8 +14,8 @@ export { isProviderCode, PROVIDER_CODE_PATTERN };
  * provider error code, a route template from `ROUTE_TEMPLATES`, a catalog model id, or an
  * application stack frame.
  *
- * The server writes `http`, `job`, `request`, `runtime`, `lifecycle`, and its `push` phases; the
- * browser's collector (`src/ts/diagnostics/collector.ts`) writes `http`, `runtime`, the browser kinds
+ * The server writes `http`, `job`, `request`, `runtime`, `lifecycle`, `remoteCommand`, and its `push`
+ * phases; the browser's collector (`src/ts/diagnostics/collector.ts`) writes `http`, `runtime`, the browser kinds
  * `jobLink`, `feed`, `sync`, `serviceWorker`, `page`, `bootCache`, and `notice`, and the browser's
  * `push` phases (the page's own, and the service worker's records the report reads).
  */
@@ -32,6 +33,7 @@ export const DIAGNOSTIC_EVENT_KINDS = [
     "bootCache",
     "push",
     "notice",
+    "remoteCommand",
 ] as const;
 
 /** `GET`: the server's ring and state (`server/src/routes/diagnostics.ts`). */
@@ -399,6 +401,11 @@ export function isStackFrame(frame: unknown): frame is string {
  * responses slower than its `HTTP_SLOW_MS`, naming the registered route template rather than a URL.
  */
 export const ROUTE_TEMPLATES = [
+    "/api/remote-commands",
+    "/api/remote-commands/:id",
+    "/api/remote-commands/:id/state",
+    "/api/remote-commands/:id/cancel",
+    "/api/remote-commands/:id/status",
     "/api/generations",
     "/api/generations/cancel",
     "/api/generations/current",
@@ -575,6 +582,12 @@ export function diagnosticModel(modelId: string | null | undefined): string | nu
 }
 
 const SCHEMAS: Record<DiagnosticEventKind, Record<string, Check>> = {
+    remoteCommand: {
+        commandId: id,
+        command: oneOf(["send"]),
+        state: oneOf([...REMOTE_COMMAND_STATES, "forgotten"]),
+        bytes: count,
+    },
     http: {
         method: oneOf(HTTP_METHODS),
         route: (value) => typeof value === "string" && ROUTE_TEMPLATE_SET.has(value),
@@ -739,7 +752,15 @@ const BROWSER_KINDS: ReadonlySet<string> = new Set([
     "notice",
 ]);
 const BROWSER_RUNTIME_ORIGINS: ReadonlySet<unknown> = new Set(["error", "unhandledrejection"]);
-const SERVER_KINDS: ReadonlySet<string> = new Set(["http", "job", "request", "runtime", "lifecycle", "push"]);
+const SERVER_KINDS: ReadonlySet<string> = new Set([
+    "http",
+    "job",
+    "request",
+    "runtime",
+    "lifecycle",
+    "push",
+    "remoteCommand",
+]);
 
 /** A `push` event's phases and fields of each side; the other side's fields are dropped. */
 const PUSH_SIDES = {

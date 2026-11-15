@@ -436,6 +436,7 @@
     { "match": "shared/events.ts", "guide": "live-update-feed" },
     { "match": "shared/backups.ts", "guide": "backup-sync-hub" },
     { "match": "shared/routes.ts", "guide": "self-host-server" },
+    { "match": "shared/remoteCommands.ts", "guide": "self-host-server" },
     { "match": "shared/hotkeys.ts", "guide": "app-shell" },
     { "match": "shared/{openai,presetTemplates}.ts", "guide": "chat-pipeline" },
     { "match": "shared/realmImport.ts", "guide": "server-resources" },

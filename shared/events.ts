@@ -6,6 +6,7 @@ import type {
     StreamingMessage,
 } from "./jobs.ts";
 import type { ChangeSet } from "./resources.ts";
+import type { RemoteCommandFrameState } from "./remoteCommands.ts";
 
 /**
  * The path of the live-update socket (`/api/events/ws?risu-auth=<JWT>`). Optional `proto` is a finite
@@ -17,8 +18,8 @@ export const EVENT_FEED_PATH = "/api/events/ws";
 export const MAX_FEED_CLIENT_NAME = 64;
 export const MAX_FEED_CLIENTS = 64;
 
-/** A registered live-update socket's tab identity and worker preference. */
-export type FeedClient = { clientId: string; name: string; worker: boolean };
+/** A registered live-update socket's tab identity, worker preference, and optional command-host mode. */
+export type FeedClient = { clientId: string; name: string; worker: boolean; host?: boolean };
 export type EventFeedClientMessage = { type: "register" } & FeedClient;
 
 /**
@@ -92,6 +93,8 @@ export type GenerationProgressEntry = {
  * - `handoff`: a content-free job handoff offer opened or closed;
  * - `generation`: a content-free running job's progress or its end, process-local like `memoryTask` and `handoff`;
  * - `clients`: the whole registered-client list; presence is process-local and has no epoch;
+ * - `remoteCommand`: a content-free pickup or stop notice to one command target;
+ * - `remoteCommandState`: a content-free state change to one command sender;
  * - `epoch`: a restore or import replaced the database; the client reloads;
  * - `ping`: the heartbeat.
  */
@@ -117,6 +120,8 @@ export type EventFeedFrame =
           | { state: "ended"; jobId: string; characterId: string; chatId: string }
       ))
     | { type: "clients"; clients: FeedClient[] }
+    | { type: "remoteCommand"; epoch: string; commandId: string; stop?: true }
+    | { type: "remoteCommandState"; epoch: string; commandId: string; state: RemoteCommandFrameState; code?: string }
     | { type: "epoch"; epoch: string }
     | { type: "ping"; ts: number };
 

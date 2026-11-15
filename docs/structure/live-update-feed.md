@@ -19,8 +19,8 @@
   in `server/src/app.ts` outside the HTTP app, so no HTTP limiter; JWT in the `risu-auth` query or header, never the
   password; `proto` logged, never enforced.
 - `shared/events.ts`: the frames (`EventFeedFrame`: `hello`, `change`, `memoryTask`, `handoff`, `generation`, `clients`,
-  `epoch`, `ping`), the one client message (`EventFeedClientMessage`), `ChatStreaming`, `ChatStreamingSnapshot`,
-  `MemoryTaskEntry`, `GenerationProgressEntry`.
+  `remoteCommand`, `remoteCommandState`, `epoch`, `ping`), the one client message (`EventFeedClientMessage`),
+  `ChatStreaming`, `ChatStreamingSnapshot`, `MemoryTaskEntry`, `GenerationProgressEntry`.
 - `shared/resources.ts`: what a `change` frame carries (`ChangeSet`, `ChatDeltaBody`, `ChatRowDeltaBody`) and its sizes
   (`MAX_FEED_PATCH_BYTES`, `SMALL_FEED_PATCH_BYTES`, `MAX_FEED_PUBLICATION_PATCH_BYTES`).
 - `server/src/data/chatStore.ts`, feed parts: a by-id group's [entry](#feed-chat-entries) and the writer's own change
@@ -55,6 +55,17 @@ are on both): a socket that cannot take it is terminated, and its client [reconc
 
 A socket's `register` message lists it in the `clients` frame every socket gets (rules: `createEventSockets` comment);
 the tab side is [feed connection](live-updates.md#feed-connection).
+
+`FeedClient.host` is optional; only a boolean registration value is stored, in both `clients` and `hello.clients`.
+`isHost`, `clientName`, and `sendToClient` all use the newest registration for an id, beyond the published list's cap. A
+newest false or absent `host` hides an older host. `sendToClient` sends only to that newest socket through `send` with
+the serialized frame's UTF-8 bytes; its boolean means a socket was found, not delivery.
+
+After storing and publishing registration, `onRegister` repeats each host's open
+[remote command](self-host-server.md#remote-command-routes), including its stop flag. A callback throw logs only its
+error name and leaves the socket open. `remoteCommand` carries epoch, command id, and optional `stop: true` to the
+target; `remoteCommandState` carries epoch, command id, state and optional refusal code to the sender. Neither frame
+broadcasts or carries a body, result, or chat text; only an authenticated HTTP body read delivers a command.
 
 ### Own chat changes
 
@@ -120,6 +131,8 @@ row ids, removals, count, changed metadata field names).
   model.
 - A frame is never split ([Publication budget](#publication-budget)); a frame a socket cannot take closes that socket
   ([Frame admission](#frame-admission)).
+- Addressed remote-command notices use `sendToClient`, never `feed.publish`; reconnect registration repeats open
+  commands from the process-local registry, not from a feed buffer.
 
 ## Recipes
 

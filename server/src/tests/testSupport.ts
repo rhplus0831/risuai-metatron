@@ -76,6 +76,7 @@ export type TestServerOptions = {
     memoryTasks?: "disabled" | MemoryTaskService;
     /** The context's own memory task service: `now` and `limits` replace its clock and caps. */
     memoryTaskOptions?: { now?: () => number; limits?: Partial<MemoryTaskLimits> };
+    remoteCommandOptions?: Parameters<typeof createServerContext>[0]["remoteCommandOptions"];
 };
 
 /** Stages a restore in process, with `resourceKinds` or the defaults: a gate test starts no worker. */
@@ -120,6 +121,7 @@ export function createTestServer(options: TestServerOptions = {}) {
         cbsTimeLimits: options.cbsTimeLimits,
         memoryTasks: options.memoryTasks,
         memoryTaskOptions: options.memoryTaskOptions,
+        remoteCommandOptions: options.remoteCommandOptions,
     });
     return {
         rootDir,

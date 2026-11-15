@@ -41,9 +41,11 @@ export type EventSockets = ReturnType<typeof createEventSockets>;
  * before adding the socket and sending hello.
  * A text `register` message sets this socket's presence. The newest registration per client id wins;
  * names use at most 64 UTF-16 units and the list keeps the newest 64 clients. Join, leave and change
- * publish the list through the same queue as feed events. Unregistered sockets still receive everything.
+ * publish the list through the same queue as feed events. Unregistered sockets still receive broadcasts.
  * `clientName` reads the newest registration for any client id, including those outside the published
  * list; an empty name or no registration returns undefined, without falling back to an older name.
+ * `isHost` and `sendToClient` use that same newest registration, with no fallback to an older host
+ * or socket. Addressed frames use `send` and its UTF-8 admission check, never the broadcast queue.
  * A client reconciles from its advertised map when the digest matches, otherwise from a log replay or
  * a fetched revision listing.
  * A failed `digest` logs only the error name (or the type of a non-Error throw) and omits only that
@@ -71,6 +73,8 @@ export function createEventSockets(options: {
     handoffs?: () => HandoffOffer[];
     /** Content-free running job progress, sampled synchronously with the other hello snapshots. */
     generations?: () => GenerationProgressEntry[];
+    /** After presence is stored and published; failures are logged without closing the socket. */
+    onRegister?: (client: FeedClient) => void;
 }) {
     const { feed, epoch, authorize, streaming, memoryTasks, digest } = options;
     const wsServer = new WebSocketServer({ noServer: true, maxPayload: 4096 });
@@ -166,6 +170,10 @@ export function createEventSockets(options: {
         broadcast(JSON.stringify({ type: "clients", clients } satisfies EventFeedFrame));
     }
 
+    function newestRegistration(clientId: string): [WebSocket, FeedClient] | undefined {
+        return [...registrations.entries()].reverse().find(([, client]) => client.clientId === clientId);
+    }
+
     function attach(ws: WebSocket, proto: number | null) {
         protocols.set(ws, proto);
         console.info(`[Live-update socket] proto=${proto ?? "none"}`);
@@ -196,12 +204,22 @@ export function createEventSockets(options: {
                 return;
             // Re-registering moves this socket to the newest position, including reconnect races.
             registrations.delete(ws);
-            registrations.set(ws, {
+            const client: FeedClient = {
                 clientId: registration.clientId,
                 name: registration.name.slice(0, MAX_FEED_CLIENT_NAME),
                 worker: registration.worker,
-            });
+                ...(typeof registration.host === "boolean" ? { host: registration.host } : {}),
+            };
+            registrations.set(ws, client);
             publishClients();
+            try {
+                options.onRegister?.(client);
+            } catch (error) {
+                console.error(
+                    "[Live updates] registration callback failed:",
+                    error instanceof Error ? error.name : typeof error,
+                );
+            }
         });
         let hello: string;
         try {
@@ -301,10 +319,20 @@ export function createEventSockets(options: {
          * list's cap. No registration or an empty newest name returns undefined, never an older name.
          */
         clientName(clientId: string): string | undefined {
-            for (const client of [...registrations.values()].reverse()) {
-                if (client.clientId === clientId) return client.name || undefined;
-            }
-            return undefined;
+            return newestRegistration(clientId)?.[1].name || undefined;
+        },
+
+        isHost(clientId: string): boolean {
+            return newestRegistration(clientId)?.[1].host === true;
+        },
+
+        /** True means a registered socket was found, not that the frame arrived. */
+        sendToClient(clientId: string, frame: EventFeedFrame): boolean {
+            const registration = newestRegistration(clientId);
+            if (!registration) return false;
+            const text = JSON.stringify(frame);
+            send(registration[0], text, Buffer.byteLength(text));
+            return true;
         },
 
         /** How many clients are connected (tests). */

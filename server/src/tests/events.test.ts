@@ -162,6 +162,70 @@ describe("the live-update socket on the server", () => {
     const epochOf = async () =>
         ((await (await request("/api/resources/revisions")).json()) as ResourceRevisionListing).epoch;
 
+    it("repeats only a registering host's open commands, including their stop flags", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        await listen({ remoteCommandOptions: { now: () => 0 } });
+        const epoch = await epochOf();
+        const first = await open();
+        const other = await open();
+        const observer = await open();
+        for (const client of [first, other, observer]) await frameAt(client, 0);
+        const register = async (client: Client, clientId: string, host: boolean) => {
+            client.ws.send(JSON.stringify({ type: "register", clientId, name: clientId, worker: false, host }));
+            await delivered(client);
+        };
+        await register(first, "desk", true);
+        await register(other, "laptop", true);
+        const send = async (url: string, body?: unknown) => {
+            const response = await request(url, {
+                ...(body === undefined ? {} : json(body)),
+                headers: { "content-type": "application/json", "x-resource-epoch": epoch },
+            });
+            expect(response.status).toBe(200);
+            return response.json();
+        };
+        for (const state of ["queued", "delivered", "running", "uncertain", "done", "other"] as const) {
+            await send("/api/remote-commands", {
+                clientId: "phone",
+                target: state === "other" ? "laptop" : "desk",
+                commandId: state,
+                command: {
+                    type: "send",
+                    requestId: state,
+                    chaId: "c",
+                    chatId: "k",
+                    userMessageId: "u",
+                    input: "private input",
+                },
+            });
+            if (state === "queued" || state === "other") continue;
+            await send(`/api/remote-commands/${state}?clientId=desk`);
+            if (state !== "delivered")
+                await send(`/api/remote-commands/${state}/state`, { clientId: "desk", attempt: 1, state });
+            if (state === "running" || state === "uncertain")
+                await send(`/api/remote-commands/${state}/cancel`, { clientId: "phone" });
+        }
+        const reconnected = await open();
+        await frameAt(reconnected, 0);
+        await register(reconnected, "desk", false);
+        expect(reconnected.frames.filter((frame) => frame.type === "remoteCommand")).toEqual([]);
+        for (const client of [first, other, observer]) await delivered(client);
+        const previous = [first, other, observer].map((client) =>
+            client.frames.filter((frame) => frame.type === "remoteCommand"),
+        );
+        await register(reconnected, "desk", true);
+        expect(reconnected.frames.filter((frame) => frame.type === "remoteCommand")).toEqual([
+            { type: "remoteCommand", epoch, commandId: "queued" },
+            { type: "remoteCommand", epoch, commandId: "delivered" },
+            { type: "remoteCommand", epoch, commandId: "running", stop: true },
+            { type: "remoteCommand", epoch, commandId: "uncertain", stop: true },
+        ]);
+        for (const [index, client] of [first, other, observer].entries()) {
+            await delivered(client);
+            expect(client.frames.filter((frame) => frame.type === "remoteCommand")).toEqual(previous[index]);
+        }
+    });
+
     it("sends committed cursors with hello and changes and serves bounded replay alongside the whole listing", async () => {
         vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
         await listen({ resourceKinds: digestKinds });
@@ -1038,6 +1102,106 @@ describe("createEventSockets", () => {
         }
     });
 
+    it("publishes boolean host flags in clients and hello and omits absent or non-boolean flags", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        const { sockets, url } = await host(async () => true);
+        const registered = connect(url);
+        const observer = connect(url);
+        const clients = [registered, observer];
+        try {
+            for (const client of clients) await frameAt(client, 0);
+            for (const flag of [true, false, undefined, "true"]) {
+                registered.ws.send(
+                    JSON.stringify({ type: "register", clientId: "desk", name: "Desk", worker: false, host: flag }),
+                );
+                await delivered(registered);
+                await delivered(observer);
+                const presence = {
+                    clientId: "desk",
+                    name: "Desk",
+                    worker: false,
+                    ...(typeof flag === "boolean" ? { host: flag } : {}),
+                };
+                expect(observer.frames.at(-1)).toEqual({ type: "clients", clients: [presence] });
+                const later = connect(url);
+                clients.push(later);
+                expect(await frameAt(later, 0)).toMatchObject({ type: "hello", clients: [presence] });
+                const hello = later.frames[0];
+                if (hello.type !== "hello") throw new Error("Expected hello");
+                expect(hello.clients).toEqual([presence]);
+            }
+        } finally {
+            for (const client of clients) client.ws.terminate();
+            sockets.close();
+        }
+    });
+
+    it("sends addressed frames only to the newest registration of their target id", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        const { sockets, url } = await host(async () => true);
+        const clients = [connect(url), connect(url), connect(url)];
+        const [older, newer, sender] = clients;
+        try {
+            for (const client of clients) await frameAt(client, 0);
+            const register = async (client: Client, clientId: string) => {
+                client.ws.send(
+                    JSON.stringify({ type: "register", clientId, name: clientId, worker: false, host: true }),
+                );
+                await delivered(client);
+            };
+            await register(older, "desk");
+            await register(newer, "desk");
+            await register(sender, "phone");
+            const command = { type: "remoteCommand", epoch: "E", commandId: "send-1" } as const;
+            const state = { type: "remoteCommandState", epoch: "E", commandId: "send-1", state: "running" } as const;
+            expect(sockets.sendToClient("desk", command)).toBe(true);
+            expect(sockets.sendToClient("phone", state)).toBe(true);
+            expect(sockets.sendToClient("missing", command)).toBe(false);
+            const addressed = (client: Client) =>
+                client.frames.filter((frame) => frame.type === "remoteCommand" || frame.type === "remoteCommandState");
+            for (const client of clients) await delivered(client);
+            expect(addressed(older)).toEqual([]);
+            expect(addressed(newer)).toEqual([command]);
+            expect(addressed(sender)).toEqual([state]);
+            await register(older, "desk");
+            expect(sockets.sendToClient("desk", command)).toBe(true);
+            for (const client of clients) await delivered(client);
+            expect(addressed(older)).toEqual([command]);
+            expect(addressed(newer)).toEqual([command]);
+            expect(addressed(sender)).toEqual([state]);
+        } finally {
+            for (const client of clients) client.ws.terminate();
+            sockets.close();
+        }
+    });
+
+    it("lets the newest false or absent host flag hide an older host registration", async () => {
+        vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+        const { sockets, url } = await host(async () => true);
+        const older = connect(url);
+        const newer = connect(url);
+        try {
+            for (const client of [older, newer]) await frameAt(client, 0);
+            expect(sockets.isHost("desk")).toBe(false);
+            for (const flag of [false, undefined]) {
+                older.ws.send(
+                    JSON.stringify({ type: "register", clientId: "desk", name: "Older", worker: false, host: true }),
+                );
+                await delivered(older);
+                expect(sockets.isHost("desk")).toBe(true);
+                newer.ws.send(
+                    JSON.stringify({ type: "register", clientId: "desk", name: "Newer", worker: false, host: flag }),
+                );
+                await delivered(newer);
+                expect(sockets.isHost("desk")).toBe(false);
+            }
+        } finally {
+            older.ws.terminate();
+            newer.ws.terminate();
+            sockets.close();
+        }
+    });
+
     it("publishes bounded names on registration, updates and departure while unregistered sockets receive every frame", async () => {
         vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
         const { feed, sockets, url } = await host(async () => true);
@@ -1328,7 +1492,8 @@ describe("createEventSockets", () => {
 
     it("admits non-hello frames by UTF-8 bytes, including exactly 4 MiB, without queuing rejected frames", async () => {
         vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
-        const frames: EventFeedFrame[] = [
+        // The broadcast frames; the addressed remote-command frames are sent by `sendToClient`, not the feed.
+        const frames: Exclude<EventFeedFrame, { type: "remoteCommand" | "remoteCommandState" }>[] = [
             {
                 type: "change",
                 epoch: "E",

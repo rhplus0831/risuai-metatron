@@ -110,6 +110,9 @@ import { DIAGNOSTICS_PATH, DIAGNOSTICS_REPORT_PATH, registerDiagnosticsRoutes } 
 import { PUSH_SUBSCRIPTION_PATH, registerPushRoutes } from "./routes/push.ts";
 import { createPushService, type PushTransport } from "./push/pushService.ts";
 import { createEventSockets } from "./routes/events.ts";
+import { createRemoteCommands, type RemoteCommandLimits } from "./remoteCommands.ts";
+import { registerRemoteCommandRoutes } from "./routes/remoteCommands.ts";
+import { REMOTE_COMMANDS_PATH } from "../../shared/remoteCommands.ts";
 import { MEMORY_TASKS_PATH, registerMemoryTaskRoutes } from "./routes/memoryTasks.ts";
 import { STRUCTURED_MEMORY_PATH, registerStructuredMemoryRoutes } from "./routes/structuredMemory.ts";
 import { registerResourceRoutes, RESOURCE_READ_PATH } from "./routes/resources.ts";
@@ -135,11 +138,11 @@ import type { AppEnv } from "./types.ts";
  *
  * Middleware runs before route authentication: HTTP diagnostics, preview asset headers, shutdown
  * admission/tracking, then body limits. Resource, checkpoint, memory-task, structured-memory, auth
- * state-write, push state-write, and lifecycle handlers are tracked through their responses before
- * the store closes. Backups/imports manage their own operation admission. Shutdown refuses those
+ * state-write, push state-write, remote-command, and lifecycle handlers are tracked through their
+ * responses before the store closes. Backups/imports manage their own operation admission. Shutdown refuses those
  * families plus history, diagnostics, and token routes with 503, Retry-After: 5, and no-store; all
  * responses then close their connections. History, diagnostics, push, memory-task, structured-memory,
- * checkpoint, token, and lifecycle responses are no-store even on limiter/body-limit failures.
+ * checkpoint, remote-command, token, and lifecycle responses are no-store even on limiter/body-limit failures.
  *
  * Four independent client-IP limiter buckets use server/src/http/clientIp.ts and
  * server/src/http/rateLimit.ts: authenticated, storage, and auth each allow 2000/minute by default;
@@ -151,8 +154,8 @@ import type { AppEnv } from "./types.ts";
  * The default body limit is 100 MiB, checked before route handlers. Backup, module, and CharX imports
  * instead stream under maxImportBytes. Route-local caps replace the app cap for Realm POSTs,
  * diagnostic reports, history shares, translation, memory tasks, structured memory, checkpoints,
- * tokens, missing-asset checks, resource reads/boot, login/crypto/setup, transforms, and subscription
- * PUT/DELETE. Their modules own the caps and authentication order; storage batch bodies use the
+ * tokens, remote-command POSTs (1 MiB), missing-asset checks, resource reads/boot, login/crypto/setup,
+ * transforms, and subscription PUT/DELETE. Their modules own the caps and authentication order; storage batch bodies use the
  * app cap. History and diagnostics routes require JWT; shares cap at 4 KiB and reports at 1 MiB,
  * both after auth in server/src/routes/requestHistory.ts and server/src/routes/diagnostics.ts.
  * server/src/http/staticCache.ts handles validators and encoded siblings before static
@@ -287,6 +290,8 @@ export function createServerContext(options: {
     memoryTasks?: "disabled" | MemoryTaskService;
     /** The context's memory task service: `now` and `limits` replace its clock and caps (`MEMORY_TASK_LIMITS`). */
     memoryTaskOptions?: { now?: () => number; limits?: Partial<MemoryTaskLimits> };
+    /** The process-local command relay's clock and caps (tests). */
+    remoteCommandOptions?: { now?: () => number; limits?: Partial<RemoteCommandLimits> };
     /** The thumbnail encoder loader and generation limits (default 2 running, 32 queued). */
     thumbnailOptions?: ThumbnailOptions;
     /** Retention scan clocks, grace, chunk yield, disk probe, and timer delays (tests). */
@@ -371,12 +376,20 @@ export function createServerContext(options: {
         streaming: () => generationJobs.streamingSnapshot(),
         handoffs: () => generationJobs.handoffSnapshot(),
         generations: () => generationJobs.generationSnapshot(),
+        onRegister: (client) => remoteCommands.onRegister(client),
         memoryTasks: () =>
             memoryTasks?.snapshot().map(({ chatRef, status }) => ({
                 characterId: chatRef.chaId,
                 chatId: chatRef.chatId,
                 status,
             })) ?? [],
+    });
+    const remoteCommands = createRemoteCommands({
+        epoch: () => resources.epoch(),
+        isHost: eventSockets.isHost,
+        notify: eventSockets.sendToClient,
+        diagnostics,
+        ...options.remoteCommandOptions,
     });
     const snapshots = createSnapshotManager({
         databaseFile: path.join(savePath, "data", "resources.sqlite"),
@@ -688,6 +701,7 @@ export function createServerContext(options: {
         upgradeListeners.clear();
         // Before the snapshot manager stops: the clients see the server going away (1001) and reconnect.
         eventSockets.close();
+        remoteCommands.close();
         authenticatedRouteLimiter.dispose();
         storageRouteLimiter.dispose();
         authRouteLimiter.dispose();
@@ -751,12 +765,14 @@ export function createServerContext(options: {
         const structuredMemory =
             c.req.path === STRUCTURED_MEMORY_PATH || c.req.path.startsWith(`${STRUCTURED_MEMORY_PATH}/`);
         const checkpoint = c.req.path === CHAT_CHECKPOINTS_PATH || c.req.path.startsWith(`${CHAT_CHECKPOINTS_PATH}/`);
+        const remoteCommand = c.req.path === REMOTE_COMMANDS_PATH || c.req.path.startsWith(`${REMOTE_COMMANDS_PATH}/`);
         const resource =
             /^\/api\/(?:resources|llm-secrets)(?:\/|$)/.test(c.req.path) ||
             c.req.path.replace(/\/+$/, "") === MESSAGE_SEARCH_PATH ||
             memoryTask ||
             structuredMemory ||
-            checkpoint;
+            checkpoint ||
+            remoteCommand;
         const backup = /^\/api\/backups(?:\/|$)/.test(c.req.path);
         // The module, CharX, and Realm imports are refused like the backup routes.
         const fileImportRoute = c.req.path.replace(/\/+$/, "");
@@ -810,7 +826,15 @@ export function createServerContext(options: {
             if (shuttingDown) {
                 c.header("Connection", "close");
             }
-            if (history || memoryTask || structuredMemory || tokenRoute || checkpoint || assetLifecycleRoute) {
+            if (
+                history ||
+                memoryTask ||
+                structuredMemory ||
+                tokenRoute ||
+                checkpoint ||
+                assetLifecycleRoute ||
+                remoteCommand
+            ) {
                 c.header("Cache-Control", "no-store");
             }
         }
@@ -826,6 +850,7 @@ export function createServerContext(options: {
     // routes', and the missing asset check's bodies are capped by those routes (8 MiB, 16 KiB, 16 KiB,
     // 1 MiB, 4 KiB, 4 KiB, 2 MiB, 32 MiB, 16 KiB, 4 KiB, 4 KiB, 64 KiB (256 KiB for revisions and health)
     // and a restore's 32 MiB, 16 KiB, 2 MiB, 64 KiB).
+    // Every remote-command POST also caps its own body at 1 MiB after authentication.
     app.use((c, next) => {
         const route = c.req.path.replace(/\/+$/, "");
         const ownLimit =
@@ -841,6 +866,8 @@ export function createServerContext(options: {
                     route === DIAGNOSTICS_REPORT_PATH ||
                     route === MESSAGE_SEARCH_PATH ||
                     route === MEMORY_TASKS_PATH ||
+                    route === REMOTE_COMMANDS_PATH ||
+                    route.startsWith(`${REMOTE_COMMANDS_PATH}/`) ||
                     route.startsWith(`${STRUCTURED_MEMORY_PATH}/`) ||
                     route.startsWith(`${CHAT_CHECKPOINTS_PATH}/`) ||
                     route === TOKEN_COUNT_PATH ||
@@ -920,6 +947,13 @@ export function createServerContext(options: {
         },
     });
     registerGenerationRoutes(app, { jobs: generationJobs, auth, limiter: authenticatedRouteLimiter.middleware });
+    registerRemoteCommandRoutes(app, {
+        commands: remoteCommands,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+        epoch: () => resources.epoch(),
+        bodyBytes: options.remoteCommandOptions?.limits?.bodyBytes,
+    });
     registerTransformRoutes(app, {
         transforms,
         store: resources,
@@ -1167,6 +1201,7 @@ export function createServerContext(options: {
         memoryTasks,
         push,
         eventSockets,
+        remoteCommands,
         diagnostics,
         realmStaging,
         upstreamStaging,

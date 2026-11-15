@@ -40,7 +40,11 @@ The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credent
   publications, terminal fence, durability, and trust rules; its contract also covers the server's event ring.
 - Server emitters: jobs in `server/src/jobs/generationJobs.ts`, requests in `server/src/llm/historyObserver.ts`,
   HTTP/lifecycle in `server/src/app.ts` and `server/src/routes/backupsUpstream.ts`, runtime in
-  `server/src/diagnostics/log.ts` and `server/src/main.ts`, and push in `server/src/push/pushService.ts`.
+  `server/src/diagnostics/log.ts` and `server/src/main.ts`, push in `server/src/push/pushService.ts`, and command relay
+  transitions in `server/src/remoteCommands.ts`.
+- The server-only `remoteCommand` kind projects exactly commandId (generation-id syntax), command (`send`), state
+  (including forgotten), and non-negative integer bytes. No command body, result, chat text, or client name is kept.
+  `ROUTE_TEMPLATES` includes all five remote-command endpoints for HTTP diagnostics.
 - `server/src/diagnostics/share.ts` `createRequestShares`: support-copy content, redaction, ordering, and synchronous
   lifetime.
 - `server/src/routes/diagnostics.ts` `registerDiagnosticsRoutes`: `GET /api/diagnostics` reads memory;
