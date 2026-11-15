@@ -200,6 +200,9 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
   requests read the snapshots directly. Adapter comments own parser details. A tab request's tool calls go through the
   `mcpTool` callback (`mcp.ts` `callTool`), a job's through its job tool service; the adapter appends the results and
   sends the follow-up request.
+- `requestChatDataMain` dispatches only a tool name the request offered and answers any other as an unknown tool. An
+  explicit `tools: []` also leaves out the configured Responses web search; an omitted or automatically listed empty set
+  keeps it (`allowConfiguredTools`).
 - Gemini thought signatures (`providers.saveSignatures`, the Model page's toggle for a `geminiThinking` model): only a
   `model`-mode request saves them (`requestChatDataMain` sets `saveSignatures`; translation, memory, and the other
   auxiliary modes never do, since their hosts' `saveSignature` throws). The marker renders as nothing
@@ -400,6 +403,11 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
   Audit Fixes, [archive](../archived-plan/README.md).
 - The server's `gemma` tokenizer loads `llama/llama3.json`, so Gemma counts are Llama 3 counts (also for on-screen
   counts). Decision: `server/src/prompt/tokenizers/gemma.ts` header.
+- The tiktoken families take quadratic time on one long pre-tokenizer piece, so `tokenizers/tiktoken.ts` splits a piece
+  over 512 UTF-8 bytes before encoding. Text without such a piece gets the package's ids; a split run may count a few
+  tokens more per cut. Text with a code point whose Unicode category differs between Node and the package, non-ASCII
+  text on an unmeasured Unicode version, and a pattern JavaScript cannot compile keep the package path. The other
+  families are not bounded ([found issues](../backlog/found-issues.md#server-generation)). Decision: owner, 2026-11-15.
 - NanoGPT's `providers.nanogptSubscriptionState` and `nanogptUseSubscriptionEndpoint` remain global: two profiles on
   different accounts share subscription state and endpoint selection. A model-profile follow-up
   ([deferred work](../backlog/deferred-work.md#model-profiles)). Decision: owner, 2026-11-10 (known-issues review).

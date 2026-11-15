@@ -158,9 +158,10 @@ refusal the memory step recovered from or outlived replaces no later error.
   logged once (`generation.outputCount`) and stops the meter, which also stops when `readReply` returns. The tokenizer
   runs on the server thread for the new part, or a whole rewritten snapshot.
 - Half Streaming (`providers.halfStreaming`, read only here, from the request db): with Response Streaming off, a send
-  is quiet unless it is a `previewPrompt` or its reply model is `LLMFormat.OobaLegacy` (whose string stream `readReply`
-  misreads). Only its reply request gets `forceStreaming`; memory, translation, and Lua or trigger requests keep their
-  arguments. An answer that comes back buffered takes the buffered path.
+  is quiet unless it is a `previewPrompt` or its reply model is `LLMFormat.OobaLegacy` (`readReply` reads its string
+  snapshots as a one-key map; the format's quiet path is untested). Only its reply request gets `forceStreaming`;
+  memory, translation, and Lua or trigger requests keep their arguments. An answer that comes back buffered takes the
+  buffered path.
 - A quiet stream takes the streamed path (reply row, `begin`, `accepted`, meter, tail, and the final write on a stop or
   read failure), but `readReply`'s `quiet` emits no `chunk`, writes no raw checkpoint, and keeps chunk sequence 0, so no
   tab sees partial text. A stream on a send that is not quiet (Response Streaming on, or a plugin provider that streams

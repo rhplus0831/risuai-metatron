@@ -704,6 +704,10 @@ The panel is part of the main document, so the rules of a `<style>` element in i
 app. HTML that carries one asks the user for the `'globalStyle'` permission first. If the user declines, the panel is
 still shown, without its `<style>` elements. A panel styled with inline `style` attributes needs no permission.
 
+A panel is confined to its own box: `className` is applied to a wrapper inside the panel, and positioned content
+(`position: fixed` or `absolute`, a high `z-index`) stays inside the panel and is clipped at its edge. Content that
+must overflow the panel, such as a dropdown, belongs in the plugin's own iframe (`showContainer`), not in a chat panel.
+
 ## Data Storage
 
 ### Plugin Arguments

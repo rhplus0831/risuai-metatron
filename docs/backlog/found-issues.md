@@ -51,28 +51,25 @@ asks for the plugin's new `globalStyle` permission and is shown without it when 
 ([permission list](../structure/plugin-sandbox.md#permission-list)). The inline styles and class names it left open
 are the Plugins entry below.
 
+The twelve entries left on 2026-11-15 were worked the same day by Sol implementers and test writers in five worktrees
+with session verification (each new test was run against its fix reverted, then the whole suite on the merged branch).
+Nine were fixed with regression tests or, for the two test-tooling entries, by a run of the repaired test or driver: a
+tool call the request did not offer, the special token at the auto-continue count, the `OobaLegacy` string stream (Half
+Streaming stays off for the format, in [deferred work](deferred-work.md#generation-progress-window)), the greeting
+rebuild, the full OOC log race, the plugin chat panel (the owner's decision: paint containment, no new permission), the
+dead `onCharacterSelected` hook, the working-tree listing test, and the job handoff driver's consent
+(`measurePluginData.mjs` had the same gap and was fixed with it). The OOC race was not fixed as the entry suggested: a
+log of 201 exchanges can consist of entries `oocPrune` protects, so the stored limit got a slack of 16 over the ask
+limit and nothing is dropped. The whole-chat replacement entry was closed: no caller in `src/` or `shared/` builds the
+next chat from a partial field list (`editChat` and `editChatSync` clone the baseline; copy, branch, and import spread
+the whole chat; the two plugin setters forward the whole chat the plugin read), and the persistence guide does not
+carry the plan's absolute claim. The tokenizer entry was narrowed to what is left below, and the `@import` entry stays
+by the owner's decision.
+
 ## Contents
 
-- [Chat store](#chat-store): 1
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 1
-
-## Chat store
-
-### A whole-chat replacement may drop a chat's Draft hook choice
-
-The Input Hooks plan says an older tab never writes `draftHookId` and leaves a stored one alone, because a `meta` op
-names its fields. That holds for ordinary `meta` ops, but `replaceChat` (`src/ts/storage/chatStore.svelte.ts:4613`)
-replaces the whole chat, and the field reconciliation after it (`chatStore.svelte.ts:4787`) unsets every key the next
-chat lacks. A writer that builds the next chat from a partial field list, without the chat's unknown metadata, would
-drop the field; the chat copy, the branch, and the import carry it. Found by the challenger of the Input Hooks run's
-slice 1 and confirmed in part by reading; no caller that builds such a partial chat was named.
-
-**Why it matters:** a user's Draft hook choice could vanish silently after such a replacement, and the persistence
-guide may repeat the plan's absolute claim.
-
-**Suggested handling:** list the callers of `replaceChat` and of the reconciliation that build the next chat from a
-partial field list before treating this as a bug; if one exists, carry unknown metadata through it.
 
 ## Rendering
 
@@ -94,25 +91,33 @@ opens. No plugin and no low-level grant is needed.
 stops cards that load web fonts this way; allowing only known font hosts (whose sheets hold `@font-face` rules) keeps
 most of those; loading and scoping the imported sheet is a larger change.
 
+**Decision:** owner, 2026-11-15: left as it is; the owner will deal with it separately, outside the batch that cleared
+the rest of this file. Do not fix it in passing.
+
 ## Server generation
 
-### A long unbroken run of letters stalls every request while its tokens are counted
+### A long text stalls every request while a tokenizer other than tiktoken counts it
 
-The `o200k_base` and `cl100k_base` encoders take quadratic time on one unbroken run of letters, and the server
-encodes synchronously on the thread that serves every request (`server/src/prompt/tokenizers/index.ts:131`). The count
-route passes the caller's text with a 2 MiB body cap and no limit per string (`server/src/routes/tokens.ts:110`).
-Found 2026-11-12 while speeding up `promptRunner.test.ts`. Reproduced 2026-11-14 in a running server (wide review,
-cut X3, and a second run): a 200 KB run counted with `o200k_base` held an unrelated boot read for 17.6 s (15.2 s on
-the rerun) and `cl100k_base` for 16.6 s; the other 13 local families stayed under 0.5 s, and the same bytes with
-spaces took 84 ms. A mock model reply of 200 KB stalled the server 17.7 s; a send over a chat that already stores
-such a message took 78.7 s, a preview 32.3 s, and a memory test 39.1 s. The `server-generation` guide's Limitations
-record tokenizer calls on the main thread as accepted on 2026-11-10 (worker isolation is a separate design); that
-decision carries no numbers.
+The server encodes synchronously on the thread that serves every request (`server/src/prompt/tokenizers/index.ts`),
+and the count route passes the caller's text with a 2 MiB body cap and no limit per string
+(`server/src/routes/tokens.ts`). The first form of this entry was about the two tiktoken families, whose encoders take
+quadratic time on one long pre-tokenizer piece: a 200 KB run of letters held an unrelated boot read for 17.6 s, a send
+over a chat that stores such a message took 78.7 s (wide review of 2026-11-14, cut X3). Those two were bounded on
+2026-11-15 (`tokenizers/tiktoken.ts` splits a piece over 512 UTF-8 bytes; 200 KB of any slow class now counts in under
+0.1 s). What is left, measured the same day on one shared machine:
 
-**Why it matters:** one signed-in client, an imported card, or a model reply can leave an instance answering nobody
-for the length of the count.
+- The other local families at 2 MiB: `novellist` 38.9 s on repeated emoji, `gemma` 16.2 s on letters (0.8 s at
+  200 KB), `claude` 6.0 s on letters, the rest 1 to 4 s. At 200 KB every one of them stayed under a second.
+- A tiktoken text that keeps the package path on purpose: one with a code point whose Unicode category differs between
+  Node and the package, or non-ASCII text on a Node whose Unicode version was not measured (16 and 17 were). A long
+  run in such a text is as slow as before.
+
+The `llm-requests` guide's Limitations record the split; the `server-generation` guide's record tokenizer calls on the
+main thread as accepted on 2026-11-10 (worker isolation is a separate design).
+
+**Why it matters:** a text near the route's 2 MiB cap, from a signed-in client, an imported card, or a model reply,
+can still leave an instance answering nobody for seconds to tens of seconds on those families.
 
 **Suggested handling:** the owner's note of 2026-11-14: "Token counting isn't always fast, so I'm considering moving
-it to a worker thread." A size refusal before encoding at the shared gateway (`tokenizers/index.ts:19`) is the cheap
-bound; it was offered and not taken, since it also refuses legitimate large text. An exact count of a large text
-needs the encode off the serving thread, which is the worker design.
+it to a worker thread." That design covers every family. Short of it, look at `novellist` on emoji and `gemma` on
+letters first, since their times grow faster than the text.

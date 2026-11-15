@@ -435,9 +435,12 @@ lore.
   together with the live-updates reservation window.
 - OOC questions ([OOC question](#ooc-question)): a question is refused while its chat generates, and an answer that is
   streaming when the page reloads is lost (Decision: OOC Session D5, owner, 2026-11-14). The answer request passes
-  `tools: []` but cannot stop a provider that adds its own tools or runs a call it was not offered, and a provider that
-  appends a midway error to its stream text is stored as an answer. Two devices that each prune a full `oocLog`
-  (`MAX_OOC_EXCHANGES`) and add an exchange at once can exceed the limit; the server refuses the later merge.
+  `tools: []`, so no tool call is dispatched and no configured web search is added ([LLM requests](llm-requests.md)); a
+  provider that adds tools of its own is not stopped, and one that appends a midway error to its stream text is stored
+  as an answer.
+- Two devices that each prune a full `oocLog` and add an exchange at once store more than `MAX_OOC_EXCHANGES`: the
+  validator accepts `OOC_LOG_CONCURRENCY_SLACK` more, and the next question prunes back to the limit or is refused as
+  full when nothing is removable.
 - `disable_ui_prompt` lore decorators fill `disabledUIPrompts`, which nothing consumes. Decision: owner, 2026-11-10
   (known-issues review): upstream has no consumer either; the decorator is accepted and ignored.
 - `renderChatTemplate` calls Jinja's `Template.render` synchronously with no work or time limit; a costly custom

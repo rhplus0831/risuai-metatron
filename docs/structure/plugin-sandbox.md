@@ -155,6 +155,9 @@ The user allows permissions ahead of a plugin's first request through `reviewPlu
 - `setChatPanel` HTML that carries a `style` element (HTML or SVG) needs `globalStyle`, asked once: the panel is
   inserted into the main document, where the rules reach the whole app. Denied, the panel is shown without its `style`
   elements. HTML without one asks nothing.
+- A chat panel's `section` has paint containment and carries no plugin attribute: the plugin's `className` and the panel
+  id sit on a wrapper inside it, so inline styles and classes cannot place content over the app, and content that
+  overflows the panel (a dropdown) is clipped. Decision: owner, 2026-11-15.
 - A `setChatPanel` call that waited applies only while it is the latest call for its panel id and its instance is not
   unloading. Panel ids are one namespace over every plugin, and a removal (`unregisterUIPart`, unload) counts as a call
   (`chatPanelCalls`).

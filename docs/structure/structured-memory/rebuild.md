@@ -117,7 +117,8 @@ aliases (`namedByUser`) seeds like one with a person's grade or context mode: it
 marked sections, so a language change does not retitle it. A fresh rebuild forgets it, like every mark.
 
 Rebuild replaces a non-retracted live event only when it cites something and staged events cite every message and any
-greeting it cites. This replaces greeting-only events too; retracted events stay stored.
+greeting it cites. This replaces greeting-only events too; retracted events stay stored. When the chat has no greeting
+at the swap, an event that cites messages needs only those covered, since no run can cite its greeting again.
 
 Each staged event takes the trust marks of standing live events that share a source message or greeting with it. It
 takes a corrected title and summary only when exactly one of those events holds `userCorrected` and cites the same set
