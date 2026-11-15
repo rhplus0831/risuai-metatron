@@ -1,10 +1,11 @@
 // @vitest-environment node
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { get_encoding, type Tiktoken } from "@dqbd/tiktoken";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createTokenizers, TOKENIZER_FAMILIES, type TokenizerFamily } from "../prompt/tokenizers/index.ts";
 import { loadAll } from "../prompt/tokenizers/loadAll.ts";
-import { createTokenCounter, type TokenCountScope } from "../prompt/tokens.ts";
+import { createTokenCounter, isTokenizerTextRefusal, type TokenCountScope } from "../prompt/tokens.ts";
 import { LLMTokenizer } from "../../../shared/llm.ts";
 import {
     BASELINE_DIR,
@@ -52,6 +53,88 @@ describe("browser parity in process", () => {
             await expect(tokenizers.count(family, "a <|endoftext|> b")).rejects.toThrow("special token");
             expect(await tokenizers.count(family, "hello world")).toBe(2);
         }
+    });
+});
+
+describe.each(["cl100k_base", "o200k_base"] as const)("bounded tiktoken encoding: %s", (family) => {
+    let native: Tiktoken;
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    beforeAll(async () => {
+        native = get_encoding(family);
+        await tokenizers.load(family);
+    });
+    afterAll(() => native.free());
+    afterEach(() => vi.restoreAllMocks());
+
+    async function encodeWithCalls(text: string) {
+        // Observe the real package boundary, including its ordinary-text fast path.
+        const prototype = Object.getPrototypeOf(native) as Tiktoken;
+        const encode = vi.spyOn(prototype, "encode");
+        const ordinary = vi.spyOn(prototype, "encode_ordinary");
+        const ids = Uint32Array.from(await tokenizers.encode(family, text));
+        const pieces = [...encode.mock.calls, ...ordinary.mock.calls].map(([piece]) => piece);
+        return { ids, pieces };
+    }
+
+    it.each([
+        ["letters", "abcdefghijklmnop".repeat(128)],
+        [
+            family === "cl100k_base" ? "punctuation and marks" : "punctuation with a slash/newline tail",
+            family === "cl100k_base" ? "!\u0301".repeat(700) : "!" + "/\n".repeat(1024),
+        ],
+        // An odd ASCII prefix exposes cuts that advance through individual surrogate code units.
+        ["astral letters at an unaligned boundary", "abc" + "\u{10428}".repeat(600)],
+    ])("encodes overlong %s in bounded pieces and decodes exactly", async (_name, text) => {
+        const { ids, pieces } = await encodeWithCalls(text);
+        expect(pieces.length).toBeGreaterThan(1);
+        for (const piece of pieces) {
+            expect(Buffer.byteLength(piece)).toBeLessThanOrEqual(512);
+        }
+        expect(pieces.join("")).toBe(text);
+        expect(decoder.decode(native.decode(ids))).toBe(text);
+    });
+
+    it.each([
+        [
+            "English prose",
+            (
+                "The editor reads the draft beside an open window. She checks each paragraph for clear examples, " +
+                "then adds a note about the next review. Across the room, a colleague compares the revised story " +
+                "with the original and writes down the questions they will discuss after lunch. "
+            ).repeat(2),
+        ],
+        [
+            "Korean prose",
+            (
+                "편집자는 창가에 앉아 원고를 읽습니다. 문장마다 예시가 분명한지 확인하고 다음 검토를 위한 메모를 남깁니다. " +
+                "동료는 수정한 이야기와 원본을 비교하며 점심 뒤에 함께 이야기할 질문을 적습니다. "
+            ).repeat(3),
+        ],
+        ["a run just below the byte limit", "a".repeat(511)],
+        ["a Unicode long-s contraction between bounded runs", "a".repeat(509) + "'\u017f" + "a".repeat(510)],
+    ])("keeps package ids and one whole-text call for %s", async (_name, text) => {
+        const expected = native.encode(text);
+        const { ids, pieces } = await encodeWithCalls(text);
+        expect(ids).toEqual(expected);
+        expect(pieces).toEqual([text]);
+    });
+
+    it.each([
+        ["inside split text", "a".repeat(1024) + " <|endoftext|> " + "b".repeat(1024)],
+        // Without whole-text validation, the punctuation piece cuts after the first '<'.
+        ["across a cut", "!".repeat(511) + "<|endoftext|>" + "a".repeat(1024)],
+    ])("refuses a special token %s with a recognized text refusal", async (_name, text) => {
+        await expect(tokenizers.encode(family, text)).rejects.toSatisfy(isTokenizerTextRefusal);
+        await expect(tokenizers.count(family, text)).rejects.toSatisfy(isTokenizerTextRefusal);
+    });
+
+    it("keeps the package path for a Unicode-table difference even beside overlong runs", async () => {
+        // Sidetic is in the loader's measured package/Node Unicode-table differences.
+        const text = "a".repeat(1025) + "\u{10940}" + "b".repeat(1025);
+        const expected = native.encode(text);
+        const { ids, pieces } = await encodeWithCalls(text);
+        expect(ids).toEqual(expected);
+        expect(pieces).toEqual([text]);
     });
 });
 

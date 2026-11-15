@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { Tiktoken } from "@dqbd/tiktoken";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -43,6 +44,37 @@ describe("the fixture", () => {
             expect(Object.keys(fixture.families[family]).sort()).toEqual([...TEXT_NAMES].sort());
         }
     });
+});
+
+describe("native tiktoken patterns", () => {
+    it.each(["cl100k_base", "o200k_base"] as const)(
+        "%s loads a package-valid pattern JavaScript cannot compile and keeps package ids",
+        async (family) => {
+            const require = createRequire(import.meta.url);
+            const data = require(`@dqbd/tiktoken/encoders/${family}.json`) as {
+                bpe_ranks: string;
+                special_tokens: Record<string, number>;
+                pat_str: string;
+            };
+            const pattern = "\\p{L}++|\\p{N}{1,3}|[^\\p{L}\\p{N}]+";
+            expect(() => new RegExp(pattern, "gu")).toThrow(SyntaxError);
+            const native = new Tiktoken(data.bpe_ranks, data.special_tokens, pattern);
+            const tokenizers = createTokenizers({ rootDir: REPO_ROOT });
+            const original = data.pat_str;
+            try {
+                data.pat_str = pattern;
+                await expect(tokenizers.load(family)).resolves.toBeUndefined();
+                const text = "hello world 123, Ελληνικά " + "a".repeat(1100);
+                const expected = native.encode(text);
+                expect(Array.from(await tokenizers.encode(family, text))).toEqual(Array.from(expected));
+                expect(await tokenizers.count(family, text)).toBe(expected.length);
+            } finally {
+                data.pat_str = original;
+                native.free();
+                await tokenizers.dispose();
+            }
+        },
+    );
 });
 
 describe("the dispose contract", () => {
