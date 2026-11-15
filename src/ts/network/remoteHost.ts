@@ -194,7 +194,10 @@ function prepareReport(reporter: Reporter, report: StateReport): PreparedReport 
             undefined,
         );
         if (!longest?.text.length) return null;
-        longest.text = longest.text.slice(0, Math.floor(longest.text.length / 2));
+        let cut = Math.floor(longest.text.length / 2);
+        // Never end on the first half of a surrogate pair.
+        if (cut > 0 && (longest.text.charCodeAt(cut - 1) & 0xfc00) === 0xd800) cut--;
+        longest.text = longest.text.slice(0, cut);
         json = JSON.stringify(body);
     }
     return { report: copy, body: json };

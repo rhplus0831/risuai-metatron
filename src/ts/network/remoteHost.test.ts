@@ -347,6 +347,22 @@ describe("remote host sends", () => {
         },
     );
 
+    it("shortens an oversized report text without ending it inside a surrogate pair", async () => {
+        // An odd number of pairs: half of the UTF-16 length falls between the two halves of one.
+        const text = "😀".repeat(300_001);
+        stubs.send.mockImplementation(async (_index, arg) => {
+            arg!.reports!.push({ kind: "error", text });
+            arg!.onEnd?.(end);
+            return false;
+        });
+        await deliver();
+        const last = reports().at(-1) as { result?: { truncated?: true; reports: { text: string }[] } };
+        expect(last.result?.truncated).toBe(true);
+        const shortened = last.result!.reports[0].text;
+        expect(shortened.length).toBe(300_000);
+        expect(shortened.endsWith("😀")).toBe(true);
+    });
+
     it("returns an uncertain result with collected reports when the send throws", async () => {
         stubs.send.mockImplementation(async (_index, arg) => {
             arg!.reports!.push({ kind: "notice", text: "hooks skipped" });
