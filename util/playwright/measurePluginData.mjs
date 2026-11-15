@@ -331,6 +331,7 @@ try {
             ? { revision: null, data: { grants: {}, lastGrantTime: {} } }
             : permissionResponse.body;
     const grant = createHash("sha256").update(pluginScript).digest("hex") + "_db";
+    const dbWriteGrant = createHash("sha256").update(pluginScript).digest("hex") + "_dbWrite";
     await post("/api/resources/batch", {
         ops: [
             {
@@ -358,10 +359,11 @@ try {
                 baseRevision: permissions.revision,
                 // Seed the same script hash and periodic timestamp the real consent flow persists.
                 data: {
-                    grants: { ...permissions.data.grants, [grant]: true },
+                    grants: { ...permissions.data.grants, [grant]: true, [dbWriteGrant]: true },
                     lastGrantTime: {
                         ...permissions.data.lastGrantTime,
                         [`${pluginName}_db_lastGrantTime`]: Date.now(),
+                        [`${pluginName}_dbWrite_lastGrantTime`]: Date.now(),
                     },
                 },
             },
