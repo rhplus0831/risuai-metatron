@@ -95,9 +95,12 @@ Shutdown refuses admission and clears the registry.
 
 - `POST /api/remote-commands` accepts `{ clientId, target, commandId, command, uncertain? }`; a send's `requestId` must
   equal `commandId`; its `userMessageId` is required with a nonempty input, and its optional `continue` (kept only when
-  true), `continueMessageId`, `rerollMessageId` (never with `continue`) and `speakerChaId` join the action identity.
-  Answers state, attempted, stopRequested, attempt, and optional code/result. New targets must be registered hosts (404
-  `targetUnavailable`); 16 open commands per target (409 `targetFull`).
+  true), `continueMessageId` and `rerollMessageId` (never with `continue`) join the action identity; `speakerChaId` does
+  not, as in the generation's `requestFingerprint`, so the first body's speaker stands. Answers state, attempted,
+  stopRequested, attempt, and optional code/result. New targets must be registered hosts (404 `targetUnavailable`).
+- A new id answers 409 `targetFull` at 16 open commands per target, or at the whole relay's bound: 1,024 entries, or 64
+  MiB counting an open command as its body plus a full result and a closed one as its result. Nothing accepted is
+  evicted for room.
 - `GET /api/remote-commands/:id?clientId=&contractVersion=` is target-only: an open command's body, state, attempted,
   stopRequested and incremented attempt. It changes queued to delivered; a closed command answers 410 without a body. A
   send with `continue`, `continueMessageId`, `rerollMessageId` or `speakerChaId` needs `contractVersion` 2
@@ -105,8 +108,10 @@ Shutdown refuses admission and clears the registry.
   `unsupported` (`uncertain` when attempted), and answers 410 `unsupported`.
 - `POST /api/remote-commands/:id/state` is target-only: `{ clientId, attempt, state, code?, result? }`. Reports may be
   running, uncertain, done, or refused with a checked code. A lower attempt answers `superseded: true` without changes;
-  a future attempt or disallowed transition answers 409 `invalidTransition`. A repeated closed report is idempotent. The
-  answer includes state, stopRequested and attempt.
+  a future attempt or disallowed transition answers 409 `invalidTransition`. A repeated closed report is idempotent.
+  After an attempt's `uncertain`, its `running` (an abandoned copy) or a result-less `uncertain` (a reload recovery's
+  repeat) changes nothing. A result above the body cap as stored answers 413. The answer includes state, stopRequested
+  and attempt.
 - `POST /api/remote-commands/:id/cancel` takes `{ clientId }`, sender-only: queued closes cancelled; an open command
   already read gets stopRequested, carried by every read, answer, and notice until the next matching post, and another
   target notice. Closed commands stay closed. Answers state, stopRequested and attempt; an unknown id stores nothing.
@@ -341,9 +346,10 @@ and the jobs' parts are in [store state](server-resources.md#process-memory) and
   loaded encoder. A restart loses only work in flight; the disk cache stays.
 - The asset mark's last report, run identity, and export holds.
 - Remote commands: queued, delivered, running and uncertain are open; done, refused, expired and cancelled are closed.
-  Only a body read delivers; running or an uncertain post makes attempted sticky. Refusal after an attempt remains
-  uncertain. Every open body read increments attempt, guarding against stale state reports. Closing deletes the body but
-  retains its type and SHA-256 action identity. Results are opaque JSON objects bounded by the POST cap.
+  Only a body read delivers; a running or uncertain report, or an uncertain post, makes attempted sticky. Refusal after
+  an attempt remains uncertain. Every open body read increments attempt, guarding against stale state reports. Closing
+  deletes the body but retains its type and SHA-256 action identity. Results are opaque JSON objects bounded by the POST
+  cap.
 - The command registry expires queued pickup after 30 s, retains closed entries 10 minutes, and forgets open entries 40
   minutes after the last state change, notifying the sender with forgotten. One unref'd timer and access-time sweeps
   enforce deadlines; every access silently drops other epochs. Shutdown clears all entries and the timer. Frames carry

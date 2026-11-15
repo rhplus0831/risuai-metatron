@@ -3,6 +3,8 @@ import type { EventFeedFrame, FeedClient } from "../../shared/events.ts";
 import {
     MAX_OPEN_COMMANDS_PER_TARGET,
     MAX_REMOTE_COMMAND_BODY_BYTES,
+    MAX_REMOTE_COMMAND_RETAINED_BYTES,
+    MAX_REMOTE_COMMANDS,
     REMOTE_COMMAND_CLOSED_KEEP_MS,
     REMOTE_COMMAND_OPEN_DROP_MS,
     REMOTE_COMMAND_PICKUP_MS,
@@ -27,6 +29,8 @@ import type { DiagnosticsRecorder } from "./diagnostics/log.ts";
 
 export type RemoteCommandLimits = {
     maxOpenPerTarget: number;
+    maxEntries: number;
+    retainedBytes: number;
     bodyBytes: number;
     pickupMs: number;
     closedKeepMs: number;
@@ -53,6 +57,7 @@ type Entry = {
     stopRequested: boolean;
     code?: RemoteCommandRefusalCode;
     result?: RemoteCommandResult;
+    resultBytes: number;
     changedAt: number;
     pickupAt: number;
 };
@@ -84,7 +89,11 @@ function failure(
  * the body but keeps its content-free identity; absence never certifies that no job ran. Every
  * access sweeps obsolete epochs and deadlines. One unref'd timer handles the next deadline even
  * when no client polls. A new attempt's first report renews the deadline even with the same state;
- * reads and repeated reports of the same attempt and state do not.
+ * reads and repeated reports of the same attempt and state do not. Reports of one attempt are ordered:
+ * after its `uncertain`, its `running` or a result-less `uncertain` is a late copy and changes nothing.
+ * Besides the per-target cap, a new id is refused (`targetFull`) at the whole relay's entry count or
+ * retained bytes, and a result is refused (413) above the body cap as stored; nothing accepted is
+ * evicted for room.
  */
 export function createRemoteCommands(options: {
     epoch: () => string;
@@ -99,6 +108,8 @@ export function createRemoteCommands(options: {
     const timers = options.timers ?? { setTimeout, clearTimeout };
     const limits: RemoteCommandLimits = {
         maxOpenPerTarget: MAX_OPEN_COMMANDS_PER_TARGET,
+        maxEntries: MAX_REMOTE_COMMANDS,
+        retainedBytes: MAX_REMOTE_COMMAND_RETAINED_BYTES,
         bodyBytes: MAX_REMOTE_COMMAND_BODY_BYTES,
         pickupMs: REMOTE_COMMAND_PICKUP_MS,
         closedKeepMs: REMOTE_COMMAND_CLOSED_KEEP_MS,
@@ -209,6 +220,23 @@ export function createRemoteCommands(options: {
         return count >= limits.maxOpenPerTarget;
     }
 
+    /** An open command holds its body and may still receive a result of up to the body cap. */
+    function retained(entry: Entry): number {
+        return isOpen(entry) ? entry.bodyBytes + limits.bodyBytes : entry.resultBytes;
+    }
+
+    /** Whether the relay as a whole has room for a new command; `replaced` is a closed entry it takes over. */
+    function relayFull(bodyBytes: number, replaced?: Entry): boolean {
+        let count = 1;
+        let bytes = bodyBytes + limits.bodyBytes;
+        for (const entry of entries.values()) {
+            if (entry === replaced) continue;
+            count++;
+            bytes += retained(entry);
+        }
+        return count > limits.maxEntries || bytes > limits.retainedBytes;
+    }
+
     return {
         sweep,
         /** Immutable retry identity and sender are checked before looking at target availability. */
@@ -239,6 +267,7 @@ export function createRemoteCommands(options: {
             if (full(body.target)) return failure(409, REMOTE_COMMAND_ERRORS.targetFull);
             const bodyBytes = Buffer.byteLength(JSON.stringify(body.command));
             if (bodyBytes > limits.bodyBytes) return failure(413, "Request body too large");
+            if (relayFull(bodyBytes, existing)) return failure(409, REMOTE_COMMAND_ERRORS.targetFull);
             const at = now();
             const entry: Entry = {
                 commandId: body.commandId,
@@ -254,6 +283,7 @@ export function createRemoteCommands(options: {
                 lastReportedAttempt: 0,
                 attempted: body.uncertain === true,
                 stopRequested: false,
+                resultBytes: 0,
                 changedAt: at,
                 pickupAt: at + limits.pickupMs,
             };
@@ -275,6 +305,7 @@ export function createRemoteCommands(options: {
             ) {
                 entry.code = "unsupported";
                 entry.result = undefined;
+                entry.resultBytes = 0;
                 transition(entry, entry.attempted ? "uncertain" : "refused");
                 schedule();
                 return failure(410, "unsupported", entry.state);
@@ -302,11 +333,27 @@ export function createRemoteCommands(options: {
                     : failure(409, REMOTE_COMMAND_ERRORS.invalidTransition, entry.state);
             }
             if (entry.state === "queued") return failure(409, REMOTE_COMMAND_ERRORS.invalidTransition, entry.state);
+            const result = "result" in body ? body.result : undefined;
+            // Parsing can grow a body (`1e20` is stored as 21 digits): the stored form keeps to the cap too.
+            const resultBytes = result === undefined ? 0 : Buffer.byteLength(JSON.stringify(result));
+            if (resultBytes > limits.bodyBytes) return failure(413, "Request body too large");
+            // After an attempt's `uncertain`, its `running` is a late copy (the host sends it without waiting
+            // and can abandon it for its final report) and its `uncertain` without a result is a reload
+            // recovery's repeat: neither reopens the run, erases the result, or renews the deadline.
+            if (
+                entry.state === "uncertain" &&
+                body.attempt === entry.lastReportedAttempt &&
+                (body.state === "running" || (body.state === "uncertain" && result === undefined))
+            ) {
+                return { ok: true, body: stateAnswer(entry) };
+            }
             let state: RemoteCommandState = body.state;
             entry.code = body.state === "refused" ? body.code : undefined;
-            if (body.state === "running") entry.attempted = true;
+            // A host that lost its run (a reload before `running` arrived) reports only `uncertain`.
+            if (body.state === "running" || body.state === "uncertain") entry.attempted = true;
             if (body.state === "refused" && (entry.attempted || entry.state !== "delivered")) state = "uncertain";
-            entry.result = "result" in body && body.result !== undefined ? structuredClone(body.result) : undefined;
+            entry.result = result === undefined ? undefined : structuredClone(result);
+            entry.resultBytes = resultBytes;
             const newAttempt = body.attempt > entry.lastReportedAttempt;
             entry.lastReportedAttempt = body.attempt;
             transition(entry, state, now(), newAttempt);

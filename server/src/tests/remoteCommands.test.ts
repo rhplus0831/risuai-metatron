@@ -10,7 +10,12 @@ import type {
     RemoteCommandState,
     RemoteCommandStateBody,
 } from "../../../shared/remoteCommands.ts";
-import { createRemoteCommands, type RemoteCommandOutcome, type RemoteCommands } from "../remoteCommands.ts";
+import {
+    createRemoteCommands,
+    type RemoteCommandLimits,
+    type RemoteCommandOutcome,
+    type RemoteCommands,
+} from "../remoteCommands.ts";
 import { allowListenerOrigin, createResourceTestClient, json } from "./testSupport.ts";
 
 const path = "/api/remote-commands";
@@ -93,10 +98,6 @@ describe("remote commands over HTTP", () => {
                 { continue: true, continueMessageId: "reply-b" },
             ],
             [{ rerollMessageId: "reply-a" }, { rerollMessageId: "reply-b" }],
-            [
-                { rerollMessageId: "reply-a", speakerChaId: "speaker-a" },
-                { rerollMessageId: "reply-a", speakerChaId: "speaker-b" },
-            ],
         ];
         const queued = { state: "queued", attempted: false, stopRequested: false, attempt: 0 };
         for (const [index, [original, changed]] of actions.entries()) {
@@ -108,6 +109,18 @@ describe("remote commands over HTTP", () => {
                 error: "commandChanged",
             });
         }
+        // The speaker is outside the identity, as it is outside the generation's request fingerprint: a
+        // re-post with another speaker is the same command and the first body stands.
+        const reroll = post("speaker");
+        const first = { ...reroll.command, rerollMessageId: "reply-a", speakerChaId: "speaker-a" };
+        await answer(await client.json(path, { ...reroll, command: first }), 200, queued);
+        await answer(
+            await client.json(path, { ...reroll, command: { ...first, speakerChaId: "speaker-b" } }),
+            200,
+            queued,
+        );
+        const read = await client.request(`${path}/speaker?clientId=desk&contractVersion=2`);
+        expect(((await read.json()) as { command: unknown }).command).toEqual(first);
         const plain = post("plain");
         await answer(await client.json(path, plain), 200, queued);
         await answer(
@@ -536,7 +549,12 @@ describe("remote command registry", () => {
             enter(from, id);
             const open = ["delivered", "running", "uncertain"].includes(from);
             const repeated = from === to;
-            const expected = to === "refused" && (from === "running" || from === "uncertain") ? "uncertain" : to;
+            // A `running` after the same attempt's `uncertain` is a late copy and changes nothing.
+            const expected =
+                (to === "refused" && (from === "running" || from === "uncertain")) ||
+                (to === "running" && from === "uncertain")
+                    ? "uncertain"
+                    : to;
             const before = ok(commands.status(id, "phone"));
             const outcome = commands.report(id, report(to));
             if (!open && !repeated) {
@@ -552,7 +570,7 @@ describe("remote command registry", () => {
             expect(ok(outcome)).toEqual({ state: expected, stopRequested: false, attempt: 1 });
             expect(ok(commands.status(id, "phone"))).toEqual({
                 state: expected,
-                attempted: from === "running" || to === "running",
+                attempted: [from, to].includes("running") || [from, to].includes("uncertain"),
                 stopRequested: false,
                 attempt: 1,
                 ...(to === "refused" ? { code: "busy" } : {}),
@@ -702,6 +720,131 @@ describe("remote command registry", () => {
         ok(commands.post(post("other-host", "laptop")));
         ok(commands.cancel("send-0", "phone"));
         expect(ok(commands.post(post("overflow")))).toMatchObject({ state: "queued", attempt: 0 });
+    });
+
+    it("keeps an uncertain result when the same attempt's abandoned running report arrives late", () => {
+        const result = { ok: false, settled: false, reports: [{ kind: "error", text: "no answer" }] };
+        enter("delivered");
+        ok(commands.report("send-1", { clientId: "desk", attempt: 1, state: "uncertain", result }));
+        const before = ok(commands.status("send-1", "phone"));
+        expect(before).toMatchObject({ state: "uncertain", attempted: true, result });
+        notices.length = 0;
+        vi.advanceTimersByTime(1_000);
+        expect(ok(commands.report("send-1", report("running")))).toEqual({
+            state: "uncertain",
+            stopRequested: false,
+            attempt: 1,
+        });
+        expect(ok(commands.status("send-1", "phone"))).toEqual(before);
+        expect(notices).toEqual([]);
+        // The late copy did not restart the open-command lifetime.
+        vi.advanceTimersByTime(2_399_000);
+        expect(notices).toEqual([notice("forgotten")]);
+    });
+
+    it("keeps an uncertain result when a reload recovery repeats uncertain without one", () => {
+        // The host reloaded before the first report's answer arrived and reports from its saved id.
+        const result = { ok: false, settled: false, reports: [{ kind: "error", text: "no answer" }] };
+        enter("running");
+        ok(commands.report("send-1", { clientId: "desk", attempt: 1, state: "uncertain", result }));
+        const before = ok(commands.status("send-1", "phone"));
+        notices.length = 0;
+        expect(ok(commands.report("send-1", report("uncertain")))).toMatchObject({ state: "uncertain" });
+        expect(ok(commands.status("send-1", "phone"))).toEqual(before);
+        expect(notices).toEqual([]);
+        // A repeat that carries a result replaces it, as any report of the current attempt does.
+        const newer = { ...result, reports: [] };
+        ok(commands.report("send-1", { clientId: "desk", attempt: 1, state: "uncertain", result: newer }));
+        expect(ok(commands.status("send-1", "phone"))).toMatchObject({ result: newer });
+    });
+
+    it("refuses a result that is larger than the body cap as stored, and keeps the command's state", () => {
+        commands.close();
+        commands = createRemoteCommands({
+            epoch: () => epoch,
+            isHost: () => true,
+            notify: (clientId, frame) => notices.push({ clientId, frame }),
+            limits: { bodyBytes: 1_000 },
+        });
+        enter("running");
+        const before = ok(commands.status("send-1", "phone"));
+        // 60 numbers that a request can write as `1e20` (4 bytes) and JSON stores as 21 digits each.
+        const result = { values: Array.from({ length: 60 }, () => 1e20) };
+        expect(Buffer.byteLength(JSON.stringify(result))).toBeGreaterThan(1_000);
+        expect(commands.report("send-1", { clientId: "desk", attempt: 1, state: "done", result })).toEqual({
+            ok: false,
+            status: 413,
+            body: { error: "Request body too large" },
+        });
+        expect(ok(commands.status("send-1", "phone"))).toEqual(before);
+    });
+
+    it("accepts running from a new read of an uncertain command", () => {
+        enter("uncertain");
+        ok(commands.post(post()));
+        expect(ok(commands.read("send-1", "desk"))).toMatchObject({ attempt: 2, attempted: true });
+        expect(ok(commands.report("send-1", report("running", 2)))).toMatchObject({ state: "running" });
+        expect(ok(commands.status("send-1", "phone"))).toMatchObject({ state: "running", attempted: true });
+    });
+
+    it("marks a command attempted when its host reports only uncertain, so a later refusal certifies nothing", () => {
+        // A host page that reloaded before its `running` arrived reports `uncertain` from its saved id.
+        enter("delivered");
+        ok(commands.report("send-1", report("uncertain")));
+        ok(commands.post(post()));
+        expect(ok(commands.read("send-1", "desk"))).toMatchObject({ attempt: 2, attempted: true });
+        expect(ok(commands.report("send-1", report("refused", 2)))).toMatchObject({ state: "uncertain" });
+    });
+
+    describe("whole-relay bounds", () => {
+        const bounded = (limits: Partial<RemoteCommandLimits>) => {
+            commands.close();
+            commands = createRemoteCommands({
+                epoch: () => epoch,
+                isHost: () => true,
+                notify: (clientId, frame) => notices.push({ clientId, frame }),
+                limits,
+            });
+        };
+        const full = { ok: false, status: 409, body: { error: "targetFull" } };
+
+        it("refuses a new id at the total entry count, counting closed commands and every target", () => {
+            bounded({ maxEntries: 3 });
+            enter("done", "closed");
+            enter("running", "open");
+            ok(commands.post(post("third", "laptop")));
+            expect(commands.post(post("fourth", "another-host"))).toEqual(full);
+            expect(commands.status("fourth", "phone")).toEqual(unknown);
+            // Nothing accepted was evicted for room, and a retry of a held id is still answered.
+            expect(ok(commands.status("closed", "phone"))).toMatchObject({ state: "done" });
+            expect(ok(commands.post(post("open")))).toMatchObject({ state: "running" });
+            vi.advanceTimersByTime(600_000);
+            expect(ok(commands.post(post("fourth", "another-host")))).toMatchObject({ state: "queued" });
+        });
+
+        it("counts an open command as its body and a full result, and a closed one as the result it kept", () => {
+            const body = Buffer.byteLength(JSON.stringify(post("a").command));
+            const result = { reports: [{ kind: "error", text: "x".repeat(400) }] };
+            const kept = Buffer.byteLength(JSON.stringify(result));
+            expect(kept).toBeLessThan(body + 1_000);
+            // Room for two open commands of this size (each reserves 1,000 bytes for a result) and one kept result.
+            bounded({ bodyBytes: 1_000, retainedBytes: 2 * (body + 1_000) + kept });
+            ok(commands.post(post("a")));
+            ok(commands.post(post("b", "laptop")));
+            expect(commands.post(post("c", "third-host"))).toEqual(full);
+            ok(commands.read("a", "desk"));
+            ok(commands.report("a", { clientId: "desk", attempt: 1, state: "done", result }));
+            // Closing gave back the body and the reserve; the entry now counts as the result it kept.
+            ok(commands.post(post("c", "third-host")));
+            expect(commands.post(post("d", "fourth-host"))).toEqual(full);
+        });
+
+        it("lets a post replace its own closed entry at the bound", () => {
+            bounded({ maxEntries: 1 });
+            enter("cancelled");
+            expect(ok(commands.post(post()))).toMatchObject({ state: "queued" });
+            expect(commands.post(post("other"))).toEqual(full);
+        });
     });
 
     it("silently drops entries from another epoch before access or notification", () => {

@@ -8,6 +8,9 @@ export const REMOTE_COMMAND_CONTRACT_VERSION = 2;
 
 export const MAX_OPEN_COMMANDS_PER_TARGET = 16;
 export const MAX_REMOTE_COMMAND_BODY_BYTES = 1024 * 1024;
+/** Whole-relay bounds: every retained command, and its bodies and results (an open one reserves a full result). */
+export const MAX_REMOTE_COMMANDS = 1024;
+export const MAX_REMOTE_COMMAND_RETAINED_BYTES = 64 * 1024 * 1024;
 export const REMOTE_COMMAND_PICKUP_MS = 30_000;
 export const REMOTE_COMMAND_CLOSED_KEEP_MS = 10 * 60_000;
 export const REMOTE_COMMAND_OPEN_DROP_MS = 40 * 60_000;
@@ -48,7 +51,10 @@ export type PluginReloadOutcome = "applied" | "failed" | "pluginsOff";
 /** `notReloaded` is a page reload that could not safely persist its recovery marker or navigate. */
 export type RemoteReloadResult = { outcome: PluginReloadOutcome | "notReloaded" };
 
-/** Only action fields identify a retry; the first accepted body's other fields stand. */
+/**
+ * Only action fields identify a retry; the first accepted body's other fields stand. The fields are the
+ * ones the generation's `requestFingerprint` compares, so the speaker is not among them.
+ */
 export function remoteCommandAction(command: RemoteCommand) {
     switch (command.type) {
         case "reload":
@@ -63,7 +69,6 @@ export function remoteCommandAction(command: RemoteCommand) {
                 ...(command.continue === true ? { continue: true } : {}),
                 ...(command.continueMessageId !== undefined ? { continueMessageId: command.continueMessageId } : {}),
                 ...(command.rerollMessageId !== undefined ? { rerollMessageId: command.rerollMessageId } : {}),
-                ...(command.speakerChaId !== undefined ? { speakerChaId: command.speakerChaId } : {}),
             };
     }
 }
