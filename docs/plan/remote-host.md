@@ -5,7 +5,8 @@ devices ask to send a message or reload its plugins), then audited against the c
 ([report](../reports/audits/plan-runner/remote-host-2026-11-15.md)) and corrected in the same commit as the report. D1
 to D3 are the owner's answers of 2026-11-15; D4 on are this plan's own and open to the owner's change. The relay's
 states, the place of the remote branch, Stop, the reload's completion, and D1, D3, D9, and D10 took their present form
-from the audit; its last three findings (M1 to M3) were applied without a further reading.
+from the audit. M1 to M3 were read again in two further turns the same day, which reshaped Stop and the returned
+reports (R1 to R5, then S1 to S5); the corrections for S1 to S5, all P2, were applied without a further reading.
 
 Sources: `FeedClient`, `EventFeedClientMessage`, `EventFeedFrame`, and `HandoffOffer` in `shared/events.ts`;
 `createEventSockets`, its `registrations` map, `send`, and `broadcast` in `server/src/routes/events.ts`; the handoff and
@@ -164,35 +165,41 @@ that gives it to `self-host-server`), `server/src/remoteCommands.ts` (the regist
     an `expired` or `cancelled` command is deleted and a read answers 410.
   - `attempted` is set once a command reaches `running`. A refusal reported for an attempted command leaves it
     `uncertain`.
-  - An open command is dropped 40 minutes after its last state change (a job runs at most `JOB_MAX_DURATION_MS`, 30
-    minutes). The sender is told with a `remoteCommandState` of `forgotten`, which it treats as uncertain.
+  - An open command is dropped 40 minutes after its last state change. This is housekeeping, set above a job's
+    30-minute limit (`JOB_MAX_DURATION_MS`); the drop proves nothing about a job, whose limit counts from its own
+    admission. The sender is told with a `remoteCommandState` of `forgotten`, which it treats as uncertain.
 - **The body stays readable by its target** in `queued`, `delivered`, `running`, and `uncertain`.
 - **Identity.** A send command is the same command when its id and its action fields match: the type, `chaId`,
   `chatId`, `input`, and `userMessageId`, the fields `requestFingerprint` compares. The registry keeps the first
   accepted body, and a re-post never changes it: `inputOriginal` and `stopOverLoreBudget` can differ on a retry of the
   same request id (the screen reads both again at each press), and the first ones stand, as the first attempt's do in
   a replayed create. A reload command matches on its type and mode. Retry hints are not in the body: the read's answer
-  carries `attempted`, and the host derives `requestUncertain` from it.
+  carries `attempted`, and the host derives `requestUncertain` from it. The post carries `uncertain` beside the command
+  (the send's own `requestUncertain`), outside the identity: a command created or re-posted with it has `attempted`
+  set, so a relay that forgot a command does not clear what its sender still knows.
 - **Cancellation is sticky.** `stopRequested` stays on the command, and every read, state acknowledgement, and
   notification of it carries the flag. The registry is synchronous, so a cancel and a read of a `queued` command are
   ordered: the cancel first closes it and no body leaves; the read first delivers it with the stop still to come. A
-  cancel of an id the registry does not hold leaves a `fenced` entry, so a post of that id arriving later never runs;
-  the answer is `fenced`, not `cancelled`, because a forgotten command may have run.
+  cancel of an id the registry does not hold stores nothing and answers 404 `unknownCommand`, which certifies nothing:
+  the command may have been forgotten after it ran, or its post may still be on its way.
 - **The relay never stops a generation.** A cancel only keeps a command from being delivered or dispatched. Stopping
-  a job that may exist is the generation cancel by request id, which the sender calls itself (slice 4).
+  a job that may exist, and refusing a create that has not arrived yet (a post that the cancel overtook still reaches
+  the host), is the generation cancel by request id, which the sender calls itself at every Stop (slice 4).
 - **Routes**, mounted explicitly in `server/src/app.ts`, each with the generation routes' pattern copied (the
   authenticated limiter, `auth.checkAuth`, `no-store`, the `x-resource-epoch` comparison answering 412):
-  - `POST /api/remote-commands` `{ clientId, target, commandId, command }`. An existing `commandId` is looked up before
-    the target. A matching command answers its state and, in `delivered`, `running`, or `uncertain`, notifies its
-    target again; a command whose action fields differ is a 409. The command keeps its first target while that target
-    is a registered host; when it is not, a re-post naming another host moves the command there, with `attempted`
-    kept. A new command for a target that is not a registered host is a 404 `targetUnavailable`.
+  - `POST /api/remote-commands` `{ clientId, target, commandId, command, uncertain? }`. An existing `commandId` is
+    looked up before the target. A matching command answers its state and, in `delivered`, `running`, or `uncertain`,
+    notifies its target again; a command whose action fields differ is a 409. A matching command closed as `expired`,
+    `cancelled`, or `refused` is replaced by the post, as a new command: no run started under that entry, and
+    the sender is asking again (a Send after a Stop that ended uncertain). The command keeps its first target while
+    that target is a registered host; when it is not, a re-post naming another host moves the command there, with
+    `attempted` kept. A new command for a target that is not a registered host is a 404 `targetUnavailable`.
   - `GET /api/remote-commands/:id?clientId=`: the body, `attempted`, and `stopRequested`, for the target only.
   - `POST /api/remote-commands/:id/state` `{ clientId, state, ... }`: from the target only; the answer carries
     `stopRequested`.
   - `POST /api/remote-commands/:id/cancel` `{ clientId }`: from the sender only. A `queued` command becomes
-    `cancelled`; a later state gets `stopRequested`, and the target is notified; an unknown id is `fenced`. The answer
-    says which: only `cancelled` certifies that nothing ran.
+    `cancelled`; a later state gets `stopRequested`, and the target is notified; an unknown id is a 404
+    `unknownCommand`. The sender does not branch on the answer (slice 4).
   - `GET /api/remote-commands/:id/status?clientId=`: for the sender. An unknown id is a 404 with the code
     `unknownCommand`, which an old server's plain 404 does not have.
 - **Frames**, through `sendToClient`: `{ type: "remoteCommand", epoch, commandId, stop? }` to the target, and
@@ -205,8 +212,9 @@ that gives it to `self-host-server`), `server/src/remoteCommands.ts` (the regist
   (each state and each refused transition; the pickup expiry and the open-command drop on a fake clock; the caps; the
   epoch change; the same id with matching fields and another `inputOriginal`, which keeps the first body; the same id
   with another `input`, which is a 409; a re-post that notifies again; a re-post that moves a command off a host that
-  left; a refusal after `running` stays `uncertain`; a read or a state report by the wrong client; the cancel in each
-  state, before the post (`fenced`), and against a read; the drop of an open command tells its sender `forgotten`).
+  left; a post with `uncertain` leaves the command `attempted`; a refusal after `running` stays `uncertain`; a read or
+  a state report by the wrong client; the cancel in each state, of an unknown id (a 404, nothing stored, and a later
+  post of that id is accepted), and against a read; the drop of an open command tells its sender `forgotten`).
 
 ## Slice 2. Host mode in the tab (`network-jobs.md`, `live-updates.md`, `app-shell.md`, `settings-i18n.md`, `ui-theming.md`)
 
@@ -247,46 +255,63 @@ Existing: `remoteHost.ts` and its test, `shared/remoteCommands.ts` with the serv
      flag to that run, answers with its state, and starts nothing.
   2. Create the command's abort controller, before the first await. Read the body (the state becomes `delivered`).
      From here on, a stop flag (in the read's answer, a later frame, or a state acknowledgement) aborts the controller.
-  3. Refuse, certifying no attempt: `stopped` when the controller is already aborted and the read did not say
-     `attempted`, `pluginsOff` when plugins are
+  3. Refuse, certifying no attempt: `stopped` when the controller is already aborted, `pluginsOff` when plugins are
      off for this page load (`safeBootOff`, checked before any wait), `chatMissing` when the character or chat is not
      listed, `busy` when the chat has a send of this tab (`isLocalSend`, not `isChatBusy`, which also counts a resumed
-     follow) and the read did not say `attempted`.
-  4. Hold plugin work and await `pluginsStarted`, as `handoff.ts` does before a takeover. An abort during the wait is
-     the `stopped` refusal for a command that was not attempted. An attempted command is never refused as `stopped`: it
-     goes on to step 6 with its aborted signal, and `runServerJob` cancels the earlier request by its id, as it does for
-     any uncertain send whose signal is already aborted.
+     follow). A command that the read marked `attempted` gets no certificate: the host reports `uncertain` where it
+     would have refused as `stopped`, `pluginsOff`, or `chatMissing`, and `busy` is not checked for it. A stopped
+     attempted command starts nothing: the host cannot tell whether its earlier attempt created a job, and stopping
+     that job is the sender's generation cancel (slice 4), which does not pass through the host.
+  4. Hold plugin work and await `pluginsStarted`, as `handoff.ts` does before a takeover. An abort during the wait
+     ends the command as step 3 does: `stopped` when it was not attempted, `uncertain` when it was.
   5. Select the chat (D7): pin it, `selectChat`, `selectCharacter`, `setChatOpen(true)`, and close the settings and
      grid layers, so the chat screen under the lock renders it.
   6. Save the command id with its epoch in `sessionStorage`, report `running`, and call `sendChat` with the chat as
-     `target`, the command's fields, the controller's `signal`, the local-only flag, the returned-failure option
-     below, and `requestUncertain` true when the read said `attempted`.
-- **The failure comes back instead of a dialog.** A job's error is shown today by its follow (`reportEnd` calls
-  `alertJobError`, and raises the skipped and missed hook notices), and a send's end does not carry it. A send gains an
-  option that returns that text in its end and raises no dialog for it, as `loreStopFollow` already hands the lore stop
-  to the caller. Other callers are unchanged.
+     `target`, the command's fields, the controller's `signal`, the local-only flag, the returned-reports option
+     below, and `requestUncertain` true when the read said `attempted`. With an attempted command the send can still
+     return at `runSend`'s own guards (a chat that is not listed, a send of this tab in the chat) before it reaches a
+     create; that end is unsettled and is reported `uncertain`.
+- **Reports come back instead of being shown.** A send's reports are shown today where they arise, and its end
+  carries none of them. `runServerJob` alerts a refusal before or at admission (a binding problem, a refused or
+  discarded write, a failed save or load, a busy chat, a refusal by the server). The job's follow shows the job's error
+  (`reportEnd` calls `alertJobError`) and, on a `done`, one toast naming skipped hooks and missed listeners. A send
+  gains an option that collects these into its end and shows none of them on this tab: a list of reports, each an
+  `error` or a `notice` with the text that would have been shown (`alertJobError`'s formatting is extracted for it).
+  `loreStopFollow` and `callerErrorCodes` already hand one report each to the caller in this way. Other callers are
+  unchanged. The "stopped elsewhere" toast is collected as a notice (a third device can stop the job). A blocked flush
+  is returned as an error even when the save layer has shown its own notice for it (`runServerJob` skips its alert
+  then); that notice belongs to the save layer and stays on the host. These also stay on the host: a maintenance end
+  with its restore watch and alert, what a follow raises outside its end (a handoff's attribution, a gone job's
+  recovery), and any dialog that waits for an answer during the job (D9).
 - **The result** is the send's end: `sendChat`'s boolean (`ok`), the refusal (`definite`, `ambiguous`, or none),
-  `onEnd`'s `settled`, `outcome`, `requestUncertain`, `reconciled`, `blockedChats`, and `loreStop`, and the failure:
-  its returned text, or a mark that a failure was shown by another follow of this tab, or nothing when the job did not
-  fail (a lore stop, a user's stop, and a `done` are not failures, as `reportEnd` treats them today). A settled end is
-  reported as `done`; an unsettled one, and a throw, as `uncertain`. The host shows neither the lore dialog nor the
-  error: the sender does. A report that fails is retried while the command is kept; the saved id is removed once the
-  report is accepted.
+  `onEnd`'s `settled`, `outcome`, `requestUncertain`, `reconciled`, `blockedChats`, and `loreStop`, and the reports:
+  the collected list, or a mark that the job's error was shown by another follow of this tab (set only when the job
+  ended in an error that follow reports, never for a stop or a `done`). A lore stop, a user's stop, and a `done` are
+  not errors, as `reportEnd` treats them today; a `done` can carry notices. A settled end is reported as `done`; an
+  unsettled one, and a throw, as `uncertain`. Both states carry the result, so the reports of an unsettled end (a
+  refusal before the create of an attempted command, a create without an answer, a lost follow) reach the sender too.
+  The host shows neither the lore dialog nor the reports: the sender does. A state report that fails is retried while
+  the command is kept; the saved id is removed once it is accepted.
 - **After a reload**, the host reports `uncertain` for each saved id of the same epoch and removes it. Its saved jobs
   resume as any tab's do. A later re-post of that command runs the steps again with `requestUncertain`. When the earlier
   create was admitted, the new one is an owned replay that joins the resumed follow, with no second job and no second
-  user message; when it was not, it is the first create. A joined follow reports as a boot resume does: its error dialog
-  is the host's, and the end carries the "shown by another follow" mark and no `loreStop`. The sender then says only
-  that the send failed on the host. This limit is accepted: it needs a host
-  reload during a job, which the `page` reload already asks about.
+  user message; when it was not, it is the first create. A joined follow reports as a boot resume does: its dialogs
+  and toasts are the host's, and the end carries no `loreStop` and no reports, only the "shown by another follow" mark
+  when the job ended in an error. The sender then says only that the send failed on the host. This limit is accepted:
+  it needs a host reload during a job, which the `page` reload already asks about.
+- **A job of another creator.** The host's create can find the request already admitted by another client: a command
+  moved to a second host, or the sender's own earlier local attempt. While that job runs, the send is refused as busy
+  and unsettled, with its report. Once it has ended, the replay returns no terminal, so the result has no report and
+  the sender relies on its chat read. Accepted: it needs two creators of one request.
 - **The host's composer and drafts are not involved**: no journal row, no input box, no slash command parsing, no Draft
   hook. Those ran, or did not, on the sending device.
 - Tests: a send command reaches `sendChat` with the same ids, the chat as `target`, the lore flag, and the local-only
-  flag; each refusal code; `busy` is not a refusal for an attempted command; a second frame for a running command
-  starts nothing; an attempted command is sent with `requestUncertain`; a settled and an unsettled end map to `done`
-  and `uncertain`; a job error is in the result and raises no dialog; a stop flag aborts the run from a frame, from the
-  read's answer, and during the startup wait; a stopped attempted command reaches `sendChat` with its aborted signal; a
-  saved id is reported `uncertain` at boot.
+  flag; each refusal code; an attempted command is reported `uncertain` where an unattempted one is refused, and is
+  not checked for `busy`; a second frame for a running command starts nothing; an attempted command is sent with
+  `requestUncertain`; a settled and an unsettled end map to `done` and `uncertain`; a job error, an admission refusal's
+  text, and a `done`'s hook notice are each in the result and are not shown; a stop flag aborts the run from a frame,
+  from the read's answer, and during the startup wait; a stopped attempted command with no run on this page starts
+  nothing and is reported `uncertain`; a saved id is reported `uncertain` at boot.
 
 ## Slice 4. The sending device's adapter (_hard_, `chat-pipeline.md`, `draft-recovery.md`, `network-jobs.md`)
 
@@ -307,37 +332,66 @@ New files: `src/ts/network/remoteSend.ts` with its test. Existing: `src/ts/proce
   pin the chat, flush this tab's pending writes, refuse the send when a write was discarded or refused, and refresh a
   stale chat. The host's flush saves the host's writes, not these.
 - **The command id** is the send's `requestId`. A retry of the same action re-posts the same command, to the host it
-  first went to while that host is connected.
+  first went to while that host is connected. Every post carries `uncertain` when the send is marked
+  `requestUncertain`.
 - **What the adapter answers**, in the shapes `runSend` already passes to `onServerRefused` and `onEnd`:
-  - **Definitely not run:** no connected host of the chosen name, a 404 `targetUnavailable`, `expired`, `cancelled`, or
-    `refused` (the host's certificate). For a send that `requestUncertain` already marked, an earlier attempt may
-    still run, so these keep that uncertainty and the fallback does not run. Otherwise: with the fallback on,
-    `sendChatOnServer` runs here with the same ids; with it off, the send is refused as definite and a toast says why,
-    and the existing restore returns the text.
-  - **`done`:** the host's result. With `ok` true it is passed on at once. Otherwise the adapter first reads the chat,
-    through the chat read under `recoverJobChat` (`readRecoveringChat`, exported for this: it needs the chat, not a
-    job id), with the chat pinned, so the screen's landed check sees a user message the host's job appended; a read
-    that fails or is not adopted makes the end unsettled and uncertain. Then: a present `loreStop` goes to the screen
-    and nothing else is shown; a returned failure text is shown with `alertError`; the "shown by another follow" mark is
-    shown as a line naming the host; a result without a failure (a stop) shows nothing. A failure is never inferred from
-    `ok` being false or from a missing text.
+  - **Definitely not run:** no connected host of the chosen name, a 404 `targetUnavailable`, `expired`, or `refused`
+    (the host's certificate). For a send that `requestUncertain` already marked, an earlier attempt may still run, so
+    these keep that uncertainty and the fallback does not run. Otherwise: with the fallback on, `sendChatOnServer`
+    runs here with the same ids; with it off, the send is refused as definite and a toast says why, and the existing
+    restore returns the text.
+  - **`done`:** the host's result. Its notices are shown first, as one toast, whatever `ok` is. With `ok` true the
+    result is then passed on. Otherwise the adapter first reads the chat, through the chat read under `recoverJobChat`
+    (`readRecoveringChat`, exported for this: it needs the chat, not a job id), with the chat pinned, so the screen's
+    landed check sees a user message the host's job appended; a read that fails or is not adopted makes the end
+    unsettled and uncertain. Then: a present `loreStop` goes to the screen and nothing else is shown; each returned
+    error is shown with `alertError`; the "shown by another follow" mark is shown as a line naming the host; a result
+    with no report shows nothing. A failure is never inferred from `ok` being false or from a missing report. The
+    result's `refusal`, `settled`, `requestUncertain`, and `blockedChats` are passed on as they are, so the screen
+    restores an unlanded draft as it does after a local refusal. A refusal inside `done` never starts the fallback:
+    the host reached its own send path, and what refused it there (a binding, a write, the server) is now on the
+    sender's screen.
   - **Uncertain:** `uncertain`, `forgotten`, a status of `unknownCommand`, a post or status request without an answer,
-    or the host
-    gone from presence for 60 s before a closed state. Unsettled and `requestUncertain`: the draft keeps its ids unless
-    its message landed, and the next Send re-posts the command.
-- **Stop.** An abort of the send's signal posts the cancel. An answer of `cancelled` ends the send as definitely not
-  run. Any other answer (`stopRequested`, `fenced`, or none) leaves a job possible, so the adapter also cancels the
-  generation by its request id (`cancelGenerationRequest`, which stops a running job of any owner and fences a create
-  that has not arrived), and then waits for the host's closed state, ending uncertain by the rules above if none
-  comes. The foreign-job Stop control appears once the send has ended.
+    or the host gone from presence for 60 s before a closed state. Unsettled and `requestUncertain`: the draft keeps
+    its ids unless its message landed, and the next Send re-posts the command, marked `uncertain`. The reports that
+    came with an `uncertain` state are shown as those of a `done` are, each once for the command; showing one does not
+    settle the send or start the fallback.
+  - **`cancelled`** reaches the adapter only as the echo of its own Stop, which does not read it (below).
+  - **Another epoch:** a 412 takes the tab's existing epoch-mismatch halt, as any request's does, and never the
+    fallback.
+- **Stop.** An abort before the post has left (during the adapter's own flush) sends no post: a send not marked
+  uncertain is refused, as `runServerJob`'s preflight refuses one, and a marked send goes on to the resolution below.
+  After the post, an abort starts two things at once, and neither waits for the other.
+  - It posts the relay cancel, which keeps an unread command from leaving and tells a running host to abort.
+  - It resolves the request id as a local send does after a Stop of an uncertain send: the adapter runs
+    `sendChatOnServer` with the aborted signal and `requestUncertain` (true even for a first Send: the post made the
+    request uncertain). That path creates nothing. It cancels the generation by its request id
+    (`cancelGenerationRequest`: the server aborts a running job whoever created it, and for an unknown id leaves a
+    tombstone that refuses a create arriving later), and it consumes the answer as `runServerJob` does today. The
+    adapter takes the returned `settled` and `requestUncertain` as they are and never reads more into `outcome`. No
+    job: a settled, definite refusal, and the next Send gets a new request id. A job that had ended, with the chat
+    read adopted: settled. Anything unsettled (a job that acknowledged the abort and may still write, a chat read that
+    failed, a cancel without an answer): the adapter goes on waiting for the host's closed state, as it would have
+    without the Stop, and ends uncertain by the rules above if none comes. A job this device created itself (an
+    earlier local attempt) is followed to its end, as a local Stop follows it.
+  - The adapter does not branch on the relay's answer, and a stopped send never falls back. The host's notices are
+    not shown for a send whose own signal was aborted, and a host result that arrives after the send has ended is
+    ignored.
+  - What is left exposed is what a local Stop leaves: when the generation cancel gets no answer and the post arrives
+    late, the host may still run the command. The send has ended uncertain, not as a refusal.
+  - The foreign-job Stop control appears once the send has ended.
 - **Feed reconnect.** After a new `hello`, the adapter reads the status of each command it waits on.
-- Tests: each answer above, with the fallback on and off; a marked send never falls back; the pending writes are
-  flushed before the post and a discarded write refuses the send; the reservation is held across the remote wait and
-  the fallback; a failed `done` reads the chat, then shows the failure; `loreStop` reaches the caller; the abort posts
-  the cancel; `stopRequested` and `fenced` also cancel the request id and do not end the send; a lore stop and a user's
-  stop show no error; each ineligible send (host mode, the local-only flag, each
-  excluded field, `continue: false` being eligible) calls `sendChatOnServer`; the command id equals the request id
-  across a retry.
+- Tests: each answer above, with the fallback on and off; a marked send never falls back and posts `uncertain`; the
+  pending writes are flushed before the post and a discarded write refuses the send; the reservation is held across
+  the remote wait and the fallback; a failed `done` reads the chat, then shows each returned error; a `done` with `ok`
+  true shows its notices; a definite refusal inside `done` restores the draft and does not fall back; `loreStop`
+  reaches the caller; a lore stop and a user's stop show no error; the abort posts the relay cancel and cancels the
+  request id whatever the relay answers (`cancelled`, `stopRequested`, a 404, none); a Stop with no job ends definite
+  without a fallback; an unsettled Stop result waits for the host's closed state; a Stop during the flush posts
+  nothing; a Send after a Stop that ended uncertain re-posts the id and the command runs again as `attempted`; the
+  reports of an `uncertain` state are shown once and settle nothing; each ineligible send (host mode, the
+  local-only flag, each excluded field, `continue: false` being eligible) calls `sendChatOnServer`; the command id
+  equals the request id across a retry.
 
 ## Slice 5. The sending device's controls (`settings-i18n.md`, `ui-theming.md`, `chat-pipeline.md`)
 
@@ -405,12 +459,14 @@ Existing: `shared/remoteCommands.ts` with the server validation, `remoteHost.ts`
   are still unrun); a server-enforced "never hand over" flag for host jobs (a second protocol change, and it would
   remove the only recovery when the host dies).
 - **D2. The sending device is an observer.** (Owner, 2026-11-15: an update every few seconds is enough.) It attaches no
-  job socket. A quiet (Half Streaming) reply therefore appears only when it ends.
+  job socket to a host's job. A quiet (Half Streaming) reply therefore appears only when it ends. The one job it
+  follows is one it created itself in an earlier local attempt of the same request, when a Stop finds it (slice 4).
 - **D3. The fallback is an option, and only for a definite failure.** (Owner, 2026-11-15: keep it as an option.)
   Definite means one of: no host of that name is connected; the server never gave the command to the host (`expired`,
-  `cancelled`, `targetUnavailable`); the host refused and certified that it never attempted the command. A read of the
-  body alone decides nothing, and a send already marked uncertain never falls back. The default is on: a send that runs
-  with today's limits is better than one that does not run (this plan's choice).
+  `targetUnavailable`); the host refused and certified that it never attempted the command. A read of the body alone
+  decides nothing. A send already marked uncertain never falls back, nor does a send the user stopped, nor one the
+  host's own send path refused. The default is on: a send that runs with today's limits is better than one that does
+  not run (this plan's choice).
 - **D4. The server relays and stores nothing durable.** A restart loses open commands; the sender then reads
   `unknownCommand` and treats the send as uncertain. Rejected: a command body in a feed frame (the feed has no
   addressing, and a body would reach every tab); the server creating the job on the host's behalf (the hook list and
@@ -453,7 +509,7 @@ Agents cannot run these; they go to [manual checks](../backlog/manual-checks.md)
   on return.
 - The same with the PC host's window hidden for more than five minutes.
 - The host is closed: the phone's send goes to the fallback, and with the fallback off the text returns.
-- Stop from the phone, before and after the host started the send.
+- Stop from the phone, before and after the host started the send, and a Send again right after each.
 - "Reload plugins" and "Reload page" from the phone, after changing a plugin argument on the phone.
 - The illustration plugin's own "auto generate" switch: which device's value the host uses.
 - With handoffs accepted on a second device, how often that device takes a host's job before the host attaches.

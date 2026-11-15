@@ -2,7 +2,8 @@
 
 - Plan: `docs/plan/remote-host.md`
 - Commit audited: `952c4baec` (`dev`), with the plan as an uncommitted draft in the working tree; the corrected plan is
-  committed with this report
+  committed with this report. The fourth and fifth turns read the plan at `3ff7eeea0` and its corrections in the
+  working tree
 - Mode: `full`
 - Model: GPT-6-Astra at `xhigh`, read-only, in place of the usual Sol session at the owner's request (the plan mixes
   server and tab work); report written by the session that drafted the plan (Claude Fable 5.2), before any plan-runner
@@ -10,16 +11,26 @@
 
 | Severity   | Count |
 | ---------- | ----- |
-| P1         | 6     |
-| P2         | 7     |
+| P1         | 8     |
+| P2         | 15    |
 | P3         | 5     |
 | unverified | 1     |
 
-Every finding is `fixed in plan`, except the part of N4 recorded as an accepted limit below. The audit ran as three
-turns of one session (about 12.4 M tokens, 45 minutes). The first read the draft and found F1 to F10. The second read
-the corrected plan: it confirmed F3 and F5 to F10, disputed F1, F2, and F4, and found N1 to N6 in the corrections. The
-third read the second round: it confirmed N1, N3, N5, N6, and F4, and found M1 to M3. M1 to M3 were applied afterwards
-and were not read again.
+Every finding is `fixed in plan`, except the parts of N4 and R4 recorded as accepted limits below. The audit ran as
+five turns of two sessions (about 17.4 M tokens, 75 minutes).
+
+1. The first read the draft and found F1 to F10.
+2. The second read the corrected plan: it confirmed F3 and F5 to F10, disputed F1, F2, and F4, and found N1 to N6 in
+   the corrections.
+3. The third read the second round: it confirmed N1, N3, N5, N6, and F4, and found M1 to M3.
+4. The fourth, a new session at the owner's request, read the corrections for M1 to M3: it confirmed M3, disputed M1
+   and M2, and found R1 to R5.
+5. The fifth read the corrections for R1 to R5: it closed R1, R2, and R5, and found S1 to S5, all P2, in R3 and R4.
+   The corrections for S1 to S5 were applied afterwards and were not read again.
+
+Each correction round until the fourth added mechanisms and brought new defects with them. The fourth round's
+corrections removed mechanisms instead (the host's own cancel, the relay's `fenced` entry, every branch on the
+relay's cancel answer), and the fifth turn found no P1.
 
 What the audit changed in the design:
 
@@ -29,8 +40,16 @@ What the audit changed in the design:
 - The draft's relay had no way back into a command after `running`. The corrected relay keeps the body readable,
   notifies the target again on a re-post and on its registration, and treats a lost or forgotten command as uncertain
   (F2, N2, M2).
-- Stop no longer depends on the host: the sender cancels the generation by its request id whenever the relay cannot
-  certify that nothing ran (N2, M1).
+- Stop no longer depends on the host or on the relay. At every Stop the sender posts the relay cancel and, without
+  waiting for it, resolves the request id through the local send path with an aborted signal, which cancels the
+  generation by its request id and consumes the answer. The relay's cancel answer certifies nothing and is not read;
+  an unknown-id cancel stores nothing; a late post is refused by the generation's tombstone at the host's create (N2,
+  M1, M2, R1 to R3, S1, S2).
+- The host returns a send's reports, not only its job's error: the refusals before and at admission, the job's error,
+  and the notices of a `done` (skipped hooks, missed listeners), with a settled and with an unsettled end (N4, M3,
+  R4, R5, S3 to S5).
+- The sender's post carries its own uncertainty, so a relay that forgot a command cannot make a retry look like a
+  first attempt (R2).
 - "No owner switch" became "no handoff is asked for": the absent-owner offer stays for host jobs (F4, N5). The
   auditor's suggested server-enforced no-handoff policy was not taken; it is in the plan's Not In This Plan.
 
@@ -66,12 +85,27 @@ State cites it.
   the controller is already aborted". Code: for an attempted command the job may already run under a resumed follow
   that the new controller does not reach (`src/ts/process/serverCommands.ts:995`); `runServerJob` cancels by request id
   only when it is called with the aborted signal (`:1110`). Correction: an attempted command is never refused as
-  `stopped` and goes on to `sendChat` with its aborted signal; the sender cancels by request id itself
-  (`cancelGenerationRequest`, `src/ts/network/generationJobs.ts:578`).
+  `stopped`; the sender cancels by request id itself (`cancelGenerationRequest`,
+  `src/ts/network/generationJobs.ts:578`). The first correction also sent the host on to `sendChat` with its aborted
+  signal; R1 withdrew that.
 - **M2. Forgetting an open command made an unknown-id cancel falsely definite.** Plan (Slice 1, third draft): an open
   command "is dropped" after 10 minutes, and a cancel of an unknown id leaves a `cancelled` entry. Code: a job runs up
   to `JOB_MAX_DURATION_MS`, 30 minutes (`server/src/jobs/generationJobs.ts:108`). Correction: the drop is at 40 minutes
-  and tells the sender `forgotten`; an unknown-id cancel answers `fenced`, which certifies nothing.
+  and tells the sender `forgotten`; an unknown-id cancel certifies nothing. The first correction kept a `fenced` entry
+  for it; R3 removed the entry, and the answer is a 404 `unknownCommand`.
+- **R1. The host's promised cancel sits behind guards that return without cancelling.** Plan (Slice 3, fourth draft):
+  an attempted command "goes on to step 6 with its aborted signal, and `runServerJob` cancels the earlier request".
+  Code: `runSend` returns at a chat that is not listed and at a send of this tab in the chat before
+  `sendChatOnServer` (`src/ts/process/index.svelte.ts:111`, `:123`), and the cancel is installed only inside
+  `runPinnedServerJob` (`src/ts/process/serverCommands.ts:1110`). Correction: the host promises no cancel. An attempted
+  command gets no certificate and, when stopped, starts nothing; the sender's two Stop requests start at once.
+- **R2. A forgotten command posted again loses its attempt, and a queued cancel then certifies "nothing ran".** Plan
+  (Slice 1 and Slice 4, fourth draft): "the read's answer carries `attempted`"; "An answer of `cancelled` ends the send
+  as definitely not run". Code: a job's 30 minutes count from its admission, not from the relay's last state change
+  (`server/src/jobs/generationJobs.ts:2400`, `:2421`), and the local path keeps an earlier uncertainty only through
+  `requestUncertain` (`src/ts/process/index.svelte.ts:112`, `src/ts/process/serverCommands.ts:1120`). Correction: the
+  post carries `uncertain`, which sets `attempted`; Stop does not read the relay's answer; the 40 minutes are named as
+  housekeeping.
 
 ## P2
 
@@ -107,6 +141,41 @@ State cites it.
   line naming the host when the result has none". Code: a lore stop and a user's stop are not errors
   (`src/ts/process/serverCommands.ts:967`, `:979`). Correction: Slice 4's `done` branch shows an error only for a
   returned failure or the "shown by another follow" mark.
+- **R3. A `fenced` id had no retry outcome and no lifetime.** Plan (Slice 1 and Slice 4, fourth draft): an unknown-id
+  cancel "leaves a `fenced` entry"; the sender "waits for the host's closed state". Code: the generation cancel already
+  answers what the relay could not: no job leaves a tombstone and a settled refusal, after which the draft takes a new
+  request id (`server/src/jobs/generationJobs.ts:2651`, `src/ts/process/serverCommands.ts:1247`,
+  `src/ts/process/sendDraft.ts:102`), and a create behind the tombstone answers 409 `requestCancelled` (`:2347`).
+  Correction: no `fenced` entry; Slice 4's Stop takes the local path's result as the send's end.
+- **R4. Only a follow's error was returned, so a refusal before or at admission was silent on the phone.** Plan
+  (Slice 3, fourth draft): "A send gains an option that returns that text in its end". Code: `runServerJob` alerts
+  those refusals itself (`src/ts/process/serverCommands.ts:1129` to `:1201`, `:1283` to `:1336`). Correction: Slice
+  3's "Reports come back instead of being shown"; a refusal inside `done` restores the draft and never starts the
+  fallback. Accepted limit, in Slice 3's "A job of another creator": the replay of an ended job that another client
+  created returns no terminal (`:1257`), so it has no report.
+- **R5. Skipped-hook and missed-listener notices had no way to the phone.** Plan (Slice 4, fourth draft): "With `ok`
+  true it is passed on at once". Code: `reportEnd` raises them as one toast on a `done`
+  (`src/ts/process/serverCommands.ts:984`). Correction: reports are `error` or `notice`, and the sender shows the
+  notices first, whatever `ok` is.
+- **S1. A Send after an uncertain Stop could get the retained `cancelled` state, which no branch handled.** Code: an
+  unanswered cancel leaves the draft its request id (`src/ts/process/serverGeneration.ts:177`,
+  `src/ts/process/sendDraft.ts:111`). Correction: a post of a command closed as `expired`, `cancelled`, or `refused`
+  replaces it as a new command.
+- **S2. The Stop text told a running job from an ended one, which the local path's result does not.** Code: a foreign
+  replay returns `requestUncertain` for "not reconciled or running" alike (`src/ts/process/serverCommands.ts:1260`).
+  Correction: the adapter takes `settled` and `requestUncertain` as returned; anything unsettled waits for the host's
+  closed state.
+- **S3. The reports of an unsettled end were collected and never shown.** Code: an attempted send's preflight refusal
+  is unsettled (`src/ts/process/serverCommands.ts:1120`, `src/ts/process/serverGeneration.ts:163`). Correction: the
+  `uncertain` state carries the result, and the sender shows its reports once without settling the send.
+- **S4. A blocked flush shows its notice below `runServerJob`, which then alerts nothing.** Code:
+  `showGeneratingNotice` (`src/ts/storage/resourceSync.svelte.ts:4324`) and the skipped alert
+  (`src/ts/process/serverCommands.ts:1167`). Correction: the option returns the blocked flush as an error anyway; the
+  save layer's notice stays on the host.
+- **S5. Dropping the "stopped elsewhere" toast hid a stop by a third device.** Code: a foreign Stop is attributed to
+  its device (`server/src/jobs/generationJobs.ts:2548`), and a cancel by request id sets no such attribution
+  (`:2635`). Correction: the toast is collected as a notice, and the sender does not show the host's notices for a
+  send it stopped itself.
 
 ## P3
 
