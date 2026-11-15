@@ -22,6 +22,7 @@ vi.mock("src/ts/stores.svelte", async () => {
 import { language } from "src/lang";
 import { openPinnedChat } from "src/ts/globalApi.svelte";
 import { recoveryChatKeys, resetChatStatusForTests, unseenChatKeys } from "src/ts/process/chatStatus.svelte";
+import { noteGenerationFrame, resetGenerationProgress } from "src/ts/process/generationProgress.svelte";
 import { followedJobs } from "src/ts/process/serverCommands";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
@@ -49,6 +50,7 @@ beforeEach(() => {
     sessionStorage.clear();
     localStorage.clear();
     resetChatStatusForTests();
+    resetGenerationProgress();
     followedJobs.set(new Map());
     installFlatDatabaseWithChats({
         characterOrder: ["alice", "bob"],
@@ -82,6 +84,7 @@ afterEach(async () => {
     instance = undefined;
     target.remove();
     resetChatStatusForTests();
+    resetGenerationProgress();
     followedJobs.set(new Map());
     installFlatDatabaseWithChats({ characters: [] });
 });
@@ -144,6 +147,36 @@ describe("MainMenu pinned-chat statuses", () => {
         unseenChatKeys.set(new Set());
         flushSync();
         cards.forEach((card, index) => expectIdle(card, items[index]));
+    });
+
+    it("shows the generating badge for a running job of the live-update feed that this tab does not follow", async () => {
+        const cards = await render();
+        noteGenerationFrame({
+            type: "generation",
+            epoch: "epoch",
+            state: "running",
+            jobId: "remote-send",
+            characterId: "bob",
+            chatId: "idle",
+            kind: "send",
+            clientId: "another-device",
+            startedAt: 1,
+            at: 2,
+        });
+        flushSync();
+        expect(cards[3].getAttribute("data-risu-chat-status")).toBe("generating");
+        expectIdle(cards[2], items[2]);
+
+        noteGenerationFrame({
+            type: "generation",
+            epoch: "epoch",
+            state: "ended",
+            jobId: "remote-send",
+            characterId: "bob",
+            chatId: "idle",
+        });
+        flushSync();
+        expectIdle(cards[3], items[3]);
     });
 
     it("keeps the badge inside the icon box without adding focus targets or intercepting card clicks", async () => {

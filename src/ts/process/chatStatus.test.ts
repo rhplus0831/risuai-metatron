@@ -309,6 +309,46 @@ describe("chat status sources", () => {
         expectGenerating([]);
     });
 
+    it("the badge set adds the feed's running jobs from admission, previews excluded, and leaves busy checks alone", async () => {
+        const progress = await import("./generationProgress.svelte");
+        const { createProbe } = await import("../storage/tests/reactiveProbe.svelte");
+        const probe = createProbe(() => status.generatingBadgeKeys());
+        disposers.push(probe.dispose);
+        const expectBadges = (keys: string[]) => {
+            flushSync();
+            expect(status.generatingBadgeKeys()).toEqual(new Set(keys));
+            expect(probe.seen.at(-1)).toEqual(new Set(keys));
+        };
+        const frame = (state: "running" | "ended", jobId: string, ref: ChatRef, kind = "send") =>
+            progress.noteGenerationFrame({
+                type: "generation",
+                epoch: EPOCH,
+                state,
+                jobId,
+                characterId: ref.chaId,
+                chatId: ref.chatId,
+                ...(state === "running" ? { kind, clientId: "another-device", startedAt: 1, at: 2 } : {}),
+            });
+        expectBadges([]);
+
+        // Another device's send before its first `begin`: no lock, no follow.
+        frame("running", "remote-send", other);
+        frame("running", "remote-preview", b, "preview");
+        frame("running", "remote-prompt-preview", b, "previewPrompt");
+        expectBadges([keyOther]);
+        expect(status.generatingChatKeys()).toEqual(new Set());
+        expect(status.isChatBusy(other)).toBe(false);
+
+        const followed = await attach("follow-a", a);
+        expectBadges([keyA, keyOther]);
+
+        frame("ended", "remote-send", other);
+        expectBadges([keyA]);
+        followed.socket.end(done());
+        await followed.end;
+        expectBadges([]);
+    });
+
     it("clears a foreign mark when its server lock is released and retains a lockless chat's mark", () => {
         vi.useFakeTimers();
         watch();

@@ -4,7 +4,7 @@
     import { chatList, selectedChatId } from "src/ts/storage/chatStore.svelte";
     import {
         chatStatusKey,
-        generatingChatKeys,
+        generatingBadgeKeys,
         memoryHealthStates,
         recoveryChatKeys,
         unseenChatKeys,
@@ -97,7 +97,7 @@
     const statusSets = $derived({
         recovery: $recoveryChatKeys,
         refused: refusedChatKeys(refusedItems()),
-        generating: generatingChatKeys(),
+        generating: generatingBadgeKeys(),
         memory: summarizing,
         unseen: $unseenChatKeys,
         health: healthStates,

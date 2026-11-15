@@ -33,12 +33,14 @@ import { bookmarkListOpen, gridOpenStore, hypaV3ModalOpen, settingsOpen } from "
 import { messageSearchPanel } from "src/ts/messageSearch.svelte";
 import { popUpEditorStore } from "src/ts/popupEditorSession.svelte";
 import { readChatGeneration } from "src/ts/network/generationJobs";
+import { runningGenerations } from "src/ts/process/generationProgress.svelte";
 import { isPageVisible, pageRecoveryVersion } from "src/ts/pageVisibility.svelte";
 
 /**
  * Projects per-chat generation, visibility, unseen-reply, recovery, and memory-health status.
  * Busy admission combines `src/ts/process/localSends.ts`, followed jobs from
  * `src/ts/process/serverCommands.ts`, and chat-store locks; foreign-job marks are advisory.
+ * The generating badge also counts the feed's running jobs (`generatingBadgeKeys`).
  * Store subscriptions are acquired lazily to avoid reading followed jobs during the import cycle.
  * `watchChatVisibility` owns effects and subscriptions: visibility clears badges and schedules
  * recovery reads. Visible chats discover foreign jobs on show, page recovery, and feed writes;
@@ -79,6 +81,23 @@ function keyRef(key: string): ChatRef {
 export function generatingChatKeys(): ReadonlySet<string> {
     const jobs = (followedView ??= fromStore(followedJobs)).current;
     return new Set([...jobs.values(), ...lockedChatKeys()]);
+}
+
+/**
+ * Chats that show the generating badge (reactive): `generatingChatKeys` plus the chat of every running
+ * job the live-update feed lists, previews excluded. A new send holds no message lock until its first
+ * `begin`, which follows the provider's response, so a tab that does not follow the job (another
+ * device, another tab) would otherwise show nothing until then; the feed lists the job from its
+ * admission. Display only: `isChatBusy` and the write fences keep `generatingChatKeys`.
+ */
+export function generatingBadgeKeys(): ReadonlySet<string> {
+    const keys = new Set(generatingChatKeys());
+    for (const entry of runningGenerations()) {
+        if (entry.kind !== "preview" && entry.kind !== "previewPrompt") {
+            keys.add(chatStatusKey({ chaId: entry.characterId, chatId: entry.chatId }));
+        }
+    }
+    return keys;
 }
 
 /**

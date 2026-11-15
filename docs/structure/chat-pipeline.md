@@ -306,6 +306,9 @@ opened from the composer menu) calls it.
   [live updates](live-updates.md#feed-connection)) shows the same spinner and extra Stop from the job's admission, in
   its stage's color. Like a mark it is advisory: neither makes `isChatBusy` true, and the server still refuses a
   competing send.
+- The generating badge of the sidebar and the home cards reads `generatingBadgeKeys`: `generatingChatKeys` plus the chat
+  of every running job the feed lists, previews excluded, so a job of another tab or device shows from its admission,
+  not from its first lock. Busy checks and write fences keep `generatingChatKeys`.
 - `chatStore.svelte.ts` owns loaded chats and every write ([chat store](chat-store.md)); autosave does not.
 - Chats load on demand. Async operations pin and load their captured targets; unavailable chats are gone to synchronous
   readers, never an excuse to use another selection ([pins and eviction](chat-store.md#pins-and-eviction)).

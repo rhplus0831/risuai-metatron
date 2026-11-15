@@ -25,7 +25,7 @@ vi.mock("src/ts/process/chatStatus.svelte", async () => {
     const { writable } = await import("svelte/store");
     return {
         chatStatusKey: vi.fn(),
-        generatingChatKeys: () => new Set<string>(),
+        generatingBadgeKeys: () => new Set<string>(),
         isChatBusy: () => false,
         memoryHealthStates: () => new Map<string, string>(),
         recoveryChatKeys: writable(new Set<string>()),
