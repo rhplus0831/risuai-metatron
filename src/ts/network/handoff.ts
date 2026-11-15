@@ -23,7 +23,7 @@ import { getResourceEpoch, ResourceRequestError } from "../storage/resourceClien
  * Manual requests use the same acceptance policy, with one best-effort reminder per job after 10 s
  * if that epoch's requested offer is still open for the same target. This does not track completion.
  */
-function preference<T extends boolean | string>(key: string, fallback: T): Writable<T> {
+export function preference<T extends boolean | string>(key: string, fallback: T): Writable<T> {
     const read = (): T => {
         try {
             const value: unknown = JSON.parse(localStorage.getItem(key) ?? "null");
@@ -85,6 +85,7 @@ export function replaceConnectedClients(snapshot: unknown): void {
                 clientId: client.clientId,
                 name: client.name.slice(0, MAX_FEED_CLIENT_NAME),
                 worker: client.worker,
+                ...(typeof client.host === "boolean" ? { host: client.host } : {}),
             });
             if (next.length === MAX_FEED_CLIENTS) break;
         }
@@ -104,12 +105,13 @@ export function handoffTargets(clients: readonly FeedClient[], selfId: string) {
     return [...groups.values()];
 }
 
-export function registration(selfId: string): EventFeedClientMessage {
+export function registration(selfId: string, host: boolean): EventFeedClientMessage {
     return {
         type: "register",
         clientId: selfId,
         name: get(clientName).slice(0, MAX_FEED_CLIENT_NAME),
         worker: get(acceptHandoffs),
+        host,
     };
 }
 

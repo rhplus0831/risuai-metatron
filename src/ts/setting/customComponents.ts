@@ -31,6 +31,7 @@ import CustomTextThemeEditor from "src/lib/Setting/Pages/Display/CustomTextTheme
 import CustomBackgroundToggle from "src/lib/Setting/Pages/Display/CustomBackgroundToggle.svelte";
 import NullableTextColorToggle from "src/lib/Setting/Pages/Display/NullableTextColorToggle.svelte";
 import HandoffToggles from "src/lib/Setting/Pages/Display/HandoffToggles.svelte";
+import RemoteHostControls from "src/lib/Setting/Pages/Display/RemoteHostControls.svelte";
 import NotificationToggle from "src/lib/Setting/Pages/Display/NotificationToggle.svelte";
 
 /**
@@ -55,6 +56,7 @@ export const customComponents: Record<string, Component<any>> = {
     NullableTextColorToggle: NullableTextColorToggle,
     NotificationToggle: NotificationToggle,
     HandoffToggles,
+    RemoteHostControls,
     // Add more as we migrate complex settings
 } as const;
 

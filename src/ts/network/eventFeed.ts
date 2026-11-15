@@ -6,6 +6,8 @@ import {
     replaceConnectedClients,
     replaceHandoffOffers,
 } from "./handoff";
+import { hostMode } from "./remoteHost";
+import { get, readonly, writable } from "svelte/store";
 import { noteGenerationFrame, replaceGenerations, resetGenerationProgress } from "../process/generationProgress.svelte";
 import { generationClientId } from "./generationJobs";
 import { EVENT_FEED_PATH, type EventFeedFrame } from "../../../shared/events.ts";
@@ -54,7 +56,7 @@ import {
  * replaces the feed's whole lock set with the server's snapshot before reconciliation starts.
  * Handoff offers go to `handoff.ts`: hello replaces them, and open/closed frames update one job.
  * Hello and `clients` replace presence there. The tab registers after each same-epoch hello and
- * when its name or worker preference changes; retiring a connection or an epoch mismatch clears presence.
+ * when its name, worker preference or host mode changes; retiring a connection or an epoch mismatch clears presence.
  *
  * One connection is current at a time (`generation`). A connection that has not opened within 10 s
  * (authentication included) or that has had no frame for 45 s while the page is visible is
@@ -104,16 +106,20 @@ let retryTimer: ReturnType<typeof setTimeout> | null = null;
 /** The socket that got its `hello` (recorded `connected` once), and the attempt it was. */
 let connectedSocket: WebSocket | null = null;
 let connectedGeneration = -1;
+const connected = writable(false);
+/** True after the current connection's same-epoch hello, until it retires or loses its registration. */
+export const feedConnected = readonly(connected);
 
 function registerClient() {
     const ws = socket;
     if (!ws || connectedSocket !== ws || connectedGeneration !== generation || ws.readyState !== 1) return;
-    ws.send(JSON.stringify(registration(generationClientId())));
+    ws.send(JSON.stringify(registration(generationClientId(), get(hostMode))));
 }
 
 // One subscription per preference, shared by every connection; only a current hello permits a send.
 clientName.subscribe(registerClient);
 acceptHandoffs.subscribe(registerClient);
+hostMode.subscribe(registerClient);
 
 /** Whether the held revisions can be trusted as far as this tab's dispatched live-feed frames. */
 export function liveFeedCurrent(): boolean {
@@ -209,6 +215,7 @@ function clearAdvertised() {
     listingOverlay = null;
     replaceHandoffOffers([]);
     connectedGeneration = -1;
+    connected.set(false);
     replaceConnectedClients([]);
 }
 
@@ -232,6 +239,7 @@ export function serverRerollsInPlace(): boolean {
  * except that an epoch-mismatch error of its read still resets memory tasks, generation progress, and the advertised map.
  */
 function retire() {
+    connected.set(false);
     rerollInPlace = false;
     generation += 1;
     listingOverlay = null;
@@ -420,6 +428,7 @@ function receive(gen: number, ws: WebSocket, frame: EventFeedFrame, connectAttem
                 recordClientEvent({ kind: "feed", phase: "connected", attempt: connectAttempt });
             }
             connectedGeneration = gen;
+            connected.set(true);
             registerClient();
             void reconcile(gen, ws, hello, frame.digest, frame.cursor, connectAttempt);
             return;

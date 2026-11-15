@@ -66,10 +66,12 @@ vi.mock("../diagnostics/collector", async () =>
 const listing = { epoch: "E1", resources: [], chats: [], chatOrders: [] };
 const change = { resources: [{ kind: "ui", id: "main", revision: "E1:1:2" }], chats: [], chatOrders: [] };
 let feed: typeof import("./eventFeed");
+let remoteHost: typeof import("./remoteHost");
 
 beforeEach(async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     vi.resetModules();
+    localStorage.removeItem("risu-remote-host");
     FakeSocket.instances = [];
     mocks.epoch.current = "E1";
     mocks.tokens.next = 0;
@@ -79,10 +81,13 @@ beforeEach(async () => {
     vi.stubGlobal("location", { protocol: "https:", host: "risu.test" });
     vi.spyOn(console, "error").mockImplementation(() => {});
     feed = await import("./eventFeed");
+    remoteHost = await import("./remoteHost");
 });
 
 afterEach(() => {
     feed.stopEventFeed();
+    remoteHost.hostMode.set(false);
+    localStorage.removeItem("risu-remote-host");
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.unstubAllGlobals();
@@ -188,7 +193,13 @@ describe("the live-update socket client", () => {
         const worker = { clientId: "worker", name: "Workstation", worker: true };
         ws.frame({ type: "hello", epoch: "E1", clients: [worker] });
         expect(get(connectedClients)).toEqual([worker]);
-        const registration = { type: "register", clientId: generationClientId(), name: "Desk", worker: false };
+        const registration = {
+            type: "register",
+            clientId: generationClientId(),
+            name: "Desk",
+            worker: false,
+            host: false,
+        };
         expect(ws.sent.map((text) => JSON.parse(text))).toEqual([registration]);
         ws.frame({ type: "hello", epoch: "E1", clients: [] });
         expect(get(connectedClients)).toEqual([]);
@@ -199,13 +210,19 @@ describe("the live-update socket client", () => {
             { ...registration, name: "Office" },
             { ...registration, name: "Office", worker: true },
         ]);
+        remoteHost.hostMode.set(true);
+        remoteHost.hostMode.set(false);
+        expect(ws.sent.slice(4).map((text) => JSON.parse(text))).toEqual([
+            { ...registration, name: "Office", worker: true, host: true },
+            { ...registration, name: "Office", worker: true, host: false },
+        ]);
         ws.frame({ type: "clients", clients: [worker] });
         expect(get(connectedClients)).toEqual([worker]);
         ws.frame({ type: "clients", clients: [] });
         expect(get(connectedClients)).toEqual([]);
         ws.close();
         clientName.set("Reconnected");
-        expect(ws.sent).toHaveLength(4);
+        expect(ws.sent).toHaveLength(6);
         await vi.advanceTimersByTimeAsync(1_000);
         const next = FakeSocket.instances.at(-1)!;
         expect(next).not.toBe(ws);
@@ -220,6 +237,20 @@ describe("the live-update socket client", () => {
         expect(mocks.epochMismatch).toHaveBeenCalledWith("restored");
         feed.stopEventFeed();
         acceptHandoffs.set(false);
+    });
+
+    it("preserves boolean host flags in presence and omits the field for older servers", async () => {
+        const { connectedClients, replaceConnectedClients } = await import("./handoff");
+        replaceConnectedClients([
+            { clientId: "host", name: "Workstation", worker: true, host: true },
+            { clientId: "browser", name: "Tablet", worker: false, host: false },
+            { clientId: "legacy", name: "Older browser", worker: true },
+        ]);
+        expect(get(connectedClients)).toStrictEqual([
+            { clientId: "host", name: "Workstation", worker: true, host: true },
+            { clientId: "browser", name: "Tablet", worker: false, host: false },
+            { clientId: "legacy", name: "Older browser", worker: true },
+        ]);
     });
 
     it("replaces handoff offers from hello, updates open and closed offers, and ignores unknown frames", async () => {

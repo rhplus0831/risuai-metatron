@@ -30,6 +30,8 @@
     import ChatScreen from "./lib/ChatScreens/ChatScreen.svelte";
     import AlertComp from "./lib/Others/AlertComp.svelte";
     import HandoffStatus from "./lib/Others/HandoffStatus.svelte";
+    import RemoteHostScreen from "./lib/Others/RemoteHostScreen.svelte";
+    import { hostMode } from "./ts/network/remoteHost";
     import ReloadNotice from "./lib/Others/ReloadNotice.svelte";
     import RefusedDataBanner from "./lib/UI/RefusedDataBanner.svelte";
     import TerminalNotice from "./lib/Others/TerminalNotice.svelte";
@@ -73,6 +75,8 @@
      * branch (`LoadingStatusState.text`) until `loadedStore`, `settingsOpen` → `Settings`, `gridOpenStore` →
      * `GridChars`, else `Sidebar` and `ChatScreen`. The overlays (alerts, notices, the Realm popup, the chat dialogs,
      * picker lists, panels, popups, and modals) mount after the screen, over whichever one shows.
+     * Host mode covers the loaded app with a lock and makes its screens and ordinary overlays inert, keeping alerts,
+     * the reload and terminal notices, and the lock's own control usable.
      *
      * Only the first dropped file is imported, through `importDroppedFile` (`.risup`/`.risupreset` a prompt preset,
      * `.risum` a module, anything else a character card), and a drag that started inside the app
@@ -85,6 +89,7 @@
 
     let aprilFools = $state(new Date().getMonth() === 3 && new Date().getDate() === 1);
     let aprilFoolsPage = $state(0);
+    const locked = $derived($hostMode && $loadedStore);
     /** The selected chat's memory run: a chat switch shows another chat's run without a new notice. */
     const memoryProgress = $derived(memoryProgressFor($memoryProgressStore, currentChatRef()));
     const memoryProgressShown = $derived(
@@ -98,6 +103,7 @@
     });
 
     const getMainDropEffect = (e: DragEvent): DataTransfer["dropEffect"] => {
+        if (locked) return "none";
         const types = Array.from(e.dataTransfer?.types ?? []);
         if (types.includes(RISU_SIDEBAR_DRAG_TYPE)) {
             return "none";
@@ -124,6 +130,10 @@
     }}
     ondragstart={markAppInternalDrag}
     ondrop={async (e) => {
+        if (locked) {
+            e.preventDefault();
+            return;
+        }
         const types = Array.from(e.dataTransfer.types ?? []);
         if (types.includes(RISU_APP_INTERNAL_DRAG_TYPE) || types.includes(RISU_SIDEBAR_DRAG_TYPE)) {
             e.preventDefault();
@@ -150,231 +160,244 @@
         }
     }}
 >
-    {#if aprilFools}
-        <div class="bg-[#212121] w-full h-screen min-h-screen text-black flex relative">
-            <div class="w-full max-w-3xl mx-auto py-8 px-4 flex justify-center items-center">
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <div class="flex flex-col w-full items-center text-[#bbbbbb]">
-                    {#if aprilFoolsPage === 0}
-                        <h1 class="text-3xl text-white font-bold mb-6">What can I help you?</h1>
-                        <div
-                            class="resize-none relative w-full bg-[#303030] rounded-3xl h-[110px] mb-6 text-[#bbbbbb]"
-                            placeholder="Ask me"
-                            onkeydown={(e) => {
-                                if (e.key === "Enter") {
-                                    aprilFoolsPage = 1;
-                                }
-                            }}
-                        >
-                            <textarea
-                                class="absolute top-0 left-0 w-full placeholder-[#bbbbbb] rounded-3xl h-full p-4 bg-transparent resize-none"
-                                placeholder="Ask me"></textarea>
-                            <div class="absolute bottom-2 left-4 flex gap-1.5">
-                                <button class="p-2 rounded-full border border-[#bbbbbb30]">
-                                    <PlusIcon size={18} color="#bbbbbb" />
-                                </button>
-                                <button class="p-2 rounded-full border border-[#bbbbbb30]">
-                                    <GlobeIcon size={18} color="#bbbbbb" />
-                                </button>
-                            </div>
-                            <div class="absolute bottom-2 right-4 flex">
-                                <button class="p-2 rounded-full bg-[#bbbbbb]">
-                                    <ArrowUpIcon size={18} color="#00000080" />
-                                </button>
-                            </div>
-                        </div>
-                        <!-- svelte-ignore a11y_click_events_have_key_events -->
-                        <div
-                            class="flex gap-1.5"
-                            onclick={() => {
-                                aprilFoolsPage = 1;
-                            }}
-                        >
-                            <button class="rounded-full border border-[#bbbbbb15] px-4 py-2">
-                                <span class="text-[#bbbbbb]">🔍</span>
-                                Search
-                            </button>
-                            <button class="rounded-full border border-[#bbbbbb15] px-4 py-2">
-                                <span class="text-[#bbbbbb]">🎮</span>
-                                Games
-                            </button>
-                            <button class="rounded-full border border-[#bbbbbb15] px-4 py-2">
-                                <span class="text-[#bbbbbb]">🎨</span>
-                                Roleplay
-                            </button>
-                            <button class="rounded-full border border-[#bbbbbb15] px-4 py-2"> More </button>
-                        </div>
-                    {:else}
-                        <h1 class="text-3xl text-white font-bold mb-6">We do not have search results.</h1>
-                        <p class="text-[#bbbbbb] mb-6">
-                            <!-- svelte-ignore a11y_missing_attribute -->
-                            <!-- svelte-ignore a11y_click_events_have_key_events -->
-                            <a
-                                class="text-blue-500 cursor-pointer"
-                                onclick={() => {
-                                    aprilFoolsPage = 0;
-                                    aprilFools = false;
+    <div class="contents" inert={locked}>
+        {#if aprilFools}
+            <div class="bg-[#212121] w-full h-screen min-h-screen text-black flex relative">
+                <div class="w-full max-w-3xl mx-auto py-8 px-4 flex justify-center items-center">
+                    <!-- svelte-ignore a11y_no_static_element_interactions -->
+                    <div class="flex flex-col w-full items-center text-[#bbbbbb]">
+                        {#if aprilFoolsPage === 0}
+                            <h1 class="text-3xl text-white font-bold mb-6">What can I help you?</h1>
+                            <div
+                                class="resize-none relative w-full bg-[#303030] rounded-3xl h-[110px] mb-6 text-[#bbbbbb]"
+                                placeholder="Ask me"
+                                onkeydown={(e) => {
+                                    if (e.key === "Enter") {
+                                        aprilFoolsPage = 1;
+                                    }
                                 }}
                             >
-                                Go to Risuai
-                            </a>
-                        </p>
-                    {/if}
+                                <textarea
+                                    class="absolute top-0 left-0 w-full placeholder-[#bbbbbb] rounded-3xl h-full p-4 bg-transparent resize-none"
+                                    placeholder="Ask me"></textarea>
+                                <div class="absolute bottom-2 left-4 flex gap-1.5">
+                                    <button class="p-2 rounded-full border border-[#bbbbbb30]">
+                                        <PlusIcon size={18} color="#bbbbbb" />
+                                    </button>
+                                    <button class="p-2 rounded-full border border-[#bbbbbb30]">
+                                        <GlobeIcon size={18} color="#bbbbbb" />
+                                    </button>
+                                </div>
+                                <div class="absolute bottom-2 right-4 flex">
+                                    <button class="p-2 rounded-full bg-[#bbbbbb]">
+                                        <ArrowUpIcon size={18} color="#00000080" />
+                                    </button>
+                                </div>
+                            </div>
+                            <!-- svelte-ignore a11y_click_events_have_key_events -->
+                            <div
+                                class="flex gap-1.5"
+                                onclick={() => {
+                                    aprilFoolsPage = 1;
+                                }}
+                            >
+                                <button class="rounded-full border border-[#bbbbbb15] px-4 py-2">
+                                    <span class="text-[#bbbbbb]">🔍</span>
+                                    Search
+                                </button>
+                                <button class="rounded-full border border-[#bbbbbb15] px-4 py-2">
+                                    <span class="text-[#bbbbbb]">🎮</span>
+                                    Games
+                                </button>
+                                <button class="rounded-full border border-[#bbbbbb15] px-4 py-2">
+                                    <span class="text-[#bbbbbb]">🎨</span>
+                                    Roleplay
+                                </button>
+                                <button class="rounded-full border border-[#bbbbbb15] px-4 py-2"> More </button>
+                            </div>
+                        {:else}
+                            <h1 class="text-3xl text-white font-bold mb-6">We do not have search results.</h1>
+                            <p class="text-[#bbbbbb] mb-6">
+                                <!-- svelte-ignore a11y_missing_attribute -->
+                                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                                <a
+                                    class="text-blue-500 cursor-pointer"
+                                    onclick={() => {
+                                        aprilFoolsPage = 0;
+                                        aprilFools = false;
+                                    }}
+                                >
+                                    Go to Risuai
+                                </a>
+                            </p>
+                        {/if}
+                    </div>
                 </div>
-            </div>
-            <span class="absolute top-4 left-4 font-bold text-[#bbbbbb] text-md md:text-lg"
-                >RisyGTP 9+ Mytho Ultra Free</span
-            >
-        </div>
-    {:else if !$loadedStore}
-        <div class="w-full h-full flex justify-center items-center text-textcolor text-xl bg-gray-900 flex-col">
-            <div class="flex flex-row items-center">
-                <svg
-                    class="animate-spin -ml-1 mr-3 h-5 w-5 text-textcolor"
-                    xmlns="http://www.w3.org/2000/svg"
-                    fill="none"
-                    viewBox="0 0 24 24"
+                <span class="absolute top-4 left-4 font-bold text-[#bbbbbb] text-md md:text-lg"
+                    >RisyGTP 9+ Mytho Ultra Free</span
                 >
-                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-                </svg>
-                <span>Loading...</span>
             </div>
+        {:else if !$loadedStore}
+            <div class="w-full h-full flex justify-center items-center text-textcolor text-xl bg-gray-900 flex-col">
+                <div class="flex flex-row items-center">
+                    <svg
+                        class="animate-spin -ml-1 mr-3 h-5 w-5 text-textcolor"
+                        xmlns="http://www.w3.org/2000/svg"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                    >
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"
+                        ></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                        ></path>
+                    </svg>
+                    <span>Loading...</span>
+                </div>
 
-            <span class="text-sm mt-2 text-textcolor2">{LoadingStatusState.text}</span>
-        </div>
-    {:else if $settingsOpen}
-        <Settings />
-    {:else}
-        {#if $gridOpenStore}
-            <GridChars
-                endGrid={() => {
-                    $gridOpenStore = false;
-                }}
-            />
+                <span class="text-sm mt-2 text-textcolor2">{LoadingStatusState.text}</span>
+            </div>
+        {:else if $settingsOpen}
+            <Settings />
         {:else}
-            {#if !$DynamicGUI}
-                <Sidebar
-                    openGrid={() => {
-                        $gridOpenStore = true;
+            {#if $gridOpenStore}
+                <GridChars
+                    endGrid={() => {
+                        $gridOpenStore = false;
                     }}
-                    hidden={!$sideBarStore}
                 />
             {:else}
-                <div
-                    class="top-0 w-full h-full left-0 z-30 flex flex-row items-center"
-                    class:fixed={$sideBarStore}
-                    class:hidden={!$sideBarStore}
-                >
-                    <!-- svelte-ignore a11y_click_events_have_key_events -->
+                {#if !$DynamicGUI}
                     <Sidebar
                         openGrid={() => {
                             $gridOpenStore = true;
                         }}
-                        hidden={false}
+                        hidden={!$sideBarStore}
                     />
-                </div>
+                {:else}
+                    <div
+                        class="top-0 w-full h-full left-0 z-30 flex flex-row items-center"
+                        class:fixed={$sideBarStore}
+                        class:hidden={!$sideBarStore}
+                    >
+                        <!-- svelte-ignore a11y_click_events_have_key_events -->
+                        <Sidebar
+                            openGrid={() => {
+                                $gridOpenStore = true;
+                            }}
+                            hidden={false}
+                        />
+                    </div>
+                {/if}
+                <ChatScreen />
             {/if}
-            <ChatScreen />
         {/if}
-    {/if}
+    </div>
     {#if $alertStore.type !== "none"}
         <AlertComp />
     {/if}
-    <RefusedDataBanner form="app" />
+    {#if locked}
+        <RemoteHostScreen />
+    {/if}
+    <div class="contents" inert={locked}>
+        <RefusedDataBanner form="app" />
+    </div>
     <ReloadNotice />
-    <HandoffStatus />
+    <div class="contents" inert={locked}>
+        <HandoffStatus />
+    </div>
     <TerminalNotice />
-    {#if $loadedStore}
-        <PushPrompt />
-    {/if}
-    {#if $showRealmInfoStore}
-        <RealmPopUp bind:openedData={$showRealmInfoStore} />
-    {/if}
-    <!-- Before the picker lists: a list opened from the binding dialog's rows paints on top of it. -->
-    {#if $chatBindingDialog}
-        <ChatBindingDialog
-            chatRef={$chatBindingDialog}
-            close={() => {
-                $chatBindingDialog = null;
-            }}
-        />
-    {/if}
-    {#if $chatCheckpointsDialog}
-        {#key `${$chatCheckpointsDialog.chaId}\u0000${$chatCheckpointsDialog.chatId}`}
-            <ChatCheckpointsDialog
-                chatRef={$chatCheckpointsDialog}
+    <div class="contents" inert={locked}>
+        {#if $loadedStore}
+            <PushPrompt />
+        {/if}
+        {#if $showRealmInfoStore}
+            <RealmPopUp bind:openedData={$showRealmInfoStore} />
+        {/if}
+        <!-- Before the picker lists: a list opened from the binding dialog's rows paints on top of it. -->
+        {#if $chatBindingDialog}
+            <ChatBindingDialog
+                chatRef={$chatBindingDialog}
                 close={() => {
-                    $chatCheckpointsDialog = null;
+                    $chatBindingDialog = null;
                 }}
             />
-        {/key}
-    {/if}
-    {#if $openPresetList}
-        <Botpreset
-            chatRef={typeof $openPresetList === "object" ? $openPresetList.chatRef : undefined}
-            close={() => {
-                $openPresetList = false;
-            }}
-        />
-    {/if}
-    {#if $openModelPresetList}
-        <Botpreset
-            kind="model"
-            chatRef={typeof $openModelPresetList === "object" ? $openModelPresetList.chatRef : undefined}
-            close={() => {
-                $openModelPresetList = false;
-            }}
-        />
-    {/if}
-    {#if $openPersonaList}
-        <ListedPersona
-            chatRef={typeof $openPersonaList === "object" ? $openPersonaList.chatRef : undefined}
-            close={() => {
-                $openPersonaList = false;
-            }}
-        />
-    {/if}
-    <!-- After the picker lists: a stop can arrive while one is open, and its dialog paints on top. Keyed: one
-         instance per request. -->
-    {#if $loreBudgetStopDialog}
-        {#key $loreBudgetStopDialog}
-            <LoreBudgetStopDialog request={$loreBudgetStopDialog} />
-        {/key}
-    {/if}
-    {#if $bookmarkListOpen}
-        <BookmarkList />
-    {/if}
-    <!-- Always mounted: it keeps its query and results across a close (it renders only while open). -->
-    {#if $loadedStore}
-        <OocPanel />
-        <MessageSearch />
-    {/if}
-    <!-- The selected chat's memory: shown once that chat is loaded. -->
-    {#if $hypaV3ModalOpen && selectedChat()}
-        {#if chatMemoryAlgorithm(chatMemorySettings(), selectedChat()) === STRUCTURED_MEMORY_ALGORITHM}
-            <StructuredMemoryPanel />
-        {:else}
-            <HypaV3Modal />
         {/if}
-    {/if}
-    <SavePopupIconComp />
-    <!-- The selected chat's own memory run, else the legacy overlay. -->
-    {#if memoryProgressShown}
-        <HypaV3Progress entry={memoryProgress} />
-    {/if}
-    {#if $loadedStore}
-        <GenerationProgressWindow {memoryProgressShown} />
-    {/if}
-    {#if popupStore.children}
-        <PopupList />
-    {/if}
-    {#if popUpEditorStore.open}
-        {#key popUpEditorStore.sessionId}
-            <PopupEditor />
-        {/key}
-    {/if}
-    {#if irisStore.open}
-        <IrisModal />
-    {/if}
+        {#if $chatCheckpointsDialog}
+            {#key `${$chatCheckpointsDialog.chaId}\u0000${$chatCheckpointsDialog.chatId}`}
+                <ChatCheckpointsDialog
+                    chatRef={$chatCheckpointsDialog}
+                    close={() => {
+                        $chatCheckpointsDialog = null;
+                    }}
+                />
+            {/key}
+        {/if}
+        {#if $openPresetList}
+            <Botpreset
+                chatRef={typeof $openPresetList === "object" ? $openPresetList.chatRef : undefined}
+                close={() => {
+                    $openPresetList = false;
+                }}
+            />
+        {/if}
+        {#if $openModelPresetList}
+            <Botpreset
+                kind="model"
+                chatRef={typeof $openModelPresetList === "object" ? $openModelPresetList.chatRef : undefined}
+                close={() => {
+                    $openModelPresetList = false;
+                }}
+            />
+        {/if}
+        {#if $openPersonaList}
+            <ListedPersona
+                chatRef={typeof $openPersonaList === "object" ? $openPersonaList.chatRef : undefined}
+                close={() => {
+                    $openPersonaList = false;
+                }}
+            />
+        {/if}
+        <!-- After the picker lists: a stop can arrive while one is open, and its dialog paints on top. Keyed: one
+         instance per request. -->
+        {#if $loreBudgetStopDialog}
+            {#key $loreBudgetStopDialog}
+                <LoreBudgetStopDialog request={$loreBudgetStopDialog} />
+            {/key}
+        {/if}
+        {#if $bookmarkListOpen}
+            <BookmarkList />
+        {/if}
+        <!-- Always mounted: it keeps its query and results across a close (it renders only while open). -->
+        {#if $loadedStore}
+            <OocPanel />
+            <MessageSearch />
+        {/if}
+        <!-- The selected chat's memory: shown once that chat is loaded. -->
+        {#if $hypaV3ModalOpen && selectedChat()}
+            {#if chatMemoryAlgorithm(chatMemorySettings(), selectedChat()) === STRUCTURED_MEMORY_ALGORITHM}
+                <StructuredMemoryPanel />
+            {:else}
+                <HypaV3Modal />
+            {/if}
+        {/if}
+        <SavePopupIconComp />
+        <!-- The selected chat's own memory run, else the legacy overlay. -->
+        {#if memoryProgressShown}
+            <HypaV3Progress entry={memoryProgress} />
+        {/if}
+        {#if $loadedStore}
+            <GenerationProgressWindow {memoryProgressShown} />
+        {/if}
+        {#if popupStore.children}
+            <PopupList />
+        {/if}
+        {#if popUpEditorStore.open}
+            {#key popUpEditorStore.sessionId}
+                <PopupEditor />
+            {/key}
+        {/if}
+        {#if irisStore.open}
+            <IrisModal />
+        {/if}
+    </div>
 </main>

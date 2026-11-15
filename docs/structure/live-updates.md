@@ -38,6 +38,10 @@ Identifiers the flows below name are not repeated here.
 - A same-epoch `hello` replaces feed locks before `reconcileRemote`; a different epoch [halts](#restore-halt). Refs
   reach the resource adapter, with chat bodies and summaries following [Chat live updates](#chat-live-updates). Handoff
   offers and presence go to `src/ts/network/handoff.ts`; socket resume/liveness is in `socketLiveness.ts`.
+- The registration carries the name, the worker preference, and `host` (Remote Host Mode,
+  [network jobs](network-jobs.md#generation-job-client)); a change of any of them registers again on the current
+  connection. Presence keeps `host` only when an entry carries it (an older server sends none). `feedConnected` is true
+  from a same-epoch `hello` until the connection retires or its epoch mismatches (the host lock screen shows it).
 - Running generation jobs: a same-epoch `hello`'s `generations` replaces the set (absent: empty), and a `generation`
   frame of the loaded epoch upserts or removes one job. The offset is the newest entry's `at` against the tab's clock;
   speed uses the samples' own `at`. Readers: the [progress window and the Stop-other ring](ui-theming.md#chat-screen).

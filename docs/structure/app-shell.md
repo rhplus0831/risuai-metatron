@@ -25,7 +25,10 @@
   before any app module loads, then `src/startApp.ts` `startApp` (mounts `App`, starts `loadData`, `initHotkey`).
 - `src/lib/Others/NodeServerRequired.svelte`: the notice without the self-host server, English only.
 - `src/App.svelte`: the screen selection ([Screen selection](#screen-selection)), the overlays, the drag/drop import,
-  and the one keep-alive controller.
+  and the one keep-alive controller. In Remote Host Mode (`hostMode`,
+  [network jobs](network-jobs.md#generation-job-client)) after load it mounts `src/lib/Others/RemoteHostScreen.svelte`
+  over the screen, which stays mounted, and makes the screen and the ordinary overlays `inert`; alerts, the reload and
+  terminal notices, and the lock stay usable, and a drop imports nothing.
 - `src/ts/keepAliveAudio.ts` `createKeepAliveAudio`: "Keep Session Alive: Via Sound"
   (`settings.ui.keepSessionAlive === "sound"`); its header documents the audio requirements.
 
@@ -71,6 +74,8 @@
   [chat bindings](persistence.md)), and the `quickSettings` key, which only shows `language.quickSettingsRemoved`. Alert
   key gating is in [global-api](global-api.md#alert-queue); picker/dialog priority is in
   [UI](ui-theming.md#dialogs-popovers-and-portals).
+- In Remote Host Mode `initHotkey` keeps only the dialog keys (Enter and Escape on an alert): no hotkey, no Ctrl+1..9,
+  no layer, settings, or grid close, and no triple-touch quick menu.
 - `shared/hotkeys.ts` `defaultHotkeys`, re-exported by `src/ts/defaulthotkeys.ts` with the `Hotkey` type of
   `shared/settings.ts`.
 - `src/ts/observer.svelte.ts` `startObserveDom`: the BGM markers (`risu-ctrl`, `BGM_STOP_GRACE_MS`) and the `x-hl-lang`

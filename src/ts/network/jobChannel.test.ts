@@ -228,6 +228,7 @@ let stores: Stores;
 let hooks: Hooks["pluginHooks"];
 let characterStore: CharacterStore;
 let records: Records;
+let remoteHost: typeof import("./remoteHost");
 /** The fixture's chats: character `c` with chat `k` (messages m1, m2). */
 const fixtureChats = (): typeof deps.chats => ({
     c: { chatPage: 0, chats: [{ id: "k", message: [{ chatId: "m1" }, { chatId: "m2" }] }] },
@@ -304,6 +305,7 @@ beforeAll(
 
 beforeEach(async () => {
     vi.resetModules();
+    localStorage.removeItem("risu-remote-host");
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "debug").mockImplementation(() => {});
@@ -335,6 +337,7 @@ beforeEach(async () => {
     stores.memoryProgressStore.set({ runs: {}, chats: {}, legacy: null });
     hooks = (await import("../plugins/pluginHooks")).pluginHooks;
     channel = await import("./jobChannel");
+    remoteHost = await import("./remoteHost");
     // The fixture: character `c` in the real records (its chats in the chat module's mock), shown
     // by the tab (the readers resolve it by `selection.characterId`).
     characterStore = await import("../storage/characterStore.svelte");
@@ -352,6 +355,8 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+    remoteHost.hostMode.set(false);
+    localStorage.removeItem("risu-remote-host");
     vi.clearAllTimers();
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -624,6 +629,36 @@ describe("notices and questions", () => {
         await pump();
         expect(deps.sayTTS).toHaveBeenCalledTimes(1);
         expect(deps.sayTTS.mock.calls[0][1]).toBe("hello");
+    });
+
+    it("host mode skips speech and completion notifications while still applying display notices", async () => {
+        const { settings } = await import("../storage/settingsViews.svelte");
+        settings.ui.notification = true;
+        const completion = {
+            chaId: "c",
+            chatId: "k",
+            title: "Risuai",
+            body: "Ann's message has been processed.",
+            url: "/chat/c/k",
+            tag: "risuai-chat-completion",
+        };
+        remoteHost.hostMode.set(true);
+        send(notice("tts", { chaId: "c", text: "hello" }));
+        send(notice("notification", completion));
+        send(notice("reloadDisplay"));
+        await vi.dynamicImportSettled();
+        await pump();
+        expect(deps.sayTTS).not.toHaveBeenCalled();
+        expect(deps.showCompletion).not.toHaveBeenCalled();
+        expect(get(stores.ReloadGUIPointer)).toBe(1);
+
+        remoteHost.hostMode.set(false);
+        send(notice("tts", { chaId: "c", text: "hello" }));
+        send(notice("notification", completion));
+        await vi.dynamicImportSettled();
+        await pump();
+        expect(deps.sayTTS).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ chaId: "c" }), "hello");
+        expect(deps.showCompletion).toHaveBeenCalledExactlyOnceWith(completion);
     });
 
     it("a notification notice shows the server's completion text through pushNotifications while the setting is on, and nothing asks for the permission here", async () => {

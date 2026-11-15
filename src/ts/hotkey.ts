@@ -38,6 +38,7 @@ import { createDialogKeyGate } from "./alertQueue";
 import { chatCheckpointsDialog, checkpointLoadBusy } from "./checkpoints/chatCheckpoints.svelte";
 import { topBindingLayer, type BindingLayer } from "./gui/dialogLayers";
 import { isImeComposing } from "./ime";
+import { hostMode } from "./network/remoteHost";
 
 /**
  * Document keyboard shortcuts, quick-menu touches and sidebar-drag scroll gestures installed by
@@ -54,6 +55,7 @@ import { isImeComposing } from "./ime";
  * - runs nothing behind the terminal notice or during IME composition;
  * - while a dialog is shown or queued, stops Escape at the document and runs no hotkey: only Enter and Escape answer
  *   the dialog;
+ * - in host mode, keeps those dialog keys but runs no shortcuts, preset changes or layer closing;
  * - while a checkpoint load runs with no dialog, swallows every key;
  * - with no alert up, closes the topmost picker list or chat dialog on Escape (`topBindingLayer`,
  *   `src/ts/gui/dialogLayers.ts`), also from a text field, except that an auto-repeated Escape does not answer
@@ -71,6 +73,40 @@ export function initHotkey() {
     window.addEventListener("keydown", (ev) => dialogKeys.keydown(ev), true);
     window.addEventListener("keyup", (ev) => dialogKeys.keyup(ev), true);
     window.addEventListener("blur", () => dialogKeys.reset());
+
+    function answerDialogKey(ev: KeyboardEvent, alertInput: HTMLInputElement | null) {
+        if (ev.key === "Escape" && alertStore.dialogVisible()) {
+            // The shown dialog closes with "" (its caller's dismissal); the toast says so once
+            // no other dialog waits.
+            if (dialogKeys.accepts(ev)) {
+                alertStore.answer("");
+                if (!alertStore.hasDialogs()) {
+                    alertToast("Alert Closed");
+                }
+            }
+            ev.preventDefault();
+        }
+        if (ev.key === "Enter" && alertStore.dialogVisible()) {
+            const shown = get(alertStore);
+            const alertType = shown.type;
+            if (ev.target instanceof Element && ev.target.closest("[data-alert-dialog] button")) {
+                // A new stroke activates the chosen button; a rejected one cannot click it natively.
+                if (!dialogKeys.accepts(ev)) {
+                    ev.preventDefault();
+                }
+            } else if (alertInput || alertType === "ask" || alertType === "normal" || alertType === "error") {
+                if (dialogKeys.accepts(ev)) {
+                    if (alertType === "ask") {
+                        alertStore.answerConfirm(true, shown);
+                    } else {
+                        alertStore.answer(alertInput ? alertInput.value : "yes", shown);
+                    }
+                }
+                ev.preventDefault();
+            }
+        }
+    }
+
     document.addEventListener("keydown", async (ev) => {
         // The terminal notice is a modal dialog with its own keys: no shortcut runs behind it.
         if (get(terminalNotice) !== null) {
@@ -80,6 +116,7 @@ export function initHotkey() {
             return;
         }
         const hasDialogs = alertStore.hasDialogs();
+        const hosting = get(hostMode);
         if (ev.key === "Escape" && hasDialogs) {
             // Panels underneath also listen on window; even a rejected Escape stays with the dialog.
             ev.preventDefault();
@@ -95,7 +132,7 @@ export function initHotkey() {
         }
         // Escape closes the topmost picker list or binding dialog also from a text field (a preset's
         // rename, or the composer that kept the focus); an alert above it closes first (below).
-        const bindingLayer = ev.key === "Escape" && !doingAlert() ? topBindingLayer() : null;
+        const bindingLayer = !hosting && ev.key === "Escape" && !doingAlert() ? topBindingLayer() : null;
         if (bindingLayer) {
             // Lore budget stops open one after another: a held Escape answers only the one it was
             // pressed on, and its repeats still go no further than this layer.
@@ -126,6 +163,11 @@ export function initHotkey() {
             isTextEntry(document.activeElement) &&
             !((alertInput || alertCheckbox) && (ev.key === "Enter" || ev.key === "Escape"))
         ) {
+            return;
+        }
+
+        if (hosting) {
+            answerDialogKey(ev, alertInput);
             return;
         }
 
@@ -356,14 +398,7 @@ export function initHotkey() {
             // Read before closing: a dialog (also one waiting for the gap) or a progress overlay.
             const hadAlert = doingAlert();
             if (alertStore.dialogVisible()) {
-                // The shown dialog closes with "" (its caller's dismissal); the toast says so once
-                // no other dialog waits.
-                if (dialogKeys.accepts(ev)) {
-                    alertStore.answer("");
-                    if (!alertStore.hasDialogs()) {
-                        alertToast("Alert Closed");
-                    }
-                }
+                answerDialogKey(ev, alertInput);
             } else if (!alertStore.hasDialogs() && get(alertStore).type === "progress") {
                 // A progress overlay is a status: the toast replaces it until its next update.
                 alertToast("Alert Closed");
@@ -380,24 +415,8 @@ export function initHotkey() {
             }
             ev.preventDefault();
         }
-        if (ev.key === "Enter" && alertStore.dialogVisible()) {
-            const shown = get(alertStore);
-            const alertType = shown.type;
-            if (ev.target instanceof Element && ev.target.closest("[data-alert-dialog] button")) {
-                // A new stroke activates the chosen button; a rejected one cannot click it natively.
-                if (!dialogKeys.accepts(ev)) {
-                    ev.preventDefault();
-                }
-            } else if (alertInput || alertType === "ask" || alertType === "normal" || alertType === "error") {
-                if (dialogKeys.accepts(ev)) {
-                    if (alertType === "ask") {
-                        alertStore.answerConfirm(true, shown);
-                    } else {
-                        alertStore.answer(alertInput ? alertInput.value : "yes", shown);
-                    }
-                }
-                ev.preventDefault();
-            }
+        if (ev.key === "Enter") {
+            answerDialogKey(ev, alertInput);
         }
     });
 
@@ -405,6 +424,7 @@ export function initHotkey() {
     let touchStartTime = 0;
     //check for triple touch
     document.addEventListener("touchstart", (ev) => {
+        if (get(hostMode)) return;
         touchs++;
         if (touchs > 2) {
             if (Date.now() - touchStartTime > 300) {

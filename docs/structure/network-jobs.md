@@ -51,6 +51,10 @@ The transport below retains this tab's in-memory log.
 - `src/ts/network/handoff.ts`: local preferences, offers, acceptance, presence and manual requests; module contract,
   `replaceHandoffOffers`, `receiveHandoffOffer`, `setHandoffWork`, `connectedClients`, `handoffTargets`, `handOffJob`.
   `src/lib/Others/HandoffStatus.svelte` renders worker progress.
+- `src/ts/network/remoteHost.ts`: Remote Host Mode, a device-local preference (`hostMode`, `localStorage`
+  `risu-remote-host`, built with `handoff.ts`'s `preference`) and the host's recent command list (`hostCommandLog`,
+  `noteHostCommand`, newest ten). The mode joins the feed registration as `host`. While it is on, `jobChannel.ts`
+  `applyEffect` skips the `tts` and `notification` notices (an unattended PC); the completion Web Push is unchanged.
 
 ### Job channel
 

@@ -3,6 +3,7 @@ import { settings, type PresetScope } from "../storage/settingsViews.svelte";
 import { setChannelCallSource } from "./channelCallSource";
 import { generationClientId, noteChannelCallbacks, reportCallbackDrained } from "./generationJobs";
 import { get } from "svelte/store";
+import { hostMode } from "./remoteHost";
 import type { ChannelChunk, ChatResyncRequest, ReplyResyncRequest } from "../../../shared/jobs.ts";
 import type {
     CallbackFailure,
@@ -443,6 +444,7 @@ function applyEffect(jobId: string, notice: GenerationNotice) {
             return;
         }
         case "tts": {
+            if (get(hostMode)) return;
             const { chaId, text } = notice.payload;
             const character = characterList().find((entry) => entry?.chaId === chaId);
             if (character && character.type !== "group") {
@@ -451,6 +453,7 @@ function applyEffect(jobId: string, notice: GenerationNotice) {
             return;
         }
         case "notification":
+            if (get(hostMode)) return;
             // The permission is asked only from a click (`pushNotifications.ts`), never here.
             if (settings.ui.notification) {
                 void import("./pushNotifications")
