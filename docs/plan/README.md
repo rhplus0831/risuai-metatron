@@ -5,7 +5,7 @@ shipped behavior; [the archive](../archived-plan/README.md) indexes completed pl
 their last commit and path, and the [backlog](../README.md) holds what they left open.
 
 - [Remote Host](remote-host.md): a tab in host mode that other devices ask to send a message or reload its plugins.
-  Drafted and [audited](../reports/audits/plan-runner/remote-host-2026-11-15.md) on 2026-11-15; slices 1 to 6 have landed.
+  Drafted and [audited](../reports/audits/plan-runner/remote-host-2026-11-15.md) on 2026-11-15; all seven slices have landed.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive, following the archive's procedure for the plan's open items. Use `None`
