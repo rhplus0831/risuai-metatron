@@ -265,6 +265,8 @@ The transport below retains this tab's in-memory log.
 - A remote send ends uncertain whenever its state cannot be established (a status read that races the post, the sender's
   own feed down for 60 s, a host result after the end). The draft keeps its ids and the next Send re-posts the command.
   A Stop whose chat has left the list sends no generation cancel. Decision: Remote Host plan (slice 4).
+- A host whose command read reached the relay but whose answer was lost runs nothing and reports nothing: the command
+  stays `delivered` until the host's next registration notifies it again. Decision: Remote Host plan (slice 3).
 - A notification click whose route is `/` (a payload without a chat route, `safeRoute` in `public/sw.js`) focuses an
   existing window or opens `/` if none exists. Whether the enable button keeps its user activation when it waits behind
   a reconcile, and whether `navigator.serviceWorker.ready` names the old worker during an upgrade, are browser behaviors

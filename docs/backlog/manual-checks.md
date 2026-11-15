@@ -34,6 +34,7 @@ Checks that a finished plan left to a person, a device, a real provider, or a sc
 - [ ] **Generation Progress Window (3)**: at phone width (about 360px), the progress window starts as a pill, expands, and does not cover the chat header's buttons; with a memory run on the selected chat, the memory indicator and the window do not overlap and the memory indicator still expands and collapses.
 - [ ] **OOC Session (4, 5)**: on a phone (about 360px), the OOC panel fills the screen over the chat and the toggle settings popover fits; on a wide screen the panel sits beside the chat without a backdrop, Escape in the panel or the page closes it but Escape in the main composer does not, and Escape or a click outside closes only the settings popover.
 - [ ] **Input Hooks (2, 4, 5)**: at phone width (about 360px), the Input Hooks settings page (2); the draft box with the on-screen keyboard open and the composer's height after a long hook result (4); a long BTW result in its panel (5); a Korean IME (also the desktop Japanese IME) composing in the draft box when Enter is pressed (4).
+- [ ] **Remote Host**: a phone sending through a PC host whose screen turns off at once (the reply and the plugin's illustration are there on return), and the same with the host's window hidden for more than five minutes; the host closed (the send falls back, and with the fallback off the text returns); Stop from the phone before and after the host started the send, each followed by a Send right away; "Reload plugins" and "Reload page" from the phone after changing a plugin argument there (6); which device's value the illustration plugin's own "auto generate" switch takes on the host; how often a second device that accepts handoffs takes a host's job before the host attaches; Continue and in-place reroll from the phone through the host, and a Continue sent to a host tab not reloaded since the server update falling back on `unsupported` (7); at phone width (about 360px), the remote send settings and the composer's host line (5).
 
 ## iOS Safari and the Home Screen app
 
@@ -105,6 +106,7 @@ Two tabs, two browsers, or a dropped connection:
 - [ ] **Generation Progress Window (3, 4)**: a second browser or device lists the first one's job from its start with that client's name, opening the chat shows the Stop-other spinner in the stage color, and the row disappears at the end (3); with Half Streaming, the second device shows no partial text during the reply and the whole reply at the end (4).
 - [ ] **OOC Session (4)**: an answer's Markdown, code blocks, and display scripts render in the panel while it streams and once stored; a send in the main chat while an OOC answer streams; refresh shows the count of new messages and later questions carry no earlier exchange; attach chips feed the next question.
 - [ ] **OOC Session (4)**: a second browser or device shows the stored exchange once the answer ends.
+- [ ] **Remote Host (2)**: a plugin's full-screen UI (z-index 1000) stays under the host mode screen (`z-1050`) and cannot be reached while host mode is on.
 
 ## Real providers and external services
 
