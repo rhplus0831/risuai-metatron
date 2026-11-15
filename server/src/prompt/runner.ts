@@ -63,6 +63,7 @@ import {
 } from "../jobs/generationJobs.ts";
 import { logEvent } from "../diagnostics/log.ts";
 import { createOutputMeter } from "./outputMeter.ts";
+import { isTokenizerTextRefusal } from "./tokens.ts";
 import { isValidResourceId } from "../data/resourceStore.ts";
 import {
     admitProviderModels,
@@ -2309,12 +2310,17 @@ async function runSpeaker(arg: {
 
         // Auto-continue: the reply is closed and the next round continues it.
         let needsAutoContinue = false;
-        const resultTokens = (await services.tokenize(result)) + arg.usedContinueTokens;
+        let resultTokens: number | null = null;
+        try {
+            resultTokens = (await services.tokenize(result)) + arg.usedContinueTokens;
+        } catch (error) {
+            if (!isTokenizerTextRefusal(error)) throw error;
+        }
         setup.check();
-        if (db.autoContinueMinTokens > 0 && resultTokens < db.autoContinueMinTokens) {
+        if (resultTokens !== null && db.autoContinueMinTokens > 0 && resultTokens < db.autoContinueMinTokens) {
             needsAutoContinue = true;
         }
-        if (db.autoContinueChat && !isLastCharPunctuation(result)) {
+        if (resultTokens !== null && db.autoContinueChat && !isLastCharPunctuation(result)) {
             //if result doesn't end with punctuation or special characters, auto continue
             needsAutoContinue = true;
         }
@@ -2332,7 +2338,7 @@ async function runSpeaker(arg: {
             }
             return false;
         };
-        if (needsAutoContinue && roundLeft()) {
+        if (needsAutoContinue && resultTokens !== null && roundLeft()) {
             // The continue takes the reply over as a new generation (a resend this round's trigger
             // asked for is dropped with it, as the tab's recursion drops it).
             finalize();

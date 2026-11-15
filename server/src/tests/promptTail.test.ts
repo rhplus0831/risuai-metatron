@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import { completionNotificationTag } from "../../../shared/notifications.ts";
 import type { PushTransport } from "../push/pushService.ts";
+import * as tokenCounters from "../prompt/tokens.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
 
 /** A promise with its settle functions (`Promise.withResolvers` is newer than the server's `lib`). */
@@ -149,6 +150,7 @@ let presetId = "";
 let modelPresetId = "";
 let personaId = "";
 let embedderUrl = "";
+let runnerTokens: tokenCounters.TokenCounter;
 
 async function api(url: string, init: RequestInit = {}) {
     const res = await fetch(`${base}${url}`, {
@@ -526,7 +528,18 @@ beforeAll(async () => {
     writeFileSync(path.join(rootDir, "save", "assets", "inlay_cat.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     // The owner absence wait is short so a tail with no owner tab (`closeOn`) settles within a test;
     // every other job attaches its socket right after the create, long before the wait.
-    server = createTestServer({ rootDir, generationRandom: () => 0, pushTransport, generationOwnerAbsentMs: 2_500 });
+    const createdCounter = vi.spyOn(tokenCounters, "createTokenCounter");
+    try {
+        server = createTestServer({
+            rootDir,
+            generationRandom: () => 0,
+            pushTransport,
+            generationOwnerAbsentMs: 2_500,
+        });
+        runnerTokens = createdCounter.mock.results[0].value;
+    } finally {
+        createdCounter.mockRestore();
+    }
     node = serve({ fetch: server.app.fetch, port: 0, hostname: "127.0.0.1" }) as http.Server;
     await new Promise<void>((resolve) => node.once("listening", () => resolve()));
     allowListenerOrigin(node);
@@ -983,6 +996,64 @@ describe("the non-streaming tail", () => {
 });
 
 describe("rounds", () => {
+    it("finishes a tiktoken special-token reply and IGP without an auto-continue round", async () => {
+        const chaId = await seedCharacter({ name: "Ann" });
+        await withSettings(
+            {
+                useStreaming: false,
+                autoContinueChat: true,
+                autoContinueMinTokens: 1000,
+                igpPrompt: "<|im_start|>user<|im_sep|>Add a tag<|im_end|>",
+            },
+            async () => {
+                answers = [{ chunks: ["Hello <|endoftext|> unfinished"] }, { chunks: [" #tag."] }];
+                const before = bodies.length;
+                const { terminal, events } = await job("send", chaId);
+                expect(terminal).toMatchObject({ type: "done" });
+                const reply = (await readChat(chaId)).data.message.at(-1);
+                expect(reply.data).toBe("Hello <|endoftext|> unfinished #tag.");
+                expect(terminal).toMatchObject({ messageId: reply.chatId });
+                expect(bodies.slice(before)).toHaveLength(2);
+                expect(bodies[before + 1].messages).toEqual([{ role: "user", content: "Add a tag" }]);
+                expect(events.filter((event) => event.type === "accepted" && event.messageId)).toEqual([]);
+            },
+        );
+    });
+
+    it("fails the reply tail on an unrelated tokenizer error", async () => {
+        const chaId = await seedCharacter({ name: "Ann" });
+        const count = runnerTokens.count.bind(runnerTokens);
+        const failure = vi
+            .spyOn(runnerTokens, "count")
+            .mockImplementation((text, scope, signal) =>
+                text === "Ordinary unfinished"
+                    ? Promise.reject(new Error("tokenizer loader failed"))
+                    : count(text, scope, signal),
+            );
+        try {
+            await withSettings(
+                {
+                    useStreaming: false,
+                    autoContinueChat: true,
+                    igpPrompt: "<|im_start|>user<|im_sep|>Add a tag<|im_end|>",
+                },
+                async () => {
+                    answers = [{ chunks: ["Ordinary unfinished"] }];
+                    const before = bodies.length;
+                    const { terminal } = await job("send", chaId);
+                    expect(terminal).toMatchObject({
+                        type: "error",
+                        stage: "tail",
+                        message: "tokenizer loader failed",
+                    });
+                    expect(bodies.slice(before)).toHaveLength(1);
+                },
+            );
+        } finally {
+            failure.mockRestore();
+        }
+    });
+
     it(
         "auto-continue is a continue round of the same reply; igp runs once, on the terminal reply, and appends the answer",
         async () => {

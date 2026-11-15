@@ -57,7 +57,7 @@ are the Plugins entry below.
 - [Plugins](#plugins): 1
 - [Rendering](#rendering): 1
 - [Selection](#selection): 1
-- [Server generation](#server-generation): 3
+- [Server generation](#server-generation): 2
 - [Structured Memory](#structured-memory): 1
 - [Test tooling](#test-tooling): 2
 
@@ -170,20 +170,6 @@ for the length of the count.
 it to a worker thread." A size refusal before encoding at the shared gateway (`tokenizers/index.ts:19`) is the cheap
 bound; it was offered and not taken, since it also refuses legitimate large text. An exact count of a large text
 needs the encode off the serving thread, which is the worker design.
-
-### A reply containing a tokenizer special token can fail the job at the auto-continue count
-
-The tail of `runPromptSend` awaits `services.tokenize(result)` for the auto-continue decision
-(`server/src/prompt/runner.ts:2244`). That is `tokenize` in `server/src/lua/bindings.ts:711`, which calls
-`deps.tokens.count` with no refusal handling, and `cl100k_base` and `o200k_base` throw on a text containing one of their
-special tokens (`isTokenizerTextRefusal`, `server/src/prompt/tokens.ts:67`). Found 2026-11-14 by the challenger of the
-Generation Progress Window run's slice 2; read, not run.
-
-**Why it matters:** a model reply that contains `<|endoftext|>` (or a `<|fim_...|>` token for `cl100k_base`) on an
-OpenAI-family tokenizer is stored, then the job ends with an error terminal and skips the rest of the tail.
-
-**Suggested handling:** reproduce with a mock reply first; then treat a refusal at that count as the route does
-(`null`, or a count without the special tokens) instead of failing the job.
 
 ### A streamed `OobaLegacy` reply is stored as its first character
 
