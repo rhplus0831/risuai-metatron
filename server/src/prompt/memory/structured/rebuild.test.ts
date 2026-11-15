@@ -938,6 +938,26 @@ it("replaces standing greeting-only events with their marks and retains retracti
     expect(messageOnly?.remove?.events).toEqual([]);
 });
 
+it("replaces a covered mixed event only after the greeting is gone and still carries greeting-only events", () => {
+    const greeting = { fmIndex: -1, hash: greetingSourceHash("Welcome") };
+    const live = {
+        pages: [],
+        threads: [],
+        events: [event("mixed", ["a1"], { greeting }), event("greeting-only", [], { greeting })],
+    };
+    const replacement = event("replacement", ["a1"]);
+    const staged = { pages: [], threads: [], events: [replacement] };
+    const { createdRevision, ...written } = replacement;
+
+    const removedGreeting = rebuildChanges("rebuild", live, staged, [], false);
+    expect(removedGreeting?.events).toEqual([written]);
+    expect(removedGreeting?.remove?.events).toEqual(["mixed"]);
+
+    const presentGreeting = rebuildChanges("rebuild", live, staged, [], true);
+    expect(presentGreeting?.events).toEqual([written]);
+    expect(presentGreeting?.remove?.events).toEqual([]);
+});
+
 it("charges greeting UTF-8 bytes once and a greeting-only backfill call without adding a message", async () => {
     const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
     const store = createResourceStore({ file: ":memory:", kinds });

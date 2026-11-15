@@ -4139,6 +4139,37 @@ describe("structured memory tasks", () => {
         expect(contents(t)).toEqual(held);
     });
 
+    it("uses the owner's current greeting at the rebuild swap after the last staged commit", async () => {
+        const t = structuredHarness({
+            structuredWriter: async (call) => {
+                const staged = t.store.memory.rebuild.staged;
+                expect(
+                    call.commit(staged.readContents("c", "k1")!.revision, recordedWindow("replacement", call)).outcome,
+                ).toBe("committed");
+                t.updateOwner((owner) => ({ ...owner, firstMessage: "" }));
+                return { outcome: "recorded" };
+            },
+        });
+        const greeting = writerGreeting({ firstMessage: GREETING }, t.chat("k1"))!;
+        const sources = t
+            .chat("k1")!
+            .message.slice(0, 2)
+            .map((message, index) => ({
+                messageId: message.chatId!,
+                index,
+                hash: messageSourceHash(message),
+            }));
+        writeMemory(t.store, "c", "k1", { events: [{ ...event("mixed", sources), greeting: greeting.source }] });
+        const input = beginStagedRun(t, "rebuild", [["m1", "m2"]]);
+        const terminal = t.nextTerminal("k1");
+
+        expect(t.service.rebuild(input).outcome).toBe("queued");
+        expect((await terminal).status).toMatchObject({ state: "done", reason: "rebuilt" });
+        await t.service.drain();
+        expect(contents(t).events.map(({ id }) => id)).toEqual(["replacement"]);
+        expect(eventRecord(t).sources).toEqual(sources);
+    });
+
     it("rechecks the adoption hold at the swap after the last staged commit", async () => {
         const t = structuredHarness({
             structuredWriter: async (call) => {

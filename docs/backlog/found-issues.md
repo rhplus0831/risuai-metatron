@@ -58,7 +58,6 @@ are the Plugins entry below.
 - [Rendering](#rendering): 1
 - [Selection](#selection): 1
 - [Server generation](#server-generation): 1
-- [Structured Memory](#structured-memory): 1
 - [Test tooling](#test-tooling): 2
 
 ## Chat store
@@ -170,16 +169,6 @@ for the length of the count.
 it to a worker thread." A size refusal before encoding at the shared gateway (`tokenizers/index.ts:19`) is the cheap
 bound; it was offered and not taken, since it also refuses legitimate large text. An exact count of a large text
 needs the encode off the serving thread, which is the worker design.
-
-## Structured Memory
-
-### A rebuild after the greeting was emptied keeps a mixed greeting event beside its replacement
-
-`rebuildChanges` replaces a live event only when the staged events cite every message it cites and, when it cites the greeting, when some staged event also cites a greeting (`greetingRecorded`, `server/src/prompt/memory/structured/rebuild.ts:569`, used at `:577`). A rebuild plans no greeting when `memoryChatGreeting` finds none (`shared/structuredMemory.ts:328`: an empty greeting, a group, or a reset). So when the card's greeting was emptied after an event recorded it with messages, the rebuild re-cites those messages, cannot re-cite the greeting, and carries the old event as well: two active events cover the same messages. Found 2026-11-14 by the plan-runner orchestrator while verifying the Structured Memory Greeting Source plan's slice 3 (`db551febc`); read, not run. A greeting-only event has the same rule but no duplicate, since nothing else cites its messages.
-
-**Why it matters:** the duplicated event is sent twice in memory and its trust marks are copied onto the replacement, so a person sees two events for one stretch of the chat until they retract one.
-
-**Suggested handling:** reproduce with a `rebuildChanges` test (a live `{ greeting, m1 }` event, staged events citing `m1` with no greeting); then waive the greeting condition when the chat has no current greeting, as the greeting it cited no longer exists to cover.
 
 ## Test tooling
 

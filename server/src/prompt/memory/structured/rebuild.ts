@@ -70,7 +70,8 @@ import type { WriterMemory } from "./writer.ts";
  * - What a rebuild keeps: a person's work is seeded at the start (`rebuildSeed`), so the writer sees those
  *   pages and a lock binds it. No event is seeded: carrying is decided at the swap (`rebuildChanges`), so a
  *   retraction that lands during the run counts, and the writer reads only what the run wrote. Replacement
- *   requires staged citations for every message and any greeting; shared greetings also carry trust marks.
+ *   requires staged citations for every message and any greeting still present; greeting-only events
+ *   still require a staged greeting. Shared greetings also carry trust marks.
  * - A fresh rebuild seeds nothing and its swap removes every live record, so only the adoption lineage
  *   crosses it: with none kept, an adopted chat's stored summaries would stop being resettable.
  * - A backfill stands behind records that already exist, so each of its windows is a historical write
@@ -508,7 +509,8 @@ function swappedEvent(
  * read once in the run's life.
  *
  * A rebuild replaces a live event only when it is not retracted, cites something, and every cited message
- * and any cited greeting is cited by staged events: a replacement committed for everything it said.
+ * and any cited greeting is cited by staged events, unless it also cites messages and the chat no longer
+ * has a greeting: a replacement committed for everything of its sources that remains.
  * Any other is carried as it is, including every retracted event and an adopted summary whose sources
  * are gone, disabled, past the plan, or absent. Each staged event takes the marks of every standing live event
  * it shares a message or greeting with, carried ones included, so rebuilding what survives of a suppressed
@@ -538,6 +540,7 @@ export function rebuildChanges(
     live: MemoryRecordSet & { contents?: Pick<MemoryContents, "trash"> },
     staged: MemoryRecordSet,
     folds: readonly MemoryEvent[] = [],
+    hasCurrentGreeting = true,
 ): MemoryChanges | null {
     if (staged.events.length === 0 && (mode !== "backfill" || folds.length === 0)) {
         return null;
@@ -574,7 +577,7 @@ export function rebuildChanges(
             event.status !== "retracted" &&
             (ids.length > 0 || greeting) &&
             ids.every((id) => cited.has(id)) &&
-            (!greeting || greetingRecorded)
+            (!greeting || greetingRecorded || (!hasCurrentGreeting && ids.length > 0))
         );
     });
     const greetingEvents = live.events.filter((event) => storedMemoryGreeting(event.greeting) !== null);

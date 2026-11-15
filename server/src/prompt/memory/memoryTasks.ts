@@ -26,6 +26,7 @@ import type { SerializableHypaV3Data } from "../../../../shared/memory.ts";
 import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../../shared/resources.ts";
 import {
     type MemoryEvent,
+    memoryChatGreeting,
     normalizeStructuredMemorySettings,
     STRUCTURED_MEMORY_ALGORITHM,
     structuredMemoryEmbeddingLanes,
@@ -1298,8 +1299,8 @@ export function createMemoryTasks(deps: {
             return;
         }
         let folds: MemoryEvent[] = [];
+        const chat = store.readChatSource(chaId, chatId).data as Chat | null;
         if (mode === "backfill") {
-            const chat = store.readChatSource(chaId, chatId).data as Chat | null;
             if (chat) {
                 const { screening, omitUserMessages } = store.memory.readWriterSettings(chat.memoryPresetId);
                 if (omitUserMessages) {
@@ -1312,7 +1313,14 @@ export function createMemoryTasks(deps: {
                 }
             }
         }
-        const changes = rebuildChanges(mode, stored, staged, folds);
+        const changes = rebuildChanges(
+            mode,
+            stored,
+            staged,
+            folds,
+            memoryChatGreeting(store.get(charactersKind, chaId)?.data as character | groupChat | undefined, chat) !==
+                null,
+        );
         if (!changes) {
             endRunning(task, "skipped", { reason: "nothingRecorded" });
             return;
