@@ -1964,7 +1964,7 @@ export const languageEnglish = {
                 useHost: "Use",
                 noHosts: "No hosts connected.",
                 enabled: "Send through a remote host",
-                help: "The composer's Send and Send Draft go to the named host tab. Keep that tab open in Remote Host Mode. Other sends stay on this device.",
+                help: "The composer's Send and Send Draft, Continue, and a reroll of a single reply go to the named host tab. Keep that tab open in Remote Host Mode. Other sends stay on this device.",
                 hostName: "Host name",
                 hostHelp:
                     "Use the host browser's client name. The newest connected host tab with that name is used. You can also enter a host that is offline now.",

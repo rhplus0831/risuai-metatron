@@ -85,3 +85,15 @@
         </button>
     </div>
 </section>
+{#if $alertStore.type !== "none" && $alertStore.type !== "toast"}
+    <!-- An alert or a status overlay (1100) covers the control above, and a `wait` or `progress` one has no
+         button of its own: this copy stays above that layer, so the mode is one click from leaving. -->
+    <button
+        type="button"
+        data-remote-host-leave-over-alert
+        class="fixed right-3 top-3 z-1110 rounded-md border border-darkborderc bg-darkbg px-4 py-2 text-textcolor hover:bg-bgcolor"
+        onclick={() => hostMode.set(false)}
+    >
+        {language.serverJob.remoteHost.leave}
+    </button>
+{/if}
