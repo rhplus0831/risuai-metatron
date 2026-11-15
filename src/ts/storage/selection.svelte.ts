@@ -148,16 +148,7 @@ export function selectLoreBookPage(page: number) {
 // `selectedIndex()` is its index in the character list, tracked; a completed membership change of
 // the list that removes the selected character selects home (the records' hook below).
 
-const selectedListeners = new Set<(chaId: string) => void>();
 const changeListeners = new Set<() => void>();
-
-/** Registers a listener called when a tab selects a character (not home, not a reconciliation). */
-export function onCharacterSelected(listener: (chaId: string) => void): () => void {
-    selectedListeners.add(listener);
-    return () => {
-        selectedListeners.delete(listener);
-    };
-}
 
 /** Registers a listener called after every change of the selected character by `selectCharacter`, home included. */
 export function onCharacterSelectionChanged(listener: () => void): () => void {
@@ -180,16 +171,6 @@ export function selectCharacter(chaId: string | null) {
             for (const listener of [...changeListeners]) {
                 listener();
             }
-        }
-        if (!changed || id === null) {
-            return;
-        }
-        for (const listener of [...selectedListeners]) {
-            // A subscriber or an earlier listener selected again: this selection is no longer news.
-            if (selection.characterId !== id) {
-                return;
-            }
-            listener(id);
         }
     });
 }

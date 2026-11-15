@@ -969,25 +969,17 @@ describe("characters another writer created or deleted", () => {
         expect(fake.batchCount()).toBe(0);
     });
 
-    it("keeps the selected character after an earlier one is removed without running the selection's side effects", async () => {
+    it("keeps the selected character after an earlier one is removed without writing", async () => {
         const { fake, selection, characters } = await boot();
-        const selected: string[] = [];
-        const off = selection.onCharacterSelected((chaId) => selected.push(chaId));
-        try {
-            selection.selectCharacterAt(1);
-            // Selecting `d` is a selection: its listeners run once.
-            expect(selected).toEqual(["d"]);
-            const batches = fake.batchCount();
-            fake.store.delete(characterKind(fake), "c", fake.record("characters", "c")!.revision);
-            await settle(fake);
-            expect(selection.selectedIndex()).toBe(0);
-            expect(characters()[0].chaId).toBe("d");
-            // The index moved, the selection did not: no listener ran and nothing was written.
-            expect(selected).toEqual(["d"]);
-            expect(fake.batchCount()).toBe(batches);
-        } finally {
-            off();
-        }
+        selection.selectCharacterAt(1);
+        expect(selection.selection.characterId).toBe("d");
+        const batches = fake.batchCount();
+        fake.store.delete(characterKind(fake), "c", fake.record("characters", "c")!.revision);
+        await settle(fake);
+        expect(selection.selection.characterId).toBe("d");
+        expect(selection.selectedIndex()).toBe(0);
+        expect(characters()[0].chaId).toBe("d");
+        expect(fake.batchCount()).toBe(batches);
     });
 });
 

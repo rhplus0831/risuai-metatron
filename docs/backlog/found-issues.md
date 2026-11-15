@@ -56,7 +56,6 @@ are the Plugins entry below.
 - [Chat store](#chat-store): 1
 - [Plugins](#plugins): 1
 - [Rendering](#rendering): 1
-- [Selection](#selection): 1
 - [Server generation](#server-generation): 1
 
 ## Chat store
@@ -114,21 +113,6 @@ opens. No plugin and no low-level grant is needed.
 **Suggested handling:** the owner's decision, since it costs compatibility: dropping every import closes it and also
 stops cards that load web fonts this way; allowing only known font hosts (whose sheets hold `@font-face` rules) keeps
 most of those; loading and scoping the imported sheet is a larger change.
-
-## Selection
-
-### `onCharacterSelected` has no product listener left
-
-`onCharacterSelected` (`src/ts/storage/selection.svelte.ts:155`) lost its only product registration when the Per-Chat
-Memory plan's slice 1 (`ea39acfcb`) removed the `alwaysToggleOn` hook in `characterStore.svelte.ts`. Only tests
-register listeners now (`src/ts/storage/tests/characterRecords.test.ts`, the selection probe in
-`resourceSyncLive.test.ts`). No guide names it. Found 2026-11-12 during that slice.
-
-**Why it matters:** a dead extension point keeps its ordering contract (listeners run after the selection changes) and
-its tests with no caller to need them.
-
-**Suggested handling:** drop the function and the tests that only exercise it, or keep it with a module comment
-saying it is a deliberate hook.
 
 ## Server generation
 

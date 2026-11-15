@@ -21,7 +21,6 @@ import {
     trackedRecord,
 } from "../records.svelte";
 import {
-    onCharacterSelected,
     onCharacterSelectionChanged,
     selectCharacter,
     selectCharacterAt,
@@ -35,10 +34,9 @@ import { assembleChats, findChat } from "../chatStore.svelte";
 // directly. These are regressions for a raw merge after a local reorder or removal, orphaned wrappers
 // across a field patch and a whole replacement, a same-id local replacement with a held nested
 // wrapper, a repeated object at installation, the reset, a removal before the selected character,
-// the selection read inside its listener and a reentrant selection, and a removal inside a
-// `$derived`; and the contracts: per-character ownership (a value of A assigned into B is a copy), the
-// local-field policy on every trap, the list's structural refusals with nothing changed, and the
-// notification contract (`setCharacterWriteListener`). A refusal is checked for no side effect: the
+// and a removal inside a `$derived`; and the contracts: per-character ownership (a value of A assigned
+// into B is a copy), the local-field policy on every trap, the list's structural refusals with nothing
+// changed, and the notification contract (`setCharacterWriteListener`). A refusal is checked for no side effect: the
 // raw list text unchanged and no notification. The selection is by index through
 // `selectCharacterAt`/`selectedIndex` (there is no separate index store).
 
@@ -563,62 +561,6 @@ describe("the selection", () => {
         selectCharacterAt(1);
         removeCharacterRecords(["a"]);
         expect([selection.characterId, selectedIndex()]).toEqual(["b", 0]);
-    });
-
-    it("lets a selection listener read the new selection everywhere, and skips one superseded by a reentrant selection", () => {
-        initializeRecords({ characters: [character("a"), character("b"), character("c")] });
-        const reads: unknown[] = [];
-        const offRead = onCharacterSelected((chaId) => reads.push([chaId, selection.characterId, selectedIndex()]));
-        selectCharacter("b");
-        expect(reads).toEqual([["b", "b", 1]]);
-        // Selecting the same character again is no news.
-        selectCharacter("b");
-        expect(reads).toHaveLength(1);
-        offRead();
-
-        const heard: string[] = [];
-        const offHeard = onCharacterSelected((chaId) => heard.push(chaId));
-        let redirected = false;
-        // A change listener (they run before the selected listeners) that selects again.
-        const offRedirect = onCharacterSelectionChanged(() => {
-            if (selectedIndex() === 0 && !redirected) {
-                redirected = true;
-                selectCharacter("c");
-            }
-        });
-        selectCharacter("a");
-        expect(heard).toEqual(["c"]);
-        expect(selection.characterId).toBe("c");
-        expect(selectedIndex()).toBe(2);
-        offRedirect();
-        offHeard();
-
-        // A listener that selects again: the later listeners hear only the newer selection.
-        const order: string[] = [];
-        const offFirst = onCharacterSelected((chaId) => {
-            order.push(`first:${chaId}`);
-            if (chaId === "a") {
-                selectCharacter("b");
-            }
-        });
-        const offSecond = onCharacterSelected((chaId) => order.push(`second:${chaId}`));
-        selectCharacter("a");
-        expect(order).toEqual(["first:a", "first:b", "second:b"]);
-        expect(selectedIndex()).toBe(1);
-        offFirst();
-        offSecond();
-    });
-
-    it("tells the listeners of a tab's selection only, not of home or of a reconciliation", () => {
-        initializeRecords({ characters: [character("a"), character("b")] });
-        const heard: string[] = [];
-        const off = onCharacterSelected((chaId) => heard.push(chaId));
-        selectCharacter("a");
-        removeCharacterRecords(["a"]);
-        selectCharacter(null);
-        applyRawCharacter("n", { chaId: "n" });
-        expect(heard).toEqual(["a"]);
-        off();
     });
 
     it("completes a removal made inside a $derived, with the selection reconciled to home", () => {
