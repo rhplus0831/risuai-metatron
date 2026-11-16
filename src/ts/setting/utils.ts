@@ -31,6 +31,7 @@ import { modelSettingsItems } from "./modelSettingsData";
 import { promptSettingsItems } from "./promptSettingsData";
 import { voiceSettingsItems } from "./voiceSettingsData";
 import { storageSettingsItems } from "./storageSettingsData";
+import { deviceLinkSettingsItems } from "./deviceLinkSettingsData";
 
 /** Resolve a flat or dotted language key to a string; missing and non-string values have no label. */
 export function resolveLanguageText(source: unknown, key: string | undefined): string {
@@ -177,6 +178,7 @@ export function getFullSettingsData(searchTerm = "") {
         voiceSettingsItems,
         interactionSettingsItems,
         storageSettingsItems,
+        deviceLinkSettingsItems,
     );
 
     if (!searchTerm) return full;

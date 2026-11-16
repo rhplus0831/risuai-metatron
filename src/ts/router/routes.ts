@@ -1,5 +1,6 @@
 import {
     API_KEYS_SETTINGS_MENU,
+    DEVICE_LINK_SETTINGS_MENU,
     IMAGE_GENERATION_SETTINGS_MENU,
     INPUT_HOOKS_SETTINGS_MENU,
     INTERACTION_SETTINGS_MENU,
@@ -44,6 +45,7 @@ export const SETTINGS_PAGES = {
     accessibility: 11,
     modules: 14,
     plugins: 4,
+    "device-link": DEVICE_LINK_SETTINGS_MENU,
     user: 0,
     storage: STORAGE_SETTINGS_MENU,
     hotkeys: 15,

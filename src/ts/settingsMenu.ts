@@ -22,6 +22,8 @@ export const VOICE_SETTINGS_MENU = 20;
 export const TRANSLATION_SETTINGS_MENU = 21;
 /** The input hook list and its prompts and model choices (`InputHookSettings.svelte`). */
 export const INPUT_HOOKS_SETTINGS_MENU = 24;
+/** This browser's remote host, remote sending and job handoff controls (`DeviceLinkSettings.svelte`). */
+export const DEVICE_LINK_SETTINGS_MENU = 25;
 /** Chat input, message editing, and the menus and chat list (`InteractionSettings.svelte`). */
 export const INTERACTION_SETTINGS_MENU = 22;
 /** Disk usage, asset cleanup, and resource snapshots (`StorageSettings.svelte`). */

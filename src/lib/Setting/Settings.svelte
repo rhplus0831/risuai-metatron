@@ -15,6 +15,7 @@
         GlobeIcon,
         LanguagesIcon,
         MonitorIcon,
+        MonitorSmartphoneIcon,
         MousePointerClickIcon,
         CircleXIcon,
         KeyboardIcon,
@@ -56,6 +57,7 @@
         PROMPT_SETTINGS_MENU,
         TRANSLATION_SETTINGS_MENU,
         INPUT_HOOKS_SETTINGS_MENU,
+        DEVICE_LINK_SETTINGS_MENU,
         MEMORY_SETTINGS_MENU,
         IMAGE_GENERATION_SETTINGS_MENU,
         VOICE_SETTINGS_MENU,
@@ -68,6 +70,7 @@
     import TranslationSettings from "./Pages/TranslationSettings.svelte";
     import InputHookSettings from "./Pages/InputHookSettings.svelte";
     import InteractionSettings from "./Pages/InteractionSettings.svelte";
+    import DeviceLinkSettings from "./Pages/DeviceLinkSettings.svelte";
     import AccessibilitySettings from "./Pages/AccessibilitySettings.svelte";
     import PersonaSettings from "./Pages/PersonaSettings.svelte";
     import PromptSettings from "./Pages/PromptSettings.svelte";
@@ -129,6 +132,11 @@
                 },
                 { menus: [14], icon: PackageIcon, label: () => language.modules },
                 { menus: [4], icon: CodeIcon, label: () => language.plugin },
+                {
+                    menus: [DEVICE_LINK_SETTINGS_MENU],
+                    icon: MonitorSmartphoneIcon,
+                    label: () => language.deviceLink.title,
+                },
             ],
         },
         {
@@ -380,6 +388,8 @@
                         <InputHookSettings />
                     {:else if $SettingsMenuIndex === INTERACTION_SETTINGS_MENU}
                         <InteractionSettings />
+                    {:else if $SettingsMenuIndex === DEVICE_LINK_SETTINGS_MENU}
+                        <DeviceLinkSettings />
                     {:else if $SettingsMenuIndex === 11}
                         <AccessibilitySettings />
                     {:else if $SettingsMenuIndex === 12}

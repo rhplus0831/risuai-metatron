@@ -38,6 +38,7 @@ const PAGES: [number, string][] = [
     [11, "accessibility"],
     [14, "modules"],
     [4, "plugins"],
+    [25, "device link"],
     [0, "files"],
     [23, "storage"],
     [15, "hotkeys"],

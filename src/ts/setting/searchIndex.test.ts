@@ -47,6 +47,7 @@ import {
 } from "../storage/settingsViews.svelte";
 import { accessibilitySettingsSections } from "./accessibilitySettingsData";
 import { advancedSettingsSections } from "./advancedSettingsData";
+import { deviceLinkSettingsSections } from "./deviceLinkSettingsData";
 import { displaySettingsSections } from "./displaySettingsData.svelte";
 import { interactionSettingsSections } from "./interactionSettingsData";
 import { memorySettingsSections } from "./memorySettingsData";
@@ -61,6 +62,7 @@ import { getFullSettingsData } from "./utils";
 const ALL_SECTIONS = [
     ...accessibilitySettingsSections,
     ...interactionSettingsSections,
+    ...deviceLinkSettingsSections,
     ...advancedSettingsSections,
     ...storageSettingsSections,
     ...translationSettingsSections,

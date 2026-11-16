@@ -7,6 +7,11 @@ import {
     accessibilitySettingsSections,
 } from "./accessibilitySettingsData";
 import { advancedSettingsHeader, advancedSettingsItems, advancedSettingsSections } from "./advancedSettingsData";
+import {
+    deviceLinkSettingsHeader,
+    deviceLinkSettingsItems,
+    deviceLinkSettingsSections,
+} from "./deviceLinkSettingsData";
 import { displaySettingsItems, displaySettingsSections, displaySettingsTabs } from "./displaySettingsData.svelte";
 import {
     interactionSettingsHeader,
@@ -107,6 +112,13 @@ const PAGES: SectionedPage[] = [
         leaves: [accessibilitySettingsItems],
         header: accessibilitySettingsHeader,
         sections: accessibilitySettingsSections,
+    },
+    // The remote host and job handoff controls, moved from Display's notification section.
+    {
+        name: "deviceLink",
+        leaves: [deviceLinkSettingsItems],
+        header: deviceLinkSettingsHeader,
+        sections: deviceLinkSettingsSections,
     },
 ];
 

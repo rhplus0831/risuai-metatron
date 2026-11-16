@@ -6,6 +6,7 @@ import { matchText, prepareQuery, MATCH_SCORE, type PreparedQuery } from "../uti
 import { activeMainProfile } from "../storage/settingsViews.svelte";
 import {
     API_KEYS_SETTINGS_MENU,
+    DEVICE_LINK_SETTINGS_MENU,
     IMAGE_GENERATION_SETTINGS_MENU,
     INPUT_HOOKS_SETTINGS_MENU,
     INTERACTION_SETTINGS_MENU,
@@ -21,6 +22,7 @@ import { accessibilitySettingsHeader, accessibilitySettingsSections } from "./ac
 import { advancedSettingsHeader, advancedSettingsSections } from "./advancedSettingsData";
 import { allBasicParameterItems, modelParameterItems } from "./botSettingsParamsData";
 import { chatFormatSettingsItems } from "./chatFormatSettingsData";
+import { deviceLinkSettingsHeader, deviceLinkSettingsSections } from "./deviceLinkSettingsData";
 import { displaySettingsTabs } from "./displaySettingsData.svelte";
 import { interactionSettingsHeader, interactionSettingsSections } from "./interactionSettingsData";
 import { languageSettingsItems } from "./languageSettingsData.svelte";
@@ -144,6 +146,8 @@ placeItems(accessibilitySettingsHeader, { menu: 11 });
 placeSections(accessibilitySettingsSections, { menu: 11 });
 placeItems(interactionSettingsHeader, { menu: INTERACTION_SETTINGS_MENU });
 placeSections(interactionSettingsSections, { menu: INTERACTION_SETTINGS_MENU });
+placeItems(deviceLinkSettingsHeader, { menu: DEVICE_LINK_SETTINGS_MENU });
+placeSections(deviceLinkSettingsSections, { menu: DEVICE_LINK_SETTINGS_MENU });
 placeItems(advancedSettingsHeader, { menu: 6 });
 placeSections(advancedSettingsSections, { menu: 6 });
 placeItems(storageSettingsHeader, { menu: STORAGE_SETTINGS_MENU });
@@ -195,6 +199,7 @@ const PAGES: PageEntry[] = [
     { menu: INPUT_HOOKS_SETTINGS_MENU, label: (lang) => lang.inputHooks.title },
     { menu: 14, label: (lang) => lang.modules },
     { menu: 4, label: (lang) => lang.plugin },
+    { menu: DEVICE_LINK_SETTINGS_MENU, label: (lang) => lang.deviceLink.title },
     { menu: 3, label: (lang) => lang.display },
     { menu: INTERACTION_SETTINGS_MENU, label: (lang) => lang.interactionSettings },
     { menu: 11, label: (lang) => lang.accessibility },

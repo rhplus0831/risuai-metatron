@@ -66,7 +66,7 @@ Each module's rules are in its header or on its exports, and each component's in
 - An item's id prefix names the page it came from, not the page it sits on: search the id before assuming its page
   (`acc.`, `adv.`, and `display.` ids sit on several pages).
 - Page data:
-  `src/ts/setting/{accessibility,interaction,advanced,storage,translation,chatFormat,memory,voice}SettingsData.ts`.
+  `src/ts/setting/{accessibility,interaction,advanced,storage,translation,chatFormat,memory,voice,deviceLink}SettingsData.ts`.
 - `src/ts/setting/displaySettingsData.svelte.ts` (Display's tabs and sections, `requestDisplayTab`,
   `takeRequestedDisplayTab`); `src/ts/setting/modelSettingsData.ts` and `src/ts/setting/promptSettingsData.ts` (global
   items below the Model and Prompt pages' handwritten controls); `src/ts/setting/botSettingsParamsData.ts`
@@ -100,16 +100,17 @@ Each module's rules are in its header or on its exports, and each component's in
 
 ### Pages
 
-These live in `src/lib/Setting/Pages/`. `Display/HandoffToggles.svelte` edits device stores in
-`src/ts/network/handoff.ts`, using `serverJob.handoff` strings; its custom registry item belongs to the notification
-section. `Display/RemoteHostControls.svelte` (item `display.remoteHost`, the same section) switches the device-local
-Remote Host Mode in `src/ts/network/remoteHost.ts`, with `serverJob.remoteHost` strings, and below it edits remote
-sending (`remoteSend`, `remoteSendHost`, `remoteSendFallback` in `src/ts/network/remoteSend.ts`) beside one row per
-connected host name (`hostTargets`), with `serverJob.remoteSend.settings` strings.
+These live in `src/lib/Setting/Pages/`. `DeviceLinkSettings` (menu 25, `deviceLink` strings) holds the device-local
+controls of [network jobs](network-jobs.md), one section each, remote host first. `Device/RemoteHostControls.svelte`
+(item `display.remoteHost`) switches Remote Host Mode in `src/ts/network/remoteHost.ts`, with `serverJob.remoteHost`
+strings, and below it edits remote sending (`remoteSend`, `remoteSendHost`, `remoteSendFallback` in
+`src/ts/network/remoteSend.ts`) beside one row per connected host name (`hostTargets`), with
+`serverJob.remoteSend.settings` strings. `Device/HandoffToggles.svelte` (item `display.handoff`) edits device stores in
+`src/ts/network/handoff.ts`, using `serverJob.handoff` strings.
 
-- Declarative: `AccessibilitySettings`, `InteractionSettings`, `AdvancedSettings`, and `StorageSettings` (the header
-  array, then `SettingsSections`), `DisplaySettings` (sectioned per tab), `ChatFormatSettings`, and `LanguageSettings`
-  (the UI language only).
+- Declarative: `AccessibilitySettings`, `InteractionSettings`, `AdvancedSettings`, `StorageSettings`, and
+  `DeviceLinkSettings` (the header array, then `SettingsSections`), `DisplaySettings` (sectioned per tab),
+  `ChatFormatSettings`, and `LanguageSettings` (the UI language only).
 - Hybrid handwritten/registry pages: `ModelSettings` (the model preset and the aux selector owned by
   [media-aux](media-aux.md); its handwritten provider toggles include `saveSignatures`, shown for a `geminiThinking`
   model whether or not streaming is on, and `halfStreaming`, shown under Response Streaming only while that is off, as
@@ -140,7 +141,7 @@ connected host name (`hostTargets`), with `serverJob.remoteSend.settings` string
 - A Draft hook's card also has the Translation mode checkbox, which writes `translation: true` or removes the key
   ([translation](translation.md#send-hand-off)).
 - Other handwritten pages: `PromptSettings`, `OobaSettings`, `OpenrouterSettings`, `UserSettings`, `ThanksPage`,
-  `UpstreamImportReport`, `Advanced/BanCharacterSetSettings`, and `Display/*`.
+  `UpstreamImportReport`, `Advanced/BanCharacterSetSettings`, `Display/*`, and `Device/*`.
 
 ### Preset lists
 

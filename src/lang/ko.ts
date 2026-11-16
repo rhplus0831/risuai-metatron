@@ -999,6 +999,11 @@ export const languageKorean = {
     memorySettings: "메모리",
     voiceSettings: "음성 및 감정",
     interactionSettings: "상호작용",
+    deviceLink: {
+        title: "기기 연동",
+        remoteHostSection: "원격 호스트",
+        handoffSection: "작업 인계",
+    },
     backups: "백업",
     settingsNavGroupChatSetup: "채팅 설정",
     settingsNavGroupFeatures: "기능",

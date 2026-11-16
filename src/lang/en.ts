@@ -1060,6 +1060,12 @@ export const languageEnglish = {
     memorySettings: "Memory",
     voiceSettings: "Voice & Emotion",
     interactionSettings: "Interaction",
+    // The Device Link settings page: its menu entry, heading and section titles.
+    deviceLink: {
+        title: "Device Link",
+        remoteHostSection: "Remote host",
+        handoffSection: "Job handoff",
+    },
     backups: "Backups",
     settingsNavGroupChatSetup: "Chat setup",
     settingsNavGroupFeatures: "Features",

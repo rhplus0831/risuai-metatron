@@ -64,7 +64,7 @@ The transport below retains this tab's in-memory log.
   any await, and a later frame only repeats its report, never a second read (which would supersede the saved attempt).
 - `requestHostReload` is the requester: it offers the two modes, always confirms `page` (progress names a job's creator,
   not a takeover's owner), posts a new command id and polls its status (state frames reach only `remoteSend.ts`'s
-  waiters) for up to two minutes, then shows one outcome toast. Settings → Display host rows and Settings → Plugins
+  waiters) for up to two minutes, then shows one outcome toast. Settings → Device Link host rows and Settings → Plugins
   offer it.
 - A send command's `continue`, `continueMessageId`, `rerollMessageId` and `speakerChaId` pass unchanged to `sendChat`
   beside its input and ids. The read declares `contractVersion` (`REMOTE_COMMAND_CONTRACT_VERSION`); the relay refuses
@@ -76,8 +76,9 @@ The transport below retains this tab's in-memory log.
   `hostTargets` in `handoff.ts` picks its newest host registration) and `remoteSendFallback` (on); `remoteSendEligible`,
   `sendChatRemotely`, `receiveRemoteCommandState` (the feed's `remoteCommandState` frames) and `reconcileRemoteSends`
   (each same-epoch hello). The module header owns the contract; see [Remote send](#remote-send).
-- Remote send UI: Settings → Display (`RemoteHostControls.svelte`) edits the three preferences and lists `hostTargets`;
-  the composer's `RemoteSendMarker.svelte` names the host and whether it is connected ([UI](ui-theming.md#composer)).
+- Remote send UI: Settings → Device Link (`RemoteHostControls.svelte`) edits the three preferences and lists
+  `hostTargets`; the composer's `RemoteSendMarker.svelte` names the host and whether it is connected
+  ([UI](ui-theming.md#composer)).
 
 ### Job channel
 
