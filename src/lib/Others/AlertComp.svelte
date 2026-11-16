@@ -38,6 +38,7 @@
     import Button from "../UI/GUI/Button.svelte";
     import { XIcon, CopyIcon, CheckIcon } from "@lucide/svelte";
     import RequestLogsPopup from "./RequestLogs/RequestLogsPopup.svelte";
+    import AlertToast from "./AlertToast.svelte";
     import UpstreamImportReport from "../Setting/Pages/UpstreamImportReport.svelte";
     import SelectInput from "../UI/GUI/SelectInput.svelte";
     import OptionInput from "../UI/GUI/OptionInput.svelte";
@@ -1040,16 +1041,9 @@
         </div>
     </div>
 {:else if $alertStore.type === "toast"}
-    <!-- Keyed: each toast runs its own animation, and its end clears the status only while it is still that toast. -->
+    <!-- Keyed: each toast runs its own timer, and its close clears the status only while it is still that toast. -->
     {#each [$alertStore] as toast (toast)}
-        <div
-            class="toast-anime absolute right-0 bottom-0 bg-darkbg p-4 break-any rounded-md flex flex-col max-w-3xl max-h-11/12 overflow-y-auto z-1100 text-textcolor"
-            onanimationend={() => {
-                alertStore.clearStatus(toast);
-            }}
-        >
-            {toast.msg}
-        </div>
+        <AlertToast msg={toast.msg} onclose={() => alertStore.clearStatus(toast)} />
     {/each}
 {:else if $alertStore.type === "selectModule"}
     <div data-alert-dialog class="fixed inset-0 z-1100">
@@ -1183,22 +1177,6 @@
         word-break: normal;
         overflow-wrap: anywhere;
     }
-    @keyframes toastAnime {
-        0% {
-            opacity: 0;
-        }
-        50% {
-            opacity: 1;
-        }
-        100% {
-            opacity: 0;
-        }
-    }
-
-    .toast-anime {
-        animation: toastAnime 1s ease-out;
-    }
-
     .vis {
         opacity: 1 !important;
         --tw-bg-opacity: 1 !important;
