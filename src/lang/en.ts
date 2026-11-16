@@ -1460,6 +1460,7 @@ export const languageEnglish = {
     homeOpenCharacter: (name: string) => `Open ${name}`,
     homeMore: "More",
     homeExploreRealmDescription: "Discover and download new characters from RisuRealm.",
+    homeImportCharacterDescription: "Add characters from card files on this device.",
     openRisuRealm: "Open RisuRealm",
     unknownInteractionTime: "Unknown",
     hideAllImages: "Hide All Images",
