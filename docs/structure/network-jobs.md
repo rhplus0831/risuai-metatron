@@ -45,7 +45,8 @@ The transport below retains this tab's in-memory log.
   `generationClientId`, `savedGenerationJobs`, `rememberGenerationJob`, `forgetGenerationJob`.
 - Admission/control: `createGenerationJob`, `GenerationCreateError`, `GenerationBusyError`, `GenerationStaleError`,
   `ChatBindingRefusedError`, `ChatLoreOverrideOrphanedError`, `readGenerationJob`, `abortGenerationJob`,
-  `takeoverGenerationJob`, `requestGenerationHandoff`.
+  `takeoverGenerationJob`, `requestGenerationHandoff`, `releaseCompletionHold` (at most three tries, a retry only when
+  no answer came; never throws).
 - Socket/events: `GenerationFollow`, `followGenerationJob`, `applyGenerationEvent`, `releaseGenerationJob`,
   `detachGenerationJob`, `resyncAfterLocalWork`, `requestResync`, `dispatcher`.
 - `src/ts/network/handoff.ts`: local preferences, offers, acceptance, presence and manual requests; module contract,
@@ -54,10 +55,19 @@ The transport below retains this tab's in-memory log.
 - `src/ts/network/remoteHost.ts`: device-local `hostMode` (`localStorage` `risu-remote-host`, `preference`) and the
   newest ten acknowledged command states (`hostCommandLog`, `noteHostCommand`). The home screen's card and Settings →
   Device Link's button turn the mode on; the lock screen's control turns it off. The mode joins feed registration as
-  `host`; `jobChannel.ts` skips `tts` and `notification` notices while it is on. Completion Web Push is unchanged.
+  `host`; `jobChannel.ts` skips `tts` and `notification` notices while it is on; its completion Web Push can be held
+  (below).
 - `receiveHostCommand` reads a relay command over authenticated HTTP, holds plugin work through startup and the send,
   pins and selects its chat, and runs `sendChat` with the sender's ids and returned reports. Duplicate frames stop the
   active run or repeat its latest report. No composer or draft state enters the host's send.
+- Completion hold: when `notification` is on and an enabled `3.0` plugin with a running instance has
+  `pluginCompletionQuietMs`, the send passes `completionHoldMs` (the clamped `completionWaitMaxSeconds` plus
+  `COMPLETION_HOLD_MARGIN_MS`) and takes a `beginMutationScope` mark. A false settled send releases at once, an
+  unsettled one never; a changed epoch ends the wait unreleased.
+- After a true send's terminal report is queued, a detached wait (`completionReleasesSettled`; no pin, plugin work or
+  report held) runs `waitForPluginsQuiet`, then `flushResources` with the mark, and releases when the flush lost nothing
+  and no target reported or is busy since quiet; a report or busy target waits again, a failed or lossy flush releases
+  at the cap.
 - `util/headlessHost.mjs` runs a persistent headless host on loopback
   ([settings](build-test-platforms.md#headless-host)). It logs and dismisses dialogs with Escape, never allowing,
   confirming or choosing; only the terminal notice's OK and the supplied login password are exceptions. A dismissed

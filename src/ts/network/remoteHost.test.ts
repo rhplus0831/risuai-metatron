@@ -6,6 +6,7 @@ import type {
     RemoteCommandStateBody,
 } from "../../../shared/remoteCommands.ts";
 import type { ServerSendArg } from "../process/serverGeneration";
+import type { RisuPlugin } from "../../../shared/plugins.ts";
 import { warmModules } from "../storage/tests/mutationStoresHarness";
 
 const EPOCH = "11111111-2222-4333-8444-555555555555";
@@ -19,6 +20,12 @@ const stubs = vi.hoisted(() => ({
     reloadPlugins: vi.fn<typeof import("../plugins/plugins.svelte").reloadPluginsWhenIdle>(),
     bootOutcome: Promise.resolve<PluginReloadOutcome>("applied"),
     flush: vi.fn<typeof import("../storage/resourceSync.svelte").flushResources>(),
+    mark: vi.fn<typeof import("../storage/resourceSync.svelte").beginMutationScope>(),
+    releaseCompletion: vi.fn<typeof import("./generationJobs").releaseCompletionHold>(),
+    epoch: "11111111-2222-4333-8444-555555555555",
+    busy: vi.fn<typeof import("../plugins/apiV3/v3.svelte").pluginBusy>(),
+    instance: vi.fn<typeof import("../plugins/apiV3/v3.svelte").getV3PluginInstance>(),
+    activity: new Set<(name: string) => void>(),
     confirm: vi.fn<typeof import("../alert").alertConfirm>(),
     select: vi.fn<typeof import("../alert").alertSelect>(),
     hold: vi.fn<() => () => void>(),
@@ -35,10 +42,13 @@ vi.mock("./generationJobs", async () =>
     (await import("./tests/generationJobsMock")).createGenerationJobsMock({
         generationClientId: () => "host-client",
         holdGenerationPluginWork: stubs.hold,
+        releaseCompletionHold: stubs.releaseCompletion,
     }),
 );
 vi.mock("../storage/resourceClient", async () =>
-    (await import("../storage/tests/resourceClientMock")).createResourceClientMock({ getResourceEpoch: () => EPOCH }),
+    (await import("../storage/tests/resourceClientMock")).createResourceClientMock({
+        getResourceEpoch: () => stubs.epoch,
+    }),
 );
 vi.mock("../storage/chatStore.svelte", async () =>
     (await import("../storage/tests/chatStoreMock")).createChatStoreMock({
@@ -59,6 +69,16 @@ vi.mock("../plugins/plugins.svelte", async () => ({
 vi.mock("../storage/resourceSync.svelte", async (importOriginal) => ({
     ...(await importOriginal<typeof import("../storage/resourceSync.svelte")>()),
     flushResources: stubs.flush,
+    beginMutationScope: stubs.mark,
+}));
+vi.mock("../plugins/apiV3/v3.svelte", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../plugins/apiV3/v3.svelte")>()),
+    pluginBusy: stubs.busy,
+    getV3PluginInstance: stubs.instance,
+    onPluginActivity: (listener: (name: string) => void) => {
+        stubs.activity.add(listener);
+        return () => stubs.activity.delete(listener);
+    },
 }));
 vi.mock("../stores.svelte", async () => (await import("../tests/storesMock")).createStoresMock());
 vi.mock("../alert", async () =>
@@ -157,6 +177,12 @@ beforeEach(async () => {
     stubs.reloadPlugins.mockReset().mockResolvedValue("applied");
     stubs.bootOutcome = Promise.resolve("applied");
     stubs.flush.mockReset().mockResolvedValue({ discarded: [], refused: [] });
+    stubs.mark.mockReset().mockReturnValue({ resource: 11, chat: 17 });
+    stubs.releaseCompletion.mockReset().mockResolvedValue(true);
+    stubs.epoch = EPOCH;
+    stubs.busy.mockReset().mockReturnValue(false);
+    stubs.instance.mockReset();
+    stubs.activity.clear();
     stubs.confirm.mockReset().mockResolvedValue(true);
     stubs.select.mockReset().mockResolvedValue("1");
     stubs.hold.mockReset().mockImplementation(() => stubs.release);
@@ -440,6 +466,242 @@ describe("remote host sends", () => {
         expect(stubs.fetch.mock.calls.every(([, init]) => init?.method === "POST")).toBe(true);
         expect(sessionStorage.getItem(savedKey)).toBeNull();
         expect(get(host.hostCommandLog)[0]).toMatchObject({ commandId: "command-7", state: "uncertain" });
+    });
+});
+
+describe("remote host completion holds", () => {
+    const plugin = (overrides: Partial<RisuPlugin> = {}): RisuPlugin => ({
+        name: "illustrator",
+        script: "",
+        arguments: {},
+        realArg: {},
+        customLink: [],
+        argMeta: {},
+        version: "3.0",
+        enabled: true,
+        completionWait: true,
+        completionQuietSeconds: 3,
+        ...overrides,
+    });
+    const clean = { discarded: [], refused: [] };
+    const activity = () => {
+        for (const listener of stubs.activity) listener("illustrator");
+    };
+    let settings: typeof import("../storage/settingsViews.svelte").settings;
+
+    beforeEach(async () => {
+        settings = (await import("../storage/settingsViews.svelte")).settings;
+        settings.plugins = [plugin()];
+        settings.ui.notification = true;
+        settings.ui.completionWaitMaxSeconds = 10;
+        // Only instance presence crosses this boundary; no sandbox is executed.
+        stubs.instance.mockImplementation((name) =>
+            name === "unloaded" ? undefined : ({ name } as NonNullable<ReturnType<typeof stubs.instance>>),
+        );
+    });
+
+    afterEach(async () => {
+        stubs.epoch = "replaced-epoch";
+        await vi.advanceTimersByTimeAsync(600_000);
+        await host.completionReleasesSettled();
+    });
+
+    it.each(["no target", "notifications off"] as const)(
+        "keeps the send arguments unchanged and never releases with %s",
+        async (reason) => {
+            if (reason === "notifications off") settings.ui.notification = false;
+            else
+                settings.plugins = [
+                    plugin({ name: "disabled", enabled: false }),
+                    plugin({ name: "legacy", version: undefined }),
+                    plugin({ name: "opted-out", completionWait: false }),
+                    plugin({ name: "unloaded" }),
+                ];
+            await deliver();
+            expect(sendArgs()).not.toHaveProperty("completionHoldMs");
+            expect(sendArgs()).toEqual({
+                target,
+                input: "reviewed input",
+                inputOriginal: "  original\ninput  ",
+                userMessageId: "sender-message",
+                requestId: "sender-request",
+                continue: false,
+                continueMessageId: undefined,
+                rerollMessageId: undefined,
+                speakerChaId: undefined,
+                stopOverLoreBudget: true,
+                signal: expect.any(AbortSignal),
+                localOnly: true,
+                noHandoffPreference: true,
+                reports: [],
+                onServerRefused: expect.any(Function),
+                onEnd: expect.any(Function),
+            });
+            await vi.advanceTimersByTimeAsync(10_000);
+            await host.completionReleasesSettled();
+            expect(stubs.releaseCompletion).not.toHaveBeenCalled();
+            expect(stubs.flush).not.toHaveBeenCalled();
+        },
+    );
+
+    it.each([
+        { seconds: 0, holdMs: 40_000 },
+        { seconds: 25, holdMs: 55_000 },
+        { seconds: 601, holdMs: 630_000 },
+    ])("passes a $holdMs ms hold for a target with a $seconds second limit", async ({ seconds, holdMs }) => {
+        settings.ui.completionWaitMaxSeconds = seconds;
+        await deliver();
+        expect(sendArgs().completionHoldMs).toBe(holdMs);
+        await vi.advanceTimersByTimeAsync(3_000);
+        await host.completionReleasesSettled();
+        expect(stubs.releaseCompletion).toHaveBeenCalledExactlyOnceWith("sender-request", EPOCH);
+    });
+
+    it("waits for quiet and the pre-send scope's flush independently of reporting and send cleanup", async () => {
+        const report = deferred<Response>();
+        const save = deferred<Awaited<ReturnType<typeof stubs.flush>>>();
+        const beforeSend = { resource: 11, chat: 17 };
+        let scope = beforeSend;
+        stubs.mark.mockImplementation(() => scope);
+        stubs.send.mockImplementation(async (_index, arg) => {
+            scope = { resource: 19, chat: 23 };
+            arg?.onEnd?.(end);
+            return true;
+        });
+        const fetch = stubs.fetch.getMockImplementation()!;
+        stubs.fetch.mockImplementation((url, init, options) => {
+            if (init?.method === "POST" && JSON.parse(String(init.body)).state === "running") {
+                states.push(JSON.parse(String(init.body)));
+                return report.promise;
+            }
+            return fetch(url, init, options);
+        });
+        stubs.flush.mockReturnValue(save.promise);
+        try {
+            await deliver();
+            expect(reports().map(({ state }) => state)).toEqual(["running"]);
+            expect(stubs.release).toHaveBeenCalledTimes(1);
+            await vi.advanceTimersByTimeAsync(2_999);
+            expect(stubs.flush).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(1);
+            expect(stubs.flush).toHaveBeenCalledExactlyOnceWith({ scope: beforeSend });
+            expect(stubs.releaseCompletion).not.toHaveBeenCalled();
+            expect(stubs.unpin).not.toHaveBeenCalled();
+            report.resolve(Response.json({ state: "running", attempt: 7, stopRequested: false }));
+            await drain();
+            expect(reports().at(-1)).toMatchObject({ state: "done", result: { ok: true, settled: true } });
+            expect(stubs.unpin).toHaveBeenCalledTimes(1);
+            await vi.advanceTimersByTimeAsync(1_000);
+            expect(stubs.releaseCompletion).not.toHaveBeenCalled();
+            save.resolve(clean);
+            await host.completionReleasesSettled();
+            expect(stubs.releaseCompletion).toHaveBeenCalledExactlyOnceWith("sender-request", EPOCH);
+        } finally {
+            report.resolve(Response.json({ state: "running", attempt: 7, stopRequested: false }));
+            save.resolve(clean);
+        }
+    });
+
+    it.each(["rejected", "discarded", "refused"] as const)("releases at the cap after a %s flush", async (failure) => {
+        if (failure === "rejected") stubs.flush.mockRejectedValueOnce(new Error("save failed"));
+        else stubs.flush.mockResolvedValueOnce({ ...clean, [failure]: ["chats:character:chat"] });
+        await deliver();
+        await vi.advanceTimersByTimeAsync(3_000);
+        expect(stubs.flush).toHaveBeenCalledTimes(1);
+        expect(stubs.releaseCompletion).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(6_999);
+        expect(stubs.releaseCompletion).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        await host.completionReleasesSettled();
+        expect(stubs.releaseCompletion).toHaveBeenCalledExactlyOnceWith("sender-request", EPOCH);
+    });
+
+    it.each(["activity report", "busy without a report"] as const)(
+        "waits for quiet and flushes again after %s during a flush",
+        async (change) => {
+            const save = deferred<Awaited<ReturnType<typeof stubs.flush>>>();
+            stubs.flush.mockReturnValueOnce(save.promise);
+            await deliver();
+            await vi.advanceTimersByTimeAsync(3_000);
+            expect(stubs.flush).toHaveBeenCalledTimes(1);
+            if (change === "activity report") activity();
+            else stubs.busy.mockReturnValue(true);
+            save.resolve(clean);
+            await drain();
+            expect(stubs.releaseCompletion).not.toHaveBeenCalled();
+            if (change === "busy without a report") {
+                stubs.busy.mockReturnValue(false);
+                activity();
+            }
+            await vi.advanceTimersByTimeAsync(2_999);
+            expect(stubs.flush).toHaveBeenCalledTimes(1);
+            expect(stubs.releaseCompletion).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(1);
+            await host.completionReleasesSettled();
+            expect(stubs.flush).toHaveBeenCalledTimes(2);
+            expect(stubs.flush.mock.calls[1]).toEqual([{ scope: { resource: 11, chat: 17 } }]);
+            expect(stubs.releaseCompletion).toHaveBeenCalledExactlyOnceWith("sender-request", EPOCH);
+        },
+    );
+
+    it.each(["busy plugin", "pending flush"] as const)(
+        "counts the cap from the terminal report with a %s",
+        async (pending) => {
+            const sending = deferred<boolean>();
+            const save = deferred<Awaited<ReturnType<typeof stubs.flush>>>();
+            stubs.send.mockReturnValue(sending.promise);
+            if (pending === "busy plugin") stubs.busy.mockReturnValue(true);
+            else stubs.flush.mockReturnValue(save.promise);
+            try {
+                await deliver();
+                await vi.advanceTimersByTimeAsync(20_000);
+                expect(stubs.releaseCompletion).not.toHaveBeenCalled();
+                sendArgs().onEnd?.(end);
+                sending.resolve(true);
+                await drain();
+                expect(reports().at(-1)).toMatchObject({ state: "done", result: { ok: true } });
+                await vi.advanceTimersByTimeAsync(9_999);
+                expect(stubs.releaseCompletion).not.toHaveBeenCalled();
+                await vi.advanceTimersByTimeAsync(1);
+                await host.completionReleasesSettled();
+                expect(stubs.releaseCompletion).toHaveBeenCalledExactlyOnceWith("sender-request", EPOCH);
+            } finally {
+                sending.resolve(true);
+                save.resolve(clean);
+            }
+        },
+    );
+
+    it.each([
+        { ok: false, settled: true, releases: 1 },
+        { ok: false, settled: false, releases: 0 },
+        { ok: true, settled: false, releases: 0 },
+    ])("releases $releases holds after ok=$ok, settled=$settled", async ({ ok, settled, releases }) => {
+        stubs.busy.mockReturnValue(true);
+        stubs.send.mockImplementation(async (_index, arg) => {
+            arg?.onEnd?.({ ...end, settled, requestUncertain: !settled });
+            return ok;
+        });
+        await deliver();
+        expect(reports().at(-1)).toMatchObject({ state: settled ? "done" : "uncertain", result: { ok, settled } });
+        expect(stubs.releaseCompletion).toHaveBeenCalledTimes(releases);
+        await vi.advanceTimersByTimeAsync(10_000);
+        await host.completionReleasesSettled();
+        expect(stubs.releaseCompletion.mock.calls).toEqual(releases ? [["sender-request", EPOCH]] : []);
+        expect(stubs.flush).not.toHaveBeenCalled();
+    });
+
+    it("ends the completion wait without releasing after the resource epoch changes", async () => {
+        const save = deferred<Awaited<ReturnType<typeof stubs.flush>>>();
+        stubs.flush.mockReturnValue(save.promise);
+        await deliver();
+        await vi.advanceTimersByTimeAsync(3_000);
+        expect(stubs.flush).toHaveBeenCalledTimes(1);
+        stubs.epoch = "66666666-7777-4888-8999-aaaaaaaaaaaa";
+        save.resolve(clean);
+        await host.completionReleasesSettled();
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(stubs.releaseCompletion).not.toHaveBeenCalled();
     });
 });
 

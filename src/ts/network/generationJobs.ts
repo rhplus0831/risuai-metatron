@@ -590,6 +590,32 @@ export async function cancelGenerationRequest(requestId: string, ref: ChatRef): 
     }
 }
 
+/** Retries only an unanswered release; the server's deadline covers a release that never arrives. */
+export async function releaseCompletionHold(requestId: string, epoch: string): Promise<boolean> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+        let answered = false;
+        try {
+            if (attempt > 0) await retryWait(CREATE_DELAYS_MS[attempt - 1]);
+            return await boundedAttempt(async (signal) => {
+                const response = await authFetch("/api/generations/completion-release", {
+                    method: "POST",
+                    cache: "no-store",
+                    signal,
+                    headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: epoch },
+                    body: JSON.stringify({ requestId }),
+                });
+                answered = true;
+                if (!response.ok) return false;
+                const body: unknown = await response.json();
+                return object(body) && body.released === true;
+            });
+        } catch {
+            if (answered) return false;
+        }
+    }
+    return false;
+}
+
 /**
  * Creates or replays one frozen request for `body.context`'s chat, remembering only an owned job;
  * hooks default to `registeredHooks` in `src/ts/network/jobChannel.ts`.

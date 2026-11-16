@@ -140,6 +140,7 @@ export function createGenerationJobsMock(overrides: Partial<GenerationJobsModule
         cancelGenerationRequest: vi.fn<GenerationJobsModule["cancelGenerationRequest"]>(async () => ({
             outcome: "cancelled",
         })),
+        releaseCompletionHold: vi.fn<GenerationJobsModule["releaseCompletionHold"]>(async () => false),
         readGenerationJob: vi.fn<GenerationJobsModule["readGenerationJob"]>(async () => null),
         readChatGeneration: vi.fn<GenerationJobsModule["readChatGeneration"]>(async () => null),
         takeoverGenerationJob: vi.fn<GenerationJobsModule["takeoverGenerationJob"]>(async () => null),

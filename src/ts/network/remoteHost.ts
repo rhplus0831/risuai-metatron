@@ -18,7 +18,11 @@ import {
     type SendReport,
 } from "../../../shared/remoteCommands.ts";
 import type { EventFeedFrame } from "../../../shared/events.ts";
+import { COMPLETION_WAIT_MAX_SECONDS } from "../../../shared/database.ts";
+import { pluginCompletionQuietMs } from "../../../shared/plugins.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
+import type { PluginQuietTarget } from "../plugins/pluginQuiet";
+import type { MutationScope } from "../storage/resourceSync.svelte";
 import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
 import { preference } from "./handoff";
 
@@ -52,6 +56,8 @@ export function noteHostCommand(entry: HostCommandEntry): void {
  * fields, which pass unchanged to the send. Plugin, send, store, alert and selection modules load
  * only inside a run or request, keeping the feed's imports free of send/job-channel and plugin/feed
  * cycles. Reload ids stay reserved for this page, including recoveries before registration.
+ * Opted-in plugins hold completion Web Push; its detached release waits for quiet and saved writes,
+ * bounded by one deadline, without holding up reports or retaining the run's plugin work or chat pin.
  */
 const SAVED_COMMANDS_KEY = "risu-remote-host-commands";
 const REQUEST_DEADLINE_MS = 15_000;
@@ -59,6 +65,7 @@ const REPORT_MARGIN_BYTES = 4096;
 const PAGE_REPORT_WAIT_MS = 2_000;
 const PAGE_FLUSH_WAIT_MS = 3_000;
 const RELOAD_OUTCOME_WAIT_MS = 120_000;
+const COMPLETION_HOLD_MARGIN_MS = 30_000;
 type SavedCommand = { commandId: string; epoch: string; attempt: number; kind?: RemoteReloadMode };
 type StateReport =
     | { state: "running" }
@@ -83,11 +90,25 @@ type HostRun = {
     controller: AbortController;
     reporter?: Reporter;
 };
+type CompletionHold = {
+    capMs: number;
+    mark: MutationScope;
+    targets: readonly PluginQuietTarget[];
+    plugins: typeof import("../plugins/apiV3/v3.svelte");
+    quiet: typeof import("../plugins/pluginQuiet");
+    resources: typeof import("../storage/resourceSync.svelte");
+};
 const runs = new Map<string, HostRun>();
 const reloads = new Map<string, HostRun>();
 const recoveries = new Map<string, Promise<void>>();
 const recoveredEpochs = new Set<string>();
+const completionReleases = new Set<Promise<void>>();
 let epochHalted = false;
+
+/** Resolves once every pending detached completion release has settled. */
+export async function completionReleasesSettled(): Promise<void> {
+    while (completionReleases.size) await Promise.all(completionReleases);
+}
 
 async function loadTransport() {
     const [{ authFetch }, jobs] = await Promise.all([import("../storage/serverAuth"), import("./generationJobs")]);
@@ -434,10 +455,14 @@ async function runHostCommand(run: HostRun) {
         const { pluginsStarted } = await import("../plugins/plugins.svelte");
         await pluginsReady(pluginsStarted, run.controller.signal);
         if (run.controller.signal.aborted) return refuse("stopped");
-        const [selection, stores, { sendChat }] = await Promise.all([
+        const [selection, stores, { sendChat }, { settings }, plugins, quiet, resources] = await Promise.all([
             import("../storage/selection.svelte"),
             import("../stores.svelte"),
             import("../process/index.svelte"),
+            import("../storage/settingsViews.svelte"),
+            import("../plugins/apiV3/v3.svelte"),
+            import("../plugins/pluginQuiet"),
+            import("../storage/resourceSync.svelte"),
         ]);
         if (epochHalted || run.epoch !== getResourceEpoch()) return;
         if (run.controller.signal.aborted) return refuse("stopped");
@@ -456,6 +481,26 @@ async function runHostCommand(run: HostRun) {
             outcome: "unknown",
             blockedChats: [],
         };
+        const targets = (settings.plugins ?? []).flatMap((entry) => {
+            if (!entry.enabled || entry.version !== "3.0") return [];
+            const quietMs = pluginCompletionQuietMs(entry);
+            return quietMs !== null && plugins.getV3PluginInstance(entry.name) ? [{ name: entry.name, quietMs }] : [];
+        });
+        let completionHold: CompletionHold | undefined;
+        if (targets.length && settings.ui.notification) {
+            const mark = resources.beginMutationScope();
+            const configured = settings.ui.completionWaitMaxSeconds;
+            const seconds =
+                typeof configured === "number" && Number.isFinite(configured)
+                    ? configured
+                    : COMPLETION_WAIT_MAX_SECONDS.default;
+            const capMs =
+                Math.min(
+                    COMPLETION_WAIT_MAX_SECONDS.max,
+                    Math.max(COMPLETION_WAIT_MAX_SECONDS.min, Math.floor(seconds)),
+                ) * 1000;
+            completionHold = { capMs, mark, targets, plugins, quiet, resources };
+        }
         const ok = await sendChat(-1, {
             target,
             input: command.input,
@@ -471,6 +516,7 @@ async function runHostCommand(run: HostRun) {
             localOnly: true,
             noHandoffPreference: true,
             reports,
+            ...(completionHold ? { completionHoldMs: completionHold.capMs + COMPLETION_HOLD_MARGIN_MS } : {}),
             ...(read.attempted ? { requestUncertain: true } : {}),
             onServerRefused: (ambiguous) => {
                 refusal = ambiguous ? "ambiguous" : "definite";
@@ -481,6 +527,15 @@ async function runHostCommand(run: HostRun) {
         });
         const result: RemoteSendResult = { ...end, ok, ...(refusal ? { refusal } : {}), reports };
         queueReport(reporter, { state: result.settled ? "done" : "uncertain", result });
+        if (completionHold && result.settled) {
+            const pending = waitForCompletionRelease(command.requestId, run.epoch, ok, completionHold, transport).catch(
+                () => {
+                    // The server's deadline covers a wait that could not finish.
+                },
+            );
+            completionReleases.add(pending);
+            void pending.then(() => completionReleases.delete(pending));
+        }
     } catch (error) {
         if (!epochHalted && run.epoch === getResourceEpoch()) {
             reports.push({ kind: "error", text: error instanceof Error ? error.message : String(error) });
@@ -503,6 +558,46 @@ async function runHostCommand(run: HostRun) {
         } finally {
             releaseChat?.();
         }
+    }
+}
+
+async function waitForCompletionRelease(
+    requestId: string,
+    epoch: string,
+    ok: boolean,
+    { capMs, mark, targets, plugins, quiet, resources }: CompletionHold,
+    transport: Transport,
+): Promise<void> {
+    const deadline = Date.now() + capMs;
+    let unsubscribe: (() => void) | undefined;
+    try {
+        if (ok) {
+            let activity = 0;
+            const names = new Set(targets.map(({ name }) => name));
+            unsubscribe = plugins.onPluginActivity((name) => {
+                if (names.has(name)) activity++;
+            });
+            while (Date.now() < deadline) {
+                const outcome = await quiet.waitForPluginsQuiet(targets, {
+                    capMs: deadline - Date.now(),
+                    busy: plugins.pluginBusy,
+                    onActivity: plugins.onPluginActivity,
+                });
+                if (outcome !== "quiet" || Date.now() >= deadline) break;
+                const atQuiet = activity;
+                const saved = await settleWithin(resources.flushResources({ scope: mark }), deadline - Date.now());
+                if (!saved || saved.discarded.length || saved.refused.length) {
+                    const remaining = deadline - Date.now();
+                    if (remaining > 0) await new Promise<void>((resolve) => setTimeout(resolve, remaining));
+                    break;
+                }
+                if (activity === atQuiet && !targets.some(({ name }) => plugins.pluginBusy(name))) break;
+            }
+        }
+        if (epochHalted || epoch !== getResourceEpoch()) return;
+        await transport.jobs.releaseCompletionHold(requestId, epoch);
+    } finally {
+        unsubscribe?.();
     }
 }
 

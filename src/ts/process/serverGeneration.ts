@@ -24,6 +24,8 @@ export type ServerSendArg = {
     localOnly?: boolean;
     /** Omit preferred handoff for this create, without changing the tab's preference. */
     noHandoffPreference?: boolean;
+    /** Only a remote host sets this to hold the job's completion Web Push for plugin work. */
+    completionHoldMs?: number;
     /** Caller-owned sink for admission and own-follow reports; none of them is shown on this tab. */
     reports?: SendReport[];
     continue?: boolean;
@@ -157,6 +159,9 @@ async function sendPinned(
                         ? { continueMessageId: arg.continueMessageId }
                         : {}),
                     ...(arg.stopOverLoreBudget === true ? { stopOverLoreBudget: true } : {}),
+                    ...(typeof arg.completionHoldMs === "number" && arg.completionHoldMs > 0
+                        ? { completionHoldMs: arg.completionHoldMs }
+                        : {}),
                 },
             },
             {

@@ -285,6 +285,61 @@ describe("handoff transport", () => {
     });
 });
 
+describe("completion release transport", () => {
+    const runEpoch = "66666666-7777-4888-8999-aaaaaaaaaaaa";
+
+    it.each([
+        { answer: { released: true }, released: true },
+        { answer: { released: false }, released: false },
+    ])("posts the request id and run epoch and returns $released for $answer", async ({ answer, released }) => {
+        stubs.fetch.mockReset().mockResolvedValue(json(200, answer));
+        expect(await transport.releaseCompletionHold("sender-request", runEpoch)).toBe(released);
+        expect(stubs.fetch).toHaveBeenCalledTimes(1);
+        const [path, request] = stubs.fetch.mock.calls[0];
+        expect(path).toBe("/api/generations/completion-release");
+        expect(request?.method).toBe("POST");
+        expect(new Headers(request?.headers).get(RESOURCE_EPOCH_HEADER)).toBe(runEpoch);
+        expect(JSON.parse(String(request?.body))).toEqual({ requestId: "sender-request" });
+    });
+
+    it("retries a completion release after a transport failure", async () => {
+        stubs.fetch
+            .mockReset()
+            .mockRejectedValueOnce(new TypeError("connection lost"))
+            .mockResolvedValue(json(200, { released: true }));
+        const released = transport.releaseCompletionHold("sender-request", runEpoch);
+        await vi.runAllTimersAsync();
+        await expect(released).resolves.toBe(true);
+        expect(stubs.fetch).toHaveBeenCalledTimes(2);
+        for (const [path, request] of stubs.fetch.mock.calls) {
+            expect(path).toBe("/api/generations/completion-release");
+            expect(request?.method).toBe("POST");
+            expect(new Headers(request?.headers).get(RESOURCE_EPOCH_HEADER)).toBe(runEpoch);
+            expect(JSON.parse(String(request?.body))).toEqual({ requestId: "sender-request" });
+        }
+    });
+
+    it.each([412, 500])("does not retry a completion release answered with HTTP %s", async (status) => {
+        stubs.fetch
+            .mockReset()
+            .mockResolvedValueOnce(json(status, { error: "refused" }))
+            .mockResolvedValue(json(200, { released: true }));
+        const released = transport.releaseCompletionHold("sender-request", runEpoch);
+        await vi.runAllTimersAsync();
+        await expect(released).resolves.toBe(false);
+        expect(stubs.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns false without throwing after three unanswered completion releases", async () => {
+        stubs.fetch.mockReset().mockRejectedValue(new TypeError("offline"));
+        const released = transport.releaseCompletionHold("sender-request", runEpoch);
+        const outcome = expect(released).resolves.toBe(false);
+        await vi.runAllTimersAsync();
+        await outcome;
+        expect(stubs.fetch).toHaveBeenCalledTimes(3);
+    });
+});
+
 describe("the tab's identity and saved jobs", () => {
     it("creates the client id once per tab and keeps it in sessionStorage", async () => {
         const id = transport.generationClientId();
@@ -380,6 +435,15 @@ describe("the requests", () => {
             chatRevision: "r",
         },
     };
+
+    it("keeps the completion hold from the context in the create body", async () => {
+        stubs.fetch.mockReset().mockResolvedValue(json(200, { jobId: "held-job" }));
+        await transport.createGenerationJob({ ...body, context: { ...body.context, completionHoldMs: 55_000 } });
+        expect(stubs.fetch).toHaveBeenCalledTimes(1);
+        const [path, request] = stubs.fetch.mock.calls[0];
+        expect(path).toBe("/api/generations");
+        expect(JSON.parse(String(request?.body)).context).toEqual({ ...body.context, completionHoldMs: 55_000 });
+    });
 
     it.each([
         { status: 503, refusal: { error: "The server is not accepting generations now" }, uncertain: true },

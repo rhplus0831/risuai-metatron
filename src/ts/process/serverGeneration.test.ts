@@ -102,6 +102,15 @@ const seededCharacters = () => [
 ];
 
 describe("sendChatOnServer", () => {
+    it("copies the completion hold into the job context only when supplied", async () => {
+        for (const option of [{}, { completionHoldMs: 55_000 }]) {
+            started(done());
+            await send({ target: ref, input: "hello", userMessageId: "user-message", ...option });
+            expect(lastRequest().context).toEqual({ input: "hello", userMessageId: "user-message", ...option });
+            if (!("completionHoldMs" in option)) expect(lastRequest().context).not.toHaveProperty("completionHoldMs");
+        }
+    });
+
     it("passes the caller's reports sink and host handoff override to the job runner", async () => {
         const reports: SendReport[] = [];
         started(done());
