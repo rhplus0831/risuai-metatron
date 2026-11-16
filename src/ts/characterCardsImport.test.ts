@@ -206,6 +206,45 @@ describe("importCharacterProcess creates the character through addCharacter", ()
         expect(fake.batchCount()).toBe(0);
     });
 
+    // A book's own settings override the user's global lorebook settings, so the notice warns and lists
+    // them beside the global values; a book without them (the first test) gets the plain notice.
+    it("a card whose book carries its own lore settings warns in the import notice, beside the global values", async () => {
+        const { cards, ids, added, settings } = await boot();
+        settings.memoryTranslateMedia.loreBookDepth = 5;
+        settings.providers.loreBookToken = 1200;
+        const before = ids();
+        const book = {
+            ...characterBook("Tuned", "tuned lore"),
+            scan_depth: 12,
+            token_budget: 300,
+            recursive_scanning: false,
+            extensions: { risu_fullWordMatching: true },
+        };
+        await cards.importCharacterProcess({
+            name: "card.json",
+            data: encode(cardV2("Tuned", { character_book: book })),
+        });
+        const { character } = await added(before);
+        expect(character.loreSettings).toEqual({
+            scanDepth: 12,
+            tokenBudget: 300,
+            recursiveScanning: false,
+            fullWordMatching: true,
+        });
+        const text = language.importedLoreSettings;
+        expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(
+            [
+                language.importedCharacter,
+                "",
+                text.warning,
+                `${language.recursiveScanning}: ${text.off} ${text.global(text.on)}`,
+                `${language.fullWordMatching}: ${text.on} ${text.global(text.off)}`,
+                `${language.loreBookDepth}: 12 ${text.global("5")}`,
+                `${language.loreBookToken}: 300 ${text.global("1200")}`,
+            ].join("\n"),
+        );
+    });
+
     it("an off-spec JSON card (name, description, first message) goes through convertOffSpecCards and addCharacter", async () => {
         const { cards, ids, added } = await boot();
         const before = ids();

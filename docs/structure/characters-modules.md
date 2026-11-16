@@ -192,6 +192,9 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
   (`moduleLegacyExportIconUnsupported`); CharX carries the portrait.
 - `importCharacterCardSpec` maps a well-formed `extensions.depth_prompt` to the native field. `createBaseV2` omits
   emotions and additional assets; V3 is the full-fidelity export.
+- A card whose `character_book` sets `scan_depth`, `token_budget`, and `recursive_scanning` imports as `loreSettings`,
+  overriding the global lorebook settings; its success notice (`importedCharacterNotice`) appends
+  `importedLoreSettings.warning` and lists each value beside the global one.
 - Cards and modules with low-level access ask on import (`confirmLowLevelAccessImport`,
   `src/ts/lowLevelAccessImport.ts`): import with it, without it, or cancel (Escape cancels). Without it clears the flag
   on the object the record is later built from, so the record stores `lowLevelAccess: false`; importers must not re-read
