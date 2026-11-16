@@ -66,6 +66,19 @@ To use the server from another device, serve it over HTTPS, either with the cert
 
 The AI disclosure (the warning on an empty chat, the request-info disclaimer, and the model button on every reply) is off by default. Set `RISU_AI_DISCLOSURE=1` for the server (for example `RISU_AI_DISCLOSURE=1 pnpm run server`) to show it; changing it needs a server restart and a page reload. The dev server below reads the same variable from its shell.
 
+### Headless host
+
+From a development checkout with dependencies installed, a built client, and system Chrome, start the server and then, in another terminal, the host:
+
+```sh
+pnpm run server
+pnpm host:headless
+```
+
+Set the server's password from a person's browser first. On the host's first start, provide `RISU_HEADLESS_HOST_PASSWORD` in its environment; later starts reuse the login in `host-profile/`. That folder is a login: keep it private. Stop with Ctrl-C or SIGTERM so Chrome writes the profile.
+
+Give the plugins their standing grants first from Settings → Plugins on another device. The host dismisses every dialog with Escape and logs it; a permission prompt is denied until a person gives a standing grant. It appears as **Headless host** for other devices to send through. It connects only over loopback; settings, including a different Chrome binary, name, profile or port, are in the [headless host guide](docs/structure/build-test-platforms.md#headless-host).
+
 ### Development
 
 Run the self-host server and the Vite dev server side by side:

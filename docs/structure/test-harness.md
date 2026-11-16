@@ -60,6 +60,8 @@ codes; the entries name the role and the identifiers to look up.
   `playwright.config.ts` and `util/playwright/` are outside its type-checking scope.
 - `playwright.config.ts`: one worker, the system Chrome (`RISU_CHROME`), `globalSetup` `util/playwright/globalSetup.mjs`
   (one stack per run on `E2E_SERVER_PORT`/`E2E_VITE_PORT`).
+- `util/headlessHost.mjs`: another `playwright-core` user; a persistent host, outside the test harness
+  ([settings](build-test-platforms.md#headless-host)).
 - `e2e/fixtures.ts`: the specs' `test` (clears safe boot's counter per page load), `expect`, and `settle` (waits for
   `resourceSyncIdle`).
 - `e2e/multiClient.ts`: the reusable two-client harness (`session`, `holdBatch`, `expectState`) used by

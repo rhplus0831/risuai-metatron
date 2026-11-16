@@ -27,6 +27,7 @@
     "test:all": "vitest run",
     "test:e2e": "node util/requireHuman.mjs \"pnpm test:e2e\" && playwright test",
     "server": "node server/src/main.ts",
+    "host:headless": "node util/headlessHost.mjs",
     "dev:agent": "node util/agentDev.mjs agent",
     "dev:human": "node util/agentDev.mjs human",
     "format": "prettier --write .",

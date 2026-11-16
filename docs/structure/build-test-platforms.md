@@ -24,6 +24,7 @@
 | `check:changed` / `format:changed` | `util/changedChecks.mjs` `types` / `format`; see [Changed-file checks](#changed-file-checks). |
 | `check:docs` / `docs:*`            | See [Documentation check](#documentation-check).                                              |
 | `server`                           | Node runs `server/src/main.ts` with type stripping.                                           |
+| `host:headless`                    | System Chrome as an unattended Remote Host; see [Headless host](#headless-host).              |
 | `dev:agent` / `dev:human`          | Agent or human full stack; see [Dev runner](#dev-runner).                                     |
 | `format` / `format:check`          | Repository-wide Prettier; `format:check` caches in `node_modules/.cache/prettier/`.           |
 
@@ -122,6 +123,28 @@
   `save-agent/` from `save/` in `.save-agent.staging-*` and swaps it in; its comments list what a clone copies and
   leaves behind (`server/` secrets among them).
 - Test command environment and agent restrictions: [human gate](test-harness.md#human-gate).
+
+### Headless host
+
+- `util/headlessHost.mjs` (`pnpm host:headless`): a persistent system Chrome on the local server, with host mode and
+  name set before each document starts. Its header and `shutdown` own the process contract; settings, redaction and
+  restart timing are pure functions in `util/headlessHostConfig.mjs`. It waits for the server; it never starts it.
+- The profile is a login, created with mode `0700`. The default `host-profile/` is excluded from Git, Docker and
+  Prettier. SIGINT, SIGTERM and controlled fatal exits close the context. This needs development dependencies
+  (`playwright-core`) and system Chrome, not the Docker runtime image.
+
+| Variable                      | Meaning and default                                                                                                                                                  |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `RISU_HEADLESS_HOST_NAME`     | `Headless host`; nonblank, at most `MAX_FEED_CLIENT_NAME` code units.                                                                                                |
+| `RISU_HEADLESS_HOST_PROFILE`  | Profile folder relative to the repository root; `host-profile`.                                                                                                      |
+| `RISU_HEADLESS_HOST_PASSWORD` | Server password, typed into the app's identified login prompt once per run; needed on the first start. An unset server password must be set from a person's browser. |
+| `RISU_HEADLESS_HOST_PORT`     | Port of the served app, else `PORT`, else 6001. Use Vite's port for a dev stack.                                                                                     |
+| `RISU_HOST`                   | Unset, blank or wildcard gives `127.0.0.1`; a numeric loopback literal is kept. Names, bracketed IPv6 and other addresses are refused.                               |
+| `RISU_CHROME`                 | System Chrome binary; `/usr/bin/google-chrome`.                                                                                                                      |
+
+The listener's TLS handshake chooses HTTPS or HTTP. Dialog policy and plugin standing grants:
+[generation job client](network-jobs.md#generation-job-client). The script logs ISO timestamps and redacted, bounded
+text; it retries failed loads with backoff and lets safe boot settle before retrying a page with plugins off.
 
 ### Analysis scripts
 

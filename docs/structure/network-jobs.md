@@ -58,6 +58,11 @@ The transport below retains this tab's in-memory log.
 - `receiveHostCommand` reads a relay command over authenticated HTTP, holds plugin work through startup and the send,
   pins and selects its chat, and runs `sendChat` with the sender's ids and returned reports. Duplicate frames stop the
   active run or repeat its latest report. No composer or draft state enters the host's send.
+- `util/headlessHost.mjs` runs a persistent headless host on loopback
+  ([settings](build-test-platforms.md#headless-host)). It logs and dismisses dialogs with Escape, never allowing,
+  confirming or choosing; only the terminal notice's OK and the supplied login password are exceptions. A dismissed
+  plugin permission stays denied until a person gives a standing grant on another device, which resets the plugin and
+  drops its cached denial.
 - A `reload` command (`mode` `plugins` or `page`) holds no plugin work. `plugins` reports `running`, awaits
   `reloadPluginsWhenIdle` ([deferred reload](plugin-sandbox.md#deferred-reload)) and reports `done` with its `outcome`.
   `page` saves its id (no save: `done` `notReloaded`, no reload), reports `running`, flushes with a bound and reloads;
