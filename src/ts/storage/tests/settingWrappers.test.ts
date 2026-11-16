@@ -34,8 +34,11 @@ import { changeToModelPreset, changeToPreset } from "../presets.svelte";
 import { llmSecretState, setMaskedSecrets } from "../llmSecrets.svelte";
 import { maskLlmSecrets } from "../../../../shared/llmSecrets.ts";
 import { applyRaw, recordData, setRecordWriteListener } from "../records.svelte";
-import { selectModelPreset, selectPreset } from "../selection.svelte";
-import { installFlatDatabase } from "./installFlatDatabase";
+import { pickBinding } from "../chatBindingPick";
+import { chatBindingIds } from "../chatBinding.svelte";
+import { selectChat } from "../chatStore.svelte";
+import { selectCharacter, selection, selectModelPreset, selectPersona, selectPreset } from "../selection.svelte";
+import { installFlatDatabase, installFlatDatabaseWithChats } from "./installFlatDatabase";
 import { normalizeModelPresets, normalizeModelProfiles } from "../../../../shared/presets.ts";
 import SettingCheck from "src/lib/Setting/Wrappers/SettingCheck.svelte";
 import SettingColor from "src/lib/Setting/Wrappers/SettingColor.svelte";
@@ -731,5 +734,86 @@ describe("SettingRenderer", () => {
         changeToModelPreset("a");
         flushSync();
         expect(textarea()).toBeNull();
+    });
+});
+
+describe("the settings registry with a bound chat open", () => {
+    afterEach(() => selectCharacter(null));
+
+    it("null-target picks move the tab selection and the rendered registry reads and writes it without changing the bound records", () => {
+        installFlatDatabaseWithChats({
+            characters: [
+                {
+                    chaId: "c",
+                    type: "character",
+                    name: "C",
+                    chats: [
+                        {
+                            id: "chat",
+                            name: "Chat",
+                            message: [],
+                            localLore: [],
+                            promptPresetId: "a",
+                            modelPresetId: "a",
+                            bindedPersona: "u1",
+                        },
+                    ],
+                },
+            ],
+            botPresets: JSON.parse(JSON.stringify(settings.presets)),
+            modelPresets: JSON.parse(JSON.stringify(settings.modelPresets)),
+            modelProfiles: JSON.parse(JSON.stringify(settings.modelProfiles)),
+            personas: [
+                { id: "u1", name: "Bound persona" },
+                { id: "u2", name: "Tab persona" },
+            ],
+        });
+        selectPreset("a");
+        selectModelPreset("a");
+        selectPersona("u1");
+        selectCharacter("c");
+        selectChat("c", "chat");
+        const ref = { chaId: "c", chatId: "chat" };
+        const bindingBefore = chatBindingIds(ref);
+        const boundBefore = JSON.stringify([
+            preset("a"),
+            settings.modelPresets[0],
+            profile("pa"),
+            settings.personas[0],
+        ]);
+        const items = [
+            item({ type: "number", bindKey: "maxResponse" }),
+            item({ type: "text", bindKey: "forceReplaceUrl" }),
+            item({ type: "text", bindKey: "username" }),
+        ];
+        const { query } = render(SettingRenderer, { items });
+        const input = (key: string) => query<HTMLInputElement>(`[data-setting-id="wrappers.${key}"] input`);
+        expect([input("maxResponse").value, input("forceReplaceUrl").value, input("username").value]).toEqual([
+            "500",
+            "https://a",
+            "Bound persona",
+        ]);
+        expect(pickBinding("promptPresetId", "b", null)).toBe(true);
+        expect(pickBinding("modelPresetId", "b", null)).toBe(true);
+        expect(pickBinding("personaId", "u2", null)).toBe(true);
+        flushSync();
+        expect([selection.presetId, selection.modelPresetId, selection.personaId]).toEqual(["b", "b", "u2"]);
+        expect(chatBindingIds(ref)).toEqual(bindingBefore);
+        expect([input("maxResponse").value, input("forceReplaceUrl").value, input("username").value]).toEqual([
+            "555",
+            "https://b",
+            "Tab persona",
+        ]);
+        typeInto(input("maxResponse"), "777");
+        typeInto(input("forceReplaceUrl"), "https://tab-edited");
+        typeInto(input("username"), "Tab renamed");
+        flushSync();
+        expect(preset("b").maxResponse).toBe(777);
+        expect(profile("pb").forceReplaceUrl).toBe("https://tab-edited");
+        expect(settings.personas[1].name).toBe("Tab renamed");
+        expect(JSON.stringify([preset("a"), settings.modelPresets[0], profile("pa"), settings.personas[0]])).toBe(
+            boundBefore,
+        );
+        expect(chatBindingIds(ref)).toEqual(bindingBefore);
     });
 });

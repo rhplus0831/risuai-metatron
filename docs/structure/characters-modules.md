@@ -69,8 +69,8 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 
 - `src/ts/interchangeability.ts`: module, character, and persona conversions (`convertModuleToCharacter`,
   `convertCharacterToModule`, `convertPersonaToModule`, and the rest).
-- `src/ts/persona.ts`: `changeUserPersona` (through `pickBinding`, `src/ts/storage/chatBindingPick.ts`),
-  `selectUserImg`, `exportUserPersona`/`importUserPersona`.
+- `src/ts/persona.ts`: `changeUserPersona(id, target)` (through `pickBinding`, `src/ts/storage/chatBindingPick.ts`: a
+  `ChatRef` binds that chat, `null` selects for the tab), `selectUserImg`, `exportUserPersona`/`importUserPersona`.
 - `src/lib/Setting/Pages/PersonaSettings.svelte` (the persona editor) and `src/lib/Setting/listedPersona.svelte`.
 
 ### Character editor
@@ -265,9 +265,10 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
 - Module links resolve from the chat's bound persona, never the tab's selected persona; client `getModules` and server
   `jobModules` share `personaModuleIdSet`/`personaLinksModule`. Persona settings edit the shown record, and deleting a
   module leaves its id in the persona, character, or chat list.
-- `changeUserPersona(id)` with an id that is not in `settings.personas`, or for a chat that is gone, does nothing and
-  returns false. `PersonaSettings.svelte` creation captures its target before its dialog; a deletion moves only the
-  tab's selection, never a chat's binding.
+- `changeUserPersona(id, target)` with an id that is not in `settings.personas`, or for a chat that is gone, does
+  nothing and returns false. `PersonaSettings.svelte` edits the tab's selected persona: a grid click and a created
+  persona select for the tab (`null`), also with a chat open; a deletion moves only the tab's selection, never a chat's
+  binding.
 
 ## Recipes
 

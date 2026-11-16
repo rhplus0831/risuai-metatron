@@ -30,13 +30,12 @@ export async function selectUserImg() {
 }
 
 /**
- * Picks persona `id` where the screen shows it, through `pickBinding` (`src/ts/storage/chatBindingPick.ts`): with a
- * chat open it binds that chat, at home it selects for this client. `target` names the chat, `null` the tab's
- * selection, and `undefined` the open chat now, else (home) the tab's selection. The persona fields are forwarded
- * to the shown persona, so nothing is copied. Returns false, changing nothing, when the persona or the
+ * Picks persona `id` through `pickBinding` (`src/ts/storage/chatBindingPick.ts`): the required `target`
+ * names the chat to bind, or `null` selects for the tab, also with a chat open. The persona fields are
+ * forwarded to the shown persona, so nothing is copied. Returns false, changing nothing, when the persona or the
  * chat is gone; true otherwise, also when the persona was already picked there.
  */
-export function changeUserPersona(id: string, target?: ChatRef | null): boolean {
+export function changeUserPersona(id: string, target: ChatRef | null): boolean {
     return pickBinding("personaId", id, target);
 }
 

@@ -157,8 +157,12 @@ mechanisms register). Then comes one section per mechanism with a rule between, 
 
 - `src/lib/Setting/botpreset.svelte` (both preset lists) and `src/lib/Setting/BindingScopeNote.svelte`. `App.svelte`
   mounts one list per store (`openPresetList`, `openModelPresetList`).
-- A pick uses `pickBinding` (`src/ts/storage/chatBindingPick.ts`): it binds the open chat, or changes the tab selection
-  at home ([chat bindings](persistence.md)). Ctrl+1..9 and persona pickers use the same path.
+- A pick uses `pickBinding` (`src/ts/storage/chatBindingPick.ts`): a list opened for a chat (`chatRef`, the binding
+  panel's rows) binds that chat; any other list, Ctrl+1..9, and the Persona page change the tab's selection, also with a
+  chat open ([chat bindings](persistence.md#chat-binding)).
+- `BindingScopeNote.svelte`, per field while a chat is open: "This chat" when the chat's bound record is the shown one;
+  "Not this chat's" with a "Show this chat's" button (which selects the bound record for the tab, never binds) when it
+  is another; "Not set for this chat" when it is unset or gone. Nothing at home.
 - `src/ts/storage/presets.svelte.ts` `importPreset` returns the new id after success, or no value for a cancelled picker
   or a refused file (alerted). The share receiver consumes its cached preset only after success.
 
@@ -187,8 +191,8 @@ mechanisms register). Then comes one section per mechanism with a rule between, 
 - Search: `searchSettings` → `openSetting` → keyed page mount → `currentJump()` → scroll/highlight or unavailable note →
   `finishJump` (an available page or tab hit only navigates), across `src/ts/setting/searchIndex.ts`,
   `src/ts/setting/settingJump.svelte.ts`, and the consumers in [Settings search and jumps](#settings-search-and-jumps).
-- Preset switching changes the selected record; picking uses `pickBinding` and may update an open chat's binding. The
-  field and chat-binding rules are in [persistence](persistence.md#settings-records).
+- Preset switching on the settings screen changes the tab's selected record, never a chat's binding; only the binding
+  panel binds. The field and chat-binding rules are in [persistence](persistence.md#chat-binding).
 - A language switch is the `lang.uiLanguage` `onChange` in `src/ts/setting/languageSettingsData.svelte.ts`.
 - SillyTavern import computes `PresensePenalty` from `presence_penalty`; a missing value becomes `NaN`, then
   `normalizePreset` replaces it with the `PRESET_DEFAULTS` value.
@@ -201,9 +205,9 @@ mechanisms register). Then comes one section per mechanism with a rule between, 
   fields. Other tab readers and writers use these same views.
 - The settings screen reads and writes the edited family instead: `editedPreset`, `editedModelPreset`,
   `editedMainProfile`/`editedSubProfile`, `editedPersona`, `edited*Record()`, `readEditedRoot`/`writeEditedRoot` (the
-  registry's context and bindings), and `editedScope()` for its `getModelInfoForMode` calls. The two families resolve
-  alike for now. Chat-side readers never read the edited family; the memory, module, and plugin pages and the token
-  counts and popup previews keep the active one (what the open chat runs with).
+  registry's context and bindings), and `editedScope()` for its `getModelInfoForMode` calls. The edited family resolves
+  the tab's selection only, also with a chat open. Chat-side readers never read the edited family; the memory, module,
+  and plugin pages and the token counts and popup previews keep the active one (what the open chat runs with).
 - When a chat is open, active prompt/model/persona views follow its bound record when present, then the tab selection.
   Missing preset fields read as fresh defaults, so editing the returned copy does not save; writes resolve the current
   record, so async handlers capture its id before awaiting. See [selection rules](persistence.md#settings-records).
@@ -315,8 +319,9 @@ mechanisms register). Then comes one section per mechanism with a rule between, 
 - `slow`: none in this area.
 - `e2e`: `e2e/settingsPages.spec.ts` (page mounting, subsequent no-write traversal, and control writes),
   `e2e/presetSelection.spec.ts` (an edit in the real settings UI followed by a hotkey switch; the selection per client
-  and per tab), `e2e/chatBinding.spec.ts` (the real Model Presets and Prompt Presets pickers bind the chat, show its
-  name, close, and leave the tab's selection alone).
+  and per tab), `e2e/chatBinding.spec.ts` (the binding panel's Model Presets and Prompt Presets pickers bind the chat,
+  show its name, close, and leave the tab's selection alone; a settings pick with a bound chat open selects for the tab,
+  and the header note and its button compare the two).
 - `installFlatDatabase` (`src/ts/storage/tests/`) installs a fixture into the records, so wrapper and page tests run
   over the real views.
 - `src/ts/storage/tests/settingWrappers.test.ts` mounts the wrappers and `SettingRenderer` over the production

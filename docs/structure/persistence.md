@@ -240,8 +240,13 @@ carry them. The Translation page can clear `LLMTranslateCache` through `clearLLM
   (`shared/chatBinding.ts`): strict, no fallback.
 - `chatBinding.svelte.ts`: `chatBinding` for a send; `chatDisplayIds` for a render (per field the bound id when its
   record exists, else the tab's); `chatBindingPatch` through `setChatMeta`.
-- `pickBinding(field, id, target?)` (`chatBindingPick.ts`): a `ChatRef` binds that chat, `null` selects for the tab,
-  `undefined` binds the open chat, or selects for the tab at home.
+- `pickBinding(field, id, target)` (`chatBindingPick.ts`): the target is required; a `ChatRef` binds that chat, `null`
+  selects for the tab, also with a chat open. Only the binding panel's pickers (`ChatBindingPanel.svelte`, the store's
+  `{ chatRef }`) name a chat; the settings, their lists, and Ctrl+1..9 pass `null`.
+- `settingsViews.svelte.ts` serves two families. The active one (`active*`, `current*Record`, `readSettingsRoot`) reads
+  the selected chat's bound record first, else the tab's selection, for every chat-side reader. The edited one
+  (`edited*`, `readEditedRoot`/`writeEditedRoot`, `editedScope()`) resolves the tab's selection only, for the settings
+  screen; its writes have no first-record fallback and are dropped when the selection names no record.
 - The `ui` field `newChatBinding`: `inherit`, the default, copies the selected chat's ids that exist, never
   `bindingReview` (`initialChatBinding`); `empty` leaves a new chat unbound. A character's first chat starts unbound, a
   copy or branch keeps its source's binding, and `importChat` keeps only ids that exist and sets `bindingReview`

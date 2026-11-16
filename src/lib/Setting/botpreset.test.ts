@@ -30,7 +30,13 @@ vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: str
 vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 
 import { MODEL_PRESET_DEFAULT_NAME, normalizeModelPreset, normalizeModelProfile } from "../../../shared/presets.ts";
-import { settings, activePreset, activeModelPreset, activeMainProfile } from "src/ts/storage/settingsViews.svelte";
+import {
+    settings,
+    activePreset,
+    activeModelPreset,
+    activeMainProfile,
+    editedPreset,
+} from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase, installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { selectCharacter, selection, selectModelPreset, selectPreset } from "src/ts/storage/selection.svelte";
 import { chatBinding, chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
@@ -176,12 +182,12 @@ describe("the prompt preset list", () => {
     });
 });
 
-// The list picks for the chat the screen shows. With an open chat a pick binds that chat (the tab's
-// selection stays), the highlight is the chat's bound record that exists (none when unset or gone,
-// never the view's tab fallback), and the list names the chat. A list opened for a given chat
-// (`chatRef`) picks for that chat, selected or not, and closes when it is gone. A deletion names
-// how many chats bind the record, leaves those chats as they are, and moves the tab's selection
-// only when it named the record. At home everything is the tab's, as before.
+// Without `chatRef` the list is the settings': it marks and picks the tab's selection, also with a
+// chat open, names no chat, and leaves the open chat's binding. A list opened for a given chat
+// (`chatRef`) picks for that chat, selected or not, marks its bound record that exists (none when
+// unset or gone, never the view's tab fallback), names the chat, and closes when it is gone. A
+// deletion names how many chats bind the record, leaves those chats as they are, and moves the
+// tab's selection only when it named the record.
 describe("the lists with a chat open", () => {
     const chat = (id: string, fields: Record<string, unknown> = {}) => ({
         id,
@@ -249,11 +255,37 @@ describe("the lists with a chat open", () => {
         return { target, close, rows, rowNamed, selectedNames, icon };
     }
 
-    it("marks the open chat's bound preset, names the chat, and a pick binds the chat, not the tab", () => {
+    it("without chatRef the list marks the tab's selection, names no chat, and a pick selects for the tab, leaving the open chat's binding", () => {
         const prompt = renderFor("prompt");
-        expect(prompt.target.textContent).toContain(language.chatBinding.forChat("K"));
-        // The view shows the chat's `p2` too, but the highlight is the binding's, not the view's.
+        expect(prompt.target.textContent).not.toContain(language.chatBinding.forChat("K"));
+        // The open chat runs with its `p2`, but the settings' list is the tab's `p1`.
         expect(activePreset.id).toBe("p2");
+        expect(editedPreset.id).toBe("p1");
+        expect(prompt.selectedNames()).toEqual(["1 Prompt One"]);
+
+        prompt.rowNamed("Prompt Three").click();
+        flushSync();
+        expect(selection.presetId).toBe("p3");
+        expect(editedPreset.id).toBe("p3");
+        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "p2", modelPresetId: "m2" });
+        expect(activePreset.id).toBe("p2");
+        expect(prompt.close).toHaveBeenCalledTimes(1);
+
+        const model = renderFor("model");
+        expect(model.selectedNames()).toEqual(["Model One"]);
+        model.rowNamed("Model Three").click();
+        flushSync();
+        expect(selection.modelPresetId).toBe("m3");
+        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "p2", modelPresetId: "m2" });
+        expect(chatEntry(refJ)).not.toHaveProperty("promptPresetId");
+        expect(chatEntry(refJ)).not.toHaveProperty("modelPresetId");
+    });
+
+    it("a list opened for the open chat marks its bound preset, names it, and a pick binds it, not the tab", () => {
+        const prompt = renderFor("prompt", refK);
+        expect(prompt.target.textContent).toContain(language.chatBinding.forChat("K"));
+        // The edited view shows the tab's `p1`, but the highlight is the binding's.
+        expect(editedPreset.id).toBe("p1");
         expect(prompt.selectedNames()).toEqual(["2 Prompt Two"]);
 
         prompt.rowNamed("Prompt Three").click();
@@ -263,7 +295,7 @@ describe("the lists with a chat open", () => {
         expect(activePreset.id).toBe("p3");
         expect(prompt.close).toHaveBeenCalledTimes(1);
 
-        const model = renderFor("model");
+        const model = renderFor("model", refK);
         expect(model.selectedNames()).toEqual(["Model Two"]);
         model.rowNamed("Model Three").click();
         flushSync();
@@ -272,9 +304,24 @@ describe("the lists with a chat open", () => {
         expect(chatEntry(refJ)).not.toHaveProperty("promptPresetId");
     });
 
-    it("marks nothing for an unset or gone binding although the view falls back to the tab's preset", () => {
+    it("without chatRef the mark stays on the tab's selection whatever the open chat binds", () => {
         selectChat("c", "j");
         const prompt = renderFor("prompt");
+        expect(prompt.selectedNames()).toEqual(["1 Prompt One"]);
+        expect(prompt.target.textContent).not.toContain(language.chatBinding.forChat("J"));
+
+        chatBindingPatch(refJ, { promptPresetId: "p-gone" });
+        flushSync();
+        expect(prompt.selectedNames()).toEqual(["1 Prompt One"]);
+        chatBindingPatch(refJ, { promptPresetId: "p2" });
+        flushSync();
+        expect(activePreset.id).toBe("p2");
+        expect(prompt.selectedNames()).toEqual(["1 Prompt One"]);
+    });
+
+    it("a list opened for a chat marks nothing for an unset or gone binding although the view falls back to the tab's preset", () => {
+        selectChat("c", "j");
+        const prompt = renderFor("prompt", refJ);
         expect(activePreset.id).toBe("p1");
         expect(prompt.selectedNames()).toEqual([]);
         expect(prompt.target.textContent).toContain(language.chatBinding.forChat("J"));

@@ -42,7 +42,7 @@ import { llmSecretState, setMaskedSecrets } from "./storage/llmSecrets.svelte";
 import { maskLlmSecrets } from "../../shared/llmSecrets.ts";
 import { chatEntry, selectChat } from "./storage/chatStore.svelte";
 import { selectCharacter, selectedIndex, selection, selectPreset } from "./storage/selection.svelte";
-import { activePreset, selectedPresetIndex, settings } from "./storage/settingsViews.svelte";
+import { activePreset, editedPreset, selectedPresetIndex, settings } from "./storage/settingsViews.svelte";
 import { installFlatDatabase, installFlatDatabaseWithChats } from "./storage/tests/installFlatDatabase";
 import {
     alertStore,
@@ -458,20 +458,21 @@ describe("the preset hotkeys and Escape with the binding layers", () => {
         document.body.replaceChildren();
     });
 
-    it("Ctrl+N binds the open chat's prompt preset and leaves the tab's selection; at home it selects for the tab", async () => {
+    it("Ctrl+N with a chat open selects for the tab and leaves the chat's binding; at home it selects for the tab too", async () => {
         press("3");
         await Promise.resolve();
-        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "c" });
+        expect(selection.presetId).toBe("c");
+        expect(editedPreset.temperature).toBe(30);
+        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "b" });
         expect(chatEntry(refJ)).not.toHaveProperty("promptPresetId");
-        expect(selection.presetId).toBe("a");
-        expect(activePreset.temperature).toBe(30);
+        expect(activePreset.temperature).toBe(50);
         expect(alertToast).toHaveBeenLastCalledWith("Changed to Preset: C");
 
         selectCharacter(null);
-        press("2");
+        press("1");
         await Promise.resolve();
-        expect(selection.presetId).toBe("b");
-        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "c" });
+        expect(selection.presetId).toBe("a");
+        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "b" });
         expect(alertToast).toHaveBeenCalledTimes(2);
     });
 
@@ -493,7 +494,8 @@ describe("the preset hotkeys and Escape with the binding layers", () => {
         closeAll();
         press("3");
         await Promise.resolve();
-        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "c" });
+        expect(selection.presetId).toBe("c");
+        expect(chatEntry(refK)).toMatchObject({ promptPresetId: "b" });
     });
 
     it("Escape closes one layer per press, from the top: persona list, model list, preset list, dialog, then settings", () => {

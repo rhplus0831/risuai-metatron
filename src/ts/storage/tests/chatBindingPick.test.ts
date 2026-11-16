@@ -6,9 +6,9 @@ import { StoreBackedServer } from "./storeBackedServer";
 // the deletion count (`chatsBoundTo` over `countChatEntries`), over the chat module booted from
 // summaries against the real server store (nothing loaded, as `chatBindingViews.test.ts` boots it).
 // Covered:
-// - the target rule: `undefined` is the open chat at the call, else the tab's selection at home;
-//   `null` is the tab's selection even while a chat is open; a ref is that chat, selected or not,
-//   loaded or not;
+// - the target rule: the target is required (an omitted one does not type-check); `null` is the
+//   tab's selection, at home and while a chat is open; a ref is that chat, selected or not, loaded
+//   or not;
 // - a chat's pick sets that one field through the list entry, leaves the tab's selection, the other
 //   chats, and `bindingReview` as they are, and returns true; a gone record or a gone chat changes
 //   nothing and returns false;
@@ -39,6 +39,13 @@ type BindingModule = typeof import("../chatBinding.svelte");
 type PickModule = typeof import("../chatBindingPick");
 type RecordsModule = typeof import("../records.svelte");
 type SelectionModule = typeof import("../selection.svelte");
+
+// The target is required, so a picker cannot bind the open chat by leaving it out. Never called:
+// `pnpm check` fails if the omitted target type-checks.
+const omittedTarget = (pick: PickModule) =>
+    // @ts-expect-error the target is required
+    pick.pickBinding("promptPresetId", "p2");
+void omittedTarget;
 
 const m = (id: string, data: string) => ({ role: "user", data, chatId: id }) as any;
 const ref = (chatId: string, chaId = "c") => ({ chaId, chatId });
@@ -169,37 +176,50 @@ afterEach(() => {
 });
 
 describe("pickBinding's target", () => {
-    it("at home an undefined target is the tab's selection, per field; a gone record changes nothing", async () => {
+    it("at home a null target is the tab's selection, per field; a gone record changes nothing", async () => {
         const { chat, pick, selected } = await boot();
-        expect(pick.pickBinding("promptPresetId", "p2")).toBe(true);
-        expect(pick.pickBinding("modelPresetId", "m2")).toBe(true);
-        expect(pick.pickBinding("personaId", "u2")).toBe(true);
+        expect(pick.pickBinding("promptPresetId", "p2", null)).toBe(true);
+        expect(pick.pickBinding("modelPresetId", "m2", null)).toBe(true);
+        expect(pick.pickBinding("personaId", "u2", null)).toBe(true);
         expect(selected()).toEqual({ presetId: "p2", modelPresetId: "m2", personaId: "u2" });
 
-        expect(pick.pickBinding("promptPresetId", "p-nope")).toBe(false);
-        expect(pick.pickBinding("modelPresetId", "m-nope")).toBe(false);
-        expect(pick.pickBinding("personaId", "u-nope")).toBe(false);
+        expect(pick.pickBinding("promptPresetId", "p-nope", null)).toBe(false);
+        expect(pick.pickBinding("modelPresetId", "m-nope", null)).toBe(false);
+        expect(pick.pickBinding("personaId", "u-nope", null)).toBe(false);
         expect(selected()).toEqual({ presetId: "p2", modelPresetId: "m2", personaId: "u2" });
         // No chat was written.
         expect(chat.hasChatWork()).toBe(false);
     });
 
-    it("with an open chat an undefined target binds that chat only (unloaded, from its summary); the tab's selection stays", async () => {
+    it("with an open chat a null target selects for the tab, per field, and the open chat's binding stays; its ref binds it (unloaded, from its summary)", async () => {
         const { chat, binding, pick, selected, entryIds, open } = await boot();
         open("unbound");
         expect(chat.findChat(ref("unbound"))).toBeUndefined();
 
-        expect(pick.pickBinding("promptPresetId", "p2")).toBe(true);
-        expect(entryIds(ref("unbound"))).toMatchObject({ promptPresetId: "p2" });
+        expect(pick.pickBinding("promptPresetId", "p2", null)).toBe(true);
+        expect(pick.pickBinding("modelPresetId", "m2", null)).toBe(true);
+        expect(pick.pickBinding("personaId", "u2", null)).toBe(true);
+        expect(selected()).toEqual({ presetId: "p2", modelPresetId: "m2", personaId: "u2" });
+        expect(entryIds(ref("unbound"))).toMatchObject({
+            modelPresetId: undefined,
+            promptPresetId: undefined,
+            bindedPersona: undefined,
+        });
+        expect(chat.hasChatWork()).toBe(false);
+
+        // The open chat's own ref binds it, one field at a time, and leaves the tab's selection.
+        const openRef = chat.currentChatRef()!;
+        expect(pick.pickBinding("promptPresetId", "p1", openRef)).toBe(true);
+        expect(entryIds(ref("unbound"))).toMatchObject({ promptPresetId: "p1" });
         expect(entryIds(ref("unbound"))!.modelPresetId).toBeUndefined();
         expect(entryIds(ref("unbound"))!.bindedPersona).toBeUndefined();
-        expect(pick.pickBinding("modelPresetId", "m2")).toBe(true);
-        expect(pick.pickBinding("personaId", "u2")).toBe(true);
+        expect(pick.pickBinding("modelPresetId", "m1", openRef)).toBe(true);
+        expect(pick.pickBinding("personaId", "u1", openRef)).toBe(true);
         expect(binding.chatBinding(ref("unbound"))).toEqual({
             ok: true,
-            ids: { modelPresetId: "m2", promptPresetId: "p2", personaId: "u2" },
+            ids: { modelPresetId: "m1", promptPresetId: "p1", personaId: "u1" },
         });
-        expect(selected()).toEqual(TAB);
+        expect(selected()).toEqual({ presetId: "p2", modelPresetId: "m2", personaId: "u2" });
         // The other chats are untouched; the chat is still not loaded.
         expect(entryIds(ref("bound"))).toMatchObject({
             modelPresetId: "m2",
@@ -214,7 +234,7 @@ describe("pickBinding's target", () => {
     it("a chat's pick leaves a pending review and the other fields; a gone record changes nothing", async () => {
         const { binding, pick, entryIds, open } = await boot();
         open("partial");
-        expect(pick.pickBinding("promptPresetId", "p1")).toBe(true);
+        expect(pick.pickBinding("promptPresetId", "p1", ref("partial"))).toBe(true);
         expect(entryIds(ref("partial"))).toMatchObject({
             modelPresetId: "m1",
             promptPresetId: "p1",
@@ -227,7 +247,7 @@ describe("pickBinding's target", () => {
             problems: [{ field: "personaId", reason: "unset" }, { field: "review" }],
         });
 
-        expect(pick.pickBinding("personaId", "u-nope")).toBe(false);
+        expect(pick.pickBinding("personaId", "u-nope", ref("partial"))).toBe(false);
         expect(entryIds(ref("partial"))!.bindedPersona).toBeUndefined();
     });
 

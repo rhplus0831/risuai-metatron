@@ -63,8 +63,8 @@ export {
 export const botMakerMode = writable(false);
 export const moduleBackgroundEmbedding = writable("");
 /**
- * Whether a picker list is open: `true` opens it for what the screen shows (the open chat's binding,
- * else the tab's selection), `{ chatRef }` for that chat's binding (the binding panel's rows).
+ * Whether a picker list is open: `true` opens it for the tab's selection (the settings' list),
+ * `{ chatRef }` for that chat's binding (the binding panel's rows).
  */
 export type PickerListState = boolean | { chatRef: ChatRef };
 /** The prompt preset list (`botpreset.svelte`, kind `prompt`). */

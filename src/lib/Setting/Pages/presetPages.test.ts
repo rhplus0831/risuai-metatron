@@ -39,11 +39,19 @@ import { alertConfirm } from "src/ts/alert";
 import { deleteModelProfile, translatorPresetsUsingModelProfile } from "src/ts/storage/collectionStore.svelte";
 import { normalizeModelPreset, normalizeModelProfile } from "../../../../shared/presets.ts";
 import { createTranslatorPreset } from "../../../../shared/translatorPresets.ts";
-import { settings, activePreset, activeMainProfile } from "src/ts/storage/settingsViews.svelte";
+import { settings, activePreset, activeMainProfile, editedPreset } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase, installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import BotPreset from "../botpreset.svelte";
+import { chatBindingIds } from "src/ts/storage/chatBinding.svelte";
 import { selectChat } from "src/ts/storage/chatStore.svelte";
 import { applyRaw } from "src/ts/storage/records.svelte";
-import { selectCharacter, selectModelPreset, selectPreset, setChatOpen } from "src/ts/storage/selection.svelte";
+import {
+    selectCharacter,
+    selection,
+    selectModelPreset,
+    selectPreset,
+    setChatOpen,
+} from "src/ts/storage/selection.svelte";
 import {
     API_KEYS_SETTINGS_MENU,
     closePopupEditorSession,
@@ -566,7 +574,7 @@ describe("the Prompt page", () => {
         expect(activePreset.id).toBe("p1");
     });
 
-    it("a field's popup writes the preset it opened on; a preset change while it is open discards it, even between presets with the same text", async () => {
+    it("a field's popup writes the tab's preset it opened on, not the open chat's; a selection change while it is open discards it, even between presets with the same text", async () => {
         vi.useFakeTimers();
         const previousPopup = { ...popUpEditorStore };
         try {
@@ -589,7 +597,9 @@ describe("the Prompt page", () => {
             selectCharacter("c");
             selectChat("c", "chat");
             setChatOpen(true);
+            // The open chat runs with its `bound`; the page edits the tab's `tab`.
             expect(activePreset.id).toBe("bound");
+            expect(editedPreset.id).toBe("tab");
             const page = render(PromptPresetSettings);
             const button = (name: string) =>
                 [...page.querySelectorAll("button")].find((button) => button.textContent?.trim() === name)!;
@@ -615,21 +625,25 @@ describe("the Prompt page", () => {
             };
             const moduleIntegrations = () => settings.presets.map((preset) => [preset.id, preset.moduleIntergration]);
 
-            // The chat's bound preset is shown; Home closes the chat while its popup is open, and the
-            // tab's preset (also "") is shown next, so the bound value alone would not notice.
+            // The tab's preset is shown; the tab's selection moves to `bound` while its popup is open,
+            // and `bound` (also "") is shown next, so the bound value alone would not notice.
             openPopup();
-            popUpEditorStore.value = "typed for the bound preset";
-            selectCharacter(null);
+            popUpEditorStore.value = "typed for the tab preset";
+            selectPreset("bound");
             flushSync();
-            expect(activePreset.id).toBe("tab");
-            await closePopupWith("typed for the bound preset");
+            expect(editedPreset.id).toBe("bound");
+            await closePopupWith("typed for the tab preset");
             expect(moduleIntegrations()).toEqual([
                 ["bound", ""],
                 ["tab", ""],
             ]);
 
-            // Without a change the popup writes the shown preset, also across a refresh of the preset
-            // list (another client renamed it) that keeps its id.
+            // Without a change the popup writes the shown preset (the tab's, while the open chat still
+            // binds `bound`), also across a refresh of the preset list (another client renamed it) that
+            // keeps its id.
+            selectPreset("tab");
+            flushSync();
+            expect(activePreset.id).toBe("bound");
             openPopup();
             const refreshed = JSON.parse(JSON.stringify(settings.presets));
             refreshed[1].name = "Tab, renamed";
@@ -650,4 +664,118 @@ describe("the Prompt page", () => {
             vi.useRealTimers();
         }
     });
+});
+
+describe("settings lists with a bound chat open", () => {
+    afterEach(() => selectCharacter(null));
+
+    it.each(["prompt", "model"] as const)(
+        "a %s settings pick selects for the page and its edits; an explicit chat list binds without selecting",
+        (kind) => {
+            installFlatDatabaseWithChats({
+                characters: [
+                    {
+                        chaId: "c",
+                        type: "character",
+                        name: "C",
+                        chats: [
+                            {
+                                id: "chat",
+                                name: "Chat",
+                                message: [],
+                                localLore: [],
+                                promptPresetId: "p1",
+                                modelPresetId: "m1",
+                            },
+                        ],
+                    },
+                ],
+                botPresets: [
+                    { id: "p1", name: "Prompt One", temperature: 80, maxResponse: 300 },
+                    { id: "p2", name: "Prompt Two", temperature: 50, maxResponse: 600 },
+                ],
+                modelPresets: [
+                    normalizeModelPreset({
+                        id: "m1",
+                        name: "Model One",
+                        mainSlot: { profileId: "echo" },
+                        subSlot: { profileId: "echo" },
+                    }),
+                    normalizeModelPreset({
+                        id: "m2",
+                        name: "Model Two",
+                        mainSlot: { profileId: "spare" },
+                        subSlot: { profileId: "spare" },
+                    }),
+                ],
+                modelProfiles: [
+                    normalizeModelProfile({ id: "echo", name: "Echo", modelId: "echo_model" }),
+                    normalizeModelProfile({ id: "spare", name: "Spare", modelId: "echo_model" }),
+                ],
+                useLegacyGUI: false,
+            });
+            const ref = { chaId: "c", chatId: "chat" };
+            selectPreset("p1");
+            selectModelPreset("m1");
+            selectCharacter("c");
+            selectChat("c", "chat");
+            const bindingBefore = chatBindingIds(ref);
+            const boundBefore = JSON.stringify([settings.presets[0], settings.modelPresets[0]]);
+            const isPrompt = kind === "prompt";
+            const field = isPrompt ? "promptPresetId" : "modelPresetId";
+            const selectionKey = isPrompt ? "presetId" : "modelPresetId";
+            const page = render(isPrompt ? PromptPresetSettings : ModelSettings);
+            page.querySelector<HTMLElement>(".lucide-list")!.closest("button")!.click();
+            expect(get(isPrompt ? openPresetList : openModelPresetList)).toBe(true);
+
+            const list = document.createElement("div");
+            document.body.append(list);
+            mounted.push(mount(BotPreset, { target: list, props: { kind } }));
+            flushSync();
+            expect(list.textContent).not.toContain("For this chat");
+            const pickSecond = (target: HTMLElement) => {
+                const label = [...target.querySelectorAll("span")].find(
+                    (span) => span.textContent?.trim() === (isPrompt ? "Prompt Two" : "Model Two"),
+                );
+                expect(label, "the second preset's list row").toBeDefined();
+                label!.closest("button")!.click();
+            };
+            pickSecond(list);
+            flushSync();
+            expect(selection[selectionKey]).toBe(isPrompt ? "p2" : "m2");
+            expect(chatBindingIds(ref)).toEqual(bindingBefore);
+            expect(page.textContent).toContain(isPrompt ? "Prompt Two" : "Model Two");
+            expect(page.textContent).toContain("Not this chat's");
+            if (isPrompt) {
+                const input = [...page.querySelectorAll<HTMLInputElement>("input[type=number]")].find(
+                    (input) => input.value === "600",
+                )!;
+                expect(input).toBeDefined();
+                input.value = "777";
+                input.dispatchEvent(new Event("input", { bubbles: true }));
+                flushSync();
+                expect(settings.presets[1].maxResponse).toBe(777);
+            } else {
+                const main = page.querySelector<HTMLSelectElement>("[data-model-slot=model] select")!;
+                expect(main.value).toBe("profile:spare");
+                chooseOption(main, "profile:echo");
+                flushSync();
+                expect(settings.modelPresets[1].mainSlot).toEqual({ profileId: "echo" });
+            }
+            expect(JSON.stringify([settings.presets[0], settings.modelPresets[0]])).toBe(boundBefore);
+
+            // A new list with an explicit chat target has the opposite ownership: bind, leave the tab.
+            selectPreset("p1");
+            selectModelPreset("m1");
+            const chatList = document.createElement("div");
+            document.body.append(chatList);
+            mounted.push(mount(BotPreset, { target: chatList, props: { kind, chatRef: ref } }));
+            flushSync();
+            expect(chatList.textContent).toContain("For this chat: Chat");
+            pickSecond(chatList);
+            flushSync();
+            expect(chatBindingIds(ref)).toEqual({ ...bindingBefore, [field]: isPrompt ? "p2" : "m2" });
+            expect([selection.presetId, selection.modelPresetId]).toEqual(["p1", "m1"]);
+        },
+    );
 });

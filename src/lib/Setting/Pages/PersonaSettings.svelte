@@ -15,26 +15,24 @@
     import { onDestroy, onMount } from "svelte";
     import { sleep, sortableOptions } from "src/ts/util";
     import { newPersonaId } from "../../../../shared/presets.ts";
-    import { currentChatRef } from "src/ts/storage/chatStore.svelte";
-    import { chatsBoundTo, pickedId } from "src/ts/storage/chatBinding.svelte";
+    import { chatsBoundTo } from "src/ts/storage/chatBinding.svelte";
     import { selectPersona, selection } from "src/ts/storage/selection.svelte";
     import BindingScopeNote from "../BindingScopeNote.svelte";
     import { CircleCheckIcon } from "@lucide/svelte";
     import { normalizePersonaModules } from "../../../../shared/personas.ts";
 
     /**
-     * The persona settings page. The editor and the module links it edits (`RisuPersona.modules`) are the persona the
-     * screen shows (`editedPersonaRecord`: the open chat's bound persona, else the tab's), read at each write.
-     * Creation captures its target chat before its dialog and picks the new persona there; an imported one is not
+     * The persona settings page. The editor and the module links it edits (`RisuPersona.modules`) belong to the tab's
+     * selected persona (`editedPersonaRecord`), read at each write.
+     * Creation selects the new persona for the tab; an imported one is not
      * picked. A deletion moves only the tab's selection, never a chat's binding; the last persona is never deleted.
      */
 
     let stb: Sortable = null;
     let ele: HTMLDivElement = $state();
     let sorted = $state(0);
-    // Read once per render, not once per row. The ring marks the open chat's bound persona (none
-    // when unset or deleted), else at home the tab's; the editor below edits `editedPersona`.
-    const selectedPersonaId = $derived(pickedId("personaId", currentChatRef(), editedPersona.id));
+    // Read once per render; the ring marks the tab's selected persona, also with a chat open.
+    const selectedPersonaId = $derived(editedPersona.id);
     let moduleSearch = $state("");
     // The modules a persona can link: not MCP, with a non-blank id (`normalizePersonaModules` keeps
     // no other), each id once (the first, as the resolvers pick), shown by name, else by id.
@@ -120,7 +118,7 @@
             <button
                 data-risu-idx={i}
                 onclick={() => {
-                    changeUserPersona(persona.id);
+                    changeUserPersona(persona.id, null);
                 }}
             >
                 {#if persona.icon === ""}
@@ -151,8 +149,6 @@
         <div class="flex justify-center items-center ml-2 mr-2">
             <BaseRoundedButton
                 onClick={async () => {
-                    // The chat a new persona is picked for, read before the dialog (null: the tab's selection).
-                    const target = currentChatRef();
                     const sel = parseInt(await alertSelect([language.createfromScratch, language.importCharacter]));
                     if (sel === 0) {
                         const id = newPersonaId();
@@ -163,7 +159,7 @@
                             personaPrompt: "",
                             note: "",
                         });
-                        changeUserPersona(id, target);
+                        changeUserPersona(id, null);
                     } else if (sel === 1) {
                         await importUserPersona();
                     }

@@ -78,7 +78,8 @@ import { isJsonData } from "./mutationValidation";
  *   `personaPrompt` with `PERSONA_DEFAULTS`, `largePortrait` as stored).
  *
  * The settings screen uses `editedPreset`, `editedModelPreset`, `editedMainProfile`/`editedSubProfile`,
- * `editedPersona`, and `readEditedRoot`/`writeEditedRoot`; they resolve exactly as the active family for now.
+ * `editedPersona`, and `readEditedRoot`/`writeEditedRoot`; they resolve only the tab's selection,
+ * never the open chat's binding. Chat-side readers keep the active family.
  *
  * Profile views resolve a slot's profile by id; missing and bare slots serve schema defaults and
  * refuse changed writes. Every getter looks its record up when it runs (nothing is captured), so
@@ -132,9 +133,10 @@ export type ActivePersona = Pick<RisuPersona, ActivePersonaField> & { readonly i
 //
 // - Every access resolves the record anew from the current collection (nothing is cached), so a
 //   collection replaced by a conflict reload or a splice is honored at once.
-// - The selected chat's binding comes first: per field, a bound id that names a record wins; an
+// - The active family reads the selected chat's binding first: per field, a bound id that names a record wins; an
 //   unset or gone one falls through to the tab's selection (the display rule; a pending review does
 //   not matter). The binding is never written to the selection.
+// - The edited family resolves only the tab's selection, never the selected chat's binding.
 // - When the tab's selected id names no record, a read falls back to the first record and makes it
 //   the selection (untracked: the read may come from a `$derived`, where a tracked write throws). A
 //   write made while the id names no record is dropped, never redirected to another record.
@@ -384,9 +386,29 @@ export function forwardedPresetField(rootKey: string): PresetField | undefined {
     return forwardedPresetKeys.has(rootKey) ? ((presetFieldOfRoot[rootKey] ?? rootKey) as PresetField) : undefined;
 }
 
-function readModelRoot(rootKey: ModelPresetRootKey, scope?: Pick<PresetScope, "modelPresetId">): unknown {
-    const preset = scope ? findModelPreset(scope.modelPresetId) : resolveModelPreset();
-    return modelPresetRootValue(preset, modelProfileList(), rootKey);
+/** Live model-preset resolution: reads may repair selection; writes must never use that fallback. */
+interface ModelPresetTarget {
+    read: () => ModelPreset | undefined;
+    forWrite: () => ModelPreset | undefined;
+}
+
+const activeModelPresetTarget: ModelPresetTarget = {
+    read: resolveModelPreset,
+    forWrite: modelPresetRecordForWrite,
+};
+
+const editedModelPresetTarget: ModelPresetTarget = {
+    read: resolveTabModelPreset,
+    forWrite: () => untrack(() => findModelPreset(selection.modelPresetId)),
+};
+
+function scopedModelPresetTarget(scope: Pick<PresetScope, "modelPresetId">): ModelPresetTarget {
+    const resolve = () => findModelPreset(scope.modelPresetId);
+    return { read: resolve, forWrite: resolve };
+}
+
+function readModelRoot(rootKey: ModelPresetRootKey, target: ModelPresetTarget = activeModelPresetTarget): unknown {
+    return modelPresetRootValue(target.read(), modelProfileList(), rootKey);
 }
 
 function refuseModelRoot(rootKey: string, reason: string): false {
@@ -395,7 +417,7 @@ function refuseModelRoot(rootKey: string, reason: string): false {
 }
 
 /**
- * Applies one legacy model-root write to the selected or captured preset.
+ * Applies one legacy model-root write to the active, edited, or captured preset.
  * Same values never re-match a slot. Auxiliary modes may clear or go bare; main/sub require one
  * matching profile. Refusals warn, keep the old value, and return false without throwing, so other
  * keys still apply. A whole `seperateModels` object applies its supplied modes independently.
@@ -403,15 +425,14 @@ function refuseModelRoot(rootKey: string, reason: string): false {
 export function writeModelRoot(
     rootKey: ModelPresetRootKey | `seperateModels.${AuxModelMode}`,
     value: unknown,
-    scope?: Pick<PresetScope, "modelPresetId">,
+    targetOrScope: ModelPresetTarget | Pick<PresetScope, "modelPresetId"> = activeModelPresetTarget,
 ): boolean {
     return untrack(() => {
         if (!modelRootKeys.has(rootKey) && !rootKey.startsWith("seperateModels.")) {
             return refuseModelRoot(rootKey, "not a model root field");
         }
-        const preset = scope
-            ? findModelPreset(scope.modelPresetId)
-            : (modelPresetRecordForWrite() as ModelPresetRecord | undefined);
+        const target = "modelPresetId" in targetOrScope ? scopedModelPresetTarget(targetOrScope) : targetOrScope;
+        const preset = target.forWrite();
         const profiles = modelProfileList();
         if (rootKey === "seperateModels") {
             if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -422,7 +443,7 @@ export function writeModelRoot(
                 for (const [mode, modelId] of Object.entries(value)) {
                     if (!auxModes.includes(mode as AuxModelMode)) {
                         accepted = refuseModelRoot(`${rootKey}.${mode}`, "not an auxiliary model mode");
-                    } else if (!writeModelRoot(`seperateModels.${mode as AuxModelMode}`, modelId, scope)) {
+                    } else if (!writeModelRoot(`seperateModels.${mode as AuxModelMode}`, modelId, target)) {
                         accepted = false;
                     }
                 }
@@ -503,17 +524,17 @@ export function writeModelRoot(
     });
 }
 
-function seperateModelsView(scope?: Pick<PresetScope, "modelPresetId">): Database["seperateModels"] {
+function seperateModelsView(target: ModelPresetTarget = activeModelPresetTarget): Database["seperateModels"] {
     const view = {};
     for (const mode of auxModes) {
         defineView(
             view,
             mode,
             () => {
-                const preset = scope ? findModelPreset(scope.modelPresetId) : resolveModelPreset();
+                const preset = target.read();
                 return modelIdOfSlot(preset?.auxSlots?.[mode], modelProfileList());
             },
-            (value) => writeModelRoot(`seperateModels.${mode}`, value, scope),
+            (value) => writeModelRoot(`seperateModels.${mode}`, value, target),
         );
     }
     return Object.freeze(view) as Database["seperateModels"];
@@ -594,7 +615,9 @@ export class PresetTargetGoneError extends Error {
  */
 export function readPresetFieldOf(scope: PresetScope, rootKey: string): unknown {
     if (isModelPresetRootKey(rootKey)) {
-        return findModelPreset(scope.modelPresetId) === undefined ? undefined : readModelRoot(rootKey, scope);
+        return findModelPreset(scope.modelPresetId) === undefined
+            ? undefined
+            : readModelRoot(rootKey, scopedModelPresetTarget(scope));
     }
     const found = scopedPresetRecord(scope, rootKey);
     return found === undefined || found.record === undefined ? undefined : presetFieldValue(found.record, found.field);
@@ -814,7 +837,10 @@ export const activeSubProfile = profileForSlot(
     () => modelPresetRecordForWrite()?.subSlot,
 );
 
-function buildActivePersona(): ActivePersona {
+function buildActivePersona(
+    resolve: () => PersonaRecord | undefined,
+    forWrite: () => PersonaRecord | RisuPersona | undefined,
+): ActivePersona {
     const view = {};
     const fields: readonly ActivePersonaField[] = ["name", "icon", "note", "personaPrompt", "largePortrait"];
     for (const field of fields) {
@@ -822,21 +848,21 @@ function buildActivePersona(): ActivePersona {
             view,
             field,
             () => {
-                const value = resolvePersona()?.[field];
+                const value = resolve()?.[field];
                 if (field in PERSONA_DEFAULTS) {
                     return typeof value === "string" ? value : PERSONA_DEFAULTS[field as keyof typeof PERSONA_DEFAULTS];
                 }
                 return value;
             },
             (value) => {
-                const record = personaRecordForWrite() as unknown as PersonaRecord | undefined;
+                const record = forWrite() as PersonaRecord | undefined;
                 if (record !== undefined) {
                     record[field] = value;
                 }
             },
         );
     }
-    defineView(view, "id", () => resolvePersona()?.id);
+    defineView(view, "id", () => resolve()?.id);
     return Object.freeze(view) as ActivePersona;
 }
 
@@ -844,7 +870,7 @@ function buildActivePersona(): ActivePersona {
  * The selected persona's view. A missing or non-string `name`, `icon`, `note`, or `personaPrompt`
  * reads as its `PERSONA_DEFAULTS` value; `largePortrait` reads as stored.
  */
-export const activePersona: ActivePersona = buildActivePersona();
+export const activePersona: ActivePersona = buildActivePersona(resolvePersona, personaRecordForWrite);
 
 /** The selected preset's record (its wrapper), resolved as `activePreset` reads it; `undefined` when there is none. */
 export function currentPresetRecord(): botPreset | undefined {
@@ -861,45 +887,65 @@ export function currentPersonaRecord(): RisuPersona | undefined {
     return resolvePersona() as unknown as RisuPersona | undefined;
 }
 
-/**
- * The views and records the settings screen shows and edits (the Prompt, Model, and Persona pages,
- * their lists, and the settings registry). They resolve exactly as their active counterparts for now;
- * chat-side readers (a send, a render, a job, a plugin) never read them and keep the active family.
- */
-export const editedPreset: ActivePreset = activePreset;
-export const editedModelPreset: ActiveModelPreset = activeModelPreset;
-export const editedMainProfile: ModelProfileView = activeMainProfile;
-export const editedSubProfile: ModelProfileView = activeSubProfile;
-export const editedPersona: ActivePersona = activePersona;
+/** The settings screen's prompt preset: the tab's selection, never the open chat's binding. */
+export const editedPreset: ActivePreset = buildPresetView<ActivePreset>(ACTIVE_PRESET_FIELDS, resolveTabPreset, () =>
+    untrack(() => findPreset(selection.presetId)),
+);
 
-/** The settings screen's prompt preset record; resolves as `currentPresetRecord`. */
+/** The settings screen's model preset: the tab's selection, never the open chat's binding. */
+export const editedModelPreset: ActiveModelPreset = buildPresetView<ActiveModelPreset>(
+    ACTIVE_MODEL_PRESET_FIELDS,
+    resolveTabModelPreset,
+    () => editedModelPresetTarget.forWrite() as ModelPresetRecord | undefined,
+);
+
+/** The settings screen's main profile: from the tab's selected model preset, never the open chat's binding. */
+export const editedMainProfile: ModelProfileView = profileForSlot(
+    () => resolveTabModelPreset()?.mainSlot,
+    () => editedModelPresetTarget.forWrite()?.mainSlot,
+);
+
+/** The settings screen's sub profile: from the tab's selected model preset, never the open chat's binding. */
+export const editedSubProfile: ModelProfileView = profileForSlot(
+    () => resolveTabModelPreset()?.subSlot,
+    () => editedModelPresetTarget.forWrite()?.subSlot,
+);
+
+/** The settings screen's persona: the tab's selection, never the open chat's binding. */
+export const editedPersona: ActivePersona = buildActivePersona(resolveTabPersona, () =>
+    untrack(() => findPersona(selection.personaId)),
+);
+
+/** The settings screen's prompt preset record: the tab's selection, never the open chat's binding. */
 export function editedPresetRecord(): botPreset | undefined {
-    return currentPresetRecord();
+    return resolveTabPreset() as unknown as botPreset | undefined;
 }
 
-/** The settings screen's model preset record; resolves as `currentModelPresetRecord`. */
+/** The settings screen's model preset record: the tab's selection, never the open chat's binding. */
 export function editedModelPresetRecord(): ModelPreset | undefined {
-    return currentModelPresetRecord();
+    return resolveTabModelPreset();
 }
 
-/** The settings screen's persona record; resolves as `currentPersonaRecord`. */
+/** The settings screen's persona record: the tab's selection, never the open chat's binding. */
 export function editedPersonaRecord(): RisuPersona | undefined {
-    return currentPersonaRecord();
+    return resolveTabPersona() as unknown as RisuPersona | undefined;
 }
 
-/** The settings screen's root reader; resolves as `readSettingsRoot`. */
+/** The settings screen's root reader: preset and persona roots use the tab's selection, never the open chat's binding. */
 export function readEditedRoot(key: SettingsRootKey | string): unknown {
-    return readSettingsRoot(key);
+    const route = routeOf(editedRootRoutes, key);
+    return route.target()[route.field];
 }
 
-/** The settings screen's root writer; writes as `writeSettingsRoot`. */
+/** The settings screen's root writer: preset and persona roots use the tab's selection, never the open chat's binding. */
 export function writeEditedRoot(key: SettingsRootKey | string, value: unknown) {
-    return writeSettingsRoot(key, value);
+    const route = routeOf(editedRootRoutes, key);
+    route.target()[route.field] = value;
 }
 
-/** The ids of the prompt preset and model preset the settings screen shows (`""` when a list is empty), for `getModelInfoForMode`; it reads both ids. */
+/** The settings screen's prompt/model preset ids: the tab's selection, never the open chat's binding (`""` when empty), for `getModelInfoForMode`; reads both ids. */
 export function editedScope(): PresetScope {
-    return { presetId: activePreset.id ?? "", modelPresetId: activeModelPreset.id ?? "" };
+    return { presetId: resolveTabPreset()?.id ?? "", modelPresetId: resolveTabModelPreset()?.id ?? "" };
 }
 
 /**
@@ -950,7 +996,11 @@ interface RootRoute {
     field: string;
 }
 
-function buildRootRoutes(): ReadonlyMap<string, RootRoute> {
+function buildRootRoutes(
+    preset: ActivePreset,
+    persona: ActivePersona,
+    modelPreset: ModelPresetTarget,
+): ReadonlyMap<string, RootRoute> {
     const routes = new Map<string, RootRoute>();
     const views = settings as unknown as Record<string, Record<string, unknown>>;
     for (const section of Object.values(SECTION_KIND)) {
@@ -961,18 +1011,18 @@ function buildRootRoutes(): ReadonlyMap<string, RootRoute> {
     const presetAliases: Record<string, string> = PRESET_ROOT_ALIASES;
     for (const rootKey of FORWARDED_PRESET_KEYS as readonly string[]) {
         routes.set(rootKey, {
-            target: () => activePreset as unknown as Record<string, unknown>,
+            target: () => preset as unknown as Record<string, unknown>,
             field: presetAliases[rootKey] ?? rootKey,
         });
     }
     const modelRoots = {};
-    const auxView = seperateModelsView();
+    const auxView = seperateModelsView(modelPreset);
     for (const rootKey of FORWARDED_MODEL_PRESET_KEYS) {
         defineView(
             modelRoots,
             rootKey,
-            () => (rootKey === "seperateModels" ? auxView : readModelRoot(rootKey)),
-            (value) => writeModelRoot(rootKey, value),
+            () => (rootKey === "seperateModels" ? auxView : readModelRoot(rootKey, modelPreset)),
+            (value) => writeModelRoot(rootKey, value, modelPreset),
         );
         routes.set(rootKey, {
             target: () => modelRoots,
@@ -980,7 +1030,7 @@ function buildRootRoutes(): ReadonlyMap<string, RootRoute> {
         });
     }
     for (const [rootKey, field] of Object.entries(PERSONA_ROOT_ALIASES)) {
-        routes.set(rootKey, { target: () => activePersona as unknown as Record<string, unknown>, field });
+        routes.set(rootKey, { target: () => persona as unknown as Record<string, unknown>, field });
     }
     for (const [kind, rootKey] of Object.entries(COLLECTION_FIELDS)) {
         const selectedId = (COLLECTION_SELECTION_FIELDS as Record<string, string>)[kind];
@@ -1002,7 +1052,8 @@ function buildRootRoutes(): ReadonlyMap<string, RootRoute> {
     return routes;
 }
 
-const rootRoutes = buildRootRoutes();
+const rootRoutes = buildRootRoutes(activePreset, activePersona, activeModelPresetTarget);
+const editedRootRoutes = buildRootRoutes(editedPreset, editedPersona, editedModelPresetTarget);
 
 /**
  * Every root name the views serve (the section fields, both presets' fields under their root names,
@@ -1017,8 +1068,8 @@ export function isSettingsRootKey(key: string): key is SettingsRootKey {
     return rootRoutes.has(key);
 }
 
-function routeOf(key: string): RootRoute {
-    const route = rootRoutes.get(key);
+function routeOf(routes: ReadonlyMap<string, RootRoute>, key: string): RootRoute {
+    const route = routes.get(key);
     if (route === undefined) {
         throw new Error(`${key} is not a settings field`);
     }
@@ -1027,7 +1078,7 @@ function routeOf(key: string): RootRoute {
 
 /** Reads a root name through its view (a section field, a selected preset's or persona's field, a collection). */
 export function readSettingsRoot(key: SettingsRootKey | string): unknown {
-    const route = routeOf(key);
+    const route = routeOf(rootRoutes, key);
     return route.target()[route.field];
 }
 
@@ -1042,7 +1093,8 @@ export function scopedPresetRoot(scope: PresetScope | undefined, rootKey: Settin
         if (!findModelPreset(scope.modelPresetId)) {
             throw new PresetTargetGoneError("model preset");
         }
-        return rootKey === "seperateModels" ? seperateModelsView(scope) : readModelRoot(rootKey, scope);
+        const target = scopedModelPresetTarget(scope);
+        return rootKey === "seperateModels" ? seperateModelsView(target) : readModelRoot(rootKey, target);
     }
     const found = scope === undefined ? undefined : scopedPresetRecord(scope, rootKey);
     if (found === undefined) {
@@ -1056,6 +1108,6 @@ export function scopedPresetRoot(scope: PresetScope | undefined, rootKey: Settin
 
 /** Writes a root name through its view, with the view's rules (a dropped preset write, a replaced record). */
 export function writeSettingsRoot(key: SettingsRootKey | string, value: unknown) {
-    const route = routeOf(key);
+    const route = routeOf(rootRoutes, key);
     route.target()[route.field] = value;
 }

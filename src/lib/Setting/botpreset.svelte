@@ -1,7 +1,7 @@
 <script lang="ts">
     import { settings, editedPreset, editedModelPreset } from "src/ts/storage/settingsViews.svelte";
     import { alertConfirm, alertError } from "../../ts/alert";
-    import { language } from "../../lang";
+    import { language } from "src/lang";
     import {
         copyModelPreset,
         copyPreset,
@@ -28,14 +28,15 @@
     import PromptDiffModal from "../Others/PromptDiffModal.svelte";
     import { RISU_PRESET_DRAG_TYPE } from "src/ts/dragTypes";
     import { moveRecordListItem } from "src/ts/storage/records.svelte";
-    import { chatEntry, currentChatRef, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { chatEntry, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { chatsBoundTo, pickedId } from "src/ts/storage/chatBinding.svelte";
     import { pickBinding } from "src/ts/storage/chatBindingPick";
     import { selectPreset, selection } from "src/ts/storage/selection.svelte";
 
     /**
-     * Prompt/model preset picker. A supplied `chatRef` fixes the target and closes the list if that
-     * chat disappears (`src/ts/storage/chatStore.svelte.ts`). Both lists pick, reorder, copy, add,
+     * Prompt/model preset picker. A supplied `chatRef` binds that chat and closes the list if that
+     * chat disappears (`src/ts/storage/chatStore.svelte.ts`); without it, picks select for the tab.
+     * Both lists pick, reorder, copy, add,
      * rename, and delete, preserving the last preset; prompt presets also import/export, diff, archive,
      * and show Ctrl+1..9 numbering handled by `src/ts/hotkey.ts`.
      *
@@ -60,7 +61,7 @@
         close?: any;
         /** Which presets the list shows: the prompt presets (`settings.presets`) or the model presets. */
         kind?: "prompt" | "model";
-        /** The chat whose binding a pick changes (the binding panel's row); else the open chat, else the tab's selection. */
+        /** The chat whose binding a pick changes (the binding panel's row); without it, the tab's selection. */
         chatRef?: ChatRef;
     }
 
@@ -78,11 +79,11 @@
             !isPrompt || (preset.archived === true) === showArchived ? [{ preset, index }] : [],
         ),
     );
-    /** The chat the list picks for: the given chat, else the open chat; null at home. */
-    const shownRef = $derived(chatRef ?? currentChatRef());
-    const shownChatName = $derived(shownRef ? chatEntry(shownRef)?.name : undefined);
+    const shownChatName = $derived(chatRef ? chatEntry(chatRef)?.name : undefined);
     // Read once per render, not once per row (the selected index searched the list for every row).
-    const selectedPresetId = $derived(pickedId(field, shownRef, isPrompt ? editedPreset.id : editedModelPreset.id));
+    const selectedPresetId = $derived(
+        pickedId(field, chatRef ?? null, isPrompt ? editedPreset.id : editedModelPreset.id),
+    );
 
     // A list opened for a chat closes when that chat is gone; it never falls back to the open chat.
     $effect(() => {
@@ -99,9 +100,9 @@
         }
     });
 
-    /** Picks preset `id` for the given chat, else the open chat at this click, else the tab's selection. */
+    /** Picks preset `id` for the given chat, or the tab's selection when no chat was named. */
     function selectListed(id: string): boolean {
-        return pickBinding(field, id, chatRef);
+        return pickBinding(field, id, chatRef ?? null);
     }
 
     function copyListed(id: string) {
@@ -308,7 +309,7 @@
                 </button>
             </div>
         </div>
-        {#if shownRef}
+        {#if chatRef}
             <span class="text-textcolor2 text-sm mb-2">{language.chatBinding.forChat(shownChatName ?? "")}</span>
         {/if}
         {#if isPrompt && visibleEntries.length === 0}

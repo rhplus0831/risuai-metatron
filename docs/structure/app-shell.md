@@ -70,10 +70,10 @@
 ### Hotkeys and observers
 
 - `src/ts/hotkey.ts`: `initHotkey` (the key handler and its dispatch switch), `hotkeyMatches`, `enabledHotkeys` and
-  `activeHotkeys` (`HotkeySettings.svelte`'s list), `changeToPreset` (Ctrl+1..9 through `pickBinding`,
-  [chat bindings](persistence.md)), and the `quickSettings` key, which only shows `language.quickSettingsRemoved`. Alert
-  key gating is in [global-api](global-api.md#alert-queue); picker/dialog priority is in
-  [UI](ui-theming.md#dialogs-popovers-and-portals).
+  `activeHotkeys` (`HotkeySettings.svelte`'s list), `changeToPreset` (Ctrl+1..9: `pickBinding` with `null`, the tab's
+  selection also with a chat open; [chat bindings](persistence.md#chat-binding)), and the `quickSettings` key, which
+  only shows `language.quickSettingsRemoved`. Alert key gating is in [global-api](global-api.md#alert-queue);
+  picker/dialog priority is in [UI](ui-theming.md#dialogs-popovers-and-portals).
 - In Remote Host Mode `initHotkey` keeps only the dialog keys (Enter and Escape on an alert): no hotkey, no Ctrl+1..9,
   no layer, settings, or grid close, and no triple-touch quick menu.
 - `shared/hotkeys.ts` `defaultHotkeys`, re-exported by `src/ts/defaulthotkeys.ts` with the `Hotkey` type of

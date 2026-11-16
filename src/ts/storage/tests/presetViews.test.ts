@@ -50,13 +50,23 @@ import {
 import { llmSecretState, setMaskedSecrets } from "../llmSecrets.svelte";
 import { maskLlmSecrets } from "../../../../shared/llmSecrets.ts";
 import { CredentialRefusedError, initializeRecords, resetRecords, takeRecordFields } from "../records.svelte";
-import { selection, selectLoreBookPage, selectModelPreset, selectPreset } from "../selection.svelte";
+import { selectCharacter, selection, selectLoreBookPage, selectModelPreset, selectPreset } from "../selection.svelte";
+import { selectChat } from "../chatStore.svelte";
+import { installFlatDatabaseWithChats } from "./installFlatDatabase";
 import {
     activeMainProfile,
     activeModelPreset,
     activePreset,
+    activeSubProfile,
     currentModelPresetRecord,
     currentPresetRecord,
+    editedMainProfile,
+    editedModelPreset,
+    editedModelPresetRecord,
+    editedPreset,
+    editedPresetRecord,
+    editedScope,
+    editedSubProfile,
     modelPresetRecordForWrite,
     presetRecordForWrite,
     readSettingsRoot,
@@ -614,5 +624,120 @@ describe("changeToPreset, changeToModelPreset, and applyPresetTemplate", () => {
         applyPresetTemplate({ ...PRESET_DEFAULTS, name: "Template", temperature: 44, archived: true } as any);
         expect(presets()[1]).toMatchObject({ id: "b", name: "B", temperature: 44 });
         expect(Object.hasOwn(presets()[1], "archived")).toBe(false);
+    });
+});
+
+describe("edited preset views with a bound chat open", () => {
+    function openBoundChat() {
+        installFlatDatabaseWithChats({
+            characters: [
+                {
+                    chaId: "c",
+                    type: "character",
+                    name: "C",
+                    chats: [
+                        {
+                            id: "chat",
+                            name: "Chat",
+                            message: [],
+                            localLore: [],
+                            promptPresetId: "b",
+                            modelPresetId: "b",
+                        },
+                    ],
+                },
+            ],
+            botPresets: normalizePresets([presetA(), presetB()]),
+            modelPresets: normalizeModelPresets([presetA(), presetB()]),
+            modelProfiles: normalizeModelProfiles([
+                ...profiles(),
+                { id: "sa", name: "Sub A", modelId: "sub-a", maxContext: 6000 },
+                { id: "sb", name: "Sub B", modelId: "sub-b", maxContext: 7000 },
+            ]),
+        });
+        modelPreset("a")!.subSlot = { profileId: "sa" };
+        modelPreset("b")!.subSlot = { profileId: "sb" };
+        selectPreset("a");
+        selectModelPreset("a");
+        selectCharacter("c");
+        selectChat("c", "chat");
+    }
+
+    afterEach(() => selectCharacter(null));
+
+    it("active presets and profiles read the binding while edited views and scope read and write the tab selection", () => {
+        openBoundChat();
+        const boundBefore = plainClone([preset("b"), modelPreset("b"), profile("pb"), profile("sb")]);
+        expect([
+            activePreset.id,
+            currentPresetRecord()?.id,
+            activeModelPreset.id,
+            currentModelPresetRecord()?.id,
+        ]).toEqual(["b", "b", "b", "b"]);
+        expect([activePreset.temperature, activeMainProfile.maxContext, activeSubProfile.maxContext]).toEqual([
+            50, 5000, 7000,
+        ]);
+        expect([
+            editedPreset.id,
+            editedPresetRecord()?.id,
+            editedModelPreset.id,
+            editedModelPresetRecord()?.id,
+        ]).toEqual(["a", "a", "a", "a"]);
+        expect(editedScope()).toEqual({ presetId: "a", modelPresetId: "a" });
+        expect([editedPreset.temperature, editedModelPreset.name, editedMainProfile.id, editedSubProfile.id]).toEqual([
+            80,
+            "A",
+            "pa",
+            "sa",
+        ]);
+        expect([editedMainProfile.maxContext, editedSubProfile.maxContext]).toEqual([4000, 6000]);
+
+        editedPreset.temperature = 64;
+        editedModelPreset.name = "Tab model edited";
+        editedMainProfile.maxContext = 4100;
+        editedSubProfile.maxContext = 6100;
+        expect(preset("a")!.temperature).toBe(64);
+        expect(modelPreset("a")!.name).toBe("Tab model edited");
+        expect(profile("pa")!.maxContext).toBe(4100);
+        expect(profile("sa")!.maxContext).toBe(6100);
+        expect(plainClone([preset("b"), modelPreset("b"), profile("pb"), profile("sb")])).toEqual(boundBefore);
+
+        // The exported views and scope remain live after a tab selection changes.
+        selectPreset("b");
+        selectModelPreset("b");
+        expect(editedScope()).toEqual({ presetId: "b", modelPresetId: "b" });
+        expect([editedPreset.temperature, editedMainProfile.id, editedSubProfile.id]).toEqual([50, "pb", "sb"]);
+    });
+
+    it("edited preset and profile writes with no selected record are dropped before reads repair the selection to the first records", () => {
+        openBoundChat();
+        const before = plainClone([presets(), modelPresets(), modelProfiles()]);
+        selectPreset("gone");
+        selectModelPreset("gone");
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        try {
+            editedPreset.temperature = 1;
+            editedModelPreset.name = "must be dropped";
+            editedMainProfile.maxContext = 1;
+            editedSubProfile.maxContext = 2;
+            expect(plainClone([presets(), modelPresets(), modelProfiles()])).toEqual(before);
+            expect([selection.presetId, selection.modelPresetId]).toEqual(["gone", "gone"]);
+            expect(editedPreset.temperature).toBe(80);
+            expect(editedModelPreset.name).toBe("A");
+            expect([selection.presetId, selection.modelPresetId]).toEqual(["a", "a"]);
+            selectModelPreset("gone");
+            expect(editedMainProfile.id).toBe("pa");
+            expect(selection.modelPresetId).toBe("a");
+            selectModelPreset("gone");
+            expect(editedSubProfile.id).toBe("sa");
+            expect(selection.modelPresetId).toBe("a");
+            selectPreset("gone");
+            selectModelPreset("gone");
+            expect(editedScope()).toEqual({ presetId: "a", modelPresetId: "a" });
+            expect([selection.presetId, selection.modelPresetId]).toEqual(["a", "a"]);
+            expect([activePreset.id, activeModelPreset.id]).toEqual(["b", "b"]);
+        } finally {
+            warn.mockRestore();
+        }
     });
 });

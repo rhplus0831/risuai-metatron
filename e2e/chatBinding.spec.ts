@@ -733,3 +733,76 @@ test("two tabs showing two bound chats send with their own presets: the provider
     expect(sb.errors).toEqual([]);
     await context.close();
 });
+
+test("a settings pick shows the tab's prompt while the chat and its next request keep their binding; Show this chat's selects its preset", async ({
+    context,
+    baseURL,
+}) => {
+    const s = await session(context, baseURL!);
+    const { chaId, chats, a, b } = await seed(s);
+    const { page } = s;
+    await openCharacter(page, chaId);
+    await openChatRow(page, "Unbound");
+    const ref = { chaId, chatId: chats.unbound };
+    await sendButton(page).click();
+    for (const [field, heading, name] of [
+        ["modelPresetId", "Model Presets", NAMES.modelA],
+        ["promptPresetId", "Prompt Presets", NAMES.promptA],
+        ["personaId", "Persona", NAMES.personaA],
+    ] as const) {
+        await row(dialog(page), field).click();
+        await pick(page, heading, name);
+    }
+    await dialog(page).getByRole("button", { name: "Close" }).click();
+    expect(await entryOf(page, ref)).toMatchObject(a);
+
+    const openPromptSettings = () =>
+        page.evaluate(async () => {
+            const stores = await import("/src/ts/stores.svelte.ts");
+            stores.SettingsMenuIndex.set(stores.PROMPT_SETTINGS_MENU);
+            stores.settingsOpen.set(true);
+        });
+    await openPromptSettings();
+    const header = page
+        .getByRole("heading", { name: "Prompt", exact: true })
+        .locator("xpath=following-sibling::div[1]");
+    await header
+        .locator("button")
+        .filter({ has: page.locator(".lucide-list") })
+        .click();
+    await expect(picker(page, "Prompt Presets")).not.toContainText("For this chat");
+    await pick(page, "Prompt Presets", NAMES.promptB);
+    expect((await tabSelection(page)).presetId).toBe(b.promptPresetId);
+    expect(await entryOf(page, ref)).toMatchObject(a);
+    await expect(header).toContainText(NAMES.promptB);
+    await expect(header.getByText("Not this chat's", { exact: true })).toBeVisible();
+    const responseSize = page
+        .locator(
+            'xpath=//span[starts-with(normalize-space(.), "Max Response Size")]/following-sibling::*[1]/descendant-or-self::input',
+        )
+        .first();
+    await expect(responseSize).toHaveValue("222");
+
+    // Send while B is still selected for settings: the provider must receive A's limit.
+    await page.evaluate(async () => (await import("/src/ts/stores.svelte.ts")).settingsOpen.set(false));
+    await send(page, "Send after settings pick");
+    const body = requestWith("Send after settings pick");
+    expect(body?.model).toBe("mock-a");
+    expect(body?.max_tokens).toBe(111);
+    expect(contains(body, "Persona prompt A.")).toBe(true);
+    expect(contains(body, "Persona prompt B.")).toBe(false);
+    expect(await entryOf(page, ref)).toMatchObject(a);
+    expect((await tabSelection(page)).presetId).toBe(b.promptPresetId);
+
+    await openPromptSettings();
+    await expect(header).toContainText(NAMES.promptB);
+    await header.locator('[data-binding-scope-show="promptPresetId"]').click();
+    await expect(header).toContainText(NAMES.promptA);
+    await expect(header.getByText("This chat", { exact: true })).toBeVisible();
+    await expect(header.locator("[data-binding-scope-show]")).toHaveCount(0);
+    await expect(responseSize).toHaveValue("111");
+    expect((await tabSelection(page)).presetId).toBe(a.promptPresetId);
+    expect(await entryOf(page, ref)).toMatchObject(a);
+    await flush(page);
+    expect(s.errors).toEqual([]);
+});

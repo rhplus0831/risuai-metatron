@@ -2,12 +2,13 @@ import { expect, settle, test, type Page } from "./fixtures";
 import { clearSafeBootAttempts, openApp } from "../util/playwright/stack.mjs";
 
 // The persona forwarding and the chat binding (the persona is one of the three fields a chat binds,
-// picked through the binding panel's row or the chat list's "Chat Settings", while a pick at home
-// is the tab's selection) in the browser, against the isolated stack of `playwright.config.ts`.
-// What only the whole stack shows: an icon picked through the real file chooser while the user
-// leaves for home, where the tab's other persona shows, lands on the persona the chooser opened for
-// and keeps its id, so the chat bound to that persona keeps its binding across a reload; and the
-// persona selection is per client while the personas are shared.
+// picked through the binding panel's row or the chat list's "Chat Settings", while a settings pick
+// is the tab's selection, also with a chat open) in the browser, against the isolated stack of
+// `playwright.config.ts`. What only the whole stack shows: an icon picked through the real file
+// chooser for the persona the settings show (the tab's, not the open chat's), while the user leaves
+// for home and the tab selects another persona, lands on the persona the chooser opened for and
+// keeps its id, and the chat bound to the other persona keeps its binding and its icon across a
+// reload; and the persona selection is per client while the personas are shared.
 
 // A 1x1 PNG.
 const PNG = Buffer.from(
@@ -42,11 +43,11 @@ const personas = (page: Page): Promise<PersonaView> =>
         };
     });
 
-/** A pick where the screen shows it: the open chat's binding, or the tab's selection at home. */
+/** A settings pick: the tab's selection, also with a chat open; it never binds a chat. */
 const select = (page: Page, id: string) =>
     page.evaluate(async (personaId) => {
         const { changeUserPersona } = await import("/src/ts/persona.ts");
-        changeUserPersona(personaId);
+        changeUserPersona(personaId, null);
     }, id);
 
 async function reload(page: Page, baseURL: string) {
@@ -72,7 +73,7 @@ async function seedPersonas(page: Page): Promise<[string, string]> {
     return [ids[0], ids[1]];
 }
 
-test("the binding panel's persona row binds the open chat's persona while the tab keeps its own; an icon picked while the tab shows another persona lands on the persona the chooser opened for; the chat list's Chat Settings rebinds that row's chat", async ({
+test("the binding panel's persona row binds the open chat's persona while the tab keeps its own; an icon picked for the tab's persona lands there, also when the tab selects another one meanwhile; the chat list's Chat Settings rebinds that row's chat", async ({
     page,
     baseURL,
 }) => {
@@ -122,15 +123,15 @@ test("the binding panel's persona row binds the open chat's persona while the ta
     expect(bound).toBe(u1);
     const afterBind = await personas(page);
     expect(afterBind.selected).toBe(u2);
-    // The views follow the open chat's binding: the persona editor and the user name show U1.
+    // The active views follow the open chat's binding: the user name shows U1.
     expect(afterBind.username).toBe("U1");
     expect(afterBind.index).toBe(0);
     // The persona alone does not complete the binding (the model and prompt presets are unset).
     await expect(send).toHaveText("Set up this chat");
     await settle(page);
 
-    // The real file chooser opens for the persona the editor shows (U1, the chat's); the user goes
-    // home while it is open, where the views show the tab's U2; the PNG lands on U1.
+    // The real file chooser opens for the persona the settings show (the tab's U2, not the chat's
+    // U1); while it is open the user goes home and the tab selects U1; the PNG lands on U2.
     const [chooser] = await Promise.all([
         page.waitForEvent("filechooser"),
         page.evaluate(async () => {
@@ -143,16 +144,21 @@ test("the binding panel's persona row binds the open chat's persona while the ta
         selectCharacter(null);
     });
     expect((await personas(page)).username).toBe("U2");
+    await select(page, u1);
+    expect((await personas(page)).username).toBe("U1");
     await chooser.setFiles({ name: "icon.png", mimeType: "image/png", buffer: PNG });
     await page.evaluate(() => (window as any).__iconDone);
     await settle(page);
 
     const after = await personas(page);
-    expect(after.selected).toBe(u2);
+    expect(after.selected).toBe(u1);
     expect(after.list.map((persona) => persona.id)).toEqual([u1, u2]);
-    expect(after.list[0].icon).not.toBe("");
-    expect(after.list[1].icon).toBe("");
-    expect(after.username).toBe("U2");
+    expect(after.list[0].icon).toBe("");
+    expect(after.list[1].icon).not.toBe("");
+    // The tab goes back to U2 for the rest of the test.
+    await select(page, u2);
+    expect((await personas(page)).username).toBe("U2");
+    await settle(page);
 
     await reload(page, baseURL!);
     const view = await personas(page);
@@ -175,7 +181,10 @@ test("the binding panel's persona row binds the open chat's persona while the ta
     expect(binding.loaded).toBe(false);
     expect(binding.bindedPersona).toBe(u1);
     expect(binding.name).toBe("U1");
-    expect(binding.icon).toBe(view.list[0].icon);
+    // The chat's persona U1 kept its (empty) icon; the PNG is on U2.
+    expect(view.list[0].icon).toBe("");
+    expect(view.list[1].icon).not.toBe("");
+    expect(binding.icon).toBe("");
     expect(binding.prompt).toBe("I am one.");
 
     // The chat list's "Chat Settings" (the former "Bind Persona") opens the dialog for that row's chat

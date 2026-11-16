@@ -52,7 +52,7 @@ export function chatContextIds(ids: Extract<ChatBindingResult, { ok: true }>["id
 /**
  * The ids a render of the chat uses (the display rule): per field, the bound id when it names a
  * record that exists, else the tab's selection (`""` when it has none), never another chat's
- * binding. For the selected chat these are the settings views' ids. Equal to the binding when that
+ * binding. For the selected chat these are the active settings views' ids. Equal to the binding when that
  * is complete; never for a send, which refuses an incomplete binding (`chatBinding`). Tracked.
  */
 export function chatDisplayIds(ref: ChatRef): ChatContextIds {
@@ -142,8 +142,8 @@ export function chatBindingPatch(ref: ChatRef, patch: ChatBindingPatch) {
 
 /**
  * The id a picker marks as chosen: in chat mode (`ref` set) the chat's bound id when it names a record
- * that exists, else none (the view's tab fallback is not the chat's); at home `viewId`, the tab's
- * selection the view shows. Tracked.
+ * that exists, else none (the view's tab fallback is not the chat's); with `ref` null, `viewId`, the
+ * tab's selection the edited view shows, also with a chat open. Tracked.
  */
 export function pickedId(field: ChatBindingField, ref: ChatRef | null, viewId: string | undefined): string | null {
     if (!ref) {

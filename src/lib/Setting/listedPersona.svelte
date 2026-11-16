@@ -1,30 +1,28 @@
 <script lang="ts">
     import { settings, editedPersona } from "src/ts/storage/settingsViews.svelte";
     import { XIcon } from "@lucide/svelte";
-    import { language } from "../../lang";
+    import { language } from "src/lang";
     import { changeUserPersona } from "src/ts/persona";
-    import { chatEntry, currentChatRef, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { chatEntry, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { pickedId } from "src/ts/storage/chatBinding.svelte";
     import { personaNoteFirstLine } from "../../../shared/personas.ts";
 
     /**
      * The persona picker. A pick goes through `changeUserPersona` and closes the list when the pick is accepted (also
      * for the persona already picked; not when the persona or the chat is gone);
-     * opened for `chatRef`, it binds that chat and closes once the chat is gone, never falling back to the open chat.
+     * opened for `chatRef`, it binds that chat and closes once the chat is gone; without it, picks select for the tab.
      */
 
     interface Props {
         close?: any;
-        /** The chat whose persona a pick binds (the binding panel's row); else the open chat, else the tab's selection. */
+        /** The chat whose persona a pick binds (the binding panel's row); without it, the tab's selection. */
         chatRef?: ChatRef;
     }
 
     let { close = () => {}, chatRef }: Props = $props();
-    /** The chat the list picks for: the given chat, else the open chat; null at home. */
-    const shownRef = $derived(chatRef ?? currentChatRef());
-    const shownChatName = $derived(shownRef ? chatEntry(shownRef)?.name : undefined);
+    const shownChatName = $derived(chatRef ? chatEntry(chatRef)?.name : undefined);
     // Read once per render, not once per row.
-    const selectedPersonaId = $derived(pickedId("personaId", shownRef, editedPersona.id));
+    const selectedPersonaId = $derived(pickedId("personaId", chatRef ?? null, editedPersona.id));
 
     // A list opened for a chat closes when that chat is gone; it never falls back to the open chat.
     $effect(() => {
@@ -44,14 +42,14 @@
                 </button>
             </div>
         </div>
-        {#if shownRef}
+        {#if chatRef}
             <span class="text-textcolor2 text-sm mb-2">{language.chatBinding.forChat(shownChatName ?? "")}</span>
         {/if}
         {#each settings.personas as persona, i}
             {@const noteLine = personaNoteFirstLine(persona.note)}
             <button
                 onclick={() => {
-                    if (changeUserPersona(persona.id, chatRef)) {
+                    if (changeUserPersona(persona.id, chatRef ?? null)) {
                         close();
                     }
                 }}
