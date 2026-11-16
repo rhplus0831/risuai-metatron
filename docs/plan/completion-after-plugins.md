@@ -7,7 +7,7 @@ notification of a remote-host send only after the host's plugins have finished w
 the report. D1 and D2 are the owner's choices of 2026-11-16; D3 on are this plan's own and open to the owner's change.
 The save before the release under a mutation scope (D12), the refusal of a release for a job that ever changed owner
 (D13), the deadline counted from the job's end in the registry (D5), and the carry-over inside `upsertPlugin` (D10)
-took their present form from the audit. Landed: 2 (`1417348d0`).
+took their present form from the audit. Landed: 2 (`1417348d0`), 1 (`9cdd9d56e`).
 
 Sources: `notifyCompletion`, `runChatOutputListeners`, and `tailCallback` in `server/src/prompt/runner.ts`;
 `GenerationRunnerDeps` in `server/src/jobs/runSetup.ts`; `finishCommand` in `server/src/jobs/commandRunner.ts`;
