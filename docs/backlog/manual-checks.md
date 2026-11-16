@@ -35,6 +35,7 @@ Checks that a finished plan left to a person, a device, a real provider, or a sc
 - [ ] **OOC Session (4, 5)**: on a phone (about 360px), the OOC panel fills the screen over the chat and the toggle settings popover fits; on a wide screen the panel sits beside the chat without a backdrop, Escape in the panel or the page closes it but Escape in the main composer does not, and Escape or a click outside closes only the settings popover.
 - [ ] **Input Hooks (2, 4, 5)**: at phone width (about 360px), the Input Hooks settings page (2); the draft box with the on-screen keyboard open and the composer's height after a long hook result (4); a long BTW result in its panel (5); a Korean IME (also the desktop Japanese IME) composing in the draft box when Enter is pressed (4).
 - [ ] **Remote Host**: a phone sending through a PC host whose screen turns off at once (the reply and the plugin's illustration are there on return), and the same with the host's window hidden for more than five minutes; the host closed (the send falls back, and with the fallback off the text returns); Stop from the phone before and after the host started the send, each followed by a Send right away; "Reload plugins" and "Reload page" from the phone after changing a plugin argument there (6); which device's value the illustration plugin's own "auto generate" switch takes on the host; how often a second device that accepts handoffs takes a host's job before the host attaches; Continue and in-place reroll from the phone through the host, and a Continue sent to a host tab not reloaded since the server update falling back on `unsupported` (7); at phone width (about 360px), the remote send settings and the composer's host line (5).
+- [ ] **Headless Host**: a phone sends through `pnpm host:headless` with the owner's illustration plugin, its permissions given as standing grants first (the reply and the illustration are there); the same after the host has been up for more than a day, and after the machine slept and woke; a permission allowed with the prompt only (no standing grant), more than three days later after a restart of the script: the host's log shows the denied prompt, and a standing grant from the phone makes the next send work without restarting the script.
 
 ## iOS Safari and the Home Screen app
 
@@ -137,11 +138,13 @@ Two tabs, two browsers, or a dropped connection:
 - [ ] **Asset Lifecycle**: a Docker volume on a nearly full disk: the 507 answers of the restore, the backup import, the upstream commit, the upstream export prepare, and the manual snapshot; the snapshot tick logging once and skipping.
 - [ ] **Static Audit Fixes (SA12)**: durable writes on Windows, macOS, and network mounts, and under real power loss.
 - [ ] **Boot Resource Cache**: the reporting user comparing DevTools Timing on their own server before and after.
+- [ ] **Headless Host**: the server restarted under a running `pnpm host:headless` (the host is listed again without a restart of the script); a server with HTTPS files (the script connects, and a second start reuses the profile); the `PORT`/`RISU_HOST` forms of the owner's own setup (a service unit, a Tailscale-bound server), where the refusal message must be clear when the server is not on loopback.
 
 ## Scripts, specs, and measurements nobody ran
 
 An agent can run these without a device.
 
+- [ ] **Headless Host (3)**: `checkHeadlessHost.mjs` covers the exit for an unset password, SIGTERM and SIGINT; the exits for a missing password (4), a refused password (5) and a failed launch (1), with no Chrome left after each, and the host's own User-Agent were not exercised.
 - [ ] **Sidebar Chat Status**: the browser check's `--base` production mode was implemented but not exercised.
 - [ ] **Found Issues Clearance (Q16)**: a real-browser `measureHeap.mjs` run after a module delete, if a heap plan returns.
 - [ ] **Search (4b)**: the message search was not measured on a real large database (the real saves on the machine were 352 KB).

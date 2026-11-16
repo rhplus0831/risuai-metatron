@@ -142,9 +142,11 @@
 | `RISU_HOST`                   | Unset, blank or wildcard gives `127.0.0.1`; a numeric loopback literal is kept. Names, bracketed IPv6 and other addresses are refused.                               |
 | `RISU_CHROME`                 | System Chrome binary; `/usr/bin/google-chrome`.                                                                                                                      |
 
-The listener's TLS handshake chooses HTTPS or HTTP. Dialog policy and plugin standing grants:
-[generation job client](network-jobs.md#generation-job-client). The script logs ISO timestamps and redacted, bounded
-text; it retries failed loads with backoff and lets safe boot settle before retrying a page with plugins off.
+The listener's TLS handshake chooses HTTPS or HTTP. A secret input dialog is left alone while the document's
+`/api/test_auth` answer is unread, since an early Escape would submit an empty password. Dialog policy and plugin
+standing grants: [generation job client](network-jobs.md#generation-job-client). The script logs ISO timestamps and
+redacted, bounded text; it retries failed loads with backoff and lets safe boot settle before retrying a page with
+plugins off.
 
 ### Analysis scripts
 
