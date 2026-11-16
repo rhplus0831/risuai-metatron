@@ -60,8 +60,8 @@ codes; the entries name the role and the identifiers to look up.
   `playwright.config.ts` and `util/playwright/` are outside its type-checking scope.
 - `playwright.config.ts`: one worker, the system Chrome (`RISU_CHROME`), `globalSetup` `util/playwright/globalSetup.mjs`
   (one stack per run on `E2E_SERVER_PORT`/`E2E_VITE_PORT`).
-- `util/headlessHost.mjs`: another `playwright-core` user; a persistent host, outside the test harness
-  ([settings](build-test-platforms.md#headless-host)).
+- `util/headlessHost.mjs`: another `playwright-core` user; a persistent host, outside the test harness, checked by
+  `checkHeadlessHost.mjs` ([settings](build-test-platforms.md#headless-host)).
 - `e2e/fixtures.ts`: the specs' `test` (clears safe boot's counter per page load), `expect`, and `settle` (waits for
   `resourceSyncIdle`).
 - `e2e/multiClient.ts`: the reusable two-client harness (`session`, `holdBatch`, `expectState`) used by
@@ -86,6 +86,11 @@ None is in the gate; all are in `util/playwright/`.
   `checkAssetLifecycle.mjs` (asset sweep via the dev clock offset), `checkSidebarChatStatus.mjs`, `checkBootCache.mjs`,
   `checkServerRestartRaces.mjs`, and, with real v3 plugins under `offline.sh`, `checkJobProtocol.mjs` and
   `checkJobHandoff.mjs` (two tabs hand a job off).
+- `checkHeadlessHost.mjs` (dev stack, `offline.sh`): runs `util/headlessHost.mjs` as a child on the Vite port with
+  temporary profiles: the exit for an unset password (first, before a context sets one); the host in another context's
+  presence; a fixture plugin's `alert` and `db` prompt dismissed (call denied, no grant); a SIGTERM stop, then a start
+  on the same profile without the password; a page reload command; a SIGINT stop. After each end no process holds the
+  profile (`--user-data-dir` in `/proc`). The sender opens with `?safe=plugins`, so only the host runs the plugin.
 - Harness noise in two drivers: `checkJobProtocol.mjs` names a page reload the driver did not start as a failed case's
   cause (`HARNESS`) and reruns the case once when Vite logged its dependency reload (`RERUN`); `checkServerSend.mjs`
   prints any open alert's text before each chat open (`ALERT`).
