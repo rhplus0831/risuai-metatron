@@ -1,5 +1,6 @@
 <script lang="ts">
     import { language } from "src/lang";
+    import Alert from "src/lib/UI/GUI/Alert.svelte";
     import CheckInput from "src/lib/UI/GUI/CheckInput.svelte";
     import { acceptHandoffs, preferHandoff } from "src/ts/network/handoff";
 
@@ -7,9 +8,7 @@
 </script>
 
 <div class="flex flex-col gap-2 mt-4 text-textcolor">
-    <p class="rounded-md border border-draculared/50 p-2 text-sm text-draculared" role="note">
-        {language.deviceLink.handoffWarning}
-    </p>
+    <Alert status="warning" role="note">{language.deviceLink.handoffWarning}</Alert>
     <CheckInput bind:check={$acceptHandoffs} name={language.serverJob.handoff.acceptHandoffs} />
     <p class="text-sm text-textcolor2">{language.serverJob.handoff.acceptHelp}</p>
     <CheckInput bind:check={$preferHandoff} name={language.serverJob.handoff.preferHandoff} />

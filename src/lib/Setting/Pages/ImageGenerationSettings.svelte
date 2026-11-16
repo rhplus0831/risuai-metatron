@@ -1,6 +1,7 @@
 <script lang="ts">
     import { recoverDirectAssetElement } from "src/ts/globalApi.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
+    import Alert from "src/lib/UI/GUI/Alert.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import { language } from "src/lang";
     import Help from "src/lib/Others/Help.svelte";
@@ -1013,12 +1014,14 @@
 
     <span class="text-textcolor mt-4">LoRAs</span>
     {#if loraConflict}
-        <div class="text-draculared text-sm my-2" role="status">
-            <p>{language.wavespeedLoraConflict}</p>
-            <button class="bg-darkbutton text-textcolor rounded-md px-3 py-2 mt-2" onclick={loadSavedLoras}>
-                {language.wavespeedLoraUseSaved}
-            </button>
-        </div>
+        <Alert status="warning" className="my-2">
+            {language.wavespeedLoraConflict}
+            {#snippet actions()}
+                <button class="bg-darkbutton text-textcolor rounded-md px-3 py-2" onclick={loadSavedLoras}>
+                    {language.wavespeedLoraUseSaved}
+                </button>
+            {/snippet}
+        </Alert>
     {/if}
     {#if wavespeedModels.find((m) => m.model_id === settings.secrets.wavespeedImage.model)?.supportsLoras}
         {#each wavespeedLoras as lora, index (lora)}

@@ -8,6 +8,7 @@
     import { tokenScopeKey } from "src/ts/tokenizer";
     import { templateCheck } from "src/ts/process/templates/templateCheck";
 
+    import Alert from "src/lib/UI/GUI/Alert.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
     import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
@@ -184,13 +185,11 @@
     </div>
 {/if}
 {#if warns.length > 0 && subMenu === 0}
-    <div class="text-red-500 flex flex-col items-start p-2 rounded-md border-red-500 border mt-4">
-        <h2 class="text-xl font-bold">Warning</h2>
-        <div class="border-b border-b-red-500 mt-1 mb-2 w-full"></div>
+    <Alert status="warning" title="Warning" className="mt-4">
         {#each warns as warn}
-            <span class="ml-4">{warn}</span>
+            <span>{warn}</span>
         {/each}
-    </div>
+    </Alert>
 {/if}
 
 {#if subMenu === 0}

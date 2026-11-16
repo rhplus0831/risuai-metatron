@@ -1,5 +1,6 @@
 <script lang="ts">
     import { language } from "src/lang";
+    import Alert from "src/lib/UI/GUI/Alert.svelte";
     import { globalFetch, openURL } from "src/ts/globalApi.svelte";
 
     interface supporters {
@@ -34,9 +35,7 @@
 
 <h2 class="text-2xl font-bold mt-2">{language.supporterThanks}</h2>
 <!-- The list and both buttons belong to the original RisuAI project, not to this app. -->
-<p class="my-3 p-3 border border-darkborderc rounded-md text-sm text-textcolor" role="note">
-    {language.supporterUpstreamNotice}
-</p>
+<Alert status="neutral" role="note" className="my-3">{language.supporterUpstreamNotice}</Alert>
 
 <!-- Patreon Button -->
 <div class="flex items-center justify-center rounded-md flex-wrap gap-2">

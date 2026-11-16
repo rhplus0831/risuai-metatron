@@ -24,6 +24,7 @@
         WebhookIcon,
     } from "@lucide/svelte";
     import { language } from "src/lang";
+    import Alert from "src/lib/UI/GUI/Alert.svelte";
     import { untrack, type Component } from "svelte";
     import type { Attachment } from "svelte/attachments";
     import { getModelInfoForMode } from "src/ts/model/modellist";
@@ -346,11 +347,11 @@
                     {@attach runJump}
                 >
                     {#if jumpNotice}
-                        <p class="mb-4 rounded-md border border-darkborderc p-2 text-sm text-textcolor2" role="status">
+                        <Alert status="info" className="mb-4">
                             {jumpNotice === "noMainProfile"
                                 ? language.settingsSearch.noMainProfileNote
                                 : language.settingsSearch.hiddenNote}
-                        </p>
+                        </Alert>
                     {/if}
                     {#if $SettingsMenuIndex === 0}
                         <UserSettings />

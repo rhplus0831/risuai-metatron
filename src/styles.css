@@ -68,6 +68,17 @@
     --color-success-800: var(--risu-theme-success-800);
     --color-success-900: var(--risu-theme-success-900);
 
+    --color-warning-50: var(--risu-theme-warning-50);
+    --color-warning-100: var(--risu-theme-warning-100);
+    --color-warning-200: var(--risu-theme-warning-200);
+    --color-warning-300: var(--risu-theme-warning-300);
+    --color-warning-400: var(--risu-theme-warning-400);
+    --color-warning-500: var(--risu-theme-warning-500);
+    --color-warning-600: var(--risu-theme-warning-600);
+    --color-warning-700: var(--risu-theme-warning-700);
+    --color-warning-800: var(--risu-theme-warning-800);
+    --color-warning-900: var(--risu-theme-warning-900);
+
     --min-width-2: 0.5rem;
     --min-width-5: 1.25rem;
     --min-width-6: 1.5rem;
@@ -237,6 +248,17 @@ body {
     --risu-theme-success-700: #15803d;
     --risu-theme-success-800: #166534;
     --risu-theme-success-900: #14532d;
+
+    --risu-theme-warning-50: #fffbeb;
+    --risu-theme-warning-100: #fef3c7;
+    --risu-theme-warning-200: #fde68a;
+    --risu-theme-warning-300: #fcd34d;
+    --risu-theme-warning-400: #fbbf24;
+    --risu-theme-warning-500: #f59e0b;
+    --risu-theme-warning-600: #d97706;
+    --risu-theme-warning-700: #b45309;
+    --risu-theme-warning-800: #92400e;
+    --risu-theme-warning-900: #78350f;
 }
 
 .x-risu-language-json {

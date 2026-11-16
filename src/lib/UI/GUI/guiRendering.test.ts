@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRawSnippet, mount, tick, unmount } from "svelte";
 import { get } from "svelte/store";
 import { ColorSchemeTypeStore } from "src/ts/gui/colorscheme";
+import Alert from "./Alert.svelte";
 import Button from "./Button.svelte";
 import CheckInput from "./CheckInput.svelte";
 import IconButton from "./IconButton.svelte";
@@ -107,6 +108,45 @@ describe("GUI rendering without a browser session", () => {
         } finally {
             ColorSchemeTypeStore.set(originalScheme);
         }
+    });
+
+    it("renders Alert with its status tone, live-region role, title, body, and actions", () => {
+        const warning = renderGui(Alert, {
+            status: "warning",
+            title: "Check the template",
+            children: htmlSnippet("<span>Main prompt is missing</span>"),
+            actions: htmlSnippet("<button>Fix</button>"),
+        });
+        const error = renderGui(Alert, { status: "error", children: htmlSnippet("<span>Failed</span>") });
+        const note = renderGui(Alert, {
+            status: "error",
+            role: "note",
+            showIcon: false,
+            size: "sm",
+            className: "my-3",
+            children: htmlSnippet("<span>Static</span>"),
+        });
+
+        const warningBox = warning.getBySelector('[data-risu-alert="warning"]');
+        expect(warningBox.getAttribute("role")).toBe("status");
+        expect(warningBox.classList.contains("border-warning-500/50")).toBe(true);
+        expect(warningBox.classList.contains("p-3")).toBe(true);
+        expect(warningBox.querySelector("svg")?.classList.contains("text-warning-500")).toBe(true);
+        expect(warningBox.textContent?.replace(/\s+/g, " ").trim()).toBe(
+            "Check the template Main prompt is missing Fix",
+        );
+        expect(warning.getBySelector("button").textContent).toBe("Fix");
+
+        const errorBox = error.getBySelector('[data-risu-alert="error"]');
+        expect(errorBox.getAttribute("role")).toBe("alert");
+        expect(errorBox.classList.contains("border-danger-500/50")).toBe(true);
+        expect(errorBox.querySelector("button")).toBeNull();
+
+        const noteBox = note.getBySelector('[data-risu-alert="error"]');
+        expect(noteBox.getAttribute("role")).toBe("note");
+        expect(noteBox.querySelector("svg")).toBeNull();
+        expect(noteBox.classList.contains("p-2")).toBe(true);
+        expect(noteBox.classList.contains("my-3")).toBe(true);
     });
 
     it("renders button primitives with snippet content, variants, and disabled behavior", async () => {

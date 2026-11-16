@@ -163,6 +163,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `src/lib/UI/GUI/SelectInput.svelte` (`risu-select`), `src/lib/UI/GUI/SliderInput.svelte`,
   `src/lib/UI/GUI/OptionalInput.svelte`, `src/lib/UI/GUI/SegmentedControl.svelte`,
   `src/lib/UI/GUI/TextAreaResizable.svelte`: each one's rules are its header.
+- `src/lib/UI/GUI/Alert.svelte`: inline status box (`info`, `warning`, `error`, `success`, `neutral`) with an icon, an
+  optional title, body, and an `actions` snippet; its header has the color and `role` rules. Dialogs stay with
+  `src/ts/alert.ts`.
 - `src/lib/UI/GUI/NumberInput.svelte`: while focused it shows the typed entry, so a binding setter may refuse an empty
   or out-of-range entry without the box snapping back; `change`, blur, or a bound value changed from outside (`seen`)
   shows the bound value again. Adopting an outside value retires the refused draft and advances its comparison baseline,
@@ -247,7 +250,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 ## Invariants
 
 - Use theme tokens (see STRUCTURE.md U1). To add a color: a root variable, an `@theme` token, a `ColorScheme` field,
-  `updateColorScheme`, and presets.
+  `updateColorScheme`, and presets. The shade ramps (`primary`, `secondary`, `danger`, `success`, `warning`, `neutral`)
+  are fixed for every theme: only a root variable and an `@theme` token per shade.
 - Message identity: `Chats` keys a row by the chat and `chatId` (a message without one by its index); see
   `updateChatBody` and the per-row effect for remount conditions. Never read every row's text in the structural effect;
   per-chunk transcript JavaScript work must not grow with mounted row count.
