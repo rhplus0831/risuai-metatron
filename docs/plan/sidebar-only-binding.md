@@ -5,7 +5,7 @@ settings while a chat was open changed that chat's prompt preset, which the owne
 ([report](../reports/audits/plan-runner/sidebar-only-binding-2026-11-17.md)) and corrected in the same commit as the
 report. D1 and D2 are the owner's choices of 2026-11-17; D3 on are this plan's own and open to the owner's change. The
 route table's resolvers (slice 2) and the counts and previews that stay the running chat's (D10) took their present
-form from the audit. Landed: none.
+form from the audit. Landed: 1 (`babe551cc`).
 
 Sources: `pickBinding` in `src/ts/storage/chatBindingPick.ts`; `chatDisplayIds`, `chatBindingPatch`, and `pickedId` in
 `src/ts/storage/chatBinding.svelte.ts`; `resolvePreset`, `resolveTabPreset`, `resolveModelPreset`, `resolvePersona`,
