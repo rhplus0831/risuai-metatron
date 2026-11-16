@@ -286,6 +286,60 @@ describe("the plugin setDatabase host setter", () => {
         expect(settings.plugins).toEqual([plugin]);
     });
 
+    it("keeps the installed completion settings at confirmed replacement, ignoring the plugin's supplied values", async () => {
+        settings.plugins = [
+            {
+                name: "replace-me",
+                script: "old",
+                version: "3.0",
+                arguments: {},
+                realArg: {},
+                customLink: [],
+                argMeta: {},
+                completionWait: false,
+                completionQuietSeconds: 7,
+            },
+        ];
+        let prompted!: () => void;
+        const prompt = new Promise<void>((resolve) => {
+            prompted = resolve;
+        });
+        const { alertConfirm } = await import("src/ts/alert");
+        vi.mocked(alertConfirm).mockImplementationOnce(
+            () =>
+                new Promise<boolean>((resolve) => {
+                    captured.confirm.push(resolve);
+                    prompted();
+                }),
+        );
+        const pending = captured.api!.setDatabase({
+            plugins: [
+                {
+                    name: "replace-me",
+                    script: "new",
+                    version: "3.0",
+                    completionWait: false,
+                    completionQuietSeconds: 60,
+                },
+            ],
+        });
+        await prompt;
+        settings.plugins[0].completionWait = true;
+        settings.plugins[0].completionQuietSeconds = 13;
+        captured.confirm[0](true);
+        await pending;
+
+        expect(settings.plugins).toEqual([
+            {
+                name: "replace-me",
+                script: "new",
+                version: "3.0",
+                completionWait: true,
+                completionQuietSeconds: 13,
+            },
+        ]);
+    });
+
     it("setDatabaseLite ignores a plugin list while applying ordinary settings", async () => {
         await captured.api!.setDatabaseLite({
             plugins: [{ name: "ignored-by-lite", script: "", version: "3.0" }],

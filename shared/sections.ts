@@ -301,6 +301,7 @@ export const SECTION_FIELDS = {
         "contextMeter",
         "contextMeterTurnUnit",
         "contextMeterFixedWarn",
+        "completionWaitMaxSeconds",
         "contextMeterLookahead",
         "loreBudgetStop",
         "generationProgressWindow",

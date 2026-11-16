@@ -33,8 +33,10 @@ entrypoints.
 - `src/ts/plugins/plugins.svelte.ts`: import and the serialized reload (module header): `importPlugin`, `loadPlugins`,
   `loadPluginsForBoot`, `captureBootGuests`, `reportUnsupportedPlugins`, `loadSignature`, `queueDeferredCheck`,
   `allowedDbKeys`, `handlePluginInstallViaPlugin`.
-- `shared/plugins.ts`: `RisuPlugin`. Only `version: '3.0'` loads; a saved entry of another version stays listed and
-  `src/lib/Setting/Pages/PluginSettings.svelte` (component contract) marks it "Unsupported API".
+- `shared/plugins.ts`: `RisuPlugin`, `PLUGIN_COMPLETION_QUIET_SECONDS`, `pluginCompletionQuietMs`. Only `version: '3.0'`
+  loads; a saved entry of another version stays listed and `src/lib/Setting/Pages/PluginSettings.svelte` (component
+  contract) marks it "Unsupported API".
+- `src/ts/plugins/pluginQuiet.ts`: `waitForPluginsQuiet` ([Activity by plugin](#activity-by-plugin)).
 - `PluginSettings.svelte` captures the plugin name before update confirmation, resolves it afterwards, and passes a
   detached record to `updatePlugin`; a removed plugin cancels the update.
 - `src/ts/plugins/pluginHooks.ts`: the live hook registries (module header): `pluginHooks`, `clearPluginHooks`,
@@ -60,7 +62,8 @@ entrypoints.
   global (`RisuaiPluginAPI`).
 - Lookup in `v3.svelte.ts`: `addProvider` (permission per call), `nativeFetch` (its response body is bridged:
   [Sandbox host](#sandbox-host)), `onStorageDiscarded`, `parseRisuChat`, `runLLMModel`, `loadV3Plugins`,
-  `unloadV3Plugin`, `pluginWorkIdle`, `onPluginWorkChange`, `customV3ProviderMetaStore`.
+  `unloadV3Plugin`, `pluginWorkIdle`, `onPluginWorkChange`, `pluginBusy`, `onPluginActivity`,
+  `customV3ProviderMetaStore`.
 - Database setters: `setPluginDatabase`, `setPluginDatabaseLite`, `applyPluginDatabaseWithChats`, `applyPluginKey`,
   `pluginKeyOrder`, `warnRefused` (`[Plugin] Refused ...`). Model roots go to `writeModelRoot`
   ([compatibility model-root write rules](llm-requests.md#compatibility-model-root-writes)); a refusal warns
@@ -135,6 +138,19 @@ conflict reload) reloads the plugins here once plugin work is idle (`queueDeferr
   load satisfies them and leaves no second reload; a later request waits for the next load. `bootPluginLoadOutcome` is
   the boot load's outcome, read by a host's `page` reload.
 
+### Activity by plugin
+
+The host-hook count is also kept per plugin name beside the total that `pluginWorkIdle` reads.
+
+- `pluginBusy(name)`: the named instance's sandbox is not idle or its host hooks are running; false with no instance.
+- `onPluginActivity` hears the plugin's name on each of its sandbox's activity reports, each settled host hook of it,
+  and its unload; `notifyPluginWork` still runs on all of them. A report marks a settlement, not a start.
+- `waitForPluginsQuiet(targets, { capMs, signal, busy, onActivity })` (the plugin functions injected) gives each target
+  `{ name, quietMs }` a clock that starts with the wait and restarts on each report of its plugin, and resolves
+  `"quiet"` once every target is not busy and past its quiet time, `"cap"` at `capMs`, `"aborted"` on the signal; an
+  empty list is `"quiet"` at once. A busy target is looked at again on its next report, so no timer polls work in
+  flight; work that never settles waits for the cap. Duplicate names stay separate targets.
+
 ### Permission list
 
 The user allows permissions ahead of a plugin's first request through `reviewPluginPermissions`
@@ -181,6 +197,11 @@ The user allows permissions ahead of a plugin's first request through `reviewPlu
 ## State
 
 - `db.plugins: RisuPlugin[]`, saved as the `plugins` resource.
+- An entry's `completionWait` (off by default) and `completionQuietSeconds` (wait for this plugin before a remote host's
+  completion notification, and its quiet time) are read only through `pluginCompletionQuietMs`, which defaults, floors,
+  and clamps them; the server keeps them as stored. `upsertPlugin` gives a replacing entry its predecessor's two fields
+  and drops supplied ones, so an update, a re-import, or the plugin API's `setDatabase` keeps them and cannot set them.
+  They are not in `loadSignature`: a change reloads nothing.
 - Plugin storage:
   - `db.pluginCustomStorage` (`pluginStorage` record): `_ownedPluginStorage` by plugin name, `_pluginStorage` legacy
     read-through until claim-on-write or owner `clear()`; U+0000 names use legacy storage (module header). Shared
@@ -308,7 +329,7 @@ The user allows permissions ahead of a plugin's first request through `reviewPlu
 ## Tests
 
 - Focused:
-  `pnpm --silent test:agent src/ts/plugins src/ts/storage/tests/{pluginStorageStore,collectionStore}.test.ts src/ts/network/generationJobsPluginWork.test.ts`.
+  `pnpm --silent test:agent src/ts/plugins shared/plugins.test.ts src/ts/storage/tests/{pluginStorageStore,collectionStore}.test.ts src/ts/network/generationJobsPluginWork.test.ts`.
   The MCP clients and tool dispatch: [mcp](mcp.md#tests).
 - `slow`: none.
 - `e2e/transformGolden.spec.ts`: edit hooks.
@@ -321,7 +342,9 @@ The user allows permissions ahead of a plugin's first request through `reviewPlu
 - `databaseAccessRecorder.test.ts`: the developer `getDatabase` recorder in the real srcdoc guest, fake timers.
 - `pluginDeferredReload.test.ts`, `pluginSafeBoot.test.ts`: a mocked v3 loader, the idle predicate and safe-boot flag
   controlled.
-- `pluginWorkIdle.test.ts`: a controllable sandbox idle flag, the job channel real.
+- `pluginWorkIdle.test.ts`: a controllable sandbox idle flag, the job channel real; it also covers `pluginBusy` and
+  `onPluginActivity`.
+- `pluginQuiet.test.ts`: `waitForPluginsQuiet` under fake timers. `shared/plugins.test.ts`: `pluginCompletionQuietMs`.
 - `storeBackedServer.ts`: the real save adapter over the real server store, for writes and detached reads.
 - `getDatabaseDetached.test.ts`: database reads, cache reuse, setter load skipping, and scoped reads (summaries,
   `getChats`) over `StoreBackedServer`.

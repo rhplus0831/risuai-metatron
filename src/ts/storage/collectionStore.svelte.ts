@@ -400,14 +400,26 @@ export function setPlugins(list: unknown) {
     settings.plugins = Array.from(list, (plugin, index) => checkedPlugin(`plugins[${index}]`, plugin));
 }
 
-/** Installs a plugin, replacing the installed one with the same name. */
+/**
+ * Installs a plugin, replacing the installed one with the same name. Only the predecessor's
+ * completion-wait settings carry over; an import or plugin API replacement cannot set them.
+ */
 export function upsertPlugin(plugin: unknown) {
     const entry = checkedPlugin("plugin", plugin);
+    delete entry.completionWait;
+    delete entry.completionQuietSeconds;
     settings.plugins ??= [];
     const index = settings.plugins.findIndex((other) => other?.name === entry.name);
     if (index === -1) {
         settings.plugins.push(entry);
     } else {
+        const previous = settings.plugins[index];
+        if (previous.completionWait !== undefined) {
+            entry.completionWait = previous.completionWait;
+        }
+        if (previous.completionQuietSeconds !== undefined) {
+            entry.completionQuietSeconds = previous.completionQuietSeconds;
+        }
         settings.plugins[index] = entry;
     }
 }

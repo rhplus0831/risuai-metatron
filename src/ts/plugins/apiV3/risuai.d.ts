@@ -311,6 +311,10 @@ interface RisuPlugin {
     versionOfPlugin?: string;
     /** Update check URL */
     updateURL?: string;
+    /** Wait for this plugin before remote-host completion notifications; controlled by user settings and preserved on replacement */
+    completionWait?: boolean;
+    /** Required quiet time in seconds; controlled by user settings and preserved on replacement */
+    completionQuietSeconds?: number;
 }
 
 /**

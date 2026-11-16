@@ -441,6 +441,76 @@ describe("character order, plugins, and OAuth entries", () => {
         expect(record("characterOrder")).toEqual(["c", { id: "f", name: "F", data: ["c"] }]);
     });
 
+    it("upsertPlugin keeps the predecessor's completion settings and replaces every other field", async () => {
+        const { sync, collectionStore, record, settings } = await boot();
+        collectionStore.setPlugins([
+            {
+                name: "plug",
+                script: "old",
+                enabled: false,
+                realArg: { old: "value" },
+                displayName: "Old name",
+                completionWait: true,
+                completionQuietSeconds: 7,
+            },
+        ]);
+        const incoming = {
+            name: "plug",
+            script: "new",
+            enabled: true,
+            realArg: { new: "value" },
+            completionWait: true,
+            completionQuietSeconds: 60,
+        };
+        // Settings can change after a replacement is prepared; carry their stored values unchanged.
+        settings.plugins[0].completionWait = false;
+        settings.plugins[0].completionQuietSeconds = 4.9;
+        collectionStore.upsertPlugin(incoming);
+        const expected = [
+            {
+                name: "plug",
+                script: "new",
+                enabled: true,
+                realArg: { new: "value" },
+                completionWait: false,
+                completionQuietSeconds: 4.9,
+            },
+        ];
+        expect(plain(settings.plugins)).toEqual(expected);
+        await sync.flushResources();
+        expect(record("plugins")).toEqual(expected);
+    });
+
+    it("upsertPlugin strips supplied completion settings from a new entry", async () => {
+        const { sync, collectionStore, record, settings } = await boot();
+        collectionStore.setPlugins([]);
+        collectionStore.upsertPlugin({
+            name: "new",
+            script: "new script",
+            completionWait: true,
+            completionQuietSeconds: 15,
+        });
+        const expected = [{ name: "new", script: "new script" }];
+        expect(plain(settings.plugins)).toEqual(expected);
+        await sync.flushResources();
+        expect(record("plugins")).toEqual(expected);
+    });
+
+    it("upsertPlugin strips supplied completion settings when the predecessor has none", async () => {
+        const { sync, collectionStore, record, settings } = await boot();
+        collectionStore.setPlugins([{ name: "plug", script: "old", displayName: "Old name" }]);
+        collectionStore.upsertPlugin({
+            name: "plug",
+            script: "new",
+            completionWait: true,
+            completionQuietSeconds: 15,
+        });
+        const expected = [{ name: "plug", script: "new" }];
+        expect(plain(settings.plugins)).toEqual(expected);
+        await sync.flushResources();
+        expect(record("plugins")).toEqual(expected);
+    });
+
     it("setPlugins, upsertPlugin, and setPluginArgument write the plugin list by name", async () => {
         const { sync, collectionStore, record, settings, refused, validation } = await boot();
         for (const list of [Array(1), [null], [{}], [{ name: "" }], [{ name: 1 }], {}]) {

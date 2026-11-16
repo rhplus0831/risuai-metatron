@@ -108,7 +108,8 @@ Kinds (`shared/resources.ts`):
 - `llmSecrets` is write-only and read masked; it also holds the entry map `credentials` (`SECRET_ENTRY_MAPS`), each
   named API key's `key` by id ([credential binding](llm-requests.md)), and normalization drops older `modelPresets` and
   `customModels` maps.
-- `ui.blockedRealmCreators`: unique `{ id, name }` entries (`normalizeUi`).
+- `ui.blockedRealmCreators`: unique `{ id, name }` entries (`normalizeUi`). `ui.completionWaitMaxSeconds` (a remote
+  host's longest hold of a completion notification for its plugins) is clamped to `COMPLETION_WAIT_MAX_SECONDS`.
 - Per record: `characters` (id = `chaId`, without `chats`, `chatPage`, `reloadKeys`), `inlays`
   ([chat pipeline](chat-pipeline.md)).
 - Chats (their own tables, not a kind; [server](server-resources.md)): messages as rows by message id, one revision per

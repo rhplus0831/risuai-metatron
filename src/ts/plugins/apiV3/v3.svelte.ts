@@ -792,13 +792,16 @@ const unloadV3Plugin = async (pluginName: string) => {
         console.error(`Error terminating plugin ${pluginName}:`, error);
     }
     notifyPluginWork();
+    notifyPluginActivity(pluginName);
 };
 
 // A reload after a remote plugin change waits until `pluginWorkIdle`; `onPluginWorkChange` listeners hear
 // whenever it may have become true.
 const pluginWorkListeners = new Set<() => void>();
+const pluginActivityListeners = new Set<(name: string) => void>();
 // Host-side hook invocations still running (a wrapped hook, a provider awaiting its permission prompt).
 let runningHostHooks = 0;
+const runningHostHooksByName = new Map<string, number>();
 
 function notifyPluginWork() {
     for (const listener of [...pluginWorkListeners]) {
@@ -810,25 +813,48 @@ function notifyPluginWork() {
     }
 }
 
-function hostHookSettled() {
+function notifyPluginActivity(name: string) {
+    for (const listener of [...pluginActivityListeners]) {
+        try {
+            listener(name);
+        } catch (error) {
+            console.error(error);
+        }
+    }
+}
+
+function hostHookStarted(name: string) {
+    runningHostHooks++;
+    runningHostHooksByName.set(name, (runningHostHooksByName.get(name) ?? 0) + 1);
+}
+
+function hostHookSettled(name: string) {
     runningHostHooks--;
+    const remaining = runningHostHooksByName.get(name)! - 1;
+    if (remaining === 0) {
+        runningHostHooksByName.delete(name);
+    } else {
+        runningHostHooksByName.set(name, remaining);
+    }
     notifyPluginWork();
+    notifyPluginActivity(name);
 }
 
 /** Runs a hook invocation counted as plugin work until it returns or, for a promise, settles. */
-function trackHostHook<T>(run: () => T): T {
-    runningHostHooks++;
+function trackHostHook<T>(name: string, run: () => T): T {
+    hostHookStarted(name);
     let result: T;
     try {
         result = run();
     } catch (error) {
-        hostHookSettled();
+        hostHookSettled(name);
         throw error;
     }
     if (result && typeof (result as { then?: unknown }).then === "function") {
-        Promise.resolve(result).then(hostHookSettled, hostHookSettled);
+        const settled = () => hostHookSettled(name);
+        Promise.resolve(result).then(settled, settled);
     } else {
-        hostHookSettled();
+        hostHookSettled(name);
     }
     return result;
 }
@@ -851,6 +877,23 @@ export function pluginWorkIdle(): boolean {
         runningHostHooks === 0 &&
         v3PluginInstances.every(({ host }) => host.isIdle?.() ?? true)
     );
+}
+
+/** Whether the named running plugin has sandbox work or host hooks in flight; false without an instance. */
+export function pluginBusy(name: string): boolean {
+    const instance = getV3PluginInstance(name);
+    return !!instance && (!(instance.host.isIdle?.() ?? true) || (runningHostHooksByName.get(name) ?? 0) > 0);
+}
+
+/**
+ * Reports the plugin's name on sandbox activity, host-hook settlement, and unload.
+ * Returns the unsubscribe function; listener errors are logged without interrupting other listeners.
+ */
+export function onPluginActivity(listener: (name: string) => void): () => void {
+    pluginActivityListeners.add(listener);
+    return () => {
+        pluginActivityListeners.delete(listener);
+    };
 }
 
 /** Calls `listener` whenever `pluginWorkIdle` may have changed; returns the unsubscribe function. */
@@ -2581,7 +2624,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             return cached as unknown as F;
         }
         const wrapped = (...args: unknown[]) =>
-            trackHostHook(() => {
+            trackHostHook(identity.name, () => {
                 const context = takeHandoff();
                 if (!context) {
                     return hook(...args);
@@ -2716,7 +2759,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
                 const context = takeHandoff();
                 const exit = context ? enterContext(contextOwner, context) : undefined;
                 // Plugin work from here, the permission prompt included (no guest callback is pending yet).
-                runningHostHooks++;
+                hostHookStarted(identity.name);
                 try {
                     const conf = await getPluginPermission(identity, "provider", "periodically");
                     if (!conf) {
@@ -2734,7 +2777,7 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
                     return await func(arg, abortSignal);
                 } finally {
                     exit?.();
-                    hostHookSettled();
+                    hostHookSettled(identity.name);
                 }
             }),
                 pluginHooks.providerOptions.set(name, options ?? {}));
@@ -3916,7 +3959,10 @@ export async function executePluginV3(plugin: RisuPlugin) {
     // Both the API and instance retain the script actually loaded, even if settings change later.
     const identity: PluginIdentity = { name: plugin.name, script: plugin.script };
     const host = new SandboxHost(makeRisuaiAPIV3(iframe, plugin, identity));
-    host.onActivityChanged?.(notifyPluginWork);
+    host.onActivityChanged?.(() => {
+        notifyPluginWork();
+        notifyPluginActivity(identity.name);
+    });
     try {
         // Developer diagnostics are selected at load time; changing the setting applies on the next load.
         host.run(

@@ -141,6 +141,38 @@ describe("importPlugin permission review", () => {
         expect(mocks.loadV3Plugins).toHaveBeenCalledTimes(1);
     });
 
+    it("keeps completion settings as they stand when an imported update finishes its permission review", async () => {
+        await importPlugin(body("1.0.0"));
+        settings.plugins[0].completionWait = false;
+        settings.plugins[0].completionQuietSeconds = 7;
+        let reviewStarted!: () => void;
+        const started = new Promise<void>((resolve) => {
+            reviewStarted = resolve;
+        });
+        let finishReview!: (saved: boolean) => void;
+        mocks.reviewPluginPermissions.mockImplementationOnce(() => {
+            reviewStarted();
+            return new Promise<boolean>((resolve) => {
+                finishReview = resolve;
+            });
+        });
+        const updating = importPlugin(body("2.0.0"), { isUpdate: true, originalPluginName: "test_plugin" });
+        await started;
+        settings.plugins[0].completionWait = true;
+        settings.plugins[0].completionQuietSeconds = 11;
+        finishReview(false);
+        await updating;
+
+        expect(settings.plugins).toHaveLength(1);
+        expect(settings.plugins[0]).toMatchObject({
+            name: "test_plugin",
+            script: body("2.0.0"),
+            versionOfPlugin: "2.0.0",
+            completionWait: true,
+            completionQuietSeconds: 11,
+        });
+    });
+
     it("passes the replaced version's script on an update, so its grants can be carried over", async () => {
         await importPlugin(body("1.0.0"));
         mocks.reviewPluginPermissions.mockClear();

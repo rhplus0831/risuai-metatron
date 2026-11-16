@@ -44,6 +44,9 @@ export type StreamingDisplayOptimizationMode = "off" | "balanced" | "strong";
 /** The range and default of `Database.contextMeterFixedWarn`, in percent; `normalizeUi` clamps to it. */
 export const CONTEXT_METER_FIXED_WARN = { min: 10, max: 95, default: 60 } as const;
 
+/** The range and default of `Database.completionWaitMaxSeconds`; `normalizeUi` clamps to it. */
+export const COMPLETION_WAIT_MAX_SECONDS = { min: 10, max: 600, default: 180 } as const;
+
 /** A blocked Realm creator persisted in UI settings; `id` is identity and `name` is a display label. */
 export type BlockedRealmCreator = { id: string; name: string };
 
@@ -606,6 +609,8 @@ export interface Database {
     contextMeterTurnUnit: ContextMeterTurnUnit;
     /** The fixed share of the context, in percent, above which the meter warns (`CONTEXT_METER_FIXED_WARN`). */
     contextMeterFixedWarn: number;
+    /** The longest a remote host holds a send's completion notification for its plugins, in seconds. */
+    completionWaitMaxSeconds: number;
     /** Whether the meter marks where HypaV3 asks for a background summary. */
     contextMeterLookahead: boolean;
     /**

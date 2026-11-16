@@ -126,7 +126,7 @@ describe("every section normalizer", () => {
                 // generated string (`ui.newChatBinding`, `ui.contextMeterTurnUnit`,
                 // `memoryTranslateMedia.llmTranslationTarget`; the invalid strings are covered under
                 // their sections). A clamped number takes a value inside its range
-                // (`ui.contextMeterFixedWarn`, 10–95).
+                // (`ui.contextMeterFixedWarn`, 10–95; `ui.completionWaitMaxSeconds`, 10–600).
                 const replacement =
                     valueKindOf(value) === "string"
                         ? field === "newChatBinding"
@@ -139,7 +139,9 @@ describe("every section normalizer", () => {
                         : valueKindOf(value) === "number"
                           ? field === "contextMeterFixedWarn"
                               ? 75
-                              : 7
+                              : field === "completionWaitMaxSeconds"
+                                ? 70
+                                : 7
                           : valueKindOf(value) === "boolean"
                             ? !value
                             : Array.isArray(value)
@@ -429,6 +431,22 @@ describe("ui", () => {
         }
         expectIdempotent(normalizeUi, { contextMeterTurnUnit: "turn" });
         expectIdempotent(normalizeUi, { contextMeterTurnUnit: "message" });
+    });
+
+    it("defaults the completion wait cap to 180 seconds, clamps it to 10–600, and normalizes it idempotently", () => {
+        const cap = (value: unknown) => normalizeUi({ completionWaitMaxSeconds: value }).completionWaitMaxSeconds;
+        expect(normalizeUi(undefined).completionWaitMaxSeconds).toBe(180);
+        expect(normalizeUi({}).completionWaitMaxSeconds).toBe(180);
+        expect(cap(10)).toBe(10);
+        expect(cap(600)).toBe(600);
+        expect(cap(7)).toBe(10);
+        expect(cap(601)).toBe(600);
+        for (const value of [NaN, Infinity, -Infinity, "70", null, true]) {
+            expect(cap(value), String(value)).toBe(180);
+        }
+        for (const value of [7, 601, "70"]) {
+            expectIdempotent(normalizeUi, { completionWaitMaxSeconds: value });
+        }
     });
 
     it("clamps the context meter's fixed-share warning to 10–95 and replaces a non-finite or non-number value with 60", () => {

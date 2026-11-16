@@ -5,7 +5,7 @@ import {
     DEFAULT_CHAT_LOAD_INITIAL_PAGES,
     normalizeChatLoadPages,
 } from "../../../../shared/chatLoadPages.ts";
-import { CONTEXT_METER_FIXED_WARN } from "../../../../shared/database.ts";
+import { COMPLETION_WAIT_MAX_SECONDS, CONTEXT_METER_FIXED_WARN } from "../../../../shared/database.ts";
 import type { SectionResource } from "../../../../shared/resources.ts";
 import { isPlainObject, normalizeSection, plainClone, type SectionSpec } from "./shared.ts";
 
@@ -133,6 +133,7 @@ const spec: SectionSpec<"ui"> = {
     contextMeter: ["boolean", true],
     contextMeterTurnUnit: ["string", "user"],
     contextMeterFixedWarn: ["number", CONTEXT_METER_FIXED_WARN.default],
+    completionWaitMaxSeconds: ["number", COMPLETION_WAIT_MAX_SECONDS.default],
     contextMeterLookahead: ["boolean", true],
     loreBudgetStop: ["boolean", true],
     generationProgressWindow: ["boolean", true],
@@ -163,6 +164,10 @@ export function normalizeUi(input: unknown): SectionResource<"ui"> {
     record.contextMeterFixedWarn = Math.min(
         CONTEXT_METER_FIXED_WARN.max,
         Math.max(CONTEXT_METER_FIXED_WARN.min, record.contextMeterFixedWarn as number),
+    );
+    record.completionWaitMaxSeconds = Math.min(
+        COMPLETION_WAIT_MAX_SECONDS.max,
+        Math.max(COMPLETION_WAIT_MAX_SECONDS.min, record.completionWaitMaxSeconds as number),
     );
     if (isPlainObject(record.customTextTheme)) {
         record.customTextTheme.FontColorQuote1 ??= "#8BE9FD";

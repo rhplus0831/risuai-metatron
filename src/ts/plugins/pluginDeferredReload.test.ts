@@ -151,6 +151,22 @@ describe("the reload after a remote plugins change", () => {
         expect(loads()).toEqual([["b1"]]);
     });
 
+    it("does not reload after a remote change to either completion setting", async () => {
+        settings.plugins = [plugin("completion-settings", { completionWait: false, completionQuietSeconds: 3 })];
+        await loadPlugins();
+        expect(loads()).toEqual([["completion-settings"]]);
+
+        settings.plugins[0].completionWait = true;
+        remoteChange();
+        await settle();
+        expect(loads()).toEqual([["completion-settings"]]);
+
+        settings.plugins[0].completionQuietSeconds = 12;
+        remoteChange();
+        await settle();
+        expect(loads()).toEqual([["completion-settings"]]);
+    });
+
     it("waits while plugin work runs and reloads once it is idle", async () => {
         settings.plugins = [plugin("c1"), plugin("c2")];
         await loadPlugins();

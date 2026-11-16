@@ -62,7 +62,14 @@ vi.mock("./permissionStore", async () =>
     }),
 );
 
-import { executePluginV3, loadV3Plugins, onPluginWorkChange, pluginWorkIdle } from "./v3.svelte";
+import {
+    executePluginV3,
+    loadV3Plugins,
+    onPluginActivity,
+    onPluginWorkChange,
+    pluginBusy,
+    pluginWorkIdle,
+} from "./v3.svelte";
 import { noteChannelCallbacks } from "src/ts/network/generationJobs";
 import { endJobChannel, handleChannelEvent } from "src/ts/network/jobChannel";
 import { beginLocalSend } from "src/ts/process/localSends";
@@ -72,7 +79,7 @@ import type { Chat } from "../../../../shared/database";
 import * as resourceSync from "src/ts/storage/resourceSync.svelte";
 import { installFlatDatabase, installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
-import { pluginHooks, type PluginProviderArgument } from "../pluginHooks";
+import { pluginHooks, type EditFunction, type PluginProviderArgument } from "../pluginHooks";
 import { invokeHook } from "./pluginContext";
 import { bodyIntercepterStore } from "src/ts/stores.svelte";
 
@@ -339,6 +346,117 @@ describe("pluginWorkIdle", () => {
         releaseB();
         expect(pluginWorkIdle()).toBe(true);
         expect(observed.at(-1)).toBe(true);
+    });
+});
+
+describe("activity by plugin", () => {
+    beforeEach(() => vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] }));
+    afterEach(() => {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+    });
+
+    it("tracks each plugin's sandbox and overlapping host hooks independently while the total keeps work busy", async () => {
+        const a = await makeApi();
+        const b = await makeApi();
+        const [hostA, hostB] = harness.hosts;
+        expect(pluginBusy("not-installed")).toBe(false);
+        expect(pluginBusy(a.plugin.name)).toBe(false);
+        expect(pluginBusy(b.plugin.name)).toBe(false);
+
+        hostA.idle = false;
+        expect(pluginBusy(a.plugin.name)).toBe(true);
+        expect(pluginBusy(b.plugin.name)).toBe(false);
+        expect(pluginWorkIdle()).toBe(false);
+        hostA.idle = true;
+        hostB.idle = false;
+        expect(pluginBusy(a.plugin.name)).toBe(false);
+        expect(pluginBusy(b.plugin.name)).toBe(true);
+        hostB.idle = true;
+        expect(pluginWorkIdle()).toBe(true);
+
+        const first = deferred<string>();
+        const second = deferred<string>();
+        const other = deferred<string>();
+        a.api.addRisuScriptHandler(
+            "input",
+            vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise),
+        );
+        b.api.addRisuScriptHandler("output", () => other.promise);
+        const [input] = pluginHooks.editinput;
+        const [output] = pluginHooks.editoutput;
+        const runningFirst = input("first");
+        const runningSecond = input("second");
+        let runningOther: ReturnType<typeof output> | undefined;
+        try {
+            expect(pluginBusy(a.plugin.name)).toBe(true);
+            expect(pluginBusy(b.plugin.name)).toBe(false);
+            expect(pluginWorkIdle()).toBe(false);
+            first.resolve("first done");
+            await runningFirst;
+            expect(pluginBusy(a.plugin.name)).toBe(true);
+            expect(pluginWorkIdle()).toBe(false);
+
+            runningOther = output("other");
+            second.resolve("second done");
+            await runningSecond;
+            expect(pluginBusy(a.plugin.name)).toBe(false);
+            expect(pluginBusy(b.plugin.name)).toBe(true);
+            expect(pluginWorkIdle()).toBe(false);
+
+            // An unloaded name is not busy, but its unsettled host hook still holds the total.
+            await loadV3Plugins([]);
+            expect(pluginBusy(a.plugin.name)).toBe(false);
+            expect(pluginBusy(b.plugin.name)).toBe(false);
+            expect(pluginWorkIdle()).toBe(false);
+            other.resolve("other done");
+            await runningOther;
+            expect(pluginWorkIdle()).toBe(true);
+        } finally {
+            first.resolve("cleanup");
+            second.resolve("cleanup");
+            other.resolve("cleanup");
+            await Promise.all([runningFirst, runningSecond, runningOther]);
+        }
+    });
+
+    it("reports the plugin name on every sandbox report, host-hook settlement, and unload", async () => {
+        const a = await makeApi();
+        const b = await makeApi();
+        const [hostA, hostB] = harness.hosts;
+        const activity = vi.fn<(name: string) => void>();
+        const off = onPluginActivity(activity);
+        const gate = deferred<string>();
+        let running: ReturnType<EditFunction>;
+        try {
+            changed.mockClear();
+            hostA.listener!();
+            hostA.listener!();
+            hostB.listener!();
+            expect(activity.mock.calls).toEqual([[a.plugin.name], [a.plugin.name], [b.plugin.name]]);
+            expect(changed).toHaveBeenCalledTimes(3);
+
+            a.api.addRisuScriptHandler("input", () => gate.promise);
+            const [handler] = pluginHooks.editinput;
+            activity.mockClear();
+            changed.mockClear();
+            running = handler("text");
+            expect(activity).not.toHaveBeenCalled();
+            gate.resolve("done");
+            await running;
+            expect(activity.mock.calls).toEqual([[a.plugin.name]]);
+            expect(changed).toHaveBeenCalledTimes(1);
+
+            activity.mockClear();
+            changed.mockClear();
+            await loadV3Plugins([]);
+            expect(activity.mock.calls.map(([name]) => name).sort()).toEqual([a.plugin.name, b.plugin.name].sort());
+            expect(changed).toHaveBeenCalledTimes(2);
+        } finally {
+            off();
+            gate.resolve("cleanup");
+            await running;
+        }
     });
 });
 
