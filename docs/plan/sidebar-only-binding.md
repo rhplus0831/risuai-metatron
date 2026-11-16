@@ -1,9 +1,11 @@
 # Sidebar-Only Chat Binding Plan
 
 Status: drafted 2026-11-17 at `c788b2fc3` from the owner's report of the same day (a prompt preset picked in the
-settings while a chat was open changed that chat's prompt preset, which the owner did not expect). Not audited against
-the code yet. D1 and D2 are the owner's choices of 2026-11-17; D3 on are this plan's own and open
-to the owner's change. Landed: none.
+settings while a chat was open changed that chat's prompt preset, which the owner did not expect). Committed at `93d8dc37c`, then audited against the code at that commit
+([report](../reports/audits/plan-runner/sidebar-only-binding-2026-11-17.md)) and corrected in the same commit as the
+report. D1 and D2 are the owner's choices of 2026-11-17; D3 on are this plan's own and open to the owner's change. The
+route table's resolvers (slice 2) and the counts and previews that stay the running chat's (D10) took their present
+form from the audit. Landed: none.
 
 Sources: `pickBinding` in `src/ts/storage/chatBindingPick.ts`; `chatDisplayIds`, `chatBindingPatch`, and `pickedId` in
 `src/ts/storage/chatBinding.svelte.ts`; `resolvePreset`, `resolveTabPreset`, `resolveModelPreset`, `resolvePersona`,
@@ -12,8 +14,8 @@ Sources: `pickBinding` in `src/ts/storage/chatBindingPick.ts`; `chatDisplayIds`,
 `setOpenChatBindingSource` in `src/ts/storage/settingsViews.svelte.ts`; `selectPreset`, `selectModelPreset`, and
 `selectPersona` in `src/ts/storage/selection.svelte.ts`; `settingContext`, `getSettingValue`, and `setSettingValue` in
 `src/ts/setting/utils.ts`; `src/ts/setting/searchIndex.ts`; `getModelInfo` and `getModelInfoForMode` in
-`src/ts/model/modellist.ts`; `tabTokenScope` and `countTokens` in `src/ts/tokenizer.ts`; `tokenizePreset` in
-`src/ts/process/prompt.ts`; `changeToPreset` and the `presets`, `persona`, and `modelSelect` hotkeys in
+`src/ts/model/modellist.ts`; `tokenCountInput`, `tokenScopeKey`, and `countTokens` in `src/ts/tokenizer.ts`;
+`tokenizePreset` in `src/ts/process/prompt.ts`; `src/lib/Others/PopupEditor.svelte`; `changeToPreset` and the `presets`, `persona`, and `modelSelect` hotkeys in
 `src/ts/hotkey.ts`; `changeUserPersona`, `selectUserImg`, and `exportUserPersona` in `src/ts/persona.ts`;
 `downloadPreset` in `src/ts/storage/presets.svelte.ts`; `src/lib/Setting/botpreset.svelte`,
 `src/lib/Setting/listedPersona.svelte`, `src/lib/Setting/BindingScopeNote.svelte`, and the pages under
@@ -45,7 +47,7 @@ gets its binding, or the selection's storage.
 - **A pick binds the open chat.** `pickBinding(field, id, target?)` binds `target` when it is a `ChatRef`, selects for
   the tab when it is `null`, and for `undefined` binds `currentChatRef()` when a chat is open, else selects for the tab.
   A chat's pick writes that field only (`chatBindingPatch`).
-- **Every picker outside the panel passes `undefined`.** `botpreset.svelte` calls `pickBinding(field, id, chatRef)` with
+- **Outside the panel, a pick targets the open chat.** `botpreset.svelte` calls `pickBinding(field, id, chatRef)` with
   its optional `chatRef` prop, and `listedPersona.svelte` calls `changeUserPersona(persona.id, chatRef)`. `App.svelte`
   passes the prop only when the store holds `{ chatRef }`, which only `ChatBindingPanel.svelte` `openPicker` sets. The
   lists the settings open (`PromptPresetSettings.svelte` and `ModelSettings.svelte` set the store to `true`) and the
@@ -71,9 +73,12 @@ gets its binding, or the selection's storage.
 - **The tab's selection is never written from a binding.** `resolveTabPreset` and its siblings fall back to the first
   record and select it when the selected id names none. `chatDisplayIds` uses the tab's selection for a chat's field
   that is unset or gone. A deletion moves only the tab's selection.
-- **Helpers take a captured pair.** `getModelInfoForMode(mode, scope?)`, `resolveModelSlot(mode, scope?)`,
-  `countTokens(text, scope?)`, and `tabTokenScope(presetScope?)` read the pair of `scope` when given, else the active
-  family. `tokenizePreset(prompts, consti)` has no such parameter.
+- **Model info takes a captured pair.** `getModelInfoForMode(mode, scope?)` and `resolveModelSlot(mode, scope?)` read
+  the pair of `scope` when given, else the active family.
+- **Counts and previews read the active family.** The Prompt pages count through `tokenCountInput`, `tokenScopeKey`,
+  `countTokens`, and `tokenizePreset`, whose CBS expansion and tokenizer identity are the active family's. The popup
+  editor (`PopupEditor.svelte`) previews, shows the chat's toggles, and counts the same way; a text area's
+  `popupEditorContext` only guards the draft's write-back against a changed record.
 - **Many tests mock the views module.** Seventeen test files replace `settingsViews.svelte` with a factory
   (`rg -l 'vi.mock\([^)]*settingsViews' src`), so a module that imports a new export fails under a factory without it.
 
@@ -95,14 +100,16 @@ gets its binding, or the selection's storage.
 ## Order
 
 1, then 2. Slice 2 gives the names slice 1 introduces their own resolution, so it cannot start before slice 1 lands.
-Both edit `src/ts/storage/settingsViews.svelte.ts` and `docs/structure/settings-i18n.md`.
+Both edit `src/ts/storage/settingsViews.svelte.ts`, `src/ts/persona.ts`, `src/lib/Setting/botpreset.svelte`,
+`src/lib/Setting/listedPersona.svelte`, `src/lib/Setting/Pages/PersonaSettings.svelte`, and
+`docs/structure/settings-i18n.md`.
 
 ## Slice 1. The settings read their own names (`settings-i18n.md`)
 
 No behavior changes in this slice: every new name resolves exactly as the active name it stands beside.
 
 Existing: `src/ts/storage/settingsViews.svelte.ts`, `src/ts/setting/utils.ts`, `src/ts/setting/searchIndex.ts`,
-`src/ts/process/prompt.ts`, `src/ts/persona.ts`, `src/ts/storage/presets.svelte.ts`,
+`src/ts/persona.ts`, `src/ts/storage/presets.svelte.ts`,
 `src/lib/Setting/Settings.svelte`, `SettingsSections.svelte`, `SettingRenderer.svelte`, `botpreset.svelte`,
 `listedPersona.svelte`, `src/lib/UI/PromptDataItem.svelte`, and under `src/lib/Setting/Pages/`:
 `PromptPresetSettings.svelte`, `PromptSettings.svelte`, `OobaSettings.svelte`, `ModelSettings.svelte`,
@@ -125,20 +132,25 @@ of the test files that mount these modules.
 - **The pages and lists** named above read and write the edited family wherever they show or edit a preset, a model
   preset, a profile, or a persona: every `active*` and `current*Record` use, `ProfileSlotSelect`'s `presetId`, the
   default `profile` prop of `OpenrouterSettings` and `ChatFormatSettings`, the popup editor context ids, and the rows
-  `botpreset.svelte` and `listedPersona.svelte` mark. `ModelSettings` and `ProviderDefaultKeys` pass `editedScope()`
-  to `getModelInfoForMode`.
-- **Token counts on the Prompt pages** use the edited pair: `PromptPresetSettings` passes `editedScope()` to
-  `countTokens`, and `tokenizePreset` gains an optional `scope?: PresetScope` that `PromptSettings` passes and its
-  other callers leave out.
+  `botpreset.svelte` and `listedPersona.svelte` mark. `PromptPresetSettings`, `ModelSettings`, and `ProviderDefaultKeys`
+  pass `editedScope()` to every `getModelInfoForMode` call.
+- **Counts and previews stay the running chat's (D10).** The token counts of the Prompt pages (`tokenCountInput`,
+  `tokenScopeKey`, `countTokens`, and `tokenizePreset`, all unscoped) and the popup editor's preview, toggles, and
+  counter keep reading the active family: they count and preview the edited text with the open chat's tokenizer and
+  variables. Only the text they are given comes from the edited family. `tokenizePreset` gains no parameter, and
+  `src/ts/process/prompt.ts`, `src/ts/tokenizer.ts`, and `PopupEditor.svelte` are not edited.
 - **The actions the pages call**: `selectUserImg` and `exportUserPersona` read `editedPersona`; `downloadPreset` reads
   `editedMainProfile.maxContext`; `applyPresetTemplate` (called by tests only) reads `editedPresetRecord()`.
 - **What stays on the active family (D8)**: `MemorySettings.svelte` (the open chat's memory budget and connection),
   `Module/ModuleSettings.svelte` (the mark of a module the running preset integrates), and `PluginSettings.svelte`
   (the provider it clears on a removal). Each keeps a one-line comment saying it shows what the open chat runs with.
-- **Parity of the scoped calls.** Before passing `editedScope()` to a helper, confirm with the code that the scoped
-  and the unscoped call agree for the same records, an empty list included (`resolveModelSlot` throws
-  `PresetTargetGoneError` for both when there is no model preset; `scopedPresetRoot` throws for a gone record where the
-  view reads a default). Where they differ, keep the unscoped behavior for that call and say so in the slice report.
+  The settings report of `Advanced/SettingsExportButtons.svelte` (`buildSettingsReport`) is a diagnostic of the running
+  settings and is not edited.
+- **Parity of the scoped calls.** `getModelInfoForMode(mode, editedScope())` agrees with the unscoped call for the same
+  records, an empty model preset list included (`resolveModelSlot` throws `PresetTargetGoneError` for both).
+  `editedScope()` reads both ids, so a call that read only the model preset also tracks the prompt selection and can
+  repair a stale one; that is accepted. Confirm both with the code before editing, and say in the slice report where a
+  call differs.
 - Tests: none added (nothing can be told apart yet). The existing suite passes with no assertion changed. A test file
   whose `settingsViews.svelte` factory lacks a name a mounted module now imports gains it from a shared typed factory
   (V7), checked with `satisfies` against the module's exports.
@@ -157,9 +169,18 @@ New file: `src/lib/Setting/BindingScopeNote.test.ts`. Existing: `src/ts/storage/
   first-record fallback, so a write with no target is dropped as today); `editedModelPreset` likewise over
   `resolveTabModelPreset`; `editedMainProfile` and `editedSubProfile` are `profileForSlot` over that model preset's
   slots; `editedPersona` is the persona view over `resolveTabPersona`. `editedScope()` is the tab's resolved pair.
-  `readEditedRoot` and `writeEditedRoot` use a second route table built by the same builder with the edited views (the
-  section, collection, and selection routes are the same targets in both tables). The module header's rules list says
-  which family reads the binding first and which never does.
+  The module header's rules list says which family reads the binding first and which never does.
+- **The edited route table** (`settingsViews.svelte.ts`). `readEditedRoot` and `writeEditedRoot` use a second route
+  table. `buildRootRoutes` takes the family it serves: the preset view and the persona view its preset and persona
+  routes target, and, for the model roots, a read resolver and a no-fallback write resolver of the model preset, which
+  `readModelRoot`, `writeModelRoot`, and `seperateModelsView` take in place of their active default and call on every
+  access (an id captured when the table is built would keep the first selection, and the repairing read resolver in a
+  write would redirect a write that must be dropped). The write resolver is forwarded through `writeModelRoot`'s
+  whole-`seperateModels` call and the auxiliary setters. `routeOf` takes the table. `buildActivePersona` takes its read
+  and write resolvers the same way, and the edited profile views pass `profileForSlot` a write getter over the record
+  `selection.modelPresetId` names. The callers that pass a captured scope (`readPresetFieldOf`, `writePresetField`,
+  `scopedPresetRoot`) and `writeModelRoot`'s validation, equality checks, warnings, and cloning keep their behavior. The
+  section, collection, and selection routes are the same targets in both tables.
 - **`pickBinding` takes a required target.** `ChatRef` binds that chat (as today); `null` selects for the tab. The
   `undefined` case and its `currentChatRef()` read are removed. `changeUserPersona(id, target: ChatRef | null)`
   follows.
@@ -172,7 +193,8 @@ New file: `src/lib/Setting/BindingScopeNote.test.ts`. Existing: `src/ts/storage/
   keeps its three guards and its toast. The lists the hotkeys and `quickMenu` open are the settings' lists.
 - **The header note (D6)**, per field, while a chat is open: "This chat" when the chat's bound record exists and is the
   shown one; "Not this chat's" with a "Show this chat's" button when it exists and is another; "Not set for this chat"
-  when it is unset or gone. Nothing at home. The button calls `pickBinding(field, <the chat's bound id>, null)`.
+  when it is unset or gone. Nothing at home. The component derives the shown id from the edited view of its field. The button calls
+  `pickBinding(field, <the chat's bound id>, null)`.
   Strings `chatBinding.notThisChat` and `chatBinding.showThisChat` in `en.ts`, with `ko.ts` overrides.
 - Tests:
   - `settingsViews.test.ts`, `presetViews.test.ts`, `personaViews.test.ts`: with a chat open that binds X while the tab
@@ -185,12 +207,13 @@ New file: `src/lib/Setting/BindingScopeNote.test.ts`. Existing: `src/ts/storage/
     `settingWrappers.test.ts`: a pick with a chat open and no `chatRef` leaves the chat's binding and moves the tab's
     selection; the page then shows and writes the picked record while the chat's bound record is untouched; a list
     opened for a chat binds it and leaves the tab's selection.
-  - `hotkey.test.ts`, `hotkey.dialogs.test.ts`: Ctrl+N with a chat open selects for the tab and leaves the binding.
+  - `hotkey.test.ts`: Ctrl+N with a chat open selects for the tab and leaves the binding.
   - `BindingScopeNote.test.ts`: the three states per field, nothing at home, and the button's selection.
   - Specs: `e2e/chatBinding.spec.ts` gains a settings pick with a bound chat open (the binding and the provider's next
     request keep the chat's preset; the Prompt page shows the picked one; the note and its button); the binding
-    panel's rows bind as before. Re-read `e2e/presetSelection.spec.ts` and `e2e/personaBinding.spec.ts` for the old
-    rule and correct them.
+    panel's rows bind as before. In `e2e/personaBinding.spec.ts` the `changeUserPersona` helper passes an explicit
+    target and the icon case expects the persona the tab selects. `e2e/presetSelection.spec.ts` runs at home and is
+    not changed.
   - V6: each new assertion is shown to fail with the old `undefined` branch or the old resolver restored.
 - Guides: `persistence.md` (Chat binding: `pickBinding`'s two targets; the settings views' two families),
   `settings-i18n.md` (Preset lists, Flows, State, and the `e2e` line of Tests), `app-shell.md` (`changeToPreset`),
@@ -221,6 +244,11 @@ New file: `src/lib/Setting/BindingScopeNote.test.ts`. Existing: `src/ts/storage/
   integrates, and the plugin provider that a removal clears describe the running chat, not a record being edited.
 - **D9. `pickBinding` keeps one function with a required target.** A caller states the chat or `null`, so a new picker
   cannot bind the open chat by leaving an argument out.
+- **D10. Token counts and popup previews on the settings screen count as the open chat would.** They differ from a
+  count with the edited records only when the tokenizer choice or the CBS expansion depends on a prompt preset, model
+  preset, or persona that differs between the two. Threading the edited records through the CBS expansion, the
+  tokenizer identity, and the popup session would change the parser and the tokenizer for that number. Open to the
+  owner's change.
 
 ## Not In This Plan
 
@@ -229,6 +257,10 @@ New file: `src/lib/Setting/BindingScopeNote.test.ts`. Existing: `src/ts/storage/
 - **The memory page's split** into what the chat runs with and what the tab selects.
 - **Clearing a removed plugin's provider in every profile** instead of one.
 - **A check that no chat-side module imports the edited family.** The guides and the views' comments carry the rule.
+- **Counting and previewing with the edited records** (D10).
+- **Recounting the template when the running chat's variables change.** `PromptSettings` builds its count input from
+  the template items and the tokenizer identity, and expands CBS later, untracked; an unchanged template is not
+  recounted when a variable default it reads changes. That is today's behavior.
 - **Other locales' strings.** They fall back to English.
 
 ## Manual Checks
