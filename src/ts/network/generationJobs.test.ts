@@ -242,6 +242,16 @@ describe("handoff transport", () => {
         expect(FakeSocket.instances).toHaveLength(0);
     });
 
+    it("reads an idle chat slot from 200 null and from an older server's 404", async () => {
+        const ref = { chaId: "c", chatId: "k" };
+        stubs.fetch.mockResolvedValueOnce(json(200, null));
+        expect(await transport.readChatGeneration(ref)).toBeNull();
+        stubs.fetch.mockResolvedValueOnce(json(404, { error: "idle" }));
+        expect(await transport.readChatGeneration(ref)).toBeNull();
+        stubs.fetch.mockResolvedValueOnce(json(200, { error: "idle" }));
+        await expect(transport.readChatGeneration(ref)).rejects.toThrow();
+    });
+
     it("attaches with the ticket and uses the latest role for callbacks while ignoring unknown job events", async () => {
         const ref = { chaId: "c", chatId: "k" };
         const follow = startFollow("worker", (event) => transport.applyGenerationEvent("worker", ref, event, follow), {

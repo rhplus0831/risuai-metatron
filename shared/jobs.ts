@@ -189,7 +189,10 @@ export type GenerationCancelled =
     | { state: "cancelled" }
     | { state: "aborted" | "ended"; jobId: string; owned: boolean; status: GenerationStatus | null };
 
-/** The chat's running job, without attaching or granting access to its channel. */
+/**
+ * The chat's running job, without attaching or granting access to its channel. An idle chat answers
+ * `GET /api/generations/current` with 200 `null`, not an error status.
+ */
 export type GenerationCurrent = {
     jobId: string;
     kind: GenerationKind;

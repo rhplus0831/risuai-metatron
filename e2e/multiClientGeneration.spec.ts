@@ -257,11 +257,11 @@ async function waitForJobEnd() {
         .poll(
             async () => {
                 const answer = await a.api(`/api/generations/current?characterId=${seed!.chaId}&chatId=s1`);
-                return answer.status;
+                return answer.status === 200 ? answer.body : answer.status;
             },
             { timeout: CONVERGENCE_TIMEOUT, message: "the held server job must end before cleanup" },
         )
-        .toBe(404);
+        .toBeNull();
 }
 
 async function expectNoNotice(session: Session) {
