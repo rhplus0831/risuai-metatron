@@ -142,6 +142,32 @@ async function claimCardAssets(
     }
 }
 
+/**
+ * The notice of an added card: `importedCharacter`, and when the card brings its own lorebook settings
+ * (`loreSettings`, the editor's "Use Global Settings" unchecked) a warning listing them beside the values
+ * the global settings give instead (`shared/lore/activation.ts`: recursive scanning on, full word matching
+ * off, the depth and token budget from settings), since they silently override the user's own.
+ */
+function importedCharacterNotice(loreSettings: loreSettings | undefined): string {
+    if (!loreSettings) {
+        return language.importedCharacter;
+    }
+    const text = language.importedLoreSettings;
+    const onOff = (value: boolean) => (value ? text.on : text.off);
+    const row = (label: string, value: string, global: string) => `${label}: ${value} ${text.global(global)}`;
+    const globalDepth = settings.memoryTranslateMedia.loreBookDepth;
+    const globalToken = settings.providers.loreBookToken;
+    return [
+        language.importedCharacter,
+        "",
+        text.warning,
+        row(language.recursiveScanning, onOff(loreSettings.recursiveScanning ?? true), onOff(true)),
+        row(language.fullWordMatching, onOff(loreSettings.fullWordMatching ?? false), onOff(false)),
+        row(language.loreBookDepth, `${loreSettings.scanDepth ?? globalDepth}`, `${globalDepth}`),
+        row(language.loreBookToken, `${loreSettings.tokenBudget ?? globalToken}`, `${globalToken}`),
+    ].join("\n");
+}
+
 /** The Realm hub's base path: the self-host server's same-origin `/hub-proxy` (`server/src/routes/proxy.ts`). */
 export const hubURL = "/hub-proxy";
 
@@ -279,7 +305,7 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
         if ((da.char_name || da.name) && (da.char_persona || da.description) && (da.char_greeting || da.first_mes)) {
             const character = convertOffSpecCards(da);
             const chaId = addCharacter(character);
-            alertNormal(language.importedCharacter);
+            alertNormal(importedCharacterNotice(character.loreSettings));
             return chaId as any;
         } else {
             alertError(language.errors.noData);
@@ -624,7 +650,7 @@ async function importPngCharacter(
         if (typeof img !== "string") replay.set(imgp, { load: () => img });
         if (!(await claimCardAssets([imgp, ...Object.values(assets)], replay))) return null;
         const chaId = addCharacter(character);
-        alertNormal(language.importedCharacter);
+        alertNormal(importedCharacterNotice(character.loreSettings));
         return chaId;
     }
     return (await importCharacterCardSpec(read.card, img, "normal", assets, null, false, true)) || null;
@@ -1468,7 +1494,7 @@ async function importCharacterCardSpec<T extends boolean = false>(
     }
 
     const chaId = addCharacter(char);
-    alertNormal(language.importedCharacter);
+    alertNormal(importedCharacterNotice(char.loreSettings));
     return chaId as any;
 }
 

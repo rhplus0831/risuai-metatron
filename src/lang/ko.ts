@@ -931,6 +931,13 @@ export const languageKorean = {
         "모델을 가져왔지만, 압축 파일 내 {count}개 파일이 업로드 한도(약 100 MiB)를 초과하여 제외되었습니다: {names}",
     successImport: "성공적으로 가져왔습니다.",
     importedCharacter: "가져온 캐릭터",
+    importedLoreSettings: {
+        warning:
+            "이 캐릭터는 로어북 글로벌 설정을 사용하지 않습니다. 아래의 자체 설정이 적용되며, 괄호 안은 글로벌 설정 값입니다. 캐릭터의 로어북 > 설정에서 바꿀 수 있습니다.",
+        on: "켜짐",
+        off: "꺼짐",
+        global: (value: string) => `(글로벌: ${value})`,
+    },
     alwaysActive: "언제나 활성화",
     additionalPrompt: "추가 프롬프트",
     descriptionPrefix: "캐릭터 설명 접두사 (Prefix)",

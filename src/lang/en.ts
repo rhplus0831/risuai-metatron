@@ -992,6 +992,13 @@ export const languageEnglish = {
         "Model imported, but {count} files in the zip are too large to upload (the limit is just under 100 MiB) and were skipped: {names}",
     successImport: "Successfuly imported",
     importedCharacter: "Imported Character",
+    importedLoreSettings: {
+        warning:
+            "This character does not use the global lorebook settings: its own settings below apply, with the global value in parentheses. Change them in the character's Lorebook > Settings.",
+        on: "On",
+        off: "Off",
+        global: (value: string) => `(global: ${value})`,
+    },
     alwaysActive: "Always Active",
     additionalPrompt: "Additional Prompt",
     descriptionPrefix: "Description Prefix",
