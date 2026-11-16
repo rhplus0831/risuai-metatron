@@ -1383,6 +1383,7 @@ export const languageKorean = {
             marker: {
                 connected: "{host} 호스트를 통해 전송 · 연결됨",
                 disconnected: "{host} 호스트를 통해 전송 · 연결되지 않음",
+                offline: "연결되지 않음",
             },
             uncertain: "아직 결과를 확인할 수 없습니다. 같은 요청으로 다시 시도하려면 내용을 바꾸지 않고 전송하세요.",
             commandChanged:
