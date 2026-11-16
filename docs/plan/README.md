@@ -5,6 +5,7 @@ shipped behavior; [the archive](../archived-plan/README.md) indexes completed pl
 their last commit and path, and the [backlog](../README.md) holds what they left open.
 
 - [Headless Host](headless-host.md): a package script that keeps a headless Chrome connected as a remote host.
+  Drafted and [audited](../reports/audits/plan-runner/headless-host-2026-11-16.md) on 2026-11-16; slice 1 has landed.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive, following the archive's procedure for the plan's open items. Use `None`
