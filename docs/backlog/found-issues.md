@@ -83,13 +83,27 @@ the relay's reader found that a reload recovery's result-less `uncertain` still 
 result could grow past the body cap when parsed (both fixed with tests), and that the relay's identity still differs
 from the generation's for field combinations no caller sends, which is the Remote commands entry below.
 
+The twenty-sixth batch is the fork data-loss cross-check of 2026-11-17 at `003f367fc`: 233 failure scenarios taken
+from the data-loss fixes of four other RisuAI forks, each checked against this app by a read-only reviewer per
+subsystem, then a second reader that tried to refute each P2 finding. Seventeen entries below, each marked
+`cross-check F<n>`. They come from static reading only: none was reproduced by a test, so reproduce an entry before
+fixing it. Each entry says who read its code. The method, the verdict counts, and the findings that were not filed
+(four that are documented design, five P3 ones nobody challenged) are in
+[its report](../reports/surveys/fork-data-loss-crosscheck.md).
+
 ## Contents
 
-- [Backup and sync](#backup-and-sync): 1
+- [Backup and sync](#backup-and-sync): 4
+- [Characters](#characters): 1
+- [Chat pipeline](#chat-pipeline): 3
+- [Memory](#memory): 1
 - [Network jobs](#network-jobs): 1
+- [Plugins](#plugins): 3
 - [Remote commands](#remote-commands): 1
 - [Rendering](#rendering): 1
-- [Server generation](#server-generation): 1
+- [Server generation](#server-generation): 4
+- [Structured Memory](#structured-memory): 2
+- [Translation](#translation): 1
 
 ## Backup and sync
 
@@ -107,6 +121,123 @@ metatron-only, and the list's promise is false.
 
 **Suggested handling:** add the five fields to the list, and add a test that compares `SECTION_FIELDS` with
 upstream's `Database` keys (or a kept snapshot of them) so a new metatron-only field cannot drift past it again.
+
+### The RisuAI-compatible export leaves out Structured Memory pages and threads without saying so
+
+The compatible export's collector keeps only a chat's Structured Memory `events`
+(`server/src/data/resourceStore.ts:745`, `server/src/data/upstream/exportDatabase.ts:968`). Pages and threads, a
+manual note included, are not in the file, and the export report the user accepts does not mention them. The native
+backup keeps everything. Found 2026-11-17 by the fork data-loss cross-check (cross-check F14); a second reader
+confirmed it.
+
+**Why it matters:** a user who keeps only compatible backups has no copy of their pages and threads, and nothing told
+them.
+
+**Suggested handling:** count the omitted pages and threads in the export report and point to the native backup.
+
+### The RisuAI-compatible export leaves out assets that only a plugin's custom data references
+
+`server/src/data/upstream/assetReferences.ts:21` does not walk the plugin custom values the export retains. A plugin
+that saves an image with `saveAsset` and stores the key only in its custom database value gets the value in the
+compatible export but not the file, and the file is not in the report's missing list. Asset cleanup and the native
+backup do cover plugin-held references. Found 2026-11-17 by the fork data-loss cross-check (cross-check F15); a second
+reader confirmed it.
+
+**Why it matters:** the exported value points at a file the archive does not hold, and the report says nothing is
+missing.
+
+**Suggested handling:** walk the retained custom values for asset keys and feed them into the export's holds, its
+selection, and its missing list.
+
+### "Take snapshot" does not flush this tab's pending saves
+
+`take` in `src/lib/Setting/Pages/Storage/storageController.svelte.ts:204` calls `takeSnapshot` directly. An edit that
+is waiting in retry backoff after a short connection failure is not in the snapshot, and the action reports success
+without a notice. The file backups flush first and name refused work (`flushResources` and `backupRefusedNote` in
+`src/ts/drive/backuplocal.ts`). The pending work itself is not deleted. Composer and recovery drafts live in the
+browser and are in no server backup; neither the snapshot nor the backup screen says that. Found 2026-11-17 by the fork
+data-loss cross-check (cross-check F17); a second reader confirmed it, and the session read `take`.
+
+**Why it matters:** a snapshot taken as a safety point before a risky action can hold an older state than the screen
+shows.
+
+**Suggested handling:** flush and report discarded and refused work before `takeSnapshot`, as the file backup does.
+
+## Characters
+
+### Module export re-encodes images with the image compression setting
+
+`exportModuleLegacy` passes every asset through `compressImage` (`src/ts/process/modules.ts:188`), and `exportModule`
+reaches the same call through `exportCharacterCard` (`src/ts/characterCards.ts:2046`). With `db.imageCompression`
+on, which is the default, a JPEG, PNG, GIF or BMP asset is re-encoded as WebP at quality 0.75 with its longer side
+capped at 3000 px (`src/ts/media/compressImage/lossyCompression.ts`); an animated GIF becomes a still image. The
+setting's help text names character exports only. The stored original is untouched. Found 2026-11-17 by the fork
+data-loss cross-check (cross-check F16); a second reader confirmed it, and the session read both files.
+
+**Why it matters:** a module shared as a file carries lower-quality images than its author has, and the author is not
+told.
+
+**Suggested handling:** say so at module export and offer the original bytes, or name modules in the setting's help
+text.
+
+## Chat pipeline
+
+### An open message or translation editor loses its text when its row is mounted again
+
+The editor's draft is component state of the row (`draft` in `src/lib/ChatScreens/Chat.svelte:167`). The row's mount
+key holds the stored message text (`MountKey` in `src/lib/ChatScreens/Chats.svelte:682`), so a change of that text
+from another tab or device unmounts the row and mounts a new one (`:728`), and the typed text is gone. Opening
+Settings and returning does the same to every row, because `src/App.svelte:259` replaces the chat screen. `isEditing`
+protects an open editor only from the row trim and from containment. Found 2026-11-17 by the fork data-loss
+cross-check (cross-check F5); a second reader confirmed it, and the session read the mount key. The `chat-store`
+guide's Limitations said the draft survives, on the owner's decision of 2026-11-08; that decision accepted a behavior
+the code did not have, so it needs to be made again.
+
+**Why it matters:** a long manual edit of a message is lost by a visit to Settings or by an edit on another device,
+with no recovery draft.
+
+**Suggested handling:** keep editor drafts outside the row, keyed by character, chat and message, or leave the text
+out of the mount key while `isEditing` is true.
+
+### A reroll of a multi-reply turn keeps the discarded replies' variable changes
+
+Only a single-reply turn is a reroll carrier (`shared/rerollCandidates.ts:304`), and `rerollByRemoval` changes
+messages only (`src/lib/ChatScreens/DefaultChatScreen.svelte:1035`). When a group turn with two speakers whose
+triggers change a chat variable is rerolled, the old messages are removed, `scriptstate` keeps their effects, and the
+new replies add theirs on top. Found 2026-11-17 by the fork data-loss cross-check (cross-check F7); a second reader
+confirmed it.
+
+**Why it matters:** counters and flags of a card drift with every reroll of a group turn.
+
+**Suggested handling:** extend the before and after variable checkpoints to multi-reply bundles.
+
+### A slash-command send clears a newer composer draft and can append twice
+
+`src/lib/ChatScreens/DefaultChatScreen.svelte:719` awaits the command pipeline and then clears the input, without a
+send reservation and without comparing the text. Submitting `/speak Hello` with a network TTS mode and typing a new
+draft while it waits clears that draft when the command ends. Submitting `/speak Hello | /send Next` and pressing Send
+again while it waits appends `Next` twice. Found 2026-11-17 by the fork data-loss cross-check (cross-check F8); a
+second reader confirmed it.
+
+**Why it matters:** typed text is lost, or a message is sent twice, on a command that waits for the network.
+
+**Suggested handling:** reserve the chat before the first await and clear the input only when it still holds the
+submitted text.
+
+## Memory
+
+### An empty model answer replaces a stored SupaMemory summary or a stored translation
+
+SupaMemory's submodel summarizer can return an empty success while consolidating, and the accumulated summary becomes
+empty (`server/src/prompt/memory/supaMemory.ts:294`, `:380`). A translation step that returns only reasoning tags
+stores an empty translation that counts as fresh (`shared/translation/pipeline.ts:333`,
+`server/src/translation/runner.ts:364`). HypaV3 already validates its answer. Found 2026-11-17 by the fork data-loss
+cross-check (cross-check F11); a second reader confirmed it.
+
+**Why it matters:** one bad provider answer erases a summary built over a long chat, or a translation the user may
+have edited.
+
+**Suggested handling:** refuse a blank summary, and a blank translation of non-blank input, before it is published.
 
 ## Network jobs
 
@@ -129,6 +260,50 @@ that neither ends nor stops.
 **Suggested handling:** in `prepareServerJob`, race the wait for the shared flush against the send's signal and a
 deadline, answer a refusal that keeps the request's uncertainty, and never go on to a create after the timeout. Do not
 abort the shared write or count it as saved: it may be committed, and other callers wait on the same answer.
+
+## Plugins
+
+### Updating or re-importing a plugin resets its arguments and enables it
+
+`importPlugin` builds default `realArg` values (`0` or `""`) and `enabled: true` for the record it stores
+(`src/ts/plugins/plugins.svelte.ts:263-268`, `:363-376`), and `upsertPlugin` carries over only `completionWait` and
+`completionQuietSeconds` from the record it replaces (`src/ts/storage/collectionStore.svelte.ts:407-426`). Pressing
+Update, or importing the same plugin again, therefore returns every saved argument to its default and enables a plugin
+the user had disabled. Inherited from upstream RisuAI. Found 2026-11-17 by the fork data-loss cross-check (cross-check
+F2, rated P1); the session read both functions.
+
+**Why it matters:** arguments often hold API keys and long presets, an update is an ordinary action, and only a
+snapshot brings the values back.
+
+**Suggested handling:** at replacement, keep the enabled state and every argument value whose declaration is still
+compatible (same name and type).
+
+### A plugin's in-memory value overwrites a newer value from another tab or device
+
+Plugin storage reads and writes carry no record of what the plugin read (`src/ts/plugins/apiV3/v3.svelte.ts:3666`,
+`src/ts/storage/pluginStorageStore.svelte.ts:246`). A plugin keeps its state in memory in tab A; tab B saves a newer
+value for the same key, and A's store receives it through the live feed. When the plugin in A writes its older object,
+the write carries the new revision, so no conflict is raised and B's change is gone. Found 2026-11-17 by the fork
+data-loss cross-check (cross-check F3). Only the reviewer read this path; it rated it P1, and the session rated it P2
+because it is a property of the storage API and not a broken guard.
+
+**Why it matters:** a plugin that caches its state loses changes made on a second device, silently.
+
+**Suggested handling:** an observation per key that a remote update invalidates, or a change notification that
+plugins can subscribe to.
+
+### Character and plugin imports report success before the save is confirmed
+
+A character import (`src/ts/characterCards.ts:1496`) and a plugin import (`src/ts/plugins/plugins.svelte.ts:420`)
+announce success once the record is in the tab's store. If the connection drops or the page closes before the save is
+dispatched, a character is usually replayed from the journal at the next boot, but the `plugins` kind is excluded from
+the journal, so a plugin install or update is lost. The module import already waits
+(`src/ts/process/modules.ts:548`). Found 2026-11-17 by the fork data-loss cross-check (cross-check F10); a second
+reader confirmed it.
+
+**Why it matters:** the user saw a success notice for something that is not on the server.
+
+**Suggested handling:** use the module importer's scoped flush before announcing success or starting the plugin.
 
 ## Remote commands
 
@@ -175,6 +350,45 @@ the rest of this file. Do not fix it in passing.
 
 ## Server generation
 
+### Lua `setFullChat` rebuilds every message from role and text
+
+`setFullChatMain` (`server/src/lua/bindings.ts:1535-1556`) maps the script's list to `{ role, data }` objects with a
+fresh `chatId` each and writes a whole-chat `replace`; the working-copy branch does the same without IDs. A card's Lua
+button that calls `getFullChat`, changes some text, and calls `setFullChat` leaves every message with a new ID and
+without its time, generation and prompt information, stored translation, and reroll candidates. Inherited from upstream RisuAI. Found 2026-11-17 by the
+fork data-loss cross-check (cross-check F1, rated P1); the session read the function.
+
+**Why it matters:** one press of a card's button strips a whole chat's message data, and only a chat checkpoint or a
+snapshot from before the call brings it back.
+
+**Suggested handling:** carry message IDs through the getter and the setter, overlay role and text on the matched
+existing message, and give a fresh ID only to a new entry.
+
+### A buffered reply is not stored when an output hook fails
+
+With streaming off, the runner runs the `editoutput` hooks (`server/src/prompt/runner.ts:2221`) before the first write
+of the reply (`:2247`). If a plugin's `editoutput` hook throws or a Lua output hook times out, the provider's answer
+was received and is never written to the chat. The streaming branch stores the raw text first (`:2174`). The raw
+response is usually still in Request History while capture is on. Found 2026-11-17 by the fork data-loss cross-check
+(cross-check F6); a second reader confirmed it and narrowed it by the Request History copy.
+
+**Why it matters:** a paid answer disappears because of a fault in a script that only post-processes it.
+
+**Suggested handling:** store the buffered answer under the generation before output processing, as the streaming
+branch does.
+
+### A trigger's final reconciliation writes an earlier setter over a newer value
+
+A V2 trigger sets `x` to `first` in its working copy (`server/src/prompt/triggers.ts:592`) and then runs
+`/setvar key=x second`, which writes the live chat (`server/src/prompt/commands.ts:299`). When the trigger ends,
+`server/src/jobs/chatResult.ts:230` applies the working copy again, and `x` is `first`. The author's note follows the
+same path. Found 2026-11-17 by the fork data-loss cross-check (cross-check F9); a second reader confirmed it.
+
+**Why it matters:** a card that mixes trigger setters and slash commands ends with the older value, with no error.
+
+**Suggested handling:** do not replay setters that were already persisted, and refresh the working variables after a
+nested command.
+
 ### A long text stalls every request while a tokenizer other than tiktoken counts it
 
 The server encodes synchronously on the thread that serves every request (`server/src/prompt/tokenizers/index.ts`),
@@ -200,3 +414,46 @@ can still leave an instance answering nobody for seconds to tens of seconds on t
 **Suggested handling:** the owner's note of 2026-11-14: "Token counting isn't always fast, so I'm considering moving
 it to a worker thread." That design covers every family. Short of it, look at `novellist` on emoji and `gemma` on
 letters first, since their times grow faster than the text.
+
+## Structured Memory
+
+### A scene rewrite sees a truncated field and clips its answer
+
+An unlocked scene section can be edited to 4,000 characters. The next scene update shows the model the first 2,000
+characters of each field (`server/src/prompt/memory/structured/prompts.ts:320`) and clips each returned field to 800
+(`server/src/prompt/memory/structured/analysis.ts:342`, `server/src/prompt/memory/structured/pages.ts:660`), so a long
+hand-written section is replaced by a short rewrite of its first half. The former text stays in the page's history.
+Found 2026-11-17 by the fork data-loss cross-check (cross-check F12); a second reader confirmed it and narrowed it by
+the page history.
+
+**Why it matters:** text the user wrote into a scene page is cut without a notice; getting it back means finding the
+right history entry.
+
+**Suggested handling:** show whole fields when replacement is allowed, and refuse an oversized answer instead of
+clipping it.
+
+### A candidate whose alias is an existing page's title creates a duplicate page
+
+`find` in `server/src/prompt/memory/structured/pages.ts:358` matches a candidate by its title only. A candidate whose
+alias equals an existing page's title therefore becomes a second page for the same subject. No text is lost, and the
+two pages can be merged by hand. Found 2026-11-17 by the fork data-loss cross-check (cross-check F13, rated P3); a
+second reader confirmed it.
+
+**Why it matters:** facts about one subject are split over two pages, and each read sees only part of them.
+
+**Suggested handling:** refuse or report a candidate whose alias collides with an existing title.
+
+## Translation
+
+### A translation result or edit overwrites a newer translation of the same message
+
+`setTranslation` is fenced only by the hash of the original text (`server/src/data/chatStore.ts:2756-2790`) and does
+not require the current chat revision, and the editor's captured `base` is not compared at save
+(`src/ts/translator/storedTranslation.svelte.ts:365`). Tab A starts Retranslate, tab B edits and saves that message's
+translation, and A's result then replaces B's edit. Two open translation editors do the same to each other. Found
+2026-11-17 by the fork data-loss cross-check (cross-check F4). The reviewer rated it P1; the session read
+`setTranslation` and rated it P2, because it needs two tabs working on the same message's translation.
+
+**Why it matters:** a hand-corrected translation is replaced by a machine result, with no conflict and no notice.
+
+**Suggested handling:** an expected translation version, "none" included, checked in `setTranslation`.
