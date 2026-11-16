@@ -83,8 +83,10 @@
 
 ### Home screen
 
-- `src/lib/UI/MainMenu.svelte`: the home screen (pinned chats, recent characters, Explore); it fetches nothing from
-  Realm itself. The recent list is `src/lib/UI/mainMenuProjection.ts` `collectHomeRecentCharacters`.
+- `src/lib/UI/MainMenu.svelte`: the home screen (pinned chats, recent characters, More); it fetches nothing from Realm
+  itself. More always shows: its Realm card hides under `settings.ui.hideRealm`, and its remote host card turns on
+  `hostMode` ([network jobs](network-jobs.md#generation-job-client)). The recent list is
+  `src/lib/UI/mainMenuProjection.ts` `collectHomeRecentCharacters`.
 - `src/lib/UI/Title.svelte`: the seasonal logo and mini-game, used only by `MainMenu.svelte`.
 
 ## Flows

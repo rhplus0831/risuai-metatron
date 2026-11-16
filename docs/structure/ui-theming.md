@@ -189,10 +189,11 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   banner and an app-level pill (`refusedItemsFor`), and Record Export (`refusedRecordExportText`). `App` mounts the
   `app` form beside reload and terminal notices, below alerts.
 - `src/lib/Others/RemoteHostScreen.svelte`: the Remote Host Mode lock ([app shell](app-shell.md#entry-and-screens)),
-  fixed at `z-1050`, above plugin full-screen containers (1000) and below alerts (1100). It shows the client name, the
-  feed connection, this tab's running jobs (progress entries with this tab's client id), the recent commands, whether
-  dialogs wait, and its one control, "Leave host mode". While an alert or status overlay is shown, a copy of the control
-  sits above that layer (`z-1110`, top right): a `wait` or `progress` overlay has no button of its own.
+  fixed at `z-1050`, above plugin full-screen containers (1000) and below alerts (1100). It shows this browser's name
+  (`deviceLink.name`), the feed connection, this tab's running jobs (progress entries with this tab's client id), the
+  recent commands, whether dialogs wait, and its one control, "Leave host mode". While an alert or status overlay is
+  shown, a copy of the control sits above that layer (`z-1110`, top right): a `wait` or `progress` overlay has no button
+  of its own.
 - `src/lib/Others/GenerationProgressWindow.svelte`: the generation progress window `App` mounts after load, shown while
   `ui.generationProgressWindow` is on and a non-preview job runs on the server. Rows come from
   [live updates](live-updates.md#feed-connection) (the selected chat's first, then by start): names the tab holds, the

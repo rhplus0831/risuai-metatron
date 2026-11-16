@@ -101,12 +101,19 @@ Each module's rules are in its header or on its exports, and each component's in
 ### Pages
 
 These live in `src/lib/Setting/Pages/`. `DeviceLinkSettings` (menu 25, `deviceLink` strings) holds the device-local
-controls of [network jobs](network-jobs.md), one section each, remote host first. `Device/RemoteHostControls.svelte`
-(item `display.remoteHost`) switches Remote Host Mode in `src/ts/network/remoteHost.ts`, with `serverJob.remoteHost`
-strings, and below it edits remote sending (`remoteSend`, `remoteSendHost`, `remoteSendFallback` in
-`src/ts/network/remoteSend.ts`) beside one row per connected host name (`hostTargets`), with
-`serverJob.remoteSend.settings` strings. `Device/HandoffToggles.svelte` (item `display.handoff`) edits device stores in
-`src/ts/network/handoff.ts`, using `serverJob.handoff` strings.
+controls of [network jobs](network-jobs.md). Above its sections sit a note that they are saved in this browser only and
+`Device/DeviceNameInput.svelte` (item `deviceLink.name`: `clientName` of `src/ts/network/handoff.ts`, the one name both
+mechanisms register). Then comes one section per mechanism with a rule between, remote host first.
+
+- `Device/RemoteHostControls.svelte` (item `display.remoteHost`) is the sending side (`remoteSend`, `remoteSendHost`,
+  `remoteSendFallback` in `src/ts/network/remoteSend.ts`, `serverJob.remoteSend.settings` strings). The host is chosen
+  from one row per connected host name (`hostTargets`), never typed; a remembered name with no connected host keeps a
+  row with Clear. The empty name gets no such row: it is both "none chosen" and an unnamed host's name.
+- `Device/HostModeButton.svelte` (item `deviceLink.startHost`) turns on `hostMode` (`src/ts/network/remoteHost.ts`). It
+  is a button, as on the home screen ([app shell](app-shell.md#home-screen)), because the mode's lock screen replaces
+  the page and holds the only control that leaves it.
+- `Device/HandoffToggles.svelte` (item `display.handoff`) edits `acceptHandoffs` and `preferHandoff` of
+  `src/ts/network/handoff.ts` under a warning that recommends remote host, with `serverJob.handoff` strings.
 
 - Declarative: `AccessibilitySettings`, `InteractionSettings`, `AdvancedSettings`, `StorageSettings`, and
   `DeviceLinkSettings` (the header array, then `SettingsSections`), `DisplaySettings` (sectioned per tab),

@@ -63,34 +63,60 @@ it("lists connected hosts by name with tab counts, excludes this tab and non-hos
     expect(target.textContent).toContain("No hosts connected.");
 });
 
-it("defaults remote send off and fallback on and writes all three preferences from the controls and Use", () => {
+it("defaults remote send off and fallback on, and writes the switches and the host chosen with Use", () => {
     const checkbox = (label: string) =>
         [...target.querySelectorAll("label")]
             .find((entry) => entry.textContent?.trim() === label)!
             .querySelector<HTMLInputElement>('input[type="checkbox"]')!;
     const enabled = checkbox("Send through a remote host");
     const fallback = checkbox("Send from this device if the host cannot take the send");
-    const hostName = target.querySelector<HTMLInputElement>('input[type="text"]')!;
     expect(enabled.checked).toBe(false);
     expect(get(remote.remoteSend)).toBe(false);
     expect(fallback.checked).toBe(true);
     expect(get(remote.remoteSendFallback)).toBe(true);
+    // The host is chosen from the list only: no field takes a typed name.
+    expect(target.querySelector('input[type="text"]')).toBeNull();
 
     enabled.click();
     fallback.click();
-    hostName.value = "Offline host";
-    hostName.dispatchEvent(new Event("input", { bubbles: true }));
     flushSync();
     expect(get(remote.remoteSend)).toBe(true);
     expect(get(remote.remoteSendFallback)).toBe(false);
-    expect(get(remote.remoteSendHost)).toBe("Offline host");
 
     handoff.replaceConnectedClients([{ clientId: "desk", name: "Desk", worker: false, host: true }]);
     flushSync();
     const use = [...target.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Use")!;
+    expect(use.getAttribute("aria-pressed")).toBe("false");
     use.click();
     flushSync();
     expect(get(remote.remoteSendHost)).toBe("Desk");
-    expect(hostName.value).toBe("Desk");
     expect(use.getAttribute("aria-pressed")).toBe("true");
+});
+
+it("keeps a chosen host that is not connected in its own row, which Clear empties", () => {
+    const awayRow = () => target.querySelector<HTMLLIElement>("[data-away-host]");
+    // No name chosen: nothing to keep, and the empty name is not shown as an absent host.
+    expect(awayRow()).toBeNull();
+    expect(target.textContent).toContain("No hosts connected.");
+
+    remote.remoteSendHost.set("Desk");
+    flushSync();
+    expect(awayRow()?.firstElementChild?.textContent?.trim()).toBe("Desk · Not connected");
+    expect(target.textContent).not.toContain("No hosts connected.");
+
+    // Connected again: its ordinary row carries the choice, and the absent row goes.
+    handoff.replaceConnectedClients([{ clientId: "desk", name: "Desk", worker: false, host: true }]);
+    flushSync();
+    expect(awayRow()).toBeNull();
+    expect(target.querySelectorAll("li")).toHaveLength(1);
+
+    // Another host connected instead: both rows show, and Clear drops only the remembered name.
+    handoff.replaceConnectedClients([{ clientId: "laptop", name: "Laptop", worker: false, host: true }]);
+    flushSync();
+    expect(target.querySelectorAll("li")).toHaveLength(2);
+    awayRow()!.querySelector("button")!.click();
+    flushSync();
+    expect(get(remote.remoteSendHost)).toBe("");
+    expect(awayRow()).toBeNull();
+    expect(target.querySelectorAll("li")).toHaveLength(1);
 });

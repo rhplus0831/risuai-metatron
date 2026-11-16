@@ -30,6 +30,8 @@ import CustomColorSchemeEditor from "src/lib/Setting/Pages/Display/CustomColorSc
 import CustomTextThemeEditor from "src/lib/Setting/Pages/Display/CustomTextThemeEditor.svelte";
 import CustomBackgroundToggle from "src/lib/Setting/Pages/Display/CustomBackgroundToggle.svelte";
 import NullableTextColorToggle from "src/lib/Setting/Pages/Display/NullableTextColorToggle.svelte";
+import DeviceNameInput from "src/lib/Setting/Pages/Device/DeviceNameInput.svelte";
+import HostModeButton from "src/lib/Setting/Pages/Device/HostModeButton.svelte";
 import HandoffToggles from "src/lib/Setting/Pages/Device/HandoffToggles.svelte";
 import RemoteHostControls from "src/lib/Setting/Pages/Device/RemoteHostControls.svelte";
 import NotificationToggle from "src/lib/Setting/Pages/Display/NotificationToggle.svelte";
@@ -55,6 +57,8 @@ export const customComponents: Record<string, Component<any>> = {
     CustomBackgroundToggle: CustomBackgroundToggle,
     NullableTextColorToggle: NullableTextColorToggle,
     NotificationToggle: NotificationToggle,
+    DeviceNameInput,
+    HostModeButton,
     HandoffToggles,
     RemoteHostControls,
     // Add more as we migrate complex settings

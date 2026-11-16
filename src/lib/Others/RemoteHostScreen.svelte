@@ -25,7 +25,7 @@
     <div class="mx-auto flex min-h-full w-full max-w-2xl flex-col justify-center gap-6 p-6">
         <h1 id="remote-host-title" class="text-2xl font-bold">{language.serverJob.remoteHost.title}</h1>
         <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 rounded-md border border-darkborderc bg-darkbg p-4">
-            <dt class="text-textcolor2">{language.serverJob.remoteHost.clientName}</dt>
+            <dt class="text-textcolor2">{language.deviceLink.name}</dt>
             <dd class="break-any">{$clientName}</dd>
             <dt class="text-textcolor2">{language.serverJob.remoteHost.connection}</dt>
             <dd aria-live="polite">

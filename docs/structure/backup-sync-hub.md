@@ -112,7 +112,7 @@ and keeps what spans files.
     notice, which never waits for the commit's answer; a successful answer writes its own selection and reloads.
   - A prepared import not committed is cancelled on the server. Other tabs see the maintenance 503 retries, then the new
     epoch, and reload.
-- Realm: `MainMenu` (the Explore card) → `RealmMain` → `getRisuHub(search, page, nsfw, sort)` → `RealmPopUp` →
+- Realm: `MainMenu` (the Realm card) → `RealmMain` → `getRisuHub(search, page, nsfw, sort)` → `RealmPopUp` →
   `downloadRisuHub`. There is no upload path. A block written in the popup reaches `settings.ui.blockedRealmCreators`,
   which `getRisuHub` and `RealmMain`'s reactive filter both apply, so a block from either popup host or another tab
   hides cards at once; cards without creator metadata stay visible.

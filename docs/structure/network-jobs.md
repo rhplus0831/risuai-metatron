@@ -52,7 +52,8 @@ The transport below retains this tab's in-memory log.
   `replaceHandoffOffers`, `receiveHandoffOffer`, `setHandoffWork`, `connectedClients`, `handoffTargets`, `handOffJob`.
   `src/lib/Others/HandoffStatus.svelte` renders worker progress.
 - `src/ts/network/remoteHost.ts`: device-local `hostMode` (`localStorage` `risu-remote-host`, `preference`) and the
-  newest ten acknowledged command states (`hostCommandLog`, `noteHostCommand`). The mode joins feed registration as
+  newest ten acknowledged command states (`hostCommandLog`, `noteHostCommand`). The home screen's card and Settings →
+  Device Link's button turn the mode on; the lock screen's control turns it off. The mode joins feed registration as
   `host`; `jobChannel.ts` skips `tts` and `notification` notices while it is on. Completion Web Push is unchanged.
 - `receiveHostCommand` reads a relay command over authenticated HTTP, holds plugin work through startup and the send,
   pins and selects its chat, and runs `sendChat` with the sender's ids and returned reports. Duplicate frames stop the
@@ -76,9 +77,9 @@ The transport below retains this tab's in-memory log.
   `hostTargets` in `handoff.ts` picks its newest host registration) and `remoteSendFallback` (on); `remoteSendEligible`,
   `sendChatRemotely`, `receiveRemoteCommandState` (the feed's `remoteCommandState` frames) and `reconcileRemoteSends`
   (each same-epoch hello). The module header owns the contract; see [Remote send](#remote-send).
-- Remote send UI: Settings → Device Link (`RemoteHostControls.svelte`) edits the three preferences and lists
-  `hostTargets`; the composer's `RemoteSendMarker.svelte` names the host and whether it is connected
-  ([UI](ui-theming.md#composer)).
+- Remote send UI: Settings → Device Link (`RemoteHostControls.svelte`) edits the three preferences; the host is chosen
+  from the `hostTargets` rows ([settings](settings-i18n.md#pages)). The composer's `RemoteSendMarker.svelte` names the
+  host and whether it is connected ([UI](ui-theming.md#composer)).
 
 ### Job channel
 

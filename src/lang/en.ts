@@ -1060,11 +1060,22 @@ export const languageEnglish = {
     memorySettings: "Memory",
     voiceSettings: "Voice & Emotion",
     interactionSettings: "Interaction",
-    // The Device Link settings page: its menu entry, heading and section titles.
+    // The Device Link settings page: its menu entry, heading, notes and section texts. `name` also
+    // labels the name on the Remote Host Mode screen.
     deviceLink: {
         title: "Device Link",
+        localNote: "These settings are saved in this browser only.",
+        description: "Let the app open on another device handle this device's sends.",
+        name: "Name of this browser",
+        nameHelp: "Other devices list this browser under this name.",
         remoteHostSection: "Remote host",
+        remoteHostDescription:
+            "A host tab on another device runs the send from its start, so this device can close once it has sent.",
         handoffSection: "Job handoff",
+        handoffDescription:
+            "When the device that started a job stops answering, a tab on another device takes over the job's remaining plugin steps.",
+        handoffWarning:
+            "A plugin step already delivered to a device is never run again on another tab. If the sending device sleeps midway, the job can fail or lose a plugin's work. Remote host is recommended instead.",
     },
     backups: "Backups",
     settingsNavGroupChatSetup: "Chat setup",
@@ -1440,7 +1451,7 @@ export const languageEnglish = {
     homeRecentCharactersEmpty: "Characters you chat with will appear here.",
     homeViewAllCharacters: "View all",
     homeOpenCharacter: (name: string) => `Open ${name}`,
-    homeExplore: "Explore",
+    homeMore: "More",
     homeExploreRealmDescription: "Discover and download new characters from RisuRealm.",
     openRisuRealm: "Open RisuRealm",
     unknownInteractionTime: "Unknown",
@@ -1938,7 +1949,6 @@ export const languageEnglish = {
             preferHandoff: "Prefer a worker for new jobs",
             preferHelp:
                 "Ask an available worker to take new jobs. A plugin step already running on a device that sleeps cannot move; preferring a worker helps avoid this.",
-            clientName: "This browser's worker name",
             pending: "{character}: waiting for the other device to finish a plugin step",
             working: "{character}: processing this job here",
             takenBy: "{name} took over this job. You can keep watching and stop it here.",
@@ -1963,17 +1973,17 @@ export const languageEnglish = {
             failed: "Remote send through {host}: {reason}",
             fallback: "Remote send through {host}: {reason} Sending from this device instead.",
             settings: {
-                title: "Remote send",
-                connectedHosts: "Connected hosts",
+                hosts: "Hosts",
                 host: "{name}",
                 hostTabs: "{name} ({count} tabs)",
                 useHost: "Use",
                 noHosts: "No hosts connected.",
                 enabled: "Send through a remote host",
                 help: "The composer's Send and Send Draft, Continue, and a reroll of a single reply go to the named host tab. Keep that tab open in Remote Host Mode. Other sends stay on this device.",
-                hostName: "Host name",
+                offlineHost: "{name} · Not connected",
+                clearHost: "Clear",
                 hostHelp:
-                    "Use the host browser's client name. The newest connected host tab with that name is used. You can also enter a host that is offline now.",
+                    "The host is remembered by its name. When several host tabs share a name, the newest connected one is used.",
                 fallback: "Send from this device if the host cannot take the send",
                 fallbackHelp:
                     "Only falls back when the host certainly did not take the send. A send whose outcome is unknown is never run again on this device.",
@@ -2027,8 +2037,9 @@ export const languageEnglish = {
             reloadUncertain: "The reload outcome is unknown.",
             reloadNoAnswer: "No reload outcome arrived in time. The host may still complete the request.",
             help: "This browser runs sends and plugin reloads requested by your other devices. Keep this tab open; host mode locks its screen. Keep it in a window of its own, rather than a background tab, to prevent browser throttling.",
+            start: "Start Remote Host Mode",
+            startDescription: "This tab runs sends for your other devices. Its screen locks.",
             title: "Remote Host Mode",
-            clientName: "This browser's client name",
             connection: "Feed connection",
             connected: "Connected",
             disconnected: "Disconnected",

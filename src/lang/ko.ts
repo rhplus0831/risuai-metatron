@@ -1001,8 +1001,17 @@ export const languageKorean = {
     interactionSettings: "상호작용",
     deviceLink: {
         title: "기기 연동",
+        localNote: "이 설정은 이 브라우저에만 저장됩니다.",
+        description: "다른 기기에 열려 있는 앱이 이 기기의 채팅 전송을 대신 처리하도록 합니다.",
+        name: "구분용 이름",
+        nameHelp: "다른 기기에 이 브라우저가 이 이름으로 표시됩니다.",
         remoteHostSection: "원격 호스트",
+        remoteHostDescription:
+            "전송을 처음부터 다른 기기의 호스트 탭이 실행합니다. 보낸 뒤에는 이 기기를 닫아도 됩니다.",
         handoffSection: "작업 인계",
+        handoffDescription: "작업을 시작한 기기가 응답하지 않으면, 남은 플러그인 단계를 다른 기기의 탭이 넘겨받습니다.",
+        handoffWarning:
+            "이미 전달된 플러그인 단계는 다른 탭에서 다시 실행되지 않습니다. 보낸 기기가 도중에 절전되면 작업이 실패하거나 플러그인 처리가 빠질 수 있으므로 원격 호스트를 권장합니다.",
     },
     backups: "백업",
     settingsNavGroupChatSetup: "채팅 설정",
@@ -1324,7 +1333,6 @@ export const languageKorean = {
             preferHandoff: "새 작업을 다른 작업 탭에 우선 맡기기",
             preferHelp:
                 "새 작업을 실행 가능한 다른 작업 탭에 우선 맡깁니다. 기기가 절전 모드로 전환될 때 이미 실행 중인 플러그인 단계는 중간에 옮길 수 없으므로, 처음부터 다른 작업 탭에 맡기면 끊김을 방지할 수 있습니다.",
-            clientName: "이 브라우저의 작업 탭 이름",
             pending: "{character}: 다른 기기에서 플러그인 단계가 끝나기를 기다리는 중",
             working: "{character}: 이 기기에서 작업 처리 중",
             takenBy: "{name}에서 이 작업을 넘겨받았습니다. 여기에서 진행 상황을 지켜보거나 중지할 수 있습니다.",
@@ -1350,17 +1358,17 @@ export const languageKorean = {
             failed: "{host} 호스트를 통한 원격 전송: {reason}",
             fallback: "{host} 호스트를 통한 원격 전송: {reason} 대신 이 기기에서 전송합니다.",
             settings: {
-                title: "원격 전송",
-                connectedHosts: "연결된 호스트",
+                hosts: "호스트 목록",
                 host: "{name}",
                 hostTabs: "{name} (탭 {count}개)",
                 useHost: "사용",
                 noHosts: "연결된 호스트가 없습니다.",
                 enabled: "원격 호스트를 통해 전송",
                 help: "입력창의 전송과 초안 전송, 응답 이어쓰기, 응답 하나의 재생성을 지정한 호스트 탭에서 실행합니다. 해당 탭을 원격 호스트 모드로 열어 두세요. 그 밖의 전송은 이 기기에서 실행합니다.",
-                hostName: "호스트 이름",
+                offlineHost: "{name} · 연결되지 않음",
+                clearHost: "선택 해제",
                 hostHelp:
-                    "호스트 브라우저의 클라이언트 이름을 입력하세요. 같은 이름으로 연결된 호스트 탭 중 가장 최근에 등록된 탭을 사용합니다. 지금 연결되어 있지 않은 호스트 이름도 입력할 수 있습니다.",
+                    "호스트는 이름으로 기억합니다. 같은 이름의 호스트 탭이 여러 개면 가장 최근에 등록된 탭을 사용합니다.",
                 fallback: "호스트가 전송을 맡을 수 없으면 이 기기에서 전송",
                 fallbackHelp:
                     "호스트가 전송을 맡지 않았음이 확실할 때만 이 기기에서 대신 전송합니다. 결과를 확인할 수 없는 전송은 이 기기에서 다시 실행하지 않습니다.",
@@ -1415,8 +1423,9 @@ export const languageKorean = {
             reloadNoAnswer:
                 "제한 시간 내에 새로고침 결과를 받지 못했습니다. 호스트에서 요청이 나중에 완료될 수 있습니다.",
             help: "다른 기기에서 요청한 메시지 전송과 플러그인 새로고침을 이 브라우저에서 실행합니다. 탭을 열어 두세요. 호스트 모드에서는 이 탭의 화면이 잠깁니다. 브라우저의 백그라운드 탭 실행 제한을 피하려면 별도 창에 열어 두세요.",
+            start: "원격 호스트 모드 시작",
+            startDescription: "이 탭이 다른 기기의 전송을 대신 실행합니다. 화면이 잠깁니다.",
             title: "원격 호스트 모드",
-            clientName: "이 브라우저의 클라이언트 이름",
             connection: "피드 연결",
             connected: "연결됨",
             disconnected: "연결 끊김",
@@ -1850,7 +1859,7 @@ export const languageKorean = {
     homeRecentCharactersEmpty: "대화한 캐릭터가 여기에 표시됩니다.",
     homeViewAllCharacters: "모두 보기",
     homeOpenCharacter: (name: string) => `${name} 열기`,
-    homeExplore: "둘러보기",
+    homeMore: "기타 기능",
     homeExploreRealmDescription: "RisuRealm에서 새로운 캐릭터를 찾아 다운로드해 보세요.",
     openRisuRealm: "RisuRealm 열기",
     unknownInteractionTime: "알 수 없음",
