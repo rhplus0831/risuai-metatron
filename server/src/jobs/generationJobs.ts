@@ -428,6 +428,8 @@ type RequestIdentity =
           jobId: string;
           clientId: string | null;
           ownerClientId?: string;
+          /** Present only in process memory; disk receipts have no ownership history. */
+          everHandedOff?: boolean;
           skippedRecipient?: string;
           stoppedBy?: string;
           fingerprint: string | null;
@@ -480,6 +482,8 @@ type Job = {
     clientId: string;
     /** Current callback authority and request-lane identity. */
     ownerClientId: string;
+    /** Once callbacks change owner, the creator cannot release the job's completion hold. */
+    everHandedOff: boolean;
     requestId?: string;
     fingerprint: string | null;
     kind: GenerationKind;
@@ -878,6 +882,8 @@ export function createGenerationJobs(options: {
     runner?: GenerationRunner;
     /** Runs after a send or an attempted command sequence ends done; a throw is only logged. */
     onChatJobDone?: (characterId: string, chatId: string, kind: GenerationKind) => void;
+    /** Runs once on every end, including a forced end with a pending runner; a throw is only logged. */
+    onJobEnded?: (jobId: string) => void;
     /** The channel hub (tests inject one with a fake clock). */
     hub?: ChannelHub;
     /** The diagnostics journal: a `job` event at admission and at the end, and the caught faults. */
@@ -942,7 +948,13 @@ export function createGenerationJobs(options: {
     /** The kept outcomes of collected jobs, oldest first (`KEPT_OUTCOME_MS`), all of `keptEpoch`. */
     const kept = new Map<
         string,
-        TerminalReaders & { keptAt: number; status: GenerationStatus; requestId?: string; fingerprint: string | null }
+        TerminalReaders & {
+            keptAt: number;
+            status: GenerationStatus;
+            requestId?: string;
+            fingerprint: string | null;
+            everHandedOff: boolean;
+        }
     >();
     /** Request id → current-epoch job id, including ended jobs until collection moves their identity to kept. */
     const requestJobs = new Map<string, string>();
@@ -1332,6 +1344,7 @@ export function createGenerationJobs(options: {
         job.sockets.clear();
         job.viewers.delete(pending.ws);
         job.sockets.add(pending.ws);
+        if (job.ownerClientId !== pending.clientId) job.everHandedOff = true;
         job.ownerClientId = pending.clientId;
         job.ownerAbsentSince = null;
         job.pendingTakeover = null;
@@ -1762,6 +1775,11 @@ export function createGenerationJobs(options: {
         job.stage = null;
         job.retry = null;
         job.endedAt = clock();
+        try {
+            options.onJobEnded?.(job.id);
+        } catch (error) {
+            logEvent("generation.endDelivery", { job: job.id }, error, diagnostics);
+        }
         clearOutputTimer(job);
         publishProgress(job, "ended");
         job.terminal = terminal as GenerationTerminalEvent;
@@ -2405,6 +2423,7 @@ export function createGenerationJobs(options: {
             id: randomUUID(),
             clientId: body.clientId,
             ownerClientId: body.clientId,
+            everHandedOff: false,
             requestId: body.requestId,
             fingerprint,
             kind: body.kind,
@@ -2603,6 +2622,7 @@ export function createGenerationJobs(options: {
                 clientId: job.clientId,
                 fingerprint: job.fingerprint,
                 ownerClientId: job.ownerClientId,
+                everHandedOff: job.everHandedOff,
                 skippedRecipient: job.skippedRecipient,
                 stoppedBy: job.stoppedBy,
                 status: status(job),
@@ -2615,6 +2635,25 @@ export function createGenerationJobs(options: {
         }
         if (cancelledRequests.has(requestId)) return { cancelled: true };
         return receipts?.readByRequest(requestId) ?? null;
+    }
+
+    /** Current-epoch live or kept job identity; receipts alone cannot establish ownership history. */
+    function requestJob(requestId: string): { jobId: string; everHandedOff: boolean } | null {
+        const identity = lookupRequest(requestId);
+        return identity && !identity.cancelled && identity.everHandedOff !== undefined
+            ? { jobId: identity.jobId, everHandedOff: identity.everHandedOff }
+            : null;
+    }
+
+    /** Epoch-checked completion lookup, available across owners and during shutdown or maintenance. */
+    function releaseLookup(
+        requestId: string,
+        epoch: string | undefined,
+    ): { ok: true; job: ReturnType<typeof requestJob> } | { ok: false; status: 412; body: Record<string, unknown> } {
+        if (epoch !== store.epoch()) {
+            return { ok: false, status: 412, body: { error: "EpochMismatch", epoch: store.epoch() } };
+        }
+        return { ok: true, job: requestJob(requestId) };
     }
 
     /**
@@ -2667,6 +2706,7 @@ export function createGenerationJobs(options: {
         outcomes.set(job.id, {
             clientId: job.clientId,
             ownerClientId: job.ownerClientId,
+            everHandedOff: job.everHandedOff,
             skippedRecipient: job.skippedRecipient,
             stoppedBy: job.stoppedBy,
             keptAt: now,
@@ -3066,6 +3106,8 @@ export function createGenerationJobs(options: {
             return [...jobs.values()].filter((job) => !job.ended && job.epoch === epoch).map(progressEntry);
         },
         cancel,
+        requestJob,
+        releaseLookup,
         current,
         stop,
 

@@ -1174,8 +1174,9 @@ async function runSpeaker(arg: {
 
     /**
      * The completion notification: the tab's notice and Web Push, both naming the job's chat and its
-     * owner (a group's name and message, not the speaking member's). A failure here never changes the
-     * reply.
+     * owner (a group's name and message, not the speaking member's). A requested hold delays only
+     * Web Push; an aborted runner cannot place a hold after the registry forced its job to end.
+     * A failure here never changes the reply.
      */
     function notifyCompletion() {
         try {
@@ -1197,7 +1198,11 @@ async function runSpeaker(arg: {
                     tag: notification.tag,
                 },
             });
-            deps.push?.send(notification, { jobId: job.id }).catch((error) => console.error("[Push]", error));
+            if (job.context.completionHoldMs !== undefined && deps.completionHolds && !job.signal.aborted) {
+                deps.completionHolds.hold(job.id, notification, job.context.completionHoldMs);
+            } else {
+                deps.push?.send(notification, { jobId: job.id }).catch((error) => console.error("[Push]", error));
+            }
         } catch (error) {
             console.error("[Push] The completion notification failed", error);
         }

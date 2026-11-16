@@ -103,6 +103,7 @@ function setup(
         publishGeneration?: Parameters<typeof createGenerationJobs>[0]["publishGeneration"];
         receipts?: boolean;
         clientName?: (clientId: string) => string | undefined;
+        onJobEnded?: Parameters<typeof createGenerationJobs>[0]["onJobEnded"];
     } = {},
 ) {
     const dir = mkdtempSync(path.join(os.tmpdir(), "risu-generation-jobs-"));
@@ -154,6 +155,7 @@ function setup(
         publishHandoff: (event) => handoffs.push(event),
         publishGeneration: options.publishGeneration,
         clientName: options.clientName,
+        onJobEnded: options.onJobEnded,
     });
     cleanups.push(async () => {
         jobs.beginShutdown();
@@ -1464,6 +1466,57 @@ describe("the write capability", () => {
 });
 
 describe("the end of a job", () => {
+    it("calls the end option once when a runner returns", async () => {
+        const onJobEnded = vi.fn();
+        const s = setup({ onJobEnded });
+        const entered = withResolvers<void>();
+        const finish = withResolvers<void>();
+        const outcome = s.run(async () => {
+            entered.resolve();
+            await finish.promise;
+        });
+        const id = s.create();
+        try {
+            await entered.promise;
+            expect(onJobEnded).not.toHaveBeenCalled();
+        } finally {
+            finish.resolve();
+            await outcome;
+            await s.jobs.drain();
+        }
+        expect(onJobEnded.mock.calls).toEqual([[id]]);
+    });
+
+    it("calls the end option once at a forced end even while the runner is pending", async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        const onJobEnded = vi.fn();
+        const s = setup({ onJobEnded });
+        const entered = withResolvers<void>();
+        const finish = withResolvers<void>();
+        let returned = false;
+        const outcome = s.run(async () => {
+            entered.resolve();
+            await finish.promise;
+            returned = true;
+        });
+        const id = s.create();
+        try {
+            await entered.promise;
+            expect(s.jobs.abort(id, "tab")).toBe(true);
+            await vi.advanceTimersByTimeAsync(JOB_ABORT_GRACE_MS - 1);
+            expect(onJobEnded).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(1);
+            expect(returned).toBe(false);
+            expect(s.jobs.status(id, "tab")?.state).toBe("ended");
+            expect(onJobEnded.mock.calls).toEqual([[id]]);
+        } finally {
+            finish.resolve();
+            await outcome;
+            await vi.advanceTimersByTimeAsync(0);
+        }
+        expect(onJobEnded.mock.calls).toEqual([[id]]);
+    });
+
     it("ends once with a terminal, kills every capability, and frees the locks and the slot", async () => {
         const { jobs, lock, create, run, ended, owner, revision, store } = setup();
         let captured!: RunningJob;
@@ -2192,6 +2245,33 @@ describe("generation ownership handoffs", () => {
         return { ...s, job, body, offer, ticket, take, finish, completed };
     }
     const roles = (events: GenerationEvent[]) => events.filter((event) => event.type === "handoff");
+    it("looks up live and kept requests, preserving handoff history after the creator takes the job back", async () => {
+        const h = await live({ preferred: true, receipts: true });
+        const requestId = h.body.requestId;
+        expect(h.jobs.requestJob(requestId)).toEqual({ jobId: h.job.id, everHandedOff: false });
+        const worker = await h.take();
+        await worker.fence();
+        expect(h.jobs.requestJob(requestId)).toEqual({ jobId: h.job.id, everHandedOff: true });
+        expect(h.offer("tab", "worker")).toMatchObject({ ok: true });
+        const creator = await h.take("tab");
+        await creator.fence();
+        expect(h.jobs.status(h.job.id, "tab")).not.toHaveProperty("handedOff");
+        expect(h.jobs.requestJob(requestId)).toEqual({ jobId: h.job.id, everHandedOff: true });
+
+        h.job.emit({ type: "done", revision: h.revision() });
+        h.finish.resolve();
+        await h.completed;
+        await worker.close();
+        await creator.close();
+        h.jobs.startGc();
+        await vi.advanceTimersByTimeAsync(JOB_DONE_GRACE_MS + 30_000);
+        expect(h.jobs.status(h.job.id, "tab")).toMatchObject({ kept: true });
+        expect(h.jobs.requestJob(requestId)).toEqual({ jobId: h.job.id, everHandedOff: true });
+
+        await vi.advanceTimersByTimeAsync(KEPT_OUTCOME_MS);
+        expect(h.receipts!.readByRequest(requestId)).toMatchObject({ jobId: h.job.id });
+        expect(h.jobs.requestJob(requestId)).toBeNull();
+    });
     const callbacks = (events: GenerationEvent[]) => events.filter((event) => event.type === "callback");
     const chats = (events: GenerationEvent[]) =>
         events.filter((event) => event.type === "chatPatch" || (event.type === "resource" && event.kind === "chats"));

@@ -186,6 +186,9 @@ The transport below retains this tab's in-memory log.
   ([chat pipeline](chat-pipeline.md)).
 - `server/src/push/pushService.ts` sends the `completionNotificationTag` hash as the push `topic`, so a service replaces
   only that chat's undelivered completion. Shown notices use the per-chat tag in `shared/notifications.ts`.
+- A job created with `context.completionHoldMs` has its push held on the server until
+  `POST /api/generations/completion-release` names its request id, or until that long after the job ends
+  ([completion holds](server-generation.md#completion-holds)); the tab's `notification` notice is not held.
 - The client cannot inspect the server's subscription list. An identical subscription removed after delivery 404/410 or
   the 50-entry cap returns at the first eligible sync after the `risu-push-registered` stamp is 24 h old, or by turning
   this browser off and on.

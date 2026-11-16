@@ -9,6 +9,7 @@ import {
     type CallbackResult,
     type GenerationEvent,
     type GenerationStatus,
+    MAX_COMPLETION_HOLD_MS,
     NO_GENERATION_HOOKS,
 } from "../../../shared/jobs.ts";
 import type { ResourceReadKindsResult, ResourceReadRefsResult } from "../../../shared/resources.ts";
@@ -734,13 +735,65 @@ describe("generation jobs over HTTP and WebSocket", () => {
             [{ ...body, context: { ...body.context, chatRevision: null } }, /chatRevision/],
             [{ ...body, context: { ...body.context, triggerId: "" } }, /triggerId/],
             [{ ...body, context: { ...body.context, stopOverLoreBudget: "true" } }, /stopOverLoreBudget/],
+            ...["1000", 0, -1].map((completionHoldMs) => [
+                { ...body, context: { ...body.context, completionHoldMs } },
+                /completionHoldMs/,
+            ]),
         ] as [Record<string, unknown>, RegExp][]) {
             const res = await create(bad);
             expect(res.status, JSON.stringify(bad)).toBe(400);
             expect(res.body.error).toMatch(message);
         }
+        // JSON.stringify would turn Infinity into null. A JSON numeric literal can overflow
+        // during parsing, so exercise the finite-number check through the actual HTTP body.
+        const nonFinite = await request("/api/generations", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ ...body, context: { ...body.context, completionHoldMs: "overflow" } }).replace(
+                '"completionHoldMs":"overflow"',
+                '"completionHoldMs":1e400',
+            ),
+        });
+        expect(nonFinite.status).toBe(400);
+        expect(await nonFinite.json()).toMatchObject({ error: expect.stringContaining("completionHoldMs") });
+
+        const observed = withResolvers<RunningJob["context"]>();
+        steps.push((job) => {
+            observed.resolve(job.context);
+            job.emit({ type: "done", revision: body.context.chatRevision });
+        });
+        expect(
+            (await create({ ...body, context: { ...body.context, completionHoldMs: MAX_COMPLETION_HOLD_MS + 1 } }))
+                .status,
+        ).toBe(200);
+        expect((await observed.promise).completionHoldMs).toBe(MAX_COMPLETION_HOLD_MS);
         expect((await request("/api/generations/x?clientId=tab")).status).toBe(404);
         expect((await request("/api/generations/x?clientId=tab", { method: "DELETE" })).status).toBe(404);
+    });
+
+    it("requires a JWT and current epoch to release a completion, and reports false when nothing is held", async () => {
+        await listen();
+        const url = "/api/generations/completion-release";
+        const unknown = { requestId: "unknown-request" };
+        expect(
+            (
+                await fetch(`${base}${url}`, {
+                    ...json(unknown),
+                    headers: { "content-type": "application/json", "x-resource-epoch": epoch },
+                })
+            ).status,
+        ).toBe(400);
+        expect((await request(url, json(unknown), { jwt: "pw" })).status).toBe(400);
+        expect((await request(url, json(unknown), { epoch: "stale" })).status).toBe(412);
+        const missing = await request(url, json(unknown));
+        expect(missing.status).toBe(200);
+        expect(await missing.json()).toEqual({ released: false });
+
+        const requestId = "unheld-request";
+        expect((await create({ kind: "send", context: await context(), clientId: "tab", requestId })).status).toBe(200);
+        const unheld = await request(url, json({ requestId }));
+        expect(unheld.status).toBe(200);
+        expect(await unheld.json()).toEqual({ released: false });
     });
 
     it("admits one job per chat, streams the chat hydration, accepted, chunks, and done to the owner with the epoch, and answers the status DTO", async () => {

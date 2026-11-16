@@ -333,7 +333,8 @@ async function clientSetText(chaId: string, messageId: string, text: string) {
 let attach = 0;
 type JobOptions = {
     /** Answers a `callback` event: the answer message's fields. */
-    answerCallback?: (event: any) => Record<string, unknown>;
+    answerCallback?: (event: any) => Record<string, unknown> | Promise<Record<string, unknown>>;
+    requestId?: string;
     /**
      * Closes the owner socket at the first event this matches (the tab went away): the job runs on
      * with no owner, and its end is read from its status instead. The provider answers only after
@@ -375,6 +376,7 @@ async function job(
         body: JSON.stringify({
             kind,
             clientId: "tab",
+            ...(options.requestId ? { requestId: options.requestId } : {}),
             hooks: options.hooks ?? NO_GENERATION_HOOKS,
             context: {
                 characterId: chaId,
@@ -406,7 +408,7 @@ async function job(
     const ws = new WebSocket(url);
     let timer: ReturnType<typeof setTimeout> | undefined;
     let closedEarly = false;
-    const ended = new Promise<void>((resolve) => {
+    const ended = new Promise<void>((resolve, reject) => {
         timer = setTimeout(resolve, 45_000);
         ws.onmessage = (message) => {
             const event = JSON.parse(String(message.data));
@@ -425,7 +427,11 @@ async function job(
             }
             if (event.type === "callback") {
                 const answer = options.answerCallback?.(event) ?? { outcome: "answered", value: true };
-                ws.send(JSON.stringify({ type: "answer", id: event.id, ...answer }));
+                void Promise.resolve(answer).then((fields) => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: "answer", id: event.id, ...fields }));
+                    }
+                }, reject);
             }
             if (event.type === "done" || event.type === "error") {
                 clearTimeout(timer);
@@ -506,26 +512,7 @@ const storedText = (event: any, id: string): string | undefined =>
         ? event.data.message.find((entry: any) => entry.chatId === id)?.data
         : event.messages?.find((row: any) => row.message.chatId === id)?.message.data;
 
-beforeAll(async () => {
-    vi.spyOn(console, "log").mockImplementation(() => {});
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-    await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", () => resolve()));
-    allowListenerOrigin(provider);
-    await new Promise<void>((resolve) => embedder.listen(0, "127.0.0.1", () => resolve()));
-    allowListenerOrigin(embedder);
-    const providerUrl = `http://127.0.0.1:${(provider.address() as { port: number }).port}/v1/chat/completions`;
-    embedderUrl = `http://127.0.0.1:${(embedder.address() as { port: number }).port}/v1/embeddings`;
-    rootDir = mkdtempSync(path.join(os.tmpdir(), "risu-prompt-tail-"));
-    mkdirSync(path.join(rootDir, "dist"));
-    writeFileSync(path.join(rootDir, "dist", "index.html"), "<!doctype html><html><head></head><body></body></html>");
-    symlinkSync(path.join(REPO_ROOT, "public"), path.join(rootDir, "public"), "dir");
-    cpSync(path.join(REPO_ROOT, "version.json"), path.join(rootDir, "version.json"));
-    mkdirSync(path.join(rootDir, "save", "server"), { recursive: true });
-    writeFileSync(path.join(rootDir, "save", "server", "password"), "pw");
-    // A stored image inlay the `generateImage` callback can answer with.
-    mkdirSync(path.join(rootDir, "save", "assets"), { recursive: true });
-    writeFileSync(path.join(rootDir, "save", "assets", "inlay_cat.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+async function startServer() {
     // The owner absence wait is short so a tail with no owner tab (`closeOn`) settles within a test;
     // every other job attaches its socket right after the create, long before the wait.
     const createdCounter = vi.spyOn(tokenCounters, "createTokenCounter");
@@ -552,6 +539,29 @@ beforeAll(async () => {
             await fetch(`${base}/api/resources/ui`, { headers: { "risu-auth": await signer.jwt() } })
         ).json()) as any
     ).epoch;
+}
+
+beforeAll(async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", () => resolve()));
+    allowListenerOrigin(provider);
+    await new Promise<void>((resolve) => embedder.listen(0, "127.0.0.1", () => resolve()));
+    allowListenerOrigin(embedder);
+    const providerUrl = `http://127.0.0.1:${(provider.address() as { port: number }).port}/v1/chat/completions`;
+    embedderUrl = `http://127.0.0.1:${(embedder.address() as { port: number }).port}/v1/embeddings`;
+    rootDir = mkdtempSync(path.join(os.tmpdir(), "risu-prompt-tail-"));
+    mkdirSync(path.join(rootDir, "dist"));
+    writeFileSync(path.join(rootDir, "dist", "index.html"), "<!doctype html><html><head></head><body></body></html>");
+    symlinkSync(path.join(REPO_ROOT, "public"), path.join(rootDir, "public"), "dir");
+    cpSync(path.join(REPO_ROOT, "version.json"), path.join(rootDir, "version.json"));
+    mkdirSync(path.join(rootDir, "save", "server"), { recursive: true });
+    writeFileSync(path.join(rootDir, "save", "server", "password"), "pw");
+    // A stored image inlay the `generateImage` callback can answer with.
+    mkdirSync(path.join(rootDir, "save", "assets"), { recursive: true });
+    writeFileSync(path.join(rootDir, "save", "assets", "inlay_cat.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    await startServer();
     const presets = await single("presets");
     const modelPresets = await single("modelPresets");
     const modelProfiles = await single("modelProfiles");
@@ -649,6 +659,23 @@ async function withSettings(fields: Record<string, unknown>, body: () => Promise
     }
 }
 
+async function subscribePush() {
+    const registered = await api("/api/push/subscription", {
+        method: "PUT",
+        body: JSON.stringify({
+            subscription: {
+                endpoint: PUSH_ENDPOINT,
+                expirationTime: null,
+                keys: {
+                    p256dh: webPush.generateVAPIDKeys().publicKey,
+                    auth: randomBytes(16).toString("base64url"),
+                },
+            },
+        }),
+    });
+    expect(registered.status).toBe(204);
+}
+
 describe("the streaming tail", () => {
     it(
         "runs editoutput once on the completed text (Lua, the plugin hook, the regex) while the chunks stream raw, then the trigger, the listeners, TTS, the notification, the timings, and the final write",
@@ -666,20 +693,7 @@ describe("the streaming tail", () => {
                 const before = bodies.length;
                 // A browser registered for Web Push (`routes/push.ts`): the completion reaches it too.
                 pushes.length = 0;
-                const registered = await api("/api/push/subscription", {
-                    method: "PUT",
-                    body: JSON.stringify({
-                        subscription: {
-                            endpoint: PUSH_ENDPOINT,
-                            expirationTime: null,
-                            keys: {
-                                p256dh: webPush.generateVAPIDKeys().publicKey,
-                                auth: randomBytes(16).toString("base64url"),
-                            },
-                        },
-                    }),
-                });
-                expect(registered.status).toBe(204);
+                await subscribePush();
                 const { events, terminal } = await job(
                     "send",
                     chaId,
@@ -1718,5 +1732,169 @@ describe("reply hooks during an ownership handoff", () => {
         } finally {
             await h.close();
         }
+    });
+});
+
+describe("held completion delivery", () => {
+    const holdMs = 1_000;
+    beforeAll(async () => {
+        // The hold manager captures its timers at construction. Reuse the seeded database,
+        // but build this server under the same fake clock that drives the tail and deadlines.
+        await server.context.dispose();
+        node.closeAllConnections();
+        await new Promise<void>((resolve) => node.close(() => resolve()));
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        await startServer();
+        await subscribePush();
+    });
+    afterAll(async () => {
+        await api("/api/push/subscription", { method: "DELETE", body: JSON.stringify({ endpoint: PUSH_ENDPOINT }) });
+        vi.useRealTimers();
+    });
+
+    const release = (requestId: string) => api("/api/generations/completion-release", json({ requestId }));
+    const expectedNotice = (chaId: string, name: string) => ({
+        chaId,
+        chatId: "k",
+        title: "Risuai",
+        body: `${name}'s message has been processed.`,
+        url: `/chat/${chaId}/k`,
+        tag: completionNotificationTag(chaId, "k"),
+    });
+    const expectedPush = (chaId: string, name: string) => ({
+        title: "Risuai",
+        body: `${name}'s message has been processed.`,
+        url: `/chat/${chaId}/k`,
+        tag: completionNotificationTag(chaId, "k"),
+        icon: "/logo_192.png",
+        badge: "/logo_192.png",
+    });
+
+    it("keeps Web Push held through a long tail callback while sending the tab notice, then delivers on release", async () => {
+        await withSettings({ notification: true, useStreaming: false }, async () => {
+            const chaId = await seedCharacter({ name: "Ann", extra: { viewScreen: "imggen" } });
+            const requestId = `held-${chaId}`;
+            const entered = withResolvers<void>();
+            const finish = withResolvers<void>();
+            pushes.length = 0;
+            answers = [{ chunks: ["Finished reply."] }];
+            const pending = job(
+                "send",
+                chaId,
+                { completionHoldMs: holdMs },
+                {
+                    requestId,
+                    answerCallback: async (event) => {
+                        if (event.name === "imggen") {
+                            entered.resolve();
+                            await finish.promise;
+                        }
+                        return { outcome: "answered", value: true };
+                    },
+                },
+            );
+            try {
+                await entered.promise;
+                expect(notices(ownerEvents, "notification").map((event) => event.payload)).toEqual([
+                    expectedNotice(chaId, "Ann"),
+                ]);
+                expect(pushes).toEqual([]);
+                await vi.advanceTimersByTimeAsync(holdMs * 3);
+                expect(ownerEvents.some((event) => event.type === "done" || event.type === "error")).toBe(false);
+                expect(pushes).toEqual([]);
+            } finally {
+                finish.resolve();
+                await pending;
+            }
+            const result = await pending;
+            expect(result.terminal?.type).toBe("done");
+            expect(pushes).toEqual([]);
+            expect(await release(requestId)).toEqual({ status: 200, body: { released: true } });
+            await vi.advanceTimersByTimeAsync(0);
+            expect(pushes.map(({ endpoint, payload }) => ({ endpoint, payload: JSON.parse(payload) }))).toEqual([
+                { endpoint: PUSH_ENDPOINT, payload: expectedPush(chaId, "Ann") },
+            ]);
+            expect(await release(requestId)).toEqual({ status: 200, body: { released: false } });
+            await vi.advanceTimersByTimeAsync(holdMs);
+            expect(pushes).toHaveLength(1);
+        });
+    });
+
+    it("holds and sends nothing when Stop arrives before the completion notification", async () => {
+        await withSettings({ notification: true, useStreaming: false }, async () => {
+            const chaId = await seedCharacter({ name: "Stopped" });
+            const requestId = `stopped-${chaId}`;
+            const entered = withResolvers<void>();
+            const finish = withResolvers<void>();
+            pushes.length = 0;
+            answers = [{ chunks: ["Reply before Stop."] }];
+            const pending = job(
+                "send",
+                chaId,
+                { completionHoldMs: holdMs },
+                {
+                    requestId,
+                    hooks: { ...NO_GENERATION_HOOKS, chatOutput: true },
+                    answerCallback: async (event) => {
+                        if (event.name === "chatOutput") {
+                            entered.resolve();
+                            await finish.promise;
+                        }
+                        return { outcome: "answered", value: true };
+                    },
+                },
+            );
+            try {
+                await entered.promise;
+                expect(notices(ownerEvents, "notification")).toEqual([]);
+                expect((await api("/api/generations/cancel", json({ requestId, clientId: "tab" }))).status).toBe(200);
+                const result = await pending;
+                expect(result.terminal).toMatchObject({ type: "error", reason: "aborted", status: 499 });
+                expect(notices(result.events, "notification")).toEqual([]);
+                expect(await release(requestId)).toEqual({ status: 200, body: { released: false } });
+                await vi.advanceTimersByTimeAsync(holdMs * 2);
+                expect(pushes).toEqual([]);
+            } finally {
+                finish.resolve();
+                await pending;
+            }
+        });
+    });
+
+    it("holds a group send's notifications and releases only the last speaker's completion", async () => {
+        await withSettings({ notification: true, useStreaming: false }, async () => {
+            const ann = await seedCharacter({ name: "Ann" });
+            const bob = await seedCharacter({ name: "Bob" });
+            const group = await seedCharacter({
+                name: "Crew",
+                extra: {
+                    type: "group",
+                    characters: [ann, bob],
+                    characterTalks: [1, 1],
+                    characterActive: [true, true],
+                    orderByOrder: true,
+                    firstMessage: "",
+                    desc: "",
+                },
+            });
+            const requestId = `group-${group}`;
+            pushes.length = 0;
+            answers = [{ chunks: ["First reply."] }, { chunks: ["Last reply."] }];
+            const result = await job("group", group, { completionHoldMs: holdMs }, { requestId });
+            expect(result.terminal?.type).toBe("done");
+            expect(texts(await readChat(group))).toEqual(["user:q", "char:First reply.", "char:Last reply."]);
+            expect(notices(result.events, "notification").map((event) => event.payload)).toEqual([
+                expectedNotice(group, "Crew"),
+                expectedNotice(group, "Crew"),
+            ]);
+            expect(pushes).toEqual([]);
+            expect(await release(requestId)).toEqual({ status: 200, body: { released: true } });
+            await vi.advanceTimersByTimeAsync(0);
+            expect(pushes.map(({ endpoint, payload }) => ({ endpoint, payload: JSON.parse(payload) }))).toEqual([
+                { endpoint: PUSH_ENDPOINT, payload: expectedPush(group, "Crew") },
+            ]);
+            await vi.advanceTimersByTimeAsync(holdMs);
+            expect(pushes).toHaveLength(1);
+        });
     });
 });

@@ -9,6 +9,7 @@ import {
     MAX_CLIENT_EMOTION_NAME_CHARS,
     MAX_CLIENT_EMOTIONS,
     MAX_COMMAND_DATA_BYTES,
+    MAX_COMPLETION_HOLD_MS,
     MAX_FORM_VALUES_BYTES,
     MAX_TRIGGER_NAME_BYTES,
 } from "../../../shared/jobs.ts";
@@ -19,6 +20,7 @@ import { isValidResourceId } from "../data/resourceStore.ts";
 import { readJsonBody } from "../http/body.ts";
 import { parseGenerationHooks } from "../jobs/channel.ts";
 import type { GenerationJobs } from "../jobs/generationJobs.ts";
+import type { CompletionHolds } from "../push/completionHolds.ts";
 import type { AppEnv } from "../types.ts";
 import type { AuthStore } from "./auth.ts";
 
@@ -225,6 +227,14 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
     if (context.stopOverLoreBudget !== undefined && typeof context.stopOverLoreBudget !== "boolean") {
         return "context.stopOverLoreBudget must be a boolean when present";
     }
+    if (
+        context.completionHoldMs !== undefined &&
+        (typeof context.completionHoldMs !== "number" ||
+            !Number.isFinite(context.completionHoldMs) ||
+            context.completionHoldMs <= 0)
+    ) {
+        return "context.completionHoldMs must be a finite number above zero when present";
+    }
     const client = context.client === undefined ? undefined : parseClientEnv(context.client);
     if (typeof client === "string") {
         return client;
@@ -255,6 +265,9 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
         ...(client !== undefined ? { client } : {}),
         // Kept for any kind: the runner honors it for the kinds that send, and for no other.
         ...(context.stopOverLoreBudget === true ? { stopOverLoreBudget: true } : {}),
+        ...(context.completionHoldMs !== undefined
+            ? { completionHoldMs: Math.min(Math.floor(context.completionHoldMs as number), MAX_COMPLETION_HOLD_MS) }
+            : {}),
     };
     const hooks = parseGenerationHooks(body.hooks);
     if (typeof hooks === "string") {
@@ -277,15 +290,20 @@ function parseCreateBody(body: unknown): GenerationCreateBody | string {
  * these registrations produce. The earlier global body limiter in `server/src/app.ts`
  * (`server/src/routes/limitedBody.ts`) rejects a declared Content-Length above its cap with 413 before
  * these registrations run, without Cache-Control. Job-id reads and controls are participant-scoped
- * by client-id; current, stop and request-id cancel are available to any authenticated tab.
+ * by client-id; current, stop, request-id cancel and completion release are available to any authenticated tab.
  * The socket `/api/generations/:id/ws` is handled outside these registrations by
  * `server/src/jobs/generationJobs.ts` handleUpgrade.
  */
 export function registerGenerationRoutes(
     app: Hono<AppEnv>,
-    arg: { jobs: GenerationJobs; auth: AuthStore; limiter: MiddlewareHandler<AppEnv> },
+    arg: {
+        jobs: GenerationJobs;
+        auth: AuthStore;
+        limiter: MiddlewareHandler<AppEnv>;
+        holds?: Pick<CompletionHolds, "release">;
+    },
 ) {
-    const { jobs, auth, limiter } = arg;
+    const { jobs, auth, limiter, holds } = arg;
     const noStore: MiddlewareHandler<AppEnv> = async (c, next) => {
         await next();
         c.header("Cache-Control", "no-store");
@@ -303,6 +321,9 @@ export function registerGenerationRoutes(
      * chatLoreOverrideOrphaned { entries: [{ id, name }] }.
      * `context.stopOverLoreBudget: true` is kept for any kind and refuses nothing here: a job that
      * honors it is admitted and ends as an `error` terminal coded `loreOverBudget`.
+     * `context.completionHoldMs` is kept for any kind: a finite number above zero, floored and
+     * clamped to MAX_COMPLETION_HOLD_MS (400 otherwise). It holds Web Push until release or that
+     * duration after the job ends; the tab's notification notice keeps its timing.
      * `context.oocExchangeId` must be a valid OOC id and is accepted only for `preview`; other
      * kinds carrying it are malformed (400).
      * `context.inputOriginal` must be a string and is accepted only for send, continue, reroll,
@@ -357,6 +378,28 @@ export function registerGenerationRoutes(
             c.req.header(RESOURCE_EPOCH_HEADER),
         );
         return result.ok ? c.json(result.body) : c.json(result.body, result.status);
+    });
+
+    /**
+     * POST { requestId } with x-resource-epoch: { released: boolean }. Sends a held completion
+     * for a live or kept job that never changed owner. False for an unknown request, a tombstone,
+     * a disk receipt alone, a job that changed owner, or no hold (including no holds service).
+     * Any authenticated tab may release, including before the job ends. 400 for an invalid id;
+     * 412 for another epoch. Available during shutdown and maintenance.
+     */
+    app.post("/api/generations/completion-release", limiter, async (c) => {
+        const denied = await auth.checkAuth(c);
+        if (denied) return denied;
+        const read = await readJsonBody(c);
+        if (!read.ok) return read.response;
+        const body = read.body;
+        if (!isPlainObject(body) || typeof body.requestId !== "string" || !GENERATION_ID_PATTERN.test(body.requestId)) {
+            return c.json({ error: "requestId must be a generation id" }, 400);
+        }
+        const result = jobs.releaseLookup(body.requestId, c.req.header(RESOURCE_EPOCH_HEADER));
+        if (!result.ok) return c.json(result.body, result.status);
+        const job = result.job;
+        return c.json({ released: job && !job.everHandedOff ? (holds?.release(job.jobId) ?? false) : false });
     });
 
     /**

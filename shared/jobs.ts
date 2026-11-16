@@ -78,7 +78,12 @@ export type GenerationContext = {
      * false: the entries are left out and the reply's context report names them.
      */
     stopOverLoreBudget?: boolean;
+    /** Hold Web Push until released, or this many milliseconds after the registry ends the job; the tab's notice does not wait. */
+    completionHoldMs?: number;
 };
+
+/** The largest completion wait (600 seconds) plus the host's 30-second margin. */
+export const MAX_COMPLETION_HOLD_MS = 630_000;
 
 /**
  * The tab's viewport (CSS pixels) and `navigator.language` when the job was created, and the

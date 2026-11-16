@@ -52,7 +52,8 @@ body, answer and statuses are the comment above its registration. "+ epoch" is t
   the route): `{ jobId }` or a replay ([Generation admission](#generation-admission)).
 - `GET /api/generations/current` and `POST /api/generations/stop` + epoch: the chat slot
   ([Chat-slot lookup and stop](#chat-slot-lookup-and-stop)). `POST /api/generations/cancel` + epoch: by `requestId`,
-  whatever the owner.
+  whatever the owner. `POST /api/generations/completion-release` + epoch: `{ requestId }` → `{ released }`, a held
+  completion push ([Completion holds](#completion-holds)).
 - `GET` and `DELETE /api/generations/:id`, `POST /api/generations/:id/memory-stop` + epoch, and
   `POST /api/generations/:id/drained` (`ChannelDrainedBody`): scoped by `clientId` ([Job handoff](#job-handoff)).
 - `POST /api/generations/:id/handoff` and `/takeover` + epoch: [Job handoff](#job-handoff).
@@ -274,6 +275,27 @@ Rules: the comments of `participantJob`, `attach`, `switchOwner`, `takeover`, `a
   An owner's own ticket reattaches it; role events name the owner (`clientName`).
 - `skipped` reaches only the late-replay recipient; `done.missed` lists delivered `chatOutput` callbacks that settled
   `disconnected`.
+- `switchOwner` latches `everHandedOff` when the owner changes; it is never cleared (a creator that took the job back
+  keeps it) and moves into the kept outcome, outside the status, whose `handedOff` says who owns the job now.
+
+### Completion holds
+
+`server/src/push/completionHolds.ts` `createCompletionHolds` (its module comment owns the rules), built in `app.ts`
+after the push service.
+
+- `context.completionHoldMs` (`parseCreateBody`: a finite number above zero, floored, clamped to
+  `MAX_COMPLETION_HOLD_MS` in `shared/jobs.ts`; any kind; not in `requestFingerprint`, so a retry replays the first
+  value; a command sequence's part keeps it) makes `notifyCompletion` hand the push to `hold` instead of sending it,
+  unless the job's signal is aborted. The tab's `notification` notice is sent at the tail as without it.
+- A later hold of the same job (a group's next speaker, a sequence's next part) replaces the notification. No timer runs
+  while the job does: the registry's `onJobEnded` option (from `finalize`, once per job, forced ends included) starts
+  the deadline, `completionHoldMs` from then, never restarted.
+- The release route sends a held push at once. `requestJob` (over `lookupRequest`) answers a live job or kept outcome
+  with its `everHandedOff`, null for an unknown request, a tombstone, or a receipt alone; the route answers
+  `released: false` for null, for a job that ever changed owner (its push waits for the deadline), and when nothing is
+  held. Any authenticated tab may release, before the end too.
+- Past `MAX_COMPLETION_HOLDS` (64) the oldest is sent at once; `beginShutdown` drops every hold (`close`) before
+  `push.close()`.
 
 ## State
 
@@ -355,7 +377,7 @@ In-process harness, slow table: [shell's Tests](self-host-server.md#tests).
 - Browser checks: `util/playwright/checkJobProtocol.mjs`, `checkJobHandoff.mjs`, and `checkServerRestartRaces.mjs`
   ([test-harness](test-harness.md)); `e2e`: `e2e/multiClientGeneration.spec.ts`, two-client lock.
 - Jobs:
-  `pnpm --silent test:agent server/src/tests/{generationJobs,generationReceipts,generationDeltaChunks,generations,commandSequences,generationBarrier,jobChannel,promptRunner,outputMeter}.test.ts`.
+  `pnpm --silent test:agent server/src/tests/{generationJobs,generationReceipts,generationDeltaChunks,generations,commandSequences,generationBarrier,jobChannel,promptRunner,outputMeter,completionHolds}.test.ts`.
 - Transform and translation: `pnpm --silent test:agent server/src/tests/{transform,transformService,translate}.test.ts`.
 - LLM and tokens: `pnpm --silent test:agent server/src/tests/{llmRoutes,llmRequests,tokenRoutes,tokens}.test.ts`.
 - Job modules and CBS: `pnpm --silent test:agent server/src/tests/{jobModules,dynamicAssets,cbs}.test.ts`.

@@ -48,7 +48,9 @@ A module's contract is its doc comments; an entry names its path, role, and iden
 ### Services and helpers
 
 - `server/src/push/pushService.ts` Web Push for completions: `createPushService`, `completionTopic`, `PushService`,
-  `MAX_PUSH_SUBSCRIPTIONS`.
+  `MAX_PUSH_SUBSCRIPTIONS`. `server/src/push/completionHolds.ts` `createCompletionHolds`, `CompletionHolds`,
+  `MAX_COMPLETION_HOLDS`: completion pushes a job asked to hold, in process memory
+  ([completion holds](server-generation.md#completion-holds)).
 - `server/src/remoteCommands.ts` `createRemoteCommands`: the process-local command registry, deadlines and retry
   identity. `shared/remoteCommands.ts` owns the HTTP contract, states, refusal codes, action identity and caps.
 - `server/src/data/orderedWriter.ts` the auxiliary-write scheduler: `createOrderedWriter`, `OrderedWriter`.

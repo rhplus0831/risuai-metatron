@@ -47,6 +47,7 @@ import { createJobToolState, type JobToolState } from "../mcp/jobTools.ts";
 import type { DiagnosticsRecorder } from "../diagnostics/log.ts";
 import type { McpRegistry } from "../mcp/registry.ts";
 import type { PushService } from "../push/pushService.ts";
+import type { CompletionHolds } from "../push/completionHolds.ts";
 import type { TranslationRunner } from "../translation/runner.ts";
 
 /**
@@ -86,6 +87,8 @@ export type GenerationRunnerDeps = {
     memoryTasks?: MemoryTaskService & Partial<MemoryVectorWarmer>;
     /** Web Push for chat completions; without it only the tab is notified. */
     push?: Pick<PushService, "send">;
+    /** Holds requested Web Push completions until release or the deadline after the job ends. */
+    completionHolds?: Pick<CompletionHolds, "hold">;
     /** The diagnostics journal (its caught faults). */
     diagnostics?: DiagnosticsRecorder;
     /** The trigger effect loop's monotonic clock for its yield (default `performance.now`; tests freeze or step it). */

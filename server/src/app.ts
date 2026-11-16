@@ -109,6 +109,7 @@ import {
 import { DIAGNOSTICS_PATH, DIAGNOSTICS_REPORT_PATH, registerDiagnosticsRoutes } from "./routes/diagnostics.ts";
 import { PUSH_SUBSCRIPTION_PATH, registerPushRoutes } from "./routes/push.ts";
 import { createPushService, type PushTransport } from "./push/pushService.ts";
+import { createCompletionHolds } from "./push/completionHolds.ts";
 import { createEventSockets } from "./routes/events.ts";
 import { createRemoteCommands, type RemoteCommandLimits } from "./remoteCommands.ts";
 import { registerRemoteCommandRoutes } from "./routes/remoteCommands.ts";
@@ -447,6 +448,8 @@ export function createServerContext(options: {
         runner: options.generationRunner ?? ((job) => defaultRunner(job)),
         // The checkpoint service is built below; a job starts only after the context exists.
         onChatJobDone: (characterId, chatId) => checkpoints.autoSave(characterId, chatId),
+        // Holds are built with push below; every registry end starts their fallback deadline.
+        onJobEnded: (jobId) => completionHolds.jobEnded(jobId),
         diagnostics,
         receipts: generationReceipts,
         publishHandoff: (event) => changeFeed.publish(event),
@@ -556,6 +559,7 @@ export function createServerContext(options: {
         diagnostics,
         writer,
     });
+    const completionHolds = createCompletionHolds({ push });
     // The memory tasks, which write HypaV3 summaries or Structured Memory records after a send on
     // the request layer and script workers; a context whose resource kinds have no characters (tests) has none.
     const memoryTasks: MemoryTasks | null = resourceKinds.get(RESOURCE_KIND.characters)
@@ -597,6 +601,7 @@ export function createServerContext(options: {
         lock: generationLock,
         translations: translationRunner,
         push,
+        completionHolds,
         diagnostics,
         ...(options.generationRandom ? { random: options.generationRandom } : {}),
         ...(options.generationEffectClock ? { effectClock: options.generationEffectClock } : {}),
@@ -683,6 +688,7 @@ export function createServerContext(options: {
         generationJobs.beginShutdown();
         translationRunner.beginShutdown();
         llmRequests.beginShutdown();
+        completionHolds.close();
         push.close();
         // The staged Realm imports waiting for their commit are removed (a running commit is tracked).
         void realmStaging.close();
@@ -946,7 +952,12 @@ export function createServerContext(options: {
             };
         },
     });
-    registerGenerationRoutes(app, { jobs: generationJobs, auth, limiter: authenticatedRouteLimiter.middleware });
+    registerGenerationRoutes(app, {
+        jobs: generationJobs,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+        holds: completionHolds,
+    });
     registerRemoteCommandRoutes(app, {
         commands: remoteCommands,
         auth,

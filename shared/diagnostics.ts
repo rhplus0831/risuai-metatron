@@ -408,6 +408,7 @@ export const ROUTE_TEMPLATES = [
     "/api/remote-commands/:id/status",
     "/api/generations",
     "/api/generations/cancel",
+    "/api/generations/completion-release",
     "/api/generations/current",
     "/api/generations/stop",
     "/api/generations/:id",
