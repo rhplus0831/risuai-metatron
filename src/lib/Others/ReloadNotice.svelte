@@ -25,6 +25,7 @@
 {#if $reloadNotice !== null || showDrafts}
     <div
         class="fixed top-2 left-1/2 -translate-x-1/2 z-1110 w-max max-w-[calc(100%-1rem)] bg-darkbg border border-darkborderc p-4 break-any rounded-md flex flex-col shadow-lg"
+        data-reload-notice={$reloadNotice !== null ? "" : undefined}
         role="status"
         aria-live="polite"
     >

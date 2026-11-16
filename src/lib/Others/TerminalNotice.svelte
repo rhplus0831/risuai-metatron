@@ -27,6 +27,7 @@
 {#if $terminalNotice !== null}
     <dialog
         bind:this={dialog}
+        data-terminal-notice
         class="m-auto bg-darkbg p-4 break-any rounded-md max-w-3xl backdrop:bg-black/50"
         aria-labelledby="terminal-notice-message"
         oncancel={(event) => {

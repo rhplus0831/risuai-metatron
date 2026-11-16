@@ -1,13 +1,26 @@
 import { flushSync, mount, unmount } from "svelte";
-import { get } from "svelte/store";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { get, type Writable } from "svelte/store";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { language } from "src/lang";
 import { alertWait } from "src/ts/alert";
-import { hostMode } from "src/ts/network/remoteHost";
+import { feedConnected } from "src/ts/network/eventFeed";
+import { hostMode, noteHostCommand } from "src/ts/network/remoteHost";
+import { safeBootOff } from "src/ts/safeBoot";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { alertStore } from "src/ts/stores.svelte";
 import RemoteHostScreen from "./RemoteHostScreen.svelte";
 
+vi.mock("src/ts/network/eventFeed", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("src/ts/network/eventFeed")>();
+    const { writable } = await import("svelte/store");
+    return { ...actual, feedConnected: writable(false) };
+});
+vi.mock("src/ts/safeBoot", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("src/ts/safeBoot")>()),
+    safeBootOff: vi.fn(() => false),
+}));
+
+const connected = feedConnected as Writable<boolean>;
 let root: HTMLDivElement;
 let screen: ReturnType<typeof mount>;
 
@@ -16,8 +29,11 @@ const leaveButtons = () =>
         (button) => button.textContent?.trim() === language.serverJob.remoteHost.leave,
     );
 const overAlert = () => root.querySelector<HTMLButtonElement>("[data-remote-host-leave-over-alert]");
+const hostScreen = () => root.querySelector<HTMLElement>(":scope > section[data-remote-host-screen]")!;
 
 beforeEach(() => {
+    connected.set(false);
+    vi.mocked(safeBootOff).mockReturnValue(false);
     installFlatDatabase({ characters: [{ chaId: "c", name: "Character", type: "character" }] });
     hostMode.set(true);
     root = document.createElement("div");
@@ -58,4 +74,87 @@ it("keeps a leave control above the alert layer while a status overlay covers th
     alertStore.clearStatus();
     flushSync();
     expect(overAlert()).toBeNull();
+});
+
+it("marks the root and exposes feed connection changes as boolean strings", () => {
+    const lock = hostScreen();
+    expect(lock).not.toBeNull();
+    expect(lock.getAttribute("data-feed-connected")).toBe("false");
+
+    connected.set(true);
+    flushSync();
+    expect(lock.getAttribute("data-feed-connected")).toBe("true");
+
+    connected.set(false);
+    flushSync();
+    expect(lock.getAttribute("data-feed-connected")).toBe("false");
+});
+
+it("exposes queued dialogs, including between dialogs, without treating status as a dialog", () => {
+    const lock = hostScreen();
+    expect(lock.getAttribute("data-dialogs")).toBe("false");
+    alertWait("working");
+    flushSync();
+    expect(lock.getAttribute("data-dialogs")).toBe("false");
+
+    vi.useFakeTimers();
+    const first = alertStore.open({ type: "normal", msg: "First dialog" });
+    const queued = alertStore.open({ type: "normal", msg: "Queued dialog" });
+    try {
+        flushSync();
+        expect(lock.getAttribute("data-dialogs")).toBe("true");
+
+        first.cancel();
+        flushSync();
+        expect(lock.getAttribute("data-dialogs")).toBe("true");
+
+        queued.cancel();
+        flushSync();
+        expect(lock.getAttribute("data-dialogs")).toBe("false");
+    } finally {
+        first.cancel();
+        queued.cancel();
+        vi.runAllTimers();
+        vi.useRealTimers();
+    }
+});
+
+it("exposes whether safe boot disabled plugins for the page load", async () => {
+    expect(hostScreen().getAttribute("data-plugins-off")).toBe("false");
+
+    await unmount(screen);
+    vi.mocked(safeBootOff).mockImplementation((category) => category === "plugins");
+    screen = mount(RemoteHostScreen, { target: root });
+    flushSync();
+    expect(hostScreen().getAttribute("data-plugins-off")).toBe("true");
+});
+
+it("exposes each command's fields and omits the code attribute when no code is present", () => {
+    noteHostCommand({
+        commandId: "dom-command-with-code",
+        type: "send",
+        state: "refused",
+        code: "host_off",
+        at: 1,
+    });
+    noteHostCommand({
+        commandId: "dom-command-without-code",
+        type: "reload",
+        state: "running",
+        at: 2,
+    });
+    flushSync();
+
+    const lock = hostScreen();
+    const codedRows = lock.querySelectorAll('li[data-command-id="dom-command-with-code"]');
+    expect(codedRows).toHaveLength(1);
+    expect(codedRows[0].getAttribute("data-command-type")).toBe("send");
+    expect(codedRows[0].getAttribute("data-command-state")).toBe("refused");
+    expect(codedRows[0].getAttribute("data-command-code")).toBe("host_off");
+
+    const uncodedRows = lock.querySelectorAll('li[data-command-id="dom-command-without-code"]');
+    expect(uncodedRows).toHaveLength(1);
+    expect(uncodedRows[0].getAttribute("data-command-type")).toBe("reload");
+    expect(uncodedRows[0].getAttribute("data-command-state")).toBe("running");
+    expect(uncodedRows[0].hasAttribute("data-command-code")).toBe(false);
 });

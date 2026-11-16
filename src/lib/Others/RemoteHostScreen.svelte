@@ -5,10 +5,13 @@
     import { clientName } from "src/ts/network/handoff";
     import { hostCommandLog, hostMode } from "src/ts/network/remoteHost";
     import { runningGenerations } from "src/ts/process/generationProgress.svelte";
+    import { safeBootOff } from "src/ts/safeBoot";
     import { characterList } from "src/ts/storage/characterStore.svelte";
     import { alertStore } from "src/ts/stores.svelte";
 
     const clientId = generationClientId();
+    const pluginsOff = safeBootOff("plugins");
+    const hasDialogs = $derived($alertStore && alertStore.hasDialogs());
     const jobs = $derived.by(() => {
         const characters = characterList();
         return runningGenerations()
@@ -20,8 +23,16 @@
     });
 </script>
 
-<!-- Covers plugin full-screen containers (1000), while alerts (1100) remain answerable. -->
-<section class="fixed inset-0 z-1050 overflow-y-auto bg-bgcolor text-textcolor" aria-labelledby="remote-host-title">
+<!-- Covers plugin full-screen containers (1000), while alerts (1100) remain answerable.
+     The data attributes are read by util/headlessHost.mjs. -->
+<section
+    class="fixed inset-0 z-1050 overflow-y-auto bg-bgcolor text-textcolor"
+    aria-labelledby="remote-host-title"
+    data-remote-host-screen
+    data-feed-connected={$feedConnected ? "true" : "false"}
+    data-dialogs={hasDialogs ? "true" : "false"}
+    data-plugins-off={pluginsOff ? "true" : "false"}
+>
     <div class="mx-auto flex min-h-full w-full max-w-2xl flex-col justify-center gap-6 p-6">
         <h1 id="remote-host-title" class="text-2xl font-bold">{language.serverJob.remoteHost.title}</h1>
         <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 rounded-md border border-darkborderc bg-darkbg p-4">
@@ -58,7 +69,13 @@
             {:else}
                 <ul class="max-h-60 overflow-y-auto rounded-md border border-darkborderc bg-darkbg">
                     {#each $hostCommandLog as command (command.commandId)}
-                        <li class="flex flex-wrap gap-x-3 gap-y-1 border-b border-darkborderc p-3 last:border-b-0">
+                        <li
+                            class="flex flex-wrap gap-x-3 gap-y-1 border-b border-darkborderc p-3 last:border-b-0"
+                            data-command-id={command.commandId}
+                            data-command-type={command.type}
+                            data-command-state={command.state}
+                            data-command-code={command.code || undefined}
+                        >
                             <span class="break-any">{command.type}</span>
                             <span class="break-any text-sm text-textcolor2">{command.commandId}</span>
                             <span class="text-sm">{command.state}</span>
@@ -70,7 +87,7 @@
                 </ul>
             {/if}
         </section>
-        {#if $alertStore && alertStore.hasDialogs()}
+        {#if hasDialogs}
             <p role="status" class="rounded-md border border-darkborderc bg-darkbg p-3">
                 {language.serverJob.remoteHost.waitingDialogs}
             </p>

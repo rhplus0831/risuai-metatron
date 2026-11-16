@@ -197,6 +197,12 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   recent commands, whether dialogs wait, and its one control, "Leave host mode". While an alert or status overlay is
   shown, a copy of the control sits above that layer (`z-1110`, top right): a `wait` or `progress` overlay has no button
   of its own.
+- The lock screen's attributes are a contract the headless host script (`pnpm host:headless`) reads in place of its
+  translated text: the root carries `data-remote-host-screen`, `data-feed-connected`, `data-dialogs` (the
+  waiting-dialogs line's condition) and `data-plugins-off` (`safeBootOff("plugins")`, fixed for the page load), each
+  `"true"` or `"false"`; each command row carries `data-command-id`, `data-command-type`, `data-command-state` and, only
+  with a code, `data-command-code`. The script also reads the
+  [terminal and reload notices'](global-api.md#terminal-and-reload-notices) markers.
 - `src/lib/Others/GenerationProgressWindow.svelte`: the generation progress window `App` mounts after load, shown while
   `ui.generationProgressWindow` is on and a non-preview job runs on the server. Rows come from
   [live updates](live-updates.md#feed-connection) (the selected chat's first, then by start): names the tab holds, the

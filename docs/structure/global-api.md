@@ -70,6 +70,9 @@ comments own the notice lifetimes and input behavior.
   `terminalNoticeShown` in `alert.ts` also blocks plugin key listeners until reload.
 - `alertReloadNotice(msg)`, `reloadNotice`, `dismissReloadNotice`: the save adapter's reload notice shown by
   `src/lib/Others/ReloadNotice.svelte`; its component comment owns its layering and dismissal behavior.
+- For the headless host script ([lock screen](ui-theming.md#other-ui)), the terminal notice's `<dialog>` carries
+  `data-terminal-notice` (the shared `Button` forwards no attribute; the dialog's only button is OK) and the reload
+  notice's panel carries `data-reload-notice` while the reload notice itself is shown, not for the drafts message alone.
 - `src/ts/storage/resourceSync.svelte.ts` emits the `resourceReloaded` notice; save and conflict behavior is in
   [resource-sync](resource-sync.md).
 - While recovery drafts exist and the recovery dialog is closed, `ReloadNotice` also shows the drafts message with its

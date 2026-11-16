@@ -72,7 +72,8 @@ The transport below retains this tab's in-memory log.
   those fields to a read without it (an older host would run them as a plain send).
 - Relay reads and serialized state reports use `/api/remote-commands`, the resource epoch and the read's attempt. Newer
   states replace queued retries; transient failures retry with bounded waits for the open-command lifetime. Report texts
-  shrink to the body cap; acknowledged states enter the lock screen list.
+  shrink to the body cap; acknowledged states enter the lock screen list, whose rows and connection state are also
+  `data-*` attributes for the headless host script ([lock screen](ui-theming.md#other-ui)).
 - `src/ts/network/remoteSend.ts`: the sender's side. Device-local `remoteSend` (off), `remoteSendHost` (a name;
   `hostTargets` in `handoff.ts` picks its newest host registration) and `remoteSendFallback` (on); `remoteSendEligible`,
   `sendChatRemotely`, `receiveRemoteCommandState` (the feed's `remoteCommandState` frames) and `reconcileRemoteSends`
