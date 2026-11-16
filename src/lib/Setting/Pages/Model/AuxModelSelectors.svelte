@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { activeModelPreset } from "src/ts/storage/settingsViews.svelte";
+    import { editedModelPreset } from "src/ts/storage/settingsViews.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import Accordion from "src/lib/UI/Accordion.svelte";
     import { language } from "src/lang";
@@ -20,12 +20,12 @@
 </script>
 
 <div class="flex items-center mt-4">
-    <Check bind:check={activeModelPreset.seperateModelsForAxModels} name={language.seperateModelsForAxModels} />
+    <Check bind:check={editedModelPreset.seperateModelsForAxModels} name={language.seperateModelsForAxModels} />
 </div>
-{#if activeModelPreset.seperateModelsForAxModels && activeModelPreset.id}
+{#if editedModelPreset.seperateModelsForAxModels && editedModelPreset.id}
     <Accordion name={language.axModelsDef} styled>
         {#each modes as mode}
-            <ProfileSlotSelect presetId={activeModelPreset.id} {mode} label={language.modelProfiles.auxModes[mode]} />
+            <ProfileSlotSelect presetId={editedModelPreset.id} {mode} label={language.modelProfiles.auxModes[mode]} />
         {/each}
     </Accordion>
 {/if}

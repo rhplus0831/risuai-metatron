@@ -15,8 +15,8 @@ import type { LLMModel } from "../model/types";
  */
 
 /**
- * Context for conditions and wrappers: `settings`, `activePreset`, `activeModelPreset`, and
- * `activePersona` from `src/ts/storage/settingsViews.svelte.ts`, plus the target profile and model info.
+ * Context for conditions and wrappers: `settings`, `editedPreset`, `editedModelPreset`, and
+ * `editedPersona` from `src/ts/storage/settingsViews.svelte.ts`, plus the target profile and model info.
  */
 export interface SettingContext {
     /** The settings record views (`settings.<section>.<field>`, the collections). */
@@ -139,7 +139,7 @@ export interface SettingItem {
 
     /**
      * Root field name for binding (a section field, a forwarded preset field by its root name, a
-     * persona alias, or a collection), resolved through the settings views (`readSettingsRoot`).
+     * persona alias, or a collection), resolved through the settings views (`readEditedRoot`).
      * Only for input types (check, text, number, textarea, slider, select, color)
      */
     bindKey?: SettingsRootKey;

@@ -77,6 +77,9 @@ import { isJsonData } from "./mutationValidation";
  * - `activePersona.<field>`: the selected persona, likewise (`name`, `icon`, `note`,
  *   `personaPrompt` with `PERSONA_DEFAULTS`, `largePortrait` as stored).
  *
+ * The settings screen uses `editedPreset`, `editedModelPreset`, `editedMainProfile`/`editedSubProfile`,
+ * `editedPersona`, and `readEditedRoot`/`writeEditedRoot`; they resolve exactly as the active family for now.
+ *
  * Profile views resolve a slot's profile by id; missing and bare slots serve schema defaults and
  * refuse changed writes. Every getter looks its record up when it runs (nothing is captured), so
  * templates and `$derived` track the record reads; every setter runs untracked. LLM key values stay
@@ -856,6 +859,47 @@ export function currentModelPresetRecord(): ModelPreset | undefined {
 /** The selected persona's record (its wrapper); `undefined` when there is none. */
 export function currentPersonaRecord(): RisuPersona | undefined {
     return resolvePersona() as unknown as RisuPersona | undefined;
+}
+
+/**
+ * The views and records the settings screen shows and edits (the Prompt, Model, and Persona pages,
+ * their lists, and the settings registry). They resolve exactly as their active counterparts for now;
+ * chat-side readers (a send, a render, a job, a plugin) never read them and keep the active family.
+ */
+export const editedPreset: ActivePreset = activePreset;
+export const editedModelPreset: ActiveModelPreset = activeModelPreset;
+export const editedMainProfile: ModelProfileView = activeMainProfile;
+export const editedSubProfile: ModelProfileView = activeSubProfile;
+export const editedPersona: ActivePersona = activePersona;
+
+/** The settings screen's prompt preset record; resolves as `currentPresetRecord`. */
+export function editedPresetRecord(): botPreset | undefined {
+    return currentPresetRecord();
+}
+
+/** The settings screen's model preset record; resolves as `currentModelPresetRecord`. */
+export function editedModelPresetRecord(): ModelPreset | undefined {
+    return currentModelPresetRecord();
+}
+
+/** The settings screen's persona record; resolves as `currentPersonaRecord`. */
+export function editedPersonaRecord(): RisuPersona | undefined {
+    return currentPersonaRecord();
+}
+
+/** The settings screen's root reader; resolves as `readSettingsRoot`. */
+export function readEditedRoot(key: SettingsRootKey | string): unknown {
+    return readSettingsRoot(key);
+}
+
+/** The settings screen's root writer; writes as `writeSettingsRoot`. */
+export function writeEditedRoot(key: SettingsRootKey | string, value: unknown) {
+    return writeSettingsRoot(key, value);
+}
+
+/** The ids of the prompt preset and model preset the settings screen shows (`""` when a list is empty), for `getModelInfoForMode`; it reads both ids. */
+export function editedScope(): PresetScope {
+    return { presetId: activePreset.id ?? "", modelPresetId: activeModelPreset.id ?? "" };
 }
 
 /**

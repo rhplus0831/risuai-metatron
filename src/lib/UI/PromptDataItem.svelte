@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { activePreset } from "src/ts/storage/settingsViews.svelte";
+    import { editedPreset } from "src/ts/storage/settingsViews.svelte";
     import { recordValueIdentity } from "src/ts/storage/records.svelte";
     import type { PromptItem, PromptItemChat, PromptRole } from "src/ts/process/prompt";
     import OptionInput from "./GUI/OptionInput.svelte";
@@ -136,17 +136,17 @@
             return;
         }
 
-        const ind = activePreset.promptTemplate.findIndex((item, index) => {
+        const ind = editedPreset.promptTemplate.findIndex((item, index) => {
             return JSON.stringify(item) === JSON.stringify(prompt);
         });
 
         if (ind !== -1) {
-            activePreset.promptTemplate.splice(ind, 1);
+            editedPreset.promptTemplate.splice(ind, 1);
         }
-        const myInd = activePreset.promptTemplate.findIndex((item, index) => {
+        const myInd = editedPreset.promptTemplate.findIndex((item, index) => {
             return JSON.stringify(item) === JSON.stringify(promptItem);
         });
-        activePreset.promptTemplate.splice(myInd, 0, prompt);
+        editedPreset.promptTemplate.splice(myInd, 0, prompt);
     }
 
     const isPromptDrag = (e: DragEvent) => {
@@ -315,7 +315,7 @@
             <OptionInput value="chatML">{"chatML"}</OptionInput>
             <OptionInput value="cache">{language.cachePoint}</OptionInput>
 
-            {#if activePreset.promptSettings.customChainOfThought}
+            {#if editedPreset.promptSettings.customChainOfThought}
                 <OptionInput value="cot">{language.cot}</OptionInput>
             {/if}
         </SelectInput>
@@ -379,7 +379,7 @@
                         }}
                     />
                 {/if}
-                {#if activePreset.promptSettings.sendChatAsSystem}
+                {#if editedPreset.promptSettings.sendChatAsSystem}
                     <CheckInput name={language.chatAsOriginalOnSystem} bind:check={promptItem.chatAsOriginalOnSystem} />
                 {/if}
             {/if}

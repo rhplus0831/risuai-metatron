@@ -199,6 +199,11 @@ mechanisms register). Then comes one section per mechanism with a rule between, 
   `src/ts/storage/settingsViews.svelte.ts` rather than a whole-database object. `settings.*` accesses section records
   and collections; `activePreset.*`, `activeModelPreset.*`, and `activePersona.*` expose the selected record's own
   fields. Other tab readers and writers use these same views.
+- The settings screen reads and writes the edited family instead: `editedPreset`, `editedModelPreset`,
+  `editedMainProfile`/`editedSubProfile`, `editedPersona`, `edited*Record()`, `readEditedRoot`/`writeEditedRoot` (the
+  registry's context and bindings), and `editedScope()` for its `getModelInfoForMode` calls. The two families resolve
+  alike for now. Chat-side readers never read the edited family; the memory, module, and plugin pages and the token
+  counts and popup previews keep the active one (what the open chat runs with).
 - When a chat is open, active prompt/model/persona views follow its bound record when present, then the tab selection.
   Missing preset fields read as fresh defaults, so editing the returned copy does not save; writes resolve the current
   record, so async handlers capture its id before awaiting. See [selection rules](persistence.md#settings-records).
@@ -253,7 +258,7 @@ mechanisms register). Then comes one section per mechanism with a rule between, 
   button (once; the field empties), and clears it; the draft is dropped when the path changes.
 - Never `bind:` an LLM credential field (an `llmSecrets` credential): it reads `""`. The auxiliary credentials of the
   `secrets` section are ordinary readable fields, bound like any other (`settings.secrets.<field>`).
-- A profile field is bound through `profileForSlot({ profileId })` (or `activeMainProfile`), never through its root
+- A profile field is bound through `profileForSlot({ profileId })` (or `editedMainProfile`), never through its root
   name, so editing a profile that is not in the main slot works.
 - A setting textarea tied to a selected record passes its id as `popupEditorContext`; popup write-back rules belong to
   [UI](ui-theming.md#gui-primitives).
@@ -272,7 +277,7 @@ mechanisms register). Then comes one section per mechanism with a rule between, 
   answers 0 and stores page 0 at once (`selectLoreBookPage`).
 - `forceReplaceUrl2` is legacy-only: it is excluded from `PRESET_FIELDS` and dropped by `normalizePreset`; current
   exports omit it.
-- `PromptSettings.svelte` reads a missing `activePreset.promptTemplate` as an empty list for display, checks, and token
+- `PromptSettings.svelte` reads a missing `editedPreset.promptTemplate` as an empty list for display, checks, and token
   counts, and its mount writes nothing.
 
 ## Recipes

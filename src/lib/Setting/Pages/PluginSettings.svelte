@@ -1,4 +1,5 @@
 <script lang="ts">
+    // This page shows what the open chat runs with, so it reads the active family on purpose.
     import { activeMainProfile, settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import { PlusIcon, TrashIcon, LinkIcon, CodeXmlIcon, PowerIcon, PowerOffIcon } from "@lucide/svelte";
     import { language } from "src/lang";

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { settings } from "src/ts/storage/settingsViews.svelte";
+    import { editedScope, settings } from "src/ts/storage/settingsViews.svelte";
     import {
         AccessibilityIcon,
         ActivityIcon,
@@ -184,8 +184,8 @@
             : searchSettings(
                   query,
                   settingContext({
-                      modelInfo: getModelInfoForMode("model"),
-                      subModelInfo: getModelInfoForMode("submodel"),
+                      modelInfo: getModelInfoForMode("model", editedScope()),
+                      subModelInfo: getModelInfoForMode("submodel", editedScope()),
                   }),
               ),
     );

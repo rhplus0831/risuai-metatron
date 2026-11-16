@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { settings, activePreset, currentPresetRecord } from "src/ts/storage/settingsViews.svelte";
+    import { editedScope, settings, editedPreset, editedPresetRecord } from "src/ts/storage/settingsViews.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import { language } from "src/lang";
     import Help from "src/lib/Others/Help.svelte";
@@ -68,14 +68,14 @@
     // every tab.
     const jumpTab = currentJump()?.tab;
     let submenu = $state(settings.ui.useLegacyGUI ? -1 : typeof jumpTab === "number" ? jumpTab : 1);
-    let modelInfo = $derived(getModelInfoForMode("model"));
-    let subModelInfo = $derived(getModelInfoForMode("submodel"));
+    let modelInfo = $derived(getModelInfoForMode("model", editedScope()));
+    let subModelInfo = $derived(getModelInfoForMode("submodel", editedScope()));
 
     $effect(() => {
-        if ((submenu === 2 || submenu === -1) && !activePreset.promptTemplate) {
-            mainPromptField.update(tokenCountInput(activePreset.mainPrompt));
-            jailbreakField.update(tokenCountInput(activePreset.jailbreak));
-            globalNoteField.update(tokenCountInput(activePreset.globalNote));
+        if ((submenu === 2 || submenu === -1) && !editedPreset.promptTemplate) {
+            mainPromptField.update(tokenCountInput(editedPreset.mainPrompt));
+            jailbreakField.update(tokenCountInput(editedPreset.jailbreak));
+            globalNoteField.update(tokenCountInput(editedPreset.globalNote));
         } else {
             mainPromptField.reset();
             jailbreakField.reset();
@@ -95,10 +95,10 @@
 <div class="flex items-center gap-2 mb-4 p-2 rounded-md border border-darkborderc">
     <span class="text-textcolor2 text-sm shrink-0">{language.promptPreset}</span>
     <BindingScopeNote field="promptPresetId" />
-    {#if currentPresetRecord()?.image}
-        <img src={currentPresetRecord()?.image} alt="icon" class="w-6 h-6 rounded-md" decoding="async" />
+    {#if editedPresetRecord()?.image}
+        <img src={editedPresetRecord()?.image} alt="icon" class="w-6 h-6 rounded-md" decoding="async" />
     {/if}
-    <span class="grow truncate">{activePreset.name}</span>
+    <span class="grow truncate">{editedPreset.name}</span>
     <Button
         size="sm"
         onclick={() => {
@@ -152,7 +152,7 @@
             step={0.01}
             fixed={2}
             marginBottom
-            bind:value={activePreset.ooba.repetition_penalty}
+            bind:value={editedPreset.ooba.repetition_penalty}
         />
         <span class="text-textcolor">Length Penalty</span>
         <SliderInput
@@ -161,67 +161,67 @@
             step={0.05}
             marginBottom
             fixed={2}
-            bind:value={activePreset.ooba.length_penalty}
+            bind:value={editedPreset.ooba.length_penalty}
         />
         <span class="text-textcolor">Top K</span>
-        <SliderInput min={0} max={100} step={1} marginBottom bind:value={activePreset.ooba.top_k} />
+        <SliderInput min={0} max={100} step={1} marginBottom bind:value={editedPreset.ooba.top_k} />
         <span class="text-textcolor">Top P</span>
-        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={activePreset.ooba.top_p} />
+        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={editedPreset.ooba.top_p} />
         <span class="text-textcolor">Typical P</span>
-        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={activePreset.ooba.typical_p} />
+        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={editedPreset.ooba.typical_p} />
         <span class="text-textcolor">Top A</span>
-        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={activePreset.ooba.top_a} />
+        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={editedPreset.ooba.top_a} />
         <span class="text-textcolor">No Repeat n-gram Size</span>
-        <SliderInput min={0} max={20} step={1} marginBottom bind:value={activePreset.ooba.no_repeat_ngram_size} />
+        <SliderInput min={0} max={20} step={1} marginBottom bind:value={editedPreset.ooba.no_repeat_ngram_size} />
         <div class="flex items-center mt-4">
-            <Check bind:check={activePreset.ooba.do_sample} name={"Do Sample"} />
+            <Check bind:check={editedPreset.ooba.do_sample} name={"Do Sample"} />
         </div>
         <div class="flex items-center mt-4">
-            <Check bind:check={activePreset.ooba.add_bos_token} name={"Add BOS Token"} />
+            <Check bind:check={editedPreset.ooba.add_bos_token} name={"Add BOS Token"} />
         </div>
         <div class="flex items-center mt-4">
-            <Check bind:check={activePreset.ooba.ban_eos_token} name={"Ban EOS Token"} />
+            <Check bind:check={editedPreset.ooba.ban_eos_token} name={"Ban EOS Token"} />
         </div>
         <div class="flex items-center mt-4">
-            <Check bind:check={activePreset.ooba.skip_special_tokens} name={"Skip Special Tokens"} />
+            <Check bind:check={editedPreset.ooba.skip_special_tokens} name={"Skip Special Tokens"} />
         </div>
         <div class="flex items-center mt-4">
             <Check
-                check={!!activePreset.localStopStrings}
+                check={!!editedPreset.localStopStrings}
                 name={language.customStopWords}
                 onChange={() => {
-                    if (!activePreset.localStopStrings) {
-                        activePreset.localStopStrings = [];
+                    if (!editedPreset.localStopStrings) {
+                        editedPreset.localStopStrings = [];
                     } else {
-                        activePreset.localStopStrings = null;
+                        editedPreset.localStopStrings = null;
                     }
                 }}
             />
         </div>
-        {#if activePreset.localStopStrings}
+        {#if editedPreset.localStopStrings}
             <div class="flex flex-col p-2 rounded-sm border border-selected mt-2 gap-1">
                 <div class="p-2">
                     <button
                         class="font-medium flex justify-center items-center h-full cursor-pointer hover:text-green-500 w-full"
                         onclick={() => {
-                            let localStopStrings = activePreset.localStopStrings;
+                            let localStopStrings = editedPreset.localStopStrings;
                             localStopStrings.push("");
-                            activePreset.localStopStrings = localStopStrings;
+                            editedPreset.localStopStrings = localStopStrings;
                         }}><PlusIcon /></button
                     >
                 </div>
-                {#each activePreset.localStopStrings as stopString, i}
+                {#each editedPreset.localStopStrings as stopString, i}
                     <div class="flex w-full">
                         <div class="grow">
-                            <TextInput marginBottom bind:value={activePreset.localStopStrings[i]} fullwidth fullh />
+                            <TextInput marginBottom bind:value={editedPreset.localStopStrings[i]} fullwidth fullh />
                         </div>
                         <div>
                             <button
                                 class="font-medium flex justify-center items-center h-full cursor-pointer hover:text-green-500 w-full"
                                 onclick={() => {
-                                    let localStopStrings = activePreset.localStopStrings;
+                                    let localStopStrings = editedPreset.localStopStrings;
                                     localStopStrings.splice(i, 1);
-                                    activePreset.localStopStrings = localStopStrings;
+                                    editedPreset.localStopStrings = localStopStrings;
                                 }}><TrashIcon /></button
                             >
                         </div>
@@ -229,22 +229,22 @@
                 {/each}
             </div>
         {/if}
-        <Check bind:check={activePreset.ooba.formating.useName} name={language.useNamePrefix} />
+        <Check bind:check={editedPreset.ooba.formating.useName} name={language.useNamePrefix} />
     {:else if modelInfo.format === LLMFormat.NovelAI}
-        <Check bind:check={activePreset.NAIadventure} name={language.textAdventureNAI} />
-        <Check bind:check={activePreset.NAIappendName} name={language.appendNameNAI} />
+        <Check bind:check={editedPreset.NAIadventure} name={language.textAdventureNAI} />
+        <Check bind:check={editedPreset.NAIappendName} name={language.appendNameNAI} />
         <div class="flex flex-col p-3 bg-darkbg mt-4">
             <span class="text-textcolor">Starter</span>
-            <TextInput bind:value={activePreset.NAISettings.starter} placeholder={"⁂"} />
+            <TextInput bind:value={editedPreset.NAISettings.starter} placeholder={"⁂"} />
             <span class="text-textcolor">Seperator</span>
-            <TextInput bind:value={activePreset.NAISettings.seperator} placeholder={"\\n"} />
+            <TextInput bind:value={editedPreset.NAISettings.seperator} placeholder={"\\n"} />
         </div>
         <span class="text-textcolor">Top P</span>
-        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={activePreset.NAISettings.topP} />
+        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={editedPreset.NAISettings.topP} />
         <span class="text-textcolor">Top K</span>
-        <SliderInput min={0} max={100} step={1} marginBottom bind:value={activePreset.NAISettings.topK} />
+        <SliderInput min={0} max={100} step={1} marginBottom bind:value={editedPreset.NAISettings.topK} />
         <span class="text-textcolor">Top A</span>
-        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={activePreset.NAISettings.topA} />
+        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={editedPreset.NAISettings.topA} />
         <span class="text-textcolor">Tailfree Sampling</span>
         <SliderInput
             min={0}
@@ -252,7 +252,7 @@
             step={0.001}
             marginBottom
             fixed={3}
-            bind:value={activePreset.NAISettings.tailFreeSampling}
+            bind:value={editedPreset.NAISettings.tailFreeSampling}
         />
         <span class="text-textcolor">Typical P</span>
         <SliderInput
@@ -261,7 +261,7 @@
             step={0.01}
             marginBottom
             fixed={2}
-            bind:value={activePreset.NAISettings.typicalp}
+            bind:value={editedPreset.NAISettings.typicalp}
         />
         <span class="text-textcolor">Repetition Penalty</span>
         <SliderInput
@@ -270,7 +270,7 @@
             step={0.01}
             marginBottom
             fixed={2}
-            bind:value={activePreset.NAISettings.repetitionPenalty}
+            bind:value={editedPreset.NAISettings.repetitionPenalty}
         />
         <span class="text-textcolor">Repetition Penalty Range</span>
         <SliderInput
@@ -279,7 +279,7 @@
             step={1}
             marginBottom
             fixed={0}
-            bind:value={activePreset.NAISettings.repetitionPenaltyRange}
+            bind:value={editedPreset.NAISettings.repetitionPenaltyRange}
         />
         <span class="text-textcolor">Repetition Penalty Slope</span>
         <SliderInput
@@ -288,7 +288,7 @@
             step={0.01}
             marginBottom
             fixed={2}
-            bind:value={activePreset.NAISettings.repetitionPenaltySlope}
+            bind:value={editedPreset.NAISettings.repetitionPenaltySlope}
         />
         <span class="text-textcolor">Frequency Penalty</span>
         <SliderInput
@@ -297,7 +297,7 @@
             step={0.01}
             marginBottom
             fixed={2}
-            bind:value={activePreset.NAISettings.frequencyPenalty}
+            bind:value={editedPreset.NAISettings.frequencyPenalty}
         />
         <span class="text-textcolor">Presence Penalty</span>
         <SliderInput
@@ -306,7 +306,7 @@
             step={0.01}
             marginBottom
             fixed={2}
-            bind:value={activePreset.NAISettings.presencePenalty}
+            bind:value={editedPreset.NAISettings.presencePenalty}
         />
         <span class="text-textcolor">Mirostat LR</span>
         <SliderInput
@@ -315,7 +315,7 @@
             step={0.01}
             marginBottom
             fixed={2}
-            bind:value={activePreset.NAISettings.mirostat_lr}
+            bind:value={editedPreset.NAISettings.mirostat_lr}
         />
         <span class="text-textcolor">Mirostat Tau</span>
         <SliderInput
@@ -324,7 +324,7 @@
             step={0.01}
             marginBottom
             fixed={2}
-            bind:value={activePreset.NAISettings.mirostat_tau}
+            bind:value={editedPreset.NAISettings.mirostat_tau}
         />
         <span class="text-textcolor">Cfg Scale</span>
         <SliderInput
@@ -333,13 +333,13 @@
             step={0.01}
             marginBottom
             fixed={2}
-            bind:value={activePreset.NAISettings.cfg_scale}
+            bind:value={editedPreset.NAISettings.cfg_scale}
         />
     {:else if modelInfo.format === LLMFormat.NovelList}
         <span class="text-textcolor">Top P</span>
-        <SliderInput min={0} max={2} step={0.01} marginBottom fixed={2} bind:value={activePreset.ainconfig.top_p} />
+        <SliderInput min={0} max={2} step={0.01} marginBottom fixed={2} bind:value={editedPreset.ainconfig.top_p} />
         <span class="text-textcolor">Reputation Penalty</span>
-        <SliderInput min={0} max={2} step={0.01} marginBottom fixed={2} bind:value={activePreset.ainconfig.rep_pen} />
+        <SliderInput min={0} max={2} step={0.01} marginBottom fixed={2} bind:value={editedPreset.ainconfig.rep_pen} />
         <span class="text-textcolor">Reputation Penalty Range</span>
         <SliderInput
             min={0}
@@ -347,7 +347,7 @@
             step={1}
             marginBottom
             fixed={2}
-            bind:value={activePreset.ainconfig.rep_pen_range}
+            bind:value={editedPreset.ainconfig.rep_pen_range}
         />
         <span class="text-textcolor">Reputation Penalty Slope</span>
         <SliderInput
@@ -356,14 +356,14 @@
             step={0.1}
             marginBottom
             fixed={2}
-            bind:value={activePreset.ainconfig.rep_pen_slope}
+            bind:value={editedPreset.ainconfig.rep_pen_slope}
         />
         <span class="text-textcolor">Top K</span>
-        <SliderInput min={1} max={500} step={1} marginBottom fixed={2} bind:value={activePreset.ainconfig.top_k} />
+        <SliderInput min={1} max={500} step={1} marginBottom fixed={2} bind:value={editedPreset.ainconfig.top_k} />
         <span class="text-textcolor">Top A</span>
-        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={activePreset.ainconfig.top_a} />
+        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={editedPreset.ainconfig.top_a} />
         <span class="text-textcolor">Typical P</span>
-        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={activePreset.ainconfig.typical_p} />
+        <SliderInput min={0} max={1} step={0.01} marginBottom fixed={2} bind:value={editedPreset.ainconfig.typical_p} />
     {:else}
         <!-- Standard parameters now handled by SettingRenderer above -->
     {/if}
@@ -384,26 +384,26 @@
                         <button
                             class="font-medium cursor-pointer hover:text-green-500 w-full flex justify-center items-center"
                             onclick={() => {
-                                let bia = activePreset.bias;
+                                let bia = editedPreset.bias;
                                 bia.push(["", 0]);
-                                activePreset.bias = bia;
+                                editedPreset.bias = bia;
                             }}><PlusIcon /></button
                         >
                     </th>
                 </tr>
-                {#if activePreset.bias.length === 0}
+                {#if editedPreset.bias.length === 0}
                     <tr>
                         <td colspan="3" class="text-textcolor2">{language.noBias}</td>
                     </tr>
                 {/if}
-                {#each activePreset.bias as bias, i}
+                {#each editedPreset.bias as bias, i}
                     <tr>
                         <td class="font-medium truncate">
-                            <TextInput bind:value={activePreset.bias[i][0]} size="lg" fullwidth />
+                            <TextInput bind:value={editedPreset.bias[i][0]} size="lg" fullwidth />
                         </td>
                         <td class="font-medium truncate">
                             <NumberInput
-                                bind:value={activePreset.bias[i][1]}
+                                bind:value={editedPreset.bias[i][1]}
                                 max={100}
                                 min={-101}
                                 size="lg"
@@ -414,9 +414,9 @@
                             <button
                                 class="font-medium flex justify-center items-center h-full cursor-pointer hover:text-green-500 w-full"
                                 onclick={() => {
-                                    let bia = activePreset.bias;
+                                    let bia = editedPreset.bias;
                                     bia.splice(i, 1);
-                                    activePreset.bias = bia;
+                                    editedPreset.bias = bia;
                                 }}><TrashIcon /></button
                             >
                         </td>
@@ -428,7 +428,7 @@
             <button
                 class="font-medium cursor-pointer hover:text-textcolor gap-2"
                 onclick={() => {
-                    const data = JSON.stringify(activePreset.bias, null, 2);
+                    const data = JSON.stringify(editedPreset.bias, null, 2);
                     downloadFile("bias.json", data);
                 }}><DownloadIcon /></button
             >
@@ -436,7 +436,7 @@
                 class="font-medium cursor-pointer hover:text-textcolor"
                 onclick={async () => {
                     // The shown preset can change while the file dialog is open: the bias goes to this preset.
-                    const presetId = activePreset.id;
+                    const presetId = editedPreset.id;
                     const sel = await selectSingleFile(["json"]);
                     if (!sel) {
                         return;
@@ -452,7 +452,7 @@
     </Accordion>
 
     <Accordion styled name={language.promptTemplate}>
-        {#if activePreset.promptTemplate}
+        {#if editedPreset.promptTemplate}
             {#if submenu !== -1}
                 <PromptSettings mode="inline" subMenu={1} />
             {/if}
@@ -461,7 +461,7 @@
                 check={false}
                 name={language.usePromptTemplate}
                 onChange={() => {
-                    activePreset.promptTemplate = [];
+                    editedPreset.promptTemplate = [];
                 }}
             />
         {/if}
@@ -469,8 +469,8 @@
 
     <Accordion styled name={language.moduleIntergration} help="moduleIntergration">
         <TextAreaInput
-            bind:value={activePreset.moduleIntergration}
-            popupEditorContext={activePreset.id}
+            bind:value={editedPreset.moduleIntergration}
+            popupEditorContext={editedPreset.id}
             fullwidth
             height={"32"}
             autocomplete="off"
@@ -478,7 +478,7 @@
     </Accordion>
 
     <Accordion styled name={language.regexScript}>
-        <RegexList bind:value={activePreset.regex} popupEditorContext={activePreset.id} buttons />
+        <RegexList bind:value={editedPreset.regex} popupEditorContext={editedPreset.id} buttons />
     </Accordion>
 
     <Accordion styled name={language.icon}>
@@ -487,9 +487,9 @@
                 {language.preview}
             </span>
             <div class="flex items-center justify-center gap-2">
-                {#if currentPresetRecord()?.image}
-                    <img src={currentPresetRecord()?.image} alt="icon" class="w-6 h-6 rounded-md" decoding="async" />
-                    <span class="text-textcolor2">{currentPresetRecord()?.name}</span>
+                {#if editedPresetRecord()?.image}
+                    <img src={editedPresetRecord()?.image} alt="icon" class="w-6 h-6 rounded-md" decoding="async" />
+                    <span class="text-textcolor2">{editedPresetRecord()?.name}</span>
                 {:else}
                     <span class="text-textcolor2">{language.noImages}</span>
                 {/if}
@@ -499,7 +499,7 @@
             class="mt-2 text-textcolor2 hover:text-textcolor focus-within:text-textcolor"
             onclick={async () => {
                 // The selection can change while the file dialog is open: the image goes to this preset.
-                const presetId = activePreset.id;
+                const presetId = editedPreset.id;
                 const sel = await selectSingleFile(["png", "jpg", "jpeg", "webp"]);
                 if (!sel) {
                     return;
@@ -534,14 +534,14 @@
 {/if}
 
 {#if submenu === 2 || submenu === -1}
-    {#if !activePreset.promptTemplate}
+    {#if !editedPreset.promptTemplate}
         <span class="text-textcolor">{language.mainPrompt} <Help key="mainprompt" /></span>
         <TextAreaInput
             fullwidth
             autocomplete="off"
             height={"32"}
-            bind:value={activePreset.mainPrompt}
-            popupEditorContext={activePreset.id}
+            bind:value={editedPreset.mainPrompt}
+            popupEditorContext={editedPreset.id}
         ></TextAreaInput>
         <span class="text-textcolor2 mb-6 text-sm mt-2">{mainPromptTokens} {language.tokens}</span>
         <span class="text-textcolor">{language.jailbreakPrompt} <Help key="jailbreak" /></span>
@@ -549,8 +549,8 @@
             fullwidth
             autocomplete="off"
             height={"32"}
-            bind:value={activePreset.jailbreak}
-            popupEditorContext={activePreset.id}
+            bind:value={editedPreset.jailbreak}
+            popupEditorContext={editedPreset.id}
         ></TextAreaInput>
         <span class="text-textcolor2 mb-6 text-sm mt-2">{jailbreakTokens} {language.tokens}</span>
         <span class="text-textcolor">{language.globalNote} <Help key="globalNote" /></span>
@@ -558,21 +558,21 @@
             fullwidth
             autocomplete="off"
             height={"32"}
-            bind:value={activePreset.globalNote}
-            popupEditorContext={activePreset.id}
+            bind:value={editedPreset.globalNote}
+            popupEditorContext={editedPreset.id}
         ></TextAreaInput>
         <span class="text-textcolor2 mb-6 text-sm mt-2">{globalNoteTokens} {language.tokens}</span>
         <span class="text-textcolor mb-2 mt-4">{language.formatingOrder} <Help key="formatOrder" /></span>
-        <DropList bind:list={activePreset.formatingOrder} />
+        <DropList bind:list={editedPreset.formatingOrder} />
         <div class="flex items-center mt-4">
-            <Check bind:check={activePreset.promptPreprocess} name={language.promptPreprocess} />
+            <Check bind:check={editedPreset.promptPreprocess} name={language.promptPreprocess} />
         </div>
     {:else if submenu === 2}
         <PromptSettings mode="inline" />
     {/if}
 {/if}
 
-{#if activePreset.promptTemplate && submenu === -1}
+{#if editedPreset.promptTemplate && submenu === -1}
     <div class="mt-2">
         <Button onclick={goPromptTemplate} size="sm">{language.promptTemplate}</Button>
     </div>

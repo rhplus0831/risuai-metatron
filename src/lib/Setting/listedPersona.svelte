@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { settings, activePersona } from "src/ts/storage/settingsViews.svelte";
+    import { settings, editedPersona } from "src/ts/storage/settingsViews.svelte";
     import { XIcon } from "@lucide/svelte";
     import { language } from "../../lang";
     import { changeUserPersona } from "src/ts/persona";
@@ -24,7 +24,7 @@
     const shownRef = $derived(chatRef ?? currentChatRef());
     const shownChatName = $derived(shownRef ? chatEntry(shownRef)?.name : undefined);
     // Read once per render, not once per row.
-    const selectedPersonaId = $derived(pickedId("personaId", shownRef, activePersona.id));
+    const selectedPersonaId = $derived(pickedId("personaId", shownRef, editedPersona.id));
 
     // A list opened for a chat closes when that chat is gone; it never falls back to the open chat.
     $effect(() => {

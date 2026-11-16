@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { editedScope } from "src/ts/storage/settingsViews.svelte";
     import type { SettingContext, SettingSection } from "src/ts/setting/types";
     import { getModelInfoForMode } from "src/ts/model/modellist";
     import { languageText, sectionHasVisibleItems, settingContext } from "src/ts/setting/utils";
@@ -22,8 +23,8 @@
     const uid = $props.id();
 
     // The same context `SettingRenderer` builds, so a section whose items all hide renders nothing.
-    let modelInfo = $derived(getModelInfoForMode("model"));
-    let subModelInfo = $derived(getModelInfoForMode("submodel"));
+    let modelInfo = $derived(getModelInfoForMode("model", editedScope()));
+    let subModelInfo = $derived(getModelInfoForMode("submodel", editedScope()));
     let ctx: SettingContext = $derived(settingContext({ modelInfo, subModelInfo }));
     // Capture the jump at mount; an Accordion starts open only while that jump is still pending,
     // so a later tab round trip cannot reopen its section after the jump finishes.

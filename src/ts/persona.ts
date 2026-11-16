@@ -1,4 +1,4 @@
-import { settings, activePersona } from "./storage/settingsViews.svelte";
+import { settings, editedPersona } from "./storage/settingsViews.svelte";
 import { saveImage } from "./storage/database.svelte";
 import { selectSingleFile, sleep } from "./util";
 import { alertError, alertNormal, alertStore } from "./alert";
@@ -17,7 +17,7 @@ import { addPersona } from "./storage/collectionStore.svelte";
  * icon is dropped if the persona was deleted meanwhile.
  */
 export async function selectUserImg() {
-    const personaId = activePersona.id;
+    const personaId = editedPersona.id;
     const selected = await selectSingleFile(["png"]);
     if (!selected || !personaId) {
         return;
@@ -52,10 +52,10 @@ interface PersonaCard {
  */
 export async function exportUserPersona() {
     // The selected persona's fields, read once now: the selection can change during the awaits below.
-    const username = activePersona.name;
-    const personaPrompt = activePersona.personaPrompt;
-    const userIcon = activePersona.icon;
-    const userNote = activePersona.note;
+    const username = editedPersona.name;
+    const personaPrompt = editedPersona.personaPrompt;
+    const userIcon = editedPersona.icon;
+    const userNote = editedPersona.note;
     if (!username || !personaPrompt) {
         alertError("username or persona prompt is empty");
         return;

@@ -1,13 +1,13 @@
 import type { SettingItem, SettingContext, SettingSection } from "./types";
 import type { LLMModel } from "../model/types";
 import {
-    activeMainProfile,
-    activeModelPreset,
-    activePersona,
-    activePreset,
-    readSettingsRoot,
+    editedMainProfile,
+    editedModelPreset,
+    editedPersona,
+    editedPreset,
+    readEditedRoot,
     settings,
-    writeSettingsRoot,
+    writeEditedRoot,
     type ModelProfileView,
 } from "../storage/settingsViews.svelte";
 import { language } from "src/lang";
@@ -56,7 +56,7 @@ export function getLabel(item: SettingItem): string {
 
 /**
  * The context the conditions and wrappers read (`SettingRenderer`, `SettingsSections`): the settings
- * views, the selected (or chat-bound) presets and persona, the given model profile or else the main
+ * views, the edited presets and persona, the given model profile or else the edited main
  * slot's, and the model info the caller derived. Call it inside `$derived` so it follows the views.
  */
 export function settingContext(parts: {
@@ -66,10 +66,10 @@ export function settingContext(parts: {
 }): SettingContext {
     return {
         settings,
-        preset: activePreset,
-        modelPreset: activeModelPreset,
-        modelProfile: parts.modelProfile ?? activeMainProfile,
-        persona: activePersona,
+        preset: editedPreset,
+        modelPreset: editedModelPreset,
+        modelProfile: parts.modelProfile ?? editedMainProfile,
+        persona: editedPersona,
         modelInfo: parts.modelInfo,
         subModelInfo: parts.subModelInfo,
     };
@@ -77,7 +77,7 @@ export function settingContext(parts: {
 
 /**
  * Value precedence: `getValue`, then `bindPath`, then `bindKey`. Bindings read their root through
- * `readSettingsRoot` in `src/ts/storage/settingsViews.svelte.ts`.
+ * `readEditedRoot` in `src/ts/storage/settingsViews.svelte.ts`.
  */
 export function getSettingValue(item: SettingItem, ctx: SettingContext): any {
     if (item.getValue) {
@@ -85,14 +85,14 @@ export function getSettingValue(item: SettingItem, ctx: SettingContext): any {
     }
     if (item.bindPath) {
         const [root, ...parts] = item.bindPath.split(".");
-        let value: any = readSettingsRoot(root);
+        let value: any = readEditedRoot(root);
         for (const part of parts) {
             value = value?.[part];
         }
         return value;
     }
     if (item.bindKey) {
-        return readSettingsRoot(item.bindKey);
+        return readEditedRoot(item.bindKey);
     }
     return undefined;
 }
@@ -108,13 +108,13 @@ export function setSettingValue(item: SettingItem, newValue: any, ctx: SettingCo
     } else if (item.bindPath) {
         const [root, ...parts] = item.bindPath.split(".");
         if (parts.length === 0) {
-            writeSettingsRoot(root, newValue);
+            writeEditedRoot(root, newValue);
         } else {
-            let obj: any = readSettingsRoot(root);
+            let obj: any = readEditedRoot(root);
             if (obj === undefined || obj === null) {
                 obj = {};
-                writeSettingsRoot(root, obj);
-                obj = readSettingsRoot(root);
+                writeEditedRoot(root, obj);
+                obj = readEditedRoot(root);
             }
             for (let i = 0; i < parts.length - 1; i++) {
                 obj = obj[parts[i]] ??= {};
@@ -122,7 +122,7 @@ export function setSettingValue(item: SettingItem, newValue: any, ctx: SettingCo
             obj[parts[parts.length - 1]] = newValue;
         }
     } else if (item.bindKey) {
-        writeSettingsRoot(item.bindKey, newValue);
+        writeEditedRoot(item.bindKey, newValue);
     }
 
     if (item.onChange) {

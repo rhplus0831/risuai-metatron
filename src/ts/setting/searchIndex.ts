@@ -3,7 +3,7 @@ import { legacyMemoryAlgorithm } from "../../../shared/chatMemory.ts";
 import { language } from "src/lang";
 import { languageEnglish } from "src/lang/en";
 import { matchText, prepareQuery, MATCH_SCORE, type PreparedQuery } from "../util/koreanSearch";
-import { activeMainProfile } from "../storage/settingsViews.svelte";
+import { editedMainProfile } from "../storage/settingsViews.svelte";
 import {
     API_KEYS_SETTINGS_MENU,
     DEVICE_LINK_SETTINGS_MENU,
@@ -85,7 +85,7 @@ export type SettingUnavailableReason = "hidden" | "noMainProfile";
 
 /**
  * A labelled destination with breadcrumbs, including unavailable hits with a `reason`. Unlabelled
- * items use their section title; Connections items use `activeMainProfile` from
+ * items use their section title; Connections items use `editedMainProfile` from
  * `src/ts/storage/settingsViews.svelte.ts` for conditions and carry its `profileId` when present.
  */
 export interface SettingHit {
@@ -377,12 +377,12 @@ function itemHit(
     if (location.menu === MODEL_PROFILES_SETTINGS_MENU) {
         // Connections edits the profile it selects; the jump selects the main slot's, so the
         // conditions read that one. A dangling main slot gets no substitute.
-        const profileId = activeMainProfile.id;
+        const profileId = editedMainProfile.id;
         if (profileId === undefined) {
             return { ...hit, available: false, reason: "noMainProfile" };
         }
         hit.profileId = profileId;
-        itemCtx = { ...ctx, modelProfile: activeMainProfile };
+        itemCtx = { ...ctx, modelProfile: editedMainProfile };
     }
     const available =
         checkCondition(item, itemCtx) &&

@@ -1,5 +1,5 @@
 <script lang="ts">
-    import type { ModelProfileView } from "src/ts/storage/settingsViews.svelte";
+    import { editedScope, type ModelProfileView } from "src/ts/storage/settingsViews.svelte";
     import type { SettingItem, SettingContext } from "src/ts/setting/types";
     import type { LLMModel } from "src/ts/model/types";
     import { getModelInfoForMode } from "src/ts/model/modellist";
@@ -26,8 +26,8 @@
     let { items, modelInfo, subModelInfo, modelProfile }: Props = $props();
 
     // Derive modelInfo if not provided
-    let effectiveModelInfo = $derived(modelInfo ?? getModelInfoForMode("model"));
-    let effectiveSubModelInfo = $derived(subModelInfo ?? getModelInfoForMode("submodel"));
+    let effectiveModelInfo = $derived(modelInfo ?? getModelInfoForMode("model", editedScope()));
+    let effectiveSubModelInfo = $derived(subModelInfo ?? getModelInfoForMode("submodel", editedScope()));
 
     // Build context for condition checks
     let ctx: SettingContext = $derived(

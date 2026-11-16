@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { settings, activePersona, currentPersonaRecord } from "src/ts/storage/settingsViews.svelte";
+    import { settings, editedPersona, editedPersonaRecord } from "src/ts/storage/settingsViews.svelte";
     import { language } from "src/lang";
     import BaseRoundedButton from "src/lib/UI/BaseRoundedButton.svelte";
     import Button from "src/lib/UI/GUI/Button.svelte";
@@ -24,7 +24,7 @@
 
     /**
      * The persona settings page. The editor and the module links it edits (`RisuPersona.modules`) are the persona the
-     * screen shows (`currentPersonaRecord`: the open chat's bound persona, else the tab's), read at each write.
+     * screen shows (`editedPersonaRecord`: the open chat's bound persona, else the tab's), read at each write.
      * Creation captures its target chat before its dialog and picks the new persona there; an imported one is not
      * picked. A deletion moves only the tab's selection, never a chat's binding; the last persona is never deleted.
      */
@@ -33,8 +33,8 @@
     let ele: HTMLDivElement = $state();
     let sorted = $state(0);
     // Read once per render, not once per row. The ring marks the open chat's bound persona (none
-    // when unset or deleted), else at home the tab's; the editor below edits `activePersona`.
-    const selectedPersonaId = $derived(pickedId("personaId", currentChatRef(), activePersona.id));
+    // when unset or deleted), else at home the tab's; the editor below edits `editedPersona`.
+    const selectedPersonaId = $derived(pickedId("personaId", currentChatRef(), editedPersona.id));
     let moduleSearch = $state("");
     // The modules a persona can link: not MCP, with a non-blank id (`normalizePersonaModules` keeps
     // no other), each id once (the first, as the resolvers pick), shown by name, else by id.
@@ -55,13 +55,13 @@
         const query = prepareQuery(moduleSearch);
         return query ? linkableModules.filter((module) => matchesAny([module.name], query)) : linkableModules;
     });
-    const linkedModuleIds = $derived(new Set(normalizePersonaModules(currentPersonaRecord()?.modules)));
+    const linkedModuleIds = $derived(new Set(normalizePersonaModules(editedPersonaRecord()?.modules)));
 
-    // Written to the persona the editor shows (`currentPersonaRecord`, read at the click), adding or
+    // Written to the persona the editor shows (`editedPersonaRecord`, read at the click), adding or
     // removing only this id (ids of modules not installed stay), in canonical form as the server
     // stores it.
     function togglePersonaModule(moduleId: string) {
-        const persona = currentPersonaRecord();
+        const persona = editedPersonaRecord();
         if (!persona) {
             return;
         }
@@ -190,10 +190,10 @@
                 selectUserImg();
             }}
         >
-            {#if activePersona.icon === ""}
+            {#if editedPersona.icon === ""}
                 <div class="rounded-md h-28 w-28 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500"></div>
             {:else}
-                {#await getCharImage(activePersona.icon, activePersona.largePortrait ? "lgcss" : "css", 512)}
+                {#await getCharImage(editedPersona.icon, editedPersona.largePortrait ? "lgcss" : "css", 512)}
                     <div class="rounded-md h-28 w-28 shadow-lg bg-textcolor2 cursor-pointer hover:text-green-500"></div>
                 {:then im}
                     <div
@@ -206,7 +206,7 @@
     </div>
     <div class="flex grow flex-col p-2 max-w-full">
         <span class="text-sm text-textcolor2">{language.name}</span>
-        <TextInput marginBottom size="lg" placeholder="User" bind:value={activePersona.name} />
+        <TextInput marginBottom size="lg" placeholder="User" bind:value={editedPersona.name} />
         <span class="text-sm text-textcolor2">{language.personaNote}</span>
         <!-- The popups are the shown persona's: a selection change while one is open discards its text
              (the bound value alone cannot tell two personas with the same note apart). -->
@@ -214,16 +214,16 @@
             autocomplete="off"
             height="20"
             margin="bottom"
-            bind:value={activePersona.note}
+            bind:value={editedPersona.note}
             popupLanguage="plaintext"
-            popupEditorContext={activePersona.id}
+            popupEditorContext={editedPersona.id}
             placeholder={language.personaNotePlaceholder}
         />
         <span class="text-sm text-textcolor2">{language.description}</span>
         <TextAreaInput
             autocomplete="off"
-            bind:value={activePersona.personaPrompt}
-            popupEditorContext={activePersona.id}
+            bind:value={editedPersona.personaPrompt}
+            popupEditorContext={editedPersona.id}
             placeholder={`Put the description of this persona here.\nExample: [<user> is a 20 year old girl.]`}
         />
         <div class="mt-4 flex flex-col gap-2">
@@ -267,7 +267,7 @@
                         return;
                     }
                     // The list can change while the dialog is open: act on this persona by id.
-                    const target = currentPersonaRecord();
+                    const target = editedPersonaRecord();
                     if (!target) {
                         return;
                     }
@@ -293,12 +293,12 @@
                 }}>{language.remove}</Button
             >
             <!-- Written to the persona the selection resolves to (the first one when it names none), as the
-                 index binding did; `activePersona`'s setter would drop it. -->
+                 index binding did; `editedPersona`'s setter would drop it. -->
             <Check
                 bind:check={
-                    () => activePersona.largePortrait,
+                    () => editedPersona.largePortrait,
                     (value) => {
-                        const persona = currentPersonaRecord();
+                        const persona = editedPersonaRecord();
                         if (persona) {
                             persona.largePortrait = value;
                         }

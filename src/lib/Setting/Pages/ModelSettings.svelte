@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { activeModelPreset, settings } from "src/ts/storage/settingsViews.svelte";
+    import { editedScope, editedModelPreset, settings } from "src/ts/storage/settingsViews.svelte";
     import { language } from "src/lang";
     import { openModelPresetList } from "src/ts/stores.svelte";
     import { getModelInfoForMode, LLMFlags, LLMProvider } from "src/ts/model/modellist";
@@ -29,7 +29,7 @@
 
     const models = $derived(
         (["model", "submodel", "memory", "translate", "emotion", "otherAx"] as const).map((mode) =>
-            getModelInfoForMode(mode),
+            getModelInfoForMode(mode, editedScope()),
         ),
     );
     // A search jump to an item inside Additional Params opens it (read at mount).
@@ -42,13 +42,13 @@
 <div class="flex items-center gap-2 mb-4 p-2 rounded-md border border-darkborderc">
     <span class="text-textcolor2 text-sm shrink-0">{language.modelPreset}</span>
     <BindingScopeNote field="modelPresetId" />
-    <span class="grow truncate">{activeModelPreset.name}</span>
+    <span class="grow truncate">{editedModelPreset.name}</span>
     <Button size="sm" onclick={() => ($openModelPresetList = true)}><ListIcon size={16} /></Button>
 </div>
 
-{#if activeModelPreset.id}
-    <ProfileSlotSelect presetId={activeModelPreset.id} mode="model" label={language.model} />
-    <ProfileSlotSelect presetId={activeModelPreset.id} mode="submodel" label={language.submodel} />
+{#if editedModelPreset.id}
+    <ProfileSlotSelect presetId={editedModelPreset.id} mode="model" label={language.model} />
+    <ProfileSlotSelect presetId={editedModelPreset.id} mode="submodel" label={language.submodel} />
 {/if}
 <AuxModelSelectors />
 

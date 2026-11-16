@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { settings, activePreset, activeModelPreset } from "src/ts/storage/settingsViews.svelte";
+    import { settings, editedPreset, editedModelPreset } from "src/ts/storage/settingsViews.svelte";
     import { alertConfirm, alertError } from "../../ts/alert";
     import { language } from "../../lang";
     import {
@@ -82,7 +82,7 @@
     const shownRef = $derived(chatRef ?? currentChatRef());
     const shownChatName = $derived(shownRef ? chatEntry(shownRef)?.name : undefined);
     // Read once per render, not once per row (the selected index searched the list for every row).
-    const selectedPresetId = $derived(pickedId(field, shownRef, isPrompt ? activePreset.id : activeModelPreset.id));
+    const selectedPresetId = $derived(pickedId(field, shownRef, isPrompt ? editedPreset.id : editedModelPreset.id));
 
     // A list opened for a chat closes when that chat is gone; it never falls back to the open chat.
     $effect(() => {

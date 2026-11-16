@@ -21,7 +21,7 @@ import type { botPreset } from "../../../shared/database.ts";
 import { safeStructuredClone } from "../polyfill";
 import { addPreset } from "./collectionStore.svelte";
 import { selectModelPreset, selectPreset, selection } from "./selection.svelte";
-import { activeMainProfile, currentPresetRecord, settings } from "./settingsViews.svelte";
+import { editedMainProfile, editedPresetRecord, settings } from "./settingsViews.svelte";
 import { maxContextOverrideOf } from "../../../shared/sections.ts";
 
 /**
@@ -94,7 +94,7 @@ export function removeModelPreset(id: string): boolean {
  * id, name, image, and `archived`. The template's model fields are not applied (`normalizePreset` drops them).
  */
 export function applyPresetTemplate(template: Omit<botPreset, "id">) {
-    const current = currentPresetRecord();
+    const current = editedPresetRecord();
     if (!current) {
         return;
     }
@@ -116,7 +116,7 @@ function isPositiveSize(value: unknown): value is number {
  * bytes, nothing downloaded): `name`, `image`, and every `PROMPT_PRESET_FIELDS` field; no id,
  * `archived`, or credential. Its one model field is upstream RisuAI's `maxContext`: the preset's
  * context size override (`maxContextOverrideOf`), else the main profile the views resolve now
- * (`activeMainProfile`) when its `maxContext` is above 0, else the `PRESET_DEFAULTS` value.
+ * (`editedMainProfile`) when its `maxContext` is above 0, else the `PRESET_DEFAULTS` value.
  */
 export async function downloadPreset(id: string, type: "json" | "risupreset" | "return" = "json") {
     const source = settings.presets.find((preset) => preset.id === id);
@@ -134,7 +134,7 @@ export async function downloadPreset(id: string, type: "json" | "risupreset" | "
     for (const field of [...PRESET_RECORD_FIELDS, ...PROMPT_PRESET_FIELDS]) {
         pres[field] = stored[field];
     }
-    const profileContext = activeMainProfile.maxContext;
+    const profileContext = editedMainProfile.maxContext;
     pres.maxContext =
         maxContextOverrideOf(stored) ?? (isPositiveSize(profileContext) ? profileContext : PRESET_DEFAULTS.maxContext);
     const fileName = typeof pres.name === "string" ? pres.name : "";

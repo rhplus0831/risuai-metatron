@@ -3,6 +3,7 @@
     import { chatMemorySettings, setChatMemoryPreset } from "src/ts/storage/chatMemory.svelte";
     import { chatEntry, currentChatRef, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
+    // This page shows what the open chat runs with, so it reads the active family on purpose.
     import { activeMainProfile, settings, activePreset } from "src/ts/storage/settingsViews.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
     import { language } from "src/lang";

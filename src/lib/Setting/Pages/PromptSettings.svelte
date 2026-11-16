@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { settings, activePreset } from "src/ts/storage/settingsViews.svelte";
+    import { settings, editedPreset } from "src/ts/storage/settingsViews.svelte";
     import { ArrowLeft, PlusIcon } from "@lucide/svelte";
     import { language } from "src/lang";
     import PromptDataItem from "src/lib/UI/PromptDataItem.svelte";
@@ -30,7 +30,7 @@
     let openedItemIndices = $state(new Set<number>());
     /** The selected preset's template for reading: `[]` while it has none (writes go to the preset). */
     function templateItems(): PromptItem[] {
-        return activePreset.promptTemplate ?? [];
+        return editedPreset.promptTemplate ?? [];
     }
     interface Props {
         onGoBack?: () => void;
@@ -60,7 +60,7 @@
     });
 
     $effect.pre(() => {
-        warns = templateCheck({ promptTemplate: activePreset.promptTemplate });
+        warns = templateCheck({ promptTemplate: editedPreset.promptTemplate });
     });
     $effect.pre(() => {
         let input: PromptTokenCountInput;
@@ -129,7 +129,7 @@
         });
         openedItemIndices = newOpenedIndices;
 
-        activePreset.promptTemplate = templates;
+        editedPreset.promptTemplate = templates;
         draggedIndex = -1;
         dragOverIndex = -1;
     }
@@ -200,8 +200,8 @@
         {#key sorted}
             {#each getReorderedTemplate() as { item: prompt, originalIndex, displayIndex }}
                 <PromptDataItem
-                    bind:promptItem={activePreset.promptTemplate[originalIndex]}
-                    popupEditorContext={activePreset.id}
+                    bind:promptItem={editedPreset.promptTemplate[originalIndex]}
+                    popupEditorContext={editedPreset.id}
                     isDragging={draggedIndex === originalIndex}
                     isOpened={openedItemIndices.has(originalIndex)}
                     bind:draggedIndex
@@ -211,9 +211,9 @@
                     {displayIndex}
                     onDrop={handlePromptDrop}
                     onRemove={() => {
-                        let templates = activePreset.promptTemplate;
+                        let templates = editedPreset.promptTemplate;
                         templates.splice(originalIndex, 1);
-                        activePreset.promptTemplate = templates;
+                        editedPreset.promptTemplate = templates;
 
                         const newOpenedIndices = new Set<number>();
                         openedItemIndices.forEach((index) => {
@@ -231,14 +231,14 @@
                         dragOverIndex = -1;
                     }}
                     moveDown={() => {
-                        if (originalIndex === activePreset.promptTemplate.length - 1) {
+                        if (originalIndex === editedPreset.promptTemplate.length - 1) {
                             return;
                         }
-                        let templates = activePreset.promptTemplate;
+                        let templates = editedPreset.promptTemplate;
                         let temp = templates[originalIndex];
                         templates[originalIndex] = templates[originalIndex + 1];
                         templates[originalIndex + 1] = temp;
-                        activePreset.promptTemplate = templates;
+                        editedPreset.promptTemplate = templates;
 
                         const newOpenedIndices = new Set<number>();
                         openedItemIndices.forEach((index) => {
@@ -256,11 +256,11 @@
                         if (originalIndex === 0) {
                             return;
                         }
-                        let templates = activePreset.promptTemplate;
+                        let templates = editedPreset.promptTemplate;
                         let temp = templates[originalIndex];
                         templates[originalIndex] = templates[originalIndex - 1];
                         templates[originalIndex - 1] = temp;
-                        activePreset.promptTemplate = templates;
+                        editedPreset.promptTemplate = templates;
 
                         const newOpenedIndices = new Set<number>();
                         openedItemIndices.forEach((index) => {
@@ -282,14 +282,14 @@
     <button
         class="font-medium cursor-pointer hover:text-green-500"
         onclick={() => {
-            let value = activePreset.promptTemplate ?? [];
+            let value = editedPreset.promptTemplate ?? [];
             value.push({
                 type: "plain",
                 text: "",
                 role: "system",
                 type2: "normal",
             });
-            activePreset.promptTemplate = value;
+            editedPreset.promptTemplate = value;
         }}><PlusIcon /></button
     >
 
@@ -297,27 +297,27 @@
     <span class="text-textcolor2 mb-6 text-sm mt-2">{extokens} {language.exactTokens}</span>
 {:else}
     <span class="text-textcolor mt-4">{language.postEndInnerFormat}</span>
-    <TextInput bind:value={activePreset.promptSettings.postEndInnerFormat} />
+    <TextInput bind:value={editedPreset.promptSettings.postEndInnerFormat} />
 
     <Check
-        bind:check={activePreset.promptSettings.sendChatAsSystem}
+        bind:check={editedPreset.promptSettings.sendChatAsSystem}
         name={language.sendChatAsSystem}
         className="mt-4"
     />
-    <Check bind:check={activePreset.promptSettings.sendName} name={language.formatGroupInSingle} className="mt-4" />
+    <Check bind:check={editedPreset.promptSettings.sendName} name={language.formatGroupInSingle} className="mt-4" />
     <Check
-        bind:check={activePreset.promptSettings.trimStartNewChat}
+        bind:check={editedPreset.promptSettings.trimStartNewChat}
         name={language.trimStartNewChat}
         className="mt-4"
     />
-    <Check bind:check={activePreset.promptSettings.utilOverride} name={language.utilOverride} className="mt-4" />
-    <Check bind:check={activePreset.jsonSchemaEnabled} name={language.enableJsonSchema} className="mt-4" />
+    <Check bind:check={editedPreset.promptSettings.utilOverride} name={language.utilOverride} className="mt-4" />
+    <Check bind:check={editedPreset.jsonSchemaEnabled} name={language.enableJsonSchema} className="mt-4" />
 
-    <Check bind:check={activePreset.strictJsonSchema} name={language.strictJsonSchema} className="mt-4" />
+    <Check bind:check={editedPreset.strictJsonSchema} name={language.strictJsonSchema} className="mt-4" />
 
     {#if settings.ui.showUnrecommended}
         <Check
-            bind:check={activePreset.promptSettings.customChainOfThought}
+            bind:check={editedPreset.promptSettings.customChainOfThought}
             name={language.customChainOfThought}
             className="mt-4"
         >
@@ -325,9 +325,9 @@
         </Check>
     {/if}
     <span class="text-textcolor mt-4">{language.maxThoughtTagDepth}</span>
-    <NumberInput bind:value={activePreset.promptSettings.maxThoughtTagDepth} />
+    <NumberInput bind:value={editedPreset.promptSettings.maxThoughtTagDepth} />
     <span class="text-textcolor mt-4">{language.groupOtherBotRole} <Help key="groupOtherBotRole" /></span>
-    <SelectInput bind:value={activePreset.groupOtherBotRole}>
+    <SelectInput bind:value={editedPreset.groupOtherBotRole}>
         <OptionInput value="user">User</OptionInput>
         <OptionInput value="system">System</OptionInput>
         <OptionInput value="assistant">assistant</OptionInput>
@@ -335,38 +335,38 @@
     <span class="text-textcolor mt-4"
         >{language.customPromptTemplateToggle} <Help key="customPromptTemplateToggle" /></span
     >
-    <TextAreaInput bind:value={activePreset.customPromptTemplateToggle} popupEditorContext={activePreset.id} />
+    <TextAreaInput bind:value={editedPreset.customPromptTemplateToggle} popupEditorContext={editedPreset.id} />
     <section class="mt-4 min-w-0" aria-labelledby="preset-ooc-toggles-title">
         <h3 id="preset-ooc-toggles-title" class="text-textcolor">{language.oocToggles.title}</h3>
         <p class="mb-3 mt-1 text-sm text-textcolor2">{language.oocToggles.help}</p>
-        {#key activePreset.id}
+        {#key editedPreset.id}
             <OocToggleEditor
-                definitionsText={activePreset.customPromptTemplateToggle}
-                value={oocToggleMap(activePreset.oocToggles)}
-                onchange={(next) => (activePreset.oocToggles = { ...next })}
+                definitionsText={editedPreset.customPromptTemplateToggle}
+                value={oocToggleMap(editedPreset.oocToggles)}
+                onchange={(next) => (editedPreset.oocToggles = { ...next })}
             />
         {/key}
     </section>
     <span class="text-textcolor mt-4">{language.defaultVariables} <Help key="defaultVariables" /></span>
-    <TextAreaInput bind:value={activePreset.templateDefaultVariables} popupEditorContext={activePreset.id} />
+    <TextAreaInput bind:value={editedPreset.templateDefaultVariables} popupEditorContext={editedPreset.id} />
     <span class="text-textcolor mt-4">{language.predictedOutput}</span>
     <TextAreaInput bind:value={settings.providers.OAIPrediction} />
     <span class="text-textcolor mt-4">{language.autoSuggest} <Help key="autoSuggest" /></span>
     <TextAreaInput
-        bind:value={activePreset.autoSuggestPrompt}
-        popupEditorContext={activePreset.id}
+        bind:value={editedPreset.autoSuggestPrompt}
+        popupEditorContext={editedPreset.id}
         placeholder={defaultAutoSuggestPrompt}
     />
     <span class="text-textcolor mt-4">{language.groupInnerFormat} <Help key="groupInnerFormat" /></span>
     <TextAreaInput
         placeholder={`<{{char}}\'s Message>\n{{slot}}\n</{{char}}\'s Message>`}
-        bind:value={activePreset.groupTemplate}
-        popupEditorContext={activePreset.id}
+        bind:value={editedPreset.groupTemplate}
+        popupEditorContext={editedPreset.id}
     />
-    {#if activePreset.jsonSchemaEnabled}
+    {#if editedPreset.jsonSchemaEnabled}
         <span class="text-textcolor mt-4">{language.jsonSchema} <Help key="jsonSchema" /></span>
-        <TextAreaInput bind:value={activePreset.jsonSchema} popupEditorContext={activePreset.id} />
+        <TextAreaInput bind:value={editedPreset.jsonSchema} popupEditorContext={editedPreset.id} />
         <span class="text-textcolor mt-4">{language.extractJson} <Help key="extractJson" /></span>
-        <TextInput bind:value={activePreset.extractJson} />
+        <TextInput bind:value={editedPreset.extractJson} />
     {/if}
 {/if}
