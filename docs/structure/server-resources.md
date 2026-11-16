@@ -198,9 +198,11 @@ numeric legacy value to the newest chat `lastDate`, but leave absence as absence
 ### Archive export and import
 
 The version-2 export and import contracts are the comments above their routes in `routes/backups.ts`: a
-`data/exportScrub/` worker removes `llmSecrets` from the export's copy; the import validates the whole archive, its
-database in a restore queue turn, then installs under maintenance by the
-[content-name rule](#backup-and-import-internals).
+`data/exportScrub/` worker removes `llmSecrets` from the export's copy; the import checks the whole archive's records
+against its manifest (`planImport`), validates its database in a restore queue turn, then installs under maintenance by
+the [content-name rule](#backup-and-import-internals). Asset bytes are not part of the archive check: a content-named
+asset that is added, not repaired, is linked even when it does not hash to its name, and `restoreValidated` records the
+mismatch (`assetVerification.recordVerification`).
 
 ### Validation
 

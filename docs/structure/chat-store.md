@@ -312,10 +312,10 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   stay; a resend works). Decision: a barrier that cannot prove its `streaming` list current fails rather than install an
   older read that could retire live generations (`jobChannel.ts` `recoverJobChat`).
 - Two clients' `setText` on one message: the later-accepted one wins on any revision; no notice for the client it
-  overwrote. An open inline editor keeps its draft across another device's change of that message's text (rows are keyed
-  by message id; `updateRow`), and its Save replaces that text, also without a notice. Decision: a per-message base
-  makes slow edits conflict (Multi-Client Data Safety Checks Q3, archive); the editor, Found Issues Decisions (owner,
-  2026-11-08).
+  overwrote. An open inline editor loses its draft when another device changes that text: the row's mount key holds the
+  stored text (`MountKey`, `src/lib/ChatScreens/Chats.svelte`), so the row is mounted again
+  ([found issue](../backlog/found-issues.md#an-open-message-or-translation-editor-loses-its-text-when-its-row-is-mounted-again)).
+  Decision: a per-message base makes slow edits conflict (Multi-Client Data Safety Checks Q3, archive).
 - A character this client never persisted (`takeChatWork`'s absent-character sweep, `dropCharacterWork(id, false)`)
   keeps its parked resends (`parkedResends`) until a same-id re-add, which replays one harmless resend first, or the
   next boot: no deletion acknowledgement or `forgetCharacter` comes for it. The leak is bounded to that session's

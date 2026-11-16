@@ -191,7 +191,11 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
 - `exportModuleLegacy` refuses modules with an icon before encoding or writer initialization
   (`moduleLegacyExportIconUnsupported`); CharX carries the portrait.
 - `importCharacterCardSpec` maps a well-formed `extensions.depth_prompt` to the native field. `createBaseV2` omits
-  emotions and additional assets; V3 is the full-fidelity export.
+  emotions and additional assets; V3 carries every field.
+- Every card and module export passes asset bytes through `compressImage`
+  (`src/ts/media/compressImage/compressImage.ts`): with `db.imageCompression` on, the default, a JPEG, PNG, GIF, or BMP
+  is re-encoded as WebP at quality 0.75 with its longer side capped at 3000 px, so no export form keeps those bytes.
+  Stored originals are untouched.
 - A card whose `character_book` sets `scan_depth`, `token_budget`, and `recursive_scanning` imports as `loreSettings`,
   overriding the global lorebook settings; its success notice (`importedCharacterNotice`) appends
   `importedLoreSettings.warning` and lists each value beside the global one.
