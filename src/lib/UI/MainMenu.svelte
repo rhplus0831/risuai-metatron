@@ -17,6 +17,7 @@
         ArrowLeft,
         ChevronRightIcon,
         Globe2Icon,
+        ImportIcon,
         LayoutGridIcon,
         MonitorSmartphoneIcon,
         PinIcon,
@@ -26,7 +27,7 @@
     import { buildId, buildInfo } from "src/ts/buildInfo";
     import { alertNormal } from "src/ts/alert";
     import { language } from "src/lang";
-    import { changeChar, getCharImage } from "src/ts/characters";
+    import { changeChar, getCharImage, importCharacterAndSelect } from "src/ts/characters";
     import { onMount } from "svelte";
     import { hostMode } from "src/ts/network/remoteHost";
     import Title from "./Title.svelte";
@@ -45,7 +46,8 @@
      *   chat before its character, so the character's previous chat is not loaded first.
      * - Recent characters come from `collectHomeRecentCharacters` (`src/lib/UI/mainMenuProjection.ts`).
      * - The More section always shows. `OpenRealmStore` swaps the whole screen, logo included, for `RealmMain`; the
-     *   card that sets it is hidden under `settings.ui.hideRealm`. The remote host card turns on `hostMode`
+     *   card that sets it is hidden under `settings.ui.hideRealm`. The import card opens the card file picker directly
+     *   (`importCharacterAndSelect`, `src/ts/characters.ts`), not the add dialog. The remote host card turns on `hostMode`
      *   (`src/ts/network/remoteHost.ts`), whose lock screen then covers the app and holds the control that leaves it.
      */
 
@@ -301,6 +303,13 @@
                             () => ($OpenRealmStore = true),
                         )}
                     {/if}
+                    {@render moreCard(
+                        "import-character",
+                        ImportIcon,
+                        language.importCharacter,
+                        language.homeImportCharacterDescription,
+                        () => void importCharacterAndSelect(),
+                    )}
                     {@render moreCard(
                         "remote-host",
                         MonitorSmartphoneIcon,

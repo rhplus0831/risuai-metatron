@@ -947,6 +947,17 @@ export async function removeChar(
 }
 
 /**
+ * Opens the card file picker (`importCharacter`) and selects the last character it imported; nothing is selected when
+ * it imported none. The add dialog's import choice and the home screen's import card both run it.
+ */
+export async function importCharacterAndSelect() {
+    const created = await importCharacter();
+    if (created) {
+        changeChar(created);
+    }
+}
+
+/**
  * The add dialog: Realm opens the hub; `createfromScratch`, `importCharacter`, and `createGroup` (which the dialog
  * does not offer) add a character, which is then selected. The record is added by `createNewCharacter`,
  * `createNewGroup`, or the card import, not here.
@@ -974,8 +985,8 @@ export async function addCharacter(
             created = createNewGroup();
             break;
         case "importCharacter":
-            created = await importCharacter();
-            break;
+            await importCharacterAndSelect();
+            return;
         default:
             return;
     }

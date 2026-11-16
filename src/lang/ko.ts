@@ -1861,6 +1861,7 @@ export const languageKorean = {
     homeOpenCharacter: (name: string) => `${name} 열기`,
     homeMore: "기타 기능",
     homeExploreRealmDescription: "RisuRealm에서 새로운 캐릭터를 찾아 다운로드해 보세요.",
+    homeImportCharacterDescription: "이 기기에 있는 캐릭터 카드 파일을 불러옵니다.",
     openRisuRealm: "RisuRealm 열기",
     unknownInteractionTime: "알 수 없음",
     hideAllImages: "모든 이미지 숨기기",
