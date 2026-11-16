@@ -1991,6 +1991,7 @@ export const languageEnglish = {
             marker: {
                 connected: "Sends go through {host} · Connected",
                 disconnected: "Sends go through {host} · Not connected",
+                offline: "Not connected",
             },
             uncertain: "The outcome is still unknown. Retry unchanged text to keep the same request.",
             commandChanged:

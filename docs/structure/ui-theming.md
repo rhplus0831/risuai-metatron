@@ -55,8 +55,10 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `src/lib/ChatScreens/composerPlaceholder.ts` owns the main placeholder. `DefaultChatScreen.svelte` also handles
   incomplete chat bindings, the Stop button's `processStage` ring (the chat's foreign job's stage when it has no own
   staged job, as during a remote send), and the loading label beside Stop while a discovered job's chat loads.
-- `src/lib/ChatScreens/RemoteSendMarker.svelte`, above the composer row (never the playground): while remote sending is
-  on and the tab is not a host, the named host and whether it is connected ([remote send](network-jobs.md#remote-send)).
+- `src/lib/ChatScreens/RemoteSendMarker.svelte`, on the left of the line above the composer row that the health badge
+  and the meter's chip share (never the playground): while remote sending is on and the tab is not a host, a button with
+  the host's name, plus the state in words while the host is away; the full sentence is its name and tooltip. It opens
+  Device Link's remote host section ([remote send](network-jobs.md#remote-send)).
 - The draft box sits under the composer row for a chat with a Draft hook chosen or draft text left (never the
   playground; read-only while the binding is incomplete): a labelled textarea bound to `composer.draft` and Send Draft,
   disabled while the draft is blank or the chat is busy or runs a hook. Stop carries a status label while a Draft hook

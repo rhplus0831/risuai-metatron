@@ -1571,9 +1571,12 @@
                     : 'relative mt-2 mb-2'} chat-screen-content-width flex flex-col w-full"
                 style={settings.ui.fixedChatTextarea ? "z-index:29;" : ""}
             >
-                <!-- One line above the composer row: the health badge on the left, the meter on the right.
-                     Too narrow for both, the meter wraps above the badge. -->
+                <!-- One line above the composer row: the remote send marker and the health badge on the left, the
+                     meter on the right. Too narrow for all of them, the meter wraps above the others. -->
                 <div class="flex min-w-0 flex-wrap-reverse items-center">
+                    {#if currentCharacter?.chaId !== "§playground"}
+                        <RemoteSendMarker />
+                    {/if}
                     {#if displayedChat && memoryHealth}
                         <!-- The memory health badge, left of the meter's chip; shown with the meter off too. -->
                         <div class="mb-1 ml-4 flex min-w-0">
@@ -1629,9 +1632,6 @@
                             </div>
                         </section>
                     </div>
-                {/if}
-                {#if currentCharacter?.chaId !== "§playground"}
-                    <RemoteSendMarker />
                 {/if}
                 <div class="relative flex items-stretch w-full">
                     {#if settings.ui.useChatSticker && currentCharacter.type !== "group"}
