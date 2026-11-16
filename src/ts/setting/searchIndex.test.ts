@@ -140,6 +140,14 @@ describe("SETTING_LOCATIONS", () => {
 });
 
 describe("searchSettings", () => {
+    it("finds the plugin completion wait time limit by its label words", () => {
+        changeLanguage("en");
+        expect(hit("plugin wait time limit", "display.completionWaitMaxSeconds")).toMatchObject({
+            kind: "item",
+            available: true,
+        });
+    });
+
     it("finds Input Hooks by its page title", () => {
         changeLanguage("en");
         expect(searchSettings("Input Hooks", ctx())).toContainEqual(

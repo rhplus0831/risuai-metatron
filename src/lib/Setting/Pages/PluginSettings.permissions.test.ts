@@ -29,6 +29,7 @@ vi.mock("src/ts/plugins/apiV3/v3.svelte", async (importOriginal) => ({
 }));
 
 import { language } from "src/lang";
+import { PLUGIN_COMPLETION_QUIET_SECONDS } from "../../../../shared/plugins.ts";
 import { alertConfirm } from "src/ts/alert";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { applyRaw } from "src/ts/storage/records.svelte";
@@ -63,6 +64,62 @@ afterEach(async () => {
     await unmount(instance);
     target.remove();
     vi.useRealTimers();
+});
+
+it("stores completion notification wait settings and shows quiet time only while opted in, without reloading plugins", async () => {
+    settings.ui.completionWaitMaxSeconds = 127;
+    flushSync();
+    const wait = target.querySelector<HTMLInputElement>(
+        `input[type="checkbox"][alt="${language.pluginCompletionWait}"]`,
+    )!;
+    expect(wait).not.toBeNull();
+    expect(wait.checked).toBe(false);
+    expect(target.querySelector('input[type="number"]')).toBeNull();
+
+    wait.click();
+    flushSync();
+    expect(settings.plugins[0].completionWait).toBe(true);
+    const seconds = target.querySelector<HTMLInputElement>('input[type="number"]')!;
+    expect(seconds).not.toBeNull();
+    expect(seconds.valueAsNumber).toBe(PLUGIN_COMPLETION_QUIET_SECONDS.default);
+    expect([seconds.min, seconds.max]).toEqual([
+        String(PLUGIN_COMPLETION_QUIET_SECONDS.min),
+        String(PLUGIN_COMPLETION_QUIET_SECONDS.max),
+    ]);
+    expect(target.textContent).toContain(language.pluginCompletionQuietSeconds);
+    expect(target.textContent).toContain("127 seconds");
+
+    for (const [entered, stored] of [
+        [8.9, 8],
+        [PLUGIN_COMPLETION_QUIET_SECONDS.max + 10, PLUGIN_COMPLETION_QUIET_SECONDS.max],
+    ]) {
+        seconds.value = String(entered);
+        seconds.dispatchEvent(new Event("input", { bubbles: true }));
+        flushSync();
+        expect(settings.plugins[0].completionQuietSeconds).toBe(stored);
+    }
+    seconds.value = "";
+    seconds.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+    expect(settings.plugins[0].completionQuietSeconds).toBe(PLUGIN_COMPLETION_QUIET_SECONDS.max);
+
+    wait.click();
+    flushSync();
+    expect(settings.plugins[0].completionWait).toBe(false);
+    expect(target.querySelector('input[type="number"]')).toBeNull();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.loadPlugins).not.toHaveBeenCalled();
+});
+
+it("omits completion notification wait controls for an unsupported plugin even if its stored opt-in is on", () => {
+    const plugin = JSON.parse(JSON.stringify(settings.plugins[0]));
+    applyRaw("plugins", [{ ...plugin, version: "2.1", completionWait: true }]);
+    flushSync();
+
+    expect(target.textContent).toContain(language.pluginApiVersionUnsupportedBadge);
+    expect(target.querySelector(`input[type="checkbox"][alt="${language.pluginCompletionWait}"]`)).toBeNull();
+    expect(target.querySelector('input[type="number"]')).toBeNull();
+    expect(target.textContent).not.toContain(language.pluginCompletionQuietSeconds);
 });
 
 it.each(["fulfills", "rejects"] as const)(

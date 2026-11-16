@@ -118,6 +118,9 @@ mechanisms register). Then comes one section per mechanism with a rule between, 
 - Declarative: `AccessibilitySettings`, `InteractionSettings`, `AdvancedSettings`, `StorageSettings`, and
   `DeviceLinkSettings` (the header array, then `SettingsSections`), `DisplaySettings` (sectioned per tab),
   `ChatFormatSettings`, and `LanguageSettings` (the UI language only).
+- Display's Notifications section holds `display.notification` (`NotificationToggle`) and then
+  `display.completionWaitMaxSeconds`, the remote host's longest wait for plugins before a completion notification
+  ([plugin sandbox](plugin-sandbox.md#state)).
 - Hybrid handwritten/registry pages: `ModelSettings` (the model preset and the aux selector owned by
   [media-aux](media-aux.md); its handwritten provider toggles include `saveSignatures`, shown for a `geminiThinking`
   model whether or not streaming is on, and `halfStreaming`, shown under Response Streaming only while that is off, as

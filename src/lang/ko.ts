@@ -144,6 +144,8 @@ export const languageKorean = {
             "캐릭터와 대화를 시작할 때 표시되는 첫 메시지입니다. 이후 캐릭터의 말투와 반응에 큰 영향을 줍니다.",
         customNotificationMessage:
             "설정하면 이 캐릭터의 응답 완료 알림에 기본 문구 대신 입력한 내용을 표시합니다. 이 서버에만 저장되며 캐릭터를 내보낼 때는 포함되지 않습니다.",
+        completionWaitMaxSeconds:
+            "이 기기가 원격 호스트 모드일 때, 플러그인 페이지에서 완료 알림 대기를 켠 플러그인의 작업이 잠잠해질 때까지 응답 완료 알림을 보류합니다. 응답이 끝난 뒤 기다리는 최대 시간이며, 이 시간이 지나면 알림을 보냅니다.",
         charNote: "모델에 강한 영향을 주는 프롬프트입니다. 현재 캐릭터에 내장되며, UJB라고도 부릅니다.",
         toggleNsfw: "탈옥 프롬프트를 켜거나 끕니다.",
         lorebook:
@@ -976,6 +978,10 @@ export const languageKorean = {
         '"{name}" 플러그인의 권한을 초기화하시겠습니까? 이후 권한이 필요할 때 다시 허용 여부를 묻습니다.',
     pluginPermissionResetError: "플러그인 권한을 초기화하지 못했습니다: {error}",
     pluginPermissionsEdit: "권한",
+    pluginCompletionWait: "완료 알림을 보내기 전에 이 플러그인 기다리기",
+    pluginCompletionQuietSeconds: "플러그인 작업이 없는 시간 (초)",
+    pluginCompletionWaitHelp:
+        "이 기기가 원격 호스트 모드일 때만 적용됩니다. {place}의 플러그인 대기 시간 제한: {seconds}초.",
     pluginPermissionsReview:
         '"{name}" 플러그인의 권한\n\n체크한 권한은 플러그인 스크립트가 바뀔 때까지 묻지 않고 허용합니다. 체크하지 않은 권한은 플러그인이 처음 필요로 할 때 묻습니다. 저장하면 플러그인을 다시 시작합니다.\n\n이 권한으로 저장하시겠습니까?',
     pluginPermissionsCarriedOver: "이전 버전에 허용했던 권한이 체크되어 있습니다.",
@@ -2514,6 +2520,7 @@ export const languageKorean = {
     loading: "불러오는 중",
     autoTranslateCachedOnly: "캐시된 메시지만 자동 번역",
     notification: "알림",
+    completionWaitMaxSeconds: "플러그인 대기 시간 제한 (초)",
     permissionDenied: "브라우저 또는 OS에서 권한이 거부되었습니다",
     customNotificationMessage: "사용자 지정 알림 문구",
     pushNotifications: {

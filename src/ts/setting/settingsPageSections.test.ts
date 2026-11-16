@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { languageEnglish } from "src/lang/en";
-import { CONTEXT_METER_FIXED_WARN } from "../../../shared/database.ts";
+import { COMPLETION_WAIT_MAX_SECONDS, CONTEXT_METER_FIXED_WARN } from "../../../shared/database.ts";
 import {
     accessibilitySettingsHeader,
     accessibilitySettingsItems,
@@ -235,6 +235,26 @@ describe("settings page sections", () => {
         expect(displaySettingsSections.filter((section) => section.collapsible).map((section) => section.id)).toEqual([
             "display.theme.customCSS",
         ]);
+    });
+
+    it("places the bounded plugin completion wait number immediately after Notifications with English label and help", () => {
+        const item = displaySettingsItems.find((entry) => entry.id === "display.completionWaitMaxSeconds")!;
+        expect(item).toMatchObject({ type: "number", bindKey: "completionWaitMaxSeconds" });
+        expect([item.options?.min, item.options?.max]).toEqual([
+            COMPLETION_WAIT_MAX_SECONDS.min,
+            COMPLETION_WAIT_MAX_SECONDS.max,
+        ]);
+        expect(resolveLanguageText(languageEnglish, item.labelKey).trim()).not.toBe("");
+        expect(resolveLanguageText(languageEnglish.help, item.helpKey).trim()).not.toBe("");
+
+        const itemIds = displaySettingsItems.map((entry) => entry.id);
+        expect(itemIds).toContain("display.notification");
+        expect(itemIds[itemIds.indexOf("display.notification") + 1]).toBe(item.id);
+        const tab = displaySettingsTabs.find((entry) => entry.labelKey === "displayTabSoundNotifications")!;
+        const section = tab.sections.find((entry) => entry.id === "display.sound.notifications")!;
+        const sectionIds = section.items.map((entry) => entry.id);
+        expect(sectionIds).toContain("display.notification");
+        expect(sectionIds[sectionIds.indexOf("display.notification") + 1]).toBe(item.id);
     });
 
     it("takes Advanced apart: only its own sections' items stay, and the local network controls left the catalog", () => {

@@ -147,6 +147,8 @@ export const languageEnglish = {
         charFirstMessage: "First message of the character. This highly affects characters response.",
         customNotificationMessage:
             "When set, chat completion notifications for this character use this text instead of the default message. It stays on this server and is not exported with the character.",
+        completionWaitMaxSeconds:
+            "In Remote Host Mode, this device holds a reply's completion notification until the plugins set to be waited for on the Plugins page have gone quiet. This is the longest it waits after the reply ends; past it, the notification is sent anyway.",
         charNote: "A note that strongly affects model behavior. Embbedded to current character, also known as UJB.",
         toggleNsfw: "Toggles jailbreak prompt on and off.",
         lorebook:
@@ -1036,6 +1038,10 @@ export const languageEnglish = {
     pluginResetPermissionsConfirm: 'Reset permissions for "{name}"? Permission requests will ask again.',
     pluginPermissionResetError: "Could not reset plugin permissions: {error}",
     pluginPermissionsEdit: "Permissions",
+    pluginCompletionWait: "Wait for this plugin before the completion notification",
+    pluginCompletionQuietSeconds: "Plugin quiet time (seconds)",
+    pluginCompletionWaitHelp:
+        "Applies only when this device is in Remote Host Mode. Plugin wait time limit in {place}: {seconds} seconds.",
     pluginPermissionsReview:
         'Permissions of "{name}"\n\nA checked permission is allowed without asking until the plugin\'s script changes. An unchecked one is asked when the plugin first needs it. Saving restarts the plugin.\n\nSave these permissions?',
     pluginPermissionsCarriedOver: "The permissions the previous version was allowed are checked.",
@@ -2615,6 +2621,7 @@ export const languageEnglish = {
     loading: "Loading",
     autoTranslateCachedOnly: "Auto-translate Cached Messages Only",
     notification: "Notification",
+    completionWaitMaxSeconds: "Plugin wait time limit (seconds)",
     permissionDenied: "Permission Denied by Your Browser or OS",
     customNotificationMessage: "Custom Notification Message",
     pushNotifications: {

@@ -202,6 +202,9 @@ The user allows permissions ahead of a plugin's first request through `reviewPlu
   and clamps them; the server keeps them as stored. `upsertPlugin` gives a replacing entry its predecessor's two fields
   and drops supplied ones, so an update, a re-import, or the plugin API's `setDatabase` keeps them and cannot set them.
   They are not in `loadSignature`: a change reloads nothing.
+- Only `PluginSettings.svelte` writes those two fields: an API `3.0` row has the switch and, while the helper reads it
+  on, the quiet time within `PLUGIN_COMPLETION_QUIET_SECONDS` and a line naming the time limit
+  (`completionWaitMaxSeconds`).
 - Plugin storage:
   - `db.pluginCustomStorage` (`pluginStorage` record): `_ownedPluginStorage` by plugin name, `_pluginStorage` legacy
     read-through until claim-on-write or owner `clear()`; U+0000 names use legacy storage (module header). Shared

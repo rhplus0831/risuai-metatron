@@ -10,6 +10,7 @@ import { itemsById } from "./sections";
 import { updateAnimationSpeed } from "../gui/animation";
 import { guiSizeText, updateGuisize } from "../gui/guisize";
 import { updateTextThemeAndCSS } from "../gui/colorscheme";
+import { COMPLETION_WAIT_MAX_SECONDS } from "../../../shared/database.ts";
 
 /** Every Display item, in tab and section order. */
 export const displaySettingsItems: SettingItem[] = [
@@ -507,6 +508,18 @@ export const displaySettingsItems: SettingItem[] = [
 
     // Sound & notifications tab: Notifications
     { id: "display.notification", type: "custom", componentId: "NotificationToggle", keywords: ["notification"] },
+    {
+        id: "display.completionWaitMaxSeconds",
+        type: "number",
+        labelKey: "completionWaitMaxSeconds",
+        helpKey: "completionWaitMaxSeconds",
+        bindKey: "completionWaitMaxSeconds",
+        options: {
+            min: COMPLETION_WAIT_MAX_SECONDS.min,
+            max: COMPLETION_WAIT_MAX_SECONDS.max,
+        },
+        keywords: ["notification", "plugin", "wait", "remote host", "time limit"],
+    },
 ];
 
 /** A tab of the Display page: its label and its sections. */
@@ -643,7 +656,7 @@ export const displaySettingsTabs: DisplaySettingsTab[] = [
             {
                 id: "display.sound.notifications",
                 labelKey: "settingsSectionNotifications",
-                items: itemsById(displaySettingsItems, ["display.notification"]),
+                items: itemsById(displaySettingsItems, ["display.notification", "display.completionWaitMaxSeconds"]),
             },
         ],
     },

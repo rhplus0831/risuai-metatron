@@ -28,6 +28,7 @@
     import { generationClientId } from "src/ts/network/generationJobs";
     import { connectedClients, hostTargets } from "src/ts/network/handoff";
     import { hostReloadPending, requestHostReload } from "src/ts/network/remoteHost";
+    import { PLUGIN_COMPLETION_QUIET_SECONDS, pluginCompletionQuietMs } from "../../../../shared/plugins.ts";
 
     /**
      * Edits the persisted plugin list and arguments. Legacy entries stay visible with the
@@ -307,6 +308,47 @@
                     <TrashIcon />
                 </button>
             </div>
+            {#if plugin.version === "3.0"}
+                <div class="mt-2 flex flex-col gap-2 text-textcolor">
+                    <CheckInput
+                        name={language.pluginCompletionWait}
+                        bind:check={
+                            () => pluginCompletionQuietMs(settings.plugins[i]) !== null,
+                            (value) => (settings.plugins[i].completionWait = value)
+                        }
+                    />
+                    {#if pluginCompletionQuietMs(settings.plugins[i]) !== null}
+                        <label for={`plugin-completion-quiet-${i}`}>{language.pluginCompletionQuietSeconds}</label>
+                        <NumberInput
+                            id={`plugin-completion-quiet-${i}`}
+                            min={PLUGIN_COMPLETION_QUIET_SECONDS.min}
+                            max={PLUGIN_COMPLETION_QUIET_SECONDS.max}
+                            bind:value={
+                                () => {
+                                    const quietMs = pluginCompletionQuietMs(settings.plugins[i]);
+                                    return quietMs === null ? PLUGIN_COMPLETION_QUIET_SECONDS.default : quietMs / 1000;
+                                },
+                                (value) => {
+                                    if (Number.isFinite(value)) {
+                                        settings.plugins[i].completionQuietSeconds = Math.min(
+                                            PLUGIN_COMPLETION_QUIET_SECONDS.max,
+                                            Math.max(PLUGIN_COMPLETION_QUIET_SECONDS.min, Math.floor(value)),
+                                        );
+                                    }
+                                }
+                            }
+                        />
+                        <p class="text-sm text-textcolor2">
+                            {language.pluginCompletionWaitHelp
+                                .replace(
+                                    "{place}",
+                                    [language.display, language.displayTabSoundNotifications].join(" → "),
+                                )
+                                .replace("{seconds}", String(settings.ui.completionWaitMaxSeconds))}
+                        </p>
+                    {/if}
+                </div>
+            {/if}
             <!--List up args-->
             {#if Object.keys(plugin.arguments).filter((i) => !i.startsWith("hidden_")).length > 0 && showParams.includes(i)}
                 <div class="flex flex-col mt-2 bg-dark-900/50 p-3">
