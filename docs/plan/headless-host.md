@@ -5,7 +5,7 @@ headless Chrome and keeps it connected as a remote host), then audited against t
 ([report](../reports/audits/plan-runner/headless-host-2026-11-16.md)) and corrected in the same commit as the report.
 D1 and D2 are the owner's choices of 2026-11-16; D3 on are this plan's own and open to the owner's change. The blur
 before each Escape stroke and its reload backstop, the marker on the terminal notice's dialog, and the password
-prompt's identification by the app's own auth check took their present form from the audit. Landed: 1 (`9e60efa0d`).
+prompt's identification by the app's own auth check took their present form from the audit. Landed: 1 (`9e60efa0d`), 2 (`a91215091`).
 
 Sources: `hostMode`, `hostCommandLog`, `noteHostCommand`, and `receiveHostCommand` (its `pluginsOff` refusal) in
 `src/ts/network/remoteHost.ts`; `preference` and `clientName` in `src/ts/network/handoff.ts`; `registerClient` and
