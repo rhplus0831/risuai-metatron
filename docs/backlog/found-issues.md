@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, seven more plan-leftover collections from memory the same day, the seventeenth (the Found Issues Decisions run) on 2026-11-09, the nineteenth (the Upstream Intake 2 run) on 2026-11-10, the twentieth (the Memory Panel Readability run) on 2026-11-11, the twenty-first (the Structured Memory Recent Timeline run) the same day, the twenty-second (the Per-Chat Memory run) on 2026-11-13, the twenty-third (the Lore Budget Send Stop run) the same day, the Generation Progress Window run's two findings the same day, and the OOC Session run's two findings the same day, the Remote Host run's finding on 2026-11-16, the Completion Notification After Plugin Work run's finding the same day, and the Sidebar-Only Chat Binding run's finding on 2026-11-17; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, seven more plan-leftover collections from memory the same day, the seventeenth (the Found Issues Decisions run) on 2026-11-09, the nineteenth (the Upstream Intake 2 run) on 2026-11-10, the twentieth (the Memory Panel Readability run) on 2026-11-11, the twenty-first (the Structured Memory Recent Timeline run) the same day, the twenty-second (the Per-Chat Memory run) on 2026-11-13, the twenty-third (the Lore Budget Send Stop run) the same day, the Generation Progress Window run's two findings the same day, and the OOC Session run's two findings the same day, the Remote Host run's finding on 2026-11-16, the Completion Notification After Plugin Work run's finding the same day, the Sidebar-Only Chat Binding run's finding on 2026-11-17, and the Structured Memory Story Dates run's two findings on 2026-11-18; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. An entry is a `###` heading under its area section, a paragraph saying what and where (`file:line`), then a **Why it matters:** line and a **Suggested handling:** line; the Contents list at the top counts each area's entries. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's section of [known issues](known-issues.md) (or to the guide's Known Hazards `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -104,7 +104,7 @@ that round's implementers read next to their fixes and left: none was run.
 
 - [Backup and sync](#backup-and-sync): 3
 - [Chat screen](#chat-screen): 2
-- [Memory](#memory): 2
+- [Memory](#memory): 4
 - [Network jobs](#network-jobs): 1
 - [Plugins](#plugins): 2
 - [Remote commands](#remote-commands): 1
@@ -202,6 +202,38 @@ the same case.
 **Why it matters:** a blank answer may replace or append an empty summary there.
 
 **Suggested handling:** one probe per algorithm with an empty successful answer.
+
+### The story-date anchor line can be dropped while dated lines stay
+
+Structured Memory Story Dates run, 2026-11-18, from slice 2's challenger; read, not run. The anchor line ("Story date
+at the newest record: ...") is part of the card's stable header (`renderParts` in
+`server/src/prompt/memory/structured/card.ts`). With `volatileBeforeLastUser` the stable part goes through history and
+the volatile part is placed after formatting (`step.ts`, `server/src/prompt/assemble.ts`), so a chat range that keeps
+only the last message can drop the stable entry, anchor included, while volatile `(2 days ago)` lines stay; item
+verification checks item tags, not the header. Preview also skips an entry with no item tag
+(`src/lib/Others/StructuredMemory/PreviewTab.svelte:21`, "a tagless rule header is not a block"), so a card whose items
+are all volatile shows no anchor in Preview although the model receives it. The plain `RULE_HEADER` has the same
+exposure today.
+
+**Why it matters:** the anchor is how the model sees the lag between the newest record and the chat (the plan's D6);
+without it the labels read as counted from the present, and the plan's manual check 3 expects to see it in Preview.
+
+**Suggested handling:** a Preview on a dated chat with only volatile items, and a send under a one-message chat range;
+then decide whether the header belongs with the volatile part or Preview should show a tagless header.
+
+### An event with an unknown status is placed in the card
+
+Structured Memory Story Dates run, 2026-11-18, from slice 2's challenger; read in the code, not run.
+`prepareRetrieval` in `server/src/prompt/memory/structured/retrieve.ts:1014` skips `retracted`, leaves out `stale`
+and `suppressed`, and places every other event, so one whose `status` is neither (a probe used `"alien"`) is placed
+like an active one. Reconciliation leaves an unknown status as it is, and `memoryEventHasReadableFields` does not check
+`status`.
+
+**Why it matters:** a malformed restored or imported record reaches the flow and events lanes, and since slice 2 it can
+become the event the story date is read from, skewing every label. Pre-existing, not introduced by the run.
+
+**Suggested handling:** check whether `coveredMessages` and restore's `isEvent` agree with the placement filter, then
+place only `active` events.
 
 ## Network jobs
 
