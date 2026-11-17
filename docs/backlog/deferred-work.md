@@ -190,7 +190,7 @@ Work that finished plans named and left: features put off, a plan's Later list, 
 ## Per-Chat Memory
 
 - Not planned (the plan's Not In This Plan list): an embedding model per chat; a character-level default for new chats, or "apply to every chat of this character"; converting records to summaries or summaries to records on a mode change, beyond the existing adoption; removing `supaMemory` or `supaMemoryOnCount` from stored records; Hanurai, HypaV2, or SupaMemory as per-chat modes of their own; preset fields that only some chats override.
-- Left by the run: writers inside a job check the chat's algorithm only when admitted (memory.md Limitations); a send's in-job HypaV3 checkpoint is in [found issues](found-issues.md#memory).
+- Left by the run: writers inside a job check the chat's algorithm only when admitted (memory.md Limitations); a send's in-job HypaV3 checkpoint was a found-issues entry, fixed in `dc8f1e150`.
 
 ## Structured Memory Reply-Only Recording
 

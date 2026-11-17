@@ -246,8 +246,8 @@
 - Quarantined chat intent stays local: eligible, in-budget refusals are journaled and become recovery drafts on the next
   boot, while server backups omit it. A file backup and a compatible export name the refused items (`backupRefusedNote`,
   `src/ts/drive/backuplocal.ts`); a snapshot taken from Storage settings does not flush or say so
-  ([found issue](../backlog/found-issues.md#take-snapshot-does-not-flush-this-tabs-pending-saves)). See
-  [Chat journal](#chat-journal) and [Boot recovery](#boot-recovery). Decision: Durable Drafts D5, D8, archive.
+  ([known issue](../backlog/known-issues.md#backup-sync-hub)). See [Chat journal](#chat-journal) and
+  [Boot recovery](#boot-recovery). Decision: Durable Drafts D5, D8, archive.
 - A stale Retry or edit of a loaded whole-chat replacement takes
   [normal conflict recovery](resource-sync.md#chat-and-order-conflicts); eligible abandoned work is captured as a draft
   ([Conflict capture](#conflict-capture)). Decision: as above.
