@@ -301,6 +301,33 @@ export function scriptstateRestorePatch(
     return { merge, mergeUnset };
 }
 
+/** Applies the per-key restore to a detached variable map, preserving later independent edits. */
+export function restoredScriptstate(
+    before: ScriptstateSnapshot,
+    after: ScriptstateSnapshot,
+    current: Chat["scriptstate"],
+): Chat["scriptstate"] {
+    const { merge, mergeUnset } = scriptstateRestorePatch(before, after, current);
+    if (Object.keys(merge).length === 0 && mergeUnset.length === 0) return current;
+    const restored = { ...current, ...merge };
+    for (const key of mergeUnset) delete restored[key];
+    return restored;
+}
+
+/** The removal reroll's tail stops at a user message or the preceding reply by its last speaker. */
+export function rerollTurnStart(messages: readonly Pick<Message, "role" | "saying">[]): number {
+    const speaker = messages.at(-1)?.saying;
+    let seenSpeaker = false;
+    let index = messages.length - 1;
+    for (; index >= 0 && messages[index].role !== "user"; index--) {
+        if (messages[index].saying === speaker) {
+            if (seenSpeaker) break;
+            seenSpeaker = true;
+        }
+    }
+    return index + 1;
+}
+
 /** The last non-comment message must be the only reply since the last user message. */
 export function isRerollCarrier(
     chat: { readonly message: readonly Pick<Message, "chatId" | "role" | "isComment">[] },

@@ -1,4 +1,6 @@
 import type { DeepReadonly } from "../../../shared/readonly.ts";
+import type { ScriptstateSnapshot } from "../../../shared/database.ts";
+import { restoredScriptstate } from "../../../shared/rerollCandidates.ts";
 import type { Message } from "../storage/database.svelte";
 import { editChatSync } from "../storage/chatEdits";
 import {
@@ -138,9 +140,11 @@ export function createRerollHistory() {
         removed: DeepReadonly<Message[]>,
         end: RerollSendEnd,
         syncChat?: (ref: ChatRef) => Promise<boolean>,
+        variables?: RestoreOptions["variables"],
     ) {
         return restoreRerolledReplies(ref, owner, anchor, removed, end, {
             syncChat,
+            variables,
             onReply: (bundle) => record(ref, anchor, bundle),
         });
     }
@@ -154,6 +158,8 @@ export type RerollSendEnd = { ran: boolean; settled: boolean; blockedChats: read
 type RestoreOptions = {
     syncChat?: (ref: ChatRef) => Promise<boolean>;
     onReply?: (bundle: DeepReadonly<Message[]>) => void;
+    /** The values before removal and after its rollback; restore only keys still matching that rollback. */
+    variables?: { before: ScriptstateSnapshot; after: ScriptstateSnapshot };
 };
 
 /** Saves what is queued and reads the chat again when it is known to be behind; true when it is current. */
@@ -184,6 +190,12 @@ export async function restoreRerolledReplies(
     options: RestoreOptions = {},
 ): Promise<"restored" | "unsafe" | "none"> {
     if (!end.ran && restoreUnsentRemoval(ref, owner, anchor, removed)) {
+        if (options.variables) {
+            const { before, after } = options.variables;
+            editChatSync(ref, (draft) => {
+                draft.scriptstate = restoredScriptstate(before, after, draft.scriptstate);
+            });
+        }
         return "restored";
     }
     if (!end.settled || removed.length === 0) {
@@ -204,7 +216,7 @@ async function restorePinned(
     anchor: string | null,
     removed: DeepReadonly<Message[]>,
     end: RerollSendEnd,
-    { syncChat = syncRerolledChat, onReply }: RestoreOptions,
+    { syncChat = syncRerolledChat, onReply, variables }: RestoreOptions,
 ): Promise<"restored" | "unsafe" | "none"> {
     const ids = new Set(removed.map((message) => message.chatId));
     /** The chat's anchor index while it ends at the anchor and holds none of the removed replies, else null. */
@@ -260,6 +272,9 @@ async function restorePinned(
     editChatSync(ref, (draft) => {
         if (draft.message.length === anchorIndex + 1) {
             draft.message.push(...(safeStructuredClone(removed) as Message[]));
+            if (variables) {
+                draft.scriptstate = restoredScriptstate(variables.before, variables.after, draft.scriptstate);
+            }
             applied = true;
         }
     });

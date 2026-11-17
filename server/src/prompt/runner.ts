@@ -6,6 +6,7 @@ import {
     isRerollCarrier,
     isScriptstateSnapshot,
     scriptstateRestorePatch,
+    rerollTurnStart,
     trimCandidates,
     withCandidate,
     withoutCandidateCheckpoints,
@@ -661,6 +662,8 @@ async function runSend(
     let memoryVectorWarm: MemoryTaskBase | undefined;
     /** Every reply the job wrote (an auto-continue extends one; a resend or a group speaker adds one). */
     const replyIds = new Set<string>();
+    // Appending the next speaker prunes older stored checkpoints; keep their baselines for this job's tail.
+    const replyBaselines = new Map<string, ScriptstateSnapshot | undefined>();
     let stopped = false;
     speakers: for (const speakerId of speakers) {
         // One speaker's turn: its send, then the rounds it asks for (an auto-continue of its reply, a
@@ -691,6 +694,7 @@ async function runSend(
                 fromChain,
                 onSetup,
                 writeOwn,
+                replyBaselines,
             });
             firstSpeakerRound = false;
             if (result.type === "preview") {
@@ -1090,6 +1094,8 @@ async function runSpeaker(arg: {
     baseRequest: JobScope["request"];
     /** Whether the job's prompt preset is a `presetChain` pick. */
     fromChain: boolean;
+    /** Per-reply baselines for the current job, before the append cleanup discards older checkpoints. */
+    replyBaselines: Map<string, ScriptstateSnapshot | undefined>;
     onSetup: (setup: RunSetup) => void;
     writeOwn: (
         ops: ChatOp[],
@@ -1405,7 +1411,13 @@ async function runSpeaker(arg: {
             } else delete message.scriptstateCheckpoint;
         } else {
             const after = structuredClone(chat.scriptstate ?? null);
-            if (before !== undefined && isScriptstateSnapshot(after)) message.scriptstateCheckpoint = { before, after };
+            if (!arg.replyBaselines.has(generation.messageId)) arg.replyBaselines.set(generation.messageId, before);
+            const firstReply = chat.message
+                .slice(rerollTurnStart(chat.message))
+                .find((reply) => arg.replyBaselines.has(reply.chatId!));
+            const turnBefore = firstReply ? arg.replyBaselines.get(firstReply.chatId!) : before;
+            if (turnBefore !== undefined && isScriptstateSnapshot(after))
+                message.scriptstateCheckpoint = { before: turnBefore, after };
             else {
                 message = withoutCandidateCheckpoints(message);
                 if (before !== undefined) notice("scriptstateCheckpointSkipped");

@@ -396,6 +396,46 @@ describe("restoreRerolledReplies", () => {
         expect(server.texts("c", ref.chatId)).toEqual(["Hi", "Reply"]);
     });
 
+    it("restores variables with unsent and saved removals while preserving edits made after rollback", async () => {
+        for (const saved of [false, true]) {
+            const ref = freshChat([m("u", "Hi", "user"), m("a", "Alice says"), m("b", "Bob says")]);
+            const variables = {
+                before: { $counter: "2", $edited: "by hand", $later: "reply" },
+                after: { $counter: "0", $edited: "by hand", $later: "baseline" },
+            };
+            editChatSync(ref, (c) => {
+                c.scriptstate = variables.before;
+            });
+            commit();
+            editChatSync(ref, (c) => {
+                c.scriptstate = variables.after;
+            });
+            // A later independent edit must also survive recovery of the old replies.
+            editChatSync(ref, (c) => {
+                c.scriptstate = { ...c.scriptstate, $later: "newer edit" };
+            });
+            const removed = removeTail(ref, "u");
+            if (saved) commit();
+            const end = { ran: saved, settled: true, blockedChats: [] };
+            const syncChat = vi.fn(async () => {
+                commit();
+                return true;
+            });
+            expect(
+                await restoreRerolledReplies(ref, chat.chatOwnerToken("c"), "u", removed, end, { variables, syncChat }),
+            ).toBe("restored");
+            if (!saved) expect(syncChat).not.toHaveBeenCalled();
+            expect(ids(ref)).toEqual(["u", "a", "b"]);
+            expect(chat.findChat(ref)!.scriptstate).toEqual({
+                $counter: "2",
+                $edited: "by hand",
+                $later: "newer edit",
+            });
+            commit();
+            expect(server.texts("c", ref.chatId)).toEqual(["Hi", "Alice says", "Bob says"]);
+        }
+    });
+
     it("writes nothing while the send may still write, or for a character that was replaced", async () => {
         const ref = freshChat([m("u", "Hi", "user"), m("r", "Reply")]);
         const removed = removeTail(ref, "u");

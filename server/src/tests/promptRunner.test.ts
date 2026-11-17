@@ -3263,6 +3263,68 @@ describe("in-place reply candidates", () => {
         }
     });
 
+    it("keeps the two-speaker turn's baseline on its last reply and stops it at the previous same speaker", async () => {
+        const upstream = vi.spyOn(server.context.llmRequests, "runInJob").mockImplementation(async () => {
+            await socketOpen;
+            return {
+                type: "streaming",
+                result: new ReadableStream<Record<string, string>>({
+                    start(controller) {
+                        controller.enqueue({ "0": "Reply." });
+                        controller.close();
+                    },
+                }),
+            };
+        });
+        onTestFinished(() => upstream.mockRestore());
+        for (const repeat of [false, true]) {
+            const count = ef("v2SetVar", { var: "counter", operator: "+=", ...v("1") });
+            const first = await seedCharacter({ name: "First speaker", triggerscript: [trig("output", [count])] });
+            const second = await seedCharacter({
+                name: "Second speaker",
+                triggerscript: [
+                    {
+                        ...trig("output", [
+                            count,
+                            ...(repeat
+                                ? [
+                                      ef("v2If", {
+                                          source: "counter",
+                                          condition: "=",
+                                          targetType: "value",
+                                          target: "2",
+                                      }),
+                                      ef("v2SendAIprompt", {}, 1),
+                                      ef("v2EndIndent", {}, 1),
+                                  ]
+                                : []),
+                        ]),
+                        lowLevelAccess: true,
+                    },
+                ],
+            });
+            const owner = await seedCharacter({
+                name: "Group",
+                type: "group",
+                members: [first, second],
+                messages: [{ role: "user", data: "Hello both", chatId: "u" }],
+                chat: { scriptstate: { $counter: "0" } },
+            });
+            const result = await job("group", owner);
+            expect(result.terminal?.type, JSON.stringify(result.terminal)).toBe("done");
+            const stored = await readChat(owner);
+            expect(stored.data.message.slice(1).map((message: any) => message.saying)).toEqual(
+                repeat ? [first, second, second] : [first, second],
+            );
+            expect(stored.data.message.slice(1, -1).every((message: any) => !message.scriptstateCheckpoint)).toBe(true);
+            expect(stored.data.message.at(-1).scriptstateCheckpoint).toEqual({
+                before: { $counter: repeat ? "2" : "0" },
+                after: { $counter: repeat ? "3" : "2" },
+            });
+            expect(stored.data.scriptstate.$counter).toBe(repeat ? "3" : "2");
+        }
+    });
+
     it("preserves non-streaming carrier fields and excludes older candidates from ordinary CBS history", async () => {
         await patchProviders({ useStreaming: false });
         const chaId = await seed();

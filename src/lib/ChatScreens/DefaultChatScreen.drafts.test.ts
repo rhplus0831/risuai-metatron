@@ -1173,6 +1173,54 @@ it("alerts instead of opening a lore dialog when the unlanded input returns to t
     expect(createPosts()).toHaveLength(1);
 });
 
+it("restores a multi-reply turn's variables before reroll creation and restores replies and values after a definite failure", async () => {
+    const ref = { chaId: "c", chatId: "a" };
+    const replies = [
+        { chatId: "reply-a", role: "char" as const, saying: "speaker-a", data: "First reply" },
+        {
+            chatId: "reply-b",
+            role: "char" as const,
+            saying: "speaker-b",
+            data: "Second reply",
+            scriptstateCheckpoint: {
+                before: { $counter: "0", $edited: "before" },
+                after: { $counter: "2", $edited: "reply" },
+            },
+        },
+    ];
+    const ui = await mountComposer({
+        configureCharacter: (character) =>
+            Object.assign(character, {
+                type: "group",
+                characters: ["speaker-a", "speaker-b"],
+                characterTalks: [1, 1],
+                characterActive: [true, true],
+            }),
+        configureChat: (chat) => {
+            chat.message = [chat.message[0], ...replies];
+            chat.scriptstate = { $counter: "2", $edited: "by hand" };
+        },
+    });
+    const { findChat } = await import("src/ts/storage/chatStore.svelte");
+    let fail!: (error: Error) => void;
+    io.createJob.mockImplementation(
+        () =>
+            new Promise((_resolve, reject) => {
+                fail = reject;
+            }),
+    );
+    ui.click(ui.target.querySelector(".button-icon-reroll"));
+    await until(() => io.createJob.mock.calls.length === 1);
+    expect(io.createJob.mock.calls[0][0].context.rerollMessageId).toBeUndefined();
+    expect(findChat(ref)!.message.map((message) => message.chatId)).toEqual(["a-user"]);
+    expect(findChat(ref)!.scriptstate).toEqual({ $counter: "0", $edited: "by hand" });
+    const { GenerationCreateError } = await import("src/ts/network/generationJobs");
+    fail(new GenerationCreateError(new Error("refused before dispatch"), false));
+    await until(() => findChat(ref)!.message.at(-1)?.chatId === "reply-b");
+    expect(findChat(ref)!.message.slice(1)).toEqual(replies);
+    expect(findChat(ref)!.scriptstate).toEqual({ $counter: "2", $edited: "by hand" });
+});
+
 it("repeats a stopped in-place reroll with the same reply and speaker", async () => {
     const { target, click } = await mountComposer({
         configureChat: (chat) => {

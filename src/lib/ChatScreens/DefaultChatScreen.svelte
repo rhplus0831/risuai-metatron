@@ -112,6 +112,7 @@
     } from "src/ts/globalApi.svelte";
     import { v4 } from "uuid";
     import { neighborCandidateId, rerollCarrier, switchCandidate } from "src/ts/process/rerollCandidates";
+    import { rerollTurnStart, restoredScriptstate } from "../../../shared/rerollCandidates.ts";
     import { serverRerollsInPlace } from "src/ts/network/eventFeed";
     import { createRerollHistory } from "src/ts/process/rerollHistory";
     import { composerSendText, createSendDrafts, type SendDraft } from "src/ts/process/sendDraft";
@@ -1026,32 +1027,26 @@
         if (!chat) {
             return;
         }
-        let cha = safeStructuredClone(chat.message) as Message[];
-        if (cha.length === 0) {
+        if (chat.message.length === 0) {
             return;
         }
-        const saying = cha[cha.length - 1].saying;
-        let sayingQu = 2;
-        const removed: Message[] = [];
-        while (cha.length > 0 && cha[cha.length - 1].role !== "user") {
-            if (cha[cha.length - 1].saying === saying) {
-                sayingQu -= 1;
-                if (sayingQu === 0) {
-                    break;
-                }
-            }
-            let msg = cha.pop();
-            if (!msg) {
-                return;
-            }
-            removed.push(msg);
-        }
-        removed.reverse();
+        const start = rerollTurnStart(chat.message);
+        const cha = chat.message.slice(0, start);
+        const removed = safeStructuredClone(chat.message.slice(start)) as Message[];
         const anchor = cha.at(-1)?.chatId ?? null;
         rerollHistory.begin(ref, anchor, removed);
         // The replies after the last user message go, then the send runs again.
         const owner = chatOwnerToken(ref.chaId);
         const kept = new Set(cha.map((message) => message.chatId));
+        const checkpoint = removed.findLast((message) => !message.isComment)?.scriptstateCheckpoint;
+        const before = safeStructuredClone(chat.scriptstate ?? null);
+        // Queue variables before the removal so a refused send can still withdraw its final remove op.
+        if (checkpoint?.after !== undefined) {
+            editChatSync(ref, (draft) => {
+                draft.scriptstate = restoredScriptstate(checkpoint.before, checkpoint.after, draft.scriptstate);
+            });
+        }
+        const variables = { before, after: safeStructuredClone(findChat(ref)?.scriptstate ?? null) };
         editChatSync(ref, (draft) => {
             draft.message = draft.message.filter((message) => kept.has(message.chatId));
         });
@@ -1063,7 +1058,7 @@
         const stopOwner = chatOwnerToken(ref.chaId);
         const release = stop ? pinChat(ref) : null;
         try {
-            const restored = await rerollHistory.restore(ref, owner, anchor, removed, end);
+            const restored = await rerollHistory.restore(ref, owner, anchor, removed, end, undefined, variables);
             if (stop && (restored === "restored" || removed.length === 0)) {
                 await offerLoreStop(ref, stopOwner, stop, false, () => rerollByRemoval(ref, false));
                 return;

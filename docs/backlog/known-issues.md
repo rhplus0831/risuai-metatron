@@ -24,22 +24,8 @@ merge cannot see inside the JSON strings it stores.
 
 ## Contents
 
-- [chat-pipeline](#chat-pipeline) (1)
 - [persistence](#persistence) (1)
 - [structured-memory](#structured-memory) (1)
-
-## chat-pipeline
-
-Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-pipeline.md#known-hazards).
-
-- A reroll of a multi-reply turn keeps the discarded replies' variable changes. Only a single-reply turn is a reroll
-  carrier (`shared/rerollCandidates.ts`), and `rerollByRemoval` (`src/lib/ChatScreens/DefaultChatScreen.svelte`)
-  removes messages only. Reproduced on 2026-11-17 (cross-check F7) on the mounted chat screen: a group turn of two
-  replies whose output triggers each added 1 to a counter left it at `2`; the reroll button removed both replies and
-  the counter was still `2` when the next job was created (the new replies' additions were not run; from the code
-  they land on top). The control, a switch to a stored candidate of a single-reply turn, restored that candidate's
-  value. Counters and flags of a card drift with every reroll of a group turn. Suggested: extend the before and
-  after variable checkpoints to multi-reply bundles.
 
 ## persistence
 
