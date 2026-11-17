@@ -129,6 +129,11 @@ refusal the memory step recovered from or outlived replaces no later error.
   (`listTools`) and counts them in the resolved adapter's form ([LLM requests](llm-requests.md#server-request-layer));
   the recheck keeps that charge free, and the send's request offers that set without listing again. A plain `preview`
   job lists nothing; every other request lists its own.
+- `runSpeaker` also passes `AssemblyHost.insertedMessages`: the `start` and `end` messages of
+  `interceptionMessages(requestDb.requestInterceptions, "model")`, which the reply request's request layer will insert
+  ([LLM requests](llm-requests.md#flows)). The final recheck counts them with assembly's `tokenizeChat` and reserves
+  them with the tool schemas (budget, the required-tokens error, the `outputTokens` clamp, the trim headroom), for every
+  job kind, `preview` included; the report carries them as `interceptions`.
 - `context.stopOverLoreBudget` (kept by `parseCreateBody` only when true; not in `requestFingerprint`) asks a `send`,
   `continue`, `group`, or `reroll` job to stop at its first assembly when lore activation is stopped
   ([Lore](chat-pipeline.md#lore)): `assemblePrompt` returns an `alert` coded `loreOverBudget` before history, and the

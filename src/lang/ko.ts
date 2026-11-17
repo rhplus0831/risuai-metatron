@@ -1635,6 +1635,7 @@ export const languageKorean = {
         coverageUnknown: "제외된 이전 대화가 메모리에 반영되었는지 확인할 수 없습니다.",
         fixedShare: (percent: number) => `고정 영역 비중: 프롬프트 예산의 ${percent}%`,
         toolSchemas: "도구 스키마 (추정)",
+        interceptions: "요청 가로채기 (추정)",
         fixedShareHelp:
             "대화 기록과 메모리를 제외한 시스템 프롬프트, 캐릭터 설명, 로어북, 도구 스키마 등의 합계입니다.",
         fixedShareOver: (warn: number) => `경고 기준(${warn}%) 초과: 대화 기록이 들어갈 공간이 매우 부족합니다.`,

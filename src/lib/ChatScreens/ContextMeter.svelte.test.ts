@@ -631,22 +631,43 @@ describe("the chat's memory as it is now", () => {
 });
 
 describe("the popover", () => {
-    it("shows estimated tool schemas separately and includes them in the headline only when present", async () => {
-        install([reply("m1", { context: report({ toolSchemas: 120 }) })]);
-        render();
-        const opened = await openPanel();
-        const headline = () => opened.querySelector("span.text-lg.font-semibold")!;
-        expect(headline().textContent).toBe("720");
-        expect(headline().nextElementSibling!.textContent?.trim()).toBe(language.contextUsage.inputOfBudget("800", 90));
-        expect(sectionRows()).toContainEqual(["toolSchemas", "Tool schemas (estimated) 120 tokens 15%"]);
+    it.each(["toolSchemas", "interceptions"] as const)(
+        "shows positive %s separately and includes them in the occupied count and percentage",
+        async (kind) => {
+            const label = language.contextUsage[kind];
+            install([reply("m1", { context: report({ [kind]: 120 }) })]);
+            render();
+            const opened = await openPanel();
+            const headline = () => opened.querySelector("span.text-lg.font-semibold")!;
+            expect(headline().textContent).toBe("720");
+            expect(headline().nextElementSibling!.textContent?.trim()).toBe(
+                language.contextUsage.inputOfBudget("800", 90),
+            );
+            expect(chipText()).toContain("90%");
+            expect(sectionRows()).toContainEqual([kind, `${label} 120 tokens 15%`]);
 
-        patchMessage(ref, "m1", { generationInfo: { context: report() } });
-        flushSync();
-        expect(headline().textContent).toBe("600");
-        expect(headline().nextElementSibling!.textContent?.trim()).toBe(language.contextUsage.inputOfBudget("800", 75));
-        expect(sectionRows().map(([kind]) => kind)).toEqual(["history", "main", "description"]);
-        expect(opened.textContent).not.toContain("Tool schemas (estimated)");
-    });
+            // Both request additions occupy space, independently of message input.
+            patchMessage(ref, "m1", { generationInfo: { context: report({ toolSchemas: 40, interceptions: 120 }) } });
+            flushSync();
+            expect(headline().textContent).toBe("760");
+            expect(headline().nextElementSibling!.textContent?.trim()).toBe(
+                language.contextUsage.inputOfBudget("800", 95),
+            );
+            expect(chipText()).toContain("95%");
+
+            for (const count of [0, undefined]) {
+                patchMessage(ref, "m1", { generationInfo: { context: report({ [kind]: count }) } });
+                flushSync();
+                expect(headline().textContent).toBe("600");
+                expect(headline().nextElementSibling!.textContent?.trim()).toBe(
+                    language.contextUsage.inputOfBudget("800", 75),
+                );
+                expect(chipText()).toContain("75%");
+                expect(sectionRows().map(([kind]) => kind)).toEqual(["history", "main", "description"]);
+                expect(opened.textContent).not.toContain(label);
+            }
+        },
+    );
 
     it("uses the prompt budget in the headline and falls back when the reply consumes it", async () => {
         const s = language.contextUsage;

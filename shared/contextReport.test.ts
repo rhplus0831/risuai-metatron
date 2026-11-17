@@ -97,16 +97,19 @@ describe("parseLoreBudgetStop", () => {
 });
 
 describe("parseContextReport", () => {
-    it("accepts an optional tool-schema count outside input and rejects invalid counts", () => {
-        for (const toolSchemas of [undefined, 0, 120]) {
-            const stored = JSON.parse(JSON.stringify({ ...report(), toolSchemas }));
-            expect(parseContextReport(stored)).toEqual(stored);
-            expect(parseContextReport(stored)?.input).toBe(640);
-        }
-        for (const toolSchemas of [-1, "120", null, Number.NaN, Number.POSITIVE_INFINITY]) {
-            expect(parseContextReport({ ...report(), toolSchemas }), String(toolSchemas)).toBeNull();
-        }
-    });
+    it.each(["toolSchemas", "interceptions"] as const)(
+        "accepts an optional %s count outside input and rejects invalid counts",
+        (kind) => {
+            for (const count of [undefined, 0, 120.5]) {
+                const stored = JSON.parse(JSON.stringify({ ...report(), [kind]: count }));
+                expect(parseContextReport(stored)).toEqual(stored);
+                expect(parseContextReport(stored)?.input).toBe(640);
+            }
+            for (const count of [-1, "120", null, Number.NaN, Number.POSITIVE_INFINITY]) {
+                expect(parseContextReport({ ...report(), [kind]: count }), String(count)).toBeNull();
+            }
+        },
+    );
 
     it("accepts Structured Memory and legacy reports but refuses malformed manifest fields", () => {
         const memory: NonNullable<ContextReport["memory"]> = {
@@ -331,11 +334,15 @@ describe("eligibleHistory and historyDigest", () => {
 });
 
 describe("the meter helpers", () => {
-    it("counts tool schemas as fixed usage without adding them to message input", () => {
-        const stored = { ...report(), toolSchemas: 120 };
-        expect(fixedShare(stored)).toBeCloseTo((200 + 100 + 120) / (1000 - 100), 10);
-        expect(fixedShare(report())).toBeCloseTo(300 / 900, 10);
-    });
+    it.each(["toolSchemas", "interceptions"] as const)(
+        "counts %s as fixed usage without adding them to message input",
+        (kind) => {
+            const stored = { ...report(), [kind]: 120 };
+            expect(fixedShare(stored)).toBeCloseTo((200 + 100 + 120) / (1000 - 100), 10);
+            expect(fixedShare({ ...stored, toolSchemas: 120, interceptions: 30 })).toBeCloseTo(450 / 900, 10);
+            expect(fixedShare(report())).toBeCloseTo(300 / 900, 10);
+        },
+    );
 
     it("turnCount reads user turns or every kept message", () => {
         expect(turnCount(report(), "user")).toEqual({ kept: 4, total: 6 });

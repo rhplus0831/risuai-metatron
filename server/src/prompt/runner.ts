@@ -43,6 +43,7 @@ import {
     type SummaryWriterLease,
 } from "../../../shared/jobs.ts";
 import { LLMFormat } from "../../../shared/llm.ts";
+import { interceptionMessages } from "../../../shared/llm/interception.ts";
 import type { StreamResponseChunk } from "../../../shared/llm/request.ts";
 import { resolveModelInfo } from "../../../shared/llm/models.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
@@ -1725,6 +1726,11 @@ async function runSpeaker(arg: {
             const text = serializeToolSchemas(resolveJobRequestModel(requestDb, "model"), toolSet?.descriptors ?? []);
             return text === null ? 0 : deps.tokens.count(text, tokenScopeFor(requestDb), nativeCtx.signal);
         };
+        // The reply request is a "model" request: the request layer inserts these rules' messages
+        // into it after assembly, from the settings the request is sent with. A preview reports
+        // them too, since reading the rules needs no network.
+        const interceptions = interceptionMessages(requestDb.requestInterceptions, "model");
+        const insertedMessages = [...interceptions.start, ...interceptions.end];
         const assembled: AssembledPrompt | null = await assemblePrompt(
             {
                 db,
@@ -1828,6 +1834,7 @@ async function runSpeaker(arg: {
                     }),
                 tokenizer: jobChatTokenCounter(deps, scope, arg.chatAdditonalTokens),
                 ...(job.kind !== "preview" ? { toolSchemaTokens } : {}),
+                insertedMessages,
                 tokenScope: tokenizerIdentityKey(tokenScopeFor(requestDb)),
                 getModelInfo: (model) =>
                     resolveModelInfo(model, {

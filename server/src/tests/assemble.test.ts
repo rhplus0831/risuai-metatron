@@ -2132,31 +2132,69 @@ describe("the context report", () => {
         });
     });
 
-    it("reserves tool schemas beside messages and the response, reducing or omitting trim headroom", async () => {
-        const old = "o".repeat(100);
-        const recent = "r".repeat(20);
-        // Text length plus three per message: greeting 6, old 103, recent 23.
-        // The earlier trim ledger also reserves 50 tokens of assembly overhead.
-        for (const charge of [undefined, 0, 20, 120, 165]) {
-            const { host, run } = contextAssembly({
-                maxContext: 300,
-                messages: [
-                    { chatId: "old", data: old },
-                    { chatId: "recent", data: recent },
-                ],
-            });
-            if (charge !== undefined) host.toolSchemaTokens = async () => charge;
-            const { texts, report, generationInfo } = await run();
-            const trimmed = charge === 165;
-            expect(texts, `charge ${charge}`).toEqual(trimmed ? [recent] : ["Hi!", old, recent]);
-            expect(report.input).toBe(trimmed ? 23 : 132);
-            expect(generationInfo.outputTokens).toBe(10);
-            expect(report.input + (charge ?? 0) + report.maxResponse).toBeLessThanOrEqual(300);
-            if (charge) expect(report.toolSchemas).toBe(charge);
-            else expect(report).not.toHaveProperty("toolSchemas");
-            if ((charge ?? 0) > 108) expect(report).not.toHaveProperty("trim");
-            else expect(report.trim?.headroom).toBe(300 - 10 - 50 - 132 - (charge ?? 0));
-        }
+    it.each(["toolSchemas", "interceptions"] as const)(
+        "reserves %s beside messages and the response, reducing or omitting trim headroom",
+        async (kind) => {
+            const old = "o".repeat(100);
+            const recent = "r".repeat(20);
+            // Text length plus three per message: greeting 6, old 103, recent 23.
+            // The earlier trim ledger also reserves 50 tokens of assembly overhead.
+            for (const charge of [undefined, 0, 20, 120, 165]) {
+                const { host, run } = contextAssembly({
+                    maxContext: 300,
+                    messages: [
+                        { chatId: "old", data: old },
+                        { chatId: "recent", data: recent },
+                    ],
+                });
+                if (charge !== undefined) {
+                    if (kind === "toolSchemas") host.toolSchemaTokens = async () => charge;
+                    else
+                        host.insertedMessages =
+                            charge === 0
+                                ? []
+                                : [
+                                      { role: "system", content: "start" }, // 8 tokens, including message overhead.
+                                      { role: "user", content: "e".repeat(charge - 8 - 3) },
+                                  ];
+                }
+                const { texts, report, generationInfo } = await run();
+                const trimmed = charge === 165;
+                expect(texts, `charge ${charge}`).toEqual(trimmed ? [recent] : ["Hi!", old, recent]);
+                expect(report.input).toBe(trimmed ? 23 : 132);
+                expect(generationInfo.outputTokens).toBe(10);
+                expect(report.input + (charge ?? 0) + generationInfo.outputTokens!).toBeLessThanOrEqual(300);
+                if (charge) expect(report[kind]).toBe(charge);
+                else expect(report).not.toHaveProperty(kind);
+                if ((charge ?? 0) > 108) expect(report).not.toHaveProperty("trim");
+                else expect(report.trim?.headroom).toBe(300 - 10 - 50 - 132 - (charge ?? 0));
+            }
+        },
+    );
+
+    it("refuses when protected content, tool schemas, interceptions and the response exceed context", async () => {
+        const { host } = contextAssembly({
+            maxContext: 300,
+            template: [plain("main", "p".repeat(50)), CHAT_CARD],
+            messages: [
+                { chatId: "old", data: "o".repeat(100) },
+                { chatId: "recent", data: "r".repeat(20) },
+            ],
+        });
+        host.toolSchemaTokens = async () => 7;
+        host.insertedMessages = [{ role: "system", content: "i".repeat(247) }];
+        // Before insertion, all history fits: 53 fixed + 132 history + 10 response + 50 overhead.
+        // After every removable entry goes, 53 fixed + 7 schemas + 250 inserted + 10 response = 320.
+        const result = await assemblePrompt(host, {
+            chatAdditonalTokens: 3,
+            continue: false,
+            generationId: "counting",
+            stageTimings: { stage1Duration: 0, stage2Duration: 0 },
+        });
+        expect(result).toEqual({
+            type: "error",
+            error: "Error: The minimum required token is greater than the max context size.\n\nAt token rechecking. Required Tokens: 320",
+        });
     });
 
     it("attributes a template prompt with full history by section and records the trim ledger", async () => {

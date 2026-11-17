@@ -140,9 +140,9 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
 - `shared/prompt/chatTokens.ts` `ChatTokenCounter`, `ChatTokenHost`, and `shared/prompt/imageTokens.ts` `imageTokens`: a
   prompt's token arithmetic, the same on both runtimes.
 - The context report (`shared/contextReport.ts`, written by `assemblePrompt`) makes no counts of its own: it records the
-  counts assembly already makes; `toolSchemas` is the send's schema estimate, outside `input`. Its `tokenScope` is the
-  job scope's `tokenizerIdentityKey` (`tokenScopeFor`, `pluginTokenizer: "none"`), so a tab comparing it uses that scope
-  too.
+  counts assembly already makes; `toolSchemas` is the send's schema estimate and `interceptions` the reply's request
+  interception messages, both outside `input`. Its `tokenScope` is the job scope's `tokenizerIdentityKey`
+  (`tokenScopeFor`, `pluginTokenizer: "none"`), so a tab comparing it uses that scope too.
 
 ### Tab token counting
 
@@ -394,9 +394,10 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
 - Claude tool calls are not streamed or batched: `requestClaude` sends a request that offers tools buffered and
   directly, with `stream: false` on it and every tool follow-up, even with `useStreaming` or `claudeBatching` on. The
   SSE and batch result parsers read text and thinking only. Upstream has the same gap. Decision: owner, 2026-11-08.
-- MCP tool schemas are charged only in assembly's final recheck, as an estimate: memory budgets and the no-memory trim
-  plan without them, so the recheck can drop removable entries they kept. Decision: Found Issues Clearance Q2,
-  2026-11-09.
+- MCP tool schemas and the chat reply's request interception messages are charged only in assembly's final recheck, as
+  an estimate (other modes get no reservation): memory budgets and the no-memory trim plan without them, so the recheck
+  can drop removable entries they kept. Decision: Found Issues Clearance Q2, 2026-11-09; the interceptions, Request
+  Interception plan, 2026-11-17.
 - Request capture: a stream capture flushed by an abort, a cancel, or a read error is not trimmed for a trailing
   credential prefix (`trimPartial` runs only when the 4 MiB + 16 KiB `STREAM_CAPTURE_BYTES` bound cuts it,
   `server/src/llm/requests.ts`) and can end in U+FFFD; an adapter's `addLog` (the Anthropic batch) counts logged text,
