@@ -6,6 +6,8 @@ their last commit and path, and the [backlog](../README.md) holds what they left
 
 - [Module and Persona Folders](module-persona-folders.md): folders for the module list and the persona list, as their
   own records over the item lists.
+- [Request interception](request-interception.md): a global rule list that inserts prompts into every request of the
+  chosen modes, as the last step before the request is shaped for its model.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive, following the archive's procedure for the plan's open items. Use `None`
