@@ -13,7 +13,8 @@
   - Format readers: `server/src/routes/{importCharx,importModule,importPng}.ts`
   - `src/lib/SideBars/CharConfig.svelte`
   - `src/lib/SideBars/LoreBook/{LoreBookSetting,LoreBookList,LoreBookData,LoreEntryFields,LoreOverrideList,LoreOverrideRow}.svelte`
-  - `src/lib/Setting/Pages/Module/{ModuleSettings,ModuleMenu,ModuleChatMenu}.svelte`
+  - `src/lib/Setting/Pages/Module/{ModuleSettings,ModuleMenu,ModuleChatMenu,ModuleFolderRow}.svelte`,
+    `src/lib/Setting/Pages/Module/moduleCatalog.ts`
   - `src/lib/Setting/Pages/PersonaSettings.svelte`
   - `src/lib/Setting/listedPersona.svelte`
   - `src/lib/Others/GridCatalog.svelte`
@@ -110,6 +111,25 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 - Catalog export/delete captures the module id before its dialog and resolves it afterwards, cancelling if absent;
   exporters receive detached records. `ModuleMenu` regex, lorebook, and asset imports capture backing-module identity
   before picking and recheck after upload, cancelling on navigation, replacement, removal, or editor destruction.
+- `src/lib/Setting/Pages/Module/moduleCatalog.ts` is the one row order of the catalog and the chat menu: module folders
+  by name, each with its modules by name, then the root modules by name. Membership is resolved with the folders in
+  stored order (`groupByFolder`) before the folder rows are sorted. A search lists the modules whose name matches; a
+  folder with no match is left out and the rest show open whatever their fold state. Without one an empty folder is
+  listed.
+- `src/lib/Setting/Pages/Module/ModuleFolderRow.svelte` draws a folder row (a blank name shows as "Unnamed folder");
+  fold state is per device ([UI](ui-theming.md#state)).
+- The catalog's move button captures the module id and `folderChoices` (folders by name, then "No folder"; each ASCII
+  `|` of a label shown as `｜` so `alertSelect`'s `||` encoding holds) before the dialog, always passes a display line,
+  and maps the answer through `choiceForAnswer`: an answer that is not an index within the list (cancel, Escape) does
+  nothing, and `moveItemToFolder` runs only while the module and the chosen folder exist. Folder rename and delete (the
+  modules stay) and the new-folder button use `src/ts/storage/collectionStore.svelte.ts`; the trash button is
+  `removeModule`.
+- "Switch all" never makes a folder an activation unit: the catalog's globe (`switchAllGlobally`) removes every member
+  from `enabledModules` when all are there and otherwise adds the missing ones, in one assignment; the chat menu's check
+  (`switchAllForChat`) acts on the members not globally enabled, removing them from the chat's `modules` when all are
+  there and otherwise adding the missing ones, in one `setCurrentChatMeta`, and its folder row counts "on / total".
+  Members are the modules the read rules place in the folder, whatever the search; the character's `modules` stay per
+  module.
 
 ### Asset pickers and lists
 
