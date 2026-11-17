@@ -4,6 +4,7 @@ import {
     IMAGE_GENERATION_SETTINGS_MENU,
     INPUT_HOOKS_SETTINGS_MENU,
     MEMORY_SETTINGS_MENU,
+    REQUEST_INTERCEPTION_SETTINGS_MENU,
     TRANSLATION_SETTINGS_MENU,
     VOICE_SETTINGS_MENU,
 } from "../settingsMenu";
@@ -134,6 +135,17 @@ describe("slug tables", () => {
         expect(parseRoute("/settings/input-hooks")).toEqual({ kind: "settings", page: "input-hooks" });
         expect(settingsPageOf(24)).toBe("input-hooks");
         expect(formatRoute({ kind: "settings", page: settingsPageOf(24) })).toBe("/settings/input-hooks");
+    });
+
+    it("maps Request Interception to menu 26 and formats its URL", () => {
+        expect(REQUEST_INTERCEPTION_SETTINGS_MENU).toBe(26);
+        expect(SETTINGS_PAGES["request-interception"]).toBe(26);
+        expect(parseRoute("/settings/request-interception")).toEqual({
+            kind: "settings",
+            page: "request-interception",
+        });
+        expect(settingsPageOf(26)).toBe("request-interception");
+        expect(formatRoute({ kind: "settings", page: settingsPageOf(26) })).toBe("/settings/request-interception");
     });
 
     it("give no slug to the values without a route", () => {

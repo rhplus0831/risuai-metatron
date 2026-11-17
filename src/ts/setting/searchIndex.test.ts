@@ -160,6 +160,18 @@ describe("searchSettings", () => {
         );
     });
 
+    it("finds Request Interception by its page title at menu 26", () => {
+        changeLanguage("en");
+        expect(searchSettings("Request Interception", ctx())).toContainEqual(
+            expect.objectContaining({
+                kind: "page",
+                label: "Request Interception",
+                target: { menu: 26 },
+                available: true,
+            }),
+        );
+    });
+
     it("routes storage and snapshot searches to Storage instead of Advanced", () => {
         changeLanguage("ko");
         for (const query of ["snapshot", "스냅샷"]) {

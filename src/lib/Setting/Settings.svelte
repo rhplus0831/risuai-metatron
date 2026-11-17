@@ -21,6 +21,7 @@
         KeyboardIcon,
         CpuIcon,
         ScrollTextIcon,
+        BetweenHorizontalStartIcon,
         WebhookIcon,
     } from "@lucide/svelte";
     import { language } from "src/lang";
@@ -58,6 +59,7 @@
         PROMPT_SETTINGS_MENU,
         TRANSLATION_SETTINGS_MENU,
         INPUT_HOOKS_SETTINGS_MENU,
+        REQUEST_INTERCEPTION_SETTINGS_MENU,
         DEVICE_LINK_SETTINGS_MENU,
         MEMORY_SETTINGS_MENU,
         IMAGE_GENERATION_SETTINGS_MENU,
@@ -70,6 +72,7 @@
     import LanguageSettings from "./Pages/LanguageSettings.svelte";
     import TranslationSettings from "./Pages/TranslationSettings.svelte";
     import InputHookSettings from "./Pages/InputHookSettings.svelte";
+    import RequestInterceptionSettings from "./Pages/RequestInterceptionSettings.svelte";
     import InteractionSettings from "./Pages/InteractionSettings.svelte";
     import DeviceLinkSettings from "./Pages/DeviceLinkSettings.svelte";
     import AccessibilitySettings from "./Pages/AccessibilitySettings.svelte";
@@ -130,6 +133,11 @@
                     menus: [INPUT_HOOKS_SETTINGS_MENU],
                     icon: WebhookIcon,
                     label: () => language.inputHooks.navLabel,
+                },
+                {
+                    menus: [REQUEST_INTERCEPTION_SETTINGS_MENU],
+                    icon: BetweenHorizontalStartIcon,
+                    label: () => language.requestInterception.navLabel,
                 },
                 { menus: [14], icon: PackageIcon, label: () => language.modules },
                 { menus: [4], icon: CodeIcon, label: () => language.plugin },
@@ -387,6 +395,8 @@
                         <TranslationSettings />
                     {:else if $SettingsMenuIndex === INPUT_HOOKS_SETTINGS_MENU}
                         <InputHookSettings />
+                    {:else if $SettingsMenuIndex === REQUEST_INTERCEPTION_SETTINGS_MENU}
+                        <RequestInterceptionSettings />
                     {:else if $SettingsMenuIndex === INTERACTION_SETTINGS_MENU}
                         <InteractionSettings />
                     {:else if $SettingsMenuIndex === DEVICE_LINK_SETTINGS_MENU}

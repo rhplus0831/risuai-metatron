@@ -202,6 +202,7 @@
                 <PromptDataItem
                     bind:promptItem={editedPreset.promptTemplate[originalIndex]}
                     popupEditorContext={editedPreset.id}
+                    promptSettings={editedPreset.promptSettings}
                     isDragging={draggedIndex === originalIndex}
                     isOpened={openedItemIndices.has(originalIndex)}
                     bind:draggedIndex

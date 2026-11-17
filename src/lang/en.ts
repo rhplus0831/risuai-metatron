@@ -2552,6 +2552,27 @@ export const languageEnglish = {
         btwDismiss: "Dismiss BTW Result",
         runningBtw: "Running BTW hook…",
     },
+    requestInterception: {
+        title: "Request Interception",
+        navLabel: "Request Interception",
+        description:
+            "Each enabled rule inserts its prompt into every request of the request kinds it targets, at the start or the end of the messages, in list order.",
+        add: "Add rule",
+        empty: "No request interception rules yet.",
+        enabled: "Enabled",
+        modes: "Request kinds",
+        position: "Position",
+        start: "Start",
+        end: "End",
+        notesTitle: "Notes",
+        notes: [
+            "The text is sent as written. CBS such as {{user}} is not evaluated.",
+            "Memory and emotion answers are parsed: the Structured Memory writer expects JSON and the emotion step a single word. A rule on these requests can break them.",
+            "A summary made with a fixed summarization model is not a Memory request and is not intercepted.",
+            "Only the chat reply reserves context for the inserted text. Other requests can exceed the context size.",
+            "Additional parameters and plugins that rewrite the request body run afterwards and can change the inserted text.",
+        ],
+    },
     translatorSteps: {
         title: "Steps",
         add: "Add step",
