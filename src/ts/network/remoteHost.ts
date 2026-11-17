@@ -56,6 +56,8 @@ export function noteHostCommand(entry: HostCommandEntry): void {
  * fields, which pass unchanged to the send. Plugin, send, store, alert and selection modules load
  * only inside a run or request, keeping the feed's imports free of send/job-channel and plugin/feed
  * cycles. Reload ids stay reserved for this page, including recoveries before registration.
+ * A saved attempt keeps the client id its read used and every report of it carries that id: the relay
+ * accepts a report only from the command's target, and the page after a reload may hold another id.
  * Opted-in plugins hold completion Web Push; its detached release waits for quiet and saved writes,
  * bounded by one deadline, without holding up reports or retaining the run's plugin work or chat pin.
  */
@@ -66,7 +68,14 @@ const PAGE_REPORT_WAIT_MS = 2_000;
 const PAGE_FLUSH_WAIT_MS = 3_000;
 const RELOAD_OUTCOME_WAIT_MS = 120_000;
 const COMPLETION_HOLD_MARGIN_MS = 30_000;
-type SavedCommand = { commandId: string; epoch: string; attempt: number; kind?: RemoteReloadMode };
+type SavedCommand = {
+    commandId: string;
+    epoch: string;
+    attempt: number;
+    kind?: RemoteReloadMode;
+    /** The id the command was read under. Absent in an entry saved before the field existed. */
+    clientId?: string;
+};
 type StateReport =
     | { state: "running" }
     | { state: "uncertain" | "done"; result?: RemoteSendResult | RemoteReloadResult }
@@ -127,7 +136,8 @@ function savedCommands(): SavedCommand[] {
                 typeof entry.epoch === "string" &&
                 Number.isSafeInteger(entry.attempt) &&
                 entry.attempt > 0 &&
-                (entry.kind === undefined || entry.kind === "plugins" || entry.kind === "page"),
+                (entry.kind === undefined || entry.kind === "plugins" || entry.kind === "page") &&
+                (entry.clientId === undefined || (typeof entry.clientId === "string" && entry.clientId !== "")),
         );
     } catch {
         return [];
@@ -198,7 +208,7 @@ async function relayRequest(transport: Transport, epoch: string, path: string, b
 function prepareReport(reporter: Reporter, report: StateReport): PreparedReport | null {
     const copy = structuredClone(report);
     const body: RemoteCommandStateBody = {
-        clientId: reporter.transport.clientId,
+        clientId: reporter.saved.clientId ?? reporter.transport.clientId,
         attempt: reporter.saved.attempt,
         ...copy,
     };
@@ -419,6 +429,7 @@ async function runHostCommand(run: HostRun) {
         epoch: run.epoch,
         attempt: read.attempt,
         ...(read.command.type === "reload" ? { kind: read.command.mode } : {}),
+        clientId: transport.clientId,
     };
     const reporter = (run.reporter = reporterFor(saved, transport, run.controller));
     const refuse = (code: RemoteCommandRefusalCode) =>

@@ -140,9 +140,11 @@ The transport below retains this tab's in-memory log.
   `epochMismatch` and resource sync's restore halt.
 - `handoff.ts` holds plugin work through `pluginsStarted` and takeover; the follow holds it through attach and, when
   needed, terminal application and late listeners.
-- `remoteHost.ts` saves `{ commandId, epoch, attempt, kind? }` in `sessionStorage` `risu-remote-host-commands` before
-  sending or reloading (`kind` is a reload's mode). Final acceptance or a permanently closed/lost attempt removes it.
-  The feed's first matching hello calls `recoverHostCommands` even with host mode off: a saved send or `plugins` reload
+- `remoteHost.ts` saves `{ commandId, epoch, attempt, kind?, clientId }` in `sessionStorage` `risu-remote-host-commands`
+  before sending or reloading (`kind` is a reload's mode, `clientId` the id the command was read under). Every report of
+  the attempt carries that id, not the page's own: the relay answers a report from another id `unknownCommand`, and the
+  page after a reload can hold a new one. Final acceptance or a permanently closed/lost attempt removes the entry.
+- The feed's first matching hello calls `recoverHostCommands` even with host mode off: a saved send or `plugins` reload
   reports `uncertain` before the same id can be read again, a saved `page` reload reports `done` after the boot's plugin
   load (not after resumed jobs or idle); other epochs are discarded.
 

@@ -23,6 +23,7 @@ const stubs = vi.hoisted(() => ({
     mark: vi.fn<typeof import("../storage/resourceSync.svelte").beginMutationScope>(),
     releaseCompletion: vi.fn<typeof import("./generationJobs").releaseCompletionHold>(),
     epoch: "11111111-2222-4333-8444-555555555555",
+    clientId: "host-client",
     busy: vi.fn<typeof import("../plugins/apiV3/v3.svelte").pluginBusy>(),
     instance: vi.fn<typeof import("../plugins/apiV3/v3.svelte").getV3PluginInstance>(),
     activity: new Set<(name: string) => void>(),
@@ -40,7 +41,7 @@ vi.mock("../storage/serverAuth", async () =>
 );
 vi.mock("./generationJobs", async () =>
     (await import("./tests/generationJobsMock")).createGenerationJobsMock({
-        generationClientId: () => "host-client",
+        generationClientId: () => stubs.clientId,
         holdGenerationPluginWork: stubs.hold,
         releaseCompletionHold: stubs.releaseCompletion,
     }),
@@ -180,6 +181,7 @@ beforeEach(async () => {
     stubs.mark.mockReset().mockReturnValue({ resource: 11, chat: 17 });
     stubs.releaseCompletion.mockReset().mockResolvedValue(true);
     stubs.epoch = EPOCH;
+    stubs.clientId = "host-client";
     stubs.busy.mockReset().mockReturnValue(false);
     stubs.instance.mockReset();
     stubs.activity.clear();
@@ -278,7 +280,7 @@ describe("remote host sends", () => {
             expect(get(stores.gridOpenStore)).toBe(false);
             expect(stubs.unpin).not.toHaveBeenCalled();
             expect(JSON.parse(sessionStorage.getItem(savedKey)!)).toEqual([
-                { commandId: "command-7", epoch: EPOCH, attempt: 7 },
+                { commandId: "command-7", epoch: EPOCH, attempt: 7, clientId: "host-client" },
             ]);
             expect(reports()).toEqual([{ clientId: "host-client", attempt: 7, state: "running" }]);
             await deliver();
@@ -755,7 +757,7 @@ describe("remote host reloads", () => {
                 await deliver();
                 const saved = sessionStorage.getItem(savedKey);
                 expect(JSON.parse(saved!)).toEqual([
-                    { commandId: "command-7", epoch: EPOCH, attempt: 7, kind: "page" },
+                    { commandId: "command-7", epoch: EPOCH, attempt: 7, kind: "page", clientId: "host-client" },
                 ]);
                 expect(reports()).toEqual([{ clientId: "host-client", attempt: 7, state: "running" }]);
                 expect(stubs.flush).toHaveBeenCalledTimes(1);
@@ -813,6 +815,25 @@ describe("remote host reloads", () => {
             }
         },
     );
+
+    it("reports a page reload under the client id the command addressed when the next page holds another id", async () => {
+        read.command = { type: "reload", mode: "page" };
+        const reload = vi.spyOn(location, "reload").mockImplementation(() => {});
+        await deliver();
+        expect(reload).toHaveBeenCalledTimes(1);
+
+        // The relay accepts a report only from the command's target, and the next page may not keep that id.
+        vi.resetModules();
+        stubs.clientId = "page-after-reload";
+        host = await import("./remoteHost");
+        states.length = 0;
+        host.recoverHostCommands(EPOCH);
+        await drain();
+        expect(states).toEqual([
+            { clientId: "host-client", attempt: 7, state: "done", result: { outcome: "applied" } },
+        ]);
+        expect(sessionStorage.getItem(savedKey)).toBeNull();
+    });
 
     it("reports notReloaded without navigating when the page reload id cannot be saved", async () => {
         read.command = { type: "reload", mode: "page" };
