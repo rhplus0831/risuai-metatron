@@ -1762,7 +1762,8 @@ const CARD_DATA_URI_BASE64_LIMIT = 50 * 1024 * 1024;
  * being written; a JSON card still accumulates its data URIs, up to `JSON_EXPORT_ASSET_LIMIT`.
  *
  * A `null` record means a missing or empty file: it is written as an empty asset, counted, and warned with its key,
- * and the end alert reports the count (`exportMissingAssets`); the result carries it (`missingAssets`). Transport,
+ * and the end alert reports the count (`exportMissingAssets`); the result carries it (`missingAssets`). Images
+ * changed by compression are counted in `reencodedImages` and reported beside completion. Transport,
  * framing, compression and output errors stay fatal. A missing or empty portrait exports as `/none.webp` with a
  * console warning naming its key (none when no portrait is set), without counting as an empty asset; a portrait read
  * that throws fails the export.
@@ -1790,7 +1791,18 @@ export async function exportCharacterCard(
         alertStore.set(status);
     };
     let missingAssets = 0;
+    let reencodedImages = 0;
     let jsonAssetBytes = 0;
+    const compressExportImage = async (original: Uint8Array) => {
+        const compressed = await compressImage(original);
+        if (
+            compressed !== original &&
+            (compressed.length !== original.length || compressed.some((byte, i) => byte !== original[i]))
+        ) {
+            reencodedImages++;
+        }
+        return compressed;
+    };
     const assetBytes = (key: string, bytes: Uint8Array | null) => {
         if (bytes === null) {
             missingAssets++;
@@ -1801,13 +1813,17 @@ export async function exportCharacterCard(
     };
     const finish = () => {
         if (!arg.writer) {
-            alertNormal(
+            const message =
                 missingAssets > 0
                     ? language.exportMissingAssets.replace("{count}", String(missingAssets))
-                    : language.successExport,
+                    : language.successExport;
+            alertNormal(
+                reencodedImages > 0
+                    ? `${message}\n${language.exportReencodedImages.replace("{count}", String(reencodedImages))}`
+                    : message,
             );
         }
-        return { missingAssets };
+        return { missingAssets, reencodedImages };
     };
     try {
         let img = await readCardExportImage(char.image);
@@ -1845,7 +1861,7 @@ export async function exportCharacterCard(
                         submsg: ((i / card.data.extensions.risuai.emotions.length) * 100).toFixed(2),
                     });
                     const rData = assetBytes(key, bytes);
-                    const b64encoded = Buffer.from(await compressImage(rData)).toString("base64");
+                    const b64encoded = Buffer.from(await compressExportImage(rData)).toString("base64");
                     assetIndex++;
                     card.data.extensions.risuai.emotions[i][1] = `__asset:${assetIndex}`;
                     await writer.write("chara-ext-asset_:" + assetIndex, b64encoded);
@@ -1864,7 +1880,7 @@ export async function exportCharacterCard(
                         submsg: ((i / card.data.extensions.risuai.additionalAssets.length) * 100).toFixed(2),
                     });
                     const rData = assetBytes(key, bytes);
-                    const b64encoded = Buffer.from(await compressImage(rData)).toString("base64");
+                    const b64encoded = Buffer.from(await compressExportImage(rData)).toString("base64");
                     assetIndex++;
                     card.data.extensions.risuai.additionalAssets[i][1] = `__asset:${assetIndex}`;
                     await writer.write("chara-ext-asset_:" + assetIndex, b64encoded);
@@ -1942,11 +1958,11 @@ export async function exportCharacterCard(
                         }
                         assetIndex++;
                         if (type === "png") {
-                            const b64encoded = Buffer.from(await compressImage(rData)).toString("base64");
+                            const b64encoded = Buffer.from(await compressExportImage(rData)).toString("base64");
                             card.data.assets[i].uri = `__asset:${assetIndex}`;
                             await writer.write("chara-ext-asset_:" + assetIndex, b64encoded);
                         } else if (type === "json") {
-                            const b64encoded = Buffer.from(await compressImage(rData)).toString("base64");
+                            const b64encoded = Buffer.from(await compressExportImage(rData)).toString("base64");
                             if (b64encoded.length >= CARD_DATA_URI_BASE64_LIMIT) {
                                 throw new Error(
                                     language.jsonExportAssetTooLarge.replace("{name}", card.data.assets[i].name),
@@ -2070,7 +2086,7 @@ export async function exportCharacterCard(
                                     6,
                                 );
                             }
-                            const writtenPath = await writer.write(path, Buffer.from(await compressImage(rData)));
+                            const writtenPath = await writer.write(path, Buffer.from(await compressExportImage(rData)));
                             card.data.assets[i].uri = "embeded://" + writtenPath;
                         }
                     }

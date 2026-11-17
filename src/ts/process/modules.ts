@@ -71,7 +71,7 @@ export type { MCPModule, RisuModule } from "../../../shared/modules.ts";
  * Exports `module` as a CharX file through character conversion (`convertModuleToCharacter`, then
  * `exportCharacterCard` with this writer); a module without an icon gets `/none.webp`, saved as an asset, and the
  * `moduleNoneImage` mark. It catches every failure (one before the writer is handed over too), aborts the writer, and
- * alerts once; it never rethrows. It reports completion, with the empty-asset count, only when `alertEnd` is true.
+ * alerts once; it never rethrows. With `alertEnd`, completion includes empty-asset and re-encoded-image counts.
  */
 export async function exportModule(
     module: RisuModule,
@@ -99,10 +99,14 @@ export async function exportModule(
             onInstall: arg.onInstall,
         });
         if (alertEnd) {
-            alertNormal(
+            const message =
                 result.missingAssets > 0
                     ? language.exportMissingAssets.replace("{count}", String(result.missingAssets))
-                    : language.successExport,
+                    : language.successExport;
+            alertNormal(
+                result.reencodedImages > 0
+                    ? `${message}\n${language.exportReencodedImages.replace("{count}", String(result.reencodedImages))}`
+                    : message,
             );
         }
     } catch (error) {
@@ -118,6 +122,7 @@ export async function exportModule(
  * first await, so the metadata and the payloads keep one order while the live module is edited. Assets are read
  * through `loadAssetsInBatches` (`src/ts/storage/assetQueue.ts`); a `null` record (a missing or empty file) is
  * written as an empty asset, counted, warned with its key, and reported in the end alert (`exportMissingAssets`).
+ * The end alert also counts images whose compressed bytes differ from the stored bytes.
  * `saveData: false` writes to memory and returns the bytes, so it still buffers the whole `.risum`.
  *
  * It alerts its failure and, when `alertEnd` is true, its completion, except `saveData: false, alertEnd: false`
@@ -138,6 +143,7 @@ export async function exportModuleLegacy(
     const writer = saveData ? new LocalWriter() : new VirtualWriter();
     const controller = new AbortController();
     let missingAssets = 0;
+    let reencodedImages = 0;
     try {
         if (module.icon) {
             throw new Error(language.moduleLegacyExportIconUnsupported);
@@ -185,7 +191,15 @@ export async function exportModuleLegacy(
                 missingAssets++;
                 console.warn("Export asset missing or empty:", key);
             }
-            const encoded = await encodeRPack(Buffer.from(await compressImage(bytes ?? new Uint8Array(0))));
+            const original = bytes ?? new Uint8Array(0);
+            const compressed = await compressImage(original);
+            if (
+                compressed !== original &&
+                (compressed.length !== original.length || compressed.some((byte, i) => byte !== original[i]))
+            ) {
+                reencodedImages++;
+            }
+            const encoded = await encodeRPack(Buffer.from(compressed));
             await writeByte(1); //mark as asset
             await writeLength(encoded.length);
             await writer.write(encoded);
@@ -195,10 +209,14 @@ export async function exportModuleLegacy(
         await writer.close();
         const result = writer instanceof VirtualWriter ? writer.buf.buffer : undefined;
         if (alertEnd) {
-            alertNormal(
+            const message =
                 missingAssets > 0
                     ? language.exportMissingAssets.replace("{count}", String(missingAssets))
-                    : language.successExport,
+                    : language.successExport;
+            alertNormal(
+                reencodedImages > 0
+                    ? `${message}\n${language.exportReencodedImages.replace("{count}", String(reencodedImages))}`
+                    : message,
             );
         }
         return result;

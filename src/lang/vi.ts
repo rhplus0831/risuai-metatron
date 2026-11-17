@@ -118,7 +118,7 @@ export const languageVietnamese = {
             "Chế độ Mạnh hiển thị văn bản đang stream ở dạng thô, không kết xuất, rồi kết xuất tin nhắn bình thường sau khi stream hoàn tất. Chế độ này giảm tải nhiều nhất và có thể hữu ích trên thiết bị di động hoặc thiết bị cấu hình thấp.\n\n" +
             "Đây là tính năng thử nghiệm, nên một số tính năng có thể hoạt động ngoài ý muốn.",
         imageCompression:
-            "Nếu được bật, nó sẽ nén hình ảnh khi xuất nhân vật. Nếu hình ảnh động không hoạt động, hãy thử tắt tùy chọn này.",
+            "Nếu được bật, nó sẽ nén hình ảnh khi xuất nhân vật và mô-đun. Nếu hình ảnh động không hoạt động, hãy thử tắt tùy chọn này.",
         useExperimental: "Nếu được bật, nó sẽ hiển thị một số tính năng thử nghiệm.",
         forcePlainFetch:
             "Nếu được bật, nó sẽ sử dụng api fetch của trình duyệt thay vì yêu cầu http gốc. Điều này có thể gây ra lỗi CORS.",

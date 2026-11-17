@@ -25,7 +25,6 @@ merge cannot see inside the JSON strings it stores.
 ## Contents
 
 - [backup-sync-hub](#backup-sync-hub) (3)
-- [characters-modules](#characters-modules) (1)
 - [chat-pipeline](#chat-pipeline) (2)
 - [chat-store](#chat-store) (1)
 - [memory](#memory) (1)
@@ -62,25 +61,6 @@ Guide: [Backups, Realm Hub](../structure/backup-sync-hub.md#known-hazards).
   says that composer and recovery drafts live in the browser and are in no server backup. A snapshot taken as a
   safety point before a risky action can hold an older state than the screen shows. Suggested: flush and report
   discarded and refused work before `takeSnapshot`, as the file backup does.
-
-## characters-modules
-
-Guide: [Characters, Cards, Modules, Personas](../structure/characters-modules.md#known-hazards).
-
-- A module export re-encodes its images when the image compression setting is on. `exportModuleLegacy`
-  (`src/ts/process/modules.ts`) passes every asset through `compressImage`, and `exportModule` reaches the same call
-  through `exportCharacterCard`; `db.imageCompression` is on by default and its help text names character exports
-  only. Upstream RisuAI does the same. Reproduced on 2026-11-17 (cross-check F16) in two parts. The unit probe, whose
-  environment has no 2D canvas, answered at the canvas boundary with marker bytes: with the setting on, both export
-  formats carried the marker in place of the stored PNG; with it off, both carried the stored bytes. Then
-  `doLossyCompression` (`src/ts/media/compressImage/lossyCompression.ts`), bundled from the source, ran in headless
-  Chrome 156: a 4000x2000 PNG of 8.3 MB came out as a 3000x1500 WebP of 52 KB, an 800x600 PNG kept its size and came
-  out lossy (36 KB from 526 KB, pixels changed), the PNG's text chunk was gone from both, and a two-frame GIF came
-  out as a one-frame WebP. Not run: the JPEG fallback for a canvas that cannot encode WebP. The stored original is
-  untouched. Decision: owner, 2026-11-17: fix it by telling the author. The setting's help
-  text names modules, and an export with the setting on that holds images it will re-encode says how many (character
-  exports take the same call and may show the same line). The behavior and the single setting stay as upstream has
-  them; no per-export choice. Not yet fixed.
 
 ## chat-pipeline
 

@@ -126,7 +126,7 @@ export const languageGerman = {
             "Stark zeigt den gestreamten Text unverarbeitet an, ohne ihn zu rendern, und rendert die Nachricht normal, sobald der Stream beendet ist. Dieser Modus verringert die Last am stärksten und kann auf Mobilgeräten oder leistungsschwachen Geräten helfen.\n\n" +
             "Dies ist eine experimentelle Funktion. Dadurch können sich einige Funktionen unerwartet verhalten.",
         imageCompression:
-            "Wenn aktiviert, werden Bilder beim Exportieren des Charakters komprimiert. Wenn animierte Bilder nicht funktionieren, versuchen Sie, diese Option zu deaktivieren.",
+            "Wenn aktiviert, werden Bilder beim Exportieren von Charakteren und Modulen komprimiert. Wenn animierte Bilder nicht funktionieren, versuchen Sie, diese Option zu deaktivieren.",
         useExperimental: "Wenn aktiviert, werden einige experimentelle Funktionen angezeigt.",
         forcePlainFetch:
             "Wenn aktiviert, wird die Browser-Fetch-API anstelle der nativen HTTP-Anfrage verwendet. Dies kann zu CORS-Fehlern führen.",

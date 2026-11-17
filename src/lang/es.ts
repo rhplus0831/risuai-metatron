@@ -120,7 +120,7 @@ export const languageSpanish = {
             "Fuerte muestra el texto en streaming sin procesar, sin renderizarlo, y renderiza el mensaje normalmente cuando termina el stream. Es el modo que más reduce la carga y puede ayudar en dispositivos móviles o de gama baja.\n\n" +
             "Esta es una función experimental, por lo que algunas funciones pueden comportarse de forma inesperada.",
         imageCompression:
-            "Si está habilitado, comprimirá las imágenes al exportar el personaje. Si las imágenes animadas no funcionan, intenta desactivar esta opción.",
+            "Si está habilitado, comprimirá las imágenes al exportar personajes y módulos. Si las imágenes animadas no funcionan, intenta desactivar esta opción.",
         useExperimental: "Si está habilitado, mostrará algunas características experimentales.",
         forcePlainFetch:
             "Si está habilitado, usará la API de fetch del navegador en lugar de la solicitud HTTP nativa. Esto puede causar errores de CORS.",

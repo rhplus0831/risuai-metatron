@@ -130,7 +130,7 @@ export const languageChineseTraditional = {
             "平衡模式的渲染方式與關閉相同，並在串流結束前隱藏該訊息的編輯與翻譯按鈕。\n\n" +
             "強力模式直接顯示未經渲染的原始串流文字，等串流結束後再正常渲染該訊息。它最能降低負載，對行動裝置或低階裝置尤其有幫助。\n\n" +
             "此為實驗性功能，部分功能可能因此出現非預期行為",
-        imageCompression: "啟用後，匯出角色時會壓縮圖片。若動態圖片無法正常運作，請嘗試停用",
+        imageCompression: "啟用後，匯出角色和模組時會壓縮圖片。若動態圖片無法正常運作，請嘗試停用",
         useExperimental: "啟用後會顯示部分實驗性功能",
         forcePlainFetch: "啟用後會使用瀏覽器 Fetch API，而非原生 HTTP 請求；這可能造成 CORS 錯誤",
         autoFillRequestURL: "啟用後會依目前模型自動填入對應的請求 URL",

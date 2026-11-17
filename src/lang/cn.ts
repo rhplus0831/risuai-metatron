@@ -97,7 +97,7 @@ export const languageChinese = {
         showUnrecommended: "激活后，将显示不建议使用的过时设置。不建议使用这些设置。",
         streamingDisplayOptimizationMode:
             "更改流式生成期间回复的显示方式。无论哪种模式，流式中的消息每帧最多重绘一次，而不是每个 Token 一次；显示脚本（正则、Lua）只在流式完成后对其执行一次。\n\n关闭会在每次重绘时像其他消息一样渲染流式文本（Markdown 等）。\n\n均衡的渲染方式与关闭相同，并在流式完成前隐藏该消息的编辑和翻译按钮。\n\n强会直接显示未经渲染的原始流式文本，流式完成后再正常渲染该消息。它最能降低负载，对移动设备或低端设备可能有帮助。\n\n这是一项实验性功能，可能会导致部分功能出现非预期行为。",
-        imageCompression: "激活后，在导出角色时会压缩略图片。如果动画图片无法显示，请尝试关闭此选项。",
+        imageCompression: "激活后，在导出角色和模块时会压缩略图片。如果动画图片无法显示，请尝试关闭此选项。",
         useExperimental: "激活后，将显示部分实验性功能。",
         forcePlainFetch: "激活后，将使用浏览器的 Fetch API 来替代原生 HTTP 请求。这可能会导致 CORS 错误。",
         autoFillRequestURL: "激活后，将自动填入请求 URL 以匹配当前模型。",

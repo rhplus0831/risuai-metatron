@@ -239,7 +239,7 @@ export const languageEnglish = {
             "Strong shows the streaming text raw, without rendering it, then renders the message normally once the stream finishes. It lowers the load the most and can help on mobile or low-end devices.\n\n" +
             "This is an experimental feature, and some features may behave unexpectedly because of it.",
         imageCompression:
-            "If enabled, it will compress images when exporting character. if animated images doesn't works, try disabling this option.",
+            "Compress images when exporting characters and modules. If animated images do not work, try disabling this option.",
         useExperimental: "If enabled, it will show some experimental features.",
         forcePlainFetch:
             "If enabled, it will use browser fetch api instead of native http request. this can cause CORS errors.",
@@ -985,6 +985,7 @@ export const languageEnglish = {
     userIcon: "Your Icon",
     successExport: "Successfuly exported and downloaded to your download directory",
     exportMissingAssets: "Export finished, but {count} assets were missing or empty and were written as empty assets.",
+    exportReencodedImages: "Re-encoded {count} images for export. The originals remain in the app.",
     jsonExportTooLarge: "The assets total more than 64 MiB, too large for a JSON card. Export it as CharX instead.",
     jsonExportAssetTooLarge: 'Asset "{name}" is too large to import from a JSON card. Export it as CharX instead.',
     moduleLegacyExportIconUnsupported:
