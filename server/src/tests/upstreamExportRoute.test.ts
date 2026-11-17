@@ -83,6 +83,11 @@ const staged = (s: ResourceTestClient) => {
 };
 const writeAsset = (s: ResourceTestClient, key: string, body: string) =>
     s.request("/api/write", { method: "POST", headers: { "file-path": hex(key) }, body });
+async function writePluginStorage(s: ResourceTestClient, data: Record<string, unknown>) {
+    const { revision } = (await (await s.get("pluginStorage", "main")).json()) as { revision: string };
+    const saved = await s.put("pluginStorage", "main", { baseRevision: revision ?? null, data });
+    expect(saved.status, await saved.clone().text()).toBe(200);
+}
 const chatGroup = (characterId: string, chatId: string, name: string) => ({
     characterId,
     chatId,
@@ -207,6 +212,74 @@ describe("POST /api/backups/export-upstream/prepare and GET /download", () => {
         const withDb = decode(parseArchive(await download(s, withKeys.token)).at(-1)!);
         expect(withDb.openAIKey).toBe(SECRET);
     });
+
+    it("archives plugin-only assets, reports missing plugin values, and ignores text, property names and device buckets", async () => {
+        const s = await server();
+        const retained = {
+            nested: [{ image: "assets/plugin-only.png" }, ["assets/plugin-missing.png"]],
+            text: "See assets/text-only.png",
+            "assets/property-only.png": true,
+        };
+        await writePluginStorage(s, {
+            galleryPlugin: retained,
+            _ownedPluginStorage: { "plug\u0000image": "assets/device-only.png" },
+        });
+        for (const key of [
+            "assets/plugin-only.png",
+            "assets/text-only.png",
+            "assets/property-only.png",
+            "assets/device-only.png",
+        ]) {
+            expect((await writeAsset(s, key, `original ${key}`)).status).toBe(200);
+        }
+        const { token, report } = await prepare(s);
+        expect(report.missing).toEqual([{ key: "assets/plugin-missing.png", owner: "galleryPlugin", role: "plugin" }]);
+        expect(report.counts.assets).toBe(1);
+        const records = parseArchive(await download(s, token));
+        expect(records.map((record) => record.name)).toEqual(["plugin-only.png", "database.risudat"]);
+        expect(records[0].data.toString()).toBe("original assets/plugin-only.png");
+        expect(decode(records[1]).pluginCustomStorage).toEqual({ galleryPlugin: retained });
+    });
+
+    it.each(["object", "array"])(
+        "finds assets in JSON-encoded plugin %s values through two decoding layers",
+        async (shape) => {
+            const s = await server();
+            const payload = {
+                images: ["assets/plugin-only.png", "assets/plugin-missing.png"],
+                nested: JSON.stringify({
+                    image: "assets/nested-missing.png",
+                    deeper: JSON.stringify({ image: "assets/too-deep.png" }),
+                }),
+                malformed: '{"image":"assets/malformed.png"',
+                ordinaryText: "See assets/text-only.png",
+                quotedString: JSON.stringify("assets/quoted-only.png"),
+            };
+            const value = ` \n\t${JSON.stringify(shape === "object" ? payload : [payload])}`;
+            await writePluginStorage(s, { galleryPlugin: value });
+            for (const key of [
+                "assets/plugin-only.png",
+                "assets/too-deep.png",
+                "assets/malformed.png",
+                "assets/text-only.png",
+                "assets/quoted-only.png",
+            ]) {
+                expect((await writeAsset(s, key, `original ${key}`)).status).toBe(200);
+            }
+            const { token, report } = await prepare(s);
+            expect(report.missing).toHaveLength(2);
+            expect(report.missing).toEqual(
+                expect.arrayContaining([
+                    { key: "assets/plugin-missing.png", owner: "galleryPlugin", role: "plugin" },
+                    { key: "assets/nested-missing.png", owner: "galleryPlugin", role: "plugin" },
+                ]),
+            );
+            const records = parseArchive(await download(s, token));
+            expect(records.map((record) => record.name)).toEqual(["plugin-only.png", "database.risudat"]);
+            expect(records[0].data.toString()).toBe("original assets/plugin-only.png");
+            expect(decode(records[1]).pluginCustomStorage.galleryPlugin).toBe(value);
+        },
+    );
 
     it("reports an asset whose name no backup record can hold as left out, and writes no record for it", async () => {
         const s = await server();

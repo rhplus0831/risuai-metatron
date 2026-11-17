@@ -24,7 +24,7 @@ merge cannot see inside the JSON strings it stores.
 
 ## Contents
 
-- [backup-sync-hub](#backup-sync-hub) (2)
+- [backup-sync-hub](#backup-sync-hub) (1)
 - [chat-pipeline](#chat-pipeline) (2)
 - [chat-store](#chat-store) (1)
 - [memory](#memory) (1)
@@ -36,14 +36,6 @@ merge cannot see inside the JSON strings it stores.
 
 Guide: [Backups, Realm Hub](../structure/backup-sync-hub.md#known-hazards).
 
-- The RisuAI-compatible export leaves out an asset that only a plugin's custom data references.
-  `server/src/data/upstream/assetReferences.ts` does not walk the plugin custom values the export retains. Reproduced
-  on 2026-11-17 (cross-check F15): an asset whose key was stored only in a retained plugin custom value; the archive
-  held the value and not the file, and the report's missing list was empty, so the exported value points at a file
-  the archive does not hold. A character's portrait was exported. The native full backup held the file, because it
-  takes every asset on disk and not because it follows the plugin's reference; a partial backup was not checked.
-  Suggested: walk the retained custom values for asset keys and feed them into the export's holds, its selection, and
-  its missing list.
 - "Take snapshot" does not flush this tab's pending saves. `take` in
   `src/lib/Setting/Pages/Storage/storageController.svelte.ts` calls `takeSnapshot` directly. Reproduced on 2026-11-17
   (cross-check F17): with a theme edit whose save had failed once and was waiting in retry backoff, the snapshot

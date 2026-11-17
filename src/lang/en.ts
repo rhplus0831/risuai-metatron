@@ -1737,6 +1737,7 @@ export const languageEnglish = {
             preset: "Preset image",
             module: "Module asset",
             moduleIcon: "Module icon",
+            plugin: "Plugin custom data",
         },
         examples: "e.g.",
         warning:

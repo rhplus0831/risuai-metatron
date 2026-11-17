@@ -2147,6 +2147,7 @@ export const languageKorean = {
             preset: "프리셋 이미지",
             module: "모듈 에셋",
             moduleIcon: "모듈 아이콘",
+            plugin: "플러그인 사용자 데이터",
         },
         examples: "예:",
         warning:

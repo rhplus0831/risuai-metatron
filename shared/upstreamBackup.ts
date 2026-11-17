@@ -131,11 +131,12 @@ export type UpstreamAssetRole =
     | "folder"
     | "preset"
     | "module"
-    | "moduleIcon";
+    | "moduleIcon"
+    | "plugin";
 
 /**
  * One referenced `assets/...` key and its first user (a character, group, persona, folder, preset, or
- * module name, a persona's for its embedded module; "" for a setting).
+ * module name, a persona's for its embedded module, a plugin custom-storage key; "" for a setting).
  */
 export type UpstreamAssetReference = { key: string; owner: string; role: UpstreamAssetRole };
 

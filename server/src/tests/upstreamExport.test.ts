@@ -15,7 +15,7 @@ import type { UpstreamReportEntry } from "../../../shared/upstreamBackup.ts";
 import type { UpstreamExportReport } from "../../../shared/upstreamExportReport.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, type ValidatedSnapshot } from "../data/resourceStore.ts";
-import { collectUpstreamAssetReferences } from "../data/upstream/assetReferences.ts";
+import { collectAssetReferences, collectUpstreamAssetReferences } from "../data/upstream/assetReferences.ts";
 import { buildUpstreamDatabase, type UpstreamExportOptions } from "../data/upstream/exportDatabase.ts";
 import { convertUpstreamDatabase, type UpstreamConversion } from "../data/upstream/importDatabase.ts";
 import { decodeUpstreamDatabase, encodeUpstreamDatabase } from "../data/upstream/risuSave.ts";
@@ -1123,6 +1123,26 @@ describe("buildUpstreamDatabase: assets", () => {
             { key: "assets/shared.png", owner: "A", role: "profile" },
             { key: "assets/user.png", owner: "", role: "userIcon" },
         ]);
+    });
+
+    it("uses the same nested plugin references on import and export and keeps the first owner of shared keys", () => {
+        const characters = [{ name: "A", image: "assets/shared.png" }];
+        const pluginStorage = {
+            firstPlugin: { images: [["assets/shared.png", "assets/plugin.png"]] },
+            secondPlugin: ["assets/plugin.png", { image: "assets/second.png" }],
+        };
+        const expected = [
+            { key: "assets/shared.png", owner: "A", role: "profile" },
+            { key: "assets/plugin.png", owner: "firstPlugin", role: "plugin" },
+            { key: "assets/second.png", owner: "secondPlugin", role: "plugin" },
+        ];
+        expect(collectUpstreamAssetReferences({ characters, pluginCustomStorage: pluginStorage })).toEqual(expected);
+        expect(
+            collectAssetReferences([
+                { kind: RESOURCE_KIND.characters, data: characters[0] },
+                { kind: RESOURCE_KIND.pluginStorage, data: pluginStorage },
+            ]),
+        ).toEqual(expected);
     });
 });
 
