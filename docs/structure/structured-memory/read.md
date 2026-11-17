@@ -78,9 +78,8 @@ malformed, or deleted ids fall back to the Settings default through `chatHypaV3P
 
 1. The step drops unreadable events, then `selectMemory` reconciles events against stored messages before
    `retrieveLanes` and `buildMemoryCard` run ([reconciliation](lifecycle.md#reconciliation-and-repairs)).
-   `coveredMessages` decides what history may leave from active, unsuppressed events, the greeting entry
-   (`ReadEntry.greeting`) once any of them cites a greeting, matching today's or not; `recordedMessages` separately
-   prevents the writer repeating readable stored events. `retrieve.ts`'s header owns lane eligibility and scoring.
+   `coveredMessages` decides what history may leave; `recordedMessages` separately prevents the writer repeating
+   readable stored events. `retrieve.ts`'s header owns lane eligibility and scoring.
 2. The card enters history as `memo: "supaMemory"`. With `volatileBeforeLastUser`, its volatile part bypasses history so
    it survives chat ranges; assembly places it after formatting by provenance before the latest user, else after the
    last memory entry, else at the end.
@@ -99,20 +98,19 @@ hand-off request, not a queued task.
 
 The flow lane is a recent timeline. Under the flow target, a contiguous run of the newest events that left the window
 shows each in full (story time, title, summary, and key lines on the newest `flowKeyLineEvents`), and `flowEvents`
-titles follow it. A key-line line that does not fit enters without its key lines, so key lines alone never stop the run.
-After the other lanes and the lending, key lines return where they fit, newest first, and then the run goes on with what
-is left of the maximum. An event is in full once, in the run or in the events lane, and selection takes the run's events
-out of the events lane's exclusions. A target of 0 keeps the title-only lane. `spendLanes`' doc owns the order.
+titles follow it. An event is in full once, in the run or in the events lane, and selection takes the run's events out
+of the events lane's exclusions. A target of 0 keeps the title-only lane. `spendLanes`' doc owns the order.
+
+Story dates: `retrieve.ts`'s header owns the story date and the distance labels on flow and events lines. With one, an
+anchor line under the rule header names it, counted in every frame; an undated chat's card is unchanged.
 
 Lane targets follow `laneSplit`. Under `auto`, the default and what an absent value reads as, `readBudget` gives each
 lane `floor(maximum × percent / 100)` of the applied maximum from the preset's `laneShares` (whole percents 0 to 100,
 defaulting to `STRUCTURED_MEMORY_LANE_SHARES`: flow 25%, pages 45%, events 15%, evidence 10%, threads 5%); under
-`manual` it gives the stored `laneTargets`. Each mode keeps the other's values. The shares' sum is not bounded: over
-100%, the core round fills lanes in order until the maximum runs out. Selection hands those targets to retrieval as its
-input, and the evidence reselection reads them too. The shares decide only the core round: lending and the run's
-extension spend what the lanes leave. `requiredCap` is no share. Warming has no maximum
-(`structuredMemoryEmbeddingLanes`): it embeds for the events or pages lane when that lane's share (`auto`) or stored
-count (`manual`) is above 0.
+`manual` it gives the stored `laneTargets`. The shares' sum is not bounded: over 100%, the core round fills lanes in
+order until the maximum runs out. The shares decide only the core round: lending and the run's extension spend what the
+lanes leave. `requiredCap` is no share. Warming has no maximum (`structuredMemoryEmbeddingLanes`): it embeds for the
+events or pages lane when that lane's share (`auto`) or stored count (`manual`) is above 0.
 
 The meter reads tokens and `memoryStatusWord`; its popover and Preview share `MemoryManifest`.
 
@@ -460,6 +458,9 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
 - Under `auto` at 16,384 (a maximum of 3,276) the pages lane's 45% loses one long page on stage on every send of a
   1,000-turn fixture chat, which the title-only card's 2,000 kept. Decision: Recent Timeline D14 (owner, 2026-11-11),
   [measured](../../reports/measurements/structured-memory-timeline-2026-11-11.md#the-pages-lane-and-the-shares).
+- The story date is the newest record's, so it lags the chat by the unrecorded tail: one turn at the default cadence,
+  more under a sparser one or a paused or failing writer. A day change in that tail shortens every label until it is
+  recorded; the anchor line names the date used. Decision: Story Dates D6, plan.
 
 ### Gotchas
 

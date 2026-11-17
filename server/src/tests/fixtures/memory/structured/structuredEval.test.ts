@@ -99,6 +99,35 @@ describe("structured memory evaluation", () => {
     beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }));
     afterEach(() => vi.useRealTimers());
 
+    it("sends an admitted dated story with an anchor and a distance label", async () => {
+        const story = generateStory({ language: "en", turns: 20, seed: 17 });
+        story.turns = story.turns.slice(0, 2);
+        for (const [index, date] of ["2025-03-31", "2025-04-03"].entries()) {
+            const turn = story.turns[index];
+            turn.char += `\nStory date: ${date}.`;
+            // The writer returns a string; admission turns it into the stored date object.
+            Object.assign(turn.analysis.storyTime, { text: date, date });
+        }
+        const f = fixture({ story, algorithm: "structuredMemory" });
+        await f.rebuild();
+        const send = await f.send("Continue.", {
+            settings: {
+                budgetMode: "tokens",
+                memoryBudgetTokens: 4000,
+                structured: {
+                    laneSplit: "manual",
+                    windowTurns: 1,
+                    flowEvents: 1,
+                    laneTargets: { flow: 1500, pages: 0, events: 0, evidence: 0, threads: 0 },
+                },
+            },
+        });
+        expect(send.cardText).toContain(
+            'Story date at the newest record: 2025-04-03. An event\'s "N days ago" counts back from it.',
+        );
+        expect(send.cardText).toContain(`(3 days ago, 2025-03-31) ${story.turns[0].analysis.title}:`);
+    });
+
     it("records replies with full turn coverage while excluding user text, cast matches and quote evidence", async () => {
         const story = generateStory({ language: "en", turns: 20, seed: 17 });
         story.turns = story.turns.slice(0, 2);

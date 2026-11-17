@@ -1,7 +1,16 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { MemoryTokenizer } from "../host.ts";
-import { buildMemoryCard, eventLine, evidenceLine, flowEventLine, flowLine, itemTag, threadLine } from "./card.ts";
+import {
+    buildMemoryCard,
+    eventLine,
+    evidenceLine,
+    flowEventLine,
+    flowLine,
+    itemTag,
+    preflightMemoryCard,
+    threadLine,
+} from "./card.ts";
 import type { Lane, LaneCandidate } from "./lanes.ts";
 
 const candidate = (lane: LaneCandidate["lane"], id: string, line: string, order = 0): LaneCandidate => ({
@@ -21,6 +30,139 @@ async function spentCard(...args: Parameters<typeof buildMemoryCard>) {
 }
 
 describe("structured memory card", () => {
+    const rule =
+        "These records are authoritative for the past, and the scene for the present; recent messages win over both.";
+    const storyDate = { year: 2025, month: 4, day: 3 };
+    const anchor = 'Story date at the newest record: 2025-04-03. An event\'s "N days ago" counts back from it.';
+    const characters: MemoryTokenizer = { tokenizeChat: async ({ content }) => content.length };
+
+    it("joins distance and story text in full lines and gives title lines only the distance", () => {
+        for (const { text, label, prefix, titlePrefix } of [
+            {
+                text: "3월 17일 저녁",
+                label: "2 weeks ago",
+                prefix: "(2 weeks ago, 3월 17일 저녁) ",
+                titlePrefix: "(2 weeks ago) ",
+            },
+            { text: "", label: "2 months ago", prefix: "(2 months ago) ", titlePrefix: "(2 months ago) " },
+            { text: "3월 17일 저녁", label: undefined, prefix: "(3월 17일 저녁) ", titlePrefix: "" },
+            { text: "", label: undefined, prefix: "", titlePrefix: "" },
+        ]) {
+            const event = { id: "event", title: "title", summary: "summary", storyTime: { text }, keyLines: [] };
+            expect(eventLine(event, label)).toBe(`[m:event] ${prefix}title: summary`);
+            expect(flowEventLine(event, 12, label)).toBe(`[m:flow:event] 12 turns ago: ${prefix}title: summary`);
+            expect(flowLine(event, 154, label)).toBe(`[m:flow:event] 154 turns ago: ${titlePrefix}title`);
+        }
+    });
+
+    it("puts the formatted story anchor directly below the rule, leaving an undated header unchanged", async () => {
+        for (const [date, header] of [
+            [storyDate, `${rule}\n${anchor}`],
+            [
+                { month: 10, day: 15 },
+                `${rule}\nStory date at the newest record: 10-15. An event's "N days ago" counts back from it.`,
+            ],
+            [undefined, rule],
+        ] as const) {
+            const card = await spentCard(characters, {
+                maximum: 10000,
+                storyDate: date,
+                lanes: [
+                    { lane: "events", target: 1000, items: [candidate("events", "event", "[m:event] title: summary")] },
+                ],
+            });
+            expect(card.stable).toBe(header);
+            expect(card.volatile).toBe("Earlier events:\n[m:event] title: summary");
+            expect(card.tokens).toBe(header.length + "Earlier events:\n[m:event] title: summary".length);
+        }
+    });
+
+    it("charges the anchor before admitting optional items so a smaller fitting item survives", async () => {
+        // Frame: rule 2 + anchor 5 + events heading 1. Only the 3-token item fits in 11.
+        // Omitting the anchor during admission picks the 8-token item, which the final trim must discard.
+        const costs = new Map([
+            [rule, 2],
+            [anchor, 5],
+            ["Earlier events:", 1],
+            ["[m:large] large", 8],
+            ["[m:small] small", 3],
+        ]);
+        const card = await spentCard(
+            {
+                tokenizeChat: async ({ content }) =>
+                    content.split("\n").reduce((sum, line) => sum + (costs.get(line) ?? 0), 0),
+            },
+            {
+                maximum: 11,
+                storyDate,
+                lanes: [
+                    {
+                        lane: "events",
+                        target: 100,
+                        items: [
+                            candidate("events", "large", "[m:large] large"),
+                            candidate("events", "small", "[m:small] small"),
+                        ],
+                    },
+                ],
+            },
+        );
+        expect(card.items.map(({ id }) => id)).toEqual(["small"]);
+        expect(card.tokens).toBe(11);
+        expect(card.stable).toBe(`${rule}\n${anchor}`);
+        expect(card.volatile).toBe("Earlier events:\n[m:small] small");
+    });
+
+    it("counts the anchor in preflight's optional frame before allowing embeddings", async () => {
+        const lanes: Lane<LaneCandidate>[] = [{ lane: "events", target: 1000, items: [] }];
+        const maximum = `${rule}\n${anchor}`.length + "Earlier events:".length;
+        expect(await preflightMemoryCard(characters, { maximum, lanes, storyDate })).toEqual({
+            type: "ready",
+            embeddings: false,
+        });
+        expect(await preflightMemoryCard(characters, { maximum: maximum + 1, lanes, storyDate })).toEqual({
+            type: "ready",
+            embeddings: true,
+        });
+        expect(await preflightMemoryCard(characters, { maximum, lanes })).toEqual({ type: "ready", embeddings: true });
+    });
+
+    it("counts the anchor in the required-alone refusal in both build and preflight", async () => {
+        const line = "[m:scene] At the gate";
+        const lanes: Lane<LaneCandidate>[] = [
+            {
+                lane: "required",
+                target: line.length,
+                items: [{ ...candidate("required", "scene", line), kind: "page" }],
+            },
+        ];
+        const stable = `${rule}\n${anchor}\n\nCurrent facts:\n${line}`;
+        const maximum = stable.length - 1;
+        const refusal = {
+            type: "requiredOverLimit",
+            tokens: stable.length,
+            limit: maximum,
+            pages: [{ id: "scene", tokens: line.length }],
+        };
+        expect(await buildMemoryCard(characters, { maximum, lanes, storyDate })).toEqual(refusal);
+        expect(await preflightMemoryCard(characters, { maximum, lanes, storyDate })).toEqual(refusal);
+        const exact = await spentCard(characters, { maximum: stable.length, lanes, storyDate });
+        expect(exact.stable).toBe(stable);
+        expect(exact.tokens).toBe(stable.length);
+        expect((await buildMemoryCard(characters, { maximum, lanes })).type).toBe("card");
+    });
+
+    it("keeps a dated card empty and free when no item is admitted", async () => {
+        for (const items of [[], [candidate("events", "event", "[m:event] title: summary")]]) {
+            const card = await spentCard(characters, {
+                maximum: 1,
+                storyDate,
+                lanes: [{ lane: "events", target: 1000, items }],
+            });
+            expect(card).toMatchObject({ stable: "", volatile: "", tokens: 0, items: [] });
+        }
+    });
+
     it("renders chronological full flow lines with story time, summaries and the supplied key lines", async () => {
         const older = {
             id: "gate",

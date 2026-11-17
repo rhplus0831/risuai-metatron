@@ -294,11 +294,15 @@ export async function selectMemory(
             code: "memoryRequiredOverCap",
         };
     };
-    const preflight = await preflightMemoryCard(tokenizer, { maximum, lanes: prepared.lanes });
+    const preflight = await preflightMemoryCard(tokenizer, {
+        maximum,
+        lanes: prepared.lanes,
+        storyDate: prepared.storyDate,
+    });
     host.fence();
     if (preflight.type === "requiredOverLimit") return requiredAlert(preflight);
     const retrieved = await retrieveLanes(host, retrievalInput, { prepared, embeddings: preflight.embeddings });
-    let card = await buildMemoryCard(tokenizer, { maximum, lanes: retrieved.lanes });
+    let card = await buildMemoryCard(tokenizer, { maximum, lanes: retrieved.lanes, storyDate: retrieved.storyDate });
     if (card.type === "requiredOverLimit") {
         return requiredAlert(card);
     }
@@ -350,6 +354,7 @@ export async function selectMemory(
             const nextCard = await buildMemoryCard(tokenizer, {
                 maximum,
                 lanes: retrieved.lanes.map((lane) => (lane.lane === "evidence" ? { ...lane, items: evidence } : lane)),
+                storyDate: retrieved.storyDate,
             });
             if (nextCard.type === "requiredOverLimit") {
                 return requiredAlert(nextCard);

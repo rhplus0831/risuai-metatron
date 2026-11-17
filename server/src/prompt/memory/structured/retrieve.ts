@@ -5,14 +5,18 @@ import {
     MEMORY_GREETING_EVIDENCE_ID,
     storedMemoryGreeting,
     greetingCited,
+    isStoryDate,
     type MemoryEvent,
     memoryEventCovers,
     memoryEventHasReadableFields,
     type MemoryKnowledge,
     type MemoryPage,
     type MemorySection,
+    type MemoryStoryDate,
     type MemoryThread,
     memoryThreadEnded,
+    storyDateDistance,
+    storyDateLabel,
     type StructuredMemorySettings,
 } from "../../../../../shared/structuredMemory.ts";
 import {
@@ -43,6 +47,11 @@ import { pageNamedInTexts, sectionVectorText } from "./pages.ts";
  *   greeting has changed. With no source among the entries it has
  *   no place, so neither flow nor the events lane lists it. That is not staleness: a source can simply
  *   be disabled in this send.
+ * - The story date is the valid `storyTime.date` of the placed event with the greatest place, one still
+ *   inside the window included; among events at one place, the last stored. An undated event does not
+ *   hide an older dated one. A placed event with a valid date on or before the story date carries a label
+ *   of that distance on its flow and events lines; one dated after it, or undated, carries none. Nothing
+ *   reads a wall clock, and no label is embedded.
  * - Required is the scene page unless `never`, then the `always` pages in stored order, each with every
  *   nonblank, unsuppressed section, with character relationships filtered by the send's cast. The scene
  *   also says who is present, which no section holds. In this lane and the next, a page with nothing to
@@ -193,10 +202,15 @@ type RetrievedLanes = {
     eventsOpen: boolean;
     /** Unique eligible record texts left without vectors; evidence is not included. */
     deferredRecordTexts: number;
+    /** The date the card's distance labels count back from; absent when no placed event has a valid date. */
+    storyDate?: MemoryStoryDate;
 };
 
-/** An active, unsuppressed event with its sources' entries, newest first; `place` is the first of them. */
-type PlacedEvent = { event: MemoryEvent; sources: number[]; place: number };
+/**
+ * An active, unsuppressed event with its sources' entries, newest first; `place` is the first of them.
+ * `label` is how long before the story date the event was, on a dated event that is not after it.
+ */
+type PlacedEvent = { event: MemoryEvent; sources: number[]; place: number; label?: string };
 type RankedEvent = PlacedEvent & { reason: string; score: number };
 
 type SendEmbeddings = ReturnType<typeof sendEmbeddings>;
@@ -416,7 +430,7 @@ function flowItems(
     const end = (lastFull ? newestFirst.indexOf(lastFull) + 1 : 0) + flowEvents;
     const full: LaneCandidate[] = [];
     const items = newestFirst.slice(0, end).map((placed): LaneCandidate => {
-        const { event, place } = placed;
+        const { event, place, label } = placed;
         const turnsAgo = entries.slice(place).filter((entry) => entry.role === "char" && hasText(entry)).length;
         const title: LaneCandidate = {
             id: event.id,
@@ -426,16 +440,16 @@ function flowItems(
             // Flow follows recency, never a relevance score.
             score: 0,
             order: place,
-            line: flowLine(event, Math.max(1, turnsAgo)),
+            line: flowLine(event, Math.max(1, turnsAgo), label),
         };
         if (fullSet.has(placed)) {
             const keyLines = full.length < flowKeyLineEvents ? (event.keyLines ?? []) : [];
             full.push({
                 ...title,
                 reason: "timeline",
-                line: flowEventLine({ ...event, keyLines }, Math.max(1, turnsAgo)),
+                line: flowEventLine({ ...event, keyLines }, Math.max(1, turnsAgo), label),
                 ...(keyLines.length > 0
-                    ? { plain: { line: flowEventLine({ ...event, keyLines: [] }, Math.max(1, turnsAgo)) } }
+                    ? { plain: { line: flowEventLine({ ...event, keyLines: [] }, Math.max(1, turnsAgo), label) } }
                     : {}),
             });
         }
@@ -1010,6 +1024,27 @@ export async function prepareRetrieval(input: RetrievalInput) {
             placed.push({ event, sources, place: sources[0] });
         }
     }
+    // Stored records are not shape-checked, so a date counts only when it is valid.
+    const dateOf = ({ storyTime }: MemoryEvent) => (isStoryDate(storyTime?.date) ? storyTime.date : undefined);
+    let storyDate: MemoryStoryDate | undefined;
+    let storyPlace = -1;
+    for (const { event, place } of placed) {
+        const date = dateOf(event);
+        // On one place the later stored event wins, the one flow lists as newer.
+        if (date && place >= storyPlace) {
+            storyDate = date;
+            storyPlace = place;
+        }
+    }
+    if (storyDate) {
+        for (const item of placed) {
+            const date = dateOf(item.event);
+            const days = date && storyDateDistance(date, storyDate);
+            if (days !== undefined) {
+                item.label = storyDateLabel(days);
+            }
+        }
+    }
 
     const query = entries
         .slice(window.start)
@@ -1052,7 +1087,7 @@ export async function prepareRetrieval(input: RetrievalInput) {
             items: [],
         })),
     ];
-    return { input, stage, excluded, leaveOut, placed, query, eligible, reading, found, required, lanes };
+    return { input, stage, excluded, leaveOut, placed, storyDate, query, eligible, reading, found, required, lanes };
 }
 
 /**
@@ -1065,7 +1100,7 @@ export async function retrieveLanes(
     options: { prepared?: Awaited<ReturnType<typeof prepareRetrieval>>; embeddings?: boolean } = {},
 ): Promise<RetrievedLanes> {
     const prepared = options.prepared ?? (await prepareRetrieval(input));
-    const { stage, excluded, leaveOut, placed, query, eligible, reading, found, required } = prepared;
+    const { stage, excluded, leaveOut, placed, storyDate, query, eligible, reading, found, required } = prepared;
     const { threads, entries, window, settings, targets } = input;
     const embeddings = sendEmbeddings(
         host,
@@ -1114,14 +1149,14 @@ export async function retrieveLanes(
             {
                 lane: "events",
                 target: targets.events,
-                items: candidates.map(({ event, place, reason, score }) => ({
+                items: candidates.map(({ event, place, reason, score, label }) => ({
                     id: event.id,
                     kind: "event",
                     lane: "events",
                     reason,
                     score,
                     order: place,
-                    line: eventLine(event),
+                    line: eventLine(event, label),
                 })),
             },
             {
@@ -1142,5 +1177,6 @@ export async function retrieveLanes(
         },
         eventsOpen: open,
         deferredRecordTexts: embeddings.deferred,
+        storyDate,
     };
 }

@@ -19,6 +19,8 @@ import {
     parseStoryDate,
     formatStoryDate,
     isStoryDate,
+    storyDateDistance,
+    storyDateLabel,
     storedMemoryGreeting,
     greetingCited,
     memoryChatGreeting,
@@ -346,6 +348,40 @@ it("uses character slot budgets and keeps the page budget for other headings and
 });
 
 describe("story dates", () => {
+    it.each([
+        ["2025-03-31", "2025-04-03", 3],
+        ["12-25", "2025-04-03", 99],
+        ["2024-12-25", "04-03", 99],
+        ["12-31", "01-01", 1],
+        ["02-29", "2025-02-28", 0],
+        ["02-29", "2025-03-01", 1],
+        ["2025-02-28", "02-29", 0],
+        ["2024-03-01", "02-29", 364],
+        ["02-29", "02-28", 365],
+        ["2025-04-04", "2025-04-03", undefined],
+        ["0099-12-31", "0100-01-01", 1],
+        ["2024-12-31", "2025-01-01", 1],
+    ] as const)("counts story days from %s to %s as %s", (from, now, days) => {
+        expect(storyDateDistance(parseStoryDate(from)!, parseStoryDate(now)!)).toBe(days);
+    });
+
+    it.each([
+        [0, "same day"],
+        [1, "1 day ago"],
+        [2, "2 days ago"],
+        [13, "13 days ago"],
+        [14, "2 weeks ago"],
+        [59, "8 weeks ago"],
+        [60, "2 months ago"],
+        [76, "2 months ago"],
+        [77, "3 months ago"],
+        [729, "24 months ago"],
+        [730, "2 years ago"],
+        [1096, "3 years ago"],
+    ] as const)("labels %i story days as %s", (days, label) => {
+        expect(storyDateLabel(days)).toBe(label);
+    });
+
     it.each([
         ["2025-04-03", { year: 2025, month: 4, day: 3 }],
         ["2025/4/3", { year: 2025, month: 4, day: 3 }],

@@ -381,6 +381,11 @@ const STORY_DATE_PATTERN = /^(?:(\d{4})([-/.]))?(\d{1,2})([-/.])(\d{1,2})$/;
 const wholeUpTo = (value: unknown, max: number): value is number =>
     typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= max;
 
+const leapYear = (year: number) => year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+
+const monthDays = (month: number, leap: boolean) =>
+    month === 2 ? (leap ? 29 : 28) : [4, 6, 9, 11].includes(month) ? 30 : 31;
+
 /**
  * Whether a stored value is a story date: a plain object with a whole `month` of 1 to 12, a whole `day`
  * that month has, and a whole `year` of 1 to 9999 or none. February has 29 days in a Gregorian leap year,
@@ -399,10 +404,9 @@ export function isStoryDate(value: unknown): value is MemoryStoryDate {
         if (!wholeUpTo(year, 9999)) {
             return false;
         }
-        leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+        leap = leapYear(year);
     }
-    const days = month === 2 ? (leap ? 29 : 28) : [4, 6, 9, 11].includes(month) ? 30 : 31;
-    return day <= days;
+    return day <= monthDays(month, leap);
 }
 
 /**
@@ -428,6 +432,74 @@ export function formatStoryDate(date: MemoryStoryDate): string {
     const padded = (part: number, length: number) => String(part).padStart(length, "0");
     const monthDay = `${padded(date.month, 2)}-${padded(date.day, 2)}`;
     return date.year === undefined ? monthDay : `${padded(date.year, 4)}-${monthDay}`;
+}
+
+/** A leap year, so a yearless February 29 keeps its day when neither date of a distance states a year. */
+const STORY_DATE_REFERENCE_YEAR = 2000;
+
+/**
+ * The day number of `date` in `year` on the proleptic Gregorian calendar, in whole-number arithmetic: a
+ * `Date` reads years 1 to 99 as the 1900s and rolls a day its month lacks into the next month. A day the
+ * year's month does not have (February 29 outside a leap year) counts as that month's last day. `year`
+ * may be 0 or 10000, which a year taken for a yearless date can be.
+ */
+function storyDayNumber(year: number, { month, day }: MemoryStoryDate): number {
+    const clamped = Math.min(day, monthDays(month, leapYear(year)));
+    // The year runs from March, so February, the month of the leap day, is its last.
+    const shifted = month <= 2 ? year - 1 : year;
+    const era = Math.floor(shifted / 400);
+    const yearOfEra = shifted - era * 400;
+    const dayOfYear = Math.floor((153 * (month > 2 ? month - 3 : month + 9) + 2) / 5) + clamped - 1;
+    const dayOfEra = yearOfEra * 365 + Math.floor(yearOfEra / 4) - Math.floor(yearOfEra / 100) + dayOfYear;
+    return era * 146097 + dayOfEra;
+}
+
+/**
+ * Whole days from `from` to `now`, both inside the story: no wall clock is read. 0 is the same day.
+ * Undefined when `from` is after `now`, as a scene set in the future is.
+ *
+ * A date with no year takes the nearest year that puts `from` on or before `now`: `from` the year of `now`
+ * or the one before, `now` the year of `from` or the one after. With no year on either, `now` takes a
+ * leap year. A day the taken year lacks becomes its month's last day before the two are compared, so
+ * `02-29` is 0 days before `2025-02-28`.
+ */
+export function storyDateDistance(from: MemoryStoryDate, now: MemoryStoryDate): number | undefined {
+    if (from.year !== undefined && now.year !== undefined) {
+        const days = storyDayNumber(now.year, now) - storyDayNumber(from.year, from);
+        return days >= 0 ? days : undefined;
+    }
+    if (from.year !== undefined) {
+        const start = storyDayNumber(from.year, from);
+        const sameYear = storyDayNumber(from.year, now) - start;
+        return sameYear >= 0 ? sameYear : storyDayNumber(from.year + 1, now) - start;
+    }
+    const year = now.year ?? STORY_DATE_REFERENCE_YEAR;
+    const end = storyDayNumber(year, now);
+    const sameYear = end - storyDayNumber(year, from);
+    return sameYear >= 0 ? sameYear : end - storyDayNumber(year - 1, from);
+}
+
+/**
+ * How long ago `days` whole days is, in the card's words: days up to 13, whole weeks up to 59, months of
+ * 30.44 days up to 729, then years of 365.25 days, the last two rounded.
+ */
+export function storyDateLabel(days: number): string {
+    if (days === 0) {
+        return "same day";
+    }
+    if (days === 1) {
+        return "1 day ago";
+    }
+    if (days < 14) {
+        return `${days} days ago`;
+    }
+    if (days < 60) {
+        return `${Math.floor(days / 7)} weeks ago`;
+    }
+    if (days < 730) {
+        return `${Math.round(days / 30.44)} months ago`;
+    }
+    return `${Math.round(days / 365.25)} years ago`;
 }
 
 /** The event fields the writer returns. */

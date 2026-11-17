@@ -91,8 +91,8 @@ function input(fields: Partial<Input> = {}): Input {
 }
 const items = (result: Awaited<ReturnType<typeof retrieveLanes>>, lane: string) =>
     result.lanes.find((row) => row.lane === lane)!.items;
-async function spentCard({ lanes }: Awaited<ReturnType<typeof retrieveLanes>>, maximum: number) {
-    const card = await buildMemoryCard({ tokenizeChat: async () => 1 }, { maximum, lanes });
+async function spentCard({ lanes, storyDate }: Awaited<ReturnType<typeof retrieveLanes>>, maximum: number) {
+    const card = await buildMemoryCard({ tokenizeChat: async () => 1 }, { maximum, lanes, storyDate });
     if (card.type !== "card") throw new Error("The required lane refused");
     return card;
 }
@@ -142,6 +142,145 @@ function harness(vector: (text: string) => number[] = () => [1, 0]) {
     };
     return { host, calls, control };
 }
+
+describe("retrieved story dates", () => {
+    it("recomputes the newest valid placed date, including raw records, stored ties and greetings", async () => {
+        const { host } = harness();
+        const greeting = { fmIndex: -1, hash: "opening" };
+        const dated = (year: number, month: number, day: number) => ({
+            text: "Story time",
+            date: { year, month, day },
+        });
+        const first = event("first-at-place", ["recent"], { storyTime: dated(2025, 4, 2) });
+        const last = event("last-at-place", ["old", "recent"], { storyTime: dated(2025, 4, 3) });
+        const request = input({
+            entries: [
+                { messageId: undefined, greeting, text: "Opening", role: "char" },
+                entry("old"),
+                entry("recent"),
+                entry("newest"),
+            ],
+            window: { start: 2, dropped: new Set([0, 1]) },
+            settings: settings({ laneTargets: { flow: 0, pages: 0, events: 0, evidence: 0, threads: 0 } }),
+            events: [
+                first,
+                last,
+                event("older-stored-last", ["old"], { storyTime: dated(2025, 3, 31) }),
+                event("opening", [], { greeting, storyTime: { text: "Opening", date: { month: 10, day: 15 } } }),
+                event("undated-newest", ["newest"]),
+                event("invalid-newest", ["newest"], { storyTime: dated(2025, 2, 30) }),
+                event("stale", ["newest"], { status: "stale", storyTime: dated(2026, 1, 1) }),
+                event("retracted", ["newest"], { status: "retracted", storyTime: dated(2026, 2, 1) }),
+                event("suppressed", ["newest"], { suppressed: true, storyTime: dated(2026, 3, 1) }),
+                event("missing-source", ["missing"], { storyTime: dated(2026, 4, 1) }),
+            ],
+        });
+        const checkDate = async (date: Input["events"][number]["storyTime"]["date"]) => {
+            const prepared = await prepareRetrieval(request);
+            expect(prepared.storyDate).toEqual(date);
+            expect((await retrieveLanes(host, request, { prepared })).storyDate).toEqual(date);
+        };
+        await checkDate({ year: 2025, month: 4, day: 3 });
+        last.status = "retracted";
+        await checkDate({ year: 2025, month: 4, day: 2 });
+        first.suppressed = true;
+        await checkDate({ year: 2025, month: 3, day: 31 });
+        request.entries = request.entries.filter(({ messageId }) => messageId !== "old");
+        await checkDate({ month: 10, day: 15 });
+        request.entries = request.entries.filter((entry) => !entry.greeting);
+        await checkDate(undefined);
+    });
+
+    it("labels events, flow titles and both full forms from the story date without embedding labels", async () => {
+        const h = harness();
+        const recent = event("recent", ["recent"], {
+            summary: "recent summary",
+            storyTime: { text: "3월 31일 저녁", date: { year: 2025, month: 3, day: 31 } },
+            keyLines: [{ speaker: "Ada", text: "Stay here." }],
+        });
+        const result = await retrieveLanes(
+            h.host,
+            input({
+                entries: [entry("future"), entry("early"), entry("recent"), entry("now"), entry("undated")],
+                window: { start: 3, dropped: new Set([0, 1, 2]) },
+                settings: settings({
+                    flowEvents: 2,
+                    flowKeyLineEvents: 3,
+                    laneTargets: { flow: 1500, pages: 0, events: 1000, evidence: 0, threads: 0 },
+                }),
+                events: [
+                    event("future", ["future"], {
+                        storyTime: { text: "Tomorrow", date: { year: 2025, month: 4, day: 4 } },
+                    }),
+                    event("early", ["early"], {
+                        storyTime: { text: "3월 17일 저녁", date: { year: 2025, month: 3, day: 17 } },
+                    }),
+                    recent,
+                    event("now", ["now"], { storyTime: { text: "Today", date: { year: 2025, month: 4, day: 3 } } }),
+                    event("undated", ["undated"]),
+                ],
+            }),
+        );
+        expect(result.storyDate).toEqual({ year: 2025, month: 4, day: 3 });
+        const flow = result.lanes.find(({ lane }) => lane === "flow")!;
+        expect(flow.items.map(({ line }) => line)).toEqual([
+            "[m:flow:undated] 1 turn ago: undated",
+            "[m:flow:now] 2 turns ago: (same day) now",
+            "[m:flow:recent] 3 turns ago: (3 days ago) recent",
+            "[m:flow:early] 4 turns ago: (2 weeks ago) early",
+            "[m:flow:future] 5 turns ago: future",
+        ]);
+        expect(flow.flow?.full.find(({ id }) => id === "recent")).toMatchObject({
+            line: '[m:flow:recent] 3 turns ago: (3 days ago, 3월 31일 저녁) recent: recent summary "Stay here." (Ada)',
+            plain: { line: "[m:flow:recent] 3 turns ago: (3 days ago, 3월 31일 저녁) recent: recent summary" },
+        });
+        expect(flow.flow?.full.find(({ id }) => id === "future")?.line).toBe(
+            "[m:flow:future] 5 turns ago: (Tomorrow) future: future",
+        );
+        expect(items(result, "events").map(({ line }) => line)).toEqual([
+            '[m:recent] (3 days ago, 3월 31일 저녁) recent: recent summary "Stay here." (Ada)',
+            "[m:early] (2 weeks ago, 3월 17일 저녁) early: early",
+            "[m:future] (Tomorrow) future: future",
+        ]);
+        expect(eventVectorTexts(recent)).toEqual(["recent summary", "Stay here."]);
+        expect(h.calls.flat().join("\n")).not.toMatch(/same day|days ago|weeks ago/);
+    });
+
+    it("preserves the existing lines and header when no placed event has a valid date", async () => {
+        const { host } = harness();
+        const result = await retrieveLanes(
+            host,
+            input({
+                events: [
+                    event("undated"),
+                    event("invalid", ["old"], {
+                        storyTime: { text: "Evening", date: { year: 2025, month: 2, day: 29 } },
+                    }),
+                ],
+                settings: settings({ flowEvents: 2 }),
+            }),
+        );
+        expect(result.storyDate).toBeUndefined();
+        expect(items(result, "flow").map(({ line }) => line)).toEqual([
+            "[m:flow:invalid] 2 turns ago: invalid",
+            "[m:flow:undated] 2 turns ago: undated",
+        ]);
+        expect(items(result, "events").map(({ line }) => line)).toEqual([
+            "[m:invalid] (Evening) invalid: invalid",
+            "[m:undated] (Morning) undated: undated",
+        ]);
+        const card = await spentCard(result, 100);
+        expect(card.stable).toBe(
+            [
+                "These records are authoritative for the past, and the scene for the present; recent messages win over both.",
+                "",
+                "Recent events:",
+                "[m:flow:invalid] 2 turns ago: invalid",
+                "[m:flow:undated] 2 turns ago: undated",
+            ].join("\n"),
+        );
+    });
+});
 
 describe("bounded memory embeddings", () => {
     function selection(host: MemorySelectionInput["host"], messages: Message[]): MemorySelectionInput {
@@ -512,6 +651,31 @@ describe("selectMemory evidence from trimmed history", () => {
         );
         expect(result.gapTokens).toBe(longAnswer.length);
         expect(result.coverage).toBe("gap");
+    });
+
+    it("retains the story anchor when trimming history rebuilds the card with evidence", async () => {
+        const request = selectionInput([{ chatId: "answer", role: "char", data: longAnswer }, ...tail]);
+        const result = await selectMemory(request, {
+            ...records,
+            pages: [scene],
+            events: [
+                event("current", ["recent-reply"], {
+                    storyTime: { text: "Today", date: { year: 2025, month: 4, day: 3 } },
+                    sources: [{ messageId: "recent-reply", index: 2, hash: messageSourceHash(tail[1]) }],
+                }),
+            ],
+        });
+        expect(result.type).toBe("selected");
+        if (result.type !== "selected") throw new Error(JSON.stringify(result));
+        expect(result.items).toContainEqual(expect.objectContaining({ id: "answer", lane: "evidence" }));
+        const cardText = result.chats
+            .filter(({ memo }) => memo === "supaMemory")
+            .map(({ content }) => content)
+            .join("\n\n");
+        expect(cardText).toContain(
+            'Story date at the newest record: 2025-04-03. An event\'s "N days ago" counts back from it.',
+        );
+        expect(cardText).toContain(`[m:answer] character: "${answer}"`);
     });
 
     it("does not excerpt an older answer that stays raw after an earlier entry is trimmed", async () => {
