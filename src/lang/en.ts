@@ -2356,10 +2356,6 @@ export const languageEnglish = {
         setUp: "Set up this chat",
         setupNeeded: "Setup required",
         confirmReview: "Confirm",
-        thisChat: "This chat",
-        notThisChat: "Not this chat's",
-        showThisChat: "Show this chat's",
-        notSetForChat: "Not set for this chat",
         forChat: (name: string) => `For this chat: ${name}`,
         incomplete: "This chat cannot be sent until its settings are set or confirmed.",
         usedByChats: (count: number) =>

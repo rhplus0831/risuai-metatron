@@ -734,7 +734,7 @@ test("two tabs showing two bound chats send with their own presets: the provider
     await context.close();
 });
 
-test("a settings pick shows the tab's prompt while the chat and its next request keep their binding; the Prompt page shows no note comparing them", async ({
+test("a settings pick shows the tab's prompt while the chat and its next request keep their binding; a second pick switches back", async ({
     context,
     baseURL,
 }) => {
@@ -775,8 +775,6 @@ test("a settings pick shows the tab's prompt while the chat and its next request
     expect((await tabSelection(page)).presetId).toBe(b.promptPresetId);
     expect(await entryOf(page, ref)).toMatchObject(a);
     await expect(header).toContainText(NAMES.promptB);
-    await expect(header).not.toContainText("Not this chat's");
-    await expect(header.locator("[data-binding-scope-show]")).toHaveCount(0);
     const responseSize = page
         .locator(
             'xpath=//span[starts-with(normalize-space(.), "Max Response Size")]/following-sibling::*[1]/descendant-or-self::input',
@@ -803,7 +801,6 @@ test("a settings pick shows the tab's prompt while the chat and its next request
         .click();
     await pick(page, "Prompt Presets", NAMES.promptA);
     await expect(header).toContainText(NAMES.promptA);
-    await expect(header.getByText("This chat", { exact: true })).toHaveCount(0);
     await expect(responseSize).toHaveValue("111");
     expect((await tabSelection(page)).presetId).toBe(a.promptPresetId);
     expect(await entryOf(page, ref)).toMatchObject(a);
