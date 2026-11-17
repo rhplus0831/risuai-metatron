@@ -5,7 +5,7 @@ Status: drafted 2026-11-17 at `ace54e7da` and committed at `10283a11d`, then aud
 report. The agreed decisions are the user's of 2026-11-17; D1 to D5 are this plan's own and open to the user's change.
 The limits stated in the Goal (what rewrites the request body afterwards, the summaries outside the request layer),
 the settings report exclusion, the meter's occupied total, and the slice order took their present form from the audit.
-Landed: 1 (`3e872255e`), 2 (`b5d61469e`), 3 (`353cb4ac8`).
+Landed: 1 (`3e872255e`), 2 (`b5d61469e`), 3 (`353cb4ac8`), 4 (`d267dbe6b`).
 
 - 2026-11-17: first draft, written after a design discussion with the user. The user's answers are recorded under
   **Agreed decisions**.
