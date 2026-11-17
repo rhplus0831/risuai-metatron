@@ -51,7 +51,7 @@ Read each module's header or component contract, then read the named export's co
 - `src/lib/Others/StructuredMemory/MemoryLinkButton.svelte`: record and message link; `Props`.
 - `src/lib/Others/StructuredMemory/MemoryManifest.svelte`: shared report view; `Props`, `writerReasonText`.
 - `src/lib/Others/StructuredMemory/memoryText.ts`: stored-code text; `codeText`, `memoryReasonText`,
-  `memoryReadFailureText`.
+  `memoryReadFailureText`, `storyTimeText`.
 - `src/lib/Others/StructuredMemory/memoryRecordPress.ts`: shared command presses; `pressMemoryRecord`,
   `pressMemoryTest`.
 - `src/lib/Others/HypaV3Modal/taskStatusLine.ts`: shared task line; `memoryTaskStatusLine`.
@@ -120,17 +120,17 @@ The meter reads tokens and `memoryStatusWord`; its popover and Preview share `Me
 
 - `commitWindow` in `server/src/prompt/memory/structured/writer.ts`, for a task or a record now (`runMemoryRecord` in
   `server/src/prompt/memory/structured/recordJob.ts`), copies the run's `recorded` or `failed` receipt to every
-  assistant in the window after the memory write, preserving other generation info. A receipt conflict leaves memory
-  committed; `MemoryRun.receipt` remains authoritative.
+  assistant in the window after the memory write, keeping other generation info. A receipt conflict leaves memory
+  committed; `MemoryRun.receipt` stays authoritative.
 - The send's `structuredMemoryStep` in `server/src/prompt/assemble.ts`, whose `writerNotice` builds it, puts
   `notAutomatic` (`awaitingAdoption`, `pluginModel`, `requestTrigger`, `localSummarization`) or `skipped`
-  (`writerPaused`) on its own reply. It cannot wait for a task, since no window may be due. A later recording replaces
-  the `memory` field.
+  (`writerPaused`) on its own reply. It cannot wait for a task: no window may be due. A later recording replaces the
+  `memory` field.
 
 The receipt line shows only in a Structured Memory chat with memory on. `pending` is never stored; `memoryReceiptView`
-owns missing-row display. The `MemoryReceiptLine` component reads the held chat to follow receipt-only feed patches, and
-uses `requestMemoryPanelTarget` to open the linked page history before the panel mounts. `Chat.svelte` also renders the
-line in the `mobilechat` and `cardboard` footers. Its component contract owns display and revert behavior.
+owns missing-row display. `MemoryReceiptLine` reads the held chat to follow receipt-only feed patches, and uses
+`requestMemoryPanelTarget` to open the linked page history before the panel mounts. `Chat.svelte` also renders the line
+in the `mobilechat` and `cardboard` footers. Its component contract owns display and revert behavior.
 
 ### The memory panel
 
@@ -170,30 +170,28 @@ then closes the panel.
 
 A page opens in `read`: its title, type and aliases, its links, and each section with a body as plain text under a small
 label, the marks as badges, `currentState` first and set apart. A section's `(was: ...)` lines are folded behind a count
-and show dimmed when opened; another selection folds them again. Read's record links are `MemoryLinkButton`'s `quiet`
+and show dimmed when opened; another selection folds them again. Read's record links use `MemoryLinkButton`'s `quiet`
 form and its text column is capped. `manage` is the checking view, with every control, provenance, and the history. The
 choice lasts while Pages is mounted; Evidence missing, a page in the trash, and a jump to a history entry show `manage`.
-The jump scrolls its row once, when both the diff and the history list have rendered; another entry, page, target, or
-chat drops it. Links name live pages by title and select them; an id with no live page is a disabled button. A title
-filter narrows the tree before `memoryPageTree` groups it, so an emptied type loses its header; the trash list is not
-filtered.
+The jump scrolls its row once, when the diff and the history list have rendered; another entry, page, target, or chat
+drops it. Links name live pages by title and select them; an id with no live page is a disabled button. A title filter
+narrows the tree before `memoryPageTree` groups it, so an emptied type loses its header; the trash list is not filtered.
 
 The tree marks a page the last send used with a dot, and one legend line above it names the dot and counts those among
 the listed pages. The title filter's Search text button or form submit reads `/find?q=...` through
 `findStructuredMemory`, including in chats with events but no pages. The button shows only for typed text whose hits are
-not already showing; the action is disabled for over-100-character trimmed input and while reading, and a blank submit
-does nothing. The hits replace the tree, its no-match line, and show-more control while the trimmed input equals the
-searched text; editing it to anything else drops the hits and restores the filtered tree. Page hits show title, heading
-when present, and excerpt and select that page; event hits show title and excerpt and open Timeline. Text stays plain.
-An empty read or failure has its own line; `more` says the list was cut at `MEMORY_FIND_HITS_MAX` (200). Active searches
-rerun on `refresh`; older answers from another chat, input, read, or refresh cannot replace them. Evidence missing has
-no search.
+not shown; the action is disabled for over-100-character trimmed input and while reading, and a blank submit does
+nothing. The hits replace the tree, its no-match line, and show-more control while the trimmed input equals the searched
+text; any other edit drops the hits and restores the filtered tree. Page hits show title, heading when present, and
+excerpt and select that page; event hits show title and excerpt and open Timeline. Text stays plain. An empty read or
+failure has its own line; `more` says the list was cut at `MEMORY_FIND_HITS_MAX` (200). Active searches rerun on
+`refresh`; older answers from another chat, input, read, or refresh are dropped. Evidence missing has no search.
 
 One page lookup (`/find?page=...`) per selection and `refresh` reads its events and threads. `read` fetches on selection
-and shows only nonempty blocks below the sections: knowledge (one fact per line with believed/secret marks and its event
+and shows nonempty blocks below the sections: knowledge (one fact per line with believed/secret marks and its event
 link), the newest relationship shift per other page and direction, threads with their states (running first), and
 events. `manage` fetches when its closed event disclosure opens; both views share the answer until selection or
-`refresh` changes, retaining old rows during a refresh. The page's own `knowledge` and `relationships` sections are the
+`refresh` changes, keeping old rows during a refresh. The page's own `knowledge` and `relationships` sections are the
 writer's digest, which its rules keep short, so these blocks are where a fact recorded only on an event shows.
 
 The event list sorts by current source positions, unknowns last, before the 200-event cap; rows show story time and an
@@ -202,23 +200,25 @@ all. Event links open Timeline. Empty, failure, and truncated reads have their o
 read-number guards discard old answers; search-hit and event-link buttons are disabled while a page edit is pending.
 
 An opened Timeline event shows what it changed under its key lines: state changes, knowledge, relationship shifts, and
-thread changes, through `MemoryEventFacts`, the component the Log renders a run's extraction with. Timeline passes the
-`memoryEventView` it already made, unconverted, with page and thread titles from the contents read it does once per
-`refresh`; an id with no title shows as the id, and the Log, which passes no titles, shows ids.
+thread changes, through `MemoryEventFacts`, which the Log renders a run's extraction with. Timeline passes its
+`memoryEventView` unconverted, with page and thread titles from its contents read per `refresh`; an untitled id shows as
+the id, as in the Log, which passes no titles. Timeline's and the Log's story time lines come from `storyTimeText`: the
+date (`formatStoryDate`) and the text joined by a middle dot, then the ordinal; a date alone shows the line. Both reads
+keep only a stored date `isStoryDate` accepts.
 
-Timeline has two views, `titles` and `story`, a choice that lasts while the tab is mounted. `story` lists the same rows
-in message order without retracted events, each with its story time and summary as plain text; pressing a row still
-opens its details and repairs. Summaries come from `/story` (`readStructuredMemoryStory`), read when `story` is chosen
-and again when `refresh` moves while it is; the previous summaries stay until the new read settles. A row with no
-summary shows its title alone, and a failed read shows the failure line over rows that keep their titles.
+Timeline has two views, `titles` and `story`, kept while it is mounted. `story` lists the same rows in message order
+without retracted events, each with its story time and summary as plain text; a pressed row opens its details and
+repairs. Summaries come from `/story` (`readStructuredMemoryStory`), read when `story` is chosen and again when
+`refresh` moves while it is; old summaries stay until the new read settles. A row with no summary shows its title alone,
+and a failed read shows the failure line over rows that keep their titles.
 
 ### The Evidence missing tab
 
-The panel lists this tab only while contents' health counts flagged sections or while it is selected, so resolving the
-last one leaves the notice in place until another tab is chosen. It is `PagesTab` under a filter: the tree holds
-contents' `unsupportedPages`, the page shows its flagged sections alone, and the next flagged page is selected when the
-shown one has none left. Pages hands each contents read to the panel through `onContents`, which keeps the count current
-without a second request.
+The panel lists this tab only while contents' health counts flagged sections or it is selected, so resolving the last
+one leaves the notice until another tab is chosen. It is `PagesTab` under a filter: the tree holds contents'
+`unsupportedPages`, the page shows its flagged sections alone, and the next flagged page is selected when the shown one
+has none left. Pages hands each contents read to the panel through `onContents`, keeping the count current without a
+second request.
 
 A flagged section there takes one of two answers. Keep sends `sectionKeep` with the tab's `preserve` checkbox, which is
 tab state and starts checked; Keep all sends a page's keeps in turn, each at the revision the last answer named. Revert
@@ -239,22 +239,21 @@ control that takes the mark off.
 
 Pages has two forms of a person's own text, both off under `controlsOff`. "New note" sits over the tree, and in an empty
 chat, but not under `only="unsupported"` or while the chat waits for adoption; it sends
-[`create`](pages.md#a-persons-note) at the contents' revision and selects the answered page in `manage`. Every accepted
-page edit advances that revision at once and rereads contents, so a note made right after an edit is not refused as
-stale. In `manage`, a page that is not the scene, a character, or in the trash has "add section" (heading, body with its
-count), which sends `sectionAdd` through the held copy like a section's edit.
+[`create`](pages.md#a-persons-note) at the contents' revision and selects the answered page in `manage`. Each accepted
+page edit advances that revision at once and rereads contents, so a note right after an edit is not refused as stale. In
+`manage`, a page that is not the scene, a character, or in the trash has "add section" (heading, body with its count),
+which sends `sectionAdd` through the held copy like a section's edit.
 
 Timeline's opened, non-retracted event has a title and summary editor with limit counts, Save, and Cancel. Blank or
-over-limit text cannot be saved. The draft remembers its stored title and summary; a reread that changes either closes
-it with the `changed` notice. Opening another event or closing the current one discards the draft. Read-only or an
-outstanding send disables the controls, and every edit uses the coverage revision through `editStructuredMemory`. The
-corrected badge is held from the record beside `memoryEventView`, and is a button that confirms `eventRelease`,
-including on retracted events. Text stays plain.
+over-limit text is not saved. The draft keeps its stored title and summary; a reread that changes either closes it with
+the `changed` notice. Opening another event or closing this one discards the draft. Read-only or a pending send disables
+the controls, and every edit uses the coverage revision through `editStructuredMemory`. The corrected badge, held from
+the record beside `memoryEventView`, is a button confirming `eventRelease`, retracted events included. Text stays plain.
 
-After either an accepted or refused `eventText` or `eventRelease`, Timeline rereads coverage and the currently opened
-event's record. It also rereads the story when chosen, or invalidates its cached read so the next switch fetches it.
-Chat, selection, and read-number guards discard older answers. Refusals use the repair notices; an accepted text edit
-closes its draft before the reread, while a refused draft survives only if its stored base still matches.
+After an accepted or refused `eventText` or `eventRelease`, Timeline rereads coverage and the opened event's record. It
+also rereads the story when chosen, else drops its cached read so the next switch fetches it. Chat, selection, and
+read-number guards discard older answers. Refusals use the repair notices; an accepted text edit closes its draft before
+the reread, while a refused draft survives only if its stored base matches.
 
 ### The writer line
 
@@ -270,20 +269,20 @@ and default seeding from `GET /api/memory/structured/default-prompts`.
 
 `server/src/prompt/memory/structured/prompts.ts`'s `parseCustomFrame` owns the whole ChatML frame and CBS processing,
 required slots, and compaction's unchanged frame. Analysis requires `messages` and `scene`; patch requires `cast` and
-`previous`. Scene and cast carry `takenBack` in either mode, preserving replay checks. The writer's header owns
+`previous`. Scene and cast carry `takenBack` in either mode for replay checks. The writer's header owns
 `customPromptInvalid`, its failed receipt without a call for that frame, and the custom patch's margin check
 (`inputTooLarge`). Both invalid-frame failures count toward the pause.
 
-`customPrompt` means fine-tuning was enabled, even if no frame ran, on runs, failed and recorded receipts, and send
-notices. Failed custom receipts carry bounded, redacted `error` for the receipt line and Log. The panel reads current
-settings; receipt and Log rows read their stored mode. It is not a health state, so no badge warns about it.
+`customPrompt` means fine-tuning was on, even if no frame ran, on runs, failed and recorded receipts, and send notices.
+Failed custom receipts carry bounded, redacted `error` for the receipt line and Log. The panel reads current settings;
+receipt and Log rows read their stored mode. It is not a health state; no badge warns about it.
 
 ### The test run
 
 `runMemoryTest` in `server/src/prompt/memory/structured/testRun.ts` serves the `memoryTest` job. Its header holds replay
 or open-window selection and detached dry-run execution. After `admitRecord`, admission refuses a tab-bound `memory`
-slot or `request` trigger, or a queued or running memory task. No writer lease is taken, since that would cancel a task;
-the job holds the chat slot, and `rebuildLocks` and `chatBusy` refuse it before execution.
+slot or `request` trigger, or a queued or running memory task. It takes no writer lease, which would cancel a task; the
+job holds the chat slot, and `rebuildLocks` and `chatBusy` refuse it before execution.
 
 The contract for `createMemoryTaskHost` in `server/src/prompt/memory/memoryTaskHost.ts` allows no tool, inlay, tab
 callback, or chat-variable write. `createStructuredWriter`'s `dryRun` skips the last event to prevent self-deduping the

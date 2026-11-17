@@ -29,6 +29,7 @@ import {
     findStructuredMemory,
     readStructuredMemoryFile,
     joinMemoryCoverage,
+    memoryEventView,
     memoryRunView,
     memoryTimelineRows,
     memoryPageHistoryView,
@@ -450,7 +451,7 @@ it("shows missing receipts only on the newest eligible assistant and distinguish
     }
 });
 
-it("restarts the story after a second-round revision conflict, discarding earlier events and filling missing display fields", async () => {
+it("restarts the story after a second-round revision conflict, discarding earlier events, keeping valid dates, dropping malformed ones and filling missing display fields", async () => {
     authFetch
         .mockResolvedValueOnce(
             Response.json({
@@ -474,16 +475,25 @@ it("restarts the story after a second-round revision conflict, discarding earlie
                     {
                         id: "current",
                         summary: "Mira arrived.",
-                        storyTime: { text: "Dawn", ordinal: 3 },
+                        storyTime: { text: "Dawn", ordinal: 3, date: { year: 2025, month: 4, day: 3 } },
                         participants: ["mira"],
                     },
                 ],
                 next: 1,
             }),
         )
-        .mockResolvedValueOnce(Response.json({ revision: "r2", events: [{ id: "restored" }], next: null }));
+        .mockResolvedValueOnce(
+            Response.json({
+                revision: "r2",
+                events: [
+                    { id: "restored" },
+                    { id: "malformed-date", storyTime: { text: "Night", ordinal: 4, date: { month: 2, day: 30 } } },
+                ],
+                next: null,
+            }),
+        );
 
-    expect(await readStructuredMemoryStory(ref)).toEqual({
+    expect(await readStructuredMemoryStory(ref)).toStrictEqual({
         outcome: "ok",
         value: {
             revision: "r2",
@@ -491,10 +501,11 @@ it("restarts the story after a second-round revision conflict, discarding earlie
                 {
                     id: "current",
                     summary: "Mira arrived.",
-                    storyTime: { text: "Dawn", ordinal: 3 },
+                    storyTime: { text: "Dawn", ordinal: 3, date: { year: 2025, month: 4, day: 3 } },
                     participants: ["mira"],
                 },
                 { id: "restored", summary: "", storyTime: { text: "" }, participants: [] },
+                { id: "malformed-date", summary: "", storyTime: { text: "Night", ordinal: 4 }, participants: [] },
             ],
         },
     });
@@ -767,6 +778,24 @@ it("counts the raw window in assistant turns and leaves only covered eligible hi
     ).toMatchObject({
         gap: [],
         leaving: [],
+    });
+});
+
+it.each([
+    { name: "event", view: (storyTime: unknown) => memoryEventView({ storyTime }).storyTime },
+    {
+        name: "run",
+        view: (storyTime: unknown) => memoryRunView({ analysis: { event: { storyTime } } }).event?.storyTime,
+    },
+])("$name views preserve valid story dates and omit malformed dates without changing text or ordinal", ({ view }) => {
+    expect(view({ text: "아침", ordinal: 3, date: { year: 2025, month: 4, day: 3 } })).toStrictEqual({
+        text: "아침",
+        ordinal: 3,
+        date: { year: 2025, month: 4, day: 3 },
+    });
+    expect(view({ text: "Night", ordinal: 4, date: { year: 2025, month: 2, day: 30 } })).toStrictEqual({
+        text: "Night",
+        ordinal: 4,
     });
 });
 

@@ -13,6 +13,7 @@ import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     isSealedHypaV3Data,
+    isStoryDate,
     MEMORY_FIND_HITS_MAX,
     MEMORY_HEALTH_CHATS_MAX,
     MEMORY_KNOWLEDGE_STANCES,
@@ -44,6 +45,7 @@ import {
     type MemoryPage,
     type MemoryPageHistoryEntry,
     type MemoryPageType,
+    type MemoryStoryDate,
     type MemoryThread,
     type ReadEntry,
     type StructuredMemoryAbandonAnswer,
@@ -351,6 +353,12 @@ function storedItems(value: unknown): Record<string, unknown>[] {
 const storedText = (value: unknown) => (typeof value === "string" ? value : undefined);
 
 const storedCount = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
+
+/** A stored story date as its three fields alone; nothing for a malformed one. */
+const storedDate = (value: unknown): MemoryStoryDate | undefined =>
+    isStoryDate(value)
+        ? { ...(value.year === undefined ? {} : { year: value.year }), month: value.month, day: value.day }
+        : undefined;
 
 /** `{ [key]: value }`, or nothing for a value the receipt does not hold. */
 const present = <K extends string, V>(key: K, value: V | undefined) =>
@@ -689,6 +697,7 @@ function parseStoryRound(body: AnswerBody, cursor: number): StructuredMemoryStor
                     storyTime: {
                         text: storedText(storyTime.text) ?? "",
                         ...present("ordinal", storedCount(storyTime.ordinal)),
+                        ...present("date", storedDate(storyTime.date)),
                     },
                     participants: storedTexts(event.participants),
                 },
@@ -2315,7 +2324,7 @@ export type MemoryRunEventView = {
     writerRun?: string;
     title: string;
     summary: string;
-    storyTime: { text: string; ordinal?: number };
+    storyTime: { text: string; ordinal?: number; date?: MemoryStoryDate };
     participants: string[];
     keyLines: { speaker: string; text: string; unverified: boolean }[];
     stateChanges: {
@@ -2388,7 +2397,11 @@ function runEventView(event: Record<string, unknown>, unverified: ReadonlySet<st
     return {
         title: text(event.title),
         summary: text(event.summary),
-        storyTime: { text: text(storyTime.text), ...present("ordinal", storedCount(storyTime.ordinal)) },
+        storyTime: {
+            text: text(storyTime.text),
+            ...present("ordinal", storedCount(storyTime.ordinal)),
+            ...present("date", storedDate(storyTime.date)),
+        },
         participants: storedTexts(event.participants),
         keyLines: storedItems(event.keyLines).map((line) => ({
             speaker: text(line.speaker),

@@ -42,7 +42,7 @@
     import GreetingCitation from "./GreetingCitation.svelte";
     import MemoryLinkButton from "./MemoryLinkButton.svelte";
     import { pressMemoryRecord } from "./memoryRecordPress";
-    import { memoryReadFailureText, memoryReasonText } from "./memoryText";
+    import { memoryReadFailureText, memoryReasonText, storyTimeText } from "./memoryText";
 
     /**
      * Timeline reads server/src/routes/structuredMemory.ts's coverage answer, which already has each
@@ -238,10 +238,6 @@
             }
         });
     });
-
-    function storyTimeText({ text, ordinal }: StructuredMemoryStoryEvent["storyTime"]): string {
-        return text + (ordinal === undefined ? "" : ` (${ordinal})`);
-    }
 
     function openRow(id: string) {
         editor = null;
@@ -489,7 +485,7 @@
             {#if openEvent.writerRun === ADOPTED_WRITER_RUN}
                 <p class="text-textcolor2" data-memory-event-adopted>{language.structuredMemory.adopt.adoptedEvent}</p>
             {/if}
-            {#if openEvent.storyTime.text !== ""}
+            {#if storyTimeText(openEvent.storyTime) !== ""}
                 <p>
                     {logText.storyTime}: {storyTimeText(openEvent.storyTime)}
                 </p>
@@ -621,7 +617,7 @@
                             <span class={event.status === "retracted" ? "line-through text-textcolor2" : ""}>
                                 {event.title}
                             </span>
-                            {#if story && story.storyTime.text !== ""}
+                            {#if story && storyTimeText(story.storyTime) !== ""}
                                 <span class="text-textcolor2">
                                     {logText.storyTime}: {storyTimeText(story.storyTime)}
                                 </span>

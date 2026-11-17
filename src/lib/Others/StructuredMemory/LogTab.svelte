@@ -15,7 +15,7 @@
     import Button from "src/lib/UI/GUI/Button.svelte";
     import type { StructuredMemoryLogRun } from "../../../../shared/structuredMemory.ts";
     import MemoryEventFacts from "./MemoryEventFacts.svelte";
-    import { codeText, memoryReadFailureText, memoryReasonText } from "./memoryText";
+    import { codeText, memoryReadFailureText, memoryReasonText, storyTimeText } from "./memoryText";
 
     /**
      * Run rows preserve what the model extracted, even where admitted records differ. `memoryRunView`
@@ -140,11 +140,9 @@
         {@const event = view.event}
         <p class="font-semibold">{event.title}</p>
         <p class="whitespace-pre-wrap">{event.summary}</p>
-        {#if event.storyTime.text !== ""}
+        {#if storyTimeText(event.storyTime) !== ""}
             <p>
-                {text.storyTime}: {event.storyTime.text}{event.storyTime.ordinal === undefined
-                    ? ""
-                    : ` (${event.storyTime.ordinal})`}
+                {text.storyTime}: {storyTimeText(event.storyTime)}
             </p>
         {/if}
         {#if event.participants.length > 0}

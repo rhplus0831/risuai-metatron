@@ -401,6 +401,7 @@ it("shows run metrics and extracted items beside their verified or unverified qu
             event: {
                 title: "Extracted title",
                 summary: "**summary**",
+                storyTime: { text: "", date: { month: 10, day: 15 } },
                 keyLines: [{ speaker: "Speaker", text: "verbatim" }],
                 stateChanges: [
                     { pageId: "door", section: "state", before: "closed", after: "open", quote: "door quote" },
@@ -434,6 +435,9 @@ it("shows run metrics and extracted items beside their verified or unverified qu
     ]);
     expect(row.textContent).toContain("Extracted title");
     expect(row.textContent).toContain("**summary**");
+    expect([...row.querySelectorAll("p")].map((paragraph) => paragraph.textContent?.trim())).toContain(
+        `${language.structuredMemory.log.storyTime}: 10-15`,
+    );
     expect(row.querySelector("img, strong")).toBeNull();
     const exportButton = [...target.querySelectorAll("button")].find(
         (button) => button.textContent.trim() === language.structuredMemory.log.export,
@@ -2048,7 +2052,20 @@ it("shows a retracted event's details without an Edit control", async () => {
     expect(query("[data-memory-event-edit]")).toBeNull();
 });
 
-it("reads story once per refresh, showing unretracted summaries in message order and keeping titles on failure", async () => {
+it("shows a recorded date without story text when a Timeline title is opened", async () => {
+    const state = serveAnchoredEvent();
+    state.event.storyTime = { text: "", date: { year: 2025, month: 4, day: 3 } };
+    await open();
+    await chooseTab("timeline");
+    click('[data-memory-event="e"] > button');
+    await settle();
+    const row = query('[data-memory-event="e"]')!;
+    expect([...row.querySelectorAll("p")].map((paragraph) => paragraph.textContent?.trim())).toContain(
+        `${language.structuredMemory.log.storyTime}: 2025-04-03`,
+    );
+});
+
+it("reads story once per refresh, showing unretracted summaries and recorded dates in message order and keeping titles on failure", async () => {
     serveMemory();
     const messages = findChat(ref)!.message;
     // A backfilled early event comes after the later event in storage and in both route answers.
@@ -2079,9 +2096,19 @@ it("reads story once per refresh, showing unretracted summaries in message order
             return Response.json({
                 revision: "r1",
                 events: [
-                    { id: "later", summary: "The gate opened.", storyTime: { text: "" }, participants: [] },
+                    {
+                        id: "later",
+                        summary: "The gate opened.",
+                        storyTime: { text: "", date: { month: 10, day: 15 } },
+                        participants: [],
+                    },
                     { id: "retracted", summary: "A discarded rumor.", storyTime: { text: "Night" }, participants: [] },
-                    { id: "earlier", summary: earlySummary, storyTime: { text: "Dawn" }, participants: ["mira"] },
+                    {
+                        id: "earlier",
+                        summary: earlySummary,
+                        storyTime: { text: "Dawn", ordinal: 3, date: { year: 2025, month: 4, day: 3 } },
+                        participants: ["mira"],
+                    },
                 ],
                 next: null,
             });
@@ -2119,9 +2146,17 @@ it("reads story once per refresh, showing unretracted summaries in message order
     expect(rowIds()).toEqual(["earlier", "later", "missing"]);
     expect(summaries()).toEqual([earlySummary, "The gate opened."]);
     expect(query('[data-memory-event="earlier"]')?.textContent).toContain("Mira arrives");
-    expect(query('[data-memory-event="earlier"]')?.textContent).toContain("Dawn");
+    expect(
+        [...query('[data-memory-event="earlier"] > button')!.querySelectorAll("span")].map((span) =>
+            span.textContent?.trim(),
+        ),
+    ).toContain(`${language.structuredMemory.log.storyTime}: 2025-04-03 · Dawn (3)`);
     expect(query('[data-memory-event="earlier"] [data-memory-event-summary]')?.childElementCount).toBe(0);
-    expect(query('[data-memory-event="later"]')?.textContent).not.toContain(language.structuredMemory.log.storyTime);
+    expect(
+        [...query('[data-memory-event="later"] > button')!.querySelectorAll("span")].map((span) =>
+            span.textContent?.trim(),
+        ),
+    ).toContain(`${language.structuredMemory.log.storyTime}: 10-15`);
     expect(query('[data-memory-event="missing"]')?.textContent).toContain("An untold ending");
     expect(query('[data-memory-event="missing"] [data-memory-event-summary]')).toBeNull();
 
