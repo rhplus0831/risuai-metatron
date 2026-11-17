@@ -45,6 +45,7 @@ vi.mock("src/ts/stores.svelte", async () =>
 vi.mock("./apiV3/v3.svelte", () => ({
     loadV3Plugins: mocks.loadV3Plugins,
     reviewPluginPermissions: mocks.reviewPluginPermissions,
+    pluginGuestsSettled: async () => {},
 }));
 
 vi.mock("./apiV3/transpiler", () => ({
@@ -61,6 +62,7 @@ import {
     handlePluginInstallViaPlugin,
     importPlugin,
     loadPlugins,
+    pluginsStarted,
     updatePlugin,
     type RisuPlugin,
 } from "./plugins.svelte";
@@ -273,6 +275,72 @@ describe("plugin updates through globalFetch", () => {
         expect(settings.plugins).toHaveLength(1);
         expect(settings.plugins[0].versionOfPlugin).toBe("2.0.0");
     });
+});
+
+describe("plugin source replacement", () => {
+    it.each(["re-import", "update"] as const)(
+        "%s preserves disabled state and compatible arguments, defaulting new or changed declarations",
+        async (path) => {
+            const original = script(
+                "//@api 3.0\n//@version 1.0.0\n//@arg secret string\n//@arg count int\n//@arg changed int\n//@arg removed string",
+            );
+            await importPlugin(original);
+            await pluginsStarted();
+            expect(settings.plugins[0]).toMatchObject({
+                enabled: true,
+                realArg: { secret: "", count: 0, changed: 0, removed: "" },
+            });
+            Object.assign(settings.plugins[0], {
+                enabled: false,
+                realArg: { secret: "saved-api-key", count: 42, changed: 7, removed: "old" },
+            });
+
+            const replace = (source: string) => {
+                if (path === "re-import") return importPlugin(source);
+                vi.mocked(globalFetch).mockResolvedValueOnce({
+                    ok: true,
+                    status: 200,
+                    headers: {},
+                    data: new TextEncoder().encode(source),
+                });
+                return updatePlugin({ ...settings.plugins[0], updateURL: "https://plugins.test/test_plugin.js" });
+            };
+            await replace(path === "re-import" ? original : original.replace("1.0.0", "2.0.0"));
+            await pluginsStarted();
+            expect(settings.plugins[0]).toMatchObject({
+                enabled: false,
+                realArg: { secret: "saved-api-key", count: 42, changed: 7, removed: "old" },
+            });
+
+            let reviewStarted!: () => void;
+            const started = new Promise<void>((resolve) => (reviewStarted = resolve));
+            let finishReview!: (saved: boolean) => void;
+            mocks.reviewPluginPermissions.mockImplementationOnce(() => {
+                reviewStarted();
+                return new Promise<boolean>((resolve) => (finishReview = resolve));
+            });
+            const replacing = replace(
+                script(
+                    "//@api 3.0\n//@version 3.0.0\n//@arg secret string\n//@arg count int\n//@arg changed string\n//@arg added int",
+                ),
+            );
+            await started;
+            settings.plugins[0].realArg.secret = "edited-during-review";
+            finishReview(false);
+            await replacing;
+            await pluginsStarted();
+
+            expect(settings.plugins).toHaveLength(1);
+            expect(settings.plugins[0].enabled).toBe(false);
+            expect(settings.plugins[0].realArg).toEqual({
+                secret: "edited-during-review",
+                count: 42,
+                changed: "",
+                added: 0,
+            });
+            expect(mocks.alertError).not.toHaveBeenCalled();
+        },
+    );
 });
 
 describe("handlePluginInstallViaPlugin", () => {

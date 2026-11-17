@@ -30,7 +30,7 @@ merge cannot see inside the JSON strings it stores.
 - [chat-store](#chat-store) (1)
 - [memory](#memory) (1)
 - [persistence](#persistence) (1)
-- [plugin-sandbox](#plugin-sandbox) (2)
+- [plugin-sandbox](#plugin-sandbox) (1)
 - [structured-memory](#structured-memory) (3)
 - [translation](#translation) (2)
 
@@ -151,17 +151,6 @@ Guide: [Persistence: Database, Records, Mutation Stores](../structure/persistenc
 
 Guide: [Plugins: v3 Sandbox, Host API, Hooks, Storage, Permissions](../structure/plugin-sandbox.md#known-hazards).
 
-- Updating or re-importing a plugin resets its arguments and enables it. `importPlugin`
-  (`src/ts/plugins/plugins.svelte.ts`) builds default argument values (`0` or `""`) and `enabled: true` for the
-  record it stores, and `upsertPlugin` (`src/ts/storage/collectionStore.svelte.ts`) carries over only
-  `completionWait` and `completionQuietSeconds` from the record it replaces. Reproduced on 2026-11-17 (cross-check
-  F2, rated P1) through the real importer and store: a plugin with a string argument `saved-api-key`, a number
-  argument `42`, and the plugin disabled came back with `""`, `0`, and enabled, both after importing the same source
-  again and after `updatePlugin` installed a newer version; the two completion fields survived. Inherited from
-  upstream RisuAI. Arguments often hold API keys and long presets, an update is an ordinary action, the `plugins`
-  kind is not journaled, and only a snapshot or backup from before brings the values back. Suggested: at
-  replacement, keep the enabled state and every argument value whose declaration is still compatible (same name and
-  type).
 - A plugin import is treated as done before its save is confirmed, and a character import announces success at the
   same point. Reproduced on 2026-11-17 (cross-check F10), each half narrower than filed. Plugin: `importPlugin`
   hands the plugin to the loader with no save dispatched; after a page hide and a fresh boot against the same server

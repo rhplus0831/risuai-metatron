@@ -417,6 +417,19 @@ export async function importPlugin(
                     alertError(language.pluginPermissionSaveError.replace("{error}", String(failure.error)));
                 }
             }
+            // Read configuration after the permission review so edits made while it was open survive.
+            const previous = settings.plugins?.find((p: RisuPlugin) => p.name === pluginData.name);
+            if (previous) {
+                pluginData.enabled = previous.enabled;
+                pluginData.realArg = Object.fromEntries(
+                    Object.entries(realArg).map(([key, value]) => [
+                        key,
+                        previous.arguments?.[key] === arg[key] && Object.hasOwn(previous.realArg ?? {}, key)
+                            ? previous.realArg[key]
+                            : value,
+                    ]),
+                );
+            }
             upsertPlugin(pluginData);
         }
 
