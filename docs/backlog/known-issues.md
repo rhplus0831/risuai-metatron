@@ -26,7 +26,6 @@ merge cannot see inside the JSON strings it stores.
 
 - [chat-pipeline](#chat-pipeline) (2)
 - [chat-store](#chat-store) (1)
-- [memory](#memory) (1)
 - [persistence](#persistence) (1)
 - [structured-memory](#structured-memory) (3)
 - [translation](#translation) (1)
@@ -72,18 +71,6 @@ Guide: [Chat Store: Chat Module, Write Protocol, Checkpoints](../structure/chat-
   another device changes the edited message, the typed text stays, a notice says the message changed elsewhere, and
   a save overwrites; the translation editor shows the same notice when the stored translation changes under it
   (cross-check F4). Not yet fixed.
-
-## memory
-
-Guide: [Long-Term Memory and Embeddings](../structure/memory.md#known-hazards).
-
-- An empty model answer erases a stored SupaMemory summary. Reproduced on 2026-11-17 (cross-check F11, first half):
-  `supaMemory` (`server/src/prompt/memory/supaMemory.ts`) with the submodel summarizer reached the consolidation of
-  a four-paragraph summary, the model answered an empty success, and the returned memory kept its cursor with a
-  blank summary, which the prompt assembly stores. A non-empty answer replaced the summary as designed. Read, not
-  run: SupaMemory keeps no earlier versions, so the former summary is only in a checkpoint or snapshot from before
-  the send, or in Request History's copy of the consolidation prompt while capture is on. Suggested: refuse a blank
-  summary before it is stored. The translation half of the entry is under [translation](#translation).
 
 ## persistence
 

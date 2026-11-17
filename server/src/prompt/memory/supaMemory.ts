@@ -219,6 +219,13 @@ export async function supaMemory(
             if (db.supaModelType === "distilbart") {
                 try {
                     const sum = await host.summarizer(stringlizedChat);
+                    if (sum.trim() === "") {
+                        return {
+                            currentTokens: currentTokens,
+                            chats: chats,
+                            error: "SupaMemory: Summarizer: " + sum,
+                        };
+                    }
                     return sum;
                 } catch (error) {
                     host.fence();
@@ -292,7 +299,12 @@ export async function supaMemory(
                     },
                 ];
                 const da = await host.request(promptbody);
-                if (da.type === "fail" || da.type === "streaming" || da.type === "multiline") {
+                if (
+                    da.type === "fail" ||
+                    da.type === "streaming" ||
+                    da.type === "multiline" ||
+                    da.result.trim() === ""
+                ) {
                     return {
                         currentTokens: currentTokens,
                         chats: chats,
