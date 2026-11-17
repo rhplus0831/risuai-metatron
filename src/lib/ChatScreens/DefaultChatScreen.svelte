@@ -78,7 +78,7 @@
         isChatBusy,
         memoryHealthStates,
     } from "src/ts/process/chatStatus.svelte";
-    import { isLocalSend, localSends } from "src/ts/process/localSends";
+    import { beginLocalSend, isLocalSend, localSends } from "src/ts/process/localSends";
     import { openOocPanel } from "src/ts/ooc/oocPanel.svelte";
     import { createSendAborts } from "src/ts/process/sendAborts.svelte";
     import { createInputHookRuns } from "src/ts/process/inputHookRuns.svelte";
@@ -684,8 +684,8 @@
      * Send (`send`) and Continue (`sendContinue`) from the selected chat's composer. The checks run in
      * this order, all before the composer or reroll history is consumed:
      * the chat busy or running a hook (`isScreenBusy`), a slash command (`processMultiCommand`, which
-     * consumes its line), the chat busy again after a line that is not a command, an incomplete binding
-     * (`chatBindingDialog`), then orphaned lore overrides. A chosen Draft hook runs on nonblank main text and returns without
+     * reserves the chat and consumes its line only if unchanged), the chat busy again after a line that is not
+     * a command, an incomplete binding (`chatBindingDialog`), then orphaned lore overrides. A chosen Draft hook runs on nonblank main text and returns without
      * consuming anything; Continue, commands, blank main text, and the playground keep the send path.
      * While the binding is incomplete the send button reads "Set up this chat" and keeps the
      * `button-icon-send` class, so the send hotkey opens the setup too, and the composers are read-only.
@@ -717,12 +717,28 @@
         const characterOf = () => characterList().find((character) => character?.chaId === ref.chaId);
 
         if (draft.input.startsWith("/")) {
-            const commandProcessed = await processMultiCommand(draft.input);
-            if (commandProcessed !== false) {
-                draft.input = "";
-                inputTranslation.invalidate();
+            const submitted = draft.input;
+            const release = beginLocalSend(ref);
+            if (!release) {
+                alertError(language.chatGenerating);
                 return;
             }
+            try {
+                const commandProcessed = await processMultiCommand(submitted, ref, release);
+                if (commandProcessed !== false) {
+                    if (draft.input === submitted) {
+                        draft.input = "";
+                        inputTranslation.invalidate();
+                    }
+                    return;
+                }
+            } catch (error) {
+                alertError(error);
+                return;
+            } finally {
+                release();
+            }
+            if (draft.input !== submitted) return;
             // Not a command: the chat may have started work meanwhile.
             if (isScreenBusy(ref)) {
                 alertError(language.chatGenerating);

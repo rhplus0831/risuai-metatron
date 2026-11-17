@@ -504,6 +504,37 @@ describe("/multisend", () => {
         expect(texts(ref)).toEqual(["A", "B", "C", "D"]);
     });
 
+    it("sends every multisend part under the command's reservation without releasing it or bypassing other work", async () => {
+        const ref = freshChat();
+        const other = freshChat();
+        const reservation = beginLocalSend(ref)!;
+        try {
+            expect(await processMultiCommand('/multisend "one|||two"', ref, reservation)).toBe("");
+            expect(texts(ref).slice(4)).toEqual(["one", "two"]);
+            expect(hooks.sends).toHaveLength(2);
+            expect([...get(localSends).keys()]).toEqual([keyOf(ref)]);
+            // The same token cannot admit a different chat or bypass a server job/message lock.
+            await processMultiCommand('/multisend "foreign"', other, reservation);
+            expect(texts(other)).toEqual(["A", "B", "C", "D"]);
+            followedJobs.set(new Map([["job", keyOf(ref)]]));
+            await processMultiCommand('/multisend "busy"', ref, reservation);
+            followedJobs.set(new Map());
+            lockFromFeed(ref);
+            await processMultiCommand('/multisend "locked"', ref, reservation);
+            chat.releaseFeedLocks();
+            expect(texts(ref).slice(4)).toEqual(["one", "two"]);
+            expect(hooks.sends).toHaveLength(2);
+            expect([...get(localSends).keys()]).toEqual([keyOf(ref)]);
+        } finally {
+            reservation();
+            followedJobs.set(new Map());
+            chat.releaseFeedLocks();
+        }
+        await processMultiCommand('/multisend "expired"', ref, reservation);
+        expect(texts(ref).slice(4)).toEqual(["one", "two"]);
+        expect(get(localSends).size).toBe(0);
+    });
+
     it("runs in its chat while another chat has a followed job, a lock, or a local send: every part is sent", async () => {
         const other = freshChat();
         const ref = freshChat();

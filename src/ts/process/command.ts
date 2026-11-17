@@ -14,7 +14,8 @@ import { alertInput, alertMd, alertNormal, alertSelect } from "../alert";
 import { sayTTS } from "./tts";
 import { risuChatParser } from "../parser/parser.svelte";
 import { sendChat } from "./index.svelte";
-import { isChatBusy } from "./chatStatus.svelte";
+import { chatStatusKey, generatingChatKeys, isChatBusy } from "./chatStatus.svelte";
+import type { LocalSendReservation } from "./localSends";
 import { loadLoreBookV3Prompt } from "./lorebook.svelte";
 import { runServerManualTrigger } from "./serverCommands";
 import { refuseOrphanedOverrides } from "./loreOverrides";
@@ -36,10 +37,19 @@ import { refuseOrphanedOverrides } from "./loreOverrides";
  * false (refused, failed, lost, or stopped); false then. This is the typed command's page-owned loop;
  * command jobs run their queued parts on the server (`server/src/jobs/commandRunner.ts`).
  */
-export async function runMultisend(ref: ChatRef, clearMode: boolean, parts: readonly string[]): Promise<boolean> {
+export async function runMultisend(
+    ref: ChatRef,
+    clearMode: boolean,
+    parts: readonly string[],
+    reservation?: LocalSendReservation,
+): Promise<boolean> {
     for (const e of parts) {
         const chat = findChat(ref);
-        if (!chat || isChatBusy(ref) || refuseOrphanedOverrides(ref)) {
+        // A composer's command owns its local slot; followed jobs and message locks still refuse a part.
+        const busy = reservation
+            ? !reservation.owns(ref) || generatingChatKeys().has(chatStatusKey(ref))
+            : isChatBusy(ref);
+        if (!chat || busy || refuseOrphanedOverrides(ref)) {
             return false;
         }
         if (clearMode) {
@@ -49,7 +59,10 @@ export async function runMultisend(ref: ChatRef, clearMode: boolean, parts: read
             );
         }
         appendMessage(ref, { role: "user", data: e });
-        const sent = await sendChat(-1, { target: ref });
+        const sent = await sendChat(-1, {
+            target: ref,
+            ...(reservation ? { localSendReservation: reservation } : {}),
+        });
         if (!sent) {
             return false;
         }
@@ -70,19 +83,23 @@ export async function runMultisend(ref: ChatRef, clearMode: boolean, parts: read
  * contains an unknown command, even when an earlier part of it ran: the screen then sends the line as
  * ordinary text. `/send` only appends a user message; it does not generate.
  */
-export async function processMultiCommand(command: string, ref: ChatRef | null = currentChatRef()) {
+export async function processMultiCommand(
+    command: string,
+    ref: ChatRef | null = currentChatRef(),
+    reservation?: LocalSendReservation,
+) {
     const release = ref ? pinChat(ref) : null;
     try {
         if (ref && !(await ensureChatLoaded(ref))) {
             return "";
         }
-        return await processPinnedCommands(command, ref);
+        return await processPinnedCommands(command, ref, reservation);
     } finally {
         release?.();
     }
 }
 
-async function processPinnedCommands(command: string, ref: ChatRef | null) {
+async function processPinnedCommands(command: string, ref: ChatRef | null, reservation?: LocalSendReservation) {
     let pipe = "";
     const splited: string[] = [];
     let lastIndex = 0;
@@ -106,7 +123,7 @@ async function processPinnedCommands(command: string, ref: ChatRef | null) {
             // The chat went away while an earlier command waited: the line is consumed, not sent.
             return "";
         }
-        const result = await processCommand(splited[i].trim(), pipe, ref);
+        const result = await processCommand(splited[i].trim(), pipe, ref, reservation);
         console.log(pipe);
         if (result === false) {
             return false;
@@ -121,7 +138,12 @@ async function processPinnedCommands(command: string, ref: ChatRef | null) {
  * One command of a line. A new command is a case of this switch, with its entry in the hand-written `/?`
  * help text (the `"?"` case), which is all `/?` shows.
  */
-async function processCommand(command: string, pipe: string, ref: ChatRef | null): Promise<false | string> {
+async function processCommand(
+    command: string,
+    pipe: string,
+    ref: ChatRef | null,
+    reservation?: LocalSendReservation,
+): Promise<false | string> {
     const currentChar = ref ? characterList().find((character) => character?.chaId === ref.chaId) : selectedCharacter();
     if (!currentChar) {
         // Its character went away; `false` would mean "not a command" and send the line as text.
@@ -253,7 +275,7 @@ async function processCommand(command: string, pipe: string, ref: ChatRef | null
                 clearMode = true;
                 splited.shift();
             }
-            await runMultisend(ref, clearMode, splited);
+            await runMultisend(ref, clearMode, splited, reservation);
             return "";
         }
         case "setvar": {

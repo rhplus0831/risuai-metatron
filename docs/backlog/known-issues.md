@@ -24,7 +24,7 @@ merge cannot see inside the JSON strings it stores.
 
 ## Contents
 
-- [chat-pipeline](#chat-pipeline) (2)
+- [chat-pipeline](#chat-pipeline) (1)
 - [persistence](#persistence) (1)
 - [structured-memory](#structured-memory) (1)
 
@@ -40,14 +40,6 @@ Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-
   they land on top). The control, a switch to a stored candidate of a single-reply turn, restored that candidate's
   value. Counters and flags of a card drift with every reroll of a group turn. Suggested: extend the before and
   after variable checkpoints to multi-reply bundles.
-- A slash-command send clears a newer composer draft and can append twice. The send handler in
-  `src/lib/ChatScreens/DefaultChatScreen.svelte` awaits the command pipeline and then clears the input, without a
-  send reservation and without comparing the text. Reproduced on 2026-11-17 (cross-check F8) on the mounted chat
-  screen with only the speech request held: after `/speak Hello`, a draft typed while the speech waited was gone
-  when the command ended, and the composer's journal row goes with it at the next flush; after
-  `/speak Hello | /send Next`, a second press of Send while it waited stored `Next` twice (two user messages, no
-  second model request). The control, an ordinary send, kept the newer typing and refused the second Send. Suggested:
-  reserve the chat before the first await and clear the input only when it still holds the submitted text.
 
 ## persistence
 

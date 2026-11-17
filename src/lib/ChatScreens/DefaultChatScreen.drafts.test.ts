@@ -22,6 +22,7 @@ const transcript = vi.hoisted(() => ({
 const io = vi.hoisted(() => ({
     server: null as FakeResourceServer | null,
     inlayWritten: null as (() => void) | null,
+    speak: vi.fn<typeof import("src/ts/process/tts").sayTTS>(),
     runInputHook: vi.fn<typeof import("src/ts/process/inputHooks").runInputHook>(),
     createJob: vi.fn<typeof import("src/ts/network/generationJobs").createGenerationJob>(),
     generationFetch: vi.fn<(path: string, init?: RequestInit) => Promise<Response>>(),
@@ -29,6 +30,7 @@ const io = vi.hoisted(() => ({
     confirm: vi.fn<typeof import("src/ts/alert").alertConfirm>(),
     alertError: vi.fn<typeof import("src/ts/alert").alertError>(),
 }));
+vi.mock("src/ts/process/tts", () => ({ sayTTS: io.speak }));
 vi.mock("src/ts/alert", async () =>
     (await import("src/ts/tests/alertMock")).createAlertMock({
         alertConfirm: io.confirm,
@@ -142,6 +144,7 @@ async function mountComposer({
         return { default: stub.default };
     });
     io.createJob.mockReset();
+    io.speak.mockReset();
     io.runInputHook.mockReset();
     io.generationFetch.mockReset();
     io.confirm.mockReset().mockResolvedValue(false);
@@ -250,6 +253,64 @@ async function mountComposer({
 
     return { target, input, type, click, menuItem, menu, hide, journal };
 }
+
+it("keeps newer typing and refuses a second Send while a slash pipeline waits, appending its message once", async () => {
+    const ui = await mountComposer();
+    const { settings } = await import("src/ts/storage/settingsViews.svelte");
+    settings.ui.sendWithEnter = true;
+    const finishes: (() => void)[] = [];
+    io.speak.mockImplementation(() => new Promise<void>((resolve) => finishes.push(resolve)));
+    ui.type("/speak Hello | /send Next");
+    ui.click(ui.target.querySelector(".button-icon-send"));
+    await until(() => finishes.length === 1);
+    // Submit the same pending command again through the composer's keyboard entry point.
+    ui.input().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await drive(Promise.resolve());
+    expect.soft(io.speak).toHaveBeenCalledTimes(1);
+    expect.soft(io.alertError).toHaveBeenCalledWith(language.chatGenerating);
+    ui.type("Newer draft typed while speech waits");
+    finishes.forEach((finish) => finish());
+    await drive(Promise.resolve());
+    const { findChat } = await import("src/ts/storage/chatStore.svelte");
+    expect
+        .soft(findChat({ chaId: "c", chatId: "a" })!.message.filter((message) => message.data === "Next"))
+        .toHaveLength(1);
+    expect(ui.input().value).toBe("Newer draft typed while speech waits");
+});
+
+it("releases a failed or cancelled slash command's reservation so another command can run", async () => {
+    const ui = await mountComposer();
+    const { isLocalSend } = await import("src/ts/process/localSends");
+    const ref = { chaId: "c", chatId: "a" };
+    let fail!: (error: Error) => void;
+    io.speak.mockImplementation(
+        () =>
+            new Promise<void>((_resolve, reject) => {
+                fail = reject;
+            }),
+    );
+    ui.type("/speak fails");
+    ui.click(ui.target.querySelector(".button-icon-send"));
+    await until(() => io.speak.mock.calls.length === 1);
+    expect(isLocalSend(ref)).toBe(true);
+    const error = new Error("speech failed");
+    fail(error);
+    await until(() => io.alertError.mock.calls.length === 1);
+    expect(io.alertError).toHaveBeenCalledWith(error);
+    expect(isLocalSend(ref)).toBe(false);
+    expect(ui.input().value).toBe("/speak fails");
+    // The alert mock returns the empty answer used when the input dialog is cancelled.
+    ui.type("/input cancelled");
+    ui.click(ui.target.querySelector(".button-icon-send"));
+    expect(isLocalSend(ref)).toBe(true);
+    await until(() => !isLocalSend(ref));
+    expect(ui.input().value).toBe("");
+    ui.type("/send After cancellation");
+    ui.click(ui.target.querySelector(".button-icon-send"));
+    await until(() => !isLocalSend(ref));
+    const { findChat } = await import("src/ts/storage/chatStore.svelte");
+    expect(findChat(ref)!.message.at(-1)?.data).toBe("After cancellation");
+});
 
 it("keeps plugin panel classes and attributes on the HTML wrapper inside the section", async () => {
     const { target } = await mountComposer();
