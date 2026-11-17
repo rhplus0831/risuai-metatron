@@ -1,5 +1,5 @@
 import type { RisuPersona } from "./database.ts";
-import { isRecordId } from "./ids.ts";
+import { isRecordId, normalizeIdList } from "./ids.ts";
 import { newPersonaId, plainClone } from "./presets.ts";
 import { isPlainObject } from "./valueKinds.ts";
 
@@ -76,15 +76,12 @@ export function normalizePersonas(input: unknown): RisuPersona[] {
 }
 
 /**
- * A persona's `modules` (the linked module ids) in canonical form: the non-blank strings of a list,
- * each once, in first-occurrence order; anything that is not a list becomes `[]`. Ids are kept
- * whether or not a module has them (the collection does not see the module list).
+ * A persona's `modules` (the linked module ids) in canonical form (`normalizeIdList`): the non-blank
+ * strings of a list, each once, in first-occurrence order; anything that is not a list becomes `[]`.
+ * Ids are kept whether or not a module has them (the collection does not see the module list).
  */
 export function normalizePersonaModules(value: unknown): string[] {
-    if (!Array.isArray(value)) {
-        return [];
-    }
-    return [...new Set(value.filter((id): id is string => typeof id === "string" && id.trim() !== ""))];
+    return normalizeIdList(value);
 }
 
 /**

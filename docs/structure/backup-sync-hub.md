@@ -174,6 +174,9 @@ and keeps what spans files.
   report counts them as excluded `memory-pages` and `memory-threads`, and the confirmation points to the native backup.
 - `exportDatabase.ts` holds boot compatibility (`upstreamCharacters`), credentials (`placeNamedKeys`,
   `reportOmittedKeys`), presets and HypaV3 ratios (`upstreamPreset`, module header).
+- Settings upstream's `Database` lacks (`METATRON_ONLY_SETTINGS`, among them `moduleFolders` and `personaFolders`) are
+  deleted from the export, and one that differs from its fresh-boot value is reported as excluded `metatron-settings`.
+  An upstream database has neither folder field, so its import leaves both `[]`.
 - `upstreamPluginStorage` omits `_pluginStorage`, `_safeLocalPluginStorage`, `_ownedPluginStorage`
   (`DEVICE_PLUGIN_STORAGE_KEYS`) from `pluginCustomStorage`, counting their entries as excluded `plugin-storage`; it
   also drops `_coldplugin`. Import still writes legacy `_pluginStorage`, served by owned read-through

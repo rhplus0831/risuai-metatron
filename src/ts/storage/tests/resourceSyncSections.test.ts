@@ -216,6 +216,8 @@ const customRecords: Record<string, unknown> = {
         selectedId: "h2",
     },
     customModels: [{ id: "m", internalId: "i", name: "M" }],
+    moduleFolders: [{ id: "mf1", name: "Mods", data: ["mod", "gone"] }],
+    personaFolders: [{ id: "pf1", name: "", data: ["persona-1", "missing"] }],
     enabledModules: ["mod"],
     statics: { messages: 3, imports: "bad" },
     // The model fields live on the profiles; the stored preset still
@@ -475,6 +477,8 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
             });
             settings.credentials.push({ id: "key-1", name: "Key", type: "custom" });
             settings.enabledModules.push("mod2");
+            settings.moduleFolders.push({ id: "mf2", name: "More", data: ["mod2"] });
+            settings.personaFolders[0].name = "People";
             settings.statics.messages += 1;
             settings.globalscript.push({ comment: "s2", type: "editoutput", in: "c", out: "d", flag: "" });
             // Forwarded fields: the edits go to the selected (first) persona and
@@ -512,6 +516,13 @@ describe("fixed point and no echo (the convergence rule) on the real server stor
                 prompt: "Explain.",
                 model: { mode: "inherit" },
             });
+            expect(store.record("moduleFolders", "main")!.data).toEqual([
+                { id: "mf1", name: "Mods", data: ["mod", "gone"] },
+                { id: "mf2", name: "More", data: ["mod2"] },
+            ]);
+            expect(store.record("personaFolders", "main")!.data).toEqual([
+                { id: "pf1", name: "People", data: ["persona-1", "missing"] },
+            ]);
             expect(Object.hasOwn(store.record("llmSecrets", "main")!.data.credentials, "__proto__")).toBe(true);
             expect(store.record("llmSecrets", "main")!.data.credentials.__proto__).toEqual({ key: "proto2" });
             expect(store.record("llmSecrets", "main")!.data.credentials["key-1"]).toEqual({ key: "q" });

@@ -164,6 +164,14 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
 
 - Character, group, and persona fields belong to resource records; chats live in the chat module, not on the character
   record ([persistence](persistence.md)). `shared/personas.ts` owns persona defaults and canonical module links.
+- Module and persona folders are an overlay: the `moduleFolders` and `personaFolders` records list member ids
+  (`ItemFolder`, `shared/itemFolders.ts`), while `modules` and `personas` stay the source of what is listed and in what
+  order. A folder only organizes; `getModules`, `jobModules`, and every module link ignore it, and neither a module nor
+  a persona record carries a folder field, so no export or import sees one. Readers go through `folderOfItem` or
+  `groupByFolder`, which apply three rules instead of a repair pass:
+  - an item no folder names is at the root;
+  - an item several folders name belongs to the first of them in list order;
+  - a member id that names no item is ignored and left as stored.
 - `lastInteraction` is preserved stored data; home ordering derives from it only when no chat has a timestamp. Plugin
   snapshots may expose that derived value without saving it back (`src/ts/plugins/apiV3/v3.svelte.ts`); upstream export
   has its own cold-storage rule ([backups](backup-sync-hub.md#upstream-database-export)).
@@ -229,8 +237,8 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
   persona-link matching differ; the server's `jobModules` in `server/src/jobs/cbsHost.ts` must stay aligned.
 - Persona links use the chat's bound persona, match stored modules by id, and skip MCP modules. The bound persona's
   embedded module resolves to a stored module with its id when present; otherwise the embedded object is appended.
-- `addModule` refuses duplicate ids; `removeModule` also clears the id from global `enabledModules`. Persona, character
-  and chat module links keep their ids.
+- `addModule` refuses duplicate ids; `removeModule` also clears the id from global `enabledModules` and from
+  `moduleFolders`. Persona, character and chat module links keep their ids.
 - Keep `character.modules`, `chat.modules`, `enabledModules`, and `moduleIntergration` distinct. Membership revisions
   invalidate the `getModules` memo synchronously; `getModuleAssets` returns detached tuples and must not be mutated.
 
@@ -272,6 +280,9 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
   nothing and returns false. `PersonaSettings.svelte` edits the tab's selected persona: a grid click and a created
   persona select for the tab (`null`), also with a chat open; a deletion moves only the tab's selection, never a chat's
   binding.
+- `removePersona` (`collectionStore.svelte.ts`) is the store's deletion: it refuses the last persona, moves the tab's
+  selection off the deleted one first, and takes the id out of `personaFolders` in the same batch. The folder record and
+  the item record save apart, so a deletion that saves alone leaves a stale member id, which the read rules ignore.
 
 ## Recipes
 

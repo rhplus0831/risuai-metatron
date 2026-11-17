@@ -132,11 +132,11 @@ const COMPONENT_REMOVED_KEYS = [
 ];
 
 /**
- * Removed later: the saved toggle presets and the input hooks' prompts hold free user text like
- * `globalChatVariables` and `customPromptTemplateToggle`, and the blocked Realm creators are
- * third-party ids and names.
+ * Removed later: the saved toggle presets, the input hooks' prompts, and the module and persona
+ * folder names hold free user text like `globalChatVariables` and `customPromptTemplateToggle`,
+ * and the blocked Realm creators are third-party ids and names.
  */
-const LATER_REMOVED_KEYS = ["togglePresets", "inputHooks", "blockedRealmCreators"];
+const LATER_REMOVED_KEYS = ["togglePresets", "inputHooks", "moduleFolders", "personaFolders", "blockedRealmCreators"];
 
 /** The report's filter: the component's removal list, the later removals, and whether `key` is dropped. */
 function componentDropped(key: string): boolean {
@@ -465,6 +465,8 @@ describe("buildSettingsReport", () => {
             "hypaV3",
             "togglePresets",
             "inputHooks",
+            "moduleFolders",
+            "personaFolders",
         ]) {
             expect(Object.hasOwn(report, dropped), dropped).toBe(false);
         }

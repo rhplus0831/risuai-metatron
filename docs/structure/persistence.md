@@ -37,6 +37,9 @@ callers:
 - `shared/inputHooks.ts`: the input hook shape, limit (`MAX_INPUT_HOOKS`), default list, and normalizer, and the pure
   prompt helpers (`draftHookOf`, `inputHookHistoryCounts`, `inputHookMessages`), which fill the slots in one pass and
   reuse the translator's ChatML parser and history format.
+- `shared/itemFolders.ts`: the folder shape of `moduleFolders` and `personaFolders` (`ItemFolder`), its normalizer
+  (`normalizeItemFolders`), and the pure readers and list builders (`folderOfItem`, `groupByFolder`, `withItemInFolder`,
+  `withoutItem`). The read rules are in [characters and modules](characters-modules.md#state).
 - `shared/chatCheckpoints.ts`, `shared/jobs.ts`, `shared/chatBinding.ts`, `shared/chatLoadPages.ts`, `shared/ids.ts`:
   checkpoint, job, binding, chat load-count, and id helpers; their domain guides own semantics.
 
@@ -73,6 +76,12 @@ prototype `Object.prototype` or `null`), so a `Map`, a `Date`, or a class instan
   `addCredential`, `deleteCredential`, `copyModelProfile`, `deleteModelProfile`, `incrementStatic`). A deleted
   credential or profile leaves the bindings naming it, which refuse their requests
   ([LLM requests](llm-requests.md#invariants)).
+  - Folder writes take the collection (`"moduleFolders"` or `"personaFolders"`): `addItemFolder` (returns the id),
+    `renameItemFolder`, `removeItemFolder` (the folder only), and `moveItemToFolder` (`null` is the root). A blank
+    folder name throws `MutationValidationError`; a folder that is gone returns `false` without a write. Each installs
+    the whole list in its canonical form, and a move never writes the module or the persona.
+  - `removeModule` and `removePersona` also take the id out of the folders, in the deletion's `batchRecordWrites` scope.
+    `setModules` and `setPersonas` leave the folders as they are.
 - `src/ts/storage/pluginStorageStore.svelte.ts`: `pluginCustomStorage` ([plugins](plugin-sandbox.md)).
 
 ### Record wrappers
@@ -101,6 +110,10 @@ Kinds (`shared/resources.ts`):
   (`SECTION_FIELDS`) and the collections of `COLLECTION_FIELDS`, served under the same flat names. `translatorPresets`
   and `hypaV3Presets` hold `{ items, selectedId }` (served as `translatorPresetId`, `hypaV3PresetId`); `togglePresets`
   is a plain list, default `[]`.
+- `moduleFolders` and `personaFolders` are plain lists of `{ id, name, data }` folders (`shared/itemFolders.ts`),
+  default `[]`, merged per folder. Each is its own kind, and its `data` lists module ids or persona ids: no field of a
+  module or a persona names a folder. The server keeps only those three fields, re-keys an invalid or repeated `id`, and
+  never checks a member id against the item list.
 - `inputHooks` is a plain list merged whole (`recordMerge.ts`); a missing record is materialized with
   `defaultInputHooks()` (one Draft hook), a saved empty list stays empty, and the server refuses a write that is not a
   list but drops malformed entries from one. It is its own kind, not a section field, so a tab that does not know it
@@ -189,7 +202,8 @@ carry them. The Translation page can clear `LLMTranslateCache` through `clearLLM
 
 - Deleting the selected prompt preset selects the first remaining active one, else the first; a selected model preset or
   persona, the first remaining. Deleting another keeps the selection, and a reorder keeps the selected id
-  (`botpreset.svelte`, `removeModelPreset`, `PersonaSettings.svelte`).
+  (`botpreset.svelte`, `removeModelPreset`, `PersonaSettings.svelte`, `removePersona`). The last persona is never
+  deleted.
 - A deletion moves only the tab's selection, never a chat's binding: chats bound to the record show it as deleted and
   are not sent until another one is picked; the confirmation names how many (`chatsBoundTo`).
 

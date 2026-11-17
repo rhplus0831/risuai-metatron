@@ -3,6 +3,7 @@ import { isRecordId } from "../../../../shared/ids.ts";
 import { defaultHotkeys } from "../../../../shared/hotkeys.ts";
 import { createHypaV3Preset } from "../../../../shared/hypaV3Presets.ts";
 import { defaultInputHooks, normalizeInputHooks as normalizeInputHookList } from "../../../../shared/inputHooks.ts";
+import { normalizeItemFolders } from "../../../../shared/itemFolders.ts";
 import type { CollectionResource } from "../../../../shared/resources.ts";
 import { normalizeTogglePresets as normalizeTogglePresetList } from "../../../../shared/togglePresets.ts";
 import { createTranslatorPreset, getNormalizedTranslatorPresetName } from "../../../../shared/translatorPresets.ts";
@@ -14,7 +15,8 @@ import { isPlainObject, plainClone, requireArrayOfObjects, requireObject } from 
  * materialized) and returns the fresh-boot value; otherwise it rejects a value of the wrong shape
  * (a `ResourceValidationError`, a 400 on write) and returns a copy. `loreBook` and `inputHooks`
  * default only when absent; `hotkeys` and the two `{ items, selectedId }` records also add default
- * items to existing lists. `togglePresets` repairs ids and fields without adding items.
+ * items to existing lists. `togglePresets`, `moduleFolders`, and `personaFolders` repair ids and
+ * fields without adding items.
  */
 
 function objectList<T>(what: string, fallback: () => T[] = () => []): (input: unknown) => T[] {
@@ -30,6 +32,16 @@ export const normalizeGlobalscript = objectList<Database["globalscript"][number]
 /** `togglePresets`: a possibly empty list with unique ids and no collection-level selection. */
 export function normalizeTogglePresets(input: unknown): Database["togglePresets"] {
     return input === undefined ? [] : normalizeTogglePresetList(requireArrayOfObjects(input, "togglePresets"));
+}
+
+/** `moduleFolders`: a possibly empty list of `{ id, name, data }` folders with unique ids; member ids are not checked. */
+export function normalizeModuleFolders(input: unknown): Database["moduleFolders"] {
+    return input === undefined ? [] : normalizeItemFolders(requireArrayOfObjects(input, "moduleFolders"));
+}
+
+/** `personaFolders`: the same folder list (`normalizeItemFolders`) over persona ids. */
+export function normalizePersonaFolders(input: unknown): Database["personaFolders"] {
+    return input === undefined ? [] : normalizeItemFolders(requireArrayOfObjects(input, "personaFolders"));
 }
 
 /** `inputHooks`: an absent list gets the default; a saved list drops malformed entries and may stay empty. */

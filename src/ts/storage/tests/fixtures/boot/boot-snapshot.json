@@ -598,6 +598,8 @@
   "seperateModelsForAxModels": false,
   "seperateModels": { "memory": "", "emotion": "", "translate": "", "otherAx": "" },
   "customModels": [],
+  "moduleFolders": [],
+  "personaFolders": [],
   "inputHooks": [
     {
       "id": "default-translate",

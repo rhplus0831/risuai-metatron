@@ -125,6 +125,24 @@ const CASES: KindCase[] = [
         invalid: [{ id: "t1" }, null],
         refused: "togglePresets must be an array of objects",
     },
+    // A folder keeps only `id`, `name`, and `data`; a repeated id is re-keyed, a non-string name
+    // is "", and `data` keeps its non-blank strings once each, in first-occurrence order.
+    ...(["moduleFolders", "personaFolders"] as const).map((kind): KindCase => ({
+        kind,
+        fresh: [],
+        write: [
+            { id: "f1", name: "Work", data: ["a", "", "b", "a", 3], color: "red" },
+            { id: "f1", name: 7, data: "a" },
+        ],
+        stored: [
+            { id: "f1", name: "Work", data: ["a", "b"] },
+            { id: expect.not.stringMatching(/^f1$/) as unknown as string, name: "", data: [] },
+        ],
+        update: [{ id: "f1", name: "Renamed", data: ["b", "c"] }],
+        updated: [{ id: "f1", name: "Renamed", data: ["b", "c"] }],
+        invalid: [{ id: "f1", name: "x", data: [] }, "x"],
+        refused: `${kind} must be an array of objects`,
+    })),
     // ---- the plain record kinds --------------------------------------------------------------
     {
         kind: "presets",

@@ -1,6 +1,7 @@
 import type { NewChatBinding } from "./chatBinding.ts";
 import type { ContextMeterTurnUnit, ContextReport } from "./contextReport.ts";
 import type { InputHook } from "./inputHooks.ts";
+import type { ItemFolder } from "./itemFolders.ts";
 import type { LLMFlags, LLMFormat, LLMTokenizer } from "./llm.ts";
 import type {
     HypaModel,
@@ -275,6 +276,11 @@ export interface Database {
     openrouterFallback: boolean;
     selectedPersona: number;
     personas: RisuPersona[];
+    /**
+     * The persona folders (`shared/itemFolders.ts`): named one-level folders listing persona ids, read over `personas`,
+     * which stays the source of what is listed and in what order. No field of a persona names its folder.
+     */
+    personaFolders: ItemFolder[];
     personaNote: boolean;
     assetWidth: number;
     animationSpeed: number;
@@ -342,6 +348,11 @@ export interface Database {
     memoryLimitThickness?: number;
     modules: RisuModule[];
     enabledModules: string[];
+    /**
+     * The module folders (`shared/itemFolders.ts`): named one-level folders listing module ids, read over `modules`.
+     * A folder only organizes: it never decides which modules run, and no field of a module names its folder.
+     */
+    moduleFolders: ItemFolder[];
     sideMenuRerollButton?: boolean;
     requestInfoInsideChat?: boolean;
     additionalParams: [string, string][];

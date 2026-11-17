@@ -724,6 +724,25 @@ describe("buildUpstreamDatabase: settings", () => {
         expect(settings.examples).not.toContain("credentials");
     });
 
+    it("omits both folder collections, reports only non-empty folders, and imports them as empty", async () => {
+        for (const nonempty of ["moduleFolders", "personaFolders"] as const) {
+            const empty = nonempty === "moduleFolders" ? "personaFolders" : "moduleFolders";
+            const snapshot = await snapshotOf((w) => {
+                w.put(COLLECTION_KIND[nonempty], "main", [{ id: "folder", name: "Private folder", data: ["item"] }]);
+                w.put(COLLECTION_KIND[empty], "main", []);
+            });
+            const { exported, decoded, imported } = libraryRoundTrip(snapshot);
+            expect(exported.db).not.toHaveProperty("moduleFolders");
+            expect(exported.db).not.toHaveProperty("personaFolders");
+            expect(decoded).not.toHaveProperty("moduleFolders");
+            expect(decoded).not.toHaveProperty("personaFolders");
+            expect(excluded(exported.report, "metatron-settings")?.examples).toContain(nonempty);
+            expect(excluded(exported.report, "metatron-settings")?.examples).not.toContain(empty);
+            expect(record(imported, COLLECTION_KIND.moduleFolders)).toEqual([]);
+            expect(record(imported, COLLECTION_KIND.personaFolders)).toEqual([]);
+        }
+    });
+
     it("converts translator presets to upstream's shape from the first enabled step and selects by position", async () => {
         const { db, report } = exportOf(await snapshotOf());
         expect(db.translatorPresets).toEqual([

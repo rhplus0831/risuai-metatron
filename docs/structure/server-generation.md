@@ -35,7 +35,8 @@
   `createScriptProcessor`, `runLuaEdit`, `createTriggerRuntime`, `runEmotionMode`, `stripThoughtsBlock`).
 - `server/src/prompt/transform.ts` `createTransformService`, `partitionKnownResults`;
   `server/src/prompt/transformCache.ts`, `server/src/prompt/displayScope.ts` `createDisplayScopeLoader`,
-  `server/src/prompt/displayKinds.ts`; wire shapes in `shared/transform.ts`.
+  `server/src/prompt/displayKinds.ts` (`DISPLAY_KIND_CLASSIFICATION`; `moduleFolders` and `personaFolders` are `drop`:
+  no display transform reads a folder); wire shapes in `shared/transform.ts`.
 - `server/src/data/generationReceipts.ts` `createGenerationReceipts`: the [job receipts](#job-receipts).
 - Runtimes other guides own: `server/src/lua/` and `server/src/scripts/`, the worker-backed script runtime
   ([scripts and triggers](scripts-triggers.md)); `server/src/llm/` ([LLM requests](llm-requests.md));

@@ -182,6 +182,10 @@
   no echo. Taken fields reach `onRemoteRecordApplied`; a failure takes [whole-record acceptance](#conflicts).
 - For module lists accepted by `itemIds`, a fresh-id addition merges with independent remote changes and rebases without
   a discard.
+- `moduleFolders` and `personaFolders` merge per folder (`items`, the whole folder one unit): changes of different
+  folders merge and equal changes of one folder converge. Differing changes of one folder (a rename here, a move into it
+  elsewhere) fail, and the record takes the server's list. Their writers replace the list, so `BY_ID_FIELDS` has
+  neither.
 - `pluginStorage` merges by key, one level down in each `PLUGIN_STORAGE_DICTIONARIES` entry, other top-level keys whole
   (`mergePluginStorage`). Conflicting reserved values that cannot merge as dictionaries fail; unchanged or equal values
   still converge. `onPluginStorageDiscarded` hears replaced keys after acceptance settles the record.
