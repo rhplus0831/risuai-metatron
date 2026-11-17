@@ -2215,8 +2215,12 @@ export const languageKorean = {
             "plugin-storage": "원본 RisuAI가 브라우저 로컬에만 보관하는 플러그인 데이터",
             inlays: "인레이 이미지가 포함된 채팅 (인레이 이미지 파일은 백업에 포함되지 않음)",
             "memory-unreadable": "구조화 기억 데이터를 읽을 수 없었던 채팅",
+            "memory-pages": "Structured Memory 페이지",
+            "memory-threads": "Structured Memory 스레드",
             "asset-names": "원본 RisuAI 백업 규격에 담을 수 없는 이름의 이미지 및 파일",
         },
+        memoryOmitted: (pages: number, threads: number) =>
+            `Structured Memory 페이지 ${pages}개와 스레드 ${threads}개는 호환 내보내기에 포함되지 않습니다. 기본 백업에는 들어 있습니다.`,
         missingTitle: "누락된 이미지 및 파일 (백업에 미포함)",
         downloadQuestion: "지금 백업 파일을 다운로드할까요?",
         downloading: "RisuAI 호환 백업을 저장하는 중",

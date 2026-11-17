@@ -308,6 +308,8 @@ export type ValidatedSnapshot = {
     readonly rows: readonly { kind: string; id: string; revision: number; schemaVersion: number; text: string }[];
     readonly checkpoints?: CheckpointSnapshotRows;
     readonly memoryEvents?: readonly MemoryEventRow[] | null;
+    /** Stored pages and threads, which the upstream export cannot carry. */
+    readonly memoryCounts?: { readonly pages: number; readonly threads: number };
 } & ChatSnapshotRows;
 
 /**
@@ -719,8 +721,8 @@ export function walkSnapshotFile(
 /**
  * Reads and checks a snapshot file (`walkSnapshotFile`) into memory. With `checkpoints: false`,
  * checkpoint tables are neither read nor validated and the result omits `checkpoints`. Of the memory
- * tables, which are walked and checked as in a restore, it keeps the events, for the upstream export's
- * projection. That export is its one production caller and a memory table problem must not stop it,
+ * tables, which are walked and checked as in a restore, it keeps events for the upstream export's
+ * projection and counts pages and threads for its omission report. A memory table problem must not stop it,
  * so unlike in a restore a failure there is no refusal: what the walk collected is dropped, and
  * `memoryEvents` is null. A refusal of any other table still throws.
  */
@@ -735,6 +737,7 @@ export function readSnapshotFile(
     const chatOrders: ValidatedSnapshot["chatOrders"][number][] = [];
     const collected = options?.checkpoints === false ? undefined : collectCheckpointRows();
     const memoryEvents: MemoryEventRow[] = [];
+    const memoryCounts = { pages: 0, threads: 0 };
     let memoryFailed = false;
     walkSnapshotFile(file, kinds, {
         resource: (row) => void rows.push(row),
@@ -748,6 +751,8 @@ export function readSnapshotFile(
                 if (kind === "events") {
                     // `data` is a row's last column (`writtenColumns`).
                     memoryEvents.push({ chatSeq, data: row[row.length - 1] as string });
+                } else if (kind === "pages" || kind === "threads") {
+                    memoryCounts[kind]++;
                 }
             },
         },
@@ -763,6 +768,7 @@ export function readSnapshotFile(
         chatOrders,
         ...(checkpoints ? { checkpoints } : {}),
         ...(memoryFailed ? { memoryEvents: null } : memoryEvents.length > 0 ? { memoryEvents } : {}),
+        ...(!memoryFailed && (memoryCounts.pages > 0 || memoryCounts.threads > 0) ? { memoryCounts } : {}),
     };
 }
 

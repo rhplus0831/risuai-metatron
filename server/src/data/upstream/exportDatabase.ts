@@ -92,6 +92,8 @@ export type UpstreamExportChats = {
     readonly chatOrders: readonly { characterId: string; ids: string }[];
     /** The structured memory events (`ValidatedSnapshot`), null when the memory tables could not be read. */
     readonly memoryEvents?: readonly MemoryEventRow[] | null;
+    /** Stored pages and threads omitted regardless of the chat's current memory mode. */
+    readonly memoryCounts?: { readonly pages: number; readonly threads: number };
 };
 
 export type UpstreamExportOptions = {
@@ -404,6 +406,12 @@ export function buildUpstreamDatabase(
     db.pluginCustomStorage = upstreamPluginStorage(records.get(RESOURCE_KIND.pluginStorage), plugins, report);
 
     db.characters = upstreamCharacters(characterRecords, chats, options, now, memorySettings, report);
+    if (chats.memoryCounts?.pages) {
+        addEntry(report.excluded, "memory-pages", [], chats.memoryCounts.pages);
+    }
+    if (chats.memoryCounts?.threads) {
+        addEntry(report.excluded, "memory-threads", [], chats.memoryCounts.threads);
+    }
 
     if (!options.includeSecrets) {
         clearAuxiliaryKeys(db, report);

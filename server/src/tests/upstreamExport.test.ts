@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { mkdtempSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { projectionHistory, writeMemory } from "./memoryFixtures.ts";
+import { memoryRecords, projectionHistory, writeMemory } from "./memoryFixtures.ts";
 import os from "node:os";
 import path from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -1643,6 +1643,60 @@ describe("buildUpstreamDatabase: round trip through the import converter", () =>
 
 describe("Structured Memory export", () => {
     const real = { summaries: [{ text: "Real HypaV3", chatMemos: [], isImportant: false }] };
+    it("counts omitted pages and threads even without events or after a chat changes memory mode", async () => {
+        const history = projectionHistory();
+        const pages = memoryRecords(["manual", "notes"], "Manual gate notes").pages;
+        pages[0].sections[0].userCorrected = true;
+        const threads = memoryRecords(["gate", "keeper", "key"], "Find the gate keeper").threads;
+        const snapshot = await snapshotOf(
+            (w) => {
+                w.put("characters", "memory", { chaId: "memory", type: "character", name: "Memory" });
+                for (const id of ["events", "no-events", "changed-mode"]) {
+                    w.chat("memory", id, { name: id, memoryMode: "structuredMemory", message: history.messages });
+                }
+            },
+            {
+                populate: (store) => {
+                    writeMemory(store, "memory", "events", {
+                        events: history.events,
+                        pages: pages.slice(0, 1),
+                        threads: threads.slice(0, 1),
+                    });
+                    writeMemory(store, "memory", "no-events", { pages: pages.slice(1) });
+                    writeMemory(store, "memory", "changed-mode", { threads: threads.slice(1) });
+                    store.applyChanges({
+                        chats: [
+                            {
+                                characterId: "memory",
+                                chatId: "changed-mode",
+                                baseRevision: store.chatRevision("memory", "changed-mode")!,
+                                ops: [{ op: "meta", set: { memoryMode: "hypaV3" } }],
+                            },
+                        ],
+                    });
+                },
+                editCopy: (db) => {
+                    for (const [table, expected] of [
+                        ["memory_pages", pages],
+                        ["memory_threads", threads],
+                    ] as const) {
+                        const rows = db.prepare(`SELECT data FROM ${table} ORDER BY seq`).all();
+                        expect(rows.map((row) => JSON.parse(row.data as string))).toEqual(expected);
+                    }
+                },
+            },
+        );
+        const before = JSON.stringify(snapshot);
+        const { db, report } = exportOf(snapshot);
+        expect(excluded(report, "memory-pages")).toEqual({ code: "memory-pages", count: 2, examples: [] });
+        expect(excluded(report, "memory-threads")).toEqual({ code: "memory-threads", count: 3, examples: [] });
+        expect(converted(report, "memory-projected")).toMatchObject({ count: 1 });
+        expect(chatsOf(db, "Memory").find((chat) => chat.name === "events")!.hypaV3Data).toEqual(history.expected);
+        expect(JSON.stringify(db)).not.toContain("Manual gate notes");
+        expect(JSON.stringify(db)).not.toContain("Find the gate keeper");
+        expect(JSON.stringify(snapshot)).toBe(before);
+    });
+
     async function memorySnapshot(algorithm = "structuredMemory", editCopy?: (db: DatabaseSync) => void) {
         const history = projectionHistory();
         return snapshotOf(

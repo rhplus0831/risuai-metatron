@@ -381,6 +381,11 @@ function upstreamExportReportText(report: UpstreamExportReport, discarded: strin
     };
     entries(text.convertedTitle, report.converted, text.converted);
     entries(text.excludedTitle, report.excluded, text.excluded);
+    const pages = report.excluded.find((entry) => entry.code === "memory-pages")?.count ?? 0;
+    const threads = report.excluded.find((entry) => entry.code === "memory-threads")?.count ?? 0;
+    if (pages > 0 || threads > 0) {
+        lines.push("", text.memoryOmitted(pages, threads));
+    }
     if (report.missing.length > 0) {
         lines.push("", text.missingTitle);
         for (const asset of report.missing.slice(0, UPSTREAM_EXPORT_MISSING_SHOWN)) {

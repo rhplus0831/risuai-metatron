@@ -1806,8 +1806,12 @@ export const languageEnglish = {
             "plugin-storage": "Plugin data RisuAI keeps in the browser",
             inlays: "Chats with inlay images (the images are not in the file)",
             "memory-unreadable": "Chats whose structured memory could not be read",
+            "memory-pages": "Structured Memory pages",
+            "memory-threads": "Structured Memory threads",
             "asset-names": "Images and files whose name a RisuAI backup cannot hold",
         },
+        memoryOmitted: (pages: number, threads: number) =>
+            `Structured Memory pages (${pages}) and threads (${threads}) are not part of a compatible export. The native backup includes them.`,
         missingTitle: "Missing images and files (not in the file)",
         downloadQuestion: "Download it now?",
         downloading: "Saving the RisuAI-compatible backup",

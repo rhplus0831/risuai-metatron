@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BackupArchiveManifest } from "../../../shared/resources.ts";
+import { language } from "src/lang";
+import { languageEnglish } from "src/lang/en";
+import { languageKorean } from "src/lang/ko";
 
 // Local backups over the server's export/import routes (`backuplocal.ts`): every change is flushed
 // first, the archive stream goes to the file writer while the manifest is read from its head, the
@@ -577,6 +580,56 @@ describe("SaveUpstreamLocalBackup (a RisuAI-compatible backup)", () => {
         expect(alerts.alertConfirm.mock.calls[1][0]).toContain("changes replaced\n\nDownload it now?");
         expect(alerts.alertNormal).toHaveBeenCalledWith("Saved.");
     });
+
+    it.each([
+        [
+            "English",
+            languageEnglish.upstreamExport,
+            "Structured Memory pages",
+            "Structured Memory threads",
+            "Structured Memory pages (2) and threads (3) are not part of a compatible export. The native backup includes them.",
+        ],
+        [
+            "Korean",
+            languageKorean.upstreamExport,
+            "Structured Memory 페이지",
+            "Structured Memory 스레드",
+            "Structured Memory 페이지 2개와 스레드 3개는 호환 내보내기에 포함되지 않습니다. 기본 백업에는 들어 있습니다.",
+        ],
+    ] as const)(
+        "names omitted pages and threads and the native backup in the %s confirmation",
+        async (_locale, catalog, pagesLabel, threadsLabel, notice) => {
+            const previous = language.upstreamExport;
+            language.upstreamExport = catalog;
+            try {
+                for (const [pages, threads] of [
+                    [2, 3],
+                    [0, 3],
+                    [2, 0],
+                    [0, 0],
+                ]) {
+                    const excluded = [
+                        ...(pages ? [{ code: "memory-pages", count: pages, examples: [] }] : []),
+                        ...(threads ? [{ code: "memory-threads", count: threads, examples: [] }] : []),
+                    ];
+                    upstreamExport.prepare = () =>
+                        Response.json({ token: TOKEN, report: { ...exportReport, excluded } });
+                    alerts.alertConfirm.mockClear();
+                    answer(false, false);
+                    await SaveUpstreamLocalBackup();
+                    const text = alerts.alertConfirm.mock.calls[1][0];
+                    const expectedNotice = notice.replace("2", String(pages)).replace("3", String(threads));
+                    if (pages || threads) expect(text).toContain(expectedNotice);
+                    else expect(text).not.toContain(expectedNotice);
+                    expect(text.includes(`- ${pagesLabel}: ${pages}`)).toBe(pages > 0);
+                    expect(text.includes(`- ${threadsLabel}: ${threads}`)).toBe(threads > 0);
+                    expect(alerts.alertError).not.toHaveBeenCalled();
+                }
+            } finally {
+                language.upstreamExport = previous;
+            }
+        },
+    );
 
     it("cancels the prepared export when the report is declined, without downloading", async () => {
         upstreamExport.prepare = () => Response.json({ token: TOKEN, report: exportReport });

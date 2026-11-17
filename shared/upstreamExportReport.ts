@@ -59,6 +59,9 @@ export const UPSTREAM_EXPORT_EXCLUDED_CODES = [
      * chat, the examples are character names.
      */
     "memory-unreadable",
+    /** Structured Memory pages and threads have no upstream representation; counted per record. */
+    "memory-pages",
+    "memory-threads",
     /**
      * Referenced assets whose file name a RisuAI backup record cannot hold (a `/`, or a name upstream's
      * restore reads as its database or as cold storage); added by the export route, the examples are keys.

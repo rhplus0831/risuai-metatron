@@ -24,7 +24,7 @@ merge cannot see inside the JSON strings it stores.
 
 ## Contents
 
-- [backup-sync-hub](#backup-sync-hub) (3)
+- [backup-sync-hub](#backup-sync-hub) (2)
 - [chat-pipeline](#chat-pipeline) (2)
 - [chat-store](#chat-store) (1)
 - [memory](#memory) (1)
@@ -36,13 +36,6 @@ merge cannot see inside the JSON strings it stores.
 
 Guide: [Backups, Realm Hub](../structure/backup-sync-hub.md#known-hazards).
 
-- The RisuAI-compatible export leaves out a chat's Structured Memory pages and threads without saying so. The export
-  turns a chat's eligible events into HypaV3 summaries and carries nothing else of its memory. Reproduced on
-  2026-11-17 (cross-check F14): a chat with events, a page holding a manual note, and an open thread went through the
-  real snapshot collector and `stageUpstreamExport`; the decoded database held neither the page nor the thread, the
-  report had `memory-projected: 1` and no line for them, and its missing list was empty. The native export held both
-  records. A user who keeps only compatible backups has no copy of their pages and threads, and nothing told them.
-  Suggested: count the omitted pages and threads in the export report and point to the native backup.
 - The RisuAI-compatible export leaves out an asset that only a plugin's custom data references.
   `server/src/data/upstream/assetReferences.ts` does not walk the plugin custom values the export retains. Reproduced
   on 2026-11-17 (cross-check F15): an asset whose key was stored only in a retained plugin custom value; the archive
