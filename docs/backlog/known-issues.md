@@ -27,7 +27,7 @@ merge cannot see inside the JSON strings it stores.
 - [chat-pipeline](#chat-pipeline) (2)
 - [chat-store](#chat-store) (1)
 - [persistence](#persistence) (1)
-- [structured-memory](#structured-memory) (2)
+- [structured-memory](#structured-memory) (1)
 
 ## chat-pipeline
 
@@ -110,14 +110,3 @@ Guide: [Structured Memory Records](../structure/structured-memory/records.md#kno
     it there made one row fail the memory export of every chat. The package export has no caller in the product.
 
   Not fixed: the byte charge, since measuring costs every round; the owner has not said whether it is a Limitation.
-
-- A candidate whose alias is an existing page's title creates a duplicate page
-  ([writer guide](../structure/structured-memory/writer.md#known-hazards); rated P3). `find` in
-  `server/src/prompt/memory/structured/pages.ts` matches the candidate's title against existing titles and aliases;
-  the candidate's own aliases take no part. Reproduced on 2026-11-17 (cross-check F13): with a page `Mira`, a
-  candidate `Mira Vale` with alias `Mira` became a second character page, with nothing refused and no warning; a
-  candidate titled `Mira` updated the existing page. No text is lost and the pages can be merged by hand, but facts
-  about one subject are split over two pages. Decision: owner, 2026-11-17: fix it by reporting. The
-  page is still created, and the run records a warning that names both pages, so the merge tool can join them. An
-  automatic join was not chosen: a wrong one mixes two subjects' facts and is harder to undo than a duplicate. Not
-  yet fixed.

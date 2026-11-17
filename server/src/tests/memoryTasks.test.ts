@@ -5355,6 +5355,72 @@ describe("structured memory tasks", () => {
         ]);
     });
 
+    it("warns when a new page alias names an existing page and updates title matches without warnings", async () => {
+        for (const title of ["Mira Vale", "Mira"]) {
+            const t = structuredHarness();
+            t.write("k1", [
+                { op: "setText", id: "m1", text: "Mira returns to the harbor." },
+                { op: "setText", id: "m2", text: "Mira Vale arrives with the lost map." },
+            ]);
+            const existing: MemoryPage = {
+                ...memoryRecords(["mira"], "Mira").pages[0],
+                type: "character",
+                sections: [
+                    {
+                        heading: "identity",
+                        body: "Mira is a cartographer.",
+                        locked: false,
+                        provenance: [],
+                        sources: [],
+                        updatedAt: 1,
+                    },
+                ],
+            };
+            writeMemory(t.store, "c", "k1", { pages: [existing] });
+            const createsPage = title !== existing.title;
+            const { request, terminal } = await beginAnalysis(t);
+            request.answer(
+                JSON.stringify({
+                    ...analysis({ title: "A return", summary: "Mira returns with the map." }),
+                    pageCandidates: [
+                        {
+                            create: { type: "character", title, aliases: createsPage ? ["Mira"] : [] },
+                            confidence: 1,
+                            reason: "Mira recovered the map.",
+                        },
+                    ],
+                }),
+            );
+            const patchRequest = await nextPatch(t, request.index + 1, terminal);
+            const patchText = patchRequest.body.messages.find((m: OpenAIChat) => m.role === "user").content as string;
+            const target = JSON.parse(patchText.slice("Pages:\n".length).split("\n")[0]);
+            patchRequest.answer(
+                JSON.stringify({
+                    patches: [
+                        { pageId: target.id, heading: "identity", op: "upsert", body: "Mira recovered the map." },
+                    ],
+                }),
+            );
+            await finishRecording(t, terminal);
+
+            const pages = pageRecords(t).filter(({ type }) => type === "character");
+            expect(pages).toHaveLength(createsPage ? 2 : 1);
+            const saved = pages.find((page) => page.title === title)!;
+            expect(saved.sections[0].body).toBe("Mira recovered the map.");
+            if (createsPage) {
+                expect(saved.id).not.toBe(existing.id);
+                expect(saved.aliases).toEqual(["Mira"]);
+                expect(pages.find(({ id }) => id === existing.id)).toEqual(existing);
+            } else {
+                expect(saved.id).toBe(existing.id);
+            }
+            expect(runRecord(t).receipt!.refused).toEqual([]);
+            expect
+                .soft(runRecord(t).receipt!.warnings)
+                .toEqual(createsPage ? [{ kind: "aliasCollision", pageId: saved.id, detail: "Mira Vale ↔ Mira" }] : []);
+        }
+    });
+
     it("records refused candidates and repeated events without calling the patch model or creating entities", async () => {
         const t = structuredHarness();
         const low = {

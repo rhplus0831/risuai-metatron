@@ -2883,6 +2883,7 @@ export const languageKorean = {
         },
         warningKinds: {
             malformed: "형식이 잘못된 항목을 제외했습니다",
+            aliasCollision: "새 문서의 별칭이 기존 문서와 겹칩니다. 같은 대상이면 병합해 주세요",
             capped: "개수 한도를 초과한 항목을 제외했습니다",
             unknownPage: "존재하지 않는 문서를 지정했습니다",
             unknownThread: "존재하지 않는 미결 사항을 지정했습니다",

@@ -87,6 +87,8 @@ export type PagePlan = {
     /** The pages this recording makes, none with sections or history yet. */
     created: MemoryPage[];
     refused: MemoryReceipt["refused"];
+    /** Alias overlaps leave both pages intact for the person's merge tool. */
+    warnings?: Warning[];
     /** A page id by the name key of a create or a new page, for references that name it by title. */
     names: ReadonlyMap<string, string>;
     /** The character page of the group member who spoke the window. */
@@ -355,6 +357,7 @@ export function planPages(arg: {
 }): PagePlan {
     const { pages, candidates, seeds, speaker, newPageId } = arg;
     const created: MemoryPage[] = [];
+    const warnings: Warning[] = [];
     const names = new Map<string, string>();
     const find = (type: MemoryPageType, title: string) => {
         const tied = tiedNames(nameKey(title), seeds);
@@ -377,6 +380,13 @@ export function planPages(arg: {
         const key = nameKey(title);
         const seeded = seeds.flatMap((seed) => (seed.names.includes(key) ? seed.aliases : []));
         const page = newPage(newPageId(key), type, title, [...aliases, ...seeded]);
+        // Supplied aliases can suggest a duplicate; lore keywords alone do not identify a subject.
+        const aliasNames = new Set(aliases.flatMap((alias) => [...tiedNames(nameKey(alias), seeds)]));
+        for (const existing of [...pages, ...created]) {
+            if (existing.type === type && namedBy(existing, aliasNames)) {
+                warnings.push({ kind: "aliasCollision", pageId: page.id, detail: `${page.title} ↔ ${existing.title}` });
+            }
+        }
         created.push(page);
         names.set(key, page.id);
         return page;
@@ -421,6 +431,7 @@ export function planPages(arg: {
         targets: [...targets.values()],
         created,
         refused,
+        ...(warnings.length > 0 ? { warnings } : {}),
         names,
         ...(speakerId !== undefined ? { speakerId } : {}),
     };

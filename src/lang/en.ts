@@ -2995,6 +2995,7 @@ export const languageEnglish = {
         } as Record<string, string>,
         warningKinds: {
             malformed: "A malformed item was left out",
+            aliasCollision: "A new page's alias matches another page; merge them if they describe the same subject",
             capped: "Items past the limit were left out",
             unknownPage: "A page that does not exist was named",
             unknownThread: "A thread that does not exist was named",

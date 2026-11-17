@@ -730,7 +730,7 @@ function admitRecording(
     const admitted = ({ plan, warnings: dropped }: ReturnType<typeof planned>) =>
         admitAnalysis({
             draft: analysis.event,
-            warnings: [...warnings, ...dropped],
+            warnings: [...warnings, ...(plan.warnings ?? []), ...dropped],
             window: arg.window,
             omitUserMessages: writerSettings(arg.host).omitUserMessages,
             runId,
