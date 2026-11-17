@@ -4,6 +4,7 @@
  * and supplies Escape, the terminal notice's OK, or the password once. It never clears safe boot.
  * Run state (passwordUsed and restartWait) survives pages and browser relaunches; load state does not.
  */
+import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import net from "node:net";
 import tls from "node:tls";
@@ -26,7 +27,9 @@ import {
 } from "./headlessHostConfig.mjs";
 
 const rootDir = fileURLToPath(new URL("../", import.meta.url));
+const windows = process.platform === "win32";
 let settings;
+let chromePath;
 let chromium;
 let context;
 let launchingContext;
@@ -76,8 +79,12 @@ function shutdown(code, message) {
     return shutdownPromise;
 }
 
-process.on("SIGINT", () => void shutdown(EXIT_CODES.OK, "Stopped by SIGINT"));
-process.on("SIGTERM", () => void shutdown(EXIT_CODES.OK, "Stopped by SIGTERM"));
+// Windows reports a closed console window as SIGHUP (the process is killed about 10 s later) and
+// Ctrl+Break as SIGBREAK. Elsewhere SIGHUP stays with Playwright, which closes the browser for a
+// restart, so a run under nohup outlives its terminal.
+for (const signal of ["SIGINT", "SIGTERM", ...(windows ? ["SIGHUP", "SIGBREAK"] : [])]) {
+    process.on(signal, () => void shutdown(EXIT_CODES.OK, `Stopped by ${signal}`));
+}
 
 /** Wait for the server without starting it; a refused connection is normal during startup. */
 async function waitForListener(host, port) {
@@ -149,11 +156,12 @@ async function launchBrowser() {
     browserGone = false;
     try {
         launchingContext = chromium.launchPersistentContext(settings.profileDir, {
-            executablePath: settings.executablePath,
+            executablePath: chromePath,
             headless: true,
             // shutdown owns signals; Playwright's default SIGINT handler exits with 130.
             handleSIGINT: false,
             handleSIGTERM: false,
+            handleSIGHUP: !windows,
             // Ignoring certificate errors is safe here only because the configured address is loopback.
             ignoreHTTPSErrors: true,
         });
@@ -166,7 +174,7 @@ async function launchBrowser() {
             EXIT_CODES.STARTUP,
             locked
                 ? `Chrome profile is held by another Chrome: ${settings.profileDir}`
-                : `Could not launch Chrome (${settings.executablePath}); check the binary and profile folder ${settings.profileDir}, which another Chrome may hold`,
+                : `Could not launch Chrome (${chromePath}); check the binary and profile folder ${settings.profileDir}, which another Chrome may hold`,
         );
         return;
     } finally {
@@ -463,7 +471,7 @@ async function tick() {
 
 async function main() {
     try {
-        settings = readHeadlessHostConfig({ ...process.env }, rootDir);
+        settings = readHeadlessHostConfig({ ...process.env }, rootDir, process.platform);
     } catch (error) {
         await shutdown(EXIT_CODES.CONFIG, error.message);
         return;
@@ -477,6 +485,15 @@ async function main() {
         );
         return;
     }
+    chromePath = settings.chromePaths.find((file) => existsSync(file));
+    if (!chromePath) {
+        await shutdown(
+            EXIT_CODES.STARTUP,
+            `Chrome not found at ${settings.chromePaths.join(", ") || "any default path"}; install Google Chrome or set RISU_CHROME`,
+        );
+        return;
+    }
+    // Windows ignores the mode; the folder inherits the repository folder's permissions.
     await mkdir(settings.profileDir, { recursive: true, mode: 0o700 });
     await waitForListener(settings.host, settings.port);
     if (stopping) return;

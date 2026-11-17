@@ -73,6 +73,36 @@ describe("headless host configuration", () => {
             },
         });
     });
+    it("tries Chrome's install folders from Windows variables of any case, in Playwright's order", () => {
+        const env = {
+            "ProgramFiles(x86)": "C:\\Program Files (x86)",
+            ProgramFiles: "C:\\Program Files",
+            LOCALAPPDATA: "C:\\Users\\me\\AppData\\Local",
+        };
+        expect(readHeadlessHostConfig(env, "/repo", "win32").chromePaths).toEqual([
+            "C:\\Users\\me\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe",
+            "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+            "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+        ]);
+        expect(readHeadlessHostConfig({ ProgramFiles: " " }, "/repo", "win32").chromePaths).toEqual([]);
+    });
+
+    it("defaults to the macOS app bundle and the Linux launcher", () => {
+        expect(readHeadlessHostConfig({}, "/repo", "darwin").chromePaths).toEqual([
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        ]);
+        expect(readHeadlessHostConfig({}, "/repo", "linux").chromePaths).toEqual(["/usr/bin/google-chrome"]);
+    });
+
+    it("uses a nonblank RISU_CHROME as the only Chrome path on every platform", () => {
+        for (const platform of ["win32", "darwin", "linux"]) {
+            const env = { RISU_CHROME: "/opt/chrome", LOCALAPPDATA: "C:\\Local" };
+            expect(readHeadlessHostConfig(env, "/repo", platform).chromePaths).toEqual(["/opt/chrome"]);
+            expect(readHeadlessHostConfig({ RISU_CHROME: " " }, "/repo", platform).chromePaths).toEqual(
+                readHeadlessHostConfig({}, "/repo", platform).chromePaths,
+            );
+        }
+    });
 });
 
 describe("headless host restart timing", () => {

@@ -129,9 +129,13 @@
 - `util/headlessHost.mjs` (`pnpm host:headless`): a persistent system Chrome on the local server, with host mode and
   name set before each document starts. Its header and `shutdown` own the process contract; settings, redaction and
   restart timing are pure functions in `util/headlessHostConfig.mjs`. It waits for the server; it never starts it.
-- The profile is a login, created with mode `0700`. The default `host-profile/` is excluded from Git, Docker and
-  Prettier. SIGINT, SIGTERM and controlled fatal exits close the context. This needs development dependencies
-  (`playwright-core`) and system Chrome, not the Docker runtime image.
+- The profile is a login, created with mode `0700` (Windows ignores the mode). The default `host-profile/` is excluded
+  from Git, Docker and Prettier. SIGINT, SIGTERM, on Windows also SIGHUP (closed console) and SIGBREAK, and controlled
+  fatal exits close the context. This needs development dependencies (`playwright-core`) and system Chrome, not the
+  Docker runtime image.
+- It runs on Linux, Windows and macOS; `checkHeadlessHost.mjs` checks it on Linux only. The default Chrome is
+  `/usr/bin/google-chrome`, Google Chrome's `chrome.exe` under the Windows local and system program folders, or the
+  macOS app bundle.
 
 | Variable                      | Meaning and default                                                                                                                                                  |
 | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -140,7 +144,7 @@
 | `RISU_HEADLESS_HOST_PASSWORD` | Server password, typed into the app's identified login prompt once per run; needed on the first start. An unset server password must be set from a person's browser. |
 | `RISU_HEADLESS_HOST_PORT`     | Port of the served app, else `PORT`, else 6001. Use Vite's port for a dev stack.                                                                                     |
 | `RISU_HOST`                   | Unset, blank or wildcard gives `127.0.0.1`; a numeric loopback literal is kept. Names, bracketed IPv6 and other addresses are refused.                               |
-| `RISU_CHROME`                 | System Chrome binary; `/usr/bin/google-chrome`.                                                                                                                      |
+| `RISU_CHROME`                 | System Chrome binary. Unset or blank: the first existing path from `chromeCandidates` for the platform.                                                              |
 
 The listener's TLS handshake chooses HTTPS or HTTP. A secret input dialog is left alone while the document's
 `/api/test_auth` answer is unread, since an early Escape would submit an empty password. Dialog policy and plugin

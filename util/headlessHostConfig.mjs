@@ -54,8 +54,31 @@ export function hostLocalStorageValues(name) {
     return { "risu-remote-host": JSON.stringify(true), "risu-handoff-name": JSON.stringify(name) };
 }
 
-/** The caller supplies one environment snapshot and the repository root, never the working directory. */
-export function readHeadlessHostConfig(env, rootDir) {
+/**
+ * Google Chrome's usual install paths, tried in order. Windows and macOS follow Playwright's "chrome"
+ * channel; Linux keeps the launcher on PATH. A copied Windows environment keeps its keys' original case
+ * (`ProgramFiles`), so those names are matched without case.
+ */
+export function chromeCandidates(platform, env) {
+    if (platform === "win32") {
+        const value = (name) =>
+            Object.entries(env)
+                .find(([key]) => key.toUpperCase() === name)?.[1]
+                ?.trim();
+        return ["LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"]
+            .map(value)
+            .filter(Boolean)
+            .map((dir) => path.win32.join(dir, "Google", "Chrome", "Application", "chrome.exe"));
+    }
+    if (platform === "darwin") return ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"];
+    return ["/usr/bin/google-chrome"];
+}
+
+/**
+ * The caller supplies one environment snapshot, the repository root (never the working directory) and
+ * the platform name (`process.platform`). A nonblank RISU_CHROME is the only Chrome path.
+ */
+export function readHeadlessHostConfig(env, rootDir, platform) {
     const name = validateHeadlessHostName(env.RISU_HEADLESS_HOST_NAME ?? "Headless host");
     return {
         host: resolveHeadlessHostAddress(env.RISU_HOST),
@@ -63,7 +86,7 @@ export function readHeadlessHostConfig(env, rootDir) {
         name,
         profileDir: path.resolve(rootDir, env.RISU_HEADLESS_HOST_PROFILE || "host-profile"),
         password: env.RISU_HEADLESS_HOST_PASSWORD,
-        executablePath: env.RISU_CHROME ?? "/usr/bin/google-chrome",
+        chromePaths: env.RISU_CHROME?.trim() ? [env.RISU_CHROME] : chromeCandidates(platform, env),
         localStorageValues: hostLocalStorageValues(name),
     };
 }
