@@ -155,14 +155,13 @@ mechanisms register). Then comes one section per mechanism with a rule between, 
 
 ### Preset lists
 
-- `src/lib/Setting/botpreset.svelte` (both preset lists) and `src/lib/Setting/BindingScopeNote.svelte`. `App.svelte`
-  mounts one list per store (`openPresetList`, `openModelPresetList`).
+- `src/lib/Setting/botpreset.svelte` (both preset lists). `App.svelte` mounts one list per store (`openPresetList`,
+  `openModelPresetList`).
 - A pick uses `pickBinding` (`src/ts/storage/chatBindingPick.ts`): a list opened for a chat (`chatRef`, the binding
   panel's rows) binds that chat; any other list, Ctrl+1..9, and the Persona page change the tab's selection, also with a
   chat open ([chat bindings](persistence.md#chat-binding)).
-- `BindingScopeNote.svelte`, per field while a chat is open: "This chat" when the chat's bound record is the shown one;
-  "Not this chat's" with a "Show this chat's" button (which selects the bound record for the tab, never binds) when it
-  is another; "Not set for this chat" when it is unset or gone. Nothing at home.
+- The Model, Prompt, and Persona pages show the tab's selection with no note comparing it with the open chat's binding;
+  the binding panel shows the chat's own.
 - `src/ts/storage/presets.svelte.ts` `importPreset` returns the new id after success, or no value for a cancelled picker
   or a refused file (alerted). The share receiver consumes its cached preset only after success.
 
@@ -321,7 +320,7 @@ mechanisms register). Then comes one section per mechanism with a rule between, 
   `e2e/presetSelection.spec.ts` (an edit in the real settings UI followed by a hotkey switch; the selection per client
   and per tab), `e2e/chatBinding.spec.ts` (the binding panel's Model Presets and Prompt Presets pickers bind the chat,
   show its name, close, and leave the tab's selection alone; a settings pick with a bound chat open selects for the tab,
-  and the header note and its button compare the two).
+  and a second pick switches back).
 - `installFlatDatabase` (`src/ts/storage/tests/`) installs a fixture into the records, so wrapper and page tests run
   over the real views.
 - `src/ts/storage/tests/settingWrappers.test.ts` mounts the wrappers and `SettingRenderer` over the production

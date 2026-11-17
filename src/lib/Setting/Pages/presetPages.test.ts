@@ -745,7 +745,7 @@ describe("settings lists with a bound chat open", () => {
             expect(selection[selectionKey]).toBe(isPrompt ? "p2" : "m2");
             expect(chatBindingIds(ref)).toEqual(bindingBefore);
             expect(page.textContent).toContain(isPrompt ? "Prompt Two" : "Model Two");
-            expect(page.textContent).toContain("Not this chat's");
+            expect(page.textContent).not.toContain("Not this chat's");
             if (isPrompt) {
                 const input = [...page.querySelectorAll<HTMLInputElement>("input[type=number]")].find(
                     (input) => input.value === "600",

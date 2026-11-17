@@ -24,7 +24,6 @@
     import RegexList from "src/lib/SideBars/Scripts/RegexList.svelte";
     import SettingRenderer from "../SettingRenderer.svelte";
     import { allBasicParameterItems } from "src/ts/setting/botSettingsParamsData";
-    import BindingScopeNote from "../BindingScopeNote.svelte";
     import SettingsSections from "../SettingsSections.svelte";
     import { promptSettingsSections } from "src/ts/setting/promptSettingsData";
     import { currentJump } from "src/ts/setting/settingJump.svelte";
@@ -94,7 +93,6 @@
 
 <div class="flex items-center gap-2 mb-4 p-2 rounded-md border border-darkborderc">
     <span class="text-textcolor2 text-sm shrink-0">{language.promptPreset}</span>
-    <BindingScopeNote field="promptPresetId" />
     {#if editedPresetRecord()?.image}
         <img src={editedPresetRecord()?.image} alt="icon" class="w-6 h-6 rounded-md" decoding="async" />
     {/if}

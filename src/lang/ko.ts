@@ -1730,10 +1730,6 @@ export const languageKorean = {
         setUp: "이 채팅 설정하기",
         setupNeeded: "설정 필요",
         confirmReview: "확인",
-        thisChat: "이 채팅",
-        notThisChat: "이 채팅의 것이 아님",
-        showThisChat: "이 채팅의 것 보기",
-        notSetForChat: "이 채팅에 지정 안 됨",
         forChat: (name: string) => `이 채팅에 적용: ${name}`,
         incomplete: "이 채팅의 설정을 완료하거나 확인해야 메시지를 보낼 수 있습니다.",
         usedByChats: (count: number) =>
