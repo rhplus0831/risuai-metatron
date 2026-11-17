@@ -49,6 +49,20 @@ export function validateHeadlessHostName(name) {
     return name;
 }
 
+/** Blank is unset. `error` keeps the default of console errors only; `warn` adds warnings; `all` forwards every type. */
+export function resolveHeadlessHostConsole(raw) {
+    const level = raw?.trim().toLowerCase() || "error";
+    if (!["error", "warn", "all"].includes(level)) {
+        throw new Error("RISU_HEADLESS_HOST_CONSOLE must be error, warn or all");
+    }
+    return level;
+}
+
+/** `type` is Playwright's ConsoleMessage.type(), where console.warn is "warning". */
+export function consoleTypeLogged(level, type) {
+    return level === "all" || type === "error" || (level === "warn" && type === "warning");
+}
+
 /** Values consumed by handoff.ts's preference(), before any app module starts. */
 export function hostLocalStorageValues(name) {
     return { "risu-remote-host": JSON.stringify(true), "risu-handoff-name": JSON.stringify(name) };
@@ -86,6 +100,7 @@ export function readHeadlessHostConfig(env, rootDir, platform) {
         name,
         profileDir: path.resolve(rootDir, env.RISU_HEADLESS_HOST_PROFILE || "host-profile"),
         password: env.RISU_HEADLESS_HOST_PASSWORD,
+        consoleLevel: resolveHeadlessHostConsole(env.RISU_HEADLESS_HOST_CONSOLE),
         chromePaths: env.RISU_CHROME?.trim() ? [env.RISU_CHROME] : chromeCandidates(platform, env),
         localStorageValues: hostLocalStorageValues(name),
     };

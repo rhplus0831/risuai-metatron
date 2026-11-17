@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import {
+    consoleTypeLogged,
     nextRestartWait,
     pluginsOffReloadAt,
     readHeadlessHostConfig,
@@ -102,6 +103,24 @@ describe("headless host configuration", () => {
                 readHeadlessHostConfig({}, "/repo", platform).chromePaths,
             );
         }
+    });
+
+    it("forwards console errors only by default, warnings with warn, and every type with all", () => {
+        const level = (value?: string) =>
+            readHeadlessHostConfig({ RISU_HEADLESS_HOST_CONSOLE: value }, "/repo", "linux").consoleLevel;
+        expect([level(), level(" "), level("error"), level(" ALL "), level("warn")]).toEqual([
+            "error",
+            "error",
+            "error",
+            "all",
+            "warn",
+        ]);
+        const logged = (value: string) =>
+            ["error", "warning", "log", "debug"].filter((type) => consoleTypeLogged(value, type));
+        expect(logged("error")).toEqual(["error"]);
+        expect(logged("warn")).toEqual(["error", "warning"]);
+        expect(logged("all")).toEqual(["error", "warning", "log", "debug"]);
+        expect(() => level("verbose")).toThrow("RISU_HEADLESS_HOST_CONSOLE must be error, warn or all");
     });
 });
 

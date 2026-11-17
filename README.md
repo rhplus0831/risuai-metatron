@@ -77,7 +77,7 @@ pnpm host:headless
 
 Set the server's password from a person's browser first. On the host's first start, provide `RISU_HEADLESS_HOST_PASSWORD` in its environment; later starts reuse the login in `host-profile/`. That folder is a login: keep it private. Stop with Ctrl-C or SIGTERM so Chrome writes the profile. It also runs on Windows (set variables in PowerShell with `$env:RISU_HEADLESS_HOST_PASSWORD = "..."` before `pnpm host:headless`) and macOS, where it finds an installed Google Chrome by itself.
 
-Give the plugins their standing grants first from Settings → Plugins on another device. The host dismisses every dialog with Escape and logs it; a permission prompt is denied until a person gives a standing grant. It appears as **Headless host** for other devices to send through. It connects only over loopback; settings, including a different Chrome binary, name, profile or port, are in the [headless host guide](docs/structure/build-test-platforms.md#headless-host).
+Give the plugins their standing grants first from Settings → Plugins on another device. The host dismisses every dialog with Escape and logs it; a permission prompt is denied until a person gives a standing grant. It appears as **Headless host** for other devices to send through. It connects only over loopback; settings, including a different Chrome binary, name, profile, port or how much of the page's console it logs, are in the [headless host guide](docs/structure/build-test-platforms.md#headless-host).
 
 ### Development
 

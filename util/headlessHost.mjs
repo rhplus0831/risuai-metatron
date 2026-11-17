@@ -16,6 +16,7 @@ import {
     LOG_TEXT_LIMIT,
     RESTART_MIN_MS,
     TICK_MS,
+    consoleTypeLogged,
     cutDialogText,
     hostRootUrl,
     nextRestartWait,
@@ -265,7 +266,8 @@ async function openPage() {
         if (page === currentPage) scheduleRestart("page closed");
     });
     page.on("console", (message) => {
-        if (message.type() === "error") log(`Page console error: ${message.text()}`);
+        const type = message.type();
+        if (consoleTypeLogged(settings.consoleLevel, type)) log(`Page console ${type}: ${message.text()}`);
     });
     page.on("pageerror", (error) => log(`Page error: ${error.message}`));
     page.on("dialog", async (dialog) => {
