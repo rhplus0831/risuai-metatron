@@ -16,6 +16,7 @@ import {
     LOG_TEXT_LIMIT,
     RESTART_MIN_MS,
     TICK_MS,
+    consoleLocationText,
     consoleTypeLogged,
     cutDialogText,
     hostRootUrl,
@@ -45,7 +46,7 @@ let shutdownPromise;
 let rootUrl;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const safeText = (text) => redactCredentials(text, settings?.password);
+const safeText = (text) => redactCredentials(text, settings?.password, rootUrl && new URL(rootUrl).origin);
 const dialogText = (text) => cutDialogText(safeText(text));
 
 function log(message) {
@@ -267,9 +268,11 @@ async function openPage() {
     });
     page.on("console", (message) => {
         const type = message.type();
-        if (consoleTypeLogged(settings.consoleLevel, type)) log(`Page console ${type}: ${message.text()}`);
+        if (!consoleTypeLogged(settings.consoleLevel, type)) return;
+        log(`Page console ${type}: ${message.text()}${consoleLocationText(message.location())}`);
     });
-    page.on("pageerror", (error) => log(`Page error: ${error.message}`));
+    // The stack starts with the message in Chrome; its frames say which script threw.
+    page.on("pageerror", (error) => log(`Page error: ${error.stack || error.message}`));
     page.on("dialog", async (dialog) => {
         log(`Dismiss native ${dialog.type()}: ${dialogText(dialog.message())}`);
         try {

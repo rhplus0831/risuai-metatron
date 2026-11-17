@@ -135,11 +135,26 @@ export function cutDialogText(text) {
 }
 
 /**
+ * Where a console message came from, as text for the log. For Chrome's "Failed to load resource"
+ * the URL is the resource itself, at position 0:0; otherwise it is the script. Playwright counts
+ * lines and columns from 0; the log counts from 1, like a stack frame.
+ */
+export function consoleLocationText(location) {
+    if (!location?.url) return "";
+    const { lineNumber: line, columnNumber: column } = location;
+    const position = line || column ? `:${line + 1}:${column + 1}` : "";
+    // No closing bracket: the redactor's URL match would take it with a hidden query.
+    return ` at ${location.url}${position}`;
+}
+
+/**
  * Redact before truncating or flattening lines. Keep only URL origins: credentials can live in
- * paths as well as query strings, fragments and userinfo. Never forward request headers.
+ * paths as well as query strings, fragments and userinfo. The served app's own origin (`appOrigin`)
+ * also keeps its path, which names a route, asset or script and never a credential; its query and
+ * fragment still go. Never forward request headers.
  * The known password's escaped/URL-encoded forms are covered too; fill errors are never forwarded.
  */
-export function redactCredentials(text, password) {
+export function redactCredentials(text, password, appOrigin) {
     let result = String(text);
     if (password) {
         const forms = [password, JSON.stringify(password).slice(1, -1), encodeURIComponent(password)];
@@ -150,6 +165,9 @@ export function redactCredentials(text, password) {
     result = result.replace(/(?:https?|wss?):\/\/[^\s<>"'`]+/gi, (raw) => {
         try {
             const url = new URL(raw);
+            if (appOrigin && url.origin === appOrigin && !url.username && !url.password) {
+                return `${url.origin}${url.pathname}${url.search || url.hash ? "[redacted]" : ""}`;
+            }
             const hidden = url.username || url.password || url.search || url.hash || url.pathname !== "/";
             return `${url.protocol}//${url.host}/${hidden ? "[redacted]" : ""}`;
         } catch {

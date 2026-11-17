@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import {
+    consoleLocationText,
     consoleTypeLogged,
     nextRestartWait,
     pluginsOffReloadAt,
@@ -160,5 +161,30 @@ describe("redactCredentials", () => {
         );
         expect(text).not.toContain("host-secret");
         expect(text).not.toContain("query-secret");
+    });
+
+    it("keeps the path of the app's own origin without its query or fragment, and only the origin of any other URL", () => {
+        const app = "http://127.0.0.1:6001";
+        const redact = (text: string) => redactCredentials(text, "host-secret", app);
+        expect(redact(`404 (${app}/api/asset/abc.png)`)).toBe(`404 (${app}/api/asset/abc.png)`);
+        expect(redact(`at boot (${app}/assets/index-1a2b.js:12:345)`)).toBe(
+            `at boot (${app}/assets/index-1a2b.js:12:345)`,
+        );
+        expect(redact(`${app}/api/read?session=query-secret#frag`)).toBe(`${app}/api/read[redacted]`);
+        expect(redact(`${app}/x/host-secret/y`)).toBe(`${app}/x/[redacted]/y`);
+        expect(redact("http://user:pw@127.0.0.1:6001/api/read")).toBe("http://127.0.0.1:6001/[redacted]");
+        expect(redact("https://api.example.com/bot123:key/send")).toBe("https://api.example.com/[redacted]");
+        expect(redact("http://127.0.0.1:6002/api/read")).toBe("http://127.0.0.1:6002/[redacted]");
+        expect(redactCredentials(`${app}/api/read`, "host-secret")).toBe(`${app}/[redacted]`);
+    });
+
+    it("writes a console message's resource or script position after its text", () => {
+        expect(consoleLocationText({ url: "http://127.0.0.1:6001/a.png", lineNumber: 0, columnNumber: 0 })).toBe(
+            " at http://127.0.0.1:6001/a.png",
+        );
+        expect(consoleLocationText({ url: "http://127.0.0.1:6001/a.js", lineNumber: 11, columnNumber: 344 })).toBe(
+            " at http://127.0.0.1:6001/a.js:12:345",
+        );
+        expect(consoleLocationText({ url: "", lineNumber: 0, columnNumber: 0 })).toBe("");
     });
 });

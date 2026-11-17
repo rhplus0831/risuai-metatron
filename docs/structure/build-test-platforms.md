@@ -151,7 +151,8 @@ The listener's TLS handshake chooses HTTPS or HTTP. A secret input dialog is lef
 `/api/test_auth` answer is unread, since an early Escape would submit an empty password. Dialog policy and plugin
 standing grants: [generation job client](network-jobs.md#generation-job-client). The script logs ISO timestamps and
 redacted, bounded text; it retries failed loads with backoff and lets safe boot settle before retrying a page with
-plugins off.
+plugins off. A console line ends with its resource or script position and a page error carries its stack. A URL keeps
+only its origin, except the app's own origin, which also keeps its path (never the query or fragment).
 
 ### Analysis scripts
 
