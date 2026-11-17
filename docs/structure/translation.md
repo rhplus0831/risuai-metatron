@@ -305,3 +305,8 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
   user message's `data` makes it stale, and the send hand-off (when it includes user messages) may then translate over
   it. Re-hashing after the trigger would mark a record fresh that does not match the text. Decision: Input Hooks D2,
   D13.
+- Two clients' saves of one message's translation: the later one is taken with no conflict, since
+  `saveStoredTranslationEdit` does not compare the editor's captured `base` (reproduced 2026-11-17, cross-check F4). An
+  open editor is to show a notice when the translation changes under it
+  ([known issue](../backlog/known-issues.md#chat-store)). Decision: owner, 2026-11-17: the rule of message text, where a
+  base check makes slow edits conflict.

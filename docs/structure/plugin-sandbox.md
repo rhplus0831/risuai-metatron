@@ -394,6 +394,11 @@ The user allows permissions ahead of a plugin's first request through `reviewPlu
   reads back as `{}`, a typed array as an index object, a `Date` as a string, `NaN` and `Infinity` as `null`, and an
   `undefined` property is dropped; a `bigint` or a cycle throws. `getLocalPluginStorage().setItem` refuses those values
   instead (`isJsonValue`). Decision: upstream parity, Found Issues Decisions (owner, 2026-11-08).
+- Plugin storage is last-writer-wins per key once a remote value has reached the tab: a `setItem` of an object the
+  plugin read earlier replaces a newer value from another tab or device with no conflict (reproduced 2026-11-17,
+  cross-check F3). Before the feed delivers that value the write is answered 409 and `onStorageDiscarded` fires. A
+  plugin that reads a key again right before writing it is safe. Decision: owner, 2026-11-17: refusing stale writes
+  would fail a plugin that writes from memory on every save, and a host merge cannot see inside string values.
 - With `mainDom` consent a plugin can query and change the whole document (`getRootDocument`) and receives the keys
   typed into every field that is not a password input or marked `data-plugin-secret`; `nativeFetch` lets a plugin choose
   its request headers. Decision: owner, 2026-11-10 (known-issues review): the consent is the boundary, and plugin

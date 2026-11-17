@@ -11,10 +11,16 @@ Seventeen entries of the fork data-loss cross-check (`cross-check F<n>`) moved h
 on 2026-11-17, after each was reproduced at `5f8b0b191`. Every entry got a probe test that drives the product code
 through the entry's trigger: a defect case that states what a user would expect and fails, and a control case on the
 sibling path that passes (17 probe files, 51 cases: 26 failed on their own assertion, 25 passed). The session ran each
-probe a second time and read the two it rated highest. The probes are kept with the review material outside the
-repository. Each bullet below says what its probe saw and where the cross-check's reading was corrected. Nothing was
-fixed, and the owner has not decided on any of them. One entry is split in two here (F11, under memory and
-translation), so the seventeen are eighteen bullets.
+probe a second time and read two of them. The probes are kept with the review material outside the repository. Each
+bullet below says what its probe saw and where the cross-check's reading was corrected. Nothing was fixed that day.
+One entry is split in two here (F11, under memory and translation).
+
+The owner went through the ones that need a design choice on 2026-11-17 (F1, F3, F4, F5, F12, F13, F16); each of
+those bullets ends with the decision. The other entries have one evident fix and no decision line. F3 (a plugin's
+in-memory value overwrites a newer value from another tab or device) left this file for the
+[plugin guide's Limitations](../structure/plugin-sandbox.md#limitations): the main third-party plugin in use reads a
+key again before it writes its settings, refusing stale writes would fail its log key on every save, and a host-side
+merge cannot see inside the JSON strings it stores.
 
 ## Contents
 
@@ -24,7 +30,7 @@ translation), so the seventeen are eighteen bullets.
 - [chat-store](#chat-store) (1)
 - [memory](#memory) (1)
 - [persistence](#persistence) (1)
-- [plugin-sandbox](#plugin-sandbox) (3)
+- [plugin-sandbox](#plugin-sandbox) (2)
 - [scripts-triggers](#scripts-triggers) (1)
 - [server-generation](#server-generation) (2)
 - [structured-memory](#structured-memory) (3)
@@ -67,13 +73,17 @@ Guide: [Characters, Cards, Modules, Personas](../structure/characters-modules.md
 - A module export re-encodes its images when the image compression setting is on. `exportModuleLegacy`
   (`src/ts/process/modules.ts`) passes every asset through `compressImage`, and `exportModule` reaches the same call
   through `exportCharacterCard`; `db.imageCompression` is on by default and its help text names character exports
-  only. Reproduced on 2026-11-17 (cross-check F16), narrower than filed: the test environment has no 2D canvas, so
-  the probe answered at the canvas boundary with marker bytes. With the setting on, both export formats carried the
-  marker in place of the stored PNG; with it off, both carried the stored bytes. What the real encoder does to a
-  picture was not run and is read from `src/ts/media/compressImage/lossyCompression.ts`: WebP at quality 0.75 (JPEG
-  where the canvas cannot encode WebP), the longer side capped at 3000 px, an animated GIF drawn as a still image.
-  The stored original is untouched. Suggested: say so at module export and offer the original bytes, or name
-  modules in the setting's help text.
+  only. Upstream RisuAI does the same. Reproduced on 2026-11-17 (cross-check F16) in two parts. The unit probe, whose
+  environment has no 2D canvas, answered at the canvas boundary with marker bytes: with the setting on, both export
+  formats carried the marker in place of the stored PNG; with it off, both carried the stored bytes. Then
+  `doLossyCompression` (`src/ts/media/compressImage/lossyCompression.ts`), bundled from the source, ran in headless
+  Chrome 156: a 4000x2000 PNG of 8.3 MB came out as a 3000x1500 WebP of 52 KB, an 800x600 PNG kept its size and came
+  out lossy (36 KB from 526 KB, pixels changed), the PNG's text chunk was gone from both, and a two-frame GIF came
+  out as a one-frame WebP. Not run: the JPEG fallback for a canvas that cannot encode WebP. The stored original is
+  untouched. Decision: owner, 2026-11-17: fix it by telling the author. The setting's help
+  text names modules, and an export with the setting on that holds images it will re-encode says how many (character
+  exports take the same call and may show the same line). The behavior and the single setting stay as upstream has
+  them; no per-export choice. Not yet fixed.
 
 ## chat-pipeline
 
@@ -111,7 +121,11 @@ Guide: [Chat Store: Chat Module, Write Protocol, Checkpoints](../structure/chat-
   an open editor only from the row trim and from containment. A long manual edit is lost with no recovery draft.
   Suggested: keep editor drafts outside the row, keyed by character, chat and message. Leaving the text out of the
   mount key while `isEditing` is true would close only the first case. The owner's decision of 2026-11-08 accepted a
-  behavior the code did not have, so it needs to be made again.
+  behavior the code did not have and was made again. Decision: owner, 2026-11-17: fix it. Editor text is kept in memory
+  outside the row and returns when the row is mounted again; it need not survive a reload or a closed app. When
+  another device changes the edited message, the typed text stays, a notice says the message changed elsewhere, and
+  a save overwrites; the translation editor shows the same notice when the stored translation changes under it
+  (cross-check F4). Not yet fixed.
 
 ## memory
 
@@ -150,15 +164,6 @@ Guide: [Plugins: v3 Sandbox, Host API, Hooks, Storage, Permissions](../structure
   kind is not journaled, and only a snapshot or backup from before brings the values back. Suggested: at
   replacement, keep the enabled state and every argument value whose declaration is still compatible (same name and
   type).
-- A plugin's in-memory value overwrites a newer value from another tab or device. Plugin storage reads and writes
-  carry no record of what the plugin read (`setOwnedPluginStorageItem` in
-  `src/ts/storage/pluginStorageStore.svelte.ts`). Reproduced on 2026-11-17 (cross-check F3) with two clients on one
-  store-backed server: A read a key, B saved a newer value, the change feed delivered it to A, and A's write of its
-  older object was acknowledged and replaced B's value with no conflict. The revision guard itself works: the same
-  write made before the feed delivered B's value was answered 409, discarded, and followed by a reload notice. What
-  is missing is a link between the object a plugin holds and the store after a remote update. The reviewer rated it
-  P1; the session rated it P2, as a property of the storage API. Suggested: an observation per key that a remote
-  update invalidates, or a change notification that plugins can subscribe to.
 - A plugin import is treated as done before its save is confirmed, and a character import announces success at the
   same point. Reproduced on 2026-11-17 (cross-check F10), each half narrower than filed. Plugin: `importPlugin`
   hands the plugin to the loader with no save dispatched; after a page hide and a fresh boot against the same server
@@ -182,8 +187,11 @@ Guide: [Regex Scripts, Triggers, Lua Scripting](../structure/scripts-triggers.md
   untouched reply came back with a new ID and without its time, generation and prompt information, stored
   translation, and reroll candidates (eight checked fields, none kept). The same edit through `setChat` kept all
   eight. Inherited from upstream RisuAI. One press of a card's button strips a whole chat's message data, and only a
-  chat checkpoint or a snapshot from before the call brings it back. Suggested: carry message IDs through the getter
-  and the setter, overlay role and text on the matched existing message, and give a fresh ID only to a new entry.
+  chat checkpoint or a snapshot from before the call brings it back. Decision: owner, 2026-11-17: fix it by carrying
+  IDs. The getter gives each item an `id`; the setter overlays role and text on the message an item's `id` names, as
+  `setChat` does for one message, removes the messages the list leaves out, and makes a new message of an item
+  without an `id`, except that such an item keeps the message at the same position when role and text are equal.
+  The working-copy branch gets the same rule and is to be reproduced first. Not yet fixed.
 
 ## server-generation
 
@@ -248,32 +256,37 @@ Guide: [Structured Memory Records](../structure/structured-memory/records.md#kno
   `sceneSlot` (`server/src/prompt/memory/structured/prompts.ts`) caps the whole scene slot at 2,000 characters,
   headings and participants included, not each field; and the 800 cap is applied once, when the answer is admitted
   (`server/src/prompt/memory/structured/analysis.ts`), so `rewriteScene` in `pages.ts` stores an answer that is
-  already clipped and cannot tell. Suggested: show whole fields when replacement is allowed, and refuse an oversized
-  answer where it is admitted instead of clipping it.
+  already clipped and cannot tell. Decision: owner, 2026-11-17: fix it, with a soft limit. The editor keeps 4,000 characters and shows a
+  badge on a scene field over 800 (the prompts grow, and the writer may rewrite the field up to this length). The
+  writer's prompt shows every scene field whole and states each field's limit: 800, or the field's current length
+  while that is over 800. An answer past its limit is still clipped, now with a warning on the run. A long scene field
+  must not count as over budget in the memory health figures. Not yet fixed.
 - A candidate whose alias is an existing page's title creates a duplicate page
   ([writer guide](../structure/structured-memory/writer.md#known-hazards); rated P3). `find` in
   `server/src/prompt/memory/structured/pages.ts` matches the candidate's title against existing titles and aliases;
   the candidate's own aliases take no part. Reproduced on 2026-11-17 (cross-check F13): with a page `Mira`, a
   candidate `Mira Vale` with alias `Mira` became a second character page, with nothing refused and no warning; a
   candidate titled `Mira` updated the existing page. No text is lost and the pages can be merged by hand, but facts
-  about one subject are split over two pages. Suggested: refuse or report a candidate whose alias collides with an
-  existing title.
+  about one subject are split over two pages. Decision: owner, 2026-11-17: fix it by reporting. The
+  page is still created, and the run records a warning that names both pages, so the merge tool can join them. An
+  automatic join was not chosen: a wrong one mixes two subjects' facts and is harder to undo than a duplicate. Not
+  yet fixed.
 
 ## translation
 
 Guide:
 [Translation: Providers, the LLM Translator, Presets, Server and Stored Translation, Bilingual Display](../structure/translation.md#known-hazards).
 
-- A translation result or edit overwrites a newer translation of the same message. `setTranslation`
+- A translation run's result overwrites a hand edit saved while the run was waiting for its model. `setTranslation`
   (`server/src/data/chatStore.ts`) is fenced by the hash of the original text; it carries a base revision but is
-  accepted on an older one, and the editor's captured `base` is not compared at save
-  (`src/ts/translator/storedTranslation.svelte.ts`). Reproduced on 2026-11-17 (cross-check F4), both forms: a
-  Retranslate whose provider answer was held while another client saved a hand correction replaced that correction
-  when it arrived; and of two `StoredTranslationEdit` sessions opened before either save, the second save was
-  accepted without an alert and replaced the first. Both writers were refused when the original text had changed.
-  Nothing keeps the overwritten text. The reviewer rated it P1; the session rated it P2, because it needs two
-  clients working on the same message's translation. Suggested: an expected translation version, "none" included,
-  checked in `setTranslation`.
+  accepted on an older one, so the runner (`server/src/translation/runner.ts`) writes over whatever translation is
+  there. Reproduced on 2026-11-17 (cross-check F4): a Retranslate whose provider answer was held while another client
+  saved a hand correction replaced that correction when it arrived; the run was refused when the original text had
+  changed. Nothing keeps the overwritten text. It needs two clients on the same message's translation (the reviewer
+  rated it P1, the session P2). Decision: owner, 2026-11-17: fix it on the server only: a run remembers the
+  translation it started from and discards its result when the stored translation differs at the write. The entry's
+  other half, two editors saving over each other, stays as it is and is a
+  [Limitation of the translation guide](../structure/translation.md#limitations). Not yet fixed.
 - A translation answer that holds only reasoning tags replaces a stored translation with an empty one. Reproduced
   on 2026-11-17 (cross-check F11, second half) through the real pipeline (`shared/translation/pipeline.ts`) and
   server runner (`server/src/translation/runner.ts`): on a message with a hand-edited translation, a forced run

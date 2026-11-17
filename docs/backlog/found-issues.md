@@ -95,14 +95,15 @@ All seventeen were reproduced the same day at `5f8b0b191` and moved to [known is
 owning guide: one probe test per entry, written by five agents in separate worktrees, with a defect case that failed
 and a control case that passed, and each probe run a second time by the session. Fifteen reproduced as filed; the
 import entry (F10) and the module export entry (F16) reproduced narrower, and several descriptions were corrected
-against the code. The bullets there carry what each probe saw and each correction. The probes are kept with the review
+against the code. The module export entry's encoder was then run in headless Chrome and did what the entry said.
+The bullets there carry what each probe saw and each correction. The probes are kept with the review
 material outside the repository; none of the seventeen is fixed.
 
 ## Contents
 
 - [Backup and sync](#backup-and-sync): 1
 - [Network jobs](#network-jobs): 1
-- [Plugins](#plugins): 1
+- [Plugins](#plugins): 2
 - [Remote commands](#remote-commands): 1
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 1
@@ -162,6 +163,17 @@ confirmation, and chat creation; plugins are a second writer nobody documents.
 
 **Suggested handling:** an owner decision: exclude the binding keys from plugin chat writes, or document plugins as a
 binding writer in [persistence](../structure/persistence.md) Chat binding.
+
+### The plugin guide is over its size target
+
+`docs/structure/plugin-sandbox.md` is 36,553 bytes against the 36,000-byte target (limit 40,000): `pnpm check:docs`
+reports it `near` since the Limitation on last-writer-wins plugin storage was added on 2026-11-17. It was 35,983
+bytes before.
+
+**Why it matters:** the next facts added to the guide move it toward the limit, where a split has to land first.
+
+**Suggested handling:** a trim or split pass of its own (Size limits in `docs/structure/README.md`); Flows (about
+9,800 bytes) and Known Hazards (about 8,300) are the largest parts.
 
 ## Remote commands
 
