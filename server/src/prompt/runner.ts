@@ -2218,24 +2218,9 @@ async function runSpeaker(arg: {
                 const [role, mess] = msgs[i];
                 // The message a continue extends (locked since the send started).
                 const lastMessage = generation ? storedReply() : chatNow()?.message.at(-1);
-                let result2 = await scripts.process(owner, mess.trim(), "editoutput", chatNow()?.message.length ?? 0);
-                setup.check();
-                if (i === 0 && arg.continueSend) {
-                    result2 = await scripts.process(
-                        owner,
-                        ((lastMessage?.data ?? "") + mess).trim(),
-                        "editoutput",
-                        indexOfMessage(lastMessage?.chatId),
-                    );
-                    setup.check();
-                }
-                if (db.removeIncompleteResponse) {
-                    result2.data = trimUntilPunctuation(result2.data);
-                }
-                result = result2.data;
-                const inlayResult = runInlayScreen(currentChar, result);
-                result = inlayResult.text;
-                emoChanged = result2.emoChanged;
+                const outputIndex = chatNow()?.message.length ?? 0;
+                const rawText = (i === 0 && arg.continueSend ? (lastMessage?.data ?? "") + mess : mess).trim();
+                // Protect the raw reply before hooks, as for streams; later writes update this same generation.
                 if (i === 0 && generation) {
                     if (!lastMessage) {
                         // The message to continue is gone.
@@ -2250,7 +2235,7 @@ async function runSpeaker(arg: {
                             message: {
                                 ...structuredClone(storedReply() ?? lastMessage),
                                 role: "char",
-                                data: result,
+                                data: rawText,
                                 saying: currentChar.chaId,
                                 time: Date.now(),
                                 generationInfo,
@@ -2268,7 +2253,7 @@ async function runSpeaker(arg: {
                             messages: [
                                 {
                                     role,
-                                    data: result,
+                                    data: rawText,
                                     saying: currentChar.chaId,
                                     time: Date.now(),
                                     generationInfo,
@@ -2282,6 +2267,27 @@ async function runSpeaker(arg: {
                         { op: "begin", id: outputMessageId, generationId },
                     ]);
                     generation = { messageId: outputMessageId, generationId, seq: 0, final: false };
+                }
+                let result2 = await scripts.process(owner, mess.trim(), "editoutput", outputIndex);
+                setup.check();
+                if (i === 0 && arg.continueSend) {
+                    result2 = await scripts.process(
+                        owner,
+                        ((lastMessage?.data ?? "") + mess).trim(),
+                        "editoutput",
+                        indexOfMessage(lastMessage?.chatId),
+                    );
+                    setup.check();
+                }
+                if (db.removeIncompleteResponse) {
+                    result2.data = trimUntilPunctuation(result2.data);
+                }
+                result = result2.data;
+                const inlayResult = runInlayScreen(currentChar, result);
+                result = inlayResult.text;
+                emoChanged = result2.emoChanged;
+                if (i === 0) {
+                    writeReplyText(result);
                 } else {
                     samples.push(result);
                 }

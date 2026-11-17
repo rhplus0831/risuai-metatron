@@ -17,6 +17,7 @@ import {
     type MockInstance,
 } from "vitest";
 import { type GenerationEvent, type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
+import type { Chat } from "../../../shared/database.ts";
 import type { ChangeFeed, ChangeFeedEvent } from "../data/changeFeed.ts";
 import type { EventFeedFrame } from "../../../shared/events.ts";
 import { completionNotificationTag } from "../../../shared/notifications.ts";
@@ -401,7 +402,7 @@ type JobOptions = {
     /** Runs at every `chunk` event the owner socket gets. */
     onChunk?: () => void;
     /** Answers a `callback` event (an edit hook): the answer message's fields. */
-    answerCallback?: (event: any) => Record<string, unknown>;
+    answerCallback?: (event: any) => Record<string, unknown> | Promise<Record<string, unknown>>;
     hooks?: typeof NO_GENERATION_HOOKS;
     presetId?: string;
 };
@@ -473,26 +474,32 @@ async function job(
         const events: any[] = [];
         let chunks = 0;
         // Every frame is observed from the open on: the handler is set before the provider is released.
-        const ended = new Promise<void>((resolve) => {
+        const ended = new Promise<void>((resolve, reject) => {
             fallback = setTimeout(resolve, 45_000);
             ws.onmessage = async (message) => {
-                const event = JSON.parse(String(message.data));
-                if (event.type === "ping") {
-                    return;
-                }
-                events.push(event);
-                options.onEvent?.(event);
-                if (event.type === "chunk") {
-                    options.onChunk?.();
-                }
-                if (event.type === "chunk" && ++chunks === options.abortAfterChunks) {
-                    await api(`/api/generations/${jobId}?clientId=tab`, { method: "DELETE" });
-                }
-                if (event.type === "callback" && options.answerCallback) {
-                    ws.send(JSON.stringify({ type: "answer", id: event.id, ...options.answerCallback(event) }));
-                }
-                if (event.type === "done" || event.type === "error") {
-                    resolve();
+                try {
+                    const event = JSON.parse(String(message.data));
+                    if (event.type === "ping") {
+                        return;
+                    }
+                    events.push(event);
+                    options.onEvent?.(event);
+                    if (event.type === "chunk") {
+                        options.onChunk?.();
+                    }
+                    if (event.type === "chunk" && ++chunks === options.abortAfterChunks) {
+                        await api(`/api/generations/${jobId}?clientId=tab`, { method: "DELETE" });
+                    }
+                    if (event.type === "callback" && options.answerCallback) {
+                        ws.send(
+                            JSON.stringify({ type: "answer", id: event.id, ...(await options.answerCallback(event)) }),
+                        );
+                    }
+                    if (event.type === "done" || event.type === "error") {
+                        resolve();
+                    }
+                } catch (error) {
+                    reject(error);
                 }
             };
         });
@@ -2561,6 +2568,107 @@ describe("chat activity without character writes", () => {
         },
         SLOW,
     );
+});
+
+describe("buffered output hooks", () => {
+    const raw = "Buffered provider answer.";
+    const previous = {
+        chatId: "r",
+        role: "char",
+        data: "Previous reply.",
+        candidates: [
+            { id: "first", data: "First reply." },
+            { id: "previous", data: "Previous reply." },
+        ],
+        selected: 1,
+        candidatesRevision: 3,
+    };
+    let providers: Record<string, unknown>;
+    let previousMode: typeof mode;
+    beforeEach(async () => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        providers = (await single("providers")).data;
+        previousMode = mode;
+        await patchProviders({
+            useStreaming: false,
+            halfStreaming: false,
+            autoContinueChat: false,
+            inlayErrorResponse: false,
+            presetChain: "",
+            requestRetrys: 0,
+        });
+        mode = { chunks: [raw], delayMs: 0 };
+    });
+    afterEach(async () => {
+        await patchProviders(providers);
+        mode = previousMode;
+        vi.useRealTimers();
+    });
+
+    async function runHook(kind: "send" | "reroll", fail: boolean) {
+        const chaId = await seedCharacter({
+            name: "Output hook",
+            messages: [{ chatId: "u", role: "user", data: "Question." }, ...(kind === "reroll" ? [previous] : [])],
+        });
+        let during: Chat["message"] = [];
+        const result = await job(kind, chaId, kind === "reroll" ? { rerollMessageId: "r" } : {}, {
+            hooks: { ...NO_GENERATION_HOOKS, scripts: ["editoutput"] },
+            answerCallback: async () => {
+                during = (await readChat(chaId)).data.message.filter(
+                    (message: Chat["message"][number]) => message.role === "char",
+                );
+                return fail
+                    ? { outcome: "failed", failure: "hook", error: "output hook broke" }
+                    : { outcome: "answered", value: "Processed reply." };
+            },
+        });
+        expect(result.events.filter((event) => event.type === "callback")).toMatchObject([
+            { name: "editoutput", payload: { text: raw } },
+        ]);
+        const stored: Chat["message"] = (await readChat(chaId)).data.message;
+        expect(stored[0]).toEqual({ chatId: "u", role: "user", data: "Question." });
+        return { ...result, during, replies: stored.filter((message) => message.role === "char") };
+    }
+
+    it("retains the raw buffered reply when an output hook fails with a script error", async () => {
+        const result = await runHook("send", true);
+        expect(result.terminal).toMatchObject({
+            type: "error",
+            status: 500,
+            stage: "script",
+            message: "The editoutput plugin hook failed: output hook broke",
+        });
+        expect(result.replies).toMatchObject([{ data: raw, generationInfo: { generationId: expect.any(String) } }]);
+        expect(result.during).toMatchObject([
+            {
+                chatId: result.replies[0].chatId,
+                data: raw,
+                generationInfo: { generationId: result.replies[0].generationInfo!.generationId },
+            },
+        ]);
+    });
+
+    it("processes the one buffered reply already stored when the output hook starts", async () => {
+        const result = await runHook("send", false);
+        expect(result.terminal).toMatchObject({ type: "done" });
+        expect(result.during).toMatchObject([{ data: raw, generationInfo: { generationId: expect.any(String) } }]);
+        expect(result.replies).toMatchObject([
+            {
+                chatId: result.during[0].chatId,
+                data: "Processed reply.",
+                generationInfo: { generationId: result.during[0].generationInfo!.generationId },
+            },
+        ]);
+    });
+
+    it("stores a buffered in-place reroll before its hook and restores the previous candidate on failure", async () => {
+        const result = await runHook("reroll", true);
+        expect(result.terminal).toMatchObject({ type: "error", status: 500, stage: "script" });
+        expect(result.during).toMatchObject([
+            { chatId: "r", data: raw, generationInfo: { generationId: expect.any(String) } },
+        ]);
+        expect(result.replies).toMatchObject([{ ...previous, candidatesRevision: expect.any(Number) }]);
+    });
 });
 
 describe("Half Streaming", () => {

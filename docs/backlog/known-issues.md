@@ -31,7 +31,7 @@ merge cannot see inside the JSON strings it stores.
 - [memory](#memory) (1)
 - [persistence](#persistence) (1)
 - [plugin-sandbox](#plugin-sandbox) (2)
-- [server-generation](#server-generation) (2)
+- [server-generation](#server-generation) (1)
 - [structured-memory](#structured-memory) (3)
 - [translation](#translation) (2)
 
@@ -180,15 +180,6 @@ Guide: [Plugins: v3 Sandbox, Host API, Hooks, Storage, Permissions](../structure
 Guide:
 [Server generation: jobs, channels, transforms, LLM and token routes](../structure/server-generation.md#known-hazards).
 
-- A buffered reply is not stored when an output hook fails. With a buffered answer, the runner
-  (`server/src/prompt/runner.ts`) runs the `editoutput` hooks before the first write of the reply; the streaming
-  branch stores the raw text first. Reproduced on 2026-11-17 (cross-check F6) through the generation route with a
-  loopback provider and a plugin `editoutput` callback that reports a failure: the job ended with status 500 at
-  stage `script`, the chat held the user's message and no reply, and Request History held the provider's answer.
-  The same failure on a streamed answer left the raw text in the chat. It applies to an answer that really arrives
-  buffered: Half Streaming, or a provider that streams anyway, takes the protected path. A Lua output hook's timeout
-  was not run. A paid answer disappears from the chat because of a fault in a script that only post-processes it.
-  Suggested: store the buffered answer under the generation before output processing, as the streaming branch does.
 - A trigger's final reconciliation writes an earlier setter over a newer value. A V2 trigger's setter changes its
   working copy (`server/src/prompt/triggers.ts`), a slash command it then runs writes the live chat
   (`server/src/prompt/commands.ts`), and when the trigger ends `server/src/jobs/chatResult.ts` applies the working
