@@ -1038,6 +1038,22 @@ describe("createTranslationRunner over a fake request layer", () => {
         expect(calls).toHaveLength(1);
     });
 
+    it("fails a reasoning-only forced translation and keeps the saved translation fresh", async () => {
+        build();
+        const previous = tr("A carefully corrected translation", "text 0", { edited: true });
+        chatBatch([{ op: "setTranslation", id: "m0", translation: previous }]);
+        answer = async () => ({ type: "success", result: "<think>Consider the phrasing.</think>" });
+
+        expect(await runner.translate(req("m0", { force: true }))).toEqual({
+            ok: false,
+            status: 502,
+            error: "The translation model answered in an unexpected form",
+        });
+        expect(message("m0").translation).toEqual(previous);
+        expect(await runner.translate(req("m0"))).toEqual({ ok: true, outcome: "fresh", translation: previous });
+        expect(calls).toHaveLength(1);
+    });
+
     it("ends at the deadline from the timer: callers settle 504, the request keeps counting until it stops, and its late answer is never written", async () => {
         vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
         build();

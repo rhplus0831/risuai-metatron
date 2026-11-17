@@ -11,6 +11,7 @@ import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { storedTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { buildTranslatorHistory, type TranslatorHistory } from "../../../shared/translation/historySlots.ts";
 import {
+    EmptyTranslationError,
     runTranslatorPipeline,
     stripTranslatorReasoning,
     translateProtectingLines,
@@ -406,6 +407,9 @@ export function createTranslationRunner(deps: {
 
     /** What a run that threw ends with. */
     function settle(request: TranslateMessageRequest, error: unknown): TranslateMessageResult {
+        if (error instanceof EmptyTranslationError) {
+            return failure(502, "The translation model answered in an unexpected form");
+        }
         if (error instanceof TranslationEnd) {
             return failure(error.status, error.message);
         }

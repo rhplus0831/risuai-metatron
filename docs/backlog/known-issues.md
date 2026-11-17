@@ -28,7 +28,6 @@ merge cannot see inside the JSON strings it stores.
 - [chat-store](#chat-store) (1)
 - [persistence](#persistence) (1)
 - [structured-memory](#structured-memory) (3)
-- [translation](#translation) (1)
 
 ## chat-pipeline
 
@@ -136,17 +135,3 @@ Guide: [Structured Memory Records](../structure/structured-memory/records.md#kno
   page is still created, and the run records a warning that names both pages, so the merge tool can join them. An
   automatic join was not chosen: a wrong one mixes two subjects' facts and is harder to undo than a duplicate. Not
   yet fixed.
-
-## translation
-
-Guide:
-[Translation: Providers, the LLM Translator, Presets, Server and Stored Translation, Bilingual Display](../structure/translation.md#known-hazards).
-
-- A translation answer that holds only reasoning tags replaces a stored translation with an empty one. Reproduced
-  on 2026-11-17 (cross-check F11, second half) through the real pipeline (`shared/translation/pipeline.ts`) and
-  server runner (`server/src/translation/runner.ts`): on a message with a hand-edited translation, a forced run
-  whose answer was `<think>…</think>` and nothing else stored an empty text as `applied`, without the edited flag,
-  and the next request answered `fresh` without calling the provider. An answer with text after the tags was stored
-  as designed. It needs a run that is admitted past the freshness check (Retranslate, for one). No translation
-  history is written. Suggested: refuse a blank translation of non-blank input before it is published. The
-  SupaMemory half of the entry is under [memory](#memory).

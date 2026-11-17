@@ -300,10 +300,18 @@ export function translatorPipelineSignature(steps: readonly TranslatorStep[]) {
     }));
 }
 
+/** A nonblank source must not publish a translation emptied by output cleaning. */
+export class EmptyTranslationError extends Error {
+    constructor() {
+        super("Unexpected response type");
+        this.name = "EmptyTranslationError";
+    }
+}
+
 /**
  * Runs the steps that run (`translatorStepsToRun`) in order and returns the last step's output. Each
  * step's output has its reasoning stripped (`stripTranslatorReasoning`) before the next step or a
- * named output sees it. An error from `runStep` ends the run.
+ * named output sees it. An error from `runStep` or a blank final translation of nonblank input ends the run.
  */
 export async function runTranslatorPipeline(
     input: {
@@ -339,5 +347,8 @@ export async function runTranslatorPipeline(
         }
     }
 
+    if (input.sourceText.trim() !== "" && prevOutput.trim() === "") {
+        throw new EmptyTranslationError();
+    }
     return prevOutput;
 }

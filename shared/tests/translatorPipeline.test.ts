@@ -257,6 +257,12 @@ describe("runTranslatorPipeline", () => {
         ]);
     });
 
+    it("allows blank output for a whitespace-only source", async () => {
+        await expect(
+            runTranslatorPipeline({ steps: [step()], ...input, sourceText: " \n\t " }, async () => ""),
+        ).resolves.toBe("");
+    });
+
     it("gives the first step the source as its previous output, and an empty list returns the source", async () => {
         const runStep = vi.fn(async () => "OUT");
         await expect(runTranslatorPipeline({ steps: [step()], ...input }, runStep)).resolves.toBe("OUT");
