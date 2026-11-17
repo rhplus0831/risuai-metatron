@@ -31,7 +31,6 @@ merge cannot see inside the JSON strings it stores.
 - [memory](#memory) (1)
 - [persistence](#persistence) (1)
 - [plugin-sandbox](#plugin-sandbox) (2)
-- [scripts-triggers](#scripts-triggers) (1)
 - [server-generation](#server-generation) (2)
 - [structured-memory](#structured-memory) (3)
 - [translation](#translation) (2)
@@ -175,23 +174,6 @@ Guide: [Plugins: v3 Sandbox, Host API, Hooks, Storage, Permissions](../structure
   tested. The module import announces only after its scoped flush is acknowledged (`addImportedModule`,
   `src/ts/process/modules.ts`). Suggested: use the module importer's scoped flush before announcing success or
   starting the plugin.
-
-## scripts-triggers
-
-Guide: [Regex Scripts, Triggers, Lua Scripting](../structure/scripts-triggers.md#known-hazards).
-
-- Lua `setFullChat` rebuilds every message from role and text. `setFullChatMain` (`server/src/lua/bindings.ts`) maps
-  the script's list to role and text with a fresh `chatId` each and writes a whole-chat replace; the working-copy
-  branch does the same without IDs (read, not run). Reproduced on 2026-11-17 (cross-check F1, rated P1) with a real
-  Lua button handler that calls `getFullChat`, changes the first message's text, and calls `setFullChat`: the
-  untouched reply came back with a new ID and without its time, generation and prompt information, stored
-  translation, and reroll candidates (eight checked fields, none kept). The same edit through `setChat` kept all
-  eight. Inherited from upstream RisuAI. One press of a card's button strips a whole chat's message data, and only a
-  chat checkpoint or a snapshot from before the call brings it back. Decision: owner, 2026-11-17: fix it by carrying
-  IDs. The getter gives each item an `id`; the setter overlays role and text on the message an item's `id` names, as
-  `setChat` does for one message, removes the messages the list leaves out, and makes a new message of an item
-  without an `id`, except that such an item keeps the message at the same position when role and text are equal.
-  The working-copy branch gets the same rule and is to be reproduced first. Not yet fixed.
 
 ## server-generation
 

@@ -10,6 +10,7 @@ import { serve } from "@hono/node-server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Chat, character, loreBook } from "../../../shared/database.ts";
 import { NO_GENERATION_HOOKS, type GenerationTerminalEvent } from "../../../shared/jobs.ts";
+import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { createAssetLifecycle } from "../data/assetLifecycle.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
@@ -252,6 +253,7 @@ async function seedCharacter(options: {
     type?: "character" | "group";
     bindPersona?: boolean;
     extra?: Record<string, unknown>;
+    chat?: Partial<Chat>;
 }) {
     const chaId = `lua-${++seeded}`;
     const characterRecord: Record<string, unknown> = {
@@ -304,6 +306,7 @@ async function seedCharacter(options: {
                                     { role: "char", data: "greeting", chatId: "m1" },
                                     { role: "user", data: "hi there", chatId: "m2" },
                                 ],
+                                ...options.chat,
                             },
                         },
                     ],
@@ -1263,13 +1266,13 @@ describe("the host-function contract through the real worker", () => {
             const R = JSON.parse(notice(events, "alertNormal")!);
 
             // Reads: the client's projections, negative indexes, the missing-index values.
-            expect(JSON.parse(R.chat0)).toEqual({ role: "char", data: "greeting", time: 0 });
+            expect(JSON.parse(R.chat0)).toEqual({ id: "m1", role: "char", data: "greeting", time: 0 });
             expect(R.chatNeg).toBe("hi there");
             expect(R.roleNeg).toBe("user");
             expect(R.chatMissing).toBe("null");
             expect(R.dataMissing).toBe("");
             expect(R.len).toBe(2);
-            expect(JSON.parse(R.recent)).toEqual([{ role: "user", data: "hi there", time: 0 }]);
+            expect(JSON.parse(R.recent)).toEqual([{ id: "m2", role: "user", data: "hi there", time: 0 }]);
             // Variables: the literal "null", the character's default, changed only once; Lua `cbs`
             // does not persist `{{setvar}}` (no `runVar`).
             expect(R.var0).toBe("null");
@@ -1587,6 +1590,104 @@ describe("the host-function contract through the real worker", () => {
         },
         SLOW,
     );
+});
+
+describe("Lua full-chat updates", () => {
+    const messages: Chat["message"] = [
+        { chatId: "question", role: "user", data: "Original question.", time: 1729999999999 },
+        {
+            chatId: "reply",
+            role: "char",
+            data: "Untouched reply.",
+            time: 1730000000000,
+            generationInfo: { model: "old-model", generationId: "old-generation", inputTokens: 8, outputTokens: 2 },
+            promptInfo: { promptName: "Old preset", promptToggles: [{ key: "tone", value: "quiet" }] },
+            translation: {
+                text: "번역",
+                sourceHash: translationSourceHash("Untouched reply."),
+                targetLanguage: "ko",
+                translatedAt: 1730000000001,
+            },
+            candidates: [
+                { id: "candidateA", data: "Untouched reply." },
+                { id: "candidateB", data: "Alternative reply." },
+            ],
+            selected: 0,
+            candidatesRevision: 1,
+        },
+    ];
+
+    async function update(body: string, working = false): Promise<Chat["message"]> {
+        const chaId = await seedCharacter({
+            codes: [working ? `go = async(function(id)\n${body}\nend)` : button(body)],
+            chat: { message: messages },
+        });
+        if (working) {
+            const created = await createJob({
+                kind: "command",
+                clientId: "tab",
+                command: { type: "manual", name: "go" },
+                context: { ...(await context(chaId)), mode: "manual" },
+            });
+            expect(created.status).toBe(200);
+            expect((await follow(created.body.jobId)).terminal?.type).toBe("done");
+        } else {
+            expect((await runButton(chaId)).terminal?.type).toBe("done");
+        }
+        return (await readChat(chaId)).data.message;
+    }
+
+    it.each([
+        { path: "live chat", working: false },
+        { path: "trigger working copy", working: true },
+    ])("preserves an untouched reply through a get/set round trip on the $path", async ({ working }) => {
+        const result = await update(
+            `local chats = getFullChat(id)
+            chats[1].data = "Edited question."
+            setFullChat(id, chats)`,
+            working,
+        );
+        expect(result).toEqual([{ ...messages[0], data: "Edited question." }, messages[1]]);
+    });
+
+    it("keeps messages at unchanged positions when items have no id", async () => {
+        const result = await update(
+            `setFullChat(id, {{role = "user", data = "Original question."}, {role = "char", data = "Untouched reply."}})`,
+        );
+        expect(result).toEqual(messages);
+    });
+
+    it("creates a new message for changed text without an id and keeps its untouched sibling", async () => {
+        const result = await update(
+            `setFullChat(id, {{role = "user", data = "Edited question."}, {role = "char", data = "Untouched reply."}})`,
+        );
+        expect(result).toEqual([{ chatId: expect.any(String), role: "user", data: "Edited question." }, messages[1]]);
+        expect(result[0].chatId).not.toBe(messages[0].chatId);
+    });
+
+    it("removes omitted messages and preserves the retained message's fields", async () => {
+        const result = await update(`local chats = getFullChat(id)\nsetFullChat(id, {chats[2]})`);
+        expect(result).toEqual([messages[1]]);
+    });
+
+    it("keeps each message's fields when the list is reordered", async () => {
+        const result = await update(`local chats = getFullChat(id)\nsetFullChat(id, {chats[2], chats[1]})`);
+        expect(result).toEqual([messages[1], messages[0]]);
+    });
+
+    it("creates new messages for duplicate and unknown ids after retaining the first match", async () => {
+        const result = await update(
+            `local chats = getFullChat(id)
+            setFullChat(id, {chats[2], chats[2], {id = "unknown", role = "user", data = "New"}})`,
+        );
+        expect(result).toEqual([
+            messages[1],
+            { chatId: expect.any(String), role: "char", data: "Untouched reply." },
+            { chatId: expect.any(String), role: "user", data: "New" },
+        ]);
+        expect(result[2].chatId).not.toBe("unknown");
+        expect(new Set(result.map((message) => message.chatId)).size).toBe(3);
+    });
 });
 
 describe("Lua edit hooks", () => {

@@ -729,7 +729,27 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     };
     const messages = () => engineChat().message;
     const project = (message: Message | undefined) =>
-        message ? { role: message.role, data: message.data, time: message.time ?? 0 } : null;
+        message ? { id: message.chatId, role: message.role, data: message.data, time: message.time ?? 0 } : null;
+    const fullChatMessages = (stored: Message[], values: { id?: unknown; role: unknown; data: unknown }[]) => {
+        const byId = new Map(stored.filter((message) => message.chatId).map((message) => [message.chatId!, message]));
+        const used = new Set<Message>();
+        return values.map((value, index): Message => {
+            const role = value.role as Message["role"];
+            const data = luaText(value.data);
+            let message = typeof value.id === "string" ? byId.get(value.id) : undefined;
+            if (!message || used.has(message)) {
+                const positional = stored[index];
+                message =
+                    positional && !used.has(positional) && positional.role === role && positional.data === data
+                        ? positional
+                        : undefined;
+            }
+            if (!message) return { role, data, chatId: randomUUID() };
+            used.add(message);
+            // Like setChat, keep the stored metadata (including translations and candidates) on a text edit.
+            return message.role === role && message.data === data ? message : { ...message, role, data };
+        });
+    };
     const roleOf = (role: unknown): "user" | "char" => (role === "user" ? "user" : "char");
     /** The client's `replaceCopyMessage`: the copy's message objects may be shared, so they are replaced. */
     const replaceCopyMessage = (chat: Chat, index: number, message: Message) => {
@@ -1536,22 +1556,15 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             if (!isSafe(ctx)) {
                 return undefined;
             }
-            const realValue = JSON.parse(value as string) as { role: unknown; data: unknown }[];
+            const realValue = JSON.parse(value as string) as { id?: unknown; role: unknown; data: unknown }[];
             if (working) {
-                // The copy's list: the final application gives the messages new ids.
-                working.chat.message = realValue.map((v) => ({
-                    role: v.role as Message["role"],
-                    data: luaText(v.data),
-                }));
+                working.chat.message = fullChatMessages(working.chat.message, realValue);
                 return undefined;
             }
-            // A whole-list replacement: the messages get new ids, as before.
-            const replaced: Message[] = realValue.map((v) => ({
-                role: v.role as Message["role"],
-                data: luaText(v.data),
-                chatId: randomUUID(),
-            }));
-            writeChat((chat) => [{ op: "replace", chat: { ...structuredClone(chat), message: replaced } }], ctx);
+            writeChat(
+                (chat) => [{ op: "replace", chat: { ...chat, message: fullChatMessages(chat.message, realValue) } }],
+                ctx,
+            );
             return undefined;
         },
         reloadDisplay: (_args, ctx) => {
