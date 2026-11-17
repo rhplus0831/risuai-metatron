@@ -6,6 +6,8 @@ their last commit and path, and the [backlog](../README.md) holds what they left
 
 - [Request interception](request-interception.md): a global rule list that inserts prompts into every request of the
   chosen modes, as the last step before the request is shaped for its model.
+- [Structured Memory story dates](structured-memory-story-dates.md): the writer records a date the messages state,
+  and the memory card says how long ago each dated event was.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive, following the archive's procedure for the plan's open items. Use `None`
