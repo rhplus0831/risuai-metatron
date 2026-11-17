@@ -58,6 +58,8 @@ export type TriggerArg = {
     displayMode?: boolean;
     displayData?: string;
     tempVars?: Record<string, string>;
+    /** Apply pending copy edits and return a fresh copy of the live chat at a command boundary. */
+    syncChat?: (chat: Chat) => Chat;
 };
 
 export type TriggerResult = {
@@ -903,6 +905,7 @@ export function createTriggerRuntime(host: TriggerHost) {
                                 displayMode: arg.displayMode,
                                 displayData: arg.displayData,
                                 tempVars,
+                                syncChat: arg.syncChat,
                             });
                             services.fence(ctx);
                             if (r) {
@@ -968,10 +971,11 @@ export function createTriggerRuntime(host: TriggerHost) {
                     }
                     case "v2Command": {
                         const value = operand(effect.valueType, effect.value);
-                        // Its writes go to the job's chat (the client's display runs fall back to the
-                        // selected chat).
+                        // Commands read live storage; settle earlier copy edits, then follow their newer writes.
+                        chat = arg.syncChat?.(chat) ?? chat;
                         await host.runCommand(value, trigger.lowLevelAccess ?? false);
                         services.fence(ctx);
+                        chat = arg.syncChat?.(chat) ?? chat;
                         break;
                     }
                     case "v2SendAIprompt": {

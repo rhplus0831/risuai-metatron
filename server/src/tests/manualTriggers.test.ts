@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { serve } from "@hono/node-server";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import type { Chat } from "../../../shared/database.ts";
 import type { GenerationTerminalEvent } from "../../../shared/jobs.ts";
 import * as localModels from "../prompt/transformers.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json } from "./testSupport.ts";
@@ -141,6 +142,7 @@ async function seedCharacter(options: {
     type?: "character" | "group";
     lowLevelAccess?: boolean;
     bindPersona?: boolean;
+    chat?: Partial<Chat>;
 }) {
     const chaId = `trig-${++seeded}`;
     const res = await api("/api/resources/batch", {
@@ -195,6 +197,7 @@ async function seedCharacter(options: {
                                     { role: "char", data: "greeting", chatId: "m1" },
                                     { role: "user", data: "second", chatId: "m2" },
                                 ],
+                                ...options.chat,
                             },
                         },
                     ],
@@ -487,16 +490,14 @@ describe("a manual trigger job", () => {
             const { events, terminal } = await runManual(chaId, "cmd");
             expect(terminal?.type).toBe("done");
             const chat = await readChat(chaId);
-            // The commands write the stored chat as they run; the outer trigger's own message is
-            // anchored after its predecessor in the trigger's copy (m2), so it lands before them, as
-            // the tab's `applyChatResult` places it.
+            // The outer copy follows the command's writes, so its later append follows those messages.
             expect(texts(chat)).toEqual([
                 "char:greeting",
                 "user:second",
-                "char:outer done",
                 "user:hello",
                 "char:world",
                 "char:from nested",
+                "char:outer done",
             ]);
             expect(chat.data.scriptstate.$cv).toBe("9");
             expect(notices(events, "alertNormal").map((event) => event.payload.message)).toEqual(["null"]); // The trigger's CBS pass resolved `{{getvar::cv}}` before the commands ran, as in the tab.
@@ -746,6 +747,46 @@ describe("a manual trigger job", () => {
             });
         },
     );
+});
+
+describe("manual trigger command boundaries", () => {
+    async function run(effects: unknown[], others: unknown[] = []): Promise<Chat> {
+        const chaId = await seedCharacter({
+            triggers: [trig("go", effects), ...others],
+            chat: { scriptstate: { $x: "initial" }, note: "initial" },
+        });
+        const { terminal } = await runManual(chaId, "go");
+        expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+        const chat = await readChat(chaId);
+        expect(texts(chat)).toEqual(["char:greeting", "user:second"]);
+        return chat.data;
+    }
+
+    it("keeps a slash command's variable value after an earlier trigger setter", async () => {
+        const chat = await run([setVar("x", "=", "first"), ef("v2Command", v("/setvar key=x second"))]);
+        expect(chat.scriptstate?.$x).toBe("second");
+    });
+
+    it("keeps a nested command's author note after an earlier outer setter", async () => {
+        const chat = await run(
+            [ef("v2SetAuthorNote", v("first")), ef("v2Command", v("/trigger inner"))],
+            [trig("inner", [ef("v2SetAuthorNote", v("second"))])],
+        );
+        expect(chat.note).toBe("second");
+    });
+
+    it("applies the last setter to the variable value written by the command", async () => {
+        const chat = await run([setVar("x", "=", "1"), ef("v2Command", v("/setvar key=x 2")), setVar("x", "+=", "1")]);
+        expect(chat.scriptstate?.$x).toBe("3");
+    });
+
+    it("keeps a command's write when it runs inside a v2 nested trigger", async () => {
+        const chat = await run(
+            [setVar("x", "=", "first"), ef("v2RunTrigger", { target: "inner" })],
+            [trig("inner", [ef("v2Command", v("/setvar key=x second"))])],
+        );
+        expect(chat.scriptstate?.$x).toBe("second");
+    });
 });
 
 describe("`/multisend` in a command job", () => {

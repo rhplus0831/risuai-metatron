@@ -31,7 +31,6 @@ merge cannot see inside the JSON strings it stores.
 - [memory](#memory) (1)
 - [persistence](#persistence) (1)
 - [plugin-sandbox](#plugin-sandbox) (2)
-- [server-generation](#server-generation) (1)
 - [structured-memory](#structured-memory) (3)
 - [translation](#translation) (2)
 
@@ -174,21 +173,6 @@ Guide: [Plugins: v3 Sandbox, Host API, Hooks, Storage, Permissions](../structure
   tested. The module import announces only after its scoped flush is acknowledged (`addImportedModule`,
   `src/ts/process/modules.ts`). Suggested: use the module importer's scoped flush before announcing success or
   starting the plugin.
-
-## server-generation
-
-Guide:
-[Server generation: jobs, channels, transforms, LLM and token routes](../structure/server-generation.md#known-hazards).
-
-- A trigger's final reconciliation writes an earlier setter over a newer value. A V2 trigger's setter changes its
-  working copy (`server/src/prompt/triggers.ts`), a slash command it then runs writes the live chat
-  (`server/src/prompt/commands.ts`), and when the trigger ends `server/src/jobs/chatResult.ts` applies the working
-  copy again. Reproduced on 2026-11-17 (cross-check F9) through the generation route: a manual trigger that set `x`
-  to `first` and then ran `/setvar key=x second` ended with `first`, and one that set the author's note to `first`
-  and then ran `/trigger inner`, whose setter wrote `second`, ended with `first`; without the earlier setter both
-  ended with `second`. All jobs reported `done`. A card that mixes trigger setters and slash commands ends with the
-  older value, with no error. Suggested: do not replay setters that were already persisted, and refresh the working
-  variables after a nested command.
 
 ## structured-memory
 

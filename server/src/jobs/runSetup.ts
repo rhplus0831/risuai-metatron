@@ -393,10 +393,21 @@ export function createRunSetup(
             return null;
         }
         const baseline = { chat: structuredClone(scopeHistoryChat(scope)!) as Chat, revision: scope.chatRevision };
+        let noReply = false;
+        const syncChat = (chat: Chat): Chat => {
+            const outcome = applyTriggerChat({ job, store, scope, lock: deps.lock }, baseline, chat, options);
+            noReply ||= !!outcome?.noReply;
+            if (refreshChat(store, scope)) {
+                // Later reconciliation starts here, so edits already committed cannot replay over a command.
+                baseline.chat = structuredClone(scopeHistoryChat(scope)!) as Chat;
+                baseline.revision = scope.chatRevision;
+            }
+            return structuredClone(baseline.chat);
+        };
         let result: TriggerResult | null | undefined;
         let threw = false;
         try {
-            result = await asScript(() => runtime.runTrigger(char, mode, { ...arg, chat: baseline.chat }));
+            result = await asScript(() => runtime.runTrigger(char, mode, { ...arg, chat: baseline.chat, syncChat }));
         } catch (error) {
             threw = true;
             throw error;
@@ -414,7 +425,7 @@ export function createRunSetup(
         services.fence(nativeCtx);
         if (result) {
             const outcome = applyTriggerChat({ job, store, scope, lock: deps.lock }, baseline, result.chat, options);
-            if (outcome?.noReply) return { ...result, noReply: true };
+            if (noReply || outcome?.noReply) return { ...result, noReply: true };
         }
         return result;
     };
