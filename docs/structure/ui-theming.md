@@ -345,8 +345,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   `scrollToMessageId` is also untested; `messageJump.test.ts` drives only the pure helper.
 - Not tested automatically: lost-follow recovery. Switch away from a running chat, stop the server until reattach
   attempts fail, confirm its recovery badges, then restart the server and reopen the chat.
-- Not tested: retaining `Chat.svelte`'s inline `draft` across a server row refresh while editing; `Chat.draft.test.ts`
-  covers local typing and saving, without a remote message replacement.
+- `Chat.draft.test.ts` and `Chat.test.ts` cover an open editor's text across a row remount and an outside change of the
+  stored value. Not tested: the round trip through `App.svelte`'s Settings branch, which destroys the chat screen.
 
 ## Known Hazards
 

@@ -61,7 +61,9 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 
 - `src/ts/process/modules.ts`: `importModuleFile`, `prepareModuleImport`, `addImportedModule`, `importModule`, and
   `serverImportErrorMessage`. File imports go through `importModuleFile`; the MCP URL path `importMCPModule` adds
-  directly. `addImportedModule` waits for the save acknowledgement before reporting success.
+  directly. `addImportedModule` waits for the save acknowledgement before reporting success, and a card import does the
+  same for its character and first chat (an unconfirmed save is reported; the records stay in memory and in the
+  journal).
 - `characterURLImport` opens module settings after a saved import and consumes `#share_module` once the module was
   added. Upload paths and response handling are in [Import transports](#import-transports).
 
@@ -195,7 +197,8 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
 - Every card and module export passes asset bytes through `compressImage`
   (`src/ts/media/compressImage/compressImage.ts`): with `db.imageCompression` on, the default, a JPEG, PNG, GIF, or BMP
   is re-encoded as WebP at quality 0.75 with its longer side capped at 3000 px, so no export form keeps those bytes.
-  Stored originals are untouched.
+  Stored originals are untouched. The export's completion notice says how many images came out with other bytes
+  (`exportReencodedImages`), and the setting's help text names characters and modules.
 - A card whose `character_book` sets `scan_depth`, `token_budget`, and `recursive_scanning` imports as `loreSettings`,
   overriding the global lorebook settings; its success notice (`importedCharacterNotice`) appends
   `importedLoreSettings.warning` and lists each value beside the global one.

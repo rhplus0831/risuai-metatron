@@ -96,17 +96,21 @@ owning guide: one probe test per entry, written by five agents in separate workt
 and a control case that passed, and each probe run a second time by the session. Fifteen reproduced as filed; the
 import entry (F10) and the module export entry (F16) reproduced narrower, and several descriptions were corrected
 against the code. The module export entry's encoder was then run in headless Chrome and did what the entry said.
-The bullets there carry what each probe saw and each correction. The probes are kept with the review
-material outside the repository; none of the seventeen is fixed.
+Sixteen of the seventeen were fixed the same day and the last is a Limitation of the plugin guide
+([known issues](known-issues.md) has the account). The six entries marked "fix round of 2026-11-17" below are what
+that round's implementers read next to their fixes and left: none was run.
 
 ## Contents
 
-- [Backup and sync](#backup-and-sync): 1
+- [Backup and sync](#backup-and-sync): 3
+- [Chat screen](#chat-screen): 2
+- [Memory](#memory): 2
 - [Network jobs](#network-jobs): 1
 - [Plugins](#plugins): 2
 - [Remote commands](#remote-commands): 1
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 1
+- [Translation](#translation): 1
 
 ## Backup and sync
 
@@ -124,6 +128,80 @@ metatron-only, and the list's promise is false.
 
 **Suggested handling:** add the five fields to the list, and add a test that compares `SECTION_FIELDS` with
 upstream's `Database` keys (or a kept snapshot of them) so a new metatron-only field cannot drift past it again.
+
+### A partial native backup leaves out an asset only a plugin's data references
+
+Fix round of 2026-11-17, read and not run. The compatible export now follows asset keys inside retained plugin values
+(`collectUpstreamAssetReferences`, `server/src/data/upstream/assetReferences.ts`). The partial native backup selects
+its files from its own, deliberately limited inventory (`selectPartialBackupAssets`, `shared/backups.ts`, and
+`src/ts/drive/backuplocal.ts`), which does not read plugin data. The full native backup takes every asset on disk.
+
+**Why it matters:** a restored partial backup can hold a plugin value that names a file the archive does not hold.
+
+**Suggested handling:** reproduce first; then feed the same walker into the partial selection, or say in the partial
+backup's notes that plugin-referenced files need the full backup.
+
+### No backup screen says that drafts live in the browser
+
+Fix round of 2026-11-17, read and not run (it was the last remark of the fixed "Take snapshot" entry). Composer drafts
+and recovery drafts are in this browser's journal and in no snapshot, file backup, or compatible export; neither the
+Storage page nor the backup dialogs say so.
+
+**Why it matters:** a user who takes a snapshot before a risky action may expect an unsent draft to be in it.
+
+**Suggested handling:** one line on the Storage page, or accept it as a Limitation of
+[draft recovery](../structure/draft-recovery.md).
+
+## Chat screen
+
+### Back and forward between multi-reply bundles swaps the messages only
+
+Fix round of 2026-11-17, read and not run. A removal reroll now restores the variables its removed replies changed.
+`move` in `src/ts/process/rerollHistory.ts`, which steps back and forward between the stored bundles of a multi-reply
+turn, still swaps the message bundles and leaves the chat's variables as the shown bundle did not set them.
+
+**Why it matters:** after stepping back to an earlier bundle, counters and flags are those of the bundle that was
+shown last, the same drift the reroll fix removed.
+
+**Suggested handling:** reproduce with a two-speaker turn whose replies change a counter; then keep each bundle's
+variable values with it, as the recovery path now does.
+
+### The expanded editor popup and two small editors still lose their text on a remount
+
+Fix round of 2026-11-17, read and not run. The message editor and the stored-translation editor now keep their text in
+tab memory (`src/ts/storage/messageEditorDrafts.svelte.ts`). Three other surfaces keep theirs in component state: the
+manually expanded popup of `src/lib/UI/GUI/TextAreaResizable.svelte` (it discards unreturned text when destroyed), the
+partial-edit popover, and the editor of a rendered (cached) translation in `src/lib/ChatScreens/Chat.svelte`.
+
+**Why it matters:** the same loss as the fixed entry, on less used surfaces.
+
+**Suggested handling:** reproduce each; the popup can hand its text back to its owner on destruction.
+
+## Memory
+
+### A long scene may make the send refuse its required memory block
+
+Fix round of 2026-11-17, read and not run. A scene field may now stay as long as the user wrote it, up to 4,000
+characters, and the send prompt shows every scene field whole in its required lane (`retrieve.ts` and `card.ts` under
+`server/src/prompt/memory/structured/`). `card.ts` refuses a required block that is past its token target or the
+memory maximum (`requiredOverLimit`) instead of cutting it. Three fields of 4,000 characters were possible before
+the round too (the editor allowed them); what the round changed is that the writer no longer shortens them to 800.
+
+**Why it matters:** not known until it is run: what the send does on that refusal, and at what scene size it happens
+with the default budgets.
+
+**Suggested handling:** run a send with three 4,000-character scene fields; then the owner decides whether the
+editor's badge should also warn about it, or the block should be cut.
+
+### The other memory algorithms were not checked for a blank summarizer answer
+
+Fix round of 2026-11-17, read and not run. SupaMemory now treats a blank summarizer answer as a failed summarization
+(`server/src/prompt/memory/supaMemory.ts`). HypaV2, HypaV3, and Hanurai were outside that fix and were not read for
+the same case.
+
+**Why it matters:** a blank answer may replace or append an empty summary there.
+
+**Suggested handling:** one probe per algorithm with an empty successful answer.
 
 ## Network jobs
 
@@ -245,3 +323,16 @@ can still leave an instance answering nobody for seconds to tens of seconds on t
 **Suggested handling:** the owner's note of 2026-11-14: "Token counting isn't always fast, so I'm considering moving
 it to a worker thread." That design covers every family. Short of it, look at `novellist` on emoji and `gemma` on
 letters first, since their times grow faster than the text.
+
+## Translation
+
+### A tab translation that is only an unknown style placeholder can be stored blank
+
+Fix round of 2026-11-17, read and not run. The shared pipeline now refuses a translation that is blank after cleaning
+(`shared/translation/pipeline.ts`). The tab restores style placeholders after the pipeline returns
+(`src/ts/translator/translator.ts`, `translateLLM`, before `writeLLMCacheEntry`): an answer that holds only a
+placeholder with an unknown index can become blank there and be cached.
+
+**Why it matters:** a rendered translation can show as empty and be served from the cache again.
+
+**Suggested handling:** reproduce; then apply the same blank check after the restoration.

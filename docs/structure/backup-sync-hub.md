@@ -59,9 +59,10 @@ and keeps what spans files.
 - `shared/upstreamExportReport.ts`: the export report and routes (`UpstreamExportReport`, `UpstreamExportRequest`),
   codes mapped to `language.upstreamExport`. `shared/backups.ts`: `selectPartialBackupAssets`.
 - `src/lib/Setting/Pages/Storage/storageController.svelte.ts` restores a server snapshot and reloads (the Storage page's
-  snapshots section; `UserSettings.svelte` links there). Snapshot retention, validation, and restore ordering are in
-  [server-resources](server-resources.md#snapshots-and-restore); checkpoint tables are in its
-  [Checkpoint tables](server-resources.md#checkpoint-tables).
+  snapshots section; `UserSettings.svelte` links there). `take` flushes this tab's pending saves first, takes no
+  snapshot when the flush fails, and names discarded and refused work with the file backup's notes. Snapshot retention,
+  validation, and restore ordering are in [server-resources](server-resources.md#snapshots-and-restore); checkpoint
+  tables are in its [Checkpoint tables](server-resources.md#checkpoint-tables).
 - Realm, the Realm part of `src/ts/characterCards.ts`: `hubURL`, `getRisuHub`, `hubAdditionalHTML`, `hubType`,
   `getRealmInfo`, `showRealmInfoStore`, `downloadRisuHub`, `commitRealmCard`, `getHubResources`; its staged import
   client `src/ts/storage/realmImportClient.ts` (`prepareRealmImport`, `commitRealmImport`, `cancelRealmImport`,
@@ -169,7 +170,8 @@ and keeps what spans files.
 - Its settings steps are the job projection's (`server/src/data/databaseProjection.ts`: `projectSections`,
   `projectCollections`, `forwardSelectedPreset`, `forwardPersonaRoots`, `characterShell`, also used by `loadJobScope`).
   A structured chat's `hypaV3Data` is [the projection](structured-memory/projection.md#the-hypav3-projection) of its
-  records, unsealed (`memory-projected`, `memory-unreadable`).
+  records, unsealed (`memory-projected`, `memory-unreadable`). Its pages and threads have no place in the format: the
+  report counts them as excluded `memory-pages` and `memory-threads`, and the confirmation points to the native backup.
 - `exportDatabase.ts` holds boot compatibility (`upstreamCharacters`), credentials (`placeNamedKeys`,
   `reportOmittedKeys`), presets and HypaV3 ratios (`upstreamPreset`, module header).
 - `upstreamPluginStorage` omits `_pluginStorage`, `_safeLocalPluginStorage`, `_ownedPluginStorage`

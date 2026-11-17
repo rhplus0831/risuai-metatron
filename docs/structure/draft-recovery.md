@@ -245,9 +245,8 @@
   [Split confirmation](#split-confirmation). Decision: Durable Drafts D7, archive.
 - Quarantined chat intent stays local: eligible, in-budget refusals are journaled and become recovery drafts on the next
   boot, while server backups omit it. A file backup and a compatible export name the refused items (`backupRefusedNote`,
-  `src/ts/drive/backuplocal.ts`); a snapshot taken from Storage settings does not flush or say so
-  ([known issue](../backlog/known-issues.md#backup-sync-hub)). See [Chat journal](#chat-journal) and
-  [Boot recovery](#boot-recovery). Decision: Durable Drafts D5, D8, archive.
+  `src/ts/drive/backuplocal.ts`); a snapshot taken from Storage settings flushes first and names them the same way. See
+  [Chat journal](#chat-journal) and [Boot recovery](#boot-recovery). Decision: Durable Drafts D5, D8, archive.
 - A stale Retry or edit of a loaded whole-chat replacement takes
   [normal conflict recovery](resource-sync.md#chat-and-order-conflicts); eligible abandoned work is captured as a draft
   ([Conflict capture](#conflict-capture)). Decision: as above.

@@ -168,6 +168,9 @@ refusal the memory step recovered from or outlived replaces no later error.
   read failure), but `readReply`'s `quiet` emits no `chunk`, writes no raw checkpoint, and keeps chunk sequence 0, so no
   tab sees partial text. A stream on a send that is not quiet (Response Streaming on, or a plugin provider that streams
   on its own) is read with chunks and checkpoints.
+- A buffered reply (a continue's combined text included) is stored under its generation before output processing, as a
+  streamed one is: a failing output hook leaves the raw answer in the chat, a successful one rewrites the same message,
+  and a failed in-place reroll still restores its previous candidate.
 - A streamed reply, quiet or not, skips what only a buffered `success` gets (`requestChatDataOuter`): the plugins'
   after-request replacers and the banned-character-set check and retry; a failure after the stream returned does not
   restart the request. The primary text is trimmed before the output scripts, a continue is processed once as the

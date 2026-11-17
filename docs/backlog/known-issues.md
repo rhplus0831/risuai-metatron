@@ -8,19 +8,14 @@ answers got sandbox headers, a finding of the review itself); the rest moved to 
 owner's decision, except the persistence entry below.
 
 Seventeen entries of the fork data-loss cross-check (`cross-check F<n>`) moved here from [found issues](found-issues.md)
-on 2026-11-17, after each was reproduced at `5f8b0b191`. Every entry got a probe test that drives the product code
-through the entry's trigger: a defect case that states what a user would expect and fails, and a control case on the
-sibling path that passes (17 probe files, 51 cases: 26 failed on their own assertion, 25 passed). The session ran each
-probe a second time and read two of them. The probes are kept with the review material outside the repository. Each
-bullet below says what its probe saw and where the cross-check's reading was corrected. Nothing was fixed that day.
-One entry is split in two here (F11, under memory and translation).
-
-The owner went through the ones that need a design choice on 2026-11-17 (F1, F3, F4, F5, F12, F13, F16); each of
-those bullets ends with the decision. The other entries have one evident fix and no decision line. F3 (a plugin's
-in-memory value overwrites a newer value from another tab or device) left this file for the
-[plugin guide's Limitations](../structure/plugin-sandbox.md#limitations): the main third-party plugin in use reads a
-key again before it writes its settings, refusing stale writes would fail its log key on every save, and a host-side
-merge cannot see inside the JSON strings it stores.
+on 2026-11-17, after each was reproduced at `5f8b0b191` by a probe test that drives the product code through the
+entry's trigger. The owner decided the seven that needed a design choice the same day. Sixteen were then fixed in one
+round and their bullets deleted: implementers by group in separate worktrees, the probes turned into regression tests
+by a second agent, and each new test run against its fix reverted before the commits landed. The seventeenth, F3 (a
+plugin's in-memory value overwrites a newer value from another tab or device), is a
+[Limitation of the plugin guide](../structure/plugin-sandbox.md#limitations) by the owner's decision. What the round
+read and did not fix is in [found issues](found-issues.md); what a person has to look at is in
+[manual checks](manual-checks.md#a-real-desktop-browser-by-hand).
 
 ## Contents
 

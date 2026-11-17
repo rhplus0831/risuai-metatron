@@ -127,6 +127,10 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
 - The server trigger runtime checks job cancellation during execution and enforces a 100,000-effect limit across nested
   triggers in the job. It yields after 50 ms of effect work so pending I/O and abort callbacks can run; a privileged
   recursive trigger is ended by the shared limit, not the JavaScript stack.
+- Lua's chat getters give each message its `id`. `setFullChat` (`fullChatMessages`, `server/src/lua/bindings.ts`) keeps
+  the message an item's `id` names and lays role and text over it, as `setChat` does; an item without a usable `id`
+  keeps the stored message at its position when role and text are equal and is a new message otherwise; a message the
+  list leaves out is removed. The live chat and a trigger's working copy follow the same rule.
 - A trigger effect or Lua function that changes a character writes one field of the run's character; never the selected
   index or the whole working copy. A lore effect writes one `globalLore` entry (`GlobalLoreChange`, applied to the
   current record inside each revision-checked write: by `id`, or by index with an unchanged-value check for legacy
@@ -224,6 +228,10 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
   atomic write. A command pipeline rereads the chat before each command, and waits can expose intermediate revisions.
   See `server/src/jobs/chatResult.ts:applyTriggerChat`. Decision: owner, 2026-11-10 (known-issues review): no
   transaction or rollback policy is wanted.
+- That working copy is applied at the trigger's end and before each slash command the trigger runs; after the command
+  the copy and its baseline are read again from storage (`runOnCopy`, `server/src/jobs/runSetup.ts`). A command's write
+  is therefore not replayed over, a later setter of the trigger still wins, and a message the trigger appends after a
+  command follows the command's messages.
 - A regex script with `ableFlag` set whose action metadata leaves the flags empty runs with the legacy `g` flag.
   `server/src/tests/regex.test.ts` pins it as a quirk. Decision: owner, 2026-11-10 (known-issues review): compatibility
   with existing cards.

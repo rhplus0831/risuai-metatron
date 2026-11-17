@@ -163,6 +163,10 @@ on the rendered path; cache buttons remain for LLM. Auto-translate is a [chat se
    directly. The request remains pending until the held message contains it, disappears, or changes source, bounded by a
    15-second refresh wait.
 
+The write carries the translation the run started from (`expectTranslation`): when the stored one differs by then, the
+result is discarded (`ignored`) and a hand edit saved during the run stays. A translation that is blank after cleaning,
+for non-blank input, fails the run (`EmptyTranslationError`) and stores nothing.
+
 ### Send hand-off
 
 1. A finished send hands its messages to `server/src/translation/runner.ts` `handOff` without waiting for translation;
@@ -307,6 +311,5 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
   D13.
 - Two clients' saves of one message's translation: the later one is taken with no conflict, since
   `saveStoredTranslationEdit` does not compare the editor's captured `base` (reproduced 2026-11-17, cross-check F4). An
-  open editor is to show a notice when the translation changes under it
-  ([known issue](../backlog/known-issues.md#chat-store)). Decision: owner, 2026-11-17: the rule of message text, where a
-  base check makes slow edits conflict.
+  open editor shows a notice when the translation changes under it (`Chat.svelte`). Decision: owner, 2026-11-17: the
+  rule of message text, where a base check makes slow edits conflict.

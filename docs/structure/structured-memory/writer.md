@@ -181,13 +181,18 @@ through `{{slot::rules}}`; the default-prompts answer and patch and compaction c
 and keeps `disputed` while the body still holds the join. Highlights follow the chat-or-preset rule, with rebuilds using
 `none`; `addLinks` moves each shift destination to the newest end and keeps the newest `pageRefsPerItem` links.
 `promptThreads` gives threads about people on stage priority over older ones. Repeat planning refuses candidate pages
-but still creates a missing scene page and applies the scene rewrite.
+but still creates a missing scene page and applies the scene rewrite. A new page whose alias equals the title or an
+alias of an existing page of its kind is still created; the run records `aliasCollision` naming both, for the merge
+tool.
 
 ### The scene page
 
 The scene is created by `commitPages` even when analysis returns none; its fields are rewritten without a patch call.
 `newScenePage` and `rewriteScene` own the page rules, while the store's `memory_pages_scene` index and snapshot walk
-enforce one scene page. The read path exposes scene attendance as `stage`.
+enforce one scene page. The read path exposes scene attendance as `stage`. The analysis prompt shows each scene field
+whole and states its limit (`memorySceneFieldLimit`): 800 characters, or the stored length while that is longer, up to
+the editor's 4,000. An answer past the limit is clipped with a `sceneClipped` warning on the run, and the health figures
+count a scene field as over budget only past 4,000.
 
 ### The patch call
 

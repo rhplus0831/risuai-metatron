@@ -46,7 +46,8 @@
 - `src/ts/network/generationJobs.ts`: job transport (`createGenerationJob`, `stopChatGeneration`,
   `followGenerationJob`); protocol details are in [network jobs](network-jobs.md).
 - `src/ts/process/localSends.ts`: the tab's send registry (`localSends`, `beginLocalSend`, `isLocalSend`,
-  `anyLocalSend`).
+  `anyLocalSend`). A composer slash command takes the chat's entry before its first await and lends it to its
+  `/multisend` parts; it clears the composer only while that still holds the submitted line.
 - `src/ts/process/jobStages.ts`: job presentation stages and retry counts (`setJobStage`, `setJobRetry`, `jobRetries`,
   `dropJobStage`, `chatStageOf`).
 - `src/ts/process/chatStatus.svelte.ts`: the per-tab status sources ([State](#state)), `chatStatusKey`, `isChatBusy`,
@@ -226,6 +227,9 @@ reservation and with the same end shapes ([remote send](network-jobs.md#remote-s
 - With remote sending on, the in-place reroll and Continue go through the host (a fresh request id per press; a Continue
   without input names the message it continues); the removal reroll always runs on this tab, since its bundle history
   cannot be kept through a host ([remote send](network-jobs.md#remote-send)).
+- A removal reroll puts back, per key, the variables its removed tail changed before it sends again, and a recovered
+  tail brings them back; the newest reply of a job carries the baseline of that tail (`rerollTurnStart`,
+  `shared/rerollCandidates.ts`). A turn stored before 2026-11-17 has no such baseline and keeps its values.
 - `rerollHistory.ts` owns guarded tab restoration; [chat store](chat-store.md#by-id-ops) owns by-id writes; the
   [server job](server-generation.md#reroll-in-place) commits an in-place reroll.
 
