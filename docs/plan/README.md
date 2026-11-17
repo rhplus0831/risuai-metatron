@@ -4,8 +4,7 @@ Plans live here while work is in progress. Current architecture guides describe
 shipped behavior; [the archive](../archived-plan/README.md) indexes completed plans with
 their last commit and path, and the [backlog](../README.md) holds what they left open.
 
-- [Sidebar-Only Chat Binding](sidebar-only-binding.md): a chat's presets and persona change only in its binding
-  panel, and the settings screen edits the tab's selection.
+None.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive, following the archive's procedure for the plan's open items. Use `None`
