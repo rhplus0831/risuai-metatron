@@ -29,7 +29,7 @@ merge cannot see inside the JSON strings it stores.
 - [memory](#memory) (1)
 - [persistence](#persistence) (1)
 - [structured-memory](#structured-memory) (3)
-- [translation](#translation) (2)
+- [translation](#translation) (1)
 
 ## chat-pipeline
 
@@ -155,16 +155,6 @@ Guide: [Structured Memory Records](../structure/structured-memory/records.md#kno
 Guide:
 [Translation: Providers, the LLM Translator, Presets, Server and Stored Translation, Bilingual Display](../structure/translation.md#known-hazards).
 
-- A translation run's result overwrites a hand edit saved while the run was waiting for its model. `setTranslation`
-  (`server/src/data/chatStore.ts`) is fenced by the hash of the original text; it carries a base revision but is
-  accepted on an older one, so the runner (`server/src/translation/runner.ts`) writes over whatever translation is
-  there. Reproduced on 2026-11-17 (cross-check F4): a Retranslate whose provider answer was held while another client
-  saved a hand correction replaced that correction when it arrived; the run was refused when the original text had
-  changed. Nothing keeps the overwritten text. It needs two clients on the same message's translation (the reviewer
-  rated it P1, the session P2). Decision: owner, 2026-11-17: fix it on the server only: a run remembers the
-  translation it started from and discards its result when the stored translation differs at the write. The entry's
-  other half, two editors saving over each other, stays as it is and is a
-  [Limitation of the translation guide](../structure/translation.md#limitations). Not yet fixed.
 - A translation answer that holds only reasoning tags replaces a stored translation with an empty one. Reproduced
   on 2026-11-17 (cross-check F11, second half) through the real pipeline (`shared/translation/pipeline.ts`) and
   server runner (`server/src/translation/runner.ts`): on a message with a hand-edited translation, a forced run

@@ -73,7 +73,7 @@ export type TranslateFailureStatus = 404 | 409 | 429 | 500 | 502 | 503 | 504;
 
 /**
  * - `applied`: the translation is stored (`translation`);
- * - `ignored`: the message's text changed while it was translated, nothing is stored;
+ * - `ignored`: the message's text or stored translation changed during the run, nothing is stored;
  * - `fresh`: not forced, and the message already holds a fresh stored translation (`translation`),
  *   returned without a request.
  */
@@ -218,6 +218,7 @@ export function createTranslationRunner(deps: {
         const to = scope.db.translator || "en";
         const from = scope.db.translatorInputLanguage ?? "";
         const sourceHash = translationSourceHash(message.data);
+        const expectTranslation = structuredClone(message.translation ?? null);
         // One CBS budget for the whole run (every step and retry); a chat variable is never written.
         const evaluator = createCbsEvaluator(
             createJobCbsHost(scope, {
@@ -389,7 +390,7 @@ export function createTranslationRunner(deps: {
                         characterId: request.characterId,
                         chatId: request.chatId,
                         baseRevision: scope.chatRevision,
-                        ops: [{ op: "setTranslation", id: request.messageId, translation }],
+                        ops: [{ op: "setTranslation", id: request.messageId, translation, expectTranslation }],
                     },
                 ],
             },

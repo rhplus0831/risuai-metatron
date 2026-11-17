@@ -299,6 +299,22 @@ describe("POST /api/translate/message with the Echo model", () => {
         expect((await translate(req("u"))).body).toMatchObject({ outcome: "applied", translation: { text: "pong2" } });
     });
 
+    it("ignores a forced translation when a hand edit was saved during the run", async () => {
+        await seed();
+        await chatBatch("k", [{ op: "setTranslation", id: "r", translation: tr("Original translation", "reply") }]);
+        const held = holdProvider();
+        const pending = translate(req("r", { force: true }));
+        await held.answered;
+        const saved = tr("A newer hand correction", "reply", { translatedAt: 2, edited: true });
+        await chatBatch("k", [{ op: "setTranslation", id: "r", translation: saved }]);
+        const revision = await revisionOf();
+
+        held.release();
+        expect(await pending).toMatchObject({ status: 200, body: { outcome: "ignored", translation: null } });
+        expect((await message("r")).translation).toEqual(saved);
+        expect(await revisionOf()).toBe(revision);
+    });
+
     it("ignores a translation whose source text changed during the run and stores nothing", async () => {
         await seed();
         const held = holdProvider();

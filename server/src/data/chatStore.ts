@@ -439,7 +439,13 @@ type PreparedOp =
     | { op: "patchMessage"; id: string; set: Record<string, unknown>; unset: string[] }
     | { op: "remove"; ids: string[]; retract: boolean }
     | { op: "begin"; id: string; generationId: string }
-    | { op: "setTranslation"; id: string; translation: MessageTranslation | null }
+    | {
+          op: "setTranslation";
+          id: string;
+          translation: MessageTranslation | null;
+          /** A detached run's starting record; absent for an unconditional editor save. */
+          expectTranslation?: MessageTranslation | null;
+      }
     | { op: "selectCandidate"; messageId: string; candidateId: string; expect: { candidatesRevision: number } };
 
 type PreparedMessage = { id: string; text: string };
@@ -1082,6 +1088,15 @@ function prepareOp(raw: unknown, chatId: string): PreparedOp {
                 throw new ResourceValidationError(
                     "setTranslation must be { id, translation: MessageTranslation | null }",
                 );
+            }
+            if (Object.hasOwn(raw, "expectTranslation")) {
+                const expectTranslation = serialize(raw.expectTranslation).stored;
+                if (expectTranslation !== null && !isMessageTranslation(expectTranslation)) {
+                    throw new ResourceValidationError(
+                        "setTranslation.expectTranslation must be MessageTranslation | null",
+                    );
+                }
+                return { op: "setTranslation", id: raw.id, translation, expectTranslation };
             }
             return { op: "setTranslation", id: raw.id, translation };
         }
@@ -2772,6 +2787,14 @@ export function createChatTables(
                             translationSourceHash(message.data) !== op.translation.sourceHash)
                     ) {
                         // A translation of a text the message no longer holds.
+                        translations.push("ignored");
+                        break;
+                    }
+                    if (
+                        op.expectTranslation !== undefined &&
+                        sortedJson(message.translation ?? null) !== sortedJson(op.expectTranslation)
+                    ) {
+                        // A detached answer must not replace a translation saved during its run.
                         translations.push("ignored");
                         break;
                     }
