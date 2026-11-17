@@ -1514,6 +1514,27 @@ function typeSection(value: string) {
 }
 const sentEdits = () => reads("edits").map(([, init]) => JSON.parse(init!.body as string));
 
+it("shows the long scene field badge only above 800 characters while editing", async () => {
+    const state = serveMemory();
+    state.page.sections[0] = { ...state.page.sections[0], heading: "state", body: "S".repeat(800), locked: false };
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="scene"]');
+    await settle();
+    await choosePageView("manage");
+    const badge =
+        "Over 800 characters: prompts get longer. The memory writer may rewrite this field up to this length.";
+    expect(target.textContent).not.toContain(badge);
+    press("[data-memory-section-edit]");
+    typeSection("S".repeat(801));
+    expect(target.textContent).toContain(badge);
+    expect(query("[data-memory-section-count]")?.textContent?.trim()).toBe(
+        language.structuredMemory.pages.characters(801, 4000),
+    );
+    typeSection("S".repeat(800));
+    expect(target.textContent).not.toContain(badge);
+});
+
 it("sends one page change with the copy revision and uses each successful answer for the next edit", async () => {
     const state = serveMemory();
     const fetch = io.authFetch.getMockImplementation()!;

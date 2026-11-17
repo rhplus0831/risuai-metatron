@@ -15,11 +15,13 @@ import {
     type MemoryKnowledge,
     type MemoryKnowledgeDraft,
     type MemoryPageCandidate,
+    type MemoryPage,
     type MemoryReceipt,
     type MemorySceneDraft,
     type MemoryThread,
     type MemoryThreadState,
     memoryThreadEnded,
+    memorySceneFieldLimit,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
     memorySourceText,
     memoryWriterReads,
@@ -329,7 +331,11 @@ function readCandidates({ pageCandidates }: Record<string, unknown>, warnings: W
 }
 
 /** The answer's scene as a bounded draft: missing fields are blank, and anything of another type is no scene. */
-function readScene({ scene }: Record<string, unknown>, warnings: Warning[]): MemorySceneDraft | null {
+function readScene(
+    { scene }: Record<string, unknown>,
+    warnings: Warning[],
+    current: MemoryPage | null,
+): MemorySceneDraft | null {
     if (scene === undefined || scene === null) {
         return null;
     }
@@ -339,7 +345,20 @@ function readScene({ scene }: Record<string, unknown>, warnings: Warning[]): Mem
         warnings.push({ kind: "malformed", detail: "scene: 1" });
         return null;
     }
-    const [place, time, state] = (fields as string[]).map((field) => clampText(field, LIMITS.sceneFieldChars));
+    const [place, time, state] = (fields as string[]).map((field, index) => {
+        const heading = SCENE_SECTIONS[index];
+        const length = current?.sections.find((section) => section.heading === heading)?.body.length ?? 0;
+        const body = clampText(field, memorySceneFieldLimit(length));
+        if (body.length < field.length) {
+            warnings.push({
+                kind: "sceneClipped",
+                ...(current ? { pageId: current.id } : {}),
+                heading,
+                detail: `scene.${heading}: ${field.length} → ${body.length}`,
+            });
+        }
+        return body;
+    });
     return { participants: readIds("scene.participants", participants, warnings), place, time, state };
 }
 
@@ -422,7 +441,7 @@ export function answerJson(text: string): { ok: true; value: unknown } | { ok: f
  * a list's accepted-element cap as `capped`, once per field. Strings clamp without splitting surrogate
  * pairs. Axes round and clamp; a candidate without finite confidence is malformed.
  */
-export function parseAnalysis(text: string): ParsedAnalysis {
+export function parseAnalysis(text: string, scene: MemoryPage | null = null): ParsedAnalysis {
     const json = answerJson(text);
     if (!json.ok) {
         return { ok: false, reason: "invalidJson", error: `The model's answer is not valid JSON: ${json.error}` };
@@ -436,7 +455,7 @@ export function parseAnalysis(text: string): ParsedAnalysis {
     try {
         const event = readDraft(root, warnings);
         const pageCandidates = readCandidates(parsed, warnings);
-        return { ok: true, analysis: { event, pageCandidates, scene: readScene(parsed, warnings) }, warnings };
+        return { ok: true, analysis: { event, pageCandidates, scene: readScene(parsed, warnings, scene) }, warnings };
     } catch (error) {
         if (error instanceof InvalidField) {
             return {

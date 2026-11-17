@@ -20,6 +20,7 @@ import {
     type StructuredMemoryHighlightMode,
     type StructuredMemoryPageTool,
     memorySourceText,
+    memorySceneFieldLimit,
 } from "../../../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../../../shared/valueKinds.ts";
 import type { MemoryChanges } from "../../../data/memoryStore.ts";
@@ -658,7 +659,7 @@ export function rewriteScene(
     const warnings: Warning[] = [];
     let page = scene;
     for (const heading of SCENE_SECTIONS) {
-        const body = draft[heading];
+        let body = draft[heading];
         const section = page.sections.find((entry) => entry.heading === heading);
         if (body.trim() === "" || body === section?.body) {
             continue;
@@ -666,6 +667,17 @@ export function rewriteScene(
         if (section?.locked) {
             warnings.push(sectionWarning("lockedSection", page, heading));
             continue;
+        }
+        // The field may have shortened while a patch call was in flight.
+        const bounded = clampText(body, memorySceneFieldLimit(section?.body.length ?? 0));
+        if (bounded.length < body.length) {
+            warnings.push({
+                kind: "sceneClipped",
+                pageId: page.id,
+                heading,
+                detail: `scene.${heading}: ${body.length} → ${bounded.length}`,
+            });
+            body = bounded;
         }
         if (standingReverts(page, heading).has(body)) {
             warnings.push(sectionWarning("revertedScene", page, heading));

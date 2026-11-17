@@ -11,6 +11,7 @@ import {
     type MemoryPage,
     type MemoryThread,
     memorySectionBudget,
+    memorySceneFieldLimit,
     memoryThreadEnded,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
     type StructuredMemoryDefaultPromptsAnswer,
@@ -147,11 +148,12 @@ Axes score how long it lasts, how much it changes, and how many it touches.
 Empty lists stay as []. At most ${LIMITS.keyLinesPerEvent} keyLines, ${LIMITS.stateChangesPerEvent} stateChanges, ${LIMITS.knowledgePerEvent} knowledge, ${LIMITS.relationshipShiftsPerEvent} relationshipShifts, ${LIMITS.threadsPerEvent} of each thread list, and ${LIMITS.pageCandidates} pageCandidates.
 "scene" is null when nothing about it changed; a blank field keeps what the scene says.`;
 
-const RULES = `Rules:
+const RULES = (scene: MemoryPage | null) => `Rules:
 - A quote (a key line's text and every "quote") is copied verbatim from one message under "Messages to record", at most ${LIMITS.keyLineChars} characters: never reworded, never joined across messages or across an [Image] mark, never taken from the context.
 - Page and thread ids come only from the lists shown. Never invent an id: a lasting subject with no listed page gets a "create" in pageCandidates, and its exact title stands in for its id in this answer. Leave out the rest.
 - pageCandidates name the pages whose facts these messages change: a listed page by "targetId", a new one by "create". Confidence runs from 0 to 1 and says how sure you are of it.
 - Each axis is an integer from 0 to ${LIMITS.axisMax}.
+- Scene field limits in characters: ${SCENE_SECTIONS.map((heading) => `${heading} ${memorySceneFieldLimit(scene?.sections.find((section) => section.heading === heading)?.body.length ?? 0)}`).join(", ")}. A longer existing field may stay that long.
 - A scene field never repeats a text listed as taken back unless the messages establish it again.
 - When these messages newly establish a lasting fact about a listed character (age, family, occupation, real name, origin, nature, who now owns or is responsible for them, where they now live, or that a situational role such as customer, visitor or patient has ended) that the page's identity summary lacks or contradicts, report it in stateChanges with section "identity", the quote that establishes it, and name that page in pageCandidates.
 - Read each sentence of a listed page's identity against these messages: when a sentence describes a situation, condition or role that these messages show has ended or been resolved, report it in stateChanges with section "identity", a quote that establishes the end, and name that page in pageCandidates.`;
@@ -314,8 +316,7 @@ export function sceneTakenBackLines(scene: MemoryPage | null): string[] {
 }
 
 /**
- * What the scene page says: its fixed sections and who is present, by page id, and past the clamp, so a
- * long scene cannot cut them, what a person took back of it.
+ * Whole scene fields let the writer preserve handwritten detail; taken-back text follows them.
  */
 function sceneSlot(scene: MemoryPage | null): string {
     const lines = SCENE_SECTIONS.flatMap((heading) => {
@@ -325,8 +326,7 @@ function sceneSlot(scene: MemoryPage | null): string {
     if (scene?.participants?.length) {
         lines.push(`participants: ${JSON.stringify(scene.participants)}`);
     }
-    const shown = clampText(lines.join("\n"), LIMITS.promptSceneChars);
-    return [...(shown === "" ? [] : [shown]), ...sceneTakenBackLines(scene)].join("\n") || NONE;
+    return [...lines, ...sceneTakenBackLines(scene)].join("\n") || NONE;
 }
 
 /**
@@ -359,12 +359,13 @@ export const messageEntryLabel = (messageId: string) => `[m:${messageId}] `;
  * each window message keeps its own source id. A greeting is listed first with its solo owner's name. Text is `memorySourceText`, display markup removed, as
  * quote verification reads it, except that inlays show as `[Image]`; filling after ChatML and CBS parsing
  * prevents that text becoming prompt syntax.
- * When `input.keyLineGuidance` is true, `rules` gains the key-line selection rule; otherwise it stays unchanged.
+ * The rules state each scene field's rewrite limit and optionally guide key-line selection.
  */
 export function analysisSlots(input: AnalysisInput): AnalysisSlots {
+    const rules = RULES(input.scene);
     return {
         format: FORMAT,
-        rules: input.keyLineGuidance ? [RULES, KEY_LINE_GUIDANCE_RULE].join("\n") : RULES,
+        rules: input.keyLineGuidance ? [rules, KEY_LINE_GUIDANCE_RULE].join("\n") : rules,
         language: input.language,
         cast: input.cast.map((row) => JSON.stringify(row)).join("\n") || NONE,
         scene: sceneSlot(input.scene),
@@ -496,7 +497,7 @@ export function parseCustomFrame(
 /** Each call's default frame as stored text, with no preset text, and the slot texts the validator reads. */
 export function defaultPrompts(): StructuredMemoryDefaultPromptsAnswer {
     return {
-        analysis: { frame: analysisFrame(""), format: FORMAT, rules: RULES },
+        analysis: { frame: analysisFrame(""), format: FORMAT, rules: RULES(null) },
         patch: { frame: patchFrame(""), format: PATCH_FORMAT, rules: PATCH_RULES },
     };
 }

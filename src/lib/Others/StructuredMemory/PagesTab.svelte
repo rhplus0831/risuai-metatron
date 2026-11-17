@@ -1386,6 +1386,16 @@
             </div>
         {:else}
             <p class="whitespace-pre-wrap" data-memory-section-body>{section.body}</p>
+            {#if copy?.data.type === "scene"}
+                <span class="text-textcolor2" data-memory-section-count>
+                    {text.characters(section.body.length, sectionBodyChars)}
+                </span>
+            {/if}
+        {/if}
+        {#if copy?.data.type === "scene" && (editor?.heading === section.heading ? draft.length : section.body.length) > STRUCTURED_MEMORY_LIMITS.sceneFieldChars}
+            <span class="self-start px-1.5 text-xs rounded-sm bg-darkbutton text-textcolor2">
+                {text.sceneLongField}
+            </span>
         {/if}
         {#if section.provenance.length > 0}
             <div class="flex flex-wrap items-center gap-1">

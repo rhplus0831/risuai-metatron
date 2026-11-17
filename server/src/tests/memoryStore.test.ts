@@ -1004,6 +1004,27 @@ it("keeps a version 3 hash when display markup is inserted, while stored version
     expect(placed.status).toBe("active");
 });
 
+it("counts a 1520-character scene field within its health budget and flags one beyond 4000", () => {
+    const { store } = fileStore();
+    seed(store);
+    for (const [length, overBudgetSections] of [
+        [1520, 0],
+        [4001, 1],
+    ]) {
+        const original = records(["scene"], "x".repeat(length)).pages[0];
+        const page: MemoryPage = {
+            ...original,
+            type: "scene",
+            participants: [],
+            sections: [{ ...original.sections[0], heading: "state" }],
+        };
+        write(store, contents(store).revision, { pages: [page] });
+        expect(store.memory.readHealth([{ characterId: "c", chatId: "k" }])).toEqual([
+            { paused: false, storedStale: 0, pendingRepairs: 0, unsupportedSections: 0, overBudgetSections },
+        ]);
+    }
+});
+
 it("validates the final scene set atomically while allowing rewrites and replacement", () => {
     const { store, db, events } = fileStore();
     seed(store);

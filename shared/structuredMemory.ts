@@ -187,7 +187,7 @@ export const STRUCTURED_MEMORY_LIMITS = {
     sectionEvidence: 32,
     /** Patches one call may return. */
     patchesPerCall: 32,
-    /** One field of the scene: its place, time, or state. */
+    /** The default rewrite limit of one scene field; longer stored fields keep their length. */
     sceneFieldChars: 800,
     /** Failed runs in a row after which automatic recording pauses until the user resumes it. */
     consecutiveFailures: 5,
@@ -224,17 +224,23 @@ export const STRUCTURED_MEMORY_LIMITS = {
     promptPatchChars: 12000,
     /** Open threads the writer's prompt lists, the newest ones. */
     promptThreads: 40,
-    /** The scene text the writer's prompt holds. */
-    promptSceneChars: 2000,
     /** Messages before a window that the writer's prompt shows as context, and the text kept of each. */
     contextMessages: 3,
     contextMessageChars: 1000,
 } as const;
 
+/** A scene rewrite may keep a long stored field's length, up to the editor's limit. */
+export function memorySceneFieldLimit(currentLength: number): number {
+    return Math.min(
+        STRUCTURED_MEMORY_LIMITS.sectionBodyChars,
+        Math.max(STRUCTURED_MEMORY_LIMITS.sceneFieldChars, currentLength),
+    );
+}
+
 /**
  * How long a section may grow by default for its page type, in `body.length`, before a change gets
  * the writer's compaction call. These are starting values, with no setting. A scene field is rewritten
- * whole and clamped, so its budget is that clamp and nothing compacts it.
+ * whole and never compacted; its health ceiling is the largest allowed rewrite.
  */
 export const MEMORY_SECTION_BUDGETS = {
     character: 1600,
@@ -242,7 +248,7 @@ export const MEMORY_SECTION_BUDGETS = {
     faction: 1200,
     item: 800,
     concept: 1200,
-    scene: STRUCTURED_MEMORY_LIMITS.sceneFieldChars,
+    scene: memorySceneFieldLimit(STRUCTURED_MEMORY_LIMITS.sectionBodyChars),
     note: 1600,
 } as const satisfies Record<MemoryPageType, number>;
 
@@ -252,8 +258,11 @@ export const MEMORY_CHARACTER_SLOT_BUDGETS = {
     relationships: 1200,
 } as const satisfies Partial<Record<CharacterSectionSlot, number>>;
 
-/** The slot's budget on a character page, or the page type's budget for every other section. */
-export function memorySectionBudget(type: MemoryPageType, heading: string): number {
+/** The scene field's soft limit, a character slot's budget, or the page type's budget. */
+export function memorySectionBudget(type: MemoryPageType, heading: string, currentLength = 0): number {
+    if (type === "scene") {
+        return memorySceneFieldLimit(currentLength);
+    }
     if (type === "character" && Object.hasOwn(MEMORY_CHARACTER_SLOT_BUDGETS, heading)) {
         return MEMORY_CHARACTER_SLOT_BUDGETS[heading as keyof typeof MEMORY_CHARACTER_SLOT_BUDGETS];
     }
@@ -262,7 +271,7 @@ export function memorySectionBudget(type: MemoryPageType, heading: string): numb
 
 /** Whether `body`, a section of a page of `type` with `heading`, is past its budget. */
 export function memorySectionOverBudget(type: MemoryPageType, heading: string, body: string): boolean {
-    return body.length > memorySectionBudget(type, heading);
+    return body.length > memorySectionBudget(type, heading, body.length);
 }
 
 /** A message a record cites, as it was when the record was written. */

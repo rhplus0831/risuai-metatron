@@ -871,7 +871,12 @@ export function createStructuredWriter(
         if ("ended" in answered) {
             return answered.ended;
         }
-        const parsed = parseAnalysis(answered.text);
+        const contents = store.memory.readContents(chaId, chatId);
+        if (!contents) {
+            return { outcome: "skipped", reason: "chatGone" };
+        }
+        const pages = readPages(store, arg, contents);
+        const parsed = parseAnalysis(answered.text, pages.find(({ type }) => type === "scene") ?? null);
         if (!parsed.ok) {
             return fail(parsed.reason, parsed.error, answered.text);
         }
@@ -896,11 +901,7 @@ export function createStructuredWriter(
             },
         };
         const sceneId = randomUUID();
-        const contents = store.memory.readContents(chaId, chatId);
-        if (!contents) {
-            return { outcome: "skipped", reason: "chatGone" };
-        }
-        const first = admitRecording(store, arg, run.id, recording, contents, readPages(store, arg, contents));
+        const first = admitRecording(store, arg, run.id, recording, contents, pages);
         const shown = showTargets(first.plan.targets);
         let patchWarnings: Warning[] = [];
         if (shown.rows.length > 0) {

@@ -3001,6 +3001,7 @@ export const languageEnglish = {
             endedThread: "A thread that already ended was named",
             unseenPage: "A page the model was not shown was left as it is",
             lockedSection: "A locked section was left as it is",
+            sceneClipped: "A scene field was shortened to its rewrite limit (characters)",
             unseenSection: "A section the model did not see as it stands was left as it is",
             duplicateHeading: "A section was changed twice in one answer",
             notASlot: "A character page has no such section",
@@ -3221,6 +3222,8 @@ export const languageEnglish = {
             save: "Save",
             cancel: "Cancel",
             sectionText: "Section text",
+            sceneLongField:
+                "Over 800 characters: prompts get longer. The memory writer may rewrite this field up to this length.",
             characters: (count: number, limit: number) => `${count} / ${limit}`,
             provenance: "Events",
             sources: "Messages",

@@ -3320,6 +3320,59 @@ describe("structured memory tasks", () => {
         expect(t.store.memory.readRecord("c", "k1", "pages", page.id)!.data).toEqual(page);
     });
 
+    it.each([
+        { storedLength: 4000, answerLength: 1520, limit: 4000 },
+        { storedLength: 4000, answerLength: 4200, limit: 4000 },
+        { storedLength: 500, answerLength: 1000, limit: 800 },
+    ])(
+        "shows the whole $storedLength-character scene field and admits a $answerLength-character rewrite up to $limit with clipping warnings",
+        async ({ storedLength, answerLength, limit }) => {
+            const t = structuredHarness();
+            const stored = "S".repeat(storedLength);
+            const answered = "R".repeat(answerLength);
+            const scene: MemoryPage = {
+                ...memoryRecords(["scene"], "Scene").pages[0],
+                type: "scene",
+                contextMode: "always",
+                participants: [],
+                sections: [
+                    { heading: "state", body: stored, provenance: [], sources: [], locked: false, updatedAt: 1 },
+                ],
+            };
+            writeMemory(t.store, "c", "k1", { pages: [scene] });
+            const { request, terminal } = await beginAnalysis(t, {
+                ...writerInput(t, "m3"),
+                maxContext: 20000,
+                maxResponse: 2000,
+            });
+            const prompt = t.provider.asked(request);
+            expect.soft(prompt.split("Scene:\n")[1].split("\n\nOpen threads:")[0]).toBe(`state: ${stored}`);
+            expect.soft(prompt).toContain(`place 800, time 800, state ${limit}`);
+            request.answer(
+                JSON.stringify({
+                    ...analysis(),
+                    scene: { participants: [], place: "", time: "", state: answered },
+                }),
+            );
+            await finishRecording(t, terminal);
+            const expected = answered.slice(0, limit);
+            expect.soft(pageRecords(t).find(({ id }) => id === "scene")!.sections[0].body).toBe(expected);
+            expect.soft(runRecord(t).analysis!.scene!.state).toBe(expected);
+            expect(runRecord(t).receipt!.warnings).toEqual(
+                answerLength > limit
+                    ? [
+                          {
+                              kind: "sceneClipped",
+                              pageId: "scene",
+                              heading: "state",
+                              detail: `scene.state: ${answerLength} → ${limit}`,
+                          },
+                      ]
+                    : [],
+            );
+        },
+    );
+
     it("replaces both frames only in fine-tuning, validates both modes alike, and keeps compaction instructions", async () => {
         for (const fineTuning of [false, true]) {
             const t = structuredHarness({ hypaSettings: { structured: { ...customFrames, fineTuning } } });

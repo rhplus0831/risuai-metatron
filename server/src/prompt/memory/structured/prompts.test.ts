@@ -241,10 +241,10 @@ it("reserves patch space for taken-back text before bodies and tells the writer 
     );
 });
 
-it("keeps taken-back scene text in the analysis scene slot past a full scene's clamp", () => {
+it("keeps taken-back scene text in the analysis scene slot after whole scene fields", () => {
     const scene = memoryRecords(["scene"]).pages[0];
     scene.type = "scene";
-    scene.sections[0] = { ...scene.sections[0], heading: "state", body: "x".repeat(LIMITS.promptSceneChars + 50) };
+    scene.sections[0] = { ...scene.sections[0], heading: "state", body: "x".repeat(LIMITS.sectionBodyChars) };
     scene.history = [
         {
             id: "undo",
@@ -267,7 +267,7 @@ it("keeps taken-back scene text in the analysis scene slot past a full scene's c
     });
     expect(slots.scene).toContain("taken back from place: Rejected harbor");
     expect(slots.scene.indexOf("taken back from place: Rejected harbor")).toBeGreaterThanOrEqual(
-        LIMITS.promptSceneChars,
+        scene.sections[0].body.length,
     );
     expect(slots.messages).not.toContain("Rejected harbor");
 });

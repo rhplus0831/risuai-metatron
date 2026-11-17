@@ -27,7 +27,7 @@ merge cannot see inside the JSON strings it stores.
 - [chat-pipeline](#chat-pipeline) (2)
 - [chat-store](#chat-store) (1)
 - [persistence](#persistence) (1)
-- [structured-memory](#structured-memory) (3)
+- [structured-memory](#structured-memory) (2)
 
 ## chat-pipeline
 
@@ -111,20 +111,6 @@ Guide: [Structured Memory Records](../structure/structured-memory/records.md#kno
 
   Not fixed: the byte charge, since measuring costs every round; the owner has not said whether it is a Limitation.
 
-- A scene rewrite sees a truncated field and clips its answer
-  ([writer guide](../structure/structured-memory/writer.md#known-hazards)). An unlocked scene section can be edited
-  to 4,000 characters. Reproduced on 2026-11-17 (cross-check F12) through the real edit, writer, and commit: of a
-  4,000-character `state` field the model was shown 1,993 characters, its 1,520-character rewrite was accepted as
-  800, and 800 were stored; the run recorded no warning. The page's history held the whole former text (history
-  keeps 60 entries), and a locked section was left alone with its warning. Corrected against the filed entry:
-  `sceneSlot` (`server/src/prompt/memory/structured/prompts.ts`) caps the whole scene slot at 2,000 characters,
-  headings and participants included, not each field; and the 800 cap is applied once, when the answer is admitted
-  (`server/src/prompt/memory/structured/analysis.ts`), so `rewriteScene` in `pages.ts` stores an answer that is
-  already clipped and cannot tell. Decision: owner, 2026-11-17: fix it, with a soft limit. The editor keeps 4,000 characters and shows a
-  badge on a scene field over 800 (the prompts grow, and the writer may rewrite the field up to this length). The
-  writer's prompt shows every scene field whole and states each field's limit: 800, or the field's current length
-  while that is over 800. An answer past its limit is still clipped, now with a warning on the run. A long scene field
-  must not count as over budget in the memory health figures. Not yet fixed.
 - A candidate whose alias is an existing page's title creates a duplicate page
   ([writer guide](../structure/structured-memory/writer.md#known-hazards); rated P3). `find` in
   `server/src/prompt/memory/structured/pages.ts` matches the candidate's title against existing titles and aliases;
