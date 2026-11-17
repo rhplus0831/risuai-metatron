@@ -5,7 +5,7 @@ persona list). Audited against the code at that commit before it was committed
 ([report](../reports/audits/plan-runner/module-persona-folders-2026-11-17.md)) and corrected in the same commit as the
 report. D1 to D4 are the owner's choices of 2026-11-17; D5 on are this plan's own and open to the owner's change. The
 folder choices of the move dialog, the registries of slice 1, and the Sortable rules of slice 3 took their present
-form from the audit. Landed: 1 (`e3bba40b2`).
+form from the audit. Landed: 1 (`e3bba40b2`), 2 (`683f03275`).
 
 Sources: `RisuModule` and `normalizeModule` in `shared/modules.ts`; `normalizePersonas` and `normalizePersonaModules` in
 `shared/personas.ts`; `folder` and `ChatFolder` in `shared/database.ts`; `COLLECTION_KIND` and `COLLECTION_FIELDS` in
