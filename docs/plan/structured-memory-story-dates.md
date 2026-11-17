@@ -1,8 +1,11 @@
 # Structured Memory Story Dates Plan
 
-Status: drafted 2026-11-18 at `3b5d7ce6f` from the user's request of the same day. Not audited against the code yet.
-The goal and the status line formats are the user's; D1 to D7 are this plan's own and open to the user's change.
-Landed: none.
+Status: drafted 2026-11-18 at `3b5d7ce6f` from the user's request of the same day and committed at `aafebc9c0`, then
+audited against the code at that commit
+([report](../reports/audits/plan-runner/structured-memory-story-dates-2026-11-18.md)) and corrected in the same commit
+as the report. The goal and the status line formats are the user's; D1 to D7 are this plan's own and open to the
+user's change. The fold rule of slice 1, the limits on custom prompts and replays, the scope of the unchanged-card
+rule, and D7's wording took their present form from the audit. Landed: none.
 
 Sources: `MemoryEventDraft`, `MemoryEvent`, `memorySourceText`, `StructuredMemoryStoryEvent`, and
 `STRUCTURED_MEMORY_LIMITS` in `shared/structuredMemory.ts`; `readStoryTime` and `parseAnalysis` in
@@ -42,8 +45,8 @@ date=10월 15일 (목)
 The third form states no year.
 
 After this plan the writer copies a stated date into the event as a structured field, and the card puts the distance
-from the story's newest recorded date before each dated event: `(17 days ago, 3월 17일 저녁) title: summary`. A chat
-that never states a date gets the card it gets today, byte for byte.
+from the story's newest recorded date before each dated event: `(2 weeks ago, 3월 17일 저녁) title: summary`. A chat
+whose events hold no date gets no label and no anchor line: its stored records render as they do today.
 
 ## Current State
 
@@ -59,9 +62,10 @@ that never states a date gets the card it gets today, byte for byte.
   events lane uses it through `eventLine` and the recent timeline through `flowEventLine`, which leads with
   `<N> turns ago: `. The title-only flow line (`flowLine`) is `<N> turns ago: <title>`. No code computes a distance in
   story time.
-- **Retrieval has every active event in chat order.** `prepareRetrieval` builds `placed`, the active, unsuppressed
-  events with `place`, the position of their first source entry. `flowItems` and the events lane build their lines
-  from it.
+- **Retrieval places the events a send can read.** `prepareRetrieval` builds `placed`: the readable, active,
+  unsuppressed events that have a current source entry or a greeting entry, events whose messages are still in the raw
+  window included. `place` is the event's newest matched entry index; `placed` itself is not sorted. `flowItems` and
+  the events lane build their lines from it.
 - **The card's frame is counted.** `renderParts` puts `RULE_HEADER` at the top of the stable part; `frameTokens`,
   `preflightMemoryCard`, and `buildMemoryCard` count that frame against the maximum.
 - **The patch call sees the event's story time.** `patchSlots` passes `storyTime` whole in the event JSON.
@@ -77,11 +81,12 @@ that never states a date gets the card it gets today, byte for byte.
 ## Rules For Every Slice
 
 - No wall clock: a story date is never compared with `Date.now()`. The date helpers are pure functions.
-- A chat with no dated event gets the same card as before: no anchor line, no label, the same token counts.
+- The same stored records with no valid date render as before: no anchor line, no label, the same token counts. D5
+  changes the wording of records written from then on, dated or not, so a later card can differ through them.
 - The card's own words stay English; a date's text stays as the writer wrote it.
 - `storyTime.ordinal` keeps its meaning and its handling. No slice reads it for the label.
-- An event stored before this plan has no date and gets no label until it is re-recorded or rebuilt. No slice adds a
-  migration or a backfill pass of its own.
+- An event stored before this plan stays undated, and so unlabelled, until it is re-recorded, rebuilt, or folded
+  into by a repeat that carries a valid date (slice 1). No slice adds a migration or a backfill pass of its own.
 - User-visible strings go to `src/lang/en.ts` with their Korean text in `src/lang/ko.ts`; other locales fall back.
 - V1 to V9 apply. Each slice updates the guides it names (`pnpm docs:owner <path>`, `pnpm check:docs`). Full checks:
   `pnpm check`, `pnpm check:docs`, `pnpm format:check`, `pnpm --silent test:agent`.
@@ -94,7 +99,7 @@ that never states a date gets the card it gets today, byte for byte.
 1, then 2, then 3. Slices 2 and 3 use the field and helpers of slice 1 and nothing of each other, but both edit
 `docs/structure/structured-memory/read.md`, so they run one after the other.
 
-## Slice 1. The writer records a stated date (`records.md`, `writer.md`)
+## Slice 1. The writer records a stated date (`records.md`, `writer.md`, `lifecycle.md`)
 
 - **The field (D1).** `MemoryEventDraft.storyTime` gains `date?: MemoryStoryDate`, where
   `MemoryStoryDate = { year?: number; month: number; day: number }`. In `shared/structuredMemory.ts`, beside it:
@@ -113,6 +118,11 @@ that never states a date gets the card it gets today, byte for byte.
 
 - **Parsing.** `readStoryTime` reads a string `date` through `parseStoryDate` and keeps the result; anything else,
   and a string that does not parse, leaves the field out without a warning, as a missing story time does today.
+- **A folded repeat.** When admission folds a recording into the chat's last event (`repeatsEvent`), the written event
+  is the stored one with more sources, and the answer's story time is dropped. The fold keeps the stored
+  `storyTime.text` and takes the answer's `storyTime.date` when it holds a valid one, so an event's date stays the last
+  date its messages state. An answer with no date leaves the stored date. The fold's comment in `analysis.ts`, which
+  says everything else on the event stays, is updated with it.
 - **Stored and restored.** `isEvent`'s story time check gains `date: optional(isStoryDate)`, so a restored or imported
   record with a malformed date is refused as any malformed field is. The package format does not change:
   `metadataLines` already writes the field, an older build's `isEvent` leaves it alone, and `MEMORY_PACKAGE_VERSION`
@@ -131,14 +141,18 @@ that never states a date gets the card it gets today, byte for byte.
   - `shared/structuredMemory.test.ts`: `parseStoryDate` for each accepted form and each refusal, `formatStoryDate`,
     and `memorySourceText` keeping the date text of the three status line forms in **Goal**.
   - `analysis.test.ts`: a string date is kept, a year-less one is kept without a year, an impossible or non-string
-    one is left out and the event still parses, an answer with no `date` parses as today.
+    one is left out and the event still parses, an answer with no `date` parses as today. A fold takes the answer's
+    valid date and keeps the stored text; a fold with no date in the answer keeps the stored date.
   - `prompts.test.ts`: the analysis format names `date`, and the patch event slot carries a stored date.
   - `restore.test.ts`: an event with a valid date restores, one with a malformed date is refused, one with no date
     restores as today.
   - `importPackage.test.ts` or the package round trip that exists there: a dated event comes back with its date.
-- Guides: records (the event's fields and what a loaded event can lack), writer (what the analysis answer holds and
-  the two new rules).
-- After this slice new events carry a date when the messages state one. Nothing reads it yet.
+- Guides: records (the event's fields and what a loaded event can lack), writer (what the analysis answer holds, the
+  two new rules, and the fold), lifecycle (restore admission keeps a valid date and refuses a malformed one).
+- After this slice an event recorded from a newly assembled default prompt carries a date when the messages state one.
+  A custom analysis frame gets the new format and rules only where it quotes `{{slot::format}}` and `{{slot::rules}}`,
+  and a custom patch frame the relative-word rule only through `{{slot::rules}}`. A retry that replays a stored
+  `input` sends the instructions that input was built with. Nothing reads the date yet.
 
 ## Slice 2. The card says how long ago (_hard_, `read.md`)
 
@@ -168,7 +182,7 @@ that never states a date gets the card it gets today, byte for byte.
 
 - **The lines.** `eventBody` takes an optional label and renders the parenthesis as the label, then the story time
   text, joined by `, `; either alone stands alone, and with neither there is no parenthesis, as today:
-  - events lane: `(17 days ago, 3월 17일 저녁) title: summary`
+  - events lane: `(2 weeks ago, 3월 17일 저녁) title: summary`
   - recent timeline: `12 turns ago: (3 days ago, 3월 31일 저녁) title: summary`
   - title-only flow line: `154 turns ago: (2 months ago) title`
 
@@ -208,7 +222,9 @@ that never states a date gets the card it gets today, byte for byte.
   (`isStoryDate`), and the opened-event read of the Timeline does the same wherever it rebuilds story time.
 - `storyTimeText` in `TimelineTab.svelte` and the story time line of `LogTab.svelte` show the date first, as
   `formatStoryDate` gives it, then the text, then the ordinal in parentheses as today: `2025-04-03 · 아침`. A date
-  with no text shows alone. No new string is needed while the existing `storyTime` label leads the line; add one only
+  with no text shows alone: the three guards that hide the line while the text is empty (the Timeline's opened event
+  and story row, the Log's event) show it for a date too, and the run view's own story time type gains the field. No
+  new string is needed while the existing `storyTime` label leads the line; add one only
   if the layout needs it.
 - `StructuredMemoryPageMention.storyTime` stays the text. Pages' mention rows do not show the date.
 - Tests: the story read and the run view keep a valid date and drop a malformed one; the Timeline's opened event and
@@ -236,8 +252,11 @@ that never states a date gets the card it gets today, byte for byte.
   of the last message (see **Limits**). With the anchor the main model can see a difference between it and a status
   line in the recent messages, and `RULE_HEADER` already says recent messages win.
 - **D7. No verification of the date against the messages.** A quote is checked verbatim; a date is a normalized
-  value and has no verbatim form to check. It is as trusted as `storyTime.text` is today. A wrong date on the newest
-  event skews every label until the next event is recorded, which under the default cadence is the next turn.
+  value and has no verbatim form to check. It is as trusted as `storyTime.text` is today. A wrong date on the
+  event the story date is read from skews every label until another dated event has the greatest `place`, or a fold
+  into that event carries a valid date (slice 1). An undated recording does not replace it, and neither does a
+  recording of an older window, whose event is placed earlier. With a status line in every reply and the default
+  cadence, the next recorded turn replaces it.
 
 ## Limits
 
@@ -246,6 +265,9 @@ that never states a date gets the card it gets today, byte for byte.
   inside that tail, every label is short by that many days until the tail is recorded. The anchor line states the date
   used.
 - **Chats that state no date** get no label, and events between two status lines that carry none get none.
+- **Custom prompts and replays.** A preset's custom frame gets the new format and rules only through the format and
+  rules slots; a frame without them says what its author wrote. A replayed input asks what it asked when it was
+  built.
 - **Other calendars** (an in-world era, "Day 12") are left out by the writer's rule and get no label.
 - **Text inside pages** is not relabelled. A page says what the patch call wrote; D5 keeps relative words out of it.
 - **Cache.** The stable part changes when the story date changes, about once per story day, and each dated flow line
