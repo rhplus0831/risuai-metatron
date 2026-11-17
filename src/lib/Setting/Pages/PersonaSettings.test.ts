@@ -205,8 +205,8 @@ describe("PersonaSettings", () => {
 // The page is the tab's, also with a chat open: the icon grid's ring and the editor are the tab's
 // selected persona (`editedPersona`), a grid click and "create persona" select for the tab through
 // `changeUserPersona(id, null)` and leave every chat's binding, a deletion of the shown persona names
-// how many chats bind it, leaves them bound, and moves the tab's selection, and the header note
-// compares the shown persona with the open chat's.
+// how many chats bind it, leaves them bound, and moves the tab's selection. The page shows no note
+// comparing the shown persona with the open chat's.
 describe("PersonaSettings with a chat open", () => {
     const refK = { chaId: "c", chatId: "k" };
     const refJ = { chaId: "c", chatId: "j" };
@@ -232,8 +232,15 @@ describe("PersonaSettings with a chat open", () => {
             [...page.target.querySelectorAll("button")].find(
                 (button) => button.textContent?.trim() === language.remove,
             )!;
-        const header = () => page.target.querySelector("h2")!.parentElement!.textContent ?? "";
-        return { ...page, grid, ringed, addButton, removeButton, header };
+        // "This chat" alone is too common a phrase to look for in the whole page.
+        const scopeNote = () => [
+            ...[strings.notThisChat, strings.showThisChat, strings.notSetForChat].filter((text) =>
+                (page.target.textContent ?? "").includes(text),
+            ),
+            ...(page.target.querySelector("h2")!.textContent!.includes(strings.thisChat) ? [strings.thisChat] : []),
+            ...(page.target.querySelector("[data-binding-scope-show]") ? ["show button"] : []),
+        ];
+        return { ...page, grid, ringed, addButton, removeButton, scopeNote };
     }
 
     /** The tab selects `Ann`; chat `k` binds `Bob`, chat `j` binds nothing; `k` is open. */
@@ -265,36 +272,35 @@ describe("PersonaSettings with a chat open", () => {
         selectCharacter(null);
     });
 
-    it("rings and edits the tab's selected persona also with a chat open, whatever the chat binds; the header compares it with the chat's", () => {
+    it("rings and edits the tab's selected persona also with a chat open, whatever the chat binds; no note compares it with the chat's", () => {
         const page = renderPage();
         // The open chat runs with its `Bob`; the page shows the tab's `Ann`.
         expect(activePersona.id).toBe("p2");
         expect(page.ringed()).toEqual(["p1"]);
         expect(page.nameInput().value).toBe("Ann");
-        expect(page.header()).toContain(strings.notThisChat);
+        expect(page.scopeNote()).toEqual([]);
 
         chatBindingPatch(refK, { personaId: null });
         flushSync();
         expect(page.ringed()).toEqual(["p1"]);
         expect(page.nameInput().value).toBe("Ann");
-        expect(page.header()).toContain(strings.notSetForChat);
+        expect(page.scopeNote()).toEqual([]);
 
         chatBindingPatch(refK, { personaId: "gone" });
         flushSync();
         expect(page.ringed()).toEqual(["p1"]);
-        expect(page.header()).toContain(strings.notSetForChat);
+        expect(page.scopeNote()).toEqual([]);
 
         chatBindingPatch(refK, { personaId: "p1" });
         flushSync();
         expect(page.ringed()).toEqual(["p1"]);
-        expect(page.header()).toContain(strings.thisChat);
+        expect(page.scopeNote()).toEqual([]);
 
         selectCharacter(null);
         flushSync();
         expect(page.ringed()).toEqual(["p1"]);
         expect(page.nameInput().value).toBe("Ann");
-        expect(page.header()).not.toContain(strings.thisChat);
-        expect(page.header()).not.toContain(strings.notSetForChat);
+        expect(page.scopeNote()).toEqual([]);
     });
 
     it("a grid click with a chat open selects for the tab and leaves the chat's binding; at home it selects for the tab too", () => {

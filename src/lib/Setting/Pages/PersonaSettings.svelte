@@ -17,7 +17,6 @@
     import { newPersonaId } from "../../../../shared/presets.ts";
     import { chatsBoundTo } from "src/ts/storage/chatBinding.svelte";
     import { selectPersona, selection } from "src/ts/storage/selection.svelte";
-    import BindingScopeNote from "../BindingScopeNote.svelte";
     import { CircleCheckIcon } from "@lucide/svelte";
     import { normalizePersonaModules } from "../../../../shared/personas.ts";
 
@@ -104,10 +103,7 @@
     });
 </script>
 
-<div class="flex items-center gap-2 mb-2 mt-2">
-    <h2 class="text-2xl font-bold">{language.persona}</h2>
-    <BindingScopeNote field="personaId" />
-</div>
+<h2 class="text-2xl font-bold mb-2 mt-2">{language.persona}</h2>
 
 {#key sorted}
     <div
