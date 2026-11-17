@@ -103,6 +103,12 @@ The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credent
   is on by default; a missing `providers.requestHistoryContent` field reads as on, while `false` applies to new rows.
   The row/count/byte bounds and pruning behavior are documented by `server/src/data/requestHistory.ts`;
   `server/src/app.ts` wires `RISU_REQUEST_HISTORY_MAX_BYTES` and the provider settings.
+- The file's schema version stays `"1"` across additive columns: a column is added in place (`ALTER TABLE` inside the
+  opening transaction, before the statements are prepared) because every query names its columns, so an older server
+  keeps working on the file, while a version bump would make it run without a history. `interceptions` (the request
+  interception prompts `requestChatDataMain` inserted, set by `describe`, null when none) is one such column; it is
+  summary metadata, kept with content capture off, carried by support shares, and shown in the viewer's expanded row
+  when positive.
 - The diagnostics root defaults to `save/diagnostics/`; `RISU_DIAGNOSTICS_DIR` is resolved against `rootDir`, so an
   absolute path or `..` can place it elsewhere. `RISU_DIAGNOSTICS_MAX_BYTES` caps `events/` at 64 MiB by default; ring
   size, state schedule, and the `state.json`, `reports/`, and `shared/` file rules are in

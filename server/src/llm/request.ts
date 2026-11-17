@@ -542,7 +542,8 @@ export async function requestChatDataMain(
         };
     }
 
-    targ.formated = applyRequestInterceptions(structuredClone(arg.formated), db.requestInterceptions, model).formated;
+    const intercepted = applyRequestInterceptions(structuredClone(arg.formated), db.requestInterceptions, model);
+    targ.formated = intercepted.formated;
     targ.maxTokens = arg.maxTokens ?? db.maxResponse;
     targ.temperature = arg.temperature ?? db.temperature / 100;
     targ.bias = arg.bias;
@@ -567,6 +568,7 @@ export async function requestChatDataMain(
         profileId: profile?.id ?? null,
         profileName: profile?.name ?? null,
         provider: formatName(targ.modelInfo.format),
+        ...(intercepted.applied > 0 ? { interceptions: intercepted.applied } : {}),
     });
 
     const credential = resolveCredential(db, targ.aiModel, targ.modelInfo, profile);

@@ -82,6 +82,11 @@ export type RequestHistoryModel = {
     profileName?: string | null;
     /** The `LLMFormat` name. */
     provider?: string | null;
+    /**
+     * The request interception prompts inserted into the request; a value that is not a whole,
+     * nonnegative number is stored as null. A fixed column: summary metadata, kept with content off.
+     */
+    interceptions?: number | null;
 };
 
 /** The original bytes of exchange fields the caller already cut (a stream tee's bound). */
@@ -289,6 +294,7 @@ type SummaryRow = {
     profile_id: string | null;
     profile_name: string | null;
     provider: string | null;
+    interceptions: number | bigint | null;
     started_at: number | bigint;
     first_byte_at: number | bigint | null;
     completed_at: number | bigint | null;
@@ -308,7 +314,7 @@ type SummaryRow = {
 
 const SUMMARY_COLUMNS =
     "seq, id, job_id, source, mode, cha_id, chat_id, message_id, model_id, profile_id, profile_name, provider, " +
-    "started_at, first_byte_at, completed_at, status, http_status, provider_code, error IS NOT NULL AS has_error, " +
+    "interceptions, started_at, first_byte_at, completed_at, status, http_status, provider_code, error IS NOT NULL AS has_error, " +
     "request_bytes, response_bytes, content, exchange_count, exchanges_stored, truncation, shared_at, bytes";
 
 function nullableNumber(value: number | bigint | null): number | null {
@@ -333,6 +339,7 @@ function toSummary(row: SummaryRow): RequestHistorySummary {
         profileId: row.profile_id,
         profileName: row.profile_name,
         provider: row.provider,
+        interceptions: nullableNumber(row.interceptions),
         startedAt: Number(row.started_at),
         firstByteAt: nullableNumber(row.first_byte_at),
         completedAt: nullableNumber(row.completed_at),
@@ -470,17 +477,17 @@ export function createRequestHistory(options: {
         return {
             insert: open.prepare(
                 "INSERT INTO requests (id, job_id, source, mode, cha_id, chat_id, message_id, model_id, profile_id, profile_name, provider, " +
-                    "started_at, status, content, prompt, truncation, bytes) " +
+                    "interceptions, started_at, status, content, prompt, truncation, bytes) " +
                     "VALUES (:id, :jobId, :source, :mode, :chaId, :chatId, :messageId, :modelId, :profileId, :profileName, :provider, " +
-                    ":startedAt, 'pending', :content, :prompt, :truncation, :bytes) ON CONFLICT(id) DO NOTHING",
+                    ":interceptions, :startedAt, 'pending', :content, :prompt, :truncation, :bytes) ON CONFLICT(id) DO NOTHING",
             ),
             row: open.prepare(
                 "SELECT seq, status, content, exchange_count, exchanges_stored, truncation, bytes, " +
-                    "model_id, profile_id, profile_name, provider, prompt IS NULL AS no_prompt FROM requests WHERE id = ?",
+                    "model_id, profile_id, profile_name, provider, interceptions, prompt IS NULL AS no_prompt FROM requests WHERE id = ?",
             ),
             describe: open.prepare(
                 "UPDATE requests SET model_id = :modelId, profile_id = :profileId, profile_name = :profileName, provider = :provider, " +
-                    "truncation = :truncation, bytes = :bytes WHERE seq = :seq",
+                    "interceptions = :interceptions, truncation = :truncation, bytes = :bytes WHERE seq = :seq",
             ),
             setPrompt: open.prepare("UPDATE requests SET prompt = ?, truncation = ?, bytes = ? WHERE seq = ?"),
             firstByte: open.prepare(
@@ -568,8 +575,15 @@ export function createRequestHistory(options: {
                     "started_at INTEGER NOT NULL, first_byte_at INTEGER, completed_at INTEGER, status TEXT NOT NULL, " +
                     "http_status INTEGER, provider_code TEXT, error TEXT, request_bytes INTEGER, response_bytes INTEGER, " +
                     "content INTEGER NOT NULL, prompt TEXT, exchange_count INTEGER NOT NULL DEFAULT 0, " +
-                    "exchanges_stored INTEGER NOT NULL DEFAULT 0, truncation TEXT, shared_at INTEGER, bytes INTEGER NOT NULL)",
+                    "exchanges_stored INTEGER NOT NULL DEFAULT 0, truncation TEXT, shared_at INTEGER, bytes INTEGER NOT NULL, " +
+                    "interceptions INTEGER)",
             );
+            // A file created before the column gains it here; the version stays, since an older
+            // server names its columns in every query and keeps working on the file.
+            const columns = open.prepare("PRAGMA table_info(requests)").all() as { name: string }[];
+            if (!columns.some((column) => column.name === "interceptions")) {
+                open.exec("ALTER TABLE requests ADD COLUMN interceptions INTEGER");
+            }
             open.exec("CREATE INDEX IF NOT EXISTS requests_job ON requests (job_id, seq)");
             open.exec("CREATE INDEX IF NOT EXISTS requests_chat ON requests (cha_id, chat_id, seq)");
             open.exec(
@@ -677,6 +691,7 @@ export function createRequestHistory(options: {
         profile_id: string | null;
         profile_name: string | null;
         provider: string | null;
+        interceptions: number | bigint | null;
         no_prompt: number | bigint;
     };
 
@@ -764,6 +779,7 @@ export function createRequestHistory(options: {
                         s.insert.run({
                             id,
                             ...fields,
+                            interceptions: size(summary.interceptions),
                             startedAt,
                             content: summary.content ? 1 : 0,
                             prompt,
@@ -848,6 +864,11 @@ export function createRequestHistory(options: {
                             previous);
                     s.describe.run({
                         ...next,
+                        // A fixed column (`REQUEST_HISTORY_ROW_OVERHEAD`): no bytes of its own.
+                        interceptions:
+                            model.interceptions === undefined
+                                ? nullableNumber(row.interceptions)
+                                : size(model.interceptions),
                         truncation: truncationJson,
                         bytes: Number(row.bytes) + delta,
                         seq: row.seq,

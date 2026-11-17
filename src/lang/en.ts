@@ -3886,6 +3886,8 @@ export const languageEnglish = {
         source: "Source",
         provider: "Provider",
         profile: "Profile",
+        interceptions: "Intercepted",
+        interceptedPrompts: (count: number) => `${count} ${count === 1 ? "prompt" : "prompts"}`,
         httpStatus: "HTTP status",
         providerCode: "Provider code",
         firstByte: "First byte",

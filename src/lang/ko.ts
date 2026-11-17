@@ -3843,6 +3843,8 @@ export const languageKorean = {
         source: "출처",
         provider: "제공자",
         profile: "연결 프로필",
+        interceptions: "요청 가로채기",
+        interceptedPrompts: (count: number) => `프롬프트 ${count}개`,
         httpStatus: "HTTP 상태",
         providerCode: "제공자 코드",
         firstByte: "첫 바이트 응답",

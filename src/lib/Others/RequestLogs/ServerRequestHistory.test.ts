@@ -76,6 +76,7 @@ function summary(id: string, jobId: string | null, over: Partial<RequestHistoryS
         profileId: null,
         profileName: null,
         provider: "OpenAI",
+        interceptions: null,
         startedAt: AT,
         firstByteAt: null,
         completedAt: AT + 1000,
@@ -158,6 +159,42 @@ async function open() {
     const badges = () => buttons().filter((b) => b.textContent?.includes(language.requestHistoryShared)).length;
     return { button, rowBox, expand, badges, text: () => target.textContent ?? "" };
 }
+
+describe("ServerRequestHistory: interception counts", () => {
+    it("shows Intercepted with the prompt count in expanded details, using singular for one", async () => {
+        deps.readRequestHistory.mockImplementation(async (id) =>
+            record(summary(id, null, { interceptions: id === REQ(1) ? 2 : 1 })),
+        );
+        const view = await open();
+        expect(view.text()).not.toContain("Intercepted");
+        for (const [id, text] of [
+            [REQ(1), "2 prompts"],
+            [REQ(2), "1 prompt"],
+        ] as const) {
+            await view.expand(id);
+            const labels = [...view.rowBox(id).querySelectorAll("span")].filter(
+                (span) => span.textContent?.trim() === "Intercepted",
+            );
+            expect(labels).toHaveLength(1);
+            expect(labels[0].nextElementSibling?.textContent?.trim()).toBe(text);
+        }
+    });
+
+    it("omits the Intercepted row from expanded details when the count is null or zero", async () => {
+        deps.readRequestHistory.mockImplementation(async (id) =>
+            record(summary(id, null, { interceptions: id === REQ(1) ? null : 0 })),
+        );
+        const view = await open();
+        for (const id of [REQ(1), REQ(2)]) {
+            await view.expand(id);
+            const box = view.rowBox(id);
+            // Confirm that the details loaded before asserting the row's absence.
+            expect(box.textContent).toContain(id);
+            expect(box.textContent).not.toContain("Intercepted");
+            expect(box.textContent).not.toContain("0 prompts");
+        }
+    });
+});
 
 describe("ServerRequestHistory: sharing for support", () => {
     it("shares a row's job by job id, marks every row the answer names, and offers Update and Withdraw (by job id) on them; a standalone row goes by request id", async () => {

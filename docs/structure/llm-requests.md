@@ -188,6 +188,9 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
   replacers and the `request` trigger (the server for every format it dispatches; the tab for its own Plugin and
   WebLLM). `start` messages lead in list order; `end` messages close it, before a last `assistant` entry (a prefill).
   Each attempt clones afresh: a retry holds one copy. The text is sent without CBS; `prompt.name` is a label only.
+- The server passes the number of interception messages it inserted, when positive, to `ctx.describe` as
+  `interceptions`, the request history row's count ([diagnostics](diagnostics.md)); the tab's own Plugin and WebLLM
+  requests have no row.
 - Slot routing is `resolveSlotProfile`'s on both runtimes ([slot resolver](#model-preset-slots)): a refusal fails the
   tab's attempt with `noRetry` and the server's before dispatch; no alternate profile is tried.
 - Memory-host requests pass the chat's captured `memoryProfileId` as the named `profileId`; without one they use the
