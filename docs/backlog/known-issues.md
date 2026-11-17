@@ -24,28 +24,12 @@ merge cannot see inside the JSON strings it stores.
 
 ## Contents
 
-- [backup-sync-hub](#backup-sync-hub) (1)
 - [chat-pipeline](#chat-pipeline) (2)
 - [chat-store](#chat-store) (1)
 - [memory](#memory) (1)
 - [persistence](#persistence) (1)
 - [structured-memory](#structured-memory) (3)
 - [translation](#translation) (2)
-
-## backup-sync-hub
-
-Guide: [Backups, Realm Hub](../structure/backup-sync-hub.md#known-hazards).
-
-- "Take snapshot" does not flush this tab's pending saves. `take` in
-  `src/lib/Setting/Pages/Storage/storageController.svelte.ts` calls `takeSnapshot` directly. Reproduced on 2026-11-17
-  (cross-check F17): with a theme edit whose save had failed once and was waiting in retry backoff, the snapshot
-  request reached the server while it still held the old value, and the action ended without an error or a notice
-  (it shows no success message either: the list refreshes). The edit stayed queued and was saved by a later flush.
-  The file backup flushed the same edit before it asked for its archive and named a refused chat note
-  (`backupRefusedNote` in `src/ts/drive/backuplocal.ts`). Read, not run: neither the snapshot nor the backup screen
-  says that composer and recovery drafts live in the browser and are in no server backup. A snapshot taken as a
-  safety point before a risky action can hold an older state than the screen shows. Suggested: flush and report
-  discarded and refused work before `takeSnapshot`, as the file backup does.
 
 ## chat-pipeline
 

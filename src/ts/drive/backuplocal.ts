@@ -197,10 +197,10 @@ async function streamToFile(
 /**
  * Uses the refusal banner's chat/order labels (`src/ts/storage/resourceSync.svelte.ts` `refusedItems`),
  * falling back to ids or unmatched report keys. Refused keys returned by a successful flush do not
- * stop the export; the warning says the archive holds the server's copy without those local changes.
- * A thrown flush refusal stops before export preparation.
+ * stop the backup; the warning says it holds the server's copy without those local changes.
+ * A snapshot supplies its own introduction because it is not an archive file.
  */
-function backupRefusedNote(refused: string[]): string {
+export function backupRefusedNote(refused: string[], intro = language.backupRefusedChanges): string {
     if (refused.length === 0) return "";
     const labels = new Map<string, string>();
     for (const item of refusedItems()) {
@@ -219,7 +219,7 @@ function backupRefusedNote(refused: string[]): string {
             }
         }
     }
-    return [language.backupRefusedChanges, ...refused.map((key) => `- ${labels.get(key) ?? key}`)].join("\n");
+    return [intro, ...refused.map((key) => `- ${labels.get(key) ?? key}`)].join("\n");
 }
 
 /**

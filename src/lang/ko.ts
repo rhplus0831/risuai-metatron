@@ -3750,6 +3750,9 @@ export const languageKorean = {
         pinned: "고정됨",
         unpinned: "고정 안 됨",
         takeSnapshot: "스냅샷 생성",
+        snapshotSaveFailed: (error: string) => `스냅샷 생성 전에 최신 변경 사항을 저장하지 못했습니다: ${error}`,
+        snapshotRefusedChanges:
+            "서버가 다음 항목의 로컬 변경 사항을 거부했습니다. 스냅샷에는 서버에 저장된 버전이 담겼으며 거부된 로컬 변경 사항은 포함되지 않았습니다:",
         pin: "고정",
         unpin: "고정 해제",
         label: "라벨",

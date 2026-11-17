@@ -3791,6 +3791,9 @@ export const languageEnglish = {
         pinned: "Pinned",
         unpinned: "Unpinned",
         takeSnapshot: "Take snapshot",
+        snapshotSaveFailed: (error: string) => `Could not save your latest changes before the snapshot: ${error}`,
+        snapshotRefusedChanges:
+            "The server refused local changes to the following items. This snapshot holds the server's copy and does not contain those local changes:",
         pin: "Pin",
         unpin: "Unpin",
         label: "Label",

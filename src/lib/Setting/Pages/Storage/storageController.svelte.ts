@@ -1,5 +1,5 @@
 import { language } from "src/lang";
-import { alertConfirm, alertNormalWait } from "src/ts/alert";
+import { alertConfirm, alertNormal, alertNormalWait } from "src/ts/alert";
 import {
     readStorageReport,
     readStorageStatus,
@@ -204,8 +204,27 @@ export class StorageController {
     take = () => {
         if (this.running) return;
         return this.runAction(async () => {
+            const { flushResources } = await import("src/ts/storage/resourceSync.svelte");
+            let discarded: string[];
+            let refused: string[];
+            try {
+                ({ discarded, refused } = await flushResources());
+            } catch (cause) {
+                throw new Error(language.storage.snapshotSaveFailed(this.message(cause)));
+            }
+            if (this.disposed) return;
+            const notes = [discarded.length > 0 ? language.backupDiscardedChanges : ""];
+            if (refused.length > 0) {
+                const { backupRefusedNote } = await import("src/ts/drive/backuplocal");
+                notes.push(backupRefusedNote(refused, language.storage.snapshotRefusedChanges));
+            }
+            if (this.disposed) return;
             await takeSnapshot(this.snapshotLabel || null);
-            if (!this.disposed) this.snapshotLabel = "";
+            if (!this.disposed) {
+                this.snapshotLabel = "";
+                const note = notes.filter(Boolean).join("\n\n");
+                if (note) alertNormal(note);
+            }
             await this.refreshSnapshots();
         });
     };

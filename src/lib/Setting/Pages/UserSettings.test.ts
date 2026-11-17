@@ -18,6 +18,7 @@ vi.mock(
             SaveUpstreamLocalBackup: vi.fn(),
             readFirstRecordName: vi.fn(),
             upstreamBackupFileName: vi.fn(),
+            backupRefusedNote: vi.fn<typeof import("src/ts/drive/backuplocal").backupRefusedNote>(),
         }) satisfies typeof import("src/ts/drive/backuplocal"),
 );
 vi.mock("src/ts/storage/exportAsDataset", () => ({ exportAsDataset: vi.fn() }));
