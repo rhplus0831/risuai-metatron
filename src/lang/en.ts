@@ -2588,6 +2588,8 @@ export const languageEnglish = {
     translationFailed: "Translation failed",
     translationSourceChanged: "The message changed while it was being translated. Translate it again.",
     translationEditStale: "The message changed since the translation editor opened. The translation was not saved.",
+    messageEditorChangedElsewhere: "This message changed elsewhere. Saving will overwrite that change.",
+    translationEditorChangedElsewhere: "This translation changed elsewhere. Saving will overwrite that change.",
     translationNoContext: "This chat has no preset, model preset, or persona to translate with.",
     togglePresets: {
         title: "Toggle preset",

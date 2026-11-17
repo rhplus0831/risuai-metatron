@@ -962,6 +962,43 @@ describe("the stored path: the full editor", () => {
         expect(hoisted.alerts.error).toHaveBeenCalledTimes(1);
     });
 
+    it("retains a stored translation draft across remounts and warns before overwriting an outside change", async () => {
+        const { held, hydrate } = boot("translation-draft", { autoTranslate: true, translation: tr("Stored", "A") });
+        settings.ui.disableAutoPopupMessageEditor = true;
+        let ui = render();
+        await ui.expectText("Stored");
+        ui.click(ui.button(language.editTranslation));
+        ui.textarea()!.value = "My translation";
+        ui.textarea()!.dispatchEvent(new Event("input", { bubbles: true }));
+        flushSync();
+        ui = ui.remount();
+        expect(ui.textarea()?.value).toBe("My translation");
+        hydrate("a", tr("Changed elsewhere", "A"));
+        flushSync();
+        expect(ui.textarea()!.value).toBe("My translation");
+        expect(ui.target.textContent).toContain(language.translationEditorChangedElsewhere);
+        ui = ui.remount();
+        expect(ui.textarea()?.value).toBe("My translation");
+        expect(ui.target.textContent).toContain(language.translationEditorChangedElsewhere);
+        ui.click(ui.button(language.editTranslationSave));
+        await tick();
+        flushSync();
+        expect(held()!.translation).toMatchObject({ text: "My translation", edited: true });
+        expect(ui.textarea()).toBeNull();
+        expect(ui.target.textContent).not.toContain(language.translationEditorChangedElsewhere);
+        await ui.expectText("My translation");
+        ui.click(ui.button(language.editTranslation));
+        ui.textarea()!.value = "Discard this";
+        ui.textarea()!.dispatchEvent(new Event("input", { bubbles: true }));
+        flushSync();
+        ui.click(ui.button(language.cancel));
+        ui = ui.remount();
+        await ui.expectText("My translation");
+        expect(ui.textarea()).toBeNull();
+        ui.click(ui.button(language.editTranslation));
+        expect(ui.textarea()!.value).toBe("My translation");
+    });
+
     it("an open editor keeps its Save and Cancel when the settings switch to the rendered path meanwhile, and saves to the target it opened on", async () => {
         const { held } = boot("k8", { autoTranslate: true, translation: tr("ㄱ", "A") });
         const ui = render();

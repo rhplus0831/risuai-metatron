@@ -2485,6 +2485,8 @@ export const languageKorean = {
     translationFailed: "번역 실패",
     translationSourceChanged: "번역하는 도중 메시지 원문이 변경되었습니다. 다시 번역해 주세요.",
     translationEditStale: "번역 편집기를 연 사이에 메시지 원문이 변경되어 수정 사항을 저장하지 않았습니다.",
+    messageEditorChangedElsewhere: "이 메시지가 다른 곳에서 변경되었습니다. 저장하면 그 변경을 덮어씁니다.",
+    translationEditorChangedElsewhere: "이 번역이 다른 곳에서 변경되었습니다. 저장하면 그 변경을 덮어씁니다.",
     translationNoContext: "이 채팅에 번역에 필요한 프리셋, 모델 프리셋 또는 페르소나가 지정되어 있지 않습니다.",
     togglePresets: {
         title: "토글 프리셋",

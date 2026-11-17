@@ -93,7 +93,17 @@ vi.mock("src/ts/gui/longtouch", () => ({
 
 import { ParseMarkdown, risuChatParserForDisplay } from "src/ts/parser/parser.svelte";
 import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
-import { assembleChats, findChat, seedChats, selectChat, setMessageText } from "src/ts/storage/chatStore.svelte";
+import {
+    acceptRemoteChat,
+    assembleChats,
+    createChat,
+    deleteChat,
+    findChat,
+    removeMessages,
+    seedChats,
+    selectChat,
+    setMessageText,
+} from "src/ts/storage/chatStore.svelte";
 import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { language } from "src/lang";
@@ -107,6 +117,7 @@ import {
 import Chat from "./Chat.svelte";
 
 const ref = { chaId: "c", chatId: "draft-chat" };
+const editorDraftsPath = "src/ts/storage/messageEditorDrafts.svelte";
 const mounted: ReturnType<typeof mount>[] = [];
 function render(theme = "", overrides: { message?: string; idx?: number; isComment?: boolean } = {}) {
     installFlatDatabase({
@@ -151,12 +162,16 @@ function render(theme = "", overrides: { message?: string; idx?: number; isComme
     assembleChats([{ chaId: "c" }] as never, listed, orders);
     selectCharacter("c");
     selectChat("c", ref.chatId);
+    return mountRow(overrides);
+}
+
+function mountRow(overrides: { message?: string; idx?: number; isComment?: boolean } = {}) {
     const target = document.createElement("div");
     document.body.append(target);
     const instance = mount(Chat, {
         target,
         props: {
-            message: "Original",
+            message: findChat(ref)!.message[0].data,
             messageId: "a",
             idx: 0,
             isLastMemory: false,
@@ -181,7 +196,33 @@ function render(theme = "", overrides: { message?: string; idx?: number; isComme
     };
     const text = () => target.querySelector(".chattext")?.textContent?.trim();
     const stored = () => findChat(ref)!.message[0].data;
-    return { target, instance, toggle, textarea, type, text, stored };
+    return {
+        target,
+        instance,
+        toggle,
+        textarea,
+        type,
+        text,
+        stored,
+        remount: async () => {
+            await unmount(instance);
+            mounted.splice(mounted.indexOf(instance), 1);
+            target.remove();
+            return mountRow(overrides);
+        },
+        destroy: async () => {
+            await unmount(instance);
+            mounted.splice(mounted.indexOf(instance), 1);
+            target.remove();
+        },
+    };
+}
+
+function outsideEdit(text: string) {
+    const data = safeStructuredClone(findChat(ref)) as ChatRecord;
+    data.message[0].data = text;
+    acceptRemoteChat({ characterId: ref.chaId, id: ref.chatId, revision: "remote:2", data });
+    flushSync();
 }
 
 beforeEach(() => {
@@ -293,8 +334,49 @@ describe("original message draft", () => {
         },
     );
 
+    it("retains an open draft and its overwrite notice across an outside edit and row remount, then saves it", async () => {
+        let ui = render();
+        settings.ui.disableAutoPopupMessageEditor = true;
+        ui.toggle();
+        ui.type("My revision");
+        outsideEdit("Revision from another tab");
+        expect(ui.textarea().value).toBe("My revision");
+        ui = await ui.remount();
+        expect(ui.textarea()?.value).toBe("My revision");
+        expect(ui.target.textContent).toContain(language.messageEditorChangedElsewhere);
+        ui.toggle();
+        await tick();
+        flushSync();
+        expect(ui.stored()).toBe("My revision");
+        expect(ui.textarea()).toBeNull();
+        expect(ui.target.textContent).not.toContain(language.messageEditorChangedElsewhere);
+        const { findMessageEditorDraft } = await import(editorDraftsPath);
+        expect(findMessageEditorDraft(ref, "a", "message")).toBeUndefined();
+    });
+
+    it("drops retained drafts when their message or chat is deleted without a mounted row", async () => {
+        for (const removal of ["message", "chat"]) {
+            let ui = render();
+            settings.ui.disableAutoPopupMessageEditor = true;
+            ui.toggle();
+            ui.type("Kept until deletion");
+            ui = await ui.remount();
+            expect(ui.textarea()?.value).toBe("Kept until deletion");
+            await ui.destroy();
+            const { findMessageEditorDraft } = await import(editorDraftsPath);
+            expect(findMessageEditorDraft(ref, "a", "message")?.text).toBe("Kept until deletion");
+            if (removal === "message") removeMessages(ref, ["a"]);
+            else {
+                createChat(ref.chaId, { ...safeStructuredClone(findChat(ref))!, id: "spare", message: [] });
+                deleteChat(ref);
+            }
+            flushSync();
+            expect(findMessageEditorDraft(ref, "a", "message")).toBeUndefined();
+        }
+    });
+
     it("long-press cancel preserves the draft for reopening without storing or displaying it", async () => {
-        const ui = render();
+        let ui = render();
         await ui.instance.whenRendered();
         expect(ui.text()).toBe("Original");
         ui.toggle();
@@ -307,8 +389,18 @@ describe("original message draft", () => {
         expect(ui.stored()).toBe("Original");
         await ui.instance.whenRendered();
         expect(ui.text()).toBe("Original");
+        ui = await ui.remount();
+        await ui.instance.whenRendered();
+        expect(ui.textarea()).toBeNull();
+        expect(ui.text()).toBe("Original");
+        outsideEdit("Changed elsewhere after cancel");
+        ui = await ui.remount();
+        await ui.instance.whenRendered();
+        expect(ui.textarea()).toBeNull();
+        expect(ui.text()).toBe("Changed elsewhere after cancel");
         ui.toggle();
         expect(ui.textarea().value).toBe("Unsent draft");
+        expect(ui.target.textContent).toContain(language.messageEditorChangedElsewhere);
         expect(setMessageText).not.toHaveBeenCalled();
         ui.toggle();
         await tick();

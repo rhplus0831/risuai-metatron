@@ -25,7 +25,6 @@ merge cannot see inside the JSON strings it stores.
 ## Contents
 
 - [chat-pipeline](#chat-pipeline) (2)
-- [chat-store](#chat-store) (1)
 - [persistence](#persistence) (1)
 - [structured-memory](#structured-memory) (1)
 
@@ -49,27 +48,6 @@ Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-
   `/speak Hello | /send Next`, a second press of Send while it waited stored `Next` twice (two user messages, no
   second model request). The control, an ordinary send, kept the newer typing and refused the second Send. Suggested:
   reserve the chat before the first await and clear the input only when it still holds the submitted text.
-
-## chat-store
-
-Guide: [Chat Store: Chat Module, Write Protocol, Checkpoints](../structure/chat-store.md#known-hazards).
-
-- An open message or translation editor loses its text when its row is mounted again. The editor's draft is
-  component state of the row (`draft` in `src/lib/ChatScreens/Chat.svelte`), and the row's mount key holds the stored
-  message text (`MountKey` in `src/lib/ChatScreens/Chats.svelte`). Reproduced on 2026-11-17 (cross-check F5) on the
-  mounted chat screen, three cases: an outside change of the edited message's text replaced the typed text with the
-  new stored text; destroying the chat screen and mounting it again, which is what a visit to Settings does
-  (`src/App.svelte` replaces the screen; read, the probe did not mount `App`), brought the editor back with the
-  stored text; and the stored-translation editor lost its text the same way. The composer's draft survived the same
-  remount through its journal, and an outside change of another message left the editor alone. `isEditing` protects
-  an open editor only from the row trim and from containment. A long manual edit is lost with no recovery draft.
-  Suggested: keep editor drafts outside the row, keyed by character, chat and message. Leaving the text out of the
-  mount key while `isEditing` is true would close only the first case. The owner's decision of 2026-11-08 accepted a
-  behavior the code did not have and was made again. Decision: owner, 2026-11-17: fix it. Editor text is kept in memory
-  outside the row and returns when the row is mounted again; it need not survive a reload or a closed app. When
-  another device changes the edited message, the typed text stays, a notice says the message changed elsewhere, and
-  a save overwrites; the translation editor shows the same notice when the stored translation changes under it
-  (cross-check F4). Not yet fixed.
 
 ## persistence
 

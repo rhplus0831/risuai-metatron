@@ -18,6 +18,12 @@
 
 <script lang="ts">
     import { chatEntry } from "src/ts/storage/chatStore.svelte";
+    import {
+        closeMessageEditorDraft,
+        findMessageEditorDraft,
+        openMessageEditorDraft,
+        type MessageEditorDraft,
+    } from "src/ts/storage/messageEditorDrafts.svelte";
     import { chatMemoryAlgorithm, chatMemoryEnabled } from "../../../shared/chatMemory.ts";
     import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
     import { tick } from "svelte";
@@ -165,12 +171,9 @@
 
     let translating = $state(false);
     let editMode = $state(false);
-    /**
-     * Both original-message editors bind this draft, not `message`: opening fills it from the message (unless a
-     * cancelled one is left), and a save clears it. A long-press cancel keeps it for reopening and never changes
-     * the message, its display, the partial editor's source, or storage.
-     */
-    let draft: string | null = $state(null);
+    /** Both original-message editors share the tab's draft; cancel closes it but retains changed text for reopening. */
+    let messageDraft = $state<MessageEditorDraft>();
+    let draft = $derived(messageDraft?.text ?? null);
     /**
      * An original or translation editor is open (or loading): `Chats.svelte` neither trims this row away nor
      * contains it meanwhile.
@@ -183,6 +186,7 @@
     let editTranslationMode = $state(false);
     let loadingTranslationEdit = $state(false);
     let editTranslationText = $state("");
+    let translationDraft = $state<MessageEditorDraft>();
     /** What the open translation editor writes back to: a rendered translation's cache key, or a stored translation. */
     let editTranslationTarget: { kind: "cache"; key: string } | { kind: "stored"; edit: StoredTranslationEdit } | null =
         null;
@@ -275,12 +279,34 @@
         pendingReveal = false,
     }: Props = $props();
 
+    untrack(() => {
+        if (!chatRef || !messageId) return;
+        messageDraft = findMessageEditorDraft(chatRef, messageId, "message");
+        editMode = messageDraft?.open ?? false;
+        translationDraft = findMessageEditorDraft(chatRef, messageId, "translation");
+        if (translationDraft?.open && translationDraft.translation) {
+            editTranslationTarget = { kind: "stored", edit: translationDraft.translation };
+            editTranslationText = translationDraft.text;
+            editTranslationMode = true;
+        }
+    });
+
+    const editedMessage = $derived(chatRef && messageId ? heldMessage(chatRef, messageId) : undefined);
+    const messageChangedElsewhere = $derived(
+        !!messageDraft && !!editedMessage && editedMessage.data !== messageDraft.base,
+    );
+    const translationChangedElsewhere = $derived(
+        !!translationDraft && JSON.stringify(editedMessage?.translation) !== translationDraft.base,
+    );
+
     let autoPopupMessageEditorAttempted = false;
     let autoPopupTranslationEditorAttempted = false;
     let autoPopupMessageEditorRun = 0;
     let autoPopupTranslationEditorRun = 0;
     let activeAutoPopupMessageSessionId: number | null = null;
     let activeAutoPopupTranslationSessionId: number | null = null;
+    let retainPopupMessageDraft: (() => void) | undefined;
+    let retainPopupTranslationDraft: (() => void) | undefined;
     let popupEditorsDestroyed = false;
     let suppressAutoPopupTranslationEditor = $state(false);
     const autoPopupMessageEditor = $derived(
@@ -525,8 +551,8 @@
      * (`shouldAutoPopupMessageEditor`, off with `disableAutoPopupMessageEditor`). Closing the popup writes its
      * text to the draft and saves through `edit()`; a refused write keeps the inline editor open with the draft,
      * and the popup does not open again until edit mode is left. A changed message target (chat or message id), a
-     * changed draft, ended edit mode, a superseded popup session, or a destroyed row discards the popup's text and
-     * closes only this popup's own session.
+     * changed draft, ended edit mode, or a superseded popup session discards the popup's text. Unmounting keeps
+     * an owned popup's current text in the draft and closes only this popup's own session.
      */
     async function openAutoPopupMessageEditor() {
         if (activeAutoPopupMessageSessionId !== null || popUpEditorStore.open) return;
@@ -545,6 +571,11 @@
             draft === initialDraft &&
             (draft ?? message) === initialValue &&
             isCurrentMessageTarget(target);
+        retainPopupMessageDraft = () => {
+            if (editorIsCurrent() && isPopupEditorSessionCurrent(sessionId)) {
+                setOriginalDraft(popUpEditorStore.value);
+            }
+        };
 
         try {
             while (editorIsCurrent() && isPopupEditorSessionCurrent(sessionId) && popUpEditorStore.open) {
@@ -557,10 +588,13 @@
             }
             if (!isPopupEditorSessionCurrent(sessionId)) return;
 
-            draft = popUpEditorStore.value;
+            setOriginalDraft(popUpEditorStore.value);
             if (edit()) editMode = false;
         } finally {
-            if (activeAutoPopupMessageSessionId === sessionId) activeAutoPopupMessageSessionId = null;
+            if (activeAutoPopupMessageSessionId === sessionId) {
+                activeAutoPopupMessageSessionId = null;
+                retainPopupMessageDraft = undefined;
+            }
         }
     }
 
@@ -586,6 +620,11 @@
             editTranslationText === initialValue &&
             editTranslationTarget === target &&
             isCurrentMessageTarget(rowTarget);
+        retainPopupTranslationDraft = () => {
+            if (editorIsCurrent() && isPopupEditorSessionCurrent(sessionId)) {
+                setTranslationDraft(popUpEditorStore.value);
+            }
+        };
 
         try {
             while (editorIsCurrent() && isPopupEditorSessionCurrent(sessionId) && popUpEditorStore.open) {
@@ -599,10 +638,13 @@
             if (!isPopupEditorSessionCurrent(sessionId)) return;
 
             suppressAutoPopupTranslationEditor = true;
-            editTranslationText = popUpEditorStore.value;
+            setTranslationDraft(popUpEditorStore.value);
             await saveTranslationEdit();
         } finally {
-            if (activeAutoPopupTranslationSessionId === sessionId) activeAutoPopupTranslationSessionId = null;
+            if (activeAutoPopupTranslationSessionId === sessionId) {
+                activeAutoPopupTranslationSessionId = null;
+                retainPopupTranslationDraft = undefined;
+            }
         }
     }
 
@@ -704,14 +746,35 @@
             setMessageText(target.ref, target.id, draft ?? message);
         }
         message = draft ?? message;
-        draft = null;
+        if (target) closeMessageEditorDraft(target.ref, target.id, "message");
+        messageDraft = undefined;
+        editMode = false;
         return true;
     }
 
     function startOriginalEdit() {
         if (originalEditControlDisabled) return;
-        draft ??= message;
+        const target = messageTarget();
+        const initial = { text: message, base: message };
+        messageDraft = target
+            ? openMessageEditorDraft(target.ref, target.id, "message", initial)
+            : (messageDraft ?? { ...initial, open: true });
+        messageDraft.open = true;
         editMode = true;
+    }
+
+    function setOriginalDraft(value: string | null) {
+        if (messageDraft) messageDraft.text = value ?? "";
+    }
+
+    function cancelOriginalEdit() {
+        const target = messageTarget();
+        if (messageDraft) messageDraft.open = false;
+        if (draft === (editedMessage?.data ?? message)) {
+            if (target) closeMessageEditorDraft(target.ref, target.id, "message");
+            messageDraft = undefined;
+        }
+        editMode = false;
     }
 
     // Lua forms and interactive controls keep body clicks from opening the message editor.
@@ -908,8 +971,13 @@
             // Only a fresh stored translation is edited (the button is off without one).
             const edit = displayedChat && messageId ? beginStoredTranslationEdit(displayedChat, messageId) : null;
             if (!edit) return;
+            translationDraft = openMessageEditorDraft(edit.ref, edit.messageId, "translation", {
+                text: edit.base.text,
+                base: JSON.stringify(edit.base),
+                translation: edit,
+            });
             editTranslationTarget = { kind: "stored", edit };
-            editTranslationText = edit.base.text;
+            editTranslationText = translationDraft.text;
             editTranslationMode = true;
             return;
         }
@@ -931,8 +999,16 @@
 
     /** Closes the translation editor without writing. */
     function cancelTranslationEdit() {
+        const edit = translationDraft?.translation;
+        if (edit) closeMessageEditorDraft(edit.ref, edit.messageId, "translation");
+        translationDraft = undefined;
         editTranslationTarget = null;
         editTranslationMode = false;
+    }
+
+    function setTranslationDraft(value: string) {
+        editTranslationText = value;
+        if (translationDraft) translationDraft.text = value;
     }
 
     async function saveTranslationEdit() {
@@ -945,8 +1021,7 @@
         } else {
             await updateTranslationCache(target.key, editTranslationText);
         }
-        editTranslationTarget = null;
-        editTranslationMode = false;
+        cancelTranslationEdit();
     }
 
     /** The display CBS pre-pass of the row (`displaya`). */
@@ -1032,6 +1107,8 @@
     onDestroy(() => {
         clearSettledRender();
         if (shownTarget) releaseDisplayTransformSource(shownTarget.ref, shownTarget.id, shownOwner);
+        retainPopupMessageDraft?.();
+        retainPopupTranslationDraft?.();
         popupEditorsDestroyed = true;
         if (activeAutoPopupMessageSessionId !== null) {
             closePopupEditorSession(activeAutoPopupMessageSessionId);
@@ -1349,8 +1426,11 @@
 
 {#snippet textBox()}
     {#if editTranslationMode}
+        {#if translationChangedElsewhere}
+            <div class="text-sm text-textcolor2 mb-2" role="status">{language.translationEditorChangedElsewhere}</div>
+        {/if}
         <AutoresizeArea
-            bind:value={editTranslationText}
+            bind:value={() => editTranslationText, setTranslationDraft}
             popupEditor
             ariaLabel={language.editTranslation}
             stableHeight={useStableTranslationEditor}
@@ -1360,14 +1440,13 @@
         />
     {/if}
     {#if editMode}
+        {@render messageEditorNotice()}
         <AutoresizeArea
-            bind:value={draft}
+            bind:value={() => draft, setOriginalDraft}
             popupEditor
             ariaLabel={language.input}
             stableHeight={useStableMessageEditor}
-            handleLongPress={() => {
-                editMode = false;
-            }}
+            handleLongPress={cancelOriginalEdit}
         />
     {:else if isComment}
         <div class="w-full flex justify-center text-textcolor2 italic mb-12">
@@ -1457,6 +1536,12 @@
                 on:save={handlePartialEditSave}
             />
         {/if}
+    {/if}
+{/snippet}
+
+{#snippet messageEditorNotice()}
+    {#if messageChangedElsewhere}
+        <div class="text-sm text-textcolor2 mb-2" role="status">{language.messageEditorChangedElsewhere}</div>
     {/if}
 {/snippet}
 
@@ -2328,9 +2413,10 @@
                             </h2>
                         </div>
                         {#if editMode}
+                            {@render messageEditorNotice()}
                             <textarea
                                 class="grow h-138 sm:h-96 overflow-y-auto bg-transparent text-black p-2 mb-2 resize-none message-edit-area"
-                                bind:value={draft}></textarea>
+                                bind:value={() => draft, setOriginalDraft}></textarea>
                         {:else}
                             <div class="grow h-138 sm:h-96 overflow-y-auto p-2 mb-2 sm:mb-0">
                                 {@render textBox()}
