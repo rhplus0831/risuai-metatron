@@ -106,13 +106,14 @@ export async function exportUserPersona() {
 /**
  * Imports a persona PNG (its `persona` tEXt chunk). It saves the PNG as the icon first, then adds the persona under a
  * fresh id to the live list (`addPersona`), so a collection another client replaced meanwhile keeps both the new list
- * and the icon. The imported persona is not picked.
+ * and the icon. The imported persona is not picked. Returns the id `addPersona` gave it, or `null` when no persona was
+ * added: no file picked, no persona chunk, a missing name or prompt (reported as `noData`), or an error (reported).
  */
-export async function importUserPersona() {
+export async function importUserPersona(): Promise<string | null> {
     try {
         const v = await selectSingleFile(["png"]);
         if (!v) {
-            return;
+            return null;
         }
         const readGenerator = PngChunk.readGenerator(v.data);
         let decoded: string | undefined;
@@ -126,13 +127,13 @@ export async function importUserPersona() {
 
         if (!decoded) {
             alertError(language.errors.noData);
-            return;
+            return null;
         }
         const data: PersonaCard = JSON.parse(Buffer.from(decoded, "base64").toString("utf-8"));
         if (data.name && data.personaPrompt) {
             // The image first: the collection can be replaced meanwhile, so the add reads the live list.
             const icon = await saveImage(await reencodeImage(v.data));
-            addPersona({
+            const id = addPersona({
                 name: data.name,
                 icon,
                 personaPrompt: data.personaPrompt,
@@ -140,11 +141,12 @@ export async function importUserPersona() {
                 id: newPersonaId(),
             });
             alertNormal(language.successImport);
-        } else {
-            alertError(language.errors.noData);
+            return id;
         }
+        alertError(language.errors.noData);
+        return null;
     } catch (error) {
         alertError(error);
-        return;
+        return null;
     }
 }

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { flushSync, mount, unmount } from "svelte";
+import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The persona page binds the selected persona through `activePersona`. The large-portrait checkbox
@@ -8,6 +8,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // resolves to (the first one when the selection names none), where `activePersona`'s setter would
 // drop the write. The name and description inputs write the selected persona through the view, and
 // follow a selection change.
+
+// happy-dom cannot drag: capture the grid and invoke a drop after moving its actual tiles.
+const sortables = vi.hoisted(() => [] as { el: HTMLElement; options: { onEnd: () => Promise<void> } }[]);
+vi.mock("sortablejs/modular/sortable.core.esm.js", () => ({
+    default: {
+        create: (el: HTMLElement, options: { onEnd: () => Promise<void> }) => {
+            sortables.push({ el, options });
+            return { destroy: vi.fn() };
+        },
+    },
+}));
 
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/characters", () => ({ getCharImage: vi.fn(async () => "") }));
@@ -35,8 +46,10 @@ vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: str
 
 import { language } from "src/lang";
 import { alertConfirm, alertSelect } from "src/ts/alert";
+import { importUserPersona } from "src/ts/persona";
 import { chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
 import { chatEntry, selectChat } from "src/ts/storage/chatStore.svelte";
+import { addPersona } from "src/ts/storage/collectionStore.svelte";
 import type { Database } from "src/ts/storage/database.svelte";
 import { selectCharacter, selection, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { activePersona, editedPersona, settings } from "src/ts/storage/settingsViews.svelte";
@@ -221,11 +234,11 @@ describe("PersonaSettings with a chat open", () => {
 
     function renderPage() {
         const page = render();
-        const grid = () => [...page.target.querySelectorAll<HTMLButtonElement>("button[data-risu-idx]")];
+        const grid = () => [...page.target.querySelectorAll<HTMLButtonElement>("button[data-risu-id]")];
         const ringed = () =>
             grid()
                 .filter((button) => button.querySelector(".ring-3"))
-                .map((button) => settings.personas[Number(button.dataset.risuIdx)].id);
+                .map((button) => button.dataset.risuId!);
         const addButton = () => page.target.querySelector<HTMLButtonElement>("button.rounded-full")!;
         const removeButton = () =>
             [...page.target.querySelectorAll("button")].find(
@@ -348,6 +361,7 @@ describe("PersonaSettings with a chat open", () => {
     });
 
     it("deleting the shown persona (the tab's) names the chats bound to it, leaves them bound, and moves the tab's selection", async () => {
+        settings.personaFolders = [{ id: "filed", name: "Filed", data: ["p2"] }];
         // The tab shows the chat's `Bob`, which chat `k` binds.
         selectPersona("p2");
         const page = renderPage();
@@ -359,6 +373,7 @@ describe("PersonaSettings with a chat open", () => {
         flushSync();
         expect(alertConfirm).toHaveBeenLastCalledWith(`${language.removeConfirm}Bob\n\n${strings.usedByChats(1)}`);
         expect(settings.personas.map((persona) => persona.id)).toEqual(["p1", "p3"]);
+        expect(settings.personaFolders).toEqual([{ id: "filed", name: "Filed", data: [] }]);
         // The chat keeps the id (shown as deleted); the tab's selection moves to the first remaining one.
         expect(chatEntry(refK)).toMatchObject({ bindedPersona: "p2" });
         expect(selection.personaId).toBe("p1");
@@ -376,6 +391,199 @@ describe("PersonaSettings with a chat open", () => {
         expect(selection.personaId).toBe("p3");
         expect(chatEntry(refK)).toMatchObject({ bindedPersona: "p2" });
     });
+});
+
+describe("PersonaSettings folders", () => {
+    const ids = ["root-a", "folder-a", "other", "root-b", "folder-b", "root-c"];
+    const folders = () => [
+        { id: "z", name: "Zeta", data: ["folder-b", "folder-a"] },
+        { id: "a", name: "Alpha", data: ["other", "folder-a"] },
+    ];
+
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        sortables.length = 0;
+        installFlatDatabaseWithChats({
+            characters: [
+                {
+                    chaId: "c",
+                    type: "character",
+                    name: "C",
+                    chats: [{ id: "k", name: "K", message: [], bindedPersona: "root-a" }],
+                },
+            ],
+            personas: ids.map((id) => ({ id, name: id, icon: "", note: "", personaPrompt: `Prompt for ${id}` })),
+            personaFolders: folders(),
+        });
+        selectCharacter(null);
+        selectPersona("root-b");
+    });
+
+    afterEach(() => {
+        selectCharacter(null);
+        vi.clearAllTimers();
+        vi.useRealTimers();
+    });
+
+    async function settleGrid() {
+        flushSync();
+        await tick();
+        // The page rebuilds Sortable after its own sleep(1); no wall-clock wait or polling.
+        await vi.advanceTimersByTimeAsync(1);
+        flushSync();
+    }
+
+    function renderFolders() {
+        const page = render();
+        const shownIds = () =>
+            [...page.target.querySelectorAll<HTMLButtonElement>("button[data-risu-id]")].map(
+                (button) => button.dataset.risuId,
+            );
+        const tiles = () =>
+            [...sortables.at(-1)!.el.children].map(
+                (tile) =>
+                    tile.getAttribute("data-risu-id") ??
+                    tile.getAttribute("aria-label") ??
+                    tile.querySelector("span")?.textContent?.trim() ??
+                    "add",
+            );
+        const openFolder = async (name: string) => {
+            const button = [...page.target.querySelectorAll<HTMLButtonElement>("button.no-sort")].find(
+                (button) => button.querySelector("span")?.textContent?.trim() === name,
+            );
+            expect(button, `Folder tile ${name}`).toBeDefined();
+            button!.click();
+            await settleGrid();
+        };
+        return { ...page, shownIds, tiles, openFolder };
+    }
+
+    function chooseFolder(select: HTMLSelectElement, value: string) {
+        select.value = value;
+        // Svelte reads :checked on change; happy-dom needs the selectedIndex shim.
+        const querySelector = select.querySelector.bind(select);
+        (select as { querySelector: unknown }).querySelector = (selector: string) =>
+            selector === ":checked" ? (select.options[select.selectedIndex] ?? null) : querySelector(selector);
+        try {
+            select.dispatchEvent(new Event("change", { bubbles: true }));
+        } finally {
+            delete (select as { querySelector?: unknown }).querySelector;
+        }
+        flushSync();
+    }
+
+    it("a drop inside a folder reorders only its shown personas, keeping all outsiders in place and folders unchanged", async () => {
+        const page = renderFolders();
+        expect(page.tiles()).toEqual(["Alpha", "Zeta", "root-a", "root-b", "root-c", "add"]);
+        await page.openFolder("Zeta");
+        // Membership follows stored folder order, and persona order follows the list, not folder.data.
+        expect(page.tiles()).toEqual([`${language.itemFolders.back}: Zeta`, "folder-a", "folder-b", "add"]);
+
+        const { el, options } = sortables.at(-1)!;
+        el.insertBefore(
+            el.querySelector('button[data-risu-id="folder-b"]')!,
+            el.querySelector('button[data-risu-id="folder-a"]')!,
+        );
+        const ended = options.onEnd();
+        await settleGrid();
+        await ended;
+
+        expect(settings.personas.map((persona) => persona.id)).toEqual([
+            "root-a",
+            "folder-b",
+            "other",
+            "root-b",
+            "folder-a",
+            "root-c",
+        ]);
+        expect(settings.personaFolders).toEqual(folders());
+        expect(page.shownIds()).toEqual(["folder-b", "folder-a"]);
+
+        page.target
+            .querySelector<HTMLButtonElement>(`button[aria-label="${language.itemFolders.back}: Zeta"]`)!
+            .click();
+        await settleGrid();
+        expect(page.tiles()).toEqual(["Alpha", "Zeta", "root-a", "root-b", "root-c", "add"]);
+        await page.openFolder("Alpha");
+        expect(page.shownIds()).toEqual(["other"]);
+    });
+
+    it("the Folder select files the edited persona and can return it to no folder without changing any persona", async () => {
+        selectCharacter("c");
+        selectChat("c", "k");
+        selectPersona("folder-a");
+        const before = JSON.parse(JSON.stringify(settings.personas));
+        const page = renderFolders();
+        await page.openFolder("Alpha");
+        const select = page.target.querySelector<HTMLSelectElement>(
+            `select[aria-label="${language.itemFolders.folder}"]`,
+        )!;
+        expect([...select.options].map((option) => [option.value, option.textContent?.trim()])).toEqual([
+            ["a", "Alpha"],
+            ["z", "Zeta"],
+            ["", language.itemFolders.noFolder],
+        ]);
+        expect(select.value).toBe("z");
+        expect(activePersona.id).toBe("root-a");
+        expect(editedPersona.id).toBe("folder-a");
+
+        chooseFolder(select, "a");
+        expect(settings.personaFolders).toEqual([
+            { id: "z", name: "Zeta", data: ["folder-b"] },
+            { id: "a", name: "Alpha", data: ["other", "folder-a"] },
+        ]);
+        expect(page.shownIds()).toEqual(["folder-a", "other"]);
+
+        selectPersona("other");
+        flushSync();
+        expect(select.value).toBe("a");
+        chooseFolder(select, "");
+        expect(settings.personaFolders).toEqual([
+            { id: "z", name: "Zeta", data: ["folder-b"] },
+            { id: "a", name: "Alpha", data: ["folder-a"] },
+        ]);
+        expect(page.shownIds()).toEqual(["folder-a"]);
+        expect(settings.personas).toEqual(before);
+        expect(chatEntry({ chaId: "c", chatId: "k" })).toMatchObject({ bindedPersona: "root-a" });
+    });
+
+    it.each(["create", "import"] as const)(
+        "lists a persona added with %s in the open folder, selecting only a created one",
+        async (action) => {
+            const page = renderFolders();
+            await page.openFolder("Zeta");
+            vi.mocked(alertSelect).mockResolvedValueOnce(action === "create" ? "0" : "1");
+            if (action === "import") {
+                vi.mocked(importUserPersona).mockImplementationOnce(async () =>
+                    addPersona({
+                        id: "imported",
+                        name: "Imported",
+                        icon: "",
+                        note: "",
+                        personaPrompt: "Imported prompt",
+                    }),
+                );
+            }
+
+            page.target.querySelector<HTMLButtonElement>("button.rounded-full")!.click();
+            await settleGrid();
+            const added = settings.personas.filter((persona) => !ids.includes(persona.id));
+            expect(added).toHaveLength(1);
+            expect(added[0].name).toBe(action === "create" ? "New Persona" : "Imported");
+            expect(settings.personaFolders).toEqual([
+                { id: "z", name: "Zeta", data: ["folder-b", "folder-a", added[0].id] },
+                { id: "a", name: "Alpha", data: ["other", "folder-a"] },
+            ]);
+            expect(page.tiles()).toEqual([
+                `${language.itemFolders.back}: Zeta`,
+                "folder-a",
+                "folder-b",
+                added[0].id,
+                "add",
+            ]);
+            expect(selection.personaId).toBe(action === "create" ? added[0].id : "root-b");
+        },
+    );
 });
 
 // The Module Link section: the linkable list is the catalog's non-MCP modules with a non-blank id,

@@ -150,6 +150,9 @@ mechanisms register). Then comes one section per mechanism with a rule between, 
   of the chat's Draft hook panel ([UI](ui-theming.md#sidebar)).
 - A Draft hook's card also has the Translation mode checkbox, which writes `translation: true` or removes the key
   ([translation](translation.md#send-hand-off)).
+- `personaGrid.ts` holds `reorderShown`, the reorder rule of the persona grid, which shows the root or one persona
+  folder: the shown personas take, in their new order, the list positions they held, and every other persona keeps its
+  position. The page and its folders belong to [characters-modules](characters-modules.md#personas-and-conversion).
 - Other handwritten pages: `PromptSettings`, `OobaSettings`, `OpenrouterSettings`, `UserSettings`, `ThanksPage`,
   `UpstreamImportReport`, `Advanced/BanCharacterSetSettings`, `Display/*`, and `Device/*`.
 

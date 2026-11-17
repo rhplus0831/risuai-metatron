@@ -73,8 +73,17 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 - `src/ts/interchangeability.ts`: module, character, and persona conversions (`convertModuleToCharacter`,
   `convertCharacterToModule`, `convertPersonaToModule`, and the rest).
 - `src/ts/persona.ts`: `changeUserPersona(id, target)` (through `pickBinding`, `src/ts/storage/chatBindingPick.ts`: a
-  `ChatRef` binds that chat, `null` selects for the tab), `selectUserImg`, `exportUserPersona`/`importUserPersona`.
-- `src/lib/Setting/Pages/PersonaSettings.svelte` (the persona editor) and `src/lib/Setting/listedPersona.svelte`.
+  `ChatRef` binds that chat, `null` selects for the tab), `selectUserImg`, `exportUserPersona`/`importUserPersona`
+  (returns the new persona's id, or null on every path that adds none).
+- `src/lib/Setting/Pages/PersonaSettings.svelte` (the persona grid and editor) and
+  `src/lib/Setting/listedPersona.svelte`. The grid shows one view of the persona folders at a time: the root (folder
+  tiles by name, then the personas in no folder in list order, then the add tile) or one open folder (`openFolderId`: a
+  back tile, its personas in list order, the add tile). The page opens at the root and returns there when the open
+  folder disappears.
+- A persona folder tile shows the name, the member count, and the selection ring when it holds the tab's selected
+  persona. The editor's Folder select files the shown persona (`moveItemToFolder` for `editedPersonaRecord()` at the
+  change), next to New folder and, in a folder view, Rename and Delete folder (the personas stay). The reorder rule is
+  `reorderShown` in `src/lib/Setting/Pages/personaGrid.ts` ([settings](settings-i18n.md#pages)).
 
 ### Character editor
 
@@ -303,6 +312,14 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
 - `removePersona` (`collectionStore.svelte.ts`) is the store's deletion: it refuses the last persona, moves the tab's
   selection off the deleted one first, and takes the id out of `personaFolders` in the same batch. The folder record and
   the item record save apart, so a deletion that saves alone leaves a stale member id, which the read rules ignore.
+- The persona grid's Sortable sees one view's tiles only: persona tiles carry `data-risu-id`, and the folder, back, and
+  add tiles carry `no-sort` (with `preventOnFilter: false`, so they keep their click). `onEnd` assigns
+  `reorderShown(settings.personas, shownIds)` once: the shown personas take, in their new order, the list positions they
+  held, and every persona not shown keeps its position, so a drag inside a folder never moves a root persona and never
+  changes a folder. A view change rebuilds the grid (`{#key sorted}`) and its Sortable as a reorder does.
+- A persona created with the add tile, or imported by either import button, while a folder is open is filed into the
+  folder that was open at the click, when it still exists; a created one is selected for the tab, an imported one is
+  not. The page's deletion goes through `removePersona`.
 
 ## Recipes
 
@@ -322,7 +339,7 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
 ## Tests
 
 - Focused tab tests:
-  `pnpm --silent test:agent src/ts/characterCards src/ts/characters src/ts/exportBatches src/ts/assetList src/ts/personaImport src/ts/process/modulesImport src/ts/process/lorebook src/lib/SideBars/LoreBook src/lib/SideBars/CharConfig src/lib/Setting/Pages/Module src/lib/Setting/Pages/PersonaSettings src/ts/storage/tests/{moduleCache,personaModuleLinks,moduleImportClient,charxImportClient}`.
+  `pnpm --silent test:agent src/ts/characterCards src/ts/characters src/ts/exportBatches src/ts/assetList src/ts/personaImport src/ts/process/modulesImport src/ts/process/lorebook src/lib/SideBars/LoreBook src/lib/SideBars/CharConfig src/lib/Setting/Pages/Module src/lib/Setting/Pages/PersonaSettings src/lib/Setting/Pages/personaGrid src/ts/storage/tests/{moduleCache,personaModuleLinks,moduleImportClient,charxImportClient}`.
 - Persona picker and catalog UI tests:
   `pnpm --silent test:agent src/lib/Setting/listedPersona.test.ts src/lib/Others/GridCatalog.test.ts`.
 - Focused server/shared tests:
