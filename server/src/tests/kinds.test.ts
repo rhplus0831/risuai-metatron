@@ -33,6 +33,8 @@ const settingsKinds = [
     "statics",
     "modelPresets",
     "modelProfiles",
+    "moduleFolders",
+    "personaFolders",
 ];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const rejects = (name: string, id: string, input: unknown, message: string) => {
@@ -45,7 +47,7 @@ const accepts = (name: string, id: string, input: unknown) => {
 };
 
 describe("createKindRegistry", () => {
-    it("holds the seven record kinds (no root), five of them singletons, and the 22 settings singletons (including credentials, togglePresets, and inputHooks); presets and the settings kinds materialize", () => {
+    it("holds the seven record kinds (no root), five of them singletons, and the 24 settings singletons (including credentials, togglePresets, inputHooks, moduleFolders, and personaFolders); presets and the settings kinds materialize", () => {
         expect([...kinds.keys()]).toEqual([...recordKinds, ...settingsKinds]);
         expect(kinds.has("root")).toBe(false);
         expect([...kinds.values()].filter((k) => k.singleton).map((k) => k.name)).toEqual([

@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootMutations, plain, warmMutationGraph } from "./mutationStoresHarness";
+import { groupByFolder } from "../../../../shared/itemFolders.ts";
 
 // The settings, persona, module, plugin, order, OAuth, and preset mutations
 // (`collectionStore.svelte.ts`) against the real server store. Every refusal is checked to throw
@@ -414,6 +415,197 @@ describe("modules", () => {
             await refused(() => collectionStore.setEnabledModules(ids), validation.MutationValidationError);
         }
         await refused(() => collectionStore.addModule("m"), validation.MutationValidationError);
+    });
+});
+
+describe.each(["moduleFolders", "personaFolders"] as const)("%s mutations", (kind) => {
+    it("creates, renames, moves, and removes folders without changing the item records", async () => {
+        const { collectionStore: c, sync, settings, record } = await boot();
+        const itemsKind = kind === "moduleFolders" ? "modules" : "personas";
+        const otherKind = kind === "moduleFolders" ? "personaFolders" : "moduleFolders";
+        const items = [
+            { id: "item", name: "Item" },
+            { id: "root", name: "Root" },
+        ];
+        if (kind === "moduleFolders") c.setModules(items);
+        else c.setPersonas(items);
+        const originalItems = plain(settings[itemsKind]);
+        settings[otherKind] = [{ id: "other", name: "Other", data: ["item"] }];
+
+        const first = c.addItemFolder(kind, "First");
+        const second = c.addItemFolder(kind, "Second");
+        expect(first).toEqual(expect.any(String));
+        expect(first.length).toBeGreaterThan(0);
+        expect(second).toEqual(expect.any(String));
+        expect(second.length).toBeGreaterThan(0);
+        expect(second).not.toBe(first);
+        expect(plain(settings[kind])).toEqual([
+            { id: first, name: "First", data: [] },
+            { id: second, name: "Second", data: [] },
+        ]);
+        expect(c.moveItemToFolder(kind, "item", first)).toBe(true);
+        expect(c.renameItemFolder(kind, first, "Renamed")).toBe(true);
+        await sync.flushResources();
+        expect(record(kind)).toEqual([
+            { id: first, name: "Renamed", data: ["item"] },
+            { id: second, name: "Second", data: [] },
+        ]);
+
+        expect(c.moveItemToFolder(kind, "item", second)).toBe(true);
+        expect(plain(settings[kind])).toEqual([
+            { id: first, name: "Renamed", data: [] },
+            { id: second, name: "Second", data: ["item"] },
+        ]);
+        expect(c.moveItemToFolder(kind, "item", null)).toBe(true);
+        expect(plain(settings[kind])).toEqual([
+            { id: first, name: "Renamed", data: [] },
+            { id: second, name: "Second", data: [] },
+        ]);
+        expect(c.moveItemToFolder(kind, "item", second)).toBe(true);
+        expect(c.removeItemFolder(kind, second)).toBe(true);
+        expect(plain(settings[kind])).toEqual([{ id: first, name: "Renamed", data: [] }]);
+        expect(plain(settings[itemsKind])).toEqual(originalItems);
+        expect(groupByFolder(plain(settings[itemsKind]), plain(settings[kind])).root).toEqual(originalItems);
+        await sync.flushResources();
+        expect(record(kind)).toEqual([{ id: first, name: "Renamed", data: [] }]);
+        expect(record(itemsKind)).toEqual(originalItems);
+        expect(record(otherKind)).toEqual([{ id: "other", name: "Other", data: ["item"] }]);
+    });
+
+    it("refuses blank names and returns false for gone folders without changing or saving anything", async () => {
+        const {
+            collectionStore: c,
+            sync,
+            settings,
+            refusedEach,
+            validation,
+            mirrorText,
+            serverText,
+            fake,
+        } = await boot();
+        settings[kind] = [{ id: "kept", name: "Kept", data: ["item"] }];
+        await sync.flushResources();
+        await refusedEach(
+            ["", " \t\n"].flatMap((name) => [
+                () => c.addItemFolder(kind, name),
+                () => c.renameItemFolder(kind, "kept", name),
+            ]),
+            validation.MutationValidationError,
+        );
+        const mirror = mirrorText();
+        const stored = serverText();
+        const batches = fake.batchCount();
+        for (const mutate of [
+            () => c.renameItemFolder(kind, "gone", "Renamed"),
+            () => c.removeItemFolder(kind, "gone"),
+            () => c.moveItemToFolder(kind, "item", "gone"),
+        ]) {
+            expect(mutate()).toBe(false);
+            expect(mirrorText()).toBe(mirror);
+            await sync.flushResources();
+            expect(serverText()).toBe(stored);
+            expect(fake.batchCount()).toBe(batches);
+        }
+    });
+});
+
+describe("item deletion and folder membership", () => {
+    it("removes a module from every folder along with its record and global enablement", async () => {
+        const { collectionStore: c, settings, sync, record } = await boot();
+        c.setModules([
+            { id: "deleted", name: "Deleted" },
+            { id: "kept", name: "Kept" },
+        ]);
+        c.setEnabledModules(["deleted", "kept"]);
+        settings.moduleFolders = [
+            { id: "first", name: "First", data: ["deleted", "kept", "stale"] },
+            { id: "second", name: "Second", data: ["deleted"] },
+        ];
+        settings.personaFolders = [{ id: "personas", name: "Personas", data: ["deleted"] }];
+        await sync.flushResources();
+        expect(c.removeModule("deleted")).toBe(true);
+        const expected = [
+            { id: "first", name: "First", data: ["kept", "stale"] },
+            { id: "second", name: "Second", data: [] },
+        ];
+        expect(plain(settings.modules)).toEqual([{ id: "kept", name: "Kept" }]);
+        expect(plain(settings.enabledModules)).toEqual(["kept"]);
+        expect(plain(settings.moduleFolders)).toEqual(expected);
+        await sync.flushResources();
+        expect(record("modules")).toEqual([{ id: "kept", name: "Kept" }]);
+        expect(record("enabledModules")).toEqual(["kept"]);
+        expect(record("moduleFolders")).toEqual(expected);
+        expect(record("personaFolders")).toEqual([{ id: "personas", name: "Personas", data: ["deleted"] }]);
+    });
+
+    it("moves selection off a deleted persona, clears all its folder memberships, and refuses to delete the last persona", async () => {
+        const {
+            collectionStore: c,
+            settings,
+            selectionModule,
+            selection,
+            activePersona,
+            sync,
+            record,
+            mirrorText,
+            serverText,
+            fake,
+        } = await boot();
+        c.setPersonas([
+            { id: "kept", name: "Kept" },
+            { id: "deleted", name: "Deleted" },
+        ]);
+        const kept = plain(settings.personas[0]);
+        selectionModule.selectPersona("deleted");
+        settings.personaFolders = [
+            { id: "first", name: "First", data: ["deleted", "kept", "stale"] },
+            { id: "second", name: "Second", data: ["deleted"] },
+        ];
+        settings.moduleFolders = [{ id: "modules", name: "Modules", data: ["deleted"] }];
+        await sync.flushResources();
+        expect(c.removePersona("deleted")).toBe(true);
+        expect(selection.personaId).toBe("kept");
+        expect(activePersona.name).toBe("Kept");
+        const expected = [
+            { id: "first", name: "First", data: ["kept", "stale"] },
+            { id: "second", name: "Second", data: [] },
+        ];
+        expect(plain(settings.personas)).toEqual([kept]);
+        expect(plain(settings.personaFolders)).toEqual(expected);
+        await sync.flushResources();
+        expect(record("personas")).toEqual([kept]);
+        expect(record("personaFolders")).toEqual(expected);
+        expect(record("moduleFolders")).toEqual([{ id: "modules", name: "Modules", data: ["deleted"] }]);
+
+        const mirror = mirrorText();
+        const stored = serverText();
+        const batches = fake.batchCount();
+        expect(c.removePersona("kept")).toBe(false);
+        expect(selection.personaId).toBe("kept");
+        expect(mirrorText()).toBe(mirror);
+        await sync.flushResources();
+        expect(serverText()).toBe(stored);
+        expect(fake.batchCount()).toBe(batches);
+    });
+
+    it("leaves folder membership stored when whole module and persona lists are replaced", async () => {
+        const { collectionStore: c, settings, sync, record } = await boot();
+        c.setModules([{ id: "old-module", name: "Old module" }]);
+        c.setPersonas([{ id: "old-persona", name: "Old persona" }]);
+        const moduleFolders = [{ id: "modules", name: "Modules", data: ["old-module", "stale"] }];
+        const personaFolders = [{ id: "personas", name: "Personas", data: ["old-persona", "stale"] }];
+        settings.moduleFolders = moduleFolders;
+        settings.personaFolders = personaFolders;
+        await sync.flushResources();
+        c.setModules([{ id: "new-module", name: "New module" }]);
+        c.setPersonas([{ id: "new-persona", name: "New persona" }]);
+        expect(plain(settings.moduleFolders)).toEqual(moduleFolders);
+        expect(plain(settings.personaFolders)).toEqual(personaFolders);
+        await sync.flushResources();
+        expect(record("moduleFolders")).toEqual(moduleFolders);
+        expect(record("personaFolders")).toEqual(personaFolders);
+        expect(record("modules").map((item: { id: string }) => item.id)).toEqual(["new-module"]);
+        expect(record("personas").map((item: { id: string }) => item.id)).toEqual(["new-persona"]);
     });
 });
 

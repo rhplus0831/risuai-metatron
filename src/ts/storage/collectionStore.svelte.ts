@@ -25,6 +25,13 @@ import {
     type RisuPersona,
 } from "../../../shared/database.ts";
 import { isRecordId } from "../../../shared/ids.ts";
+import {
+    createItemFolder,
+    itemFoldersChanged,
+    withItemInFolder,
+    withoutItem,
+    type ItemFolder,
+} from "../../../shared/itemFolders.ts";
 import { ModuleShapeError, normalizeModule, type RisuModule } from "../../../shared/modules.ts";
 import type { RisuPlugin } from "../../../shared/plugins.ts";
 import { normalizePersonaModules, normalizePersonas, PERSONA_DEFAULTS } from "../../../shared/personas.ts";
@@ -56,7 +63,7 @@ import {
     writeEntries,
 } from "./mutationValidation";
 import { batchRecordWrites } from "./records.svelte";
-import { selection } from "./selection.svelte";
+import { selectPersona, selection } from "./selection.svelte";
 import { deleteEntrySecret } from "./llmSecrets.svelte";
 
 /**
@@ -222,6 +229,28 @@ export function addPersona(persona: unknown): string {
 }
 
 /**
+ * Deletes the persona with `id` and its membership of every persona folder, as one batch. Returns `false`, changing
+ * nothing, when no persona has that id or it is the last one (the list is never empty). When the tab's selection names
+ * it, the selection first moves to the first other persona; chats bound to it keep the id and show it as deleted.
+ */
+export function removePersona(id: string): boolean {
+    const personas = settings.personas ?? [];
+    const index = personas.findIndex((persona) => persona?.id === id);
+    if (index === -1 || personas.length <= 1) {
+        return false;
+    }
+    batchRecordWrites(() => {
+        const other = personas.find((persona) => persona?.id !== id);
+        if (other && untrack(() => selection.personaId) === id) {
+            selectPersona(other.id);
+        }
+        personas.splice(index, 1);
+        dropItemFromFolders("personaFolders", id);
+    });
+    return true;
+}
+
+/**
  * Sets fields of the persona with `id` (not the id itself); `modules` must be a list of strings and
  * is stored in its canonical form (`normalizePersonaModules`), as the server stores it. Throws
  * `MutationTargetGoneError` when it does not exist.
@@ -324,7 +353,10 @@ export function updateModule(id: string, patch: Record<string, unknown>): boolea
     return true;
 }
 
-/** Deletes the module with `id` and its global enablement. Returns `false` when there is none. */
+/**
+ * Deletes the module with `id`, its global enablement, and its membership of every module folder, as one batch.
+ * Returns `false` when there is none.
+ */
 export function removeModule(id: string): boolean {
     const index = (settings.modules ?? []).findIndex((module) => module?.id === id);
     if (index === -1) {
@@ -335,7 +367,94 @@ export function removeModule(id: string): boolean {
         if (settings.enabledModules?.includes(id)) {
             settings.enabledModules = settings.enabledModules.filter((enabled) => enabled !== id);
         }
+        dropItemFromFolders("moduleFolders", id);
     });
+    return true;
+}
+
+/** The two folder collections (`shared/itemFolders.ts`): folders of module ids and folders of persona ids. */
+export type ItemFolderKind = "moduleFolders" | "personaFolders";
+
+/** A detached copy of a folder list: the pure helpers compare its folders by identity, and the result is installed whole. */
+function itemFolders(kind: ItemFolderKind): ItemFolder[] {
+    return detach(settings[kind] ?? []) as ItemFolder[];
+}
+
+function requireFolderName(name: unknown): asserts name is string {
+    if (typeof name !== "string" || name.trim() === "") {
+        throw new MutationValidationError("name", "a folder needs a name");
+    }
+}
+
+/** Removes a deleted item's id from the folders of `kind`; the list is written only when a folder listed it. */
+function dropItemFromFolders(kind: ItemFolderKind, itemId: string) {
+    const folders = itemFolders(kind);
+    const next = withoutItem(folders, itemId);
+    if (itemFoldersChanged(folders, next)) {
+        settings[kind] = next;
+    }
+}
+
+/**
+ * Adds an empty folder named `name` (stored as given) to the end of the list, under a fresh id. A name that is not a
+ * string or is blank is refused (`MutationValidationError`). Returns the id.
+ */
+export function addItemFolder(kind: ItemFolderKind, name: string): string {
+    requireFolderName(name);
+    const folder = createItemFolder(name);
+    settings[kind] = [...itemFolders(kind), folder];
+    return folder.id;
+}
+
+/**
+ * Renames the folder with `id`; a blank name is refused as `addItemFolder` refuses it. Returns `false`, changing
+ * nothing, when the folder is gone.
+ */
+export function renameItemFolder(kind: ItemFolderKind, id: string, name: string): boolean {
+    requireFolderName(name);
+    const folders = itemFolders(kind);
+    const index = folders.findIndex((folder) => folder.id === id);
+    if (index === -1) {
+        return false;
+    }
+    if (folders[index].name !== name) {
+        folders[index] = { id, name, data: folders[index].data };
+        settings[kind] = folders;
+    }
+    return true;
+}
+
+/**
+ * Deletes the folder with `id`, and only the folder: its items stay in their list and are at the root from then on
+ * (or in the next folder that lists them). Returns `false` when the folder is gone.
+ */
+export function removeItemFolder(kind: ItemFolderKind, id: string): boolean {
+    const folders = itemFolders(kind);
+    if (!folders.some((folder) => folder.id === id)) {
+        return false;
+    }
+    settings[kind] = folders.filter((folder) => folder.id !== id);
+    return true;
+}
+
+/**
+ * Files the item with `itemId` into the folder with `folderId`, or at the root for `null`, taking it out of every
+ * other folder (`withItemInFolder`). Only the folder list changes, never the item, and `itemId` is not checked
+ * against the item list (an id that names no item is ignored on read). Returns `false`, changing nothing, when
+ * `folderId` names a folder that is gone; a move that changes nothing writes nothing.
+ */
+export function moveItemToFolder(kind: ItemFolderKind, itemId: string, folderId: string | null): boolean {
+    if (typeof itemId !== "string" || itemId.trim() === "") {
+        throw new MutationValidationError("itemId", "expected a non-blank id");
+    }
+    const folders = itemFolders(kind);
+    if (folderId !== null && !folders.some((folder) => folder.id === folderId)) {
+        return false;
+    }
+    const next = withItemInFolder(folders, itemId, folderId);
+    if (itemFoldersChanged(folders, next)) {
+        settings[kind] = next;
+    }
     return true;
 }
 

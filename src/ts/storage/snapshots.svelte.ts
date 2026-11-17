@@ -131,6 +131,8 @@ const REPORT_REMOVED_KEYS: ReadonlySet<string> = new Set([
     "translatorPresetId",
     "customModels",
     "inputHooks",
+    "moduleFolders",
+    "personaFolders",
     "requestInterceptions",
     "credentials",
     "mcpURLs",

@@ -66,6 +66,8 @@ export const RESOURCE_KIND = {
     statics: "statics",
     modelPresets: "modelPresets",
     modelProfiles: "modelProfiles",
+    moduleFolders: "moduleFolders",
+    personaFolders: "personaFolders",
 } as const satisfies { readonly [K in SectionKind | CollectionKind]: K } & Record<string, string>;
 
 /** A resource kind registered in the shared resource-name table. */
@@ -338,6 +340,8 @@ export const BOOT_CACHE_ELIGIBILITY = {
     enabledModules: { decision: "eligible", reason: "Module ids; measured payload under 3 KB." },
     statics: { decision: "eligible", reason: "Static asset references; measured payload under 3 KB." },
     modelPresets: { decision: "eligible", reason: "Profile slot references and options; measured payload under 3 KB." },
+    moduleFolders: { decision: "eligible", reason: "Folder names and module ids; no credential field." },
+    personaFolders: { decision: "eligible", reason: "Folder names and persona ids; no credential field." },
 } as const satisfies {
     readonly [K in ResourceKindName]: { decision: "cached" | "eligible" | "never"; reason: string };
 };

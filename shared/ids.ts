@@ -23,3 +23,16 @@ export function newId(): string {
 export function isRecordId(value: unknown): value is string {
     return typeof value === "string" && value.length > 0;
 }
+
+/**
+ * An id list in canonical form: the non-blank strings of a list, each once, in first-occurrence
+ * order; anything that is not a list becomes `[]`. A kept id is not trimmed, so `" a "` and `"a"`
+ * stay two ids. A persona's linked modules and a folder's members (`shared/itemFolders.ts`) share
+ * this rule.
+ */
+export function normalizeIdList(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return [...new Set(value.filter((id): id is string => typeof id === "string" && id.trim() !== ""))];
+}

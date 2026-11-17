@@ -328,6 +328,8 @@ export const COLLECTION_KIND = {
     statics: "statics",
     modelPresets: "modelPresets",
     modelProfiles: "modelProfiles",
+    moduleFolders: "moduleFolders",
+    personaFolders: "personaFolders",
 } as const;
 
 /** A collection resource kind. */
@@ -352,6 +354,8 @@ export const COLLECTION_FIELDS = {
     statics: "statics",
     modelPresets: "modelPresets",
     modelProfiles: "modelProfiles",
+    moduleFolders: "moduleFolders",
+    personaFolders: "personaFolders",
 } as const satisfies Record<CollectionKind, keyof Database>;
 
 /**

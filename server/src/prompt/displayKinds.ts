@@ -48,6 +48,10 @@ export const DISPLAY_KIND_CLASSIFICATION = {
     modelPresets: "keep",
     // Forwarded model/profile roots supply CBS model ids, context size and custom flags.
     modelProfiles: "keep",
+    // The module catalog's grouping; display resolves its modules by id and enablement, never by folder.
+    moduleFolders: "drop",
+    // The persona page's grouping; display resolves the bound persona by id.
+    personaFolders: "drop",
     // Admission plus CBS prompt roots, regex and default/toggle variables: never drop.
     presets: "keep",
     // Display scripts, lore, assets and toggle definitions.

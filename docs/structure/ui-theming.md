@@ -248,6 +248,10 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `ReloadGUIPointer` signals structural UI changes; `ReloadChatPointer` remounts a row by `reloadChatKey` (message id or
   greeting index), so adding/removing earlier messages does not reset that row's counter. Reassign arrays after in-place
   mutations so Svelte observes them.
+- `src/ts/gui/itemFolderFold.svelte.ts` keeps the folded module and persona folder ids of this device in one
+  `localStorage` list per kind and writes nothing to the server. A folder is open by default; a refused write stays in
+  memory for the tab, a write re-renders this tab's mounted lists, and a write drops the ids of folders that no longer
+  exist.
 - Theme settings are `theme`, `colorScheme`, `colorSchemeName`, `customColorScheme`, `textTheme`, `customCSS`,
   `textAreaSize`, `sideBarSize`, and `textAreaTextSize`.
 

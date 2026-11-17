@@ -14,6 +14,8 @@ import {
     normalizeHypaV3Presets,
     normalizeInputHooks,
     normalizeLoreBook,
+    normalizeModuleFolders,
+    normalizePersonaFolders,
     normalizeStatics,
     normalizeTogglePresets,
     normalizeTranslatorPresets,
@@ -260,4 +262,6 @@ export const DEFAULT_RESOURCE_KINDS: readonly ResourceKind[] = [
     settingsKind(RESOURCE_KIND.statics, normalizeStatics),
     settingsKind(RESOURCE_KIND.modelPresets, normalizeModelPresetCollection),
     settingsKind(RESOURCE_KIND.modelProfiles, normalizeModelProfileCollection),
+    settingsKind(RESOURCE_KIND.moduleFolders, normalizeModuleFolders),
+    settingsKind(RESOURCE_KIND.personaFolders, normalizePersonaFolders),
 ];
