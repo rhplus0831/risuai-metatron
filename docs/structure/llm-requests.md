@@ -48,6 +48,9 @@ and what to look up.
   `dynamicModelOf`, and `isUnresolvedModelId` (true when resolution reaches the final as-is OpenAI-compatible fallback;
   `ModelProfileEditor.svelte` then shows `modelProfiles.unresolvedModelNotice` beside the model field).
 - `shared/llm/thinkingResolver.ts` `resolveClaudeThinkingType`: stored versus displayed Claude thinking mode.
+- `shared/llm/interception.ts`: the request interception rules (`RequestInterception`, `MAX_REQUEST_INTERCEPTIONS`,
+  `normalizeRequestInterceptions`) and their insertion (`interceptionMessages`, `applyRequestInterceptions`), stored as
+  `providers.requestInterceptions` ([Flows](#flows)).
 - `src/ts/model/modellist.ts`: the tab's registry and lookups: `LLMModels`, `isDynamicModel`, `registerModelDynamic`
   (with a `profileId`, as the profile editor's `ModelList.svelte` passes on open, it discovers that profile's provider
   with the profile's credential), `getModelInfo`, `getModelInfoForMode`, `getModelList`. The server's lookup is
@@ -180,6 +183,11 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
   `requestChatData` → `requestChatDataMain` → `requestServer`; jobs enter the server outer loop (`requestChatDataOuter`)
   directly. Plugin v3 calls `requestChatDataMain` itself (`src/ts/plugins/apiV3/v3.svelte.ts`). Both runtimes apply
   `applyReverseProxyOverride` (`shared/llm/reverseProxy.ts`) before dispatch.
+- Request interception: both `requestChatDataMain`s insert the messages of the enabled rules in
+  `providers.requestInterceptions` that list the request's mode into the cloned prompt before `reformater`, after the
+  replacers and the `request` trigger (the server for every format it dispatches; the tab for its own Plugin and
+  WebLLM). `start` messages lead in list order; `end` messages close it, before a last `assistant` entry (a prefill).
+  Each attempt clones afresh: a retry holds one copy. The text is sent without CBS; `prompt.name` is a label only.
 - Slot routing is `resolveSlotProfile`'s on both runtimes ([slot resolver](#model-preset-slots)): a refusal fails the
   tab's attempt with `noRetry` and the server's before dispatch; no alternate profile is tried.
 - Memory-host requests pass the chat's captured `memoryProfileId` as the named `profileId`; without one they use the
@@ -395,6 +403,12 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
   not wire bytes; exchanges are stored in completion order, not start order. Decision: Request History and Diagnostics
   trade-offs (`ab11ea9d0`, [archive](../archived-plan/README.md)), recorded by Found Issues Clearance (owner,
   2026-11-09).
+- Request interception reaches only requests made through the request layer in one of its modes: the HypaV3 modal's
+  `summarize` with a summarization model other than `subModel` (`chatCompletion` in `src/ts/process/webllm.ts`),
+  SupaMemory and HypaV2 with a fixed model (`host.completions`), the local summarizer, token counting, embeddings,
+  images, and TTS are not intercepted. What rewrites the provider body afterwards (additional parameters, a plugin's
+  body interceptor, a plugin provider) can still change or drop the inserted text. Decision: Request Interception plan,
+  owner, 2026-11-17.
 - Auxiliary requests still tokenize bias strings with the main model, not their own profile's tokenizer. Decision:
   `shared/llm/request.ts` `tokenizer`.
 - A legacy plugin `custom` tokenizer counts with `cl100k_base` on screen and for `/api/llm/request` calls using the

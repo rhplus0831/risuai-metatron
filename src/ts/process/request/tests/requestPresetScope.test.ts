@@ -226,6 +226,54 @@ describe("an escape request in the tab", () => {
 });
 
 describe("a tab-run request's captured presets", () => {
+    it("passes global interception messages to the plugin provider with a trailing assistant kept last", async () => {
+        trackedRecord<Record<string, unknown>>("providers")!.requestInterceptions = [
+            {
+                id: "instruction",
+                enabled: true,
+                modes: ["model"],
+                position: "start",
+                prompt: {
+                    type: "plain",
+                    type2: "normal",
+                    role: "system",
+                    text: "Global instruction.",
+                    name: "Private label",
+                },
+            },
+            {
+                id: "reminder",
+                enabled: true,
+                modes: ["model"],
+                position: "end",
+                prompt: { type: "plain", type2: "normal", role: "bot", text: "Remember this." },
+            },
+        ];
+
+        await requestChatDataMain(
+            argOf({
+                formated: [
+                    { role: "user", content: "hi" },
+                    { role: "assistant", content: "Prefill" },
+                ],
+            }),
+            "model",
+        );
+
+        expect(provider1).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({
+                prompt_chat: [
+                    { role: "system", content: "Global instruction." },
+                    { role: "user", content: "hi" },
+                    { role: "assistant", content: "Remember this." },
+                    { role: "assistant", content: "Prefill" },
+                ],
+            }),
+            null,
+        );
+        expect(stubs.requestServer).not.toHaveBeenCalled();
+    });
+
     it("runs the provider and the model flags of the captured model preset's main profile, whatever is selected", async () => {
         expect(await requestChatData(argOf(), "model")).toEqual({
             type: "success",

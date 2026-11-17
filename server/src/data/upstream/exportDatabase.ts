@@ -139,6 +139,7 @@ const METATRON_ONLY_SETTINGS = [
     "translatorHistoryMaxTokens",
     "togglePresets",
     "inputHooks",
+    "requestInterceptions",
     "credentials",
     "modelPresets",
     "modelProfiles",

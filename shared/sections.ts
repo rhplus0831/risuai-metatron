@@ -91,6 +91,7 @@ export const SECTION_FIELDS = {
         "presetChain",
         "requestHistoryContent",
         "requestHistoryLimit",
+        "requestInterceptions",
     ],
     /** Write-only LLM provider defaults; named-key values live in the `credentials` entry map. */
     llmSecrets: [

@@ -1,6 +1,7 @@
 import { Ollama } from "ollama";
 import type { ModelProfile } from "../../../shared/database.ts";
 import { LLMFlags, LLMFormat, type LLMModel } from "../../../shared/llm.ts";
+import { applyRequestInterceptions } from "../../../shared/llm/interception.ts";
 import { resolveModelInfo } from "../../../shared/llm/models.ts";
 import { resolveSlotProfile } from "../../../shared/llm/modelSlots.ts";
 import { applyReverseProxyOverride } from "../../../shared/llm/reverseProxy.ts";
@@ -470,6 +471,9 @@ export function resolveJobRequestModel(
 /**
  * `requestChatDataMain` on the server: shared slot resolution, a request-local profile overlay,
  * argument defaults, reverse-proxy/custom-model overrides, `reformater`, then the format's function.
+ * The prompt is cloned per attempt and the request interception rules of the request's mode
+ * (`db.requestInterceptions`, `shared/llm/interception.ts`) are inserted into the clone, so
+ * `reformater` and the adapters treat an inserted message as any other and a retry holds one copy.
  * Missing or required profiles refuse before dispatch; the job's captured settings stay unchanged.
  * `Plugin` (a plugin provider model) is called in the job's tab through `ctx.pluginProvider`, and
  * `WebLLM` (a local Transformers.js model) runs on the server (`ctx.localGeneration`): both for a
@@ -538,7 +542,7 @@ export async function requestChatDataMain(
         };
     }
 
-    targ.formated = structuredClone(arg.formated);
+    targ.formated = applyRequestInterceptions(structuredClone(arg.formated), db.requestInterceptions, model).formated;
     targ.maxTokens = arg.maxTokens ?? db.maxResponse;
     targ.temperature = arg.temperature ?? db.temperature / 100;
     targ.bias = arg.bias;
