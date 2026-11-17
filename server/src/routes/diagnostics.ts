@@ -13,7 +13,8 @@ export { DIAGNOSTICS_PATH, DIAGNOSTICS_REPORT_PATH };
  * admission middleware refuses both during shutdown and makes every answer `no-store`.
  *
  * - `GET /api/diagnostics` answers `{ events, state }`: the journal's ring (the last 300 events,
- *   oldest first) and its state (`state.json`'s fields, built now). Both are in memory and
+ *   oldest first, refilled from the day files at creation, so a restart keeps them) and its state
+ *   (`state.json`'s fields, built now). Both are in memory and
  *   content-free, so the answer works during a maintenance and when the folder cannot be written;
  *   nothing is written by a read.
  * - `POST /api/diagnostics/report` saves the panel's report (a `text/plain` body of at most 1 MiB, its

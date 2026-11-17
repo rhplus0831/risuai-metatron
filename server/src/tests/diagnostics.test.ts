@@ -44,7 +44,9 @@ import { createResourceTestClient, createTestServer, TEST_INDEX_HTML, waitFor } 
 // error event, every 10 minutes, stopped by `close`), and every filesystem failure contained: a
 // symlinked `events/`, a symlink or a FIFO in place of a day file, an unwritable or missing folder, a
 // short write truncated back, a partial tail from an earlier process, each counted and warned once
-// with its code only, nothing thrown. The wiring: the context's own folder (two contexts never share
+// with its code only, nothing thrown. A restart: the next journal refills the ring and the job
+// failures from the ends of the newest day files (cut and refused lines passed over) and moves the
+// previous `state.json` to `state.prev.json`. The wiring: the context's own folder (two contexts never share
 // one), the `http` events with registered templates only, the `job` events from the registry (a
 // broken folder never fails a job), the `request` events from the history observer, the `runtime`
 // events from `logEvent`, the lifecycle events (boot, shutdown, maintenance, restore), and the final
@@ -62,6 +64,7 @@ const { fsOverrides, randomQueue } = vi.hoisted(() => ({
     fsOverrides: {
         writeSync: null as null | ((fd: number, buffer: Buffer, offset: number, length: number) => number),
         unlinkSync: null as null | ((file: string) => void),
+        fstatSync: null as null | ((fd: number) => void),
     },
     /** Hex values `randomBytes` answers next (the temp and report names), then the real ones. */
     randomQueue: [] as string[],
@@ -76,6 +79,12 @@ vi.mock("node:fs", async (importOriginal) => {
                 ? fsOverrides.writeSync(fd, buffer, offset, length)
                 : actual.writeSync(fd, buffer, offset, length),
         unlinkSync: (file: string) => (fsOverrides.unlinkSync ? fsOverrides.unlinkSync(file) : actual.unlinkSync(file)),
+        // A hook that runs right after the real `fstatSync` (a file growing after the size was taken).
+        fstatSync: (...args: Parameters<typeof actual.fstatSync>) => {
+            const stat = actual.fstatSync(...args);
+            fsOverrides.fstatSync?.(args[0]);
+            return stat;
+        },
     };
 });
 // `node:crypto` as it is, except `randomBytes` answering the queued values first (the journal's names).
@@ -137,6 +146,7 @@ beforeEach(() => {
 afterEach(async () => {
     fsOverrides.writeSync = null;
     fsOverrides.unlinkSync = null;
+    fsOverrides.fstatSync = null;
     queuedWrite = null;
     randomQueue.length = 0;
     vi.useRealTimers();
@@ -543,6 +553,145 @@ describe("the journal's refusals and failures", () => {
             writeFailures: 1,
             dropped: 0,
         });
+    });
+});
+
+describe("restoring at creation", () => {
+    /** Another journal on `dir`, as the next process opens it. */
+    function reopen(dir: string, options: Partial<Parameters<typeof createDiagnosticsJournal>[0]> = {}) {
+        const journal = createDiagnosticsJournal({ now: () => clock, ...options, dir });
+        cleanups.push(() => journal.finish());
+        return journal;
+    }
+    const prev = (dir: string) => path.join(dir, "state.prev.json");
+
+    it("refills the ring and the job failures from the newest day files: the next process shows the last 300 events and 20 failures, each once in `eventsFor`", async () => {
+        const { dir, journal } = openJournal();
+        for (let i = 0; i < 200; i++) {
+            journal.record({ ...HTTP_LINE, durationMs: i });
+        }
+        for (let i = 0; i < 25; i++) {
+            journal.record({ ...failure(), durationMs: i });
+        }
+        journal.record(failure("aborted"));
+        clock += DAY_MS;
+        for (let i = 200; i < 320; i++) {
+            journal.record({ ...HTTP_LINE, durationMs: i });
+        }
+        const before = journal.recent();
+        const failures = journal.state().recentJobFailures;
+        expect(before).toHaveLength(300);
+        expect(failures.map((event) => event.durationMs)).toEqual(Array.from({ length: 20 }, (_, i) => i + 5));
+        await journal.finish();
+
+        clock += 1000;
+        const next = reopen(dir);
+        expect(next.recent()).toEqual(before);
+        expect(next.state().recentJobFailures).toEqual(failures);
+        expect(next.stats().writeFailures).toBe(0);
+        next.record(boot);
+        expect(next.recent()).toHaveLength(300);
+        expect(next.recent().at(-2)).toEqual(before.at(-1));
+        expect(next.recent().at(-1)).toEqual({ at: clock, kind: "lifecycle", phase: "boot" });
+        await next.settled();
+        // The restored ring holds what the files hold: no event is read twice.
+        const { events, partial } = next.eventsFor(() => true, DAY_ONE);
+        expect(partial).toBe(false);
+        expect(events).toHaveLength(200 + 25 + 1 + 120 + 1);
+        expect(events.filter((event) => event.kind === "http").map((event) => event.durationMs)).toEqual(
+            Array.from({ length: 320 }, (_, i) => i),
+        );
+    });
+
+    it("reads at most `restoreBytes` from the ends of the newest files, passing over a line that start cuts, a malformed or refused line, and a symlinked day file", () => {
+        const root = tempDir();
+        const dir = path.join(root, "diag");
+        const events = path.join(dir, "events");
+        mkdirSync(events, { recursive: true });
+        const line = (durationMs: number) => `${JSON.stringify({ at: DAY_ONE, ...HTTP_LINE, durationMs })}\n`;
+        writeFileSync(path.join(events, dayFile(DAY_ONE)), line(1) + line(2));
+        const refused = `${JSON.stringify({ at: DAY_ONE, kind: "Private" })}\n`;
+        const newer = [line(3), "not json\n", refused, line(4), line(5)].join("");
+        writeFileSync(path.join(events, dayFile(DAY_ONE + DAY_MS)), newer);
+        // The newest name is a symlink to events of its own: never read.
+        const outside = path.join(root, "outside.jsonl");
+        writeFileSync(outside, line(9));
+        symlinkSync(outside, path.join(events, dayFile(DAY_ONE + 2 * DAY_MS)));
+        const bytes = (text: string) => Buffer.byteLength(text);
+        const restored = (restoreBytes?: number) =>
+            reopen(dir, { restoreBytes })
+                .recent()
+                .map((event) => event.durationMs);
+
+        expect(restored()).toEqual([1, 2, 3, 4, 5]);
+        expect(restored(0)).toEqual([]);
+        // A start right after a newline keeps that line; one inside a line passes it over.
+        expect(restored(bytes(line(4) + line(5)))).toEqual([4, 5]);
+        expect(restored(bytes(line(4) + line(5)) + 3)).toEqual([4, 5]);
+        expect(restored(bytes(line(5)) + 1)).toEqual([5]);
+        // What the newest file leaves of the budget is read from the end of the one before it.
+        expect(restored(bytes(newer) + bytes(line(2)))).toEqual([2, 3, 4, 5]);
+        expect(restored(bytes(newer) + bytes(line(2)) - 1)).toEqual([3, 4, 5]);
+        expect(readFileSync(path.join(events, dayFile(DAY_ONE + DAY_MS)), "utf8")).toBe(newer);
+        // A damaged line whose end is an event on its own: a whole read refuses it, so a cut read does too.
+        const damaged = `garbage${line(6)}`;
+        writeFileSync(path.join(events, dayFile(DAY_ONE + DAY_MS)), newer + damaged + line(7));
+        expect(restored()).toEqual([1, 2, 3, 4, 5, 7]);
+        expect(restored(bytes(line(6) + line(7)))).toEqual([7]);
+        // What is appended after the size was taken is not read: the budget holds while a file grows.
+        fsOverrides.fstatSync = () => {
+            fsOverrides.fstatSync = null;
+            writeFileSync(path.join(events, dayFile(DAY_ONE + DAY_MS)), line(8), { flag: "a" });
+        };
+        expect(restored(bytes(line(7)))).toEqual([7]);
+        expect(restored(bytes(line(7)))).toEqual([8]);
+        expect(warnings()).toEqual([]);
+    });
+
+    it("moves the previous process's `state.json` to `state.prev.json`, one generation kept: a symlink at `state.prev.json` is replaced, not followed; one at `state.json` is not moved; a directory in the way is a counted failure", async () => {
+        const { root, dir, journal } = openJournal();
+        journal.record(failure());
+        await journal.finish();
+        const first = readFileSync(path.join(dir, "state.json"), "utf8");
+
+        const second = reopen(dir);
+        expect(readFileSync(prev(dir), "utf8")).toBe(first);
+        expect(existsSync(path.join(dir, "state.json"))).toBe(false);
+        second.writeStateSync();
+        expect(readState(dir).recentJobFailures).toEqual(JSON.parse(first).recentJobFailures);
+        clock += 1000;
+        await second.finish();
+        const last = readFileSync(path.join(dir, "state.json"), "utf8");
+        expect(last).not.toBe(first);
+
+        const target = path.join(root, "target.json");
+        writeFileSync(target, "keep");
+        rmSync(prev(dir));
+        symlinkSync(target, prev(dir));
+        const third = reopen(dir);
+        expect(readFileSync(target, "utf8")).toBe("keep");
+        expect(lstatSync(prev(dir)).isSymbolicLink()).toBe(false);
+        expect(readFileSync(prev(dir), "utf8")).toBe(last);
+        expect(third.stats().writeFailures).toBe(0);
+        await third.finish();
+
+        rmSync(path.join(dir, "state.json"));
+        symlinkSync(target, path.join(dir, "state.json"));
+        const fourth = reopen(dir);
+        expect(readFileSync(prev(dir), "utf8")).toBe(last);
+        expect(lstatSync(path.join(dir, "state.json")).isSymbolicLink()).toBe(true);
+        fourth.writeStateSync();
+        expect(lstatSync(path.join(dir, "state.json")).isSymbolicLink()).toBe(false);
+        expect(readFileSync(target, "utf8")).toBe("keep");
+        expect(fourth.stats().writeFailures).toBe(0);
+        await fourth.finish();
+
+        rmSync(prev(dir));
+        mkdirSync(prev(dir));
+        const fifth = reopen(dir);
+        expect(fifth.stats().writeFailures).toBe(1);
+        expect(readState(dir)).toMatchObject({ version: 1 });
+        expect(warnings()).toHaveLength(1);
     });
 });
 
@@ -1114,6 +1263,27 @@ describe("the server context", () => {
             expect(mode(dirA)).toBe(0o750);
             expect(mode(path.join(dirA, "state.json"))).toBe(0o640);
         }
+    });
+
+    it("shows the previous process's events after a restart (its `http` event and `shutdown`, then this process's `boot`) and keeps its final state as `state.prev.json`", async () => {
+        const rootDir = makeRoot();
+        const first = createTestServer({ rootDir });
+        await first.app.request("/nowhere");
+        // The process ends; its folder stays (`close` would remove the root).
+        await first.context.dispose();
+        const dir = path.join(first.savePath, "diagnostics");
+        const finalState = readFileSync(path.join(dir, "state.json"), "utf8");
+
+        const second = createTestServer({ rootDir });
+        cleanups.push(() => second.close());
+        expect(second.context.diagnostics.recent().map((event) => [event.kind, event.phase ?? event.status])).toEqual([
+            ["lifecycle", "boot"],
+            ["http", 404],
+            ["lifecycle", "shutdown"],
+            ["lifecycle", "boot"],
+        ]);
+        expect(readFileSync(path.join(dir, "state.prev.json"), "utf8")).toBe(finalState);
+        expect(readdirSync(dir).sort()).toEqual(["events", "state.json", "state.prev.json"]);
     });
 
     it("reads `RISU_DIAGNOSTICS_DIR` against the root and `RISU_DIAGNOSTICS_MAX_BYTES` as a positive integer, and refuses another value", async () => {

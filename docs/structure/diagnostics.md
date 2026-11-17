@@ -107,6 +107,9 @@ The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credent
   absolute path or `..` can place it elsewhere. `RISU_DIAGNOSTICS_MAX_BYTES` caps `events/` at 64 MiB by default; ring
   size, state schedule, and the `state.json`, `reports/`, and `shared/` file rules are in
   `server/src/diagnostics/journal.ts`; share schema and ordering are in `server/src/diagnostics/share.ts`.
+- A restart keeps the server's view: creation refills the ring and the recent job failures from the ends of the newest
+  day files (at most 4 MiB, `RESTORE_BYTES`) and moves the previous process's `state.json` to `state.prev.json`, so
+  `GET /api/diagnostics` and reports show the previous process's last events before this process's `boot`.
 - Browser storage contracts are in `src/ts/diagnostics/collector.ts` and `src/ts/diagnostics/workerRecords.ts`;
   `public/sw.js` writes the push records that reports read.
 

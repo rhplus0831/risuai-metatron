@@ -54,6 +54,10 @@ const EVENTS_KEY = "diagnostics:events";
 const STATE_KEY = "diagnostics:state";
 const DAY_FILE = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
 const STATE_FILE = "state.json";
+/** The previous process's last `state.json`, moved aside at creation. */
+const PREVIOUS_STATE_FILE = "state.prev.json";
+/** `restoreBytes`' default: how much of the newest day files creation reads back into the ring. */
+export const RESTORE_BYTES = 4 * 1024 * 1024;
 const REPORTS_KEPT = 50;
 /** A shared copy: `<UTC stamp to the ms>-job-<job id>.json` or `<stamp>-request-<request id>.json`. */
 const SHARE_FILE = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(\d{3})Z-(job|request)-([A-Za-z0-9-]{1,80})\.json$/;
@@ -94,7 +98,7 @@ export type DiagnosticsStateSources = {
 
 /** The server's checked event journal, state publications, reports, and explicit support copies. */
 export type DiagnosticsJournal = DiagnosticsRecorder & {
-    /** The ring (the last 300 events), oldest first, as copies. */
+    /** The ring (the last 300 events, the previous process's included), oldest first, as copies. */
     recent(): DiagnosticEvent[];
     /** The state `state.json` would hold now. */
     state(): DiagnosticsState;
@@ -232,6 +236,11 @@ class RefusedPathError extends Error {
  *   when it alone passes the cap (the next event starts it again). Only `YYYY-MM-DD.jsonl` regular
  *   files are counted and deleted; anything else in the folder is left alone. The cap is enforced at
  *   creation and after every queued append.
+ * - Creation refills the ring (300 events) and the recent job failures (20) from the ends of the
+ *   newest day files (`restore`, at most `restoreBytes`, 4 MiB by default), so the previous process's
+ *   last events and failures stay visible; the server's `lifecycle` `boot` event marks where this
+ *   process starts. It also moves the previous process's `state.json` to `state.prev.json`
+ *   (`keepPreviousState`), one generation kept.
  * - `state.json` is written at creation of the server context (the caller's `writeStateSync`), every
  *   10 minutes (`start`), when a publication queued at most 5 s after an error event ends
  *   (`isDiagnosticErrorEvent`; a pending write is not postponed by later ones), and when the caller
@@ -299,6 +308,8 @@ export function createDiagnosticsJournal(options: {
     maxQueuedBytes?: number;
     /** How long `finish` waits for the queues; default 1 s. */
     drainDeadlineMs?: number;
+    /** The bytes of the newest day files read back at creation; default `RESTORE_BYTES`, 0 reads none. */
+    restoreBytes?: number;
 }): DiagnosticsJournal {
     const dir = options.dir;
     const eventsDir = path.join(dir, "events");
@@ -732,11 +743,83 @@ export function createDiagnosticsJournal(options: {
                 fail(error);
             }
             prune();
+            restore();
         }
+        keepPreviousState();
         // A save cut short between its rename and its prune leaves one too many.
         pruneReports(null);
         // A share cut short (the process ended while it wrote) leaves its temp file.
         removeShareEntries(() => false, true);
+    }
+
+    /**
+     * Refills the ring and the job failures from the newest day files (by name), newest first, reading
+     * at most `restoreBytes` in all from their ends, so a restart does not empty what
+     * `GET /api/diagnostics` and the state show. Each line is projected again (`projectServerEvent`),
+     * exactly as `eventsFor` reads it, so its disk copy and its ring copy stay one event there. A
+     * file's first partial line, an unreadable file, and a malformed or refused line are passed over.
+     * Runs at creation only, before anything is queued. Never throws: a read failure is counted.
+     */
+    function restore() {
+        let budget = options.restoreBytes ?? RESTORE_BYTES;
+        if (!(budget > 0)) {
+            return;
+        }
+        /** Newest file first; each file's events in file order. */
+        const read: DiagnosticEvent[][] = [];
+        let events = 0;
+        let failures = 0;
+        for (const name of [...files.keys()].sort().reverse()) {
+            if (budget <= 0 || (events >= RING_SIZE && failures >= RECENT_JOB_FAILURES)) {
+                break;
+            }
+            const tail = Math.min(budget, files.get(name) ?? 0);
+            budget -= tail;
+            const found: DiagnosticEvent[] = [];
+            readDayFile(
+                name,
+                (line) => {
+                    let parsed: unknown;
+                    try {
+                        parsed = JSON.parse(line);
+                    } catch {
+                        return;
+                    }
+                    const event = projectServerEvent(parsed);
+                    if (event) {
+                        found.push(event);
+                    }
+                },
+                tail,
+            );
+            read.push(found);
+            events += found.length;
+            failures += found.filter(isJobFailureEvent).length;
+        }
+        const restored = read.reverse().flat();
+        ring.push(...restored.slice(-RING_SIZE));
+        jobFailures.push(...restored.filter(isJobFailureEvent).slice(-RECENT_JOB_FAILURES));
+    }
+
+    /**
+     * Moves the previous process's `state.json` to `state.prev.json` (replacing the one before), so
+     * the boot state does not overwrite how that process ended. Only a regular file is moved: a
+     * symlink or another entry at `state.json` is left for the boot publication to replace, and a
+     * symlink at `state.prev.json` is replaced by the rename, not followed. Never throws: a failure
+     * other than the file's absence is counted.
+     */
+    function keepPreviousState() {
+        const current = path.join(dir, STATE_FILE);
+        try {
+            if (!lstatSync(current).isFile()) {
+                return;
+            }
+            renameSync(current, path.join(dir, PREVIOUS_STATE_FILE));
+        } catch (error) {
+            if (!isMissing(error)) {
+                fail(error);
+            }
+        }
     }
 
     /**
@@ -1042,9 +1125,10 @@ export function createDiagnosticsJournal(options: {
     /**
      * The lines of one day file, in order, through `onLine`. Whether it was read whole: a refused
      * entry (not a regular file), a failed read, a line over `MAX_EVENT_LINE` (skipped), or an
-     * unterminated tail is not.
+     * unterminated tail is not. With `tailBytes`, only the file's last `tailBytes` at open are read
+     * (nothing appended after), and a line cut by that start is passed over (such a read is never whole).
      */
-    function readDayFile(name: string, onLine: (line: string) => void): boolean {
+    function readDayFile(name: string, onLine: (line: string) => void, tailBytes = Infinity): boolean {
         const file = path.join(eventsDir, name);
         let fd = -1;
         try {
@@ -1052,19 +1136,28 @@ export function createDiagnosticsJournal(options: {
                 return false;
             }
             fd = openSync(file, constants.O_RDONLY | NOFOLLOW | NONBLOCK);
-            if (!fstatSync(fd).isFile()) {
+            const stat = fstatSync(fd);
+            if (!stat.isFile()) {
                 return false;
             }
-            let whole = true;
+            let position = Math.max(0, stat.size - tailBytes);
+            // A tail read stops at the size it started from: what is appended meanwhile is not read.
+            const end = Number.isFinite(tailBytes) ? stat.size : Infinity;
+            let whole = position === 0;
             let pending: Buffer[] = [];
             let pendingBytes = 0;
             let skipping = false;
             const chunk = Buffer.alloc(READ_CHUNK);
+            if (position > 0) {
+                // A start right after a newline begins a whole line; anything else cuts one.
+                skipping = readSync(fd, chunk, 0, 1, position - 1) !== 1 || chunk[0] !== 0x0a;
+            }
             for (;;) {
-                const read = readSync(fd, chunk, 0, chunk.length, null);
+                const read = readSync(fd, chunk, 0, Math.min(chunk.length, end - position), position);
                 if (read <= 0) {
                     break;
                 }
+                position += read;
                 let start = 0;
                 for (let i = 0; i < read; i++) {
                     if (chunk[i] !== 0x0a) {
