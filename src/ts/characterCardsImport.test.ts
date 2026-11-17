@@ -1,7 +1,9 @@
+import { IDBDatabase, IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { language } from "src/lang";
 import { cardV2, cardV3, characterBook, charx, nested, pngWithText } from "./storage/tests/importFixtures";
 import { bootMutations, plain } from "./storage/tests/mutationStoresHarness";
+import { createFakeLockManager } from "./storage/tests/fakeLockManager";
 import { lowLevelAccessAnswer, lowLevelAccessDialog } from "./tests/lowLevelAccessDialog";
 
 // `importCharacterProcess` creates its records through `addCharacter` over the real save adapter and
@@ -62,7 +64,10 @@ vi.mock("./tokenizer", () => ({ tokenize: vi.fn(async () => 0) }));
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
 const originalGlobals = new Map(
-    ["location", "safeStructuredClone"].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]),
+    ["location", "safeStructuredClone", "indexedDB", "IDBKeyRange"].map((key) => [
+        key,
+        Object.getOwnPropertyDescriptor(globalThis, key),
+    ]),
 );
 
 async function boot() {
@@ -409,6 +414,101 @@ describe("importCharacterProcess creates the character through addCharacter", ()
         expect(ids()).toEqual(before);
         expect(order()).not.toContain((char as any).chaId);
         expect(imports()).toBe(1);
+    });
+});
+
+describe("character import save confirmation", () => {
+    it("announces standard cards and off-spec JSON and PNG cards only after the character and first chat are acknowledged", async () => {
+        const h = await boot();
+        const offSpec = { name: "Off", description: "off desc", first_mes: "hello" };
+        for (const file of [
+            { name: "card.json", data: encode(cardV2("Standard")) },
+            { name: "off.json", data: encode(offSpec) },
+            { name: "off.png", data: pngWithText({ chara: offSpec }) },
+        ]) {
+            alerts.normal.mockClear();
+            h.fake.holdNextBatch = true;
+            let completed = false;
+            const importing = h.cards.importCharacterProcess(file).then((id) => {
+                completed = true;
+                return id;
+            });
+            try {
+                await vi.advanceTimersByTimeAsync(0);
+                expect(completed).toBe(false);
+                expect(alerts.normal).not.toHaveBeenCalled();
+                expect(h.fake.releaseBatch).not.toBeNull();
+            } finally {
+                h.fake.releaseBatch?.();
+                await importing;
+            }
+            const chaId = (await importing)!;
+            expect(h.record("characters", chaId)).toMatchObject({ chaId });
+            const chatId = h.character(chaId).chats[0].id;
+            expect(h.fake.chat(chaId, chatId)).not.toBeNull();
+            expect(alerts.normal).toHaveBeenCalledExactlyOnceWith(language.importedCharacter);
+        }
+        expect(alerts.error).not.toHaveBeenCalled();
+    });
+
+    it("reports an unconfirmed save and retains the imported character and first chat in memory and the journal", async () => {
+        vi.stubGlobal("indexedDB", new IDBFactory());
+        vi.stubGlobal("IDBKeyRange", IDBKeyRange);
+        vi.spyOn(navigator, "locks", "get").mockReturnValue(createFakeLockManager());
+        const pendingTransactions = new Set<Promise<void>>();
+        const transaction = IDBDatabase.prototype.transaction;
+        vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (...args) {
+            const tx = transaction.apply(this, args);
+            if (args[1] === "readwrite") {
+                const completion = new Promise<void>((resolve) => {
+                    const done = () => {
+                        pendingTransactions.delete(completion);
+                        resolve();
+                    };
+                    tx.addEventListener("complete", done);
+                    tx.addEventListener("abort", done);
+                });
+                pendingTransactions.add(completion);
+            }
+            return tx;
+        });
+        const h = await boot();
+        const journal = (await import("./storage/draftJournal")).pageDraftJournal();
+        expect(await journal.start()).toBe(true);
+        try {
+            h.fake.failNext = { status: 0, times: 1, match: (path) => path === "/api/resources/batch" };
+            expect(
+                await h.cards.importCharacterProcess({ name: "card.json", data: encode(cardV2("Pending")) }),
+            ).toBeNull();
+            expect(alerts.normal).not.toHaveBeenCalled();
+            expect(alerts.error).toHaveBeenCalledExactlyOnceWith(
+                language.characterImportUnconfirmed.replace("{{error}}", "Failed to fetch"),
+            );
+            const character = h.characterList().find((entry) => entry.name === "Pending")!;
+            expect(character.chats).toHaveLength(1);
+            const chatId = character.chats[0].id;
+            expect(character.chats[0].message).toEqual([]);
+            expect(h.record("characters", character.chaId)).toBeUndefined();
+            expect(h.fake.chat(character.chaId, chatId)).toBeNull();
+
+            window.dispatchEvent(new Event("pagehide"));
+            await vi.advanceTimersByTimeAsync(0);
+            while (pendingTransactions.size) {
+                await Promise.all([...pendingTransactions]);
+                await vi.advanceTimersByTimeAsync(0);
+            }
+            const rows = await journal.readOwn();
+            expect(rows).toContainEqual(
+                expect.objectContaining({ scope: "record", target: `characters\u0000${character.chaId}` }),
+            );
+            expect(rows).toContainEqual(
+                expect.objectContaining({ scope: "chat", target: `${character.chaId}\u0000${chatId}` }),
+            );
+            expect(h.fake.batchCount()).toBe(1);
+        } finally {
+            h.sync.stopResourceSync();
+            await journal.close();
+        }
     });
 });
 

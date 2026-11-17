@@ -49,6 +49,7 @@ import {
     type ClientCharacter,
 } from "./storage/characterStore.svelte";
 import { incrementStatic } from "./storage/collectionStore.svelte";
+import { beginMutationScope, flushResources, GenerationBlockedError } from "./storage/resourceSync.svelte";
 import { hasher } from "./parser/parser.svelte";
 import { type CharacterCardV3, type LorebookEntry } from "@risuai/ccardlib";
 import { reencodeImage } from "./process/files/inlays";
@@ -304,9 +305,7 @@ export async function importCharacterProcess<T extends boolean = false>(f: {
         }
         if ((da.char_name || da.name) && (da.char_persona || da.description) && (da.char_greeting || da.first_mes)) {
             const character = convertOffSpecCards(da);
-            const chaId = addCharacter(character);
-            alertNormal(importedCharacterNotice(character.loreSettings));
-            return chaId as any;
+            return (await addImportedCharacter(character)) as any;
         } else {
             alertError(language.errors.noData);
             return;
@@ -649,9 +648,7 @@ async function importPngCharacter(
         const replay = new Map<string, AssetSaveItem>();
         if (typeof img !== "string") replay.set(imgp, { load: () => img });
         if (!(await claimCardAssets([imgp, ...Object.values(assets)], replay))) return null;
-        const chaId = addCharacter(character);
-        alertNormal(importedCharacterNotice(character.loreSettings));
-        return chaId;
+        return addImportedCharacter(character);
     }
     return (await importCharacterCardSpec(read.card, img, "normal", assets, null, false, true)) || null;
 }
@@ -1493,9 +1490,39 @@ async function importCharacterCardSpec<T extends boolean = false>(
         return char as any;
     }
 
+    return (await addImportedCharacter(char)) as any;
+}
+
+/** Keeps an unconfirmed import available for retry and journal recovery without announcing success. */
+async function addImportedCharacter(char: character): Promise<string | null> {
+    const scope = beginMutationScope();
     const chaId = addCharacter(char);
+    const belongsToImport = (key: string) =>
+        key === `characters/${chaId}` || key === `chats/${chaId}` || key.startsWith(`chats/${chaId}/`);
+    let discarded: string[];
+    let refused: string[];
+    try {
+        ({ discarded, refused } = await flushResources({ scope }));
+    } catch (error) {
+        if (!characterSnapshot(chaId)) {
+            alertError(language.characterImportDiscarded);
+            return null;
+        }
+        const reason =
+            error instanceof GenerationBlockedError
+                ? language.chatGenerating
+                : error instanceof Error
+                  ? error.message
+                  : String(error);
+        alertError(language.characterImportUnconfirmed.replace("{{error}}", reason));
+        return null;
+    }
+    if (discarded.some(belongsToImport) || refused.some(belongsToImport)) {
+        alertError(language.characterImportDiscarded);
+        return null;
+    }
     alertNormal(importedCharacterNotice(char.loreSettings));
-    return chaId as any;
+    return chaId;
 }
 
 function convertCharbook(arg: {

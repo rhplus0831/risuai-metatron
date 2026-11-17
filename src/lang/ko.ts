@@ -933,6 +933,8 @@ export const languageKorean = {
         "모델을 가져왔지만, 압축 파일 내 {count}개 파일이 업로드 한도(약 100 MiB)를 초과하여 제외되었습니다: {names}",
     successImport: "성공적으로 가져왔습니다.",
     importedCharacter: "가져온 캐릭터",
+    characterImportUnconfirmed: "캐릭터를 추가했으나 저장 완료 여부를 확인하지 못했습니다 ({{error}}).",
+    characterImportDiscarded: "가져온 캐릭터 또는 첫 채팅을 저장하지 못했습니다. 다시 가져와 주세요.",
     importedLoreSettings: {
         warning:
             "이 캐릭터는 로어북 글로벌 설정을 사용하지 않습니다. 아래의 자체 설정이 적용되며, 괄호 안은 글로벌 설정 값입니다. 캐릭터의 로어북 > 설정에서 바꿀 수 있습니다.",
@@ -987,6 +989,9 @@ export const languageKorean = {
     pluginPermissionsCarriedOver: "이전 버전에 허용했던 권한이 체크되어 있습니다.",
     pluginPermissionsInstallNote: "어느 쪽을 선택해도 플러그인은 설치됩니다.",
     pluginPermissionSaveError: "플러그인 권한을 저장하지 못했습니다: {error}",
+    pluginImportUnconfirmed:
+        "플러그인은 이 탭에 남아 있으나 저장 완료 여부를 확인하지 못했습니다 ({{error}}). 플러그인을 시작하지 않았습니다. 저장을 다시 시도할 수 있도록 페이지를 열어 두거나 파일을 다시 가져와 주세요.",
+    pluginImportDiscarded: "다른 저장으로 가져온 플러그인이 교체되었습니다. 다시 가져와 주세요.",
     pluginChangedDuringImport:
         "권한 목록이 열려 있는 동안 설치된 플러그인이 다른 곳에서 변경되었습니다. 아무것도 설치하지 않았습니다.",
     pluginPermissionsStale:

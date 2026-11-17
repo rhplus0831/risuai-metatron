@@ -16,7 +16,12 @@ import {
 import { pluginCodeTranspiler } from "./apiV3/transpiler";
 import { onPermissionGrantsRemoved } from "./apiV3/permissionStore";
 import { clearPluginHooks } from "./pluginHooks";
-import { onRemoteRecordApplied } from "../storage/resourceSync.svelte";
+import {
+    beginMutationScope,
+    flushResources,
+    GenerationBlockedError,
+    onRemoteRecordApplied,
+} from "../storage/resourceSync.svelte";
 import { RESOURCE_KIND } from "../../../shared/resources.ts";
 import { safeBootOff } from "../safeBoot";
 import type { GuestStartup } from "./apiV3/factory";
@@ -116,11 +121,12 @@ export async function updatePlugin(plugin: RisuPlugin) {
         const response = await globalFetch(plugin.updateURL, { method: "GET", rawResponse: true });
         if (response.ok) {
             const jsFile = new TextDecoder().decode(response.data);
-            await importPlugin(jsFile, {
-                isUpdate: true,
-                originalPluginName: plugin.name,
-            });
-            return true;
+            return (
+                (await importPlugin(jsFile, {
+                    isUpdate: true,
+                    originalPluginName: plugin.name,
+                })) === true
+            );
         }
     } catch (error) {
         console.error("Failed to update plugin:", error);
@@ -137,6 +143,7 @@ export async function updatePlugin(plugin: RisuPlugin) {
  * the import goes on whatever the answer, and a failed save of the permissions is reported. When
  * the installed plugin of that name changed while the list was open, nothing is installed or loaded:
  * silently for an update whose plugin was removed, else with `pluginChangedDuringImport`.
+ * The installed record is flushed before loading; a failed save leaves it pending and reports why.
  */
 export async function importPlugin(
     code: string | null = null,
@@ -430,7 +437,31 @@ export async function importPlugin(
                     ]),
                 );
             }
+            const scope = beginMutationScope();
             upsertPlugin(pluginData);
+            let discarded: string[];
+            try {
+                ({ discarded } = await flushResources({ scope }));
+            } catch (error) {
+                if (!settings.plugins.some((p) => p.name === pluginData.name && p.script === pluginData.script)) {
+                    alertError(language.pluginImportDiscarded);
+                    return false;
+                }
+                const reason =
+                    error instanceof GenerationBlockedError
+                        ? language.chatGenerating
+                        : error instanceof Error
+                          ? error.message
+                          : String(error);
+                alertError(language.pluginImportUnconfirmed.replace("{{error}}", reason));
+                return false;
+            }
+            if (discarded.includes("plugins/main")) {
+                alertError(language.pluginImportDiscarded);
+                return false;
+            }
+        } else {
+            return false;
         }
 
         if (argu.isHotReload && !hotReloading.includes(pluginData.name)) {
@@ -440,6 +471,7 @@ export async function importPlugin(
         console.log(`Imported plugin: ${pluginData.name} (API v3.0)`);
 
         loadPlugins();
+        return true;
     } catch (error) {
         console.error(error);
         alertError(language.errors.noData);

@@ -30,7 +30,6 @@ merge cannot see inside the JSON strings it stores.
 - [chat-store](#chat-store) (1)
 - [memory](#memory) (1)
 - [persistence](#persistence) (1)
-- [plugin-sandbox](#plugin-sandbox) (1)
 - [structured-memory](#structured-memory) (3)
 - [translation](#translation) (2)
 
@@ -146,22 +145,6 @@ Guide: [Persistence: Database, Records, Mutation Stores](../structure/persistenc
   deletion arrives the stale id renders nothing (the sidebar and pins skip absent and trashed characters) and stays
   through selection and idle refresh; the next local add, remove, restore, or reorder (`checkCharOrder`) or the next
   boot repair removes it. Not fixed: hidden order metadata only; the owner has not yet decided to keep it.
-
-## plugin-sandbox
-
-Guide: [Plugins: v3 Sandbox, Host API, Hooks, Storage, Permissions](../structure/plugin-sandbox.md#known-hazards).
-
-- A plugin import is treated as done before its save is confirmed, and a character import announces success at the
-  same point. Reproduced on 2026-11-17 (cross-check F10), each half narrower than filed. Plugin: `importPlugin`
-  hands the plugin to the loader with no save dispatched; after a page hide and a fresh boot against the same server
-  and journal the install was gone, because the `plugins` kind is excluded from the journal
-  (`src/ts/storage/journalEligibility.ts`). There is no success notice to the user, only a console line. An install
-  followed by an acknowledged flush survived. Character: `importCharacterProcess` (`src/ts/characterCards.ts`)
-  showed its success alert while the server held no record, but the page-hide journal write was replayed at the next
-  boot with the character and its first chat, so that path lost nothing; a close before the journal commits was not
-  tested. The module import announces only after its scoped flush is acknowledged (`addImportedModule`,
-  `src/ts/process/modules.ts`). Suggested: use the module importer's scoped flush before announcing success or
-  starting the plugin.
 
 ## structured-memory
 

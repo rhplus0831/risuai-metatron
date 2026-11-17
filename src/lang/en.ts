@@ -994,6 +994,8 @@ export const languageEnglish = {
         "Model imported, but {count} files in the zip are too large to upload (the limit is just under 100 MiB) and were skipped: {names}",
     successImport: "Successfuly imported",
     importedCharacter: "Imported Character",
+    characterImportUnconfirmed: "The character was added, but its save could not be confirmed ({{error}}).",
+    characterImportDiscarded: "The imported character or its first chat could not be saved. Please import it again.",
     importedLoreSettings: {
         warning:
             "This character does not use the global lorebook settings: its own settings below apply, with the global value in parentheses. Change them in the character's Lorebook > Settings.",
@@ -1047,6 +1049,9 @@ export const languageEnglish = {
     pluginPermissionsCarriedOver: "The permissions the previous version was allowed are checked.",
     pluginPermissionsInstallNote: "The plugin is installed whichever you answer.",
     pluginPermissionSaveError: "Could not save plugin permissions: {error}",
+    pluginImportUnconfirmed:
+        "The plugin is still in this tab, but its save could not be confirmed ({{error}}). It has not been started. Keep this page open to retry saving, or import the file again.",
+    pluginImportDiscarded: "The imported plugin was replaced by another save. Please import it again.",
     pluginChangedDuringImport:
         "The installed plugin changed elsewhere while its permission list was open. Nothing was installed.",
     pluginPermissionsStale:

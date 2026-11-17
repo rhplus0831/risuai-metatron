@@ -1,4 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootMutations, warmMutationGraph } from "../storage/tests/mutationStoresHarness";
+import type { StoreBackedServer } from "../storage/tests/storeBackedServer";
 
 // Plugin API 2.0/2.1 was removed. Two contracts replaced it:
 // - `importPlugin` installs a script only when one of its `//@api` tokens is
@@ -12,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 //   keeps a reload from running every handler twice.
 
 const mocks = vi.hoisted(() => ({
+    server: null as StoreBackedServer | null,
     alertError: vi.fn(),
     alertConfirm: vi.fn(async (_message: string) => true),
     loadV3Plugins: vi.fn(async (_plugins: any[]) => {}),
@@ -30,9 +33,11 @@ vi.mock("src/ts/alert", async () =>
     }),
 );
 
-vi.mock("src/ts/util", () => ({
-    selectSingleFile: vi.fn(),
-}));
+vi.mock("src/ts/storage/serverAuth", async () =>
+    (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock({
+        authFetch: (path, init) => mocks.server!.fetch(path, init),
+    }),
+);
 
 // The update check and download go through `globalFetch`.
 vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
@@ -46,6 +51,9 @@ vi.mock("./apiV3/v3.svelte", () => ({
     loadV3Plugins: mocks.loadV3Plugins,
     reviewPluginPermissions: mocks.reviewPluginPermissions,
     pluginGuestsSettled: async () => {},
+    pluginWorkIdle: () => true,
+    onPluginWorkChange: () => () => {},
+    getV3PluginInstance: () => undefined,
 }));
 
 vi.mock("./apiV3/transpiler", () => ({
@@ -341,6 +349,93 @@ describe("plugin source replacement", () => {
             expect(mocks.alertError).not.toHaveBeenCalled();
         },
     );
+});
+
+describe("plugin import save confirmation", () => {
+    let sync: typeof import("../storage/resourceSync.svelte") | undefined;
+    beforeAll(() => warmMutationGraph(), 60_000);
+    beforeEach(() => {
+        localStorage.clear();
+        sessionStorage.clear();
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        vi.spyOn(console, "log").mockImplementation(() => {});
+        vi.spyOn(console, "error").mockImplementation(() => {});
+    });
+    afterEach(() => {
+        sync?.stopResourceSync();
+        mocks.server?.releaseBatch?.();
+        mocks.server?.close();
+        mocks.server = null;
+        vi.clearAllTimers();
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+    });
+
+    async function boot() {
+        vi.resetModules();
+        const h = await bootMutations((server) => (mocks.server = server));
+        sync = h.sync;
+        return { ...h, plugins: await import("./plugins.svelte") };
+    }
+
+    it("starts an imported plugin only after its save is acknowledged", async () => {
+        const h = await boot();
+        h.fake.holdNextBatch = true;
+        let completed = false;
+        const importing = h.plugins.importPlugin(script("//@api 3.0")).then((saved) => {
+            completed = true;
+            return saved;
+        });
+        try {
+            await vi.advanceTimersByTimeAsync(0);
+            expect(completed).toBe(false);
+            expect(mocks.loadV3Plugins).not.toHaveBeenCalled();
+            expect(h.fake.releaseBatch).not.toBeNull();
+            expect(h.record("plugins").some((plugin: RisuPlugin) => plugin.name === "test_plugin")).toBe(false);
+        } finally {
+            h.fake.releaseBatch?.();
+            await importing;
+        }
+        expect(await importing).toBe(true);
+        await h.plugins.pluginsStarted();
+        expect(h.record("plugins")).toContainEqual(expect.objectContaining({ name: "test_plugin", enabled: true }));
+        expect(mocks.loadV3Plugins).toHaveBeenCalledExactlyOnceWith([expect.objectContaining({ name: "test_plugin" })]);
+        expect(mocks.alertError).not.toHaveBeenCalled();
+    });
+
+    it("a failed update save returns false, reports the reason, and retains the pending plugin without starting it", async () => {
+        const h = await boot();
+        await h.plugins.importPlugin(script("//@api 3.0\n//@version 1.0.0"));
+        await h.plugins.pluginsStarted();
+        mocks.loadV3Plugins.mockClear();
+        const replacement = script("//@api 3.0\n//@version 2.0.0");
+        vi.mocked(globalFetch).mockResolvedValueOnce({
+            ok: true,
+            status: 200,
+            headers: {},
+            data: new TextEncoder().encode(replacement),
+        });
+        h.fake.failNext = { status: 0, times: 1, match: (path) => path === "/api/resources/batch" };
+
+        expect(
+            await h.plugins.updatePlugin({
+                ...h.settings.plugins.find((p) => p.name === "test_plugin")!,
+                updateURL: "https://plugins.test/test_plugin.js",
+            }),
+        ).toBe(false);
+        await h.plugins.pluginsStarted();
+
+        expect(mocks.loadV3Plugins).not.toHaveBeenCalled();
+        expect(mocks.alertError).toHaveBeenCalledExactlyOnceWith(
+            language.pluginImportUnconfirmed.replace("{{error}}", "Failed to fetch"),
+        );
+        expect(h.settings.plugins).toContainEqual(
+            expect.objectContaining({ name: "test_plugin", script: replacement, versionOfPlugin: "2.0.0" }),
+        );
+        expect(h.record("plugins")).toContainEqual(
+            expect.objectContaining({ name: "test_plugin", versionOfPlugin: "1.0.0" }),
+        );
+    });
 });
 
 describe("handlePluginInstallViaPlugin", () => {
