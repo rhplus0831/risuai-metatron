@@ -5,7 +5,7 @@ audited against the code at that commit
 ([report](../reports/audits/plan-runner/structured-memory-story-dates-2026-11-18.md)) and corrected in the same commit
 as the report. The goal and the status line formats are the user's; D1 to D7 are this plan's own and open to the
 user's change. The fold rule of slice 1, the limits on custom prompts and replays, the scope of the unchanged-card
-rule, and D7's wording took their present form from the audit. Landed: 1 (`24761a012`).
+rule, and D7's wording took their present form from the audit. Landed: 1 (`24761a012`), 2 (`29df9f2ee`).
 
 Sources: `MemoryEventDraft`, `MemoryEvent`, `memorySourceText`, `StructuredMemoryStoryEvent`, and
 `STRUCTURED_MEMORY_LIMITS` in `shared/structuredMemory.ts`; `readStoryTime` and `parseAnalysis` in
