@@ -373,14 +373,74 @@ export interface MemoryKnowledgeDraft {
     axes?: MemoryAxes;
 }
 
+/** A calendar date inside the story, as its messages state it; a date stated without a year has none. */
+export type MemoryStoryDate = { year?: number; month: number; day: number };
+
+const STORY_DATE_PATTERN = /^(?:(\d{4})([-/.]))?(\d{1,2})([-/.])(\d{1,2})$/;
+
+const wholeUpTo = (value: unknown, max: number): value is number =>
+    typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= max;
+
+/**
+ * Whether a stored value is a story date: a plain object with a whole `month` of 1 to 12, a whole `day`
+ * that month has, and a whole `year` of 1 to 9999 or none. February has 29 days in a Gregorian leap year,
+ * and with no year, since the day may fall in one. Any other field it holds is left alone.
+ */
+export function isStoryDate(value: unknown): value is MemoryStoryDate {
+    if (!isPlainObject(value)) {
+        return false;
+    }
+    const { year, month, day } = value;
+    if (!wholeUpTo(month, 12) || !wholeUpTo(day, 31)) {
+        return false;
+    }
+    let leap = true;
+    if (year !== undefined) {
+        if (!wholeUpTo(year, 9999)) {
+            return false;
+        }
+        leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    }
+    const days = month === 2 ? (leap ? 29 : 28) : [4, 6, 9, 11].includes(month) ? 30 : 31;
+    return day <= days;
+}
+
+/**
+ * The date a whole text states as `YYYY-MM-DD` or `MM-DD`: a four-digit year, one or two digits for the
+ * month and the day, and `-`, `/`, or `.` between them, the same one on both sides of the month.
+ * Undefined for any other text, a date inside prose included, and for a date `isStoryDate` refuses.
+ */
+export function parseStoryDate(text: string): MemoryStoryDate | undefined {
+    const match = STORY_DATE_PATTERN.exec(text.trim());
+    if (!match) {
+        return undefined;
+    }
+    const [, year, yearSeparator, month, separator, day] = match;
+    if (year !== undefined && yearSeparator !== separator) {
+        return undefined;
+    }
+    const date = { ...(year !== undefined ? { year: Number(year) } : {}), month: Number(month), day: Number(day) };
+    return isStoryDate(date) ? date : undefined;
+}
+
+/** A story date as `parseStoryDate` reads it: `2025-04-03`, or `10-15` with no year. */
+export function formatStoryDate(date: MemoryStoryDate): string {
+    const padded = (part: number, length: number) => String(part).padStart(length, "0");
+    const monthDay = `${padded(date.month, 2)}-${padded(date.day, 2)}`;
+    return date.year === undefined ? monthDay : `${padded(date.year, 4)}-${monthDay}`;
+}
+
 /** The event fields the writer returns. */
 export interface MemoryEventDraft {
     title: string;
     summary: string;
     /** Page ids. */
     participants: string[];
-    /** Time inside the story, never a wall clock; `ordinal` orders events when the text cannot. */
-    storyTime: { text: string; ordinal?: number };
+    /**
+     * Time inside the story, never a wall clock; `ordinal` orders events when the text cannot, and `date`
+     * is the calendar date the recorded messages state, when they state one.
+     */
+    storyTime: { text: string; ordinal?: number; date?: MemoryStoryDate };
     /** Verbatim lines from the window. */
     keyLines: { speaker: string; text: string }[];
     stateChanges: { pageId: string; section: string; before: string; after: string; quote: string }[];

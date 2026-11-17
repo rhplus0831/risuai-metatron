@@ -177,6 +177,15 @@ page, scene and link changes by id for one store write.
 With `keyLineGuidance` on, the analysis call's `rules` slot gains the key-line selection rule, including custom frames
 through `{{slot::rules}}`; the default-prompts answer and patch and compaction calls never carry it.
 
+The analysis answer's `storyTime` holds the free `text` and a `date`, `YYYY-MM-DD` or `MM-DD`, that a message under
+"Messages to record" states; `RULES` asks for the last one stated and forbids calculating, guessing, or taking one from
+the context. `readStoryTime` keeps a string `parseStoryDate` accepts and drops anything else without a warning. `RULES`
+and `PATCH_RULES` also keep words that depend on the reading day (today, yesterday) out of summaries, facts, and pages.
+A custom frame gets the date format and both rules only through `{{slot::format}}` and `{{slot::rules}}` (a patch frame
+the second rule through `{{slot::rules}}`), and a replayed `input` sends what it was built with. A repeat folded into
+the chat's last event keeps the stored `storyTime.text` and takes the answer's valid date, so an event's date stays the
+last one its messages state; an answer with no date leaves the stored one.
+
 `changeSection` starts evidence afresh for a replaced body, retains it when a disputed join or identical text remains,
 and keeps `disputed` while the body still holds the join. Highlights follow the chat-or-preset rule, with rebuilds using
 `none`; `addLinks` moves each shift destination to the newest end and keeps the newest `pageRefsPerItem` links.

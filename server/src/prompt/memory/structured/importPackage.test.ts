@@ -1,8 +1,14 @@
 // @vitest-environment node
 import { readFileSync } from "node:fs";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { MAX_READ_RESPONSE_BYTES } from "../../../../../shared/resources.ts";
+import { memoryRecords } from "../../../tests/memoryFixtures.ts";
 import { parseMemoryPackage } from "./importPackage.ts";
+
+vi.mock("../../../../../src/ts/storage/serverAuth", async () => {
+    const fixture = "../../../../../src/ts/storage/tests/serverAuthMock.ts";
+    return (await import(fixture)).createServerAuthMock();
+});
 
 // Literal wire fixture, with substitutions only for the malformed-record cases below.
 const pageText =
@@ -92,6 +98,21 @@ it("refuses bad files individually without losing valid pages or polluting proto
 
 // What the tab's renderers write, which the client's test keeps true.
 const renderedPackage = new URL("../../../tests/fixtures/memoryPackage.json", import.meta.url);
+
+it("round trips a story date through the Markdown timeline renderer and package import", async () => {
+    // A computed path keeps the client module graph out of the server's TypeScript project.
+    const clientModule = "../../../../../src/ts/process/structuredMemory.svelte.ts";
+    const { renderMemoryTimeline, renderMemoryThreads } = await import(clientModule);
+    const event = {
+        ...memoryRecords(["dated"]).events[0],
+        storyTime: { text: "At dawn", date: { year: 2025, month: 4, day: 3 } },
+    };
+    const parsed = parseMemoryPackage([
+        { path: "timeline.md", text: renderMemoryTimeline([{ ...event, createdRevision: 1 }], "epoch:1:1") },
+        { path: "threads.md", text: renderMemoryThreads([], "epoch:1:1") },
+    ]);
+    expect(parsed).toStrictEqual({ pages: [], events: [event], threads: [], refusals: [] });
+});
 
 it("round trips rendered pages, timeline and threads verbatim and drops legacy thread references once", () => {
     const files = JSON.parse(readFileSync(renderedPackage, "utf8")) as { path: string; text: string }[];

@@ -3,6 +3,26 @@ import { expect, it } from "vitest";
 import { memoryRecords } from "../../../tests/memoryFixtures.ts";
 import { parseRestoredRecords } from "./restore.ts";
 
+it.each([
+    { name: "a full story date", storyTime: { text: "At dawn", date: { year: 2025, month: 4, day: 3 } } },
+    { name: "a yearless story date", storyTime: { text: "At dawn", date: { month: 2, day: 29 } } },
+    { name: "no story date", storyTime: { text: "At dawn" } },
+])("restores an event with $name", ({ storyTime }) => {
+    const { pages, events, threads } = memoryRecords(["saved"]);
+    const records = { pages, events: [{ ...events[0], storyTime }], threads };
+    expect(parseRestoredRecords(records)).toStrictEqual(records);
+});
+
+it.each([
+    { name: "an impossible day", date: { year: 2025, month: 2, day: 29 } },
+    { name: "a string instead of a stored date", date: "2025-04-03" },
+])("refuses to restore an event with $name", ({ date }) => {
+    const { pages, events, threads } = memoryRecords(["saved"]);
+    expect(
+        parseRestoredRecords({ pages, events: [{ ...events[0], storyTime: { text: "At dawn", date } }], threads }),
+    ).toBeNull();
+});
+
 it("keeps genuine records beyond writer limits whole, removing only runs and source lifecycle fields", () => {
     const { pages, events, threads, runs } = memoryRecords(["saved"]);
     const section = pages[0].sections[0];

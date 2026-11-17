@@ -208,6 +208,10 @@ snapshots like a checkpoint write.
   count). `MemoryRun.analysis` keeps the bounded draft before evidence checks and deduplication, so the log shows what
   the model said even when `eventId` names something else. `MemoryRun.receipt` holds what the run listed; a message's
   `generationInfo.memory` is its copy, or what the send said ([Receipts](read.md#receipts)).
+- An event's `storyTime` is the writer's free `text`, an optional `ordinal`, and an optional `date` (`MemoryStoryDate`,
+  `{ year?, month, day }`): a calendar date the recorded messages state, copied by the writer. `parseStoryDate`,
+  `formatStoryDate`, and `isStoryDate` in `shared/structuredMemory.ts` own its forms and validity. An event recorded
+  before the field, or from messages that state no date, has none.
 - The writer computes event and knowledge grades as the sum of their axes, 0 to 9, omitting `grade` without axes. Pages
   can hold a person's grade without axes; `gradeByUser` marks that choice (`applyPageEdit`).
 
@@ -383,8 +387,8 @@ group: no walk reads them.
 
 - The limits are starting values. Only `keyLinesPerEvent`, `pageCandidates`, `consecutiveFailures`, `axisMax`,
   `gradeMax`, `importantEventGrade`, and `dedupeSimilarity` are design numbers.
-- A loaded event can lack `storyTime`, `keyLines`, or `participants`, since `checkMemoryRow` checks a row's columns
-  only. The server's readers take them as empty (`eventBody`, `eventVectorTexts`, `remappedEvent`); a new reader must
-  too. An event whose `summary`, `knowledge`, `sources`, `keyLines`, or `participants` has the wrong type is skipped by
-  prompt selection, coverage, retrieval, vector warming, and recording (`memoryEventHasReadableFields`) and stays
-  stored.
+- A loaded event can lack `storyTime`, `keyLines`, or `participants`, or hold a `storyTime.date` no check has read,
+  since `checkMemoryRow` checks a row's columns only. The server's readers take them as empty (`eventBody`,
+  `eventVectorTexts`, `remappedEvent`); a new reader must too. An event whose `summary`, `knowledge`, `sources`,
+  `keyLines`, or `participants` has the wrong type is skipped by prompt selection, coverage, retrieval, vector warming,
+  and recording (`memoryEventHasReadableFields`) and stays stored.

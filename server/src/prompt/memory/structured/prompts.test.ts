@@ -35,6 +35,26 @@ const analysisInput: AnalysisInput = {
     speaker: () => "Cara",
 };
 
+it("names storyTime.date in the analysis answer format", () => {
+    expect(defaultPrompts().analysis.format).toMatch(/"storyTime"\s*:\s*\{[^}]*"date"\s*:/);
+});
+
+it("carries the stored story date in the patch event slot", () => {
+    const event = memoryRecords(["dated"]).events[0];
+    event.storyTime = { text: "At dawn", date: { year: 2025, month: 4, day: 3 } };
+    const slots = patchSlots({ language: "English", rows: [], event });
+    expect(JSON.parse(slots.previous).storyTime).toStrictEqual({
+        text: "At dawn",
+        date: { year: 2025, month: 4, day: 3 },
+    });
+});
+
+it.each(["analysis", "patch"] as const)("keeps the rule against day-relative words in %s rules", (call) => {
+    const rules = defaultPrompts()[call].rules;
+    expect(rules).toContain("never write a word that depends on the day");
+    expect(rules).toContain("today, yesterday");
+});
+
 it("omits users from message and context slots without shifting source ids or the context boundary", () => {
     const messages: Message[] = ["u0", "a0", "u1", "a1", "u2", "a2", "u3", "a3", "u4", "a4", "u5", "a5"].map((id) => ({
         chatId: id,

@@ -25,6 +25,7 @@ import {
     STRUCTURED_MEMORY_LIMITS as LIMITS,
     memorySourceText,
     memoryWriterReads,
+    parseStoryDate,
 } from "../../../../../shared/structuredMemory.ts";
 import { isPlainObject } from "../../../../../shared/valueKinds.ts";
 import { type MemoryEventWrite, messageSourceHash } from "../../../data/memoryStore.ts";
@@ -155,10 +156,13 @@ function readStoryTime(value: unknown): MemoryEventDraft["storyTime"] {
         return { text: "" };
     }
     const { text, ordinal } = value;
+    // A date that is no string, or states no possible day, is left out as a missing story time is.
+    const date = typeof value.date === "string" ? parseStoryDate(value.date) : undefined;
     return {
         text: typeof text === "string" ? clampText(text, LIMITS.labelChars) : "",
         // Finite: a store refuses anything else, and `1e999` parses to Infinity.
         ...(typeof ordinal === "number" && Number.isFinite(ordinal) ? { ordinal } : {}),
+        ...(date ? { date } : {}),
     };
 }
 
@@ -535,9 +539,11 @@ function repeatsEvent(
  *   written once, the last naming winning, and an end sets `closedBy`.
  * - A repeat of the last stored event (`repeatsEvent`) makes no new event: that event counts it and
  *   cites the window, or the window would stay open forever, and records this admission's thread moves.
- *   The thread changes name it. Everything else on it stays, pins included, and `speakerId` does not
- *   reach it. A window that re-records an event is never a repeat: a repair must replace that event,
- *   not merge into it.
+ *   The thread changes name it. It also takes the answer's valid `storyTime.date`, so an event's date
+ *   stays the last date its messages state; an answer with no date leaves the stored one, and the stored
+ *   story time text and ordinal stay either way. Everything else on it stays, pins included, and
+ *   `speakerId` does not reach it. A window that re-records an event is never a repeat: a repair must
+ *   replace that event, not merge into it.
  *   Repetition requires an active event, the same participants and character-bigram Jaccard similarity
  *   at least `dedupeSimilarity`; hashed sources and any greeting citation must still match, while
  *   adopted null hashes pass.
@@ -670,12 +676,21 @@ export function admitAnalysis(arg: {
     const transitions = [...moved].flatMap(([threadId, to]) => (to === "done" ? [] : [{ threadId, to }]));
     const grade = memoryGrade(draft.axes);
     const greeting = (repeated && storedMemoryGreeting(repeated.greeting)) || window.greeting?.source;
+    const { date } = draft.storyTime;
     const event: MemoryEventWrite = repeated
         ? {
               ...repeated,
               repeatCount: (repeated.repeatCount ?? 0) + 1,
               sources: [...repeated.sources, ...window.sources],
               ...(greeting ? { greeting } : {}),
+              // A stored record is not shape-checked on write, and spreading a string would add index keys.
+              ...(date
+                  ? {
+                        storyTime: isPlainObject(repeated.storyTime)
+                            ? { ...repeated.storyTime, date }
+                            : { text: "", date },
+                    }
+                  : {}),
               openThreads: {
                   ...repeated.openThreads,
                   close: [...repeated.openThreads.close.filter((id) => !moved.has(id)), ...close],

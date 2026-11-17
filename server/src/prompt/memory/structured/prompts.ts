@@ -127,7 +127,7 @@ const FORMAT = `Answer with one JSON object and nothing else, with exactly these
   "title": "a short title",
   "summary": "what happened, at most ${LIMITS.eventSummaryChars} characters",
   "participants": ["page id"],
-  "storyTime": { "text": "when this happens in the story, or empty" },
+  "storyTime": { "text": "when this happens in the story, or empty", "date": "YYYY-MM-DD, or MM-DD with no year stated; only a date the messages state" },
   "keyLines": [{ "speaker": "speaker label", "text": "quote" }],
   "stateChanges": [{ "pageId": "page id", "section": "what changed", "before": "old value", "after": "new value", "quote": "quote" }],
   "knowledge": [{ "pageId": "page id of who learned it", "fact": "the fact", "stance": "${MEMORY_KNOWLEDGE_STANCES.join(" or ")}", "quote": "quote", "knowers": ["page id, only on a secret"], "axes": { "persistence": 0, "change": 0, "reach": 0 } }],
@@ -148,6 +148,10 @@ Axes score how long it lasts, how much it changes, and how many it touches.
 Empty lists stay as []. At most ${LIMITS.keyLinesPerEvent} keyLines, ${LIMITS.stateChangesPerEvent} stateChanges, ${LIMITS.knowledgePerEvent} knowledge, ${LIMITS.relationshipShiftsPerEvent} relationshipShifts, ${LIMITS.threadsPerEvent} of each thread list, and ${LIMITS.pageCandidates} pageCandidates.
 "scene" is null when nothing about it changed; a blank field keeps what the scene says.`;
 
+/** For every call that writes text a later send reads: the analysis call and the patch call. */
+const RELATIVE_DAY_RULE =
+    "- A summary, a fact, and a page's text are read long after they are written: never write a word that depends on the day it is read (today, yesterday, tomorrow, tonight, this morning, last night). Name the date when the event has one, otherwise the time of day or what it followed.";
+
 const RULES = (scene: MemoryPage | null) => `Rules:
 - A quote (a key line's text and every "quote") is copied verbatim from one message under "Messages to record", at most ${LIMITS.keyLineChars} characters: never reworded, never joined across messages or across an [Image] mark, never taken from the context.
 - Page and thread ids come only from the lists shown. Never invent an id: a lasting subject with no listed page gets a "create" in pageCandidates, and its exact title stands in for its id in this answer. Leave out the rest.
@@ -156,7 +160,9 @@ const RULES = (scene: MemoryPage | null) => `Rules:
 - Scene field limits in characters: ${SCENE_SECTIONS.map((heading) => `${heading} ${memorySceneFieldLimit(scene?.sections.find((section) => section.heading === heading)?.body.length ?? 0)}`).join(", ")}. A longer existing field may stay that long.
 - A scene field never repeats a text listed as taken back unless the messages establish it again.
 - When these messages newly establish a lasting fact about a listed character (age, family, occupation, real name, origin, nature, who now owns or is responsible for them, where they now live, or that a situational role such as customer, visitor or patient has ended) that the page's identity summary lacks or contradicts, report it in stateChanges with section "identity", the quote that establishes it, and name that page in pageCandidates.
-- Read each sentence of a listed page's identity against these messages: when a sentence describes a situation, condition or role that these messages show has ended or been resolved, report it in stateChanges with section "identity", a quote that establishes the end, and name that page in pageCandidates.`;
+- Read each sentence of a listed page's identity against these messages: when a sentence describes a situation, condition or role that these messages show has ended or been resolved, report it in stateChanges with section "identity", a quote that establishes the end, and name that page in pageCandidates.
+- storyTime.date is the calendar date a message under "Messages to record" states, as in a status line or header: "2025년 4월 3일" is "2025-04-03", "10월 15일" with no year is "10-15". When the messages state several, use the last. Never calculate or guess one, never take it from the context, and leave it out for a calendar that is not year, month and day.
+${RELATIVE_DAY_RULE}`;
 
 const KEY_LINE_GUIDANCE_RULE =
     "- Choose as key lines the ones that carry a decision, a promise, a revealed fact, or a feeling; leave out greetings and filler.";
@@ -185,7 +191,8 @@ const PATCH_RULES = `Rules:
 - A section marked disputed holds two values, the second on a "[disputed]" line, because an earlier event contradicted the first without settling it. When the event shows which is true, upsert the section with that one value and no "[disputed]" line; otherwise leave the section as it is.
 - A section marked userCorrected holds a person's words: change it only when the event contradicts them.
 - A person undid what a page lists under takenBack: do not write that text again, and do not delete a section marked deleted there.
-- "conflict" is "change" when the story moved on from the old value, and "contradiction" when both cannot be true and the story does not say why, with "confidence" from 0 to 1 that the new value is right.`;
+- "conflict" is "change" when the story moved on from the old value, and "contradiction" when both cannot be true and the story does not say why, with "confidence" from 0 to 1 that the new value is right.
+${RELATIVE_DAY_RULE}`;
 
 const COMPACT_FORMAT = `Answer with one JSON object and nothing else:
 { "body": "the section's whole shorter text" }`;

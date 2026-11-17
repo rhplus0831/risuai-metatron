@@ -22,6 +22,66 @@ const draft = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe("analysis admission", () => {
+    it.each([
+        { name: "a full string date", date: "2025/4/3", expected: { year: 2025, month: 4, day: 3 } },
+        { name: "a yearless string date", date: "10-15", expected: { month: 10, day: 15 } },
+        { name: "an impossible date", date: "2025-02-29", expected: undefined },
+        { name: "a non-string date", date: { year: 2025, month: 4, day: 3 }, expected: undefined },
+        { name: "no date", date: undefined, expected: undefined },
+    ])("parses an answer with $name without losing its story time text", ({ date, expected }) => {
+        const parsed = parseAnalysis(JSON.stringify(draft({ storyTime: { text: "At dawn", date } })));
+        expect(parsed.ok).toBe(true);
+        if (!parsed.ok) throw new Error(parsed.error);
+        expect(parsed.analysis.event.storyTime).toStrictEqual({
+            text: "At dawn",
+            ...(expected === undefined ? {} : { date: expected }),
+        });
+        expect(parsed.warnings).toEqual([]);
+    });
+
+    it.each([
+        { name: "takes the answer's date", date: "10-15", expected: { month: 10, day: 15 } },
+        {
+            name: "keeps the stored date when the answer has none",
+            date: undefined,
+            expected: { year: 2025, month: 4, day: 3 },
+        },
+    ])("a repeat $name while keeping the stored story time text", ({ date, expected }) => {
+        const messages: Message[] = ["first", "repeat"].map((chatId) => ({
+            chatId,
+            role: "char",
+            data: "Cara promises to return.",
+        }));
+        const sources = messages.map((message, index) => ({
+            messageId: message.chatId!,
+            index,
+            hash: messageSourceHash(message),
+        }));
+        const lastEvent = {
+            ...memoryRecords(["stored"], "Cara promises to return.").events[0],
+            createdRevision: 1,
+            sources: [sources[0]],
+            storyTime: { text: "The first morning", date: { year: 2025, month: 4, day: 3 } },
+        };
+        const parsed = parseAnalysis(JSON.stringify(draft({ storyTime: { text: "Later that evening", date } })));
+        if (!parsed.ok) throw new Error(parsed.error);
+        const admitted = admitAnalysis({
+            draft: parsed.analysis.event,
+            warnings: parsed.warnings,
+            window: { messages: [messages[1]], sources: [sources[1]] },
+            messages,
+            runId: "repeat-run",
+            pages: new Set(),
+            threads: new Map(),
+            lastEvent,
+            newId: () => "new-event",
+        });
+        expect(admitted.repeated).toBe(true);
+        expect(admitted.event.id).toBe("stored");
+        expect(admitted.event.sources).toEqual(sources);
+        expect(admitted.event.storyTime).toStrictEqual({ text: "The first morning", date: expected });
+    });
+
     it("rejects user-only quotes as quoteNotFound under omission and keeps the full source coverage", () => {
         const messages: Message[] = [
             { chatId: "u", role: "user", data: "The secret is amber." },

@@ -16,6 +16,9 @@ import {
     memoryRerecordTarget,
     memorySourceHashVersion,
     memorySourceText,
+    parseStoryDate,
+    formatStoryDate,
+    isStoryDate,
     storedMemoryGreeting,
     greetingCited,
     memoryChatGreeting,
@@ -342,7 +345,74 @@ it("uses character slot budgets and keeps the page budget for other headings and
     expect(memorySectionOverBudget("character", "goals", "x".repeat(1001))).toBe(false);
 });
 
+describe("story dates", () => {
+    it.each([
+        ["2025-04-03", { year: 2025, month: 4, day: 3 }],
+        ["2025/4/3", { year: 2025, month: 4, day: 3 }],
+        ["0001.01.1", { year: 1, month: 1, day: 1 }],
+        ["10-15", { month: 10, day: 15 }],
+        ["2/9", { month: 2, day: 9 }],
+        ["02.29", { month: 2, day: 29 }],
+        ["2024-02-29", { year: 2024, month: 2, day: 29 }],
+        ["2000-02-29", { year: 2000, month: 2, day: 29 }],
+        ["9999-12-31", { year: 9999, month: 12, day: 31 }],
+    ] as const)("parses %s and accepts its stored date", (text, date) => {
+        expect(parseStoryDate(text)).toStrictEqual(date);
+        expect(isStoryDate(date)).toBe(true);
+    });
+
+    it.each([
+        ["0000-01-01", { year: 0, month: 1, day: 1 }],
+        ["10000-01-01", { year: 10000, month: 1, day: 1 }],
+        ["00-01", { month: 0, day: 1 }],
+        ["13-01", { month: 13, day: 1 }],
+        ["01-00", { month: 1, day: 0 }],
+        ["01-32", { month: 1, day: 32 }],
+        ["04-31", { month: 4, day: 31 }],
+        ["02-30", { month: 2, day: 30 }],
+        ["2025-02-29", { year: 2025, month: 2, day: 29 }],
+        ["1900-02-29", { year: 1900, month: 2, day: 29 }],
+    ] as const)("refuses %s and its invalid stored date", (text, date) => {
+        expect(parseStoryDate(text)).toBeUndefined();
+        expect(isStoryDate(date)).toBe(false);
+    });
+
+    it.each(["025-04-03", "2025-004-03", "2025-04-003", "On 2025-04-03", "2025-04-03 at dawn"])(
+        "refuses date text outside the supported forms: %s",
+        (text) => {
+            expect(parseStoryDate(text)).toBeUndefined();
+        },
+    );
+
+    it("requires a stored object with whole numeric date fields", () => {
+        for (const value of [
+            null,
+            "2025-04-03",
+            { year: "2025", month: 4, day: 3 },
+            { month: "4", day: 3 },
+            { month: 4, day: 3.5 },
+            { month: 4 },
+        ]) {
+            expect(isStoryDate(value), JSON.stringify(value)).toBe(false);
+        }
+    });
+
+    it("formats dates with padded parts and leaves an unstated year out", () => {
+        expect(formatStoryDate({ year: 2025, month: 4, day: 3 })).toBe("2025-04-03");
+        expect(formatStoryDate({ month: 10, day: 15 })).toBe("10-15");
+        expect(formatStoryDate({ year: 1, month: 2, day: 9 })).toBe("0001-02-09");
+    });
+});
+
 describe("memorySourceText", () => {
+    it.each([
+        ["bracketed status", "[Nu|2025년 4월 3일 목요일|아침|재원의 방]", "2025년 4월 3일"],
+        ["inline status", "<status>date:2025/10/27 (월)|time:아침|place:재원의 방</status>", "2025/10/27"],
+        ["status block", "<STATUS>\ntime=19:40\ndate=10월 15일 (목)\n</STATUS>", "10월 15일"],
+    ])("keeps the stated calendar date in %s", (_form, text, dateText) => {
+        expect(memorySourceText(text)).toContain(dateText);
+    });
+
     const block =
         '<div class="am-illustration-projection" data-am-message-id="m" data-am-slot-index="12">' +
         '<span class="am-image" style="display: block"><img class="am-image__media" ' +

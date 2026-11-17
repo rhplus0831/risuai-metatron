@@ -1,4 +1,5 @@
 import {
+    isStoryDate,
     MEMORY_CONTEXT_MODES,
     storedMemoryGreeting,
     MEMORY_EVENT_STATUSES,
@@ -175,7 +176,11 @@ const isEvent = shaped<Omit<MemoryEventWrite, "rerecord">>({
     title: isText,
     summary: isText,
     participants: isTexts,
-    storyTime: shaped<MemoryEvent["storyTime"]>({ text: isText, ordinal: optional(isNumber) }),
+    storyTime: shaped<MemoryEvent["storyTime"]>({
+        text: isText,
+        ordinal: optional(isNumber),
+        date: optional(isStoryDate),
+    }),
     keyLines: listOf(shaped<MemoryEvent["keyLines"][number]>({ speaker: isText, text: isText })),
     stateChanges: listOf(
         shaped<MemoryEvent["stateChanges"][number]>({

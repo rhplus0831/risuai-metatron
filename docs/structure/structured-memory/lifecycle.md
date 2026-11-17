@@ -183,6 +183,11 @@ Import crosses the file adapter, chat creation, save loop and restore route:
    request answers `restored: false`. Only the three checked lists reach the store, which can still refuse invalid ids,
    a second scene page or an oversized record with 400.
 
+`parseRestoredRecords`, for a chat file and a Markdown package alike, admits an event's `storyTime.date` when
+`isStoryDate` holds and refuses the record when it does not, as any malformed field; an event without one restores as
+before. `MEMORY_PACKAGE_VERSION` stays 2: `metadataLines` already writes the field, and an older build's check leaves it
+alone.
+
 The body cap is `RouteLimits.memoryRestoreBodyBytes`, default `MEMORY_RESTORE_BODY_BYTES` (32 MiB), since a stored
 record can reach one read round. A 413 is `tooLarge` with a size notice. `restored: false` or a non-`epoch` refusal
 fails; `epoch` halts with its own notice. `restoreChatMemory` names failed chats under any algorithm, each failure
