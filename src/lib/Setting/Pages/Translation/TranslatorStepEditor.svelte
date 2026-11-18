@@ -279,6 +279,7 @@
                 }
             }
             placeholder={defaultTranslatorPrompt}
+            popupMode="literal"
         />
     </div>
 {/if}

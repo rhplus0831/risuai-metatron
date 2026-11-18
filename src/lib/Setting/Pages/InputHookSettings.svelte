@@ -204,6 +204,7 @@
                     id={`input-hook-prompt-${hookId}`}
                     fullwidth
                     popupEditor
+                    popupMode="literal"
                     popupEditorContext={hookId}
                     bind:value={
                         () => liveHook(hookId)?.prompt ?? "",
