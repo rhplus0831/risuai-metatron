@@ -10,7 +10,7 @@ import { WebSocket as WsClient } from "ws";
 import { CALLBACK_TIMEOUT_MS } from "../jobs/channel.ts";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
-import { completionNotificationTag } from "../../../shared/notifications.ts";
+import * as notifications from "../../../shared/notifications.ts";
 import type { PushTransport } from "../push/pushService.ts";
 import * as tokenCounters from "../prompt/tokens.ts";
 import { allowListenerOrigin, createSigner, createTestServer, json, sleep, waitFor } from "./testSupport.ts";
@@ -738,7 +738,7 @@ describe("the streaming tail", () => {
                     title: "Risuai",
                     body: "Ann's message has been processed.",
                     url: `/chat/${chaId}/k`,
-                    tag: completionNotificationTag(chaId, "k"),
+                    tag: notifications.completionNotificationTag(chaId, "k"),
                 };
                 expect(notices(events, "notification").map((event) => event.payload)).toEqual([notification]);
                 await waitFor(() => pushes.length === 1);
@@ -1759,13 +1759,13 @@ describe("held completion delivery", () => {
         title: "Risuai",
         body: `${name}'s message has been processed.`,
         url: `/chat/${chaId}/k`,
-        tag: completionNotificationTag(chaId, "k"),
+        tag: notifications.completionNotificationTag(chaId, "k"),
     });
     const expectedPush = (chaId: string, name: string) => ({
         title: "Risuai",
         body: `${name}'s message has been processed.`,
         url: `/chat/${chaId}/k`,
-        tag: completionNotificationTag(chaId, "k"),
+        tag: notifications.completionNotificationTag(chaId, "k"),
         icon: "/logo_192.png",
         badge: "/logo_192.png",
     });
@@ -1861,7 +1861,9 @@ describe("held completion delivery", () => {
         });
     });
 
-    it("holds a group send's notifications and releases only the last speaker's completion", async () => {
+    it("holds a group send's notifications and releases only the last speaker's completion", async ({
+        onTestFinished,
+    }) => {
         await withSettings({ notification: true, useStreaming: false }, async () => {
             const ann = await seedCharacter({ name: "Ann" });
             const bob = await seedCharacter({ name: "Bob" });
@@ -1878,20 +1880,35 @@ describe("held completion delivery", () => {
                 },
             });
             const requestId = `group-${group}`;
+            // Both speakers' notices name the group. Label their bodies to track which one is released.
+            const formatNotification = notifications.completionNotification;
+            const labelNotice = (speaker: string) => (args: Parameters<typeof formatNotification>[0]) => {
+                const notification = formatNotification(args);
+                return { ...notification, body: `${notification.body} (${speaker})` };
+            };
+            const formatter = vi
+                .spyOn(notifications, "completionNotification")
+                .mockImplementationOnce(labelNotice("Ann"))
+                .mockImplementationOnce(labelNotice("Bob"));
+            onTestFinished(() => {
+                formatter.mockRestore();
+            });
+            const firstBody = "Crew's message has been processed. (Ann)";
+            const lastBody = "Crew's message has been processed. (Bob)";
             pushes.length = 0;
             answers = [{ chunks: ["First reply."] }, { chunks: ["Last reply."] }];
             const result = await job("group", group, { completionHoldMs: holdMs }, { requestId });
             expect(result.terminal?.type).toBe("done");
             expect(texts(await readChat(group))).toEqual(["user:q", "char:First reply.", "char:Last reply."]);
             expect(notices(result.events, "notification").map((event) => event.payload)).toEqual([
-                expectedNotice(group, "Crew"),
-                expectedNotice(group, "Crew"),
+                { ...expectedNotice(group, "Crew"), body: firstBody },
+                { ...expectedNotice(group, "Crew"), body: lastBody },
             ]);
             expect(pushes).toEqual([]);
             expect(await release(requestId)).toEqual({ status: 200, body: { released: true } });
             await vi.advanceTimersByTimeAsync(0);
             expect(pushes.map(({ endpoint, payload }) => ({ endpoint, payload: JSON.parse(payload) }))).toEqual([
-                { endpoint: PUSH_ENDPOINT, payload: expectedPush(group, "Crew") },
+                { endpoint: PUSH_ENDPOINT, payload: { ...expectedPush(group, "Crew"), body: lastBody } },
             ]);
             await vi.advanceTimersByTimeAsync(holdMs);
             expect(pushes).toHaveLength(1);
