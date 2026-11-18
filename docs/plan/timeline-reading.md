@@ -4,7 +4,7 @@ Status: drafted 2026-11-18 at `de5357ca5` from the owner's request; the owner ac
 (Decisions); audited the same day by a read-only GPT-6.2-Astra session in `full` mode, at the owner's request in
 place of plan-runner's own audit ([report](../reports/audits/plan-runner/timeline-reading-2026-11-18.md): one P1,
 seven P2, and thirteen P3, all fixed in this text). The report and this line share the plan's last commit, so a
-plan-runner run skips its Plan audit unless the plan changes again. Landed: none.
+plan-runner run skips its Plan audit unless the plan changes again. Landed: 1 (`9dd66b47a`).
 
 Sources: the owner's request and answers (2026-11-18: the Timeline lists the oldest event first, and as turns pile up
 it reads as a log viewer for the data the model uses, not as a page a person refers to; the most frequent use is
