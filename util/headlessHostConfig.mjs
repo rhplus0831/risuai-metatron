@@ -30,10 +30,17 @@ export function resolveHeadlessHostAddress(raw) {
     throw new Error("RISU_HOST must be a numeric loopback address without brackets, or a wildcard (0.0.0.0 or ::)");
 }
 
+// A Windows environment snapshot retains the original spelling of its case-insensitive keys.
+function envValue(env, platform, name) {
+    if (platform !== "win32" || Object.hasOwn(env, name)) return env[name];
+    return Object.entries(env).find(([key]) => key.toUpperCase() === name)?.[1];
+}
+
 /** Blank ports are unset: use RISU_HEADLESS_HOST_PORT, then PORT, then 6001. */
-export function resolveHeadlessHostPort(env) {
-    const variable = env.RISU_HEADLESS_HOST_PORT?.trim() ? "RISU_HEADLESS_HOST_PORT" : "PORT";
-    const raw = env[variable]?.trim();
+export function resolveHeadlessHostPort(env, platform) {
+    const hostPort = envValue(env, platform, "RISU_HEADLESS_HOST_PORT")?.trim();
+    const variable = hostPort ? "RISU_HEADLESS_HOST_PORT" : "PORT";
+    const raw = hostPort || envValue(env, platform, "PORT")?.trim();
     if (!raw) return 6001;
     const port = Number(raw);
     if (!/^\d+$/.test(raw) || !Number.isInteger(port) || port < 1 || port > 65535) {
@@ -70,17 +77,12 @@ export function hostLocalStorageValues(name) {
 
 /**
  * Google Chrome's usual install paths, tried in order. Windows and macOS follow Playwright's "chrome"
- * channel; Linux keeps the launcher on PATH. A copied Windows environment keeps its keys' original case
- * (`ProgramFiles`), so those names are matched without case.
+ * channel; Linux keeps the launcher on PATH.
  */
 export function chromeCandidates(platform, env) {
     if (platform === "win32") {
-        const value = (name) =>
-            Object.entries(env)
-                .find(([key]) => key.toUpperCase() === name)?.[1]
-                ?.trim();
         return ["LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"]
-            .map(value)
+            .map((name) => envValue(env, platform, name)?.trim())
             .filter(Boolean)
             .map((dir) => path.win32.join(dir, "Google", "Chrome", "Application", "chrome.exe"));
     }
@@ -93,15 +95,17 @@ export function chromeCandidates(platform, env) {
  * the platform name (`process.platform`). A nonblank RISU_CHROME is the only Chrome path.
  */
 export function readHeadlessHostConfig(env, rootDir, platform) {
-    const name = validateHeadlessHostName(env.RISU_HEADLESS_HOST_NAME ?? "Headless host");
+    const value = (key) => envValue(env, platform, key);
+    const name = validateHeadlessHostName(value("RISU_HEADLESS_HOST_NAME") ?? "Headless host");
+    const chrome = value("RISU_CHROME");
     return {
-        host: resolveHeadlessHostAddress(env.RISU_HOST),
-        port: resolveHeadlessHostPort(env),
+        host: resolveHeadlessHostAddress(value("RISU_HOST")),
+        port: resolveHeadlessHostPort(env, platform),
         name,
-        profileDir: path.resolve(rootDir, env.RISU_HEADLESS_HOST_PROFILE || "host-profile"),
-        password: env.RISU_HEADLESS_HOST_PASSWORD,
-        consoleLevel: resolveHeadlessHostConsole(env.RISU_HEADLESS_HOST_CONSOLE),
-        chromePaths: env.RISU_CHROME?.trim() ? [env.RISU_CHROME] : chromeCandidates(platform, env),
+        profileDir: path.resolve(rootDir, value("RISU_HEADLESS_HOST_PROFILE") || "host-profile"),
+        password: value("RISU_HEADLESS_HOST_PASSWORD"),
+        consoleLevel: resolveHeadlessHostConsole(value("RISU_HEADLESS_HOST_CONSOLE")),
+        chromePaths: chrome?.trim() ? [chrome] : chromeCandidates(platform, env),
         localStorageValues: hostLocalStorageValues(name),
     };
 }

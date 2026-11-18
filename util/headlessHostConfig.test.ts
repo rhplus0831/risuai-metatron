@@ -1,4 +1,5 @@
 // @vitest-environment node
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
     consoleLocationText,
@@ -104,6 +105,60 @@ describe("headless host configuration", () => {
                 readHeadlessHostConfig({}, "/repo", platform).chromePaths,
             );
         }
+    });
+
+    it("reads mixed-case host settings on Windows and keeps other platforms case-sensitive", () => {
+        const env = {
+            Risu_Host: "127.0.0.2",
+            Port: "7100",
+            Risu_Chrome: "D:\\Tools\\Chrome\\chrome.exe",
+            Risu_Headless_Host_Name: "Desk A",
+            Risu_Headless_Host_Profile: "desk-profile",
+            Risu_Headless_Host_Password: "example-password",
+            Risu_Headless_Host_Console: "warn",
+        };
+        const uppercase = Object.fromEntries(Object.entries(env).map(([key, value]) => [key.toUpperCase(), value]));
+        const config = readHeadlessHostConfig(env, "/repo", "win32");
+        expect(config).toMatchObject({
+            host: "127.0.0.2",
+            port: 7100,
+            chromePaths: ["D:\\Tools\\Chrome\\chrome.exe"],
+            name: "Desk A",
+            profileDir: path.resolve("/repo", "desk-profile"),
+            password: "example-password",
+            consoleLevel: "warn",
+        });
+        expect(config).toEqual(readHeadlessHostConfig(uppercase, "/repo", "win32"));
+        expect(readHeadlessHostConfig({ ...env, Risu_Headless_Host_Port: "7200" }, "/repo", "win32").port).toBe(7200);
+
+        for (const platform of ["linux", "darwin"]) {
+            expect(readHeadlessHostConfig(env, "/repo", platform)).toEqual(
+                readHeadlessHostConfig({}, "/repo", platform),
+            );
+        }
+    });
+
+    it("prefers exact Windows environment keys over mixed-case duplicates, including blank values", () => {
+        const env = {
+            Risu_Headless_Host_Port: "7200",
+            RISU_HEADLESS_HOST_PORT: " ",
+            Port: "7100",
+            PORT: "7101",
+            Risu_Chrome: "D:\\Tools\\Chrome\\chrome.exe",
+            RISU_CHROME: " ",
+            ProgramFiles: "C:\\Other",
+            PROGRAMFILES: "C:\\System",
+            localAppData: "C:\\Local",
+            "programFiles(x86)": "C:\\X86",
+        };
+        expect(readHeadlessHostConfig(env, "/repo", "win32")).toMatchObject({
+            port: 7101,
+            chromePaths: [
+                "C:\\Local\\Google\\Chrome\\Application\\chrome.exe",
+                "C:\\System\\Google\\Chrome\\Application\\chrome.exe",
+                "C:\\X86\\Google\\Chrome\\Application\\chrome.exe",
+            ],
+        });
     });
 
     it("forwards console errors only by default, warnings with warn, and every type with all", () => {
