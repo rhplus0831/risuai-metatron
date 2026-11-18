@@ -1087,6 +1087,7 @@ export type ServerJobRequest = {
             | "triggerId"
             | "stopOverLoreBudget"
             | "oocExchangeId"
+            | "completionHoldMs"
         >
     >;
 };
