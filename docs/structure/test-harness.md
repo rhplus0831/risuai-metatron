@@ -135,14 +135,17 @@ None is in the gate; all are in `util/playwright/`.
 `pnpm test:slow`). Across processes:
 
 1. The wrapper keys the cache by the working tree's `git write-tree` (`workingTreeId` in `util/workingTree.mjs`),
-   versions, and arguments; a hit replays the stored output before any lock.
+   versions, and arguments; a hit replays the stored output before any lock. The tree is taken with `git add -A` into a
+   temporary index in the OS temp directory, so untracked files count (one new probe file misses the cache) and the
+   checkout's own index is never touched.
 2. A whole-suite run waits up to 15 minutes for the machine-wide lock, then runs even if the lock is still held. File
    filters bypass the lock. See the [parallel run timings](../reports/measurements/test-suite-lock-2026-10-30.md).
 3. The Vitest child (`AGENT_TEST=1`) runs with the reporter, which holds its output and writes per-file results to the
    file `RISU_REPORT_RESULTS_FILE` names.
 4. When at most `MAX_RERUN_FILES` files failed and no error was unhandled, the wrapper reruns each alone with the file
    filters removed (`parseCLI` from `vitest/node`), then merges the results: a file that passes alone is `FLAKY` and
-   logged to `flaky.jsonl`.
+   logged to `flaky.jsonl`. `--no-rerun` turns the rerun off: use it for a run expected to fail (a break-test with its
+   guarded line broken, or a probe that asserts a defect), where the rerun only repeats the known failure.
 
 ### Browser specs
 
@@ -207,6 +210,7 @@ util-linux.
 | Default gate / focused files         | `pnpm --silent test:agent [files or directories]`                                                        |
 | Affected slow tests                  | `pnpm --silent test:agent --tags-filter=slow <files>`                                                    |
 | Fast and slow tests together         | `pnpm --silent test:agent --all [files]`                                                                 |
+| Install a fresh worktree             | `pnpm install --frozen-lockfile --offline --ignore-scripts` (enough for `test:agent`)                    |
 | Browser specs                        | `pnpm --silent test:agent --e2e [e2e/<name>.spec.ts]`; selection rules: [Browser specs](#browser-specs). |
 | Reproduce under CPU load             | `pnpm --silent test:overload <files>` (Linux).                                                           |
 | Runner, slow-table, and import rules | `pnpm check:tests` (static inventory).                                                                   |
@@ -409,4 +413,7 @@ case stays in `triggerRuntime.test.ts` ("ends an endless loop with the limit").
 - For a chat large enough to exceed V8's argument limit, keep a small gated case and run the full-size case in the slow
   tier. See `src/ts/storage/tests/resourceSyncHydration.test.ts`.
 - A probe under `docs/reports/audits/*/probes/` asserts the defect: a passing probe means the bug is present.
+- The wrapper writes only git-ignored files (`node_modules/.cache/agent-test/`) and a temporary index outside the
+  checkout, so a read-only review may run it. Say so in a read-only agent's brief: told "no writes", an agent refuses
+  the wrapper (read-only Astra agents did, 2026-10-26).
 - Stop a background run by its PID. Matching the command text can also stop the calling shell or another worktree's run.
