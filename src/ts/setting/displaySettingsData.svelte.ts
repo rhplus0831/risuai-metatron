@@ -517,6 +517,7 @@ export const displaySettingsItems: SettingItem[] = [
         options: {
             min: COMPLETION_WAIT_MAX_SECONDS.min,
             max: COMPLETION_WAIT_MAX_SECONDS.max,
+            clampOnCommit: true,
         },
         keywords: ["notification", "plugin", "wait", "remote host", "time limit"],
     },

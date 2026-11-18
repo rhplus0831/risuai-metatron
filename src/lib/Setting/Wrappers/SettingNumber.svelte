@@ -10,6 +10,14 @@
     }
 
     let { item, ctx }: Props = $props();
+
+    function commit(value: number) {
+        if (!item.options?.clampOnCommit || !Number.isFinite(value)) return;
+        const { min, max } = item.options;
+        if (min !== undefined && max !== undefined) {
+            updateSettingValue(item, Math.min(max, Math.max(min, value)), ctx);
+        }
+    }
 </script>
 
 <span class="text-textcolor {item.classes ?? ''}">
@@ -22,4 +30,5 @@
     min={item.options?.min}
     max={item.options?.max}
     bind:value={() => getSettingValue(item, ctx), (v) => updateSettingValue(item, v, ctx)}
+    onChange={(event) => commit(event.currentTarget.valueAsNumber)}
 />

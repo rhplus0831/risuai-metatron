@@ -51,6 +51,7 @@ import SettingSegmented from "src/lib/Setting/Wrappers/SettingSegmented.svelte";
 import SettingRenderer from "src/lib/Setting/SettingRenderer.svelte";
 import { activeMainProfile, activeModelPreset, activePersona, activePreset, settings } from "../settingsViews.svelte";
 import { accessibilitySettingsItems } from "../../setting/accessibilitySettingsData";
+import { displaySettingsItems } from "../../setting/displaySettingsData.svelte";
 import { interactionSettingsItems } from "../../setting/interactionSettingsData";
 import { chatFormatSettingsItems } from "../../setting/chatFormatSettingsData";
 import { modelSpecificParameterItems } from "../../setting/botSettingsParamsData";
@@ -236,6 +237,28 @@ describe("SettingNumber", () => {
         expect(preset("a").maxResponse).toBe(64);
         expect(input.value).toBe("64");
         expect(preset("b").maxResponse).toBe(555);
+    });
+
+    it.each([
+        ["900", 600],
+        ["5", 10],
+        ["90", 90],
+    ] as const)("commits %s as a displayed and stored plugin wait limit of %i", (typed, expected) => {
+        const item = displaySettingsItems.find(({ id }) => id === "display.completionWaitMaxSeconds")!;
+        const { query } = render(SettingNumber, { item, ctx: ctx() });
+        const input = query<HTMLInputElement>("input");
+
+        input.focus();
+        typeInto(input, typed);
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        input.blur();
+        flushSync();
+
+        const stored = recordData<Pick<Database, "completionWaitMaxSeconds">>("ui")?.completionWaitMaxSeconds;
+        expect({ shown: input.valueAsNumber, stored }).toEqual({
+            shown: expected,
+            stored: expected,
+        });
     });
 });
 
