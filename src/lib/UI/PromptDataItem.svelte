@@ -42,6 +42,7 @@
         onRemove?: () => void;
         moveUp?: () => void;
         moveDown?: () => void;
+        onDragStart?: () => void;
         onDrop?: () => void;
         isDragging?: boolean;
         isOpened?: boolean;
@@ -69,6 +70,7 @@
         onRemove = () => {},
         moveUp = () => {},
         moveDown = () => {},
+        onDragStart,
         onDrop = () => {},
         isDragging = false,
         isOpened = false,
@@ -278,6 +280,7 @@
         style:cursor="grab"
         ondragstart={(e) => {
             draggedIndex = currentIndex;
+            onDragStart?.();
             markPromptDrag(e);
 
             const dragElement = document.createElement("div");

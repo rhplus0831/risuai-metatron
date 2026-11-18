@@ -27,6 +27,8 @@
     let extokens = $state(0);
     let draggedIndex = $state(-1);
     let dragOverIndex = $state(-1);
+    let draggedPresetId = $state<string>();
+    const dragMatchesPreset = $derived(draggedPresetId !== undefined && draggedPresetId === editedPreset.id);
     let openedItemIndices = $state(new Set<number>());
     /** The selected preset's template for reading: `[]` while it has none (writes go to the preset). */
     function templateItems(): PromptItem[] {
@@ -82,7 +84,7 @@
     }
 
     function getReorderedTemplate() {
-        if (draggedIndex === -1 || dragOverIndex === -1 || draggedIndex === dragOverIndex) {
+        if (!dragMatchesPreset || draggedIndex === -1 || dragOverIndex === -1 || draggedIndex === dragOverIndex) {
             return getDisplayTemplate();
         }
 
@@ -99,6 +101,12 @@
     }
 
     function handlePromptDrop() {
+        // A feed update can switch the preset under the mounted rows during a drag.
+        if (!dragMatchesPreset) {
+            draggedIndex = -1;
+            dragOverIndex = -1;
+            return;
+        }
         if (draggedIndex === -1 || dragOverIndex === -1 || draggedIndex === dragOverIndex) {
             return;
         }
@@ -203,13 +211,14 @@
                     bind:promptItem={editedPreset.promptTemplate[originalIndex]}
                     popupEditorContext={editedPreset.id}
                     promptSettings={editedPreset.promptSettings}
-                    isDragging={draggedIndex === originalIndex}
+                    isDragging={dragMatchesPreset && draggedIndex === originalIndex}
                     isOpened={openedItemIndices.has(originalIndex)}
                     bind:draggedIndex
                     bind:dragOverIndex
                     bind:openedItemIndices
                     currentIndex={originalIndex}
                     {displayIndex}
+                    onDragStart={() => (draggedPresetId = editedPreset.id)}
                     onDrop={handlePromptDrop}
                     onRemove={() => {
                         let templates = editedPreset.promptTemplate;
