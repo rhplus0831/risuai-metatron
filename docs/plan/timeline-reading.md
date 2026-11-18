@@ -19,7 +19,7 @@ anchors and the session re-read the ones a slice rests on. Identifiers are the a
 before editing (STRUCTURE.md protocol step 5).
 
 The chapter synopses that sit on top of this view are a separate plan,
-[Timeline Chapter Synopses](timeline-chapters.md), which starts after this one lands.
+Timeline Chapter Synopses, which landed after this one and is [archived](../archived-plan/README.md).
 
 ## Goal
 
@@ -314,7 +314,7 @@ The owner accepted D1 to D7 on 2026-11-18. D8 to D10 are this plan's own, found 
 
 ## Not In This Plan
 
-- Chapter synopses, their record, their model call, and their button ([the chapter plan](timeline-chapters.md)).
+- Chapter synopses, their record, their model call, and their button (the chapter plan, [archived](../archived-plan/README.md)).
 - Searching the original messages from the memory panel, proposed as its own session on 2026-11-18.
 - Any change to the prompt, the writer, stored records, or the events a send selects.
 - A filter by participant or by grade, and sorting options.
