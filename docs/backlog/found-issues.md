@@ -129,7 +129,7 @@ The [2026-11-18 structure audit findings](../research/found-issues.md) have thei
 The HypaV2 entry below points to that record. The audit also retired the plugin guide size warning and verified that the
 JSON, Markdown, snapshot and checkpoint validators reject unknown event statuses.
 
-- [Backup and sync](#backup-and-sync): 3
+- [Backup and sync](#backup-and-sync): 4
 - [Chat screen](#chat-screen): 4
 - [Docs](#docs): 1
 - [Headless host](#headless-host): 2
@@ -146,6 +146,20 @@ JSON, Markdown, snapshot and checkpoint validators reject unknown event statuses
 - [Translation](#translation): 1
 
 ## Backup and sync
+
+### HTML chat exports can fail to import or change the original message text
+
+Two export/import round trips reproduced this on 2026-11-18. A chat with the default empty note exported successfully,
+but importing the HTML reported “No Data” and added no chat. With a nonempty note, a message containing literal
+`&lt;tag&gt; &amp; &#65;` was imported and saved as `<tag> & A`. The embedded JSON escapes angle brackets but leaves
+ampersands untouched. The importer reads the HTML parser's decoded text and requires a truthy note.
+[Exporter](../../src/ts/characters.ts#L432), [importer](../../src/ts/characters.ts#L686).
+
+**Why it matters.** Someone transferring a transcript can see a successful import with different message text.
+The original chat survived when the test imported back into the same character. JSON export/import is a workaround.
+
+**Suggested handling.** Encode the embedded JSON so its text round-trips, and accept an empty string for a valid
+note. Cover both cases by feeding the actual HTML download back to the importer.
 
 ### The upstream export's list of metatron-only settings misses newer fields
 
