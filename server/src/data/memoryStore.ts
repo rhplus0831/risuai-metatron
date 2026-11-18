@@ -12,6 +12,8 @@ import {
     MEMORY_RUN_RESULTS,
     MEMORY_SECTION_BUDGETS,
     MEMORY_THREAD_STATES,
+    isMemoryChapter,
+    memoryChapterMark,
     memoryGreetingHashFields,
     memorySourceHashFields,
     memorySourceHashOf,
@@ -23,12 +25,14 @@ import {
     writerPaused,
 } from "../../../shared/structuredMemory.ts";
 import type {
+    MemoryChapter,
     MemoryEvent,
     MemoryGreetingSource,
     MemoryManifest,
     MemoryPage,
     MemoryRun,
     MemoryThread,
+    StructuredMemoryChaptersAnswer,
     StructuredMemoryContents,
     StructuredMemoryHealthEntry,
     StructuredMemoryRebuild,
@@ -672,10 +676,111 @@ type RebuildRow = {
     error: string | null;
 };
 
+/** Display-only synopses. The caller owns each mutation's transaction and epoch. */
+function createChapterTables(db: DatabaseSync, selectChat: StatementSync, revisionToken: (seq: number) => string) {
+    const chapterBytes = db.prepare(
+        "SELECT COALESCE(SUM(octet_length(data)), 0) AS bytes FROM memory_chapters WHERE chatSeq = ?",
+    );
+    const chapterRows = db.prepare("SELECT data FROM memory_chapters WHERE chatSeq = ? ORDER BY seq");
+    const otherChapters = db.prepare("SELECT data FROM memory_chapters WHERE chatSeq = ? AND id IS NOT ?");
+    const hasChapter = db.prepare("SELECT 1 FROM memory_chapters WHERE chatSeq = ? AND id = ?");
+    const addChapter = db.prepare("INSERT INTO memory_chapters (chatSeq, id, data) VALUES (?, ?, ?)");
+    const deleteChapter = db.prepare("DELETE FROM memory_chapters WHERE chatSeq = ? AND id = ?");
+    const memberEvent = db.prepare(
+        "SELECT data FROM memory_events WHERE chatSeq = ? AND id = ? AND status != 'retracted'",
+    );
+
+    function parsed(data: string): unknown {
+        try {
+            return JSON.parse(data);
+        } catch {
+            return null;
+        }
+    }
+
+    function requireChatSeq(characterId: string, chatId: string): number {
+        const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
+        if (!chat) throw new ResourceConflictError(null);
+        return chat.seq;
+    }
+
+    function save(seq: number, chapter: MemoryChapter, oldId: string | null) {
+        const { stored, text } = serialize(chapter);
+        if (Buffer.byteLength(text, "utf8") > MAX_READ_RESPONSE_BYTES) {
+            throw new ResourceValidationError(`Stored chapter is longer than ${MAX_READ_RESPONSE_BYTES} bytes`);
+        }
+        if (!isMemoryChapter(stored)) throw new ResourceValidationError("Invalid memory chapter");
+        if (hasChapter.get(seq, stored.id)) throw new ResourceValidationError("Chapter id already exists");
+
+        for (const { id, mark } of stored.events) {
+            const row = memberEvent.get(seq, id) as { data: string } | undefined;
+            // The JSON body preserves the exact UTF-16 title used by coverage, including lone surrogates.
+            const event = row && parsed(row.data);
+            if (!isPlainObject(event) || event.status === "retracted") {
+                throw new ResourceValidationError("Chapter event is missing or retracted");
+            }
+            const date = isPlainObject(event.storyTime) ? event.storyTime.date : undefined;
+            if (memoryChapterMark(event.title, event.summary, date) !== mark) {
+                throw new ResourceValidationError("Chapter event has changed");
+            }
+        }
+        // Even a chapter the display cannot read still owns the event ids in its stored array.
+        const ids = new Set(stored.events.map(({ id }) => id));
+        for (const row of otherChapters.iterate(seq, oldId)) {
+            const other = parsed(row.data as string);
+            if (
+                isPlainObject(other) &&
+                Array.isArray(other.events) &&
+                other.events.some((entry) => isPlainObject(entry) && typeof entry.id === "string" && ids.has(entry.id))
+            ) {
+                throw new ResourceValidationError("Chapter event already belongs to another chapter");
+            }
+        }
+        if (oldId !== null) deleteChapter.run(seq, oldId);
+        addChapter.run(seq, stored.id, text);
+    }
+
+    return {
+        list(
+            characterId: string,
+            chatId: string,
+            budgetBytes = Infinity,
+        ): StructuredMemoryChaptersAnswer | "tooLarge" | null {
+            const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
+            if (!chat) return null;
+            const { bytes } = chapterBytes.get(chat.seq) as { bytes: number };
+            if (bytes > budgetBytes) return "tooLarge";
+            const chapters: MemoryChapter[] = [];
+            for (const row of chapterRows.iterate(chat.seq)) {
+                const chapter = parsed(row.data as string);
+                if (isMemoryChapter(chapter)) chapters.push(chapter);
+            }
+            return { revision: revisionToken(chat.seq), chapters };
+        },
+        add(characterId: string, chatId: string, chapter: MemoryChapter) {
+            save(requireChatSeq(characterId, chatId), chapter, null);
+        },
+        replace(characterId: string, chatId: string, chapterId: string, chapter: MemoryChapter) {
+            const seq = requireChatSeq(characterId, chatId);
+            if (!isValidResourceId(chapterId) || !hasChapter.get(seq, chapterId)) {
+                throw new ResourceValidationError("Chapter to replace is gone");
+            }
+            save(seq, chapter, chapterId);
+        },
+        remove(characterId: string, chatId: string, ids: readonly string[]): number | null {
+            const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
+            if (!chat) return null;
+            let removed = 0;
+            for (const id of ids) removed += Number(deleteChapter.run(chat.seq, id).changes);
+            return removed;
+        },
+    };
+}
+
 /**
  * Prepares the memory statements and returns the methods over them; the tables must exist
- * (`openChatSchema` runs first). `write`, `replace`, and the writers of `rebuild` join the caller's open
- * transaction.
+ * (`openChatSchema` runs first). `write`, `replace`, and the writers of `chapters` and `rebuild` join
+ * the caller's open transaction.
  */
 export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
     const selectChat = db.prepare("SELECT seq FROM chats WHERE characterId = ? AND id = ?");
@@ -795,6 +900,11 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
 
     function revisionOf(seq: number): number {
         return stateOf(seq).revision;
+    }
+
+    /** The memory revision of the chat with this `seq`, one row: what a projection is sealed with. */
+    function revisionToken(seq: number): string {
+        return tokens.token(seq, revisionOf(seq));
     }
 
     /** The current token of `seq` at `current`, with any other base refused. */
@@ -987,10 +1097,8 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
             return (tables.events.count.get(chatSeq) as { count: number }).count > 0;
         },
 
-        /** The memory revision of the chat with this `seq`, one row: what a projection is sealed with. */
-        revisionToken(chatSeq: number): string {
-            return tokens.token(chatSeq, revisionOf(chatSeq));
-        },
+        revisionToken,
+        chapters: createChapterTables(db, selectChat, revisionToken),
 
         /**
          * Per ref, in order, the memory revision of a chat a whole read projects, one statement each and

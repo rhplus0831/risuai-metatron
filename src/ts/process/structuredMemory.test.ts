@@ -26,6 +26,8 @@ import {
     buildStructuredMemoryPackage,
     buildStructuredMemoryLog,
     readStructuredMemoryCoverage,
+    readStructuredMemoryChapters,
+    removeStructuredMemoryChapters,
     readStructuredMemoryStory,
     findStructuredMemory,
     readStructuredMemoryFile,
@@ -107,6 +109,45 @@ const round = (revision: string, pages: MemoryPage[], events: MemoryEvent[], nex
     Response.json({ revision, pages, events, next });
 const NO_SCREENING = { refusal: [], format: [] };
 const noThreads = (revision: string) => Response.json({ revision, threads: [], next: null });
+
+it("reads well-shaped chapters with their revision and posts the selected chapter ids for removal", async () => {
+    const first = { id: "arrival", title: "Arrival", synopsis: "They dock.", events: [{ id: "boat", mark: "a" }] };
+    const last = { id: "departure", title: "Departure", synopsis: "They sail.", events: [{ id: "sail", mark: "b" }] };
+    authFetch.mockResolvedValueOnce(
+        Response.json({
+            revision: "r4",
+            chapters: [
+                first,
+                { ...first, id: "bad-title", title: null },
+                { ...first, id: "long-synopsis", synopsis: "x".repeat(1201) },
+                { ...first, id: "bad-member", events: [...first.events, { id: "other" }] },
+                last,
+            ],
+        }),
+    );
+    expect(await readStructuredMemoryChapters(ref)).toEqual({
+        outcome: "ok",
+        value: { revision: "r4", chapters: [first, last] },
+    });
+    const [readUrl, readInit] = authFetch.mock.calls[0];
+    expect(readUrl).toBe(`${base}/chapters`);
+    expect(readInit?.method ?? "GET").toBe("GET");
+    expect(new Headers(readInit?.headers).get(RESOURCE_EPOCH_HEADER)).toBe("epoch");
+
+    authFetch.mockResolvedValueOnce(Response.json({ removed: 2 }));
+    expect(await removeStructuredMemoryChapters(ref, [first.id, last.id])).toEqual({
+        outcome: "ok",
+        value: { removed: 2 },
+    });
+    const [removeUrl, removeInit] = authFetch.mock.calls[1];
+    expect(removeUrl).toBe(`${base}/chapters/remove`);
+    expect(removeInit?.method).toBe("POST");
+    expect(new Headers(removeInit?.headers).get(RESOURCE_EPOCH_HEADER)).toBe("epoch");
+    expect(JSON.parse(removeInit!.body as string)).toEqual({ ids: ["arrival", "departure"] });
+
+    authFetch.mockResolvedValueOnce(Response.json({ chapters: [first] }));
+    expect((await readStructuredMemoryChapters(ref)).outcome).toBe("failed");
+});
 
 it("shares pending contents only for the same chat and epoch before a memory write answer settles", async () => {
     const pending: { resolve: (response: Response) => void; promise: Promise<Response> }[] = [];

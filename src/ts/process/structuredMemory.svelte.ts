@@ -13,8 +13,9 @@ import type { Chat, Message } from "../../../shared/database.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
+    isMemoryChapter,
     isSealedHypaV3Data,
-    isStoryDate,
+    storedStoryDate,
     MEMORY_FIND_HITS_MAX,
     MEMORY_HEALTH_CHATS_MAX,
     MEMORY_KNOWLEDGE_STANCES,
@@ -54,6 +55,8 @@ import {
     type StructuredMemoryAdoptAnswer,
     type StructuredMemoryAdoption,
     type StructuredMemoryCadence,
+    type StructuredMemoryChapterRemoveAnswer,
+    type StructuredMemoryChaptersAnswer,
     type StructuredMemoryContentsAnswer,
     type StructuredMemoryCostAnswer,
     type StructuredMemoryCostMode,
@@ -359,12 +362,6 @@ const storedCount = (value: unknown) => (typeof value === "number" && Number.isF
 const storedGrade = (value: unknown) =>
     typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= STRUCTURED_MEMORY_LIMITS.gradeMax
         ? value
-        : undefined;
-
-/** A stored story date as its three fields alone; nothing for a malformed one. */
-const storedDate = (value: unknown): MemoryStoryDate | undefined =>
-    isStoryDate(value)
-        ? { ...(value.year === undefined ? {} : { year: value.year }), month: value.month, day: value.day }
         : undefined;
 
 /** `{ [key]: value }`, or nothing for a value the receipt does not hold. */
@@ -703,7 +700,7 @@ function parseStoryRound(body: AnswerBody, cursor: number): StructuredMemoryStor
                     storyTime: {
                         text: storedText(storyTime.text) ?? "",
                         ...present("ordinal", storedCount(storyTime.ordinal)),
-                        ...present("date", storedDate(storyTime.date)),
+                        ...present("date", storedStoryDate(storyTime.date)),
                     },
                     participants: storedTexts(event.participants),
                     ...present("grade", storedGrade(event.grade)),
@@ -785,6 +782,16 @@ function parseEditAnswer(body: AnswerBody): StructuredMemoryEditAnswer | null {
         isPlainObject(data)
         ? (body as StructuredMemoryEditAnswer)
         : null;
+}
+
+function parseChaptersAnswer({ revision, chapters }: AnswerBody): StructuredMemoryChaptersAnswer | null {
+    return typeof revision === "string" && Array.isArray(chapters)
+        ? { revision, chapters: chapters.filter(isMemoryChapter) }
+        : null;
+}
+
+function parseChapterRemoveAnswer({ removed }: AnswerBody): StructuredMemoryChapterRemoveAnswer | null {
+    return typeof removed === "number" && Number.isSafeInteger(removed) && removed >= 0 ? { removed } : null;
 }
 
 function parseRevertAnswer(body: AnswerBody): StructuredMemoryRevertAnswer | null {
@@ -975,6 +982,24 @@ export function readStructuredMemoryRecord<K extends StructuredMemoryRecordKind>
             ? (body as StructuredMemoryRecordAnswer<K>)
             : null,
     );
+}
+
+/** All displayable chapters with the chat's memory revision in the same read. */
+export function readStructuredMemoryChapters(
+    ref: ChatRef,
+): Promise<StructuredMemoryResult<StructuredMemoryChaptersAnswer>> {
+    return readAnswer(`${chatPath(ref)}/chapters`, parseChaptersAnswer);
+}
+
+export function removeStructuredMemoryChapters(
+    ref: ChatRef,
+    ids: readonly string[],
+): Promise<StructuredMemoryResult<StructuredMemoryChapterRemoveAnswer>> {
+    return readAnswer(`${chatPath(ref)}/chapters/remove`, parseChapterRemoveAnswer, editRefusalOf, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ids }),
+    });
 }
 
 /**
@@ -2510,7 +2535,7 @@ function runEventView(event: Record<string, unknown>, unverified: ReadonlySet<st
         storyTime: {
             text: text(storyTime.text),
             ...present("ordinal", storedCount(storyTime.ordinal)),
-            ...present("date", storedDate(storyTime.date)),
+            ...present("date", storedStoryDate(storyTime.date)),
         },
         participants: storedTexts(event.participants),
         keyLines: storedItems(event.keyLines).map((line) => ({

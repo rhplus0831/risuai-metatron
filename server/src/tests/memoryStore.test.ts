@@ -8,8 +8,14 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { Chat, Message } from "../../../shared/database.ts";
 import { MAX_READ_RESPONSE_BYTES } from "../../../shared/resources.ts";
-import { sealHypaV3Data, storedMemoryGreeting } from "../../../shared/structuredMemory.ts";
-import type { MemoryEvent, MemoryPage, MemoryRun, MemoryThread } from "../../../shared/structuredMemory.ts";
+import { memoryChapterMark, sealHypaV3Data, storedMemoryGreeting } from "../../../shared/structuredMemory.ts";
+import type {
+    MemoryChapter,
+    MemoryEvent,
+    MemoryPage,
+    MemoryRun,
+    MemoryThread,
+} from "../../../shared/structuredMemory.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
 import { createCheckpointService } from "../data/checkpointService.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
@@ -169,6 +175,7 @@ const dropMemoryTables = [
     "memory_staged_runs",
     "memory_event_sources",
     "memory_staged_event_sources",
+    "memory_chapters",
 ]
     .map((table) => `DROP TABLE ${table};`)
     .join("\n");
@@ -183,9 +190,137 @@ function eventCiting(id: string, messageIds: string[]) {
         })),
     };
 }
+
 function sourceRows(db: DatabaseSync, table = "memory_event_sources") {
     return db.prepare(`SELECT chatSeq, messageId, eventId FROM ${table} ORDER BY chatSeq, messageId, eventId`).all();
 }
+
+function chapter(id: string, ...events: MemoryEvent[]): MemoryChapter {
+    return {
+        id,
+        title: `Chapter ${id}`,
+        synopsis: "The gate opens.",
+        events: events.map(({ id, title, summary, storyTime }) => ({
+            id,
+            mark: memoryChapterMark(title, summary, storyTime.date),
+        })),
+    };
+}
+
+it("adds chapters only for current, unretracted, unclaimed events in the current epoch", () => {
+    const { store } = fileStore();
+    seed(store);
+    const [claimed, free, edited, retracted, missing] = records([
+        "claimed",
+        "free",
+        "edited",
+        "retracted",
+        "missing",
+    ]).events;
+    claimed.storyTime.date = { month: 4, day: 3 };
+    const revision = write(store, contents(store).revision, {
+        events: [
+            claimed,
+            free,
+            { ...edited, summary: "Changed since the chapter was written." },
+            { ...retracted, status: "retracted" },
+        ],
+    });
+    const chapters = store.memory.chapters;
+    const epoch = store.epoch();
+    const saved = chapter("saved", claimed);
+    chapters.add("c", "k", epoch, saved);
+    for (const invalid of [missing, retracted, edited, claimed]) {
+        expect(
+            () => chapters.add("c", "k", epoch, chapter("candidate", free, invalid)),
+            `Chapter containing the ${invalid.id} event should be refused`,
+        ).toThrow(ResourceValidationError);
+    }
+    expect(() => chapters.add("c", "k", "old-epoch", chapter("candidate", free))).toThrow(ResourceEpochError);
+    expect(chapters.list("c", "k")).toEqual({ revision, chapters: [saved] });
+    expect(contents(store).revision).toBe(revision);
+});
+
+it("replaces an existing chapter atomically under a fresh id at the end of storage order", () => {
+    const { store, file } = fileStore();
+    seed(store);
+    const events = records(["first", "second", "third"]).events;
+    const revision = write(store, contents(store).revision, { events });
+    const chapters = store.memory.chapters;
+    const epoch = store.epoch();
+    const old = chapter("z-old", events[0]);
+    const kept = chapter("m-kept", events[1]);
+    const fresh = chapter("a-new", events[0], events[2]);
+    chapters.add("c", "k", epoch, old);
+    chapters.add("c", "k", epoch, kept);
+    expect(() => chapters.replace("c", "k", "old-epoch", old.id, fresh)).toThrow(ResourceEpochError);
+    expect(() => chapters.remove("c", "k", "old-epoch", [old.id])).toThrow(ResourceEpochError);
+    expect(() => chapters.replace("c", "k", epoch, old.id, { ...fresh, id: old.id })).toThrow(ResourceValidationError);
+    expect(() => chapters.replace("c", "k", epoch, "missing", chapter("unused", events[2]))).toThrow(
+        ResourceValidationError,
+    );
+    expect(() => chapters.replace("c", "k", epoch, old.id, chapter("overlap", events[1]))).toThrow(
+        ResourceValidationError,
+    );
+
+    editFile(
+        file,
+        "CREATE TRIGGER refuse_chapter BEFORE INSERT ON memory_chapters BEGIN SELECT RAISE(ABORT, 'chapter insert failed'); END;",
+    );
+    expect(() => chapters.replace("c", "k", epoch, old.id, fresh)).toThrow("chapter insert failed");
+    expect(chapters.list("c", "k")).toEqual({ revision, chapters: [old, kept] });
+    editFile(file, "DROP TRIGGER refuse_chapter");
+    chapters.replace("c", "k", epoch, old.id, fresh);
+    expect(chapters.list("c", "k")).toEqual({ revision, chapters: [kept, fresh] });
+});
+
+it("cascades chapter deletion only to rows owned by the deleted chat", () => {
+    const { store, db } = fileStore();
+    const events = records(["opening"]).events;
+    const saved = chapter("arrival", ...events);
+    for (const characterId of ["c", "other"]) {
+        seed(store, characterId);
+        write(store, contents(store, characterId).revision, { events }, characterId);
+        store.memory.chapters.add(characterId, "k", store.epoch(), saved);
+    }
+    store.applyChanges({ chats: [group(store.chatRevision("c", "k"), [{ op: "delete" }])] });
+    expect(db.prepare("SELECT chatSeq, id FROM memory_chapters").all()).toEqual([
+        { chatSeq: chatSeq(db, "other"), id: saved.id },
+    ]);
+});
+
+it("restores events from a snapshot containing chapters and leaves its chapters out", async () => {
+    const { store, dir } = fileStore();
+    seed(store);
+    const events = records(["opening"]).events;
+    write(store, contents(store).revision, { events });
+    const saved = chapter("arrival", ...events);
+    store.memory.chapters.add("c", "k", store.epoch(), saved);
+    const snapshot = path.join(dir, "chapters.sqlite");
+    await store.backupTo(snapshot);
+    const backup = new DatabaseSync(snapshot, { readOnly: true });
+    readers.push(backup);
+    expect(backup.prepare("SELECT id FROM memory_chapters").all()).toEqual([{ id: saved.id }]);
+    write(store, contents(store).revision, { remove: { events: ["opening"] } });
+    await installSnapshot(store, snapshot, kinds);
+    const restored = contents(store);
+    expect(restored.events.map(({ id }) => id)).toEqual(["opening"]);
+    expect(store.memory.chapters.list("c", "k")).toEqual({ revision: restored.revision, chapters: [] });
+});
+
+it("opens a database from before chapters and can summarize its existing events", () => {
+    const { store, file } = fileStore();
+    seed(store);
+    const events = records(["opening"]).events;
+    const revision = write(store, contents(store).revision, { events });
+    store.close();
+    editFile(file, "DROP TABLE memory_chapters");
+    const reopened = createResourceStore({ file, kinds });
+    stores.push(reopened);
+    const saved = chapter("arrival", ...events);
+    reopened.memory.chapters.add("c", "k", reopened.epoch(), saved);
+    expect(reopened.memory.chapters.list("c", "k")).toEqual({ revision, chapters: [saved] });
+});
 
 it.each(["live", "staged"] as const)(
     "maintains %s event citations through insert, source updates and removal",

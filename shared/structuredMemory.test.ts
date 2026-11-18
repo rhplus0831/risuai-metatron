@@ -5,6 +5,8 @@ import {
     type MemoryEvent,
     type MemoryManifestItem,
     STRUCTURED_MEMORY_LIMITS,
+    memoryChapterMark,
+    memoryChapterUnits,
     memoryEventGroups,
     memoryGrade,
     memorySceneFieldLimit,
@@ -490,6 +492,47 @@ describe("memoryEventGroups", () => {
         expect(groups[3].events).toEqual(events.slice(10));
         expect(groups.flatMap(({ events }) => events)).toEqual(events);
     });
+});
+
+it("marks the title, summary and story date after normalizing missing or invalid fields", () => {
+    const day = { month: 4, day: 3 };
+    const mark = memoryChapterMark("Arrival", "They dock.", day);
+    expect(memoryChapterMark("Arrival", "They dock.", { ...day })).toBe(mark);
+    expect(memoryChapterMark("Departure", "They dock.", day)).not.toBe(mark);
+    expect(memoryChapterMark("Arrival", "They sail.", day)).not.toBe(mark);
+    expect(memoryChapterMark("Arrival", "They dock.", { ...day, day: 4 })).not.toBe(mark);
+    expect(memoryChapterMark(42, "They dock.", day)).toBe(memoryChapterMark("", "They dock.", day));
+    expect(memoryChapterMark("Arrival", null, day)).toBe(memoryChapterMark("Arrival", "", day));
+    expect(memoryChapterMark("Arrival", "They dock.", { month: 4, day: 31 })).toBe(
+        memoryChapterMark("Arrival", "They dock.", undefined),
+    );
+});
+
+it("gathers whole day parts oldest first and leaves the open tail and newest ten events out", () => {
+    expect(STRUCTURED_MEMORY_LIMITS.chapterRecentEvents).toBe(10);
+    // Three events on day one, then ten on day two. The invalid date continues day two.
+    const days = [1, 1, 1, 2, 2, 31, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3];
+    const older = days.map((day, i) => ({ id: String(i), date: { month: 4, day }, chaptered: false }));
+    const recent = Array.from({ length: 10 }, (_, i) => ({ id: `recent-${i}`, chaptered: false }));
+    // At size four the ten-event day splits 4/3/3. Its first part closes the
+    // preceding three-event group, and the two remaining parts close together.
+    const units = memoryChapterUnits([...older, ...recent], 4, STRUCTURED_MEMORY_LIMITS.chapterRecentEvents);
+    expect(units.map((unit) => unit.map(({ id }) => id))).toEqual([
+        ["0", "1", "2", "3", "4", "5", "6"],
+        ["7", "8", "9", "10", "11", "12"],
+    ]);
+});
+
+it("closes a short gap at a covered event even when it is the first protected event", () => {
+    const loose = (id: string) => ({ id, chaptered: false });
+    const first = loose("first");
+    const covered = { id: "already-covered", chaptered: true };
+    const full = ["one", "two", "three"].map(loose);
+    const tail = { ...loose("tail"), date: { month: 4, day: 3 } };
+    const older = [first, covered, ...full, tail];
+    const recent = Array.from({ length: 10 }, (_, i) => ({ id: `recent-${i}`, chaptered: i === 0 }));
+    expect(memoryChapterUnits([...older, ...recent], 3, 10)).toEqual([[first], full, [tail]]);
+    expect(memoryChapterUnits(older, 3, 0)).toEqual([[first], full]);
 });
 
 describe("memorySourceText", () => {

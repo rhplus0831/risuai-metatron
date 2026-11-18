@@ -76,6 +76,27 @@ export type ResourceKindName = (typeof RESOURCE_KIND)[keyof typeof RESOURCE_KIND
 /** The only id a singleton kind (every kind except `characters` and `inlays`) accepts. */
 export const SINGLETON_RESOURCE_ID = "main";
 
+export const MAX_RESOURCE_ID_LENGTH = 512;
+const controlCharacterRegex = /[\u0000-\u001f\u007f]/;
+const loneSurrogateRegex = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+/**
+ * A resource id is 1 to 512 UTF-16 code units of well-formed Unicode with no control character, and
+ * not `.` or `..` (URL parsers resolve those away). Clients put it in the path through
+ * `encodeURIComponent`, so `/`, `%`, and non-ASCII characters are allowed.
+ */
+export function isValidResourceId(id: unknown): id is string {
+    return (
+        typeof id === "string" &&
+        id.length >= 1 &&
+        id.length <= MAX_RESOURCE_ID_LENGTH &&
+        id !== "." &&
+        id !== ".." &&
+        !controlCharacterRegex.test(id) &&
+        !loneSurrogateRegex.test(id)
+    );
+}
+
 /**
  * An inlay's metadata. Media bytes live in the `assets` storage namespace under `asset`; a signature
  * keeps its JSON text in `text`.

@@ -12,6 +12,7 @@ import {
     ADOPTED_WRITER_RUN,
     isSealedHypaV3Data,
     memoryAnchorState,
+    memoryChapterMark,
     reconcileMemoryEvents,
     writerPaused,
     sealedHypaV3DataIntact,
@@ -101,6 +102,15 @@ const event = (id: string, summary = "Event body"): MemoryEvent => ({
     writerRun: "run",
     createdRevision: 1,
 });
+
+function chapter(e: MemoryEvent) {
+    return {
+        id: `chapter-${e.id}`,
+        title: e.title,
+        synopsis: "부두에 도착했다.",
+        events: [{ id: e.id, mark: memoryChapterMark(e.title, e.summary, e.storyTime.date) }],
+    };
+}
 
 async function answer(response: Response, status = 200): Promise<any> {
     expect(response.headers.get("cache-control")).toBe("no-store");
@@ -668,8 +678,8 @@ const run = (id: string, result: MemoryRun["result"] = "failed"): MemoryRun => (
     error: "Private error text",
 });
 
-function observeMemoryRows() {
-    const metadata = { pages: 0, events: 0, threads: 0, runs: 0 };
+function observeMemoryRows(kinds = ["pages", "events", "threads", "runs"]) {
+    const metadata = Object.fromEntries(kinds.map((kind) => [kind, 0]));
     const bodies = { ...metadata };
     const statements = new Map<string, unknown[]>();
     // Count results at the SQLite I/O boundary, including rows a caller materializes then discards.
@@ -681,9 +691,8 @@ function observeMemoryRows() {
             ...args: unknown[]
         ) {
             const value = Reflect.apply(original, this, args);
-            const kind = /\bFROM\s+memory_(pages|events|threads|runs)\b/i.exec(this.sourceSQL)?.[1] as
-                keyof typeof metadata | undefined;
-            if (!kind) return value;
+            const kind = /\bFROM\s+memory_(\w+)\b/i.exec(this.sourceSQL)?.[1];
+            if (!kind || !Object.hasOwn(metadata, kind)) return value;
             const sql = this.sourceSQL;
             const count = (row: Record<string, unknown> | undefined) => {
                 if (!row) return;
@@ -708,6 +717,46 @@ function observeMemoryRows() {
     });
     return { metadata, bodies, statements, restore: () => spies.forEach((spy) => spy.mockRestore()) };
 }
+
+it("lists chapters with the memory revision and refuses an oversized list before reading any chapter body", async () => {
+    const events = [event("first"), event("second")];
+    const [first, second] = events.map(chapter);
+    const s = await server({ routeLimits: { memoryPackageRoundBytes: bytes(first) + bytes(second) - 1 } });
+    const revision = s.write({ events });
+    const chapters = s.store.memory.chapters;
+    chapters.add(characterId, chatId, s.epoch, first);
+    expect(await answer(await s.request(`${base}/chapters`))).toEqual({ revision, chapters: [first] });
+    expect(
+        await answer(await s.request(`${base.replace(encodeURIComponent(chatId), "gone")}/chapters`), 404),
+    ).toMatchObject({
+        reason: "chatGone",
+    });
+    chapters.add(characterId, chatId, s.epoch, second);
+    const observed = observeMemoryRows(["chapters"]);
+    try {
+        expect(await answer(await s.request(`${base}/chapters`), 413)).toMatchObject({ reason: "tooLarge" });
+        expect(observed.bodies.chapters).toBe(0);
+    } finally {
+        observed.restore();
+    }
+});
+
+it("removes only the requested chapters with a current epoch and an open write fence", async () => {
+    const s = await server();
+    const events = [event("first"), event("kept"), event("last")];
+    const revision = s.write({ events });
+    const chapters = events.map(chapter);
+    for (const row of chapters) s.store.memory.chapters.add(characterId, chatId, s.epoch, row);
+    const remove = { ids: [chapters[0].id, chapters[2].id] };
+    const route = `${base}/chapters/remove`;
+    expect(await answer(await s.json(route, remove, {}, "old-epoch"), 412)).toMatchObject({ error: "EpochMismatch" });
+    stageRun(s);
+    expect(await answer(await s.json(route, remove), 409)).toMatchObject({ reason: "fenced" });
+    expect(await answer(await s.request(`${base}/chapters`))).toEqual({ revision, chapters });
+    s.store.memory.rebuild.abandon(characterId, chatId, s.epoch);
+    expect(await answer(await s.json(route, remove))).toEqual({ removed: 2 });
+    expect(await answer(await s.request(`${base}/chapters`))).toEqual({ revision, chapters: [chapters[1]] });
+});
 
 it("reads at most one Log page of metadata per round and serves every run newest first exactly once", async () => {
     const s = await server();

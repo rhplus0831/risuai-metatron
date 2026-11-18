@@ -22,6 +22,7 @@ import {
     normalizeStructuredMemorySettings,
     sealHypaV3Data,
     STRUCTURED_MEMORY_ALGORITHM,
+    type MemoryChapter,
     type SealedHypaV3Data,
     type StructuredMemoryHealthEntry,
     type StructuredMemorySettings,
@@ -39,6 +40,7 @@ import {
 import {
     type BatchConflict,
     type ChangeSet,
+    isValidResourceId,
     MAX_FEED_PATCH_BYTES,
     MAX_FEED_PUBLICATION_PATCH_BYTES,
     RESOURCE_KIND,
@@ -153,9 +155,6 @@ const PATCH_BASES_MAX = 4;
 const PATCH_BASES_MAX_UNITS = 64 * 1024 * 1024;
 const PATCH_BASE_UNITS_PER_CHAR = 4;
 
-const MAX_RESOURCE_ID_LENGTH = 512;
-const controlCharacterRegex = /[\u0000-\u001f\u007f]/;
-const loneSurrogateRegex = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 const uuidPattern = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const integerPattern = "(0|[1-9][0-9]*)";
 const revisionTokenRegex = new RegExp(`^(${uuidPattern}):${integerPattern}:${integerPattern}$`);
@@ -492,22 +491,7 @@ export type TransactionBody<F extends () => unknown> = F &
           ? unknown
           : never);
 
-/**
- * A resource id is 1 to 512 UTF-16 code units of well-formed Unicode with no control character, and
- * not `.` or `..` (URL parsers resolve those away). Clients put it in the path through
- * `encodeURIComponent`, so `/`, `%`, and non-ASCII characters are allowed.
- */
-export function isValidResourceId(id: unknown): id is string {
-    return (
-        typeof id === "string" &&
-        id.length >= 1 &&
-        id.length <= MAX_RESOURCE_ID_LENGTH &&
-        id !== "." &&
-        id !== ".." &&
-        !controlCharacterRegex.test(id) &&
-        !loneSurrogateRegex.test(id)
-    );
-}
+export { isValidResourceId };
 
 /**
  * The rows of `sql` over a snapshot file, one at a time with its number from 1, so no table is held in
@@ -2237,6 +2221,43 @@ export function createResourceStore(options: {
                     }
                     return revision;
                 });
+            },
+            chapters: {
+                list(...args: Parameters<typeof memoryTables.chapters.list>) {
+                    assertOpen();
+                    return memoryTables.chapters.list(...args);
+                },
+                add(characterId: string, chatId: string, epoch: string | undefined, chapter: MemoryChapter) {
+                    assertWritable();
+                    assertEpochNow(epoch);
+                    transactionInScope(() => {
+                        memoryTables.chapters.add(characterId, chatId, chapter);
+                        countWrite();
+                    });
+                },
+                replace(
+                    characterId: string,
+                    chatId: string,
+                    epoch: string | undefined,
+                    chapterId: string,
+                    chapter: MemoryChapter,
+                ) {
+                    assertWritable();
+                    assertEpochNow(epoch);
+                    transactionInScope(() => {
+                        memoryTables.chapters.replace(characterId, chatId, chapterId, chapter);
+                        countWrite();
+                    });
+                },
+                remove(characterId: string, chatId: string, epoch: string | undefined, ids: readonly string[]) {
+                    assertWritable();
+                    assertEpochNow(epoch);
+                    return transactionInScope(() => {
+                        const removed = memoryTables.chapters.remove(characterId, chatId, ids);
+                        if (removed) countWrite();
+                        return removed;
+                    });
+                },
             },
             readContents(...args: Parameters<typeof memoryTables.readContents>) {
                 assertOpen();

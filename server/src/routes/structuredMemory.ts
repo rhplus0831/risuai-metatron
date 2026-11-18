@@ -28,6 +28,8 @@ import {
     type MemoryPage,
     type StructuredMemoryAbandonAnswer,
     type StructuredMemoryAdoptAnswer,
+    type StructuredMemoryChapterRemoveAnswer,
+    type StructuredMemoryChaptersAnswer,
     type StructuredMemoryContentsAnswer,
     type StructuredMemoryCostAnswer,
     type StructuredMemoryCostMode,
@@ -107,6 +109,7 @@ export { STRUCTURED_MEMORY_PATH };
 
 /** An edit holds one section at `sectionBodyChars`, which JSON's escapes can lengthen, and its ids. */
 const MAX_EDIT_BODY_BYTES = 64 * 1024;
+const MAX_CHAPTER_REMOVE_IDS = 256;
 
 /** A revisions request holds `MEMORY_REVISION_CHATS_MAX` chats named by two UUIDs, about 200 KiB of JSON. */
 const MAX_REVISIONS_BODY_BYTES = 256 * 1024;
@@ -116,6 +119,8 @@ const REFUSAL_TEXT = {
     recordGone: "Record not found",
     fenced: "Something is writing this chat's memory",
     tooLarge: "The chat's memory is too large to project",
+    chaptersTooLarge: "The chat's chapters are too large to read",
+    chapterIds: `ids must contain 1 to ${MAX_CHAPTER_REMOVE_IDS} valid chapter ids`,
     trashed: "This page is in the trash",
 } as const;
 
@@ -555,6 +560,13 @@ type RoundRead = {
  *   `StructuredMemoryProjectionAnswer`; `hypaV3Data` is null for a chat that read leaves as stored, and
  *   `revision` too under another algorithm, which reads no memory table. Stored events over
  *   `packageRoundBytes` are 413 `{ error, reason: "tooLarge" }` before any message is read. 404 `chatGone`.
+ * - `GET /api/memory/structured/:characterId/:chatId/chapters` answers `StructuredMemoryChaptersAnswer`:
+ *   the current memory revision and well-shaped chapters in storage order. 404 `chatGone`, or 413
+ *   `tooLarge` if the chapters' total stored bytes exceed `packageRoundBytes`, checked before reading bodies.
+ * - `POST /api/memory/structured/:characterId/:chatId/chapters/remove` accepts `{ ids }`, 1 to 256
+ *   resource ids under the 64 KiB edit body cap. Other shapes or invalid ids are 400. After the epoch,
+ *   fence and maintenance checks, it removes matching rows and answers `StructuredMemoryChapterRemoveAnswer`
+ *   with the number removed (possibly zero). 404 `chatGone`, 409 `fenced`. The memory revision stays.
  * - `POST /api/memory/structured/:characterId/:chatId/edits` `{ revision, edit }`: one person's edit
  *   (`StructuredMemoryEdit`, `server/src/prompt/memory/structured/edits.ts`), answered
  *   `StructuredMemoryEditAnswer`. Admission checks ids, the body, then the edit shape (`parseMemoryEdit`,
@@ -680,9 +692,9 @@ type RoundRead = {
  * The epoch check and the store reads run in one synchronous step, so a round is one snapshot;
  * separate rounds are tied together only by `revision`.
  * An edit's, a revert's, a page tool's, an import's, an inherit's, a restore's, an adoption's, a decline's,
- * a reset's, or an abandon's checks and its write share one such step too, after any body is read, so
- * nothing can take the chat between the fence and the write, and no writer of the source chat comes between
- * its reads. The fence covers a rebuild's run too, also while a stopped one waits.
+ * a reset's, a chapter removal's, or an abandon's checks and its write share one such step too, after any
+ * body is read, so nothing can take the chat between the fence and the write, and no writer of the source
+ * chat comes between its reads. The fence covers a rebuild's run too, also while a stopped one waits.
  */
 export function registerStructuredMemoryRoutes(
     app: Hono<AppEnv>,
@@ -697,8 +709,8 @@ export function registerStructuredMemoryRoutes(
         restoreBodyBytes: number;
         /**
          * Whether something that can write this chat's memory holds the chat, which refuses an edit, a
-         * revert, a page tool, an import, an inherit, a restore, an adoption, a decline, or a reset: its
-         * task, a job, or its rebuild's run.
+         * revert, a page tool, an import, an inherit, a restore, an adoption, a decline, a reset or a chapter
+         * removal: its task, a job, or its rebuild's run.
          */
         fenced: (characterId: string, chatId: string) => boolean;
         /** Whether a job holds the chat: the one thing that refuses abandoning its rebuild. */
@@ -1129,6 +1141,59 @@ export function registerStructuredMemoryRoutes(
             return storeErrorResponse(c, error);
         }
     });
+
+    app.get(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/chapters`, limiter, authenticated, (c) => {
+        const { characterId, chatId } = c.req.param();
+        if (!isValidResourceId(characterId) || !isValidResourceId(chatId)) {
+            return c.json({ error: "characterId and chatId must be ids" }, 400);
+        }
+        if (c.req.header(RESOURCE_EPOCH_HEADER) !== store.epoch()) {
+            return c.json({ error: "EpochMismatch", epoch: store.epoch() }, 412);
+        }
+        try {
+            const listed = store.memory.chapters.list(characterId, chatId, packageRoundBytes);
+            if (listed === null) return c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
+            if (listed === "tooLarge") return c.json({ error: REFUSAL_TEXT.chaptersTooLarge, reason: "tooLarge" }, 413);
+            return compressedJson(c, listed satisfies StructuredMemoryChaptersAnswer);
+        } catch (error) {
+            return storeErrorResponse(c, error);
+        }
+    });
+
+    app.post(
+        `${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/chapters/remove`,
+        limiter,
+        authenticated,
+        limitBody,
+        async (c) => {
+            const { characterId, chatId } = c.req.param();
+            if (!isValidResourceId(characterId) || !isValidResourceId(chatId)) {
+                return c.json({ error: "characterId and chatId must be ids" }, 400);
+            }
+            const read = await readJsonBody(c);
+            if (!read.ok) return read.response;
+            const ids = isPlainObject(read.body) ? read.body.ids : undefined;
+            if (
+                !Array.isArray(ids) ||
+                ids.length === 0 ||
+                ids.length > MAX_CHAPTER_REMOVE_IDS ||
+                !ids.every(isValidResourceId)
+            ) {
+                return c.json({ error: REFUSAL_TEXT.chapterIds }, 400);
+            }
+            const epoch = c.req.header(RESOURCE_EPOCH_HEADER);
+            if (epoch !== store.epoch()) return c.json({ error: "EpochMismatch", epoch: store.epoch() }, 412);
+            if (fenced(characterId, chatId)) return c.json({ error: REFUSAL_TEXT.fenced, reason: "fenced" }, 409);
+            try {
+                maintenance.assertOpen();
+                const removed = store.memory.chapters.remove(characterId, chatId, epoch, ids);
+                if (removed === null) return c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
+                return compressedJson(c, { removed } satisfies StructuredMemoryChapterRemoveAnswer);
+            } catch (error) {
+                return storeErrorResponse(c, error);
+            }
+        },
+    );
 
     app.post(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/edits`, limiter, authenticated, limitBody, async (c) => {
         const characterId = c.req.param("characterId");

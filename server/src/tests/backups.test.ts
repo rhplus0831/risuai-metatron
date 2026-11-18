@@ -1120,8 +1120,9 @@ describe("POST /api/backups/import", () => {
     });
 
     it("caps the upload at maxImportBytes, by the declared length and by the bytes received", async () => {
-        const s = await defaultServer({ maxImportBytes: 256 * 1024 });
-        const big = new Uint8Array(300 * 1024);
+        // The cap leaves room for an empty store's database, which grows with every table the schema adds.
+        const s = await defaultServer({ maxImportBytes: 512 * 1024 });
+        const big = new Uint8Array(600 * 1024);
         const declared = await s.request("/api/backups/import", {
             method: "POST",
             headers: { "content-type": "application/octet-stream", "content-length": String(big.length) },

@@ -339,6 +339,18 @@ const MEMORY_EVENT_SOURCES_SQL = MEMORY_EVENT_SOURCE_TABLES.map(({ events, sourc
     `;
 }).join("");
 
+/** Display synopses are created at every open and cascade with their chat. Restore walks only the
+ * record tables in the memory group, even when the source database also holds chapters. */
+const MEMORY_CHAPTERS_SQL = `
+    CREATE TABLE IF NOT EXISTS memory_chapters (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+        id TEXT NOT NULL,
+        data TEXT NOT NULL,
+        UNIQUE (chatSeq, id)
+    ) STRICT;
+`;
+
 /**
  * A message's role as `messages_role` indexes it. A query reaches that index only through this exact
  * expression, so every statement that counts by role builds on this text.
@@ -381,7 +393,7 @@ const MEMORY_ROUND_INDEXES_SQL = `
  * What `openChatSchema` adds to `CHAT_TABLES_SQL`, each created when missing, and a staged store's
  * writer too, so a staged file has the live schema.
  */
-export const CHAT_OPEN_SCHEMA_SQL = `${CHAT_GROUP_TABLE_SQL}${CHAT_SUMMARY_TABLE_SQL}${MEMORY_TABLES_SQL}${MEMORY_REBUILD_TABLES_SQL}${MEMORY_EVENT_SOURCES_SQL}${MESSAGE_ROLE_INDEX_SQL}${MESSAGE_CHECKPOINT_INDEX_SQL}${MEMORY_ROUND_INDEXES_SQL}`;
+export const CHAT_OPEN_SCHEMA_SQL = `${CHAT_GROUP_TABLE_SQL}${CHAT_SUMMARY_TABLE_SQL}${MEMORY_TABLES_SQL}${MEMORY_REBUILD_TABLES_SQL}${MEMORY_EVENT_SOURCES_SQL}${MEMORY_CHAPTERS_SQL}${MESSAGE_ROLE_INDEX_SQL}${MESSAGE_CHECKPOINT_INDEX_SQL}${MEMORY_ROUND_INDEXES_SQL}`;
 
 /** A chat's user messages, answered from `messages_role` alone: no message row is read. */
 export const COUNT_USER_TURNS_SQL = `SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ? AND ${MESSAGE_ROLE_SQL} = 'user'`;

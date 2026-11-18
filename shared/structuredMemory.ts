@@ -2,7 +2,8 @@ import type { Message } from "./database.ts";
 import { eligibleHistory } from "./eligibleHistory.ts";
 import { greetingIndex, greetingText } from "./greetings.ts";
 import type { SerializableHypaV3Data, SerializableSummary } from "./memory.ts";
-import { MAX_READ_RESPONSE_BYTES } from "./resources.ts";
+import { isValidResourceId, MAX_READ_RESPONSE_BYTES, MAX_RESOURCE_ID_LENGTH } from "./resources.ts";
+import { textHash } from "./textHash.ts";
 import { isPlainObject } from "./valueKinds.ts";
 
 /**
@@ -203,6 +204,8 @@ export const STRUCTURED_MEMORY_LIMITS = {
     dedupeSimilarity: 0.8,
     eventTitleChars: 120,
     eventSummaryChars: 800,
+    chapterSynopsisChars: 1200,
+    chapterRecentEvents: 10,
     keyLineChars: 300,
     /** A fact, a state's values, or a relationship's note. */
     factChars: 300,
@@ -210,7 +213,7 @@ export const STRUCTURED_MEMORY_LIMITS = {
     /** A short label: a speaker, a section heading, a relationship's direction, the story time. */
     labelChars: 120,
     /** The longest id a record can hold (`isValidResourceId`). */
-    idChars: 512,
+    idChars: MAX_RESOURCE_ID_LENGTH,
     /** A failed run's stored error. */
     runErrorChars: 2000,
     /** The model's answer a failed run keeps when it could not read that answer. */
@@ -438,6 +441,61 @@ export function formatStoryDate(date: MemoryStoryDate): string {
     return date.year === undefined ? monthDay : `${padded(date.year, 4)}-${monthDay}`;
 }
 
+/** A stored story date as its calendar fields alone. Malformed dates read as absent. */
+export function storedStoryDate(value: unknown): MemoryStoryDate | undefined {
+    return isStoryDate(value)
+        ? { ...(value.year === undefined ? {} : { year: value.year }), month: value.month, day: value.day }
+        : undefined;
+}
+
+/** A display synopsis and the events it covers, in story order. */
+export type MemoryChapter = {
+    id: string;
+    title: string;
+    synopsis: string;
+    events: { id: string; mark: string }[];
+};
+
+export function isMemoryChapter(value: unknown): value is MemoryChapter {
+    if (
+        !isPlainObject(value) ||
+        !isValidResourceId(value.id) ||
+        typeof value.title !== "string" ||
+        value.title.length > STRUCTURED_MEMORY_LIMITS.eventTitleChars ||
+        typeof value.synopsis !== "string" ||
+        value.synopsis.length > STRUCTURED_MEMORY_LIMITS.chapterSynopsisChars ||
+        !Array.isArray(value.events) ||
+        value.events.length === 0
+    ) {
+        return false;
+    }
+    const ids = new Set<string>();
+    for (const entry of value.events) {
+        if (
+            !isPlainObject(entry) ||
+            !isValidResourceId(entry.id) ||
+            typeof entry.mark !== "string" ||
+            ids.has(entry.id)
+        ) {
+            return false;
+        }
+        ids.add(entry.id);
+    }
+    return true;
+}
+
+/** Detects changes to the stored fields a chapter summarizes. */
+export function memoryChapterMark(title: unknown, summary: unknown, date: unknown): string {
+    const day = storedStoryDate(date);
+    return textHash(
+        JSON.stringify([
+            typeof title === "string" ? title : "",
+            typeof summary === "string" ? summary : "",
+            day ? formatStoryDate(day) : null,
+        ]),
+    );
+}
+
 /**
  * Groups events in the given story order. A new stated date starts a group, and undated events
  * continue the preceding group (or start a date-less one). Each run splits into the fewest parts
@@ -469,6 +527,44 @@ export function memoryEventGroups<E extends { id: string; date?: MemoryStoryDate
         }
     }
     return groups;
+}
+
+/** Whole date groups of loose events, oldest first. A short tail closes only against a chapter. */
+export function memoryChapterUnits<E extends { id: string; date?: unknown; chaptered: boolean }>(
+    events: readonly E[],
+    size: number,
+    recent: number,
+): E[][] {
+    if (!Number.isInteger(size) || size < 1) throw new RangeError("Group size must be a positive integer");
+    if (!Number.isInteger(recent) || recent < 0) throw new RangeError("Recent count must be a non-negative integer");
+    const units: E[][] = [];
+    const limit = events.length - recent;
+    let start = 0;
+    while (start < limit) {
+        if (events[start].chaptered) {
+            start++;
+            continue;
+        }
+        const run = [];
+        let end = start;
+        while (end < limit && !events[end].chaptered) {
+            const { id, date } = events[end];
+            run.push({ id, date: storedStoryDate(date) });
+            end++;
+        }
+        let unitStart = start;
+        let groupEnd = start;
+        for (const group of memoryEventGroups(run, size)) {
+            groupEnd += group.events.length;
+            if (groupEnd - unitStart >= size) {
+                units.push(events.slice(unitStart, groupEnd));
+                unitStart = groupEnd;
+            }
+        }
+        if (unitStart < end && events[end]?.chaptered) units.push(events.slice(unitStart, end));
+        start = end;
+    }
+    return units;
 }
 
 /** A leap year, so a yearless February 29 keeps its day when neither date of a distance states a year. */
@@ -1025,6 +1121,9 @@ export type StructuredMemoryContentsAnswer = StructuredMemoryContents & {
 
 /** The abandon route's answer: the chat's memory revision, which it left alone, and whether a run went. */
 export type StructuredMemoryAbandonAnswer = { revision: string; abandoned: boolean };
+
+export type StructuredMemoryChaptersAnswer = { revision: string; chapters: MemoryChapter[] };
+export type StructuredMemoryChapterRemoveAnswer = { removed: number };
 
 /** What a cost preview prices: a rebuild of either kind, a backfill, or a press of record now. */
 export type StructuredMemoryCostMode = StructuredMemoryRebuildMode | "record";
