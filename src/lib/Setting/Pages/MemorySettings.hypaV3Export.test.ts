@@ -75,6 +75,7 @@ beforeEach(() => {
         memoryTokensRatio: 0.35,
         queryChatCount: 7,
         gapConfirmTokens: 0,
+        structured: { eventsPerGroup: 17 },
     });
     const other = createHypaV3Preset("Other");
     // Installed into the records the way the app installs a boot (its fields moved into the
@@ -142,6 +143,7 @@ describe("the HypaV3 preset export", () => {
         expect(settings.hypaV3Presets.selectedId).toBe(imported.id);
         expect(imported.name).toBe("Exported");
         expect(imported.settings.gapConfirmTokens).toBe(0);
+        expect(imported.settings.structured.eventsPerGroup).toBe(17);
         expect(JSON.parse(JSON.stringify(imported.settings))).toStrictEqual(
             JSON.parse(JSON.stringify(settings.hypaV3Presets.items[1].settings)),
         );

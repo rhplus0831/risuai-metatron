@@ -3494,6 +3494,9 @@ export const languageEnglish = {
             },
             highlightChangeGrade: "Lowest grade of a highlighted change",
             highlightHelp: "A change that replaces your correction is always highlighted.",
+            eventsPerGroup: "Events per Timeline group",
+            eventsPerGroupHelp:
+                "A story day with more events is shown in parts. Chapters use the same number as their target size once they exist.",
             sections: {
                 recording: "Recording",
                 budget: "Memory block budget",

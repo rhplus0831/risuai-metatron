@@ -568,6 +568,7 @@ const structuredDefaults = {
     highlightMode: "important",
     highlightKinds: ["create", "contradiction", "delete"],
     highlightChangeGrade: 5,
+    eventsPerGroup: 10,
     volatileBeforeLastUser: false,
 };
 
@@ -594,6 +595,7 @@ const structuredCustom = {
     highlightMode: "all",
     highlightKinds: ["change", "create"],
     highlightChangeGrade: 9,
+    eventsPerGroup: 30,
     volatileBeforeLastUser: true,
 };
 
@@ -686,6 +688,7 @@ describe("Structured Memory settings", () => {
             fineTuning: [null, 0, 1, "true"],
             highlightMode: ["sometimes", "", null, 1],
             highlightChangeGrade: [-1, 10, 0.5, "5", null, NaN, Infinity],
+            eventsPerGroup: [2, 31, 10.5, "12"],
         };
         for (const [key, values] of Object.entries(invalid)) {
             for (const value of [...values, undefined]) {
@@ -711,8 +714,13 @@ describe("Structured Memory settings", () => {
             });
         }
         expect(
-            normalizeStructuredMemorySettings({ ...structuredCustom, cadenceRatio: 0.99, highlightChangeGrade: 0 }),
-        ).toStrictEqual({ ...structuredCustom, cadenceRatio: 0.99, highlightChangeGrade: 0 });
+            normalizeStructuredMemorySettings({
+                ...structuredCustom,
+                cadenceRatio: 0.99,
+                highlightChangeGrade: 0,
+                eventsPerGroup: 3,
+            }),
+        ).toStrictEqual({ ...structuredCustom, cadenceRatio: 0.99, highlightChangeGrade: 0, eventsPerGroup: 3 });
     });
 
     it("defaults existing presets to auto and keeps stored lane counts and shares through mode switches", () => {
@@ -906,6 +914,21 @@ describe.each([
 
     it("fills missing writer settings while preserving every existing HypaV3 setting", () => {
         expect(read(legacySettings)).toStrictEqual({ ...legacySettings, structured: structuredDefaults });
+    });
+
+    it("keeps valid Timeline group sizes and defaults missing or invalid sizes to ten", () => {
+        for (const [structured, expected] of [
+            [{}, 10],
+            [{ eventsPerGroup: "12" }, 10],
+            [{ eventsPerGroup: 10.5 }, 10],
+            [{ eventsPerGroup: 2 }, 10],
+            [{ eventsPerGroup: 31 }, 10],
+            [{ eventsPerGroup: 3 }, 3],
+            [{ eventsPerGroup: 17 }, 17],
+            [{ eventsPerGroup: 30 }, 30],
+        ] as const) {
+            expect(read({ structured }).structured.eventsPerGroup, JSON.stringify(structured)).toBe(expected);
+        }
     });
 
     it("normalizes nested writer settings field by field", () => {

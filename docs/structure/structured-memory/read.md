@@ -138,7 +138,7 @@ The component contract owns tab mounting and refresh. `TABS` puts the content ta
 Evidence missing), then Coverage, Preview, Log, and Settings, so a panel opens on Pages unless `takeMemoryPanelTarget`
 names a tab. Preview runs only on its button since its local send moves `refresh`. The panel, Coverage, and record and
 rebuild presses resolve the target chat's preset from `chatEntry(ref)`, including unloaded chats, for cadence, window
-size, and screening.
+size, and screening; Timeline resolves it the same way for its group size.
 
 Contents from `server/src/routes/structuredMemory.ts` supplies `adoption`, `rebuild`, `recordedLanguage`, `health`, and
 `unsupportedPages`; the tab's HypaV3 mirror decides none. A [held chat](lifecycle.md#the-adoption-choice) offers
@@ -180,9 +180,9 @@ badges and selection changes. Two reads cross the server boundary:
 Timeline takes titles from coverage and opens in Read, the story read: it joins `readStructuredMemoryStory` by event id,
 skips retracted events, and keeps titles when a summary is missing or the read fails. Its row reader keeps a valid date
 even when time text is missing. Read groups events with `memoryEventGroups` (`shared/structuredMemory.ts`), by story
-date in chat order and cut at `STRUCTURED_MEMORY_LIMITS.eventsPerGroup`; Manage holds the badges, edits, and repairs.
-Opening an event fetches its record. Timeline and Log share `MemoryEventFacts` for changes and `storyTimeText` for date,
-text and ordinal. Timeline resolves page and thread ids from contents; Log displays ids.
+date in chat order and cut at the chat preset's `eventsPerGroup`; Manage holds the badges, edits, and repairs. Opening
+an event fetches its record. Timeline and Log share `MemoryEventFacts` for changes and `storyTimeText` for date, text
+and ordinal. Timeline resolves page and thread ids from contents; Log displays ids.
 
 ### The Evidence missing tab
 

@@ -3373,6 +3373,9 @@ export const languageKorean = {
             },
             highlightChangeGrade: "강조할 변경 사항의 최소 등급",
             highlightHelp: "사용자가 직접 수정한 내용을 덮어쓰는 변경은 항상 강조 표시됩니다.",
+            eventsPerGroup: "타임라인 묶음당 사건 수",
+            eventsPerGroupHelp:
+                "하루의 사건이 이보다 많으면 여러 부분으로 나누어 보여 줍니다. 챕터가 생기면 같은 수를 챕터의 목표 크기로 씁니다.",
             sections: {
                 recording: "기록",
                 budget: "기억 블록 예산",

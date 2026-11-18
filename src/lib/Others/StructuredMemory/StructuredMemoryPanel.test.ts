@@ -2255,6 +2255,41 @@ function spyOnRowScroll() {
     return scroll;
 }
 
+it("splits a story day using the chat's preset and regroups Read without server requests when its size changes", async () => {
+    const { createHypaV3Preset } = await import("../../../../shared/hypaV3Presets.ts");
+    settings.hypaV3Presets.items.push(
+        createHypaV3Preset("Chat timeline", { structured: { eventsPerGroup: 4 } }, "chat-timeline"),
+    );
+    setChatMeta(ref, { memoryPresetId: "chat-timeline" });
+    serveTimelineEvents(
+        Array.from({ length: 10 }, (_, index) => ({
+            id: `e${index}`,
+            sourceIndex: index,
+            storyTime: { text: "", date: { month: 4, day: 3 } },
+        })),
+    );
+    const expectParts = (sizes: number[]) => {
+        const heads = [...target.querySelectorAll("[data-memory-group] > button")];
+        expect(heads).toHaveLength(sizes.length);
+        for (const [index, count] of sizes.entries()) {
+            expect(heads[index].textContent).toContain(`04-03 (${sizes.length - index})`);
+            expect(heads[index].textContent).toContain(language.structuredMemory.timeline.eventCount(count));
+        }
+    };
+
+    await open();
+    await chooseTab("timeline");
+    expect(timelineViewButton("read")?.getAttribute("aria-pressed")).toBe("true");
+    // Ten events at a maximum of four make three parts, newest first.
+    expectParts([3, 3, 4]);
+    const requests = io.authFetch.mock.calls.length;
+
+    settings.hypaV3Presets.items.find(({ id }) => id === "chat-timeline")!.settings.structured.eventsPerGroup = 6;
+    await settle();
+    expectParts([5, 5]);
+    expect(io.authFetch).toHaveBeenCalledTimes(requests);
+});
+
 it("stars Read events at grades six and above", async () => {
     serveTimelineEvents([5, 6, 7].map((grade) => ({ id: `grade-${grade}`, grade })));
     await open();

@@ -214,6 +214,8 @@ Compaction changes no event, and a warning does not fail the run.
   the chat's stored id to `readWriterSettings`.
 - A chat's `structuredMemoryLanguage` wins over its owner's, and the owner's over the preset's `language`, where `""`
   follows `db.language`. A chat's `structuredMemoryHighlight` wins over the preset's `highlightMode`.
+- `eventsPerGroup` (3 to 30, default `STRUCTURED_MEMORY_LIMITS.eventsPerGroup`) is display-only: the Timeline's group
+  size, which the writer never reads.
 - `omitUserMessages` defaults to false and applies to events recorded from then on. On, the writer is handed no user
   message, as a window message or a context line, and a quote only a user message holds is `quoteNotFound`; its events
   still cite the user messages, so coverage and reconciliation read them as before, and turning it off leaves no message
@@ -260,11 +262,11 @@ Compaction changes no event, and a warning does not fail the run.
 - Overrides are read only through `structuredMemoryLanguageOverride` and `structuredMemoryHighlightOverride`, which
   treat a bad stored value as unset. No normalizer deletes one: the tab holds what it sent, so a server-only deletion
   would make a later conflict merge against a record the server does not have.
-- `memorySettingsFingerprint` digests `structured` without its highlight fields, the language overrides (not the chat's
-  highlight either: a highlight only marks a commit), and `db.language` only while the chat's algorithm is Structured
-  Memory, so a change to them never marks another algorithm's queued task stale. The stored mode itself is not digested:
-  a mode change that resolves to the same algorithm keeps a queued task. Its preset is the scope's chat preset, so
-  changing another preset leaves that task current.
+- `memorySettingsFingerprint` digests `structured` without its highlight fields and `eventsPerGroup`, the language
+  overrides (not the chat's highlight either: a highlight only marks a commit), and `db.language` only while the chat's
+  algorithm is Structured Memory, so a change to them never marks another algorithm's queued task stale. The stored mode
+  itself is not digested: a mode change that resolves to the same algorithm keeps a queued task. Its preset is the
+  scope's chat preset, so changing another preset leaves that task current.
 - A message is recorded when a readable stored event cites it, in any status, retracted and stale included: that stops
   the writer recording it again automatically, so nothing brings back what the user retracted. It is not coverage:
   dropping raw history asks whether an active event covers it, and never reads this set. The greeting is recorded the
@@ -284,7 +286,7 @@ Compaction changes no event, and a warning does not fail the run.
 
 - A new writer setting: `StructuredMemorySettings`, `normalizeStructuredMemorySettings`, and the fresh-boot fixture
   `src/ts/storage/tests/fixtures/boot/boot-snapshot.json`. Verify its inclusion in `structuredMemoryFingerprint`.
-  History highlight settings are excluded.
+  History highlight settings and the display-only `eventsPerGroup` are excluded.
 
 ## Tests
 

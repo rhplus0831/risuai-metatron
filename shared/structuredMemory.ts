@@ -195,8 +195,10 @@ export const STRUCTURED_MEMORY_LIMITS = {
     gradeMax: 9,
     /** The grade from which an event counts as important (`projectHypaV3Data`). */
     importantEventGrade: 6,
-    /** The most events a Timeline reading group shows together. */
+    /** Default maximum number of events in a Timeline group. */
     eventsPerGroup: 10,
+    eventsPerGroupMin: 3,
+    eventsPerGroupMax: 30,
     /** Near-identical summaries: the character-bigram Jaccard index from which an event merges into the last one. */
     dedupeSimilarity: 0.8,
     eventTitleChars: 120,
@@ -842,7 +844,7 @@ export interface MemoryRun {
     language?: string;
 }
 
-/** The writer's settings, kept in the memory preset (`normalizeStructuredMemorySettings`). */
+/** Structured Memory settings kept in the memory preset (`normalizeStructuredMemorySettings`). */
 export interface StructuredMemorySettings {
     /** The language the writer records in; `""` follows the UI language. */
     language: string;
@@ -893,6 +895,8 @@ export interface StructuredMemorySettings {
     highlightKinds: StructuredMemoryHighlightKind[];
     /** The grade from which a listed `change` is highlighted, 0 to `STRUCTURED_MEMORY_LIMITS.gradeMax`. */
     highlightChangeGrade: number;
+    /** Display-only Timeline group size. A story day with more events is shown in parts. */
+    eventsPerGroup: number;
     /** The memory card's volatile part goes right before the latest user message, the stable part stays. */
     volatileBeforeLastUser: boolean;
 }
@@ -2048,7 +2052,7 @@ function textList(value: unknown): string[] {
 }
 
 /**
- * Writer settings with every field filled: each is checked on its own, an invalid one takes its
+ * Preset settings with every field filled: each is checked on its own, an invalid one takes its
  * default, and unknown keys are dropped. The result shares nothing with `input` or with another
  * result.
  */
@@ -2101,6 +2105,12 @@ export function normalizeStructuredMemorySettings(input: unknown): StructuredMem
               ]
             : ["create", "contradiction", "delete"],
         highlightChangeGrade: integerIn(source.highlightChangeGrade, 5, 0, STRUCTURED_MEMORY_LIMITS.gradeMax),
+        eventsPerGroup: integerIn(
+            source.eventsPerGroup,
+            STRUCTURED_MEMORY_LIMITS.eventsPerGroup,
+            STRUCTURED_MEMORY_LIMITS.eventsPerGroupMin,
+            STRUCTURED_MEMORY_LIMITS.eventsPerGroupMax,
+        ),
         volatileBeforeLastUser:
             typeof source.volatileBeforeLastUser === "boolean" ? source.volatileBeforeLastUser : false,
     };

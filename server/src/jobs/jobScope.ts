@@ -465,18 +465,22 @@ export function memorySettingsFingerprint(scope: JobScope): string {
 }
 
 /**
- * What Structured Memory's writer adds to `memorySettingsFingerprint`. The preset's highlight fields
- * stay out, as the chat's highlight override does: a highlight only marks a commit's history, so a
- * change to one need not end a queued run.
+ * What Structured Memory's writer adds to `memorySettingsFingerprint`. Highlights only mark commit
+ * history, and `eventsPerGroup` only changes Timeline grouping. Both leave the writer's input unchanged,
+ * so edits to these settings keep queued runs current.
  */
 function structuredMemoryFingerprint(scope: JobScope, preset: HypaV3Preset | undefined): unknown {
     const owner = scope.db.characters.find((entry) => entry?.chaId === scope.characterId);
     const chat = scopeChat(scope);
     const structured = preset?.settings?.structured;
     const settings = structured
-        ? (({ highlightMode: _mode, highlightKinds: _kinds, highlightChangeGrade: _grade, ...rest }) => rest)(
-              structured,
-          )
+        ? (({
+              highlightMode: _mode,
+              highlightKinds: _kinds,
+              highlightChangeGrade: _grade,
+              eventsPerGroup: _eventsPerGroup,
+              ...rest
+          }) => rest)(structured)
         : null;
     return {
         settings,

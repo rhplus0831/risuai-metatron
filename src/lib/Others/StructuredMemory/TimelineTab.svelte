@@ -23,17 +23,20 @@
         type StructuredMemoryCoverage,
     } from "src/ts/process/structuredMemory.svelte";
     import { characterList } from "src/ts/storage/characterStore.svelte";
-    import { findChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { chatEntry, findChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import SegmentedControl from "src/lib/UI/GUI/SegmentedControl.svelte";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
+    import { chatHypaV3Preset } from "../../../../shared/chatMemory.ts";
     import {
         ADOPTED_WRITER_RUN,
         formatStoryDate,
         memoryAnchorState,
         memoryEventGroups,
         memoryRerecordTarget,
+        normalizeStructuredMemorySettings,
         storedMemoryGreeting,
         STRUCTURED_MEMORY_LIMITS,
         type StructuredMemoryCoverageEvent,
@@ -51,8 +54,8 @@
      * status at one revision. Held messages reconcile those facts and place them in chat order through
      * memoryTimelineRows. Read joins the story by id once per refresh and omits retracted events.
      * Missing story data leaves the titles readable. memoryEventGroups keeps events in chat order
-     * within each date or part. Groups appear newest first, 30 at a time. The newest opens by default,
-     * and presses follow event ids when dates arrive and regroup them.
+     * within each date and splits long days at the chat preset's group size. Groups appear newest first,
+     * 30 at a time. The newest opens by default, and presses follow event ids when groups change.
      *
      * Read shows summaries and important stars. An open event shows its story and links to pages and
      * sources. Manage lists every event newest first, unplaced rows last, with badges, facts, edits
@@ -151,6 +154,12 @@
         }),
     );
     const toCheck = $derived(manageRows.filter(({ event }) => event.status === "stale" || event.rerecord));
+    const eventsPerGroup = $derived(
+        normalizeStructuredMemorySettings(
+            chatHypaV3Preset(settings.hypaV3Presets.items, settings.hypaV3Presets.selectedId, chatEntry(chatRef))
+                ?.settings.structured,
+        ).eventsPerGroup,
+    );
     const groups = $derived.by(() => {
         const events = rows
             .filter(({ event }) => event.status !== "retracted")
@@ -159,7 +168,7 @@
                 const story = stories.get(id);
                 return { ...row, id, story, date: story?.storyTime?.date };
             });
-        return memoryEventGroups(events, STRUCTURED_MEMORY_LIMITS.eventsPerGroup).reverse();
+        return memoryEventGroups(events, eventsPerGroup).reverse();
     });
     const usedEvents = $derived(memoryItemsUsed(messages, "event"));
     const messageIndexes = $derived(memoryMessageIndexes(messages));

@@ -165,6 +165,7 @@ it("edits only consumed settings in the Structured Memory section and shares the
             control(text.highlightMode),
             ...Object.values(text.highlightKinds).map(kindBox),
             ...(conditional ? [control(conditional)] : []),
+            control(text.eventsPerGroup),
         ];
         // Exhaustive editable controls: an unconsumed setting must not acquire an editor here.
         const hypaV3Section = [...target.querySelectorAll("h3")].find(
@@ -471,6 +472,21 @@ it("writes the flow token target and key-line event count through their count in
     change(flow, "0");
     change(keyLines, "0");
     expect(read()).toMatchObject({ laneTargets: { flow: 0 }, flowKeyLineEvents: 0 });
+});
+
+it("writes the Timeline group size only in the selected preset", () => {
+    settings.ui.memoryAlgorithmType = "structuredMemory";
+    open();
+    change(selectWith("first"), "second");
+    expect(settings.hypaV3Presets.selectedId).toBe("second");
+
+    const input = control(text.eventsPerGroup) as HTMLInputElement;
+    expect(input).toMatchObject({ type: "number", min: "3", max: "30", value: "10" });
+    change(input, "17");
+    expect(settings.hypaV3Presets.items).toMatchObject([
+        { id: "first", settings: { structured: { eventsPerGroup: 10 } } },
+        { id: "second", settings: { structured: { eventsPerGroup: 17 } } },
+    ]);
 });
 
 it("shows each lane's target against the maximum a send applies, following the shares, the split and a reduced budget", () => {

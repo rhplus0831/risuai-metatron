@@ -1029,6 +1029,15 @@
             )}
         {/if}
     {/if}
+    {@render structuredCount(
+        preset,
+        text.eventsPerGroup,
+        STRUCTURED_MEMORY_LIMITS.eventsPerGroupMin,
+        (read) => read.eventsPerGroup,
+        (next, count) => (next.eventsPerGroup = count),
+        STRUCTURED_MEMORY_LIMITS.eventsPerGroupMax,
+        text.eventsPerGroupHelp,
+    )}
 {/if}
 
 <div class="mb-8"></div>
