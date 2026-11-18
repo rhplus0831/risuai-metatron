@@ -256,6 +256,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - Use theme tokens (see STRUCTURE.md U1). To add a color: a root variable, an `@theme` token, a `ColorScheme` field,
   `updateColorScheme`, and presets. The shade ramps (`primary`, `secondary`, `danger`, `success`, `warning`, `neutral`)
   are fixed for every theme: only a root variable and an `@theme` token per shade.
+- A title never differs from the text under it by weight alone: `--risu-font-family` can be the user's `customFont`,
+  which may render no visible bold. Pair `font-semibold` with a size step or a muted color on the secondary text, as the
+  Read view of `TimelineTab.svelte` does.
 - Message identity: `Chats` keys a row by the chat and `chatId` (a message without one by its index); see
   `updateChatBody` and the per-row effect for remount conditions. Never read every row's text in the structural effect;
   per-chunk transcript JavaScript work must not grow with mounted row count.

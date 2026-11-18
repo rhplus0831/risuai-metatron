@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { ChevronDownIcon, ChevronRightIcon, XIcon } from "@lucide/svelte";
+    import { ChevronDownIcon, ChevronRightIcon, Trash2Icon, XIcon } from "@lucide/svelte";
     import { getAbortSignal, onDestroy, tick, untrack } from "svelte";
     import { SvelteMap } from "svelte/reactivity";
     import { language } from "src/lang";
@@ -67,9 +67,16 @@
      * order. Loose events inside its span follow the chapter (the latest anchor for overlapping spans).
      * Each remaining run groups by date and the preset's group size separately. Chapters and groups
      * appear newest first, 30 at a time, with the newest open by default. Presses follow chapter ids or
-     * loose event ids. The synopsis stays visible when collapsed. Only matching coverage, story and
-     * chapter revisions can label a chapter out of date. Each chapter action rereads chapters on
-     * settlement. Only the latest read can install, including after a removal or remake.
+     * loose event ids. A chapter is a bordered card whose heading toggles its synopsis: closed, the
+     * heading itself carries a two-line preview; open, the whole synopsis shows with a second toggle
+     * for the member events, closed until pressed or revealed, and the chapter's actions. The
+     * out-of-date label sits in the heading so a closed chapter shows it. Only matching coverage,
+     * story and chapter revisions can label a chapter out of date. Each chapter action rereads
+     * chapters on settlement. Only the latest read can install, including after a removal or remake.
+     *
+     * A reader's font may render no visible weight difference, so a title never differs from the text
+     * under it by weight alone: Read sets chapter and event titles a size above their text, and a
+     * heading's counts and ages are smaller and muted.
      *
      * Read can search memory text even with no events. Submitting replaces the groups with page and
      * event hits until the trimmed draft changes or Read closes. A page hit opens Pages. An event hit clears
@@ -82,7 +89,8 @@
      *
      * A jump opens its event in the current view, switching to Manage for a retracted event or an
      * explicit Manage link. In Read the reveal waits for both the story and chapter reads to settle,
-     * then pages to the containing chapter or group, expands it and scrolls to the open event.
+     * then pages to the containing chapter or group, expands it (a chapter and its events) and
+     * scrolls to the open event.
      * Manage can reveal its row as soon as coverage places it. An absent id gets one coverage reread.
      * Only an accepted, successful answer can establish that the event is gone. All record text stays plain.
      *
@@ -151,6 +159,8 @@
     let elementsShown = $state(GROUPS_AT_ONCE);
     const groupPresses = new SvelteMap<string, boolean>();
     const chapterPresses = new SvelteMap<string, boolean>();
+    /** Chapters whose member events are listed; the synopsis alone is the default reading. */
+    const chapterEventPresses = new SvelteMap<string, boolean>();
     /** The expanded event, one at a time, and its record once read. */
     let openId = $state<string | null>(null);
     let openEvent = $state.raw<MemoryRunEventView | null>(null);
@@ -249,9 +259,11 @@
         return newest && !element.events.some(({ id }) => groupPresses.get(id) === false);
     }
 
-    function pressElement(element: ReadElement, expanded: boolean) {
+    /** `events` also lists an opened chapter's events, for a reveal that targets one of them. */
+    function pressElement(element: ReadElement, expanded: boolean, events = false) {
         if (element.kind === "chapter") {
             chapterPresses.set(element.chapter.id, expanded);
+            if (expanded && events) chapterEventPresses.set(element.chapter.id, true);
         } else {
             for (const { id } of element.events) groupPresses.set(id, expanded);
         }
@@ -634,7 +646,7 @@
             const elementIndex = elements.findIndex((element) => element.events.some(({ id }) => id === target.id));
             if (elementIndex < 0) return;
             elementsShown = Math.max(elementsShown, elementIndex + 1);
-            pressElement(elements[elementIndex], true);
+            pressElement(elements[elementIndex], true, true);
         }
         if (!target.opened && target.source !== "notice") {
             target.opened = true;
@@ -853,12 +865,12 @@
             onclick={() => toggle(event.id)}
         >
             {#if expanded}
-                <ChevronDownIcon size={16} class="shrink-0 mt-0.5" />
+                <ChevronDownIcon size={16} class="shrink-0 {view === 'read' ? 'mt-1' : 'mt-0.5'}" />
             {:else}
-                <ChevronRightIcon size={16} class="shrink-0 mt-0.5" />
+                <ChevronRightIcon size={16} class="shrink-0 {view === 'read' ? 'mt-1' : 'mt-0.5'}" />
             {/if}
             {#if view === "read"}
-                <span class="w-4 shrink-0">
+                <span class="w-4 shrink-0 text-base">
                     {#if story?.grade !== undefined && story.grade >= STRUCTURED_MEMORY_LIMITS.importantEventGrade}
                         <span
                             role="img"
@@ -870,7 +882,13 @@
                 </span>
             {/if}
             <span class="flex flex-col flex-1 min-w-0">
-                <span class={event.status === "retracted" ? "line-through text-textcolor2" : ""}>
+                <span
+                    class={[
+                        view === "read" && "text-base font-semibold",
+                        event.status === "retracted" && "line-through text-textcolor2",
+                    ]}
+                    data-memory-event-title
+                >
                     {event.title}
                 </span>
                 {#if view === "manage"}
@@ -896,7 +914,7 @@
                         {/if}
                     </span>
                 {:else if story?.summary}
-                    <span class="whitespace-pre-wrap break-words" data-memory-event-summary>
+                    <span class="mt-0.5 whitespace-pre-wrap break-words" data-memory-event-summary>
                         {story.summary}
                     </span>
                 {/if}
@@ -1040,71 +1058,138 @@
                     <ul class="flex flex-col min-w-0 gap-2">
                         {#each elements.slice(0, elementsShown) as element, index (element.kind === "chapter" ? `chapter:${element.chapter.id}` : `group:${element.events[0].id}`)}
                             {@const expanded = elementOpen(element, index === 0)}
-                            <li
-                                class="flex flex-col min-w-0 gap-1"
-                                data-memory-group={element.kind === "group" ? "" : undefined}
-                                data-memory-chapter={element.kind === "chapter" ? element.chapter.id : undefined}
-                            >
-                                <button
-                                    type="button"
-                                    class="flex min-w-0 items-start gap-2 rounded-md p-2 text-left hover:bg-selected"
-                                    aria-expanded={expanded}
-                                    onclick={() => pressElement(element, !expanded)}
+                            {#if element.kind === "chapter"}
+                                {@const { chapter, events } = element}
+                                {@const eventsOpen = chapterEventPresses.get(chapter.id) ?? false}
+                                {@const outOfDate = revisionsMatch && memoryChapterOutOfDate(chapter, rows, stories)}
+                                {@const dates = chapterDates(events)}
+                                <li
+                                    class="flex flex-col min-w-0 border rounded-md border-darkborderc"
+                                    data-memory-chapter={chapter.id}
                                 >
-                                    {#if expanded}
-                                        <ChevronDownIcon size={16} class="shrink-0 mt-0.5" />
-                                    {:else}
-                                        <ChevronRightIcon size={16} class="shrink-0 mt-0.5" />
-                                    {/if}
-                                    <span class="flex min-w-0 flex-wrap items-baseline gap-x-2 break-words">
-                                        {#if element.kind === "chapter"}
-                                            <span class="min-w-0 font-semibold">{element.chapter.title}</span>
-                                            <span>{chapterDates(element.events)}</span>
-                                        {:else if element.date}
-                                            <span class="font-semibold">
-                                                {formatStoryDate(element.date)}{element.partCount > 1
-                                                    ? ` (${element.part})`
-                                                    : ""}
-                                            </span>
+                                    <button
+                                        type="button"
+                                        class="flex min-w-0 items-start gap-2 rounded-md p-2 text-left hover:bg-selected"
+                                        aria-expanded={expanded}
+                                        onclick={() => pressElement(element, !expanded)}
+                                    >
+                                        {#if expanded}
+                                            <ChevronDownIcon size={16} class="shrink-0 mt-1.5" />
+                                        {:else}
+                                            <ChevronRightIcon size={16} class="shrink-0 mt-1.5" />
                                         {/if}
-                                        <span>{text.eventCount(element.events.length)}</span>
-                                        <span class="text-textcolor2">{turnRange(element)}</span>
-                                    </span>
-                                </button>
-                                {#if element.kind === "chapter"}
-                                    <p class="whitespace-pre-wrap break-words" data-memory-chapter-synopsis>
-                                        {element.chapter.synopsis}
-                                    </p>
-                                    <div class="flex flex-wrap items-center gap-2">
-                                        {#if revisionsMatch && memoryChapterOutOfDate(element.chapter, rows, stories)}
-                                            <span class="text-textcolor2" data-memory-chapter-stale
-                                                >{text.chapters.stale}</span
+                                        <span class="flex flex-col flex-1 min-w-0 break-words">
+                                            <span class="text-lg font-semibold" data-memory-chapter-title
+                                                >{chapter.title}</span
                                             >
+                                            <span class="flex flex-wrap gap-x-2 text-xs text-textcolor2">
+                                                {#if dates}
+                                                    <span>{dates}</span>
+                                                {/if}
+                                                <span>{text.eventCount(events.length)}</span>
+                                                <span>{turnRange(element)}</span>
+                                                {#if outOfDate}
+                                                    <span class="text-draculared" data-memory-chapter-stale
+                                                        >{text.chapters.stale}</span
+                                                    >
+                                                {/if}
+                                            </span>
+                                            {#if !expanded}
+                                                <span
+                                                    class="mt-2 pl-2 border-l-2 border-darkborderc text-textcolor2 line-clamp-2"
+                                                    data-memory-chapter-synopsis
+                                                >
+                                                    {chapter.synopsis}
+                                                </span>
+                                            {/if}
+                                        </span>
+                                    </button>
+                                    {#if expanded}
+                                        <p
+                                            class="ml-8 mr-2 mb-2 pl-2 border-l-2 border-darkborderc whitespace-pre-wrap break-words"
+                                            data-memory-chapter-synopsis
+                                        >
+                                            {chapter.synopsis}
+                                        </p>
+                                        <div class="flex flex-wrap items-center gap-2 ml-8 mr-2 mb-2">
                                             <button
                                                 type="button"
-                                                class="px-2 py-1 border rounded-md border-darkborderc enabled:hover:bg-selected disabled:opacity-50 disabled:cursor-not-allowed"
-                                                disabled={chapterControlsOff}
-                                                onclick={() => makeChapters(element.chapter.id)}
-                                                data-memory-chapter-remake>{text.chapters.remake}</button
+                                                class="flex items-center gap-1 px-2 py-1 border rounded-md border-darkborderc hover:bg-selected"
+                                                aria-expanded={eventsOpen}
+                                                onclick={() => chapterEventPresses.set(chapter.id, !eventsOpen)}
+                                                data-memory-chapter-events
                                             >
+                                                {#if eventsOpen}
+                                                    <ChevronDownIcon size={14} class="shrink-0" />
+                                                {:else}
+                                                    <ChevronRightIcon size={14} class="shrink-0" />
+                                                {/if}
+                                                {text.eventCount(events.length)}
+                                            </button>
+                                            {#if outOfDate}
+                                                <button
+                                                    type="button"
+                                                    class="px-2 py-1 border rounded-md border-darkborderc enabled:hover:bg-selected disabled:opacity-50 disabled:cursor-not-allowed"
+                                                    disabled={chapterControlsOff}
+                                                    onclick={() => makeChapters(chapter.id)}
+                                                    data-memory-chapter-remake>{text.chapters.remake}</button
+                                                >
+                                            {/if}
+                                            <button
+                                                type="button"
+                                                class="p-1 ml-auto rounded-md text-textcolor2 enabled:hover:bg-selected enabled:hover:text-textcolor disabled:opacity-50 disabled:cursor-not-allowed"
+                                                disabled={chapterControlsOff}
+                                                aria-label={text.chapters.remove}
+                                                title={text.chapters.remove}
+                                                onclick={() => removeChapter(chapter)}
+                                                data-memory-chapter-remove
+                                            >
+                                                <Trash2Icon size={16} aria-hidden="true" />
+                                            </button>
+                                        </div>
+                                        {#if eventsOpen}
+                                            <ul class="flex flex-col min-w-0 gap-1 mx-2 mb-2">
+                                                {#each events as row (row.id)}
+                                                    {@render eventRow(row, row.story)}
+                                                {/each}
+                                            </ul>
                                         {/if}
-                                        <button
-                                            type="button"
-                                            class="px-2 py-1 border rounded-md border-darkborderc enabled:hover:bg-selected disabled:opacity-50 disabled:cursor-not-allowed"
-                                            disabled={chapterControlsOff}
-                                            onclick={() => removeChapter(element.chapter)}
-                                            data-memory-chapter-remove>{text.chapters.remove}</button
-                                        >
-                                    </div>
-                                {/if}
-                                {#if expanded}
-                                    <ul class="flex flex-col min-w-0 gap-1">
-                                        {#each element.events as row (row.id)}
-                                            {@render eventRow(row, row.story)}
-                                        {/each}
-                                    </ul>
-                                {/if}
-                            </li>
+                                    {/if}
+                                </li>
+                            {:else}
+                                <li class="flex flex-col min-w-0 gap-1" data-memory-group>
+                                    <button
+                                        type="button"
+                                        class="flex min-w-0 items-start gap-2 rounded-md p-2 text-left hover:bg-selected"
+                                        aria-expanded={expanded}
+                                        onclick={() => pressElement(element, !expanded)}
+                                    >
+                                        {#if expanded}
+                                            <ChevronDownIcon size={16} class="shrink-0 mt-0.5" />
+                                        {:else}
+                                            <ChevronRightIcon size={16} class="shrink-0 mt-0.5" />
+                                        {/if}
+                                        <span class="flex min-w-0 flex-wrap items-baseline gap-x-2 break-words">
+                                            {#if element.date}
+                                                <span class="font-semibold">
+                                                    {formatStoryDate(element.date)}{element.partCount > 1
+                                                        ? ` (${element.part})`
+                                                        : ""}
+                                                </span>
+                                            {/if}
+                                            <span>{text.eventCount(element.events.length)}</span>
+                                            <span class="text-textcolor2">{turnRange(element)}</span>
+                                        </span>
+                                    </button>
+                                    {#if expanded}
+                                        <ul class="flex flex-col min-w-0 gap-1">
+                                            {#each element.events as row (row.id)}
+                                                {@render eventRow(row, row.story)}
+                                            {/each}
+                                        </ul>
+                                    {/if}
+                                </li>
+                            {/if}
                         {/each}
                     </ul>
                 {/if}

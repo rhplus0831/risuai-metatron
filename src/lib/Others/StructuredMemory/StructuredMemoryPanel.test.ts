@@ -2338,18 +2338,39 @@ it("interleaves loose runs with chapters at their first surviving member and ope
     expect(heads.map((head) => head.getAttribute("aria-expanded"))).toEqual(["true", "false", "false", "false"]);
     const rowIds = (el: HTMLElement) =>
         [...el.querySelectorAll<HTMLElement>("[data-memory-event]")].map((row) => row.dataset.memoryEvent);
-    expect(rowIds(elements[0])).toEqual(["arrival", "landing"]);
+    const synopses = (el: HTMLElement) => [...el.querySelectorAll<HTMLElement>("[data-memory-chapter-synopsis]")];
+    const eventsToggle = (el: HTMLElement) => el.querySelector<HTMLButtonElement>("[data-memory-chapter-events]");
     const { timeline } = language.structuredMemory;
     for (const label of [arrival.title, "04-03", "04-04", timeline.eventCount(2), timeline.turnsAgoRange(1, 2)])
         expect(heads[0].textContent).toContain(label);
+    // An open chapter reads as its synopsis, below the heading; its events wait behind their own toggle.
+    expect(synopses(elements[0]).map((el) => el.textContent?.trim())).toEqual([arrival.synopsis]);
+    expect(heads[0].contains(synopses(elements[0])[0])).toBe(false);
+    expect(rowIds(elements[0])).toEqual([]);
+    expect(eventsToggle(elements[0])?.getAttribute("aria-expanded")).toBe("false");
+    expect(eventsToggle(elements[0])?.textContent?.trim()).toBe(timeline.eventCount(2));
+    expect(elements[0].querySelector("[data-memory-chapter-remove]")?.getAttribute("aria-label")).toBe("Remove");
+    // A closed chapter keeps only a preview of the synopsis, inside the heading that opens it.
     expect(heads[2].textContent).toContain(voyage.title);
-    expect(elements[2].querySelector("[data-memory-chapter-synopsis]")?.textContent?.trim()).toBe(voyage.synopsis);
-    expect(elements[2].querySelector("[data-memory-chapter-remake]")).toBeNull();
-    for (const index of [0, 2])
-        expect(elements[index].querySelector("[data-memory-chapter-remove]")?.textContent?.trim()).toBe("Remove");
+    expect(synopses(elements[2]).map((el) => el.textContent?.trim())).toEqual([voyage.synopsis]);
+    expect(heads[2].contains(synopses(elements[2])[0])).toBe(true);
+    for (const control of ["remake", "remove", "events"])
+        expect(elements[2].querySelector(`[data-memory-chapter-${control}]`), control).toBeNull();
     for (const index of [1, 2, 3]) heads[index].click();
     await settle();
+    expect(elements.map(rowIds)).toEqual([[], ["between"], [], ["before"]]);
+    expect(heads[2].contains(synopses(elements[2])[0])).toBe(false);
+    for (const index of [0, 2]) eventsToggle(elements[index])!.click();
+    await settle();
     expect(elements.map(rowIds)).toEqual([["arrival", "landing"], ["between"], ["boat"], ["before"]]);
+    expect(eventsToggle(elements[0])?.getAttribute("aria-expanded")).toBe("true");
+    // Closing the chapter folds its events with it; reopening shows them as they were left.
+    heads[0].click();
+    await settle();
+    expect(rowIds(elements[0])).toEqual([]);
+    heads[0].click();
+    await settle();
+    expect(rowIds(elements[0])).toEqual(["arrival", "landing"]);
 
     await chooseTimelineView("manage");
     expect(query("[data-memory-chapter]")).toBeNull();
@@ -2441,6 +2462,9 @@ it("removes only after confirmation and ignores a pre-removal read that finishes
     click("[data-memory-panel-refresh]");
     await settle();
     expect(getChapters).toHaveBeenCalledTimes(2);
+    // The loose event after it is the newest element, so the chapter starts closed, without its actions.
+    expect(query(`${chapterBox(old.id)} [data-memory-chapter-remove]`)).toBeNull();
+    click(`${chapterBox(old.id)} > button`);
     click(`${chapterBox(old.id)} [data-memory-chapter-remove]`);
     await settle();
     expect(alertConfirm).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(old.title));
