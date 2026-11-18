@@ -6,6 +6,7 @@ import { showTargets } from "./patches.ts";
 import { createNodeCbsEvaluator } from "../../../tests/cbsHost.ts";
 import { parseChatML } from "../../triggers.ts";
 import {
+    MEMORY_SECTION_BUDGETS,
     type MemoryThread,
     type MemoryThreadState,
     STRUCTURED_MEMORY_LIMITS as LIMITS,
@@ -201,6 +202,24 @@ it("inserts the entire compaction section after CBS and ChatML parse without exp
     expect(messages[1].content).toBe(
         `Page:\n${JSON.stringify({ type: "location", title: "Harbor {{user}}", heading: "Gate" })}\n\nSection:\n${body}`,
     );
+});
+
+it("tells the compaction model to preserve named dates and avoid day-relative wording", () => {
+    const detail = "The north berth keeps the same schedule. ";
+    const body = `The crossing resumed on 2025-04-03. ${detail.repeat(Math.ceil(MEMORY_SECTION_BUDGETS.location / detail.length))}`;
+    const slots = compactSlots({
+        language: "English",
+        target: { page: { id: "harbor", type: "location", title: "Harbor" }, heading: "Gate", body },
+    });
+    const [system, section] = assembleCompactPrompt(
+        { parseChatML: (text) => parseChatML(text, (text) => text) },
+        "",
+        slots,
+    );
+
+    expect(system.content).toContain("Keep the dates the section names");
+    expect(system.content).toContain("never write a word that depends on the day it is read");
+    expect(section.content).toContain("The crossing resumed on 2025-04-03.");
 });
 
 it("reserves patch space for taken-back text before bodies and tells the writer how to treat corrections", () => {

@@ -148,9 +148,10 @@ Axes score how long it lasts, how much it changes, and how many it touches.
 Empty lists stay as []. At most ${LIMITS.keyLinesPerEvent} keyLines, ${LIMITS.stateChangesPerEvent} stateChanges, ${LIMITS.knowledgePerEvent} knowledge, ${LIMITS.relationshipShiftsPerEvent} relationshipShifts, ${LIMITS.threadsPerEvent} of each thread list, and ${LIMITS.pageCandidates} pageCandidates.
 "scene" is null when nothing about it changed; a blank field keeps what the scene says.`;
 
-/** For every call that writes text a later send reads: the analysis call and the patch call. */
-const RELATIVE_DAY_RULE =
-    "- A summary, a fact, and a page's text are read long after they are written: never write a word that depends on the day it is read (today, yesterday, tomorrow, tonight, this morning, last night). Name the date when the event has one, otherwise the time of day or what it followed.";
+/** For every call that writes text a later send reads: analysis, patch, and compaction. */
+const RELATIVE_DAY_WORDING =
+    "never write a word that depends on the day it is read (today, yesterday, tomorrow, tonight, this morning, last night).";
+const RELATIVE_DAY_RULE = `- A summary, a fact, and a page's text are read long after they are written: ${RELATIVE_DAY_WORDING} Name the date when the event has one, otherwise the time of day or what it followed.`;
 
 const RULES = (scene: MemoryPage | null) => `Rules:
 - A quote (a key line's text and every "quote") is copied verbatim from one message under "Messages to record", at most ${LIMITS.keyLineChars} characters: never reworded, never joined across messages or across an [Image] mark, never taken from the context.
@@ -209,7 +210,7 @@ function compactRules(heading: string, budget: number): string {
 - Keep only the current standing, dropping how it changed and why (the timeline keeps that) and every "(was: ...)" line, and add nothing.`
               : `- Keep every fact that is still true and each current value, and add nothing.
 - Drop repetition and superseded "(was: ...)" lines first.`;
-    return `Rules:\n${rules}\n- Aim for at most ${budget} characters.`;
+    return `Rules:\n${rules}\n- Keep the dates the section names and ${RELATIVE_DAY_WORDING}\n- Aim for at most ${budget} characters.`;
 }
 
 /** The default frame, with the preset's text after the fixed instructions. */
