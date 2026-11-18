@@ -28,6 +28,7 @@
     import { importMCPModule } from "src/ts/process/mcp/mcp";
     import { convertModuleToCharacter } from "src/ts/interchangeability";
     import { addCharacter } from "src/ts/storage/characterStore.svelte";
+    import { recordValueIdentity } from "src/ts/storage/records.svelte";
     import {
         addItemFolder,
         moveItemToFolder,
@@ -286,9 +287,10 @@
                                 onclick={async (e) => {
                                     e.stopPropagation();
                                     const moduleId = rmodule.id;
+                                    const identity = recordValueIdentity(rmodule);
                                     const d = await alertConfirm(`${language.removeConfirm}` + rmodule.name);
                                     if (d) {
-                                        removeModule(moduleId);
+                                        removeModule(moduleId, identity);
                                     }
                                 }}
                             >

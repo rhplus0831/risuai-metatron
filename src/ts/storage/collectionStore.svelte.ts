@@ -62,7 +62,7 @@ import {
     requireObject,
     writeEntries,
 } from "./mutationValidation";
-import { batchRecordWrites } from "./records.svelte";
+import { batchRecordWrites, recordValueIdentity } from "./records.svelte";
 import { selectPersona, selection } from "./selection.svelte";
 import { deleteEntrySecret } from "./llmSecrets.svelte";
 
@@ -354,16 +354,22 @@ export function updateModule(id: string, patch: Record<string, unknown>): boolea
 }
 
 /**
- * Deletes the module with `id`, its global enablement, and its membership of every module folder, as one batch.
- * Returns `false` when there is none.
+ * Deletes the first module with `id`, or the exact record when a row identity is supplied. A wrapper
+ * can follow a replacement during confirmation, so use the identity captured when the dialog opened.
+ * Returns `false` if the target is gone. Clears enablement and folder membership when the last match is deleted.
  */
-export function removeModule(id: string): boolean {
-    const index = (settings.modules ?? []).findIndex((module) => module?.id === id);
+export function removeModule(id: string, identity?: symbol): boolean {
+    const index = (settings.modules ?? []).findIndex(
+        (module) => module?.id === id && (identity === undefined || recordValueIdentity(module) === identity),
+    );
     if (index === -1) {
         return false;
     }
     batchRecordWrites(() => {
         settings.modules.splice(index, 1);
+        if (settings.modules.some((module) => module?.id === id)) {
+            return;
+        }
         if (settings.enabledModules?.includes(id)) {
             settings.enabledModules = settings.enabledModules.filter((enabled) => enabled !== id);
         }
