@@ -434,4 +434,27 @@ describe("module reloads", () => {
             target.remove();
         }
     });
+
+    it("shows the folder's enabled and total counts in the module picker without a bulk switch", async () => {
+        const { chat, collectionStore: c, settings, flushSync, mount, unmount } = await boot();
+        c.setEnabledModules(["a"]);
+        settings.moduleFolders = [{ id: "options", name: "Options", data: ["a", "b"] }];
+        const Menu = (await import("../../../lib/Setting/Pages/Module/ModuleChatMenu.svelte")).default;
+        const target = document.createElement("div");
+        document.body.append(target);
+        const component = mount(Menu, { target, props: { alertMode: true } });
+        flushSync();
+        try {
+            const folder = target.querySelector<HTMLButtonElement>("button[aria-expanded]")!;
+            expect(folder.textContent).toContain("1 / 2");
+            expect(folder.parentElement!.querySelector("button:has(.lucide-circle-check)")).toBeNull();
+
+            chat.setChatMeta(refK, { modules: ["b"] });
+            flushSync();
+            expect(folder.textContent).toContain("2 / 2");
+        } finally {
+            await unmount(component);
+            target.remove();
+        }
+    });
 });

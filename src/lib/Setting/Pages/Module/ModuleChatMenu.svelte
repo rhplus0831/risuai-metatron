@@ -67,7 +67,6 @@
     }
 
     function folderCount(memberIds: string[]) {
-        if (alertMode) return memberIds.length;
         const { on, total } = chatOnCount(memberIds, settings.enabledModules ?? [], currentChat?.modules ?? []);
         return `${on} / ${total}`;
     }
