@@ -7,13 +7,16 @@ import { strFromU8, strToU8, zipSync, unzipSync } from "fflate";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { storyTimeText } from "src/lib/Others/StructuredMemory/memoryText";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
-import type {
-    MemoryEvent,
-    MemoryPage,
-    MemorySource,
-    MemoryThread,
-    StructuredMemoryImportFile,
-    StructuredMemoryImportRefusal,
+import {
+    memoryChapterMark,
+    type MemoryChapter,
+    type StructuredMemoryCoverageEvent,
+    type MemoryEvent,
+    type MemoryPage,
+    type MemorySource,
+    type MemoryThread,
+    type StructuredMemoryImportFile,
+    type StructuredMemoryImportRefusal,
 } from "../../../shared/structuredMemory.ts";
 import { setEpochMismatchListener, setResourceEpoch } from "../storage/resourceClient";
 import {
@@ -35,6 +38,8 @@ import {
     memoryEventView,
     memoryRunView,
     memoryTimelineRows,
+    memoryChapterLayout,
+    memoryChapterOutOfDate,
     memoryPageHistoryView,
     memoryBlockEntries,
     memoryPagePath,
@@ -147,6 +152,79 @@ it("reads well-shaped chapters with their revision and posts the selected chapte
 
     authFetch.mockResolvedValueOnce(Response.json({ chapters: [first] }));
     expect((await readStructuredMemoryChapters(ref)).outcome).toBe("failed");
+});
+
+it("places a loose event after the latest first-listed anchor of overlapping chapters", () => {
+    const chapter = (id: string, members: string[]): MemoryChapter => ({
+        id,
+        title: id,
+        synopsis: id,
+        events: members.map((id) => ({ id, mark: "stored" })),
+    });
+    const rows = ["a2", "b1", "x", "a1", "b2"].map((id) => ({ id }));
+    const elements = memoryChapterLayout(rows, [chapter("A", ["a1", "a2"]), chapter("B", ["b1", "b2"])], 10);
+    // The helper returns story order. Read displays the elements newest first, with members still in story order.
+    expect(
+        elements
+            .toReversed()
+            .map((element) => [
+                element.kind === "chapter" ? element.chapter.id : "group",
+                element.events.map(({ id }) => id),
+            ]),
+    ).toEqual([
+        ["group", ["x"]],
+        ["A", ["a2", "a1"]],
+        ["B", ["b1", "b2"]],
+    ]);
+});
+
+it("marks changed, missing, retracted or reordered chapter members out of date and ignores loose events", () => {
+    const date = { month: 3, day: 8 };
+    const summary = "The gate stayed shut.";
+    const row = (id: string, changes?: Partial<StructuredMemoryCoverageEvent>) => ({
+        event: {
+            id,
+            title: "Gate watch",
+            status: "active" as const,
+            sources: [],
+            messageIds: [],
+            sourceIndex: null,
+            ...changes,
+        },
+    });
+    const first = row("first");
+    const last = row("last");
+    const loose = row("loose");
+    // Identical marks keep a change in member order distinguishable only by the listed ids.
+    const mark = memoryChapterMark("Gate watch", summary, date);
+    const chapter = {
+        id: "watch",
+        title: "The watch",
+        synopsis: "Two quiet shifts.",
+        events: [
+            { id: "first", mark },
+            { id: "last", mark },
+        ],
+    };
+    const story = (id: string) => ({ id, summary, storyTime: { text: "", date }, participants: [] });
+    const stories = new Map([
+        ["first", story("first")],
+        ["last", story("last")],
+    ]);
+    const rows = [first, loose, last];
+    const outOfDate = (currentRows = rows, currentStories = stories) =>
+        memoryChapterOutOfDate(chapter, currentRows, currentStories);
+    const edited = (change: Partial<ReturnType<typeof story>>) =>
+        new Map(stories).set("last", { ...story("last"), ...change });
+
+    expect(outOfDate(), "loose event between members").toBe(false);
+    expect(outOfDate([first, loose, row("last", { title: "Gate opened" })]), "edited title").toBe(true);
+    expect(outOfDate(rows, edited({ summary: "Someone arrived." })), "edited summary").toBe(true);
+    const nextDay = { text: "", date: { month: 3, day: 9 } };
+    expect(outOfDate(rows, edited({ storyTime: nextDay })), "changed date").toBe(true);
+    expect(outOfDate([first, loose, row("last", { status: "retracted" })]), "retracted member").toBe(true);
+    expect(outOfDate([first, loose]), "missing last member").toBe(true);
+    expect(outOfDate([last, loose, first]), "reordered members").toBe(true);
 });
 
 it("shares pending contents only for the same chat and epoch before a memory write answer settles", async () => {

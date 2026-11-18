@@ -45,8 +45,10 @@ import {
     MEMORY_FIND_HITS_MAX,
     MEMORY_FIND_QUERY_CHARS,
     sealHypaV3Data,
+    memoryChapterMark,
     STRUCTURED_MEMORY_LIMITS,
     writerPaused,
+    type MemoryChapter,
     type MemoryEvent,
     type MemoryPage,
     type MemoryThread,
@@ -80,6 +82,8 @@ vi.mock("src/ts/globalApi.svelte", async () =>
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
 const ref = { chaId: "c", chatId: "k" };
+const chaptersRoute = "/api/memory/structured/c/k/chapters";
+const chapterCostRoute = `${chaptersRoute}/cost`;
 const epoch = "0f3d4b9a-0000-4000-8000-000000000001";
 const revision = (n: number) => `${epoch}:1:${n}`;
 const message = (id: string, role: "user" | "char", data = id): Message => ({ chatId: id, role, data });
@@ -168,10 +172,13 @@ beforeEach(() => {
             return Response.json({ counts: JSON.parse(init!.body as string).texts.map(() => 1) });
         if (url.includes("/coverage")) return Response.json(facts());
         if (url.includes("/runs")) return Response.json(logRound());
-        if (url.includes("/cost")) return Response.json({ calls: 1, messages: 2, estimatedTokens: 1700 });
+        if (url === chaptersRoute) return Response.json({ revision: facts().revision, chapters: [] });
+        if (url === chapterCostRoute) return Response.json({ units: 0 });
+        if (url.includes("/cost?")) return Response.json({ calls: 1, messages: 2, estimatedTokens: 1700 });
         throw new Error(`Unexpected request: ${url}`);
     });
     io.runServerJob.mockReset();
+    vi.mocked(alertConfirm).mockReset();
     vi.mocked(alertError).mockClear();
     vi.mocked(alertToast).mockClear();
     io.downloadFile.mockReset().mockResolvedValue(undefined);
@@ -789,6 +796,7 @@ function serveMemory(
         if (url.endsWith("/records/threads/t")) return Response.json({ revision: state.revision, data: state.thread });
         if (url.endsWith("/records/events/event"))
             return Response.json({ revision: state.revision, data: state.event });
+        if (url === chaptersRoute) return Response.json({ revision: state.revision, chapters: [] });
         if (url.startsWith(storyRoute)) return storyAnswer(state.revision, [state.event]);
         return fetch(url, init, options);
     });
@@ -1970,6 +1978,7 @@ function serveAnchoredEvent() {
                 next: null,
             });
         if (url.endsWith("/records/events/e")) return Response.json({ revision: state.revision, data: state.event });
+        if (url === chaptersRoute) return Response.json({ revision: state.revision, chapters: [] });
         if (url.startsWith(storyRoute)) return storyAnswer(state.revision, [state.event]);
         if (url === "/api/memory/structured/c/k")
             return Response.json({
@@ -2261,6 +2270,351 @@ function spyOnRowScroll() {
     releases.push(() => scroll.mockRestore());
     return scroll;
 }
+
+/** Members as they were when the server stored the synopsis. */
+function chapter(id: string, ...members: (Pick<MemoryEvent, "id"> & Partial<MemoryEvent>)[]): MemoryChapter {
+    return {
+        id,
+        title: `Chapter ${id}`,
+        synopsis: `Synopsis of ${id}`,
+        events: members.map(({ id, title, summary, storyTime }) => ({
+            id,
+            mark: memoryChapterMark(title ?? id, summary, storyTime?.date),
+        })),
+    };
+}
+
+function serveResponseAt(route: string, answer: () => Response | Promise<Response>) {
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) =>
+        url === route ? answer() : fetch(url, init, options),
+    );
+}
+
+function expectChapterCommand(fields: { remake: string } | { limit: number }) {
+    expect(io.runServerJob).toHaveBeenCalledExactlyOnceWith(
+        characterList()[0],
+        ref,
+        expect.objectContaining({
+            kind: "command",
+            command: { type: "memoryChapters", ...fields },
+            label: "memoryChapters",
+        }),
+    );
+}
+
+const chapterBox = (id: string) => `[data-memory-chapter="${id}"]`;
+const makeSynopses = "[data-memory-chapters-make]";
+
+it("interleaves loose runs with chapters at their first surviving member and opens only the newest", async () => {
+    const ids = ["withdrawn", "before", "boat", "between", "arrival", "landing"];
+    const messages = ids.map((id) => message(id, "char"));
+    install(messages);
+    const events = ids.map((id, index) => ({
+        id,
+        status: id === "withdrawn" ? ("retracted" as const) : ("active" as const),
+        sources: [{ index, messageId: id, hash: memoryMessageHash(messages[index]) }],
+        storyTime: { text: "", date: { month: 4, day: id === "landing" ? 4 : 3 } },
+    }));
+    const revision = serveTimelineEvents(events);
+    const voyage = {
+        ...chapter("voyage", events[2]),
+        title: "The <b>voyage</b>",
+        synopsis: "A <em>quiet</em> crossing.",
+    };
+    const arrival = chapter("shore", events[0], events[4], events[5]);
+    serveResponseAt(chaptersRoute, () =>
+        Response.json({
+            revision,
+            chapters: [voyage, arrival, chapter("lost", { id: "missing" })],
+        }),
+    );
+    await open();
+    await chooseTab("timeline");
+
+    const elements = [...target.querySelectorAll<HTMLElement>("[data-memory-group], [data-memory-chapter]")];
+    expect(elements.map((el) => el.dataset.memoryChapter ?? "group")).toEqual(["shore", "group", "voyage", "group"]);
+    const heads = elements.map((el) => el.querySelector<HTMLButtonElement>("button[aria-expanded]")!);
+    expect(heads.map((head) => head.getAttribute("aria-expanded"))).toEqual(["true", "false", "false", "false"]);
+    const rowIds = (el: HTMLElement) =>
+        [...el.querySelectorAll<HTMLElement>("[data-memory-event]")].map((row) => row.dataset.memoryEvent);
+    expect(rowIds(elements[0])).toEqual(["arrival", "landing"]);
+    const { timeline } = language.structuredMemory;
+    for (const label of [arrival.title, "04-03", "04-04", timeline.eventCount(2), timeline.turnsAgoRange(1, 2)])
+        expect(heads[0].textContent).toContain(label);
+    expect(heads[2].textContent).toContain(voyage.title);
+    expect(elements[2].querySelector("[data-memory-chapter-synopsis]")?.textContent?.trim()).toBe(voyage.synopsis);
+    expect(elements[2].querySelector("[data-memory-chapter-remake]")).toBeNull();
+    for (const index of [0, 2])
+        expect(elements[index].querySelector("[data-memory-chapter-remove]")?.textContent?.trim()).toBe("Remove");
+    for (const index of [1, 2, 3]) heads[index].click();
+    await settle();
+    expect(elements.map(rowIds)).toEqual([["arrival", "landing"], ["between"], ["boat"], ["before"]]);
+
+    await chooseTimelineView("manage");
+    expect(query("[data-memory-chapter]")).toBeNull();
+    expect(query(makeSynopses)).toBeNull();
+    expect(query(timelineRow("withdrawn"))).not.toBeNull();
+});
+
+it("withholds the out-of-date label until coverage, story and chapters agree on a revision", async () => {
+    const state = serveAnchoredEvent();
+    const stored = chapter("gate", { ...state.event, title: "Before the edit" });
+    let chapterRevision = state.revision;
+    let storyRevision = state.revision;
+    serveResponseAt(chaptersRoute, () => Response.json({ revision: chapterRevision, chapters: [stored] }));
+    serveResponseAt(storyRoute, () => storyAnswer(storyRevision, [state.event]));
+    await open();
+    await chooseTab("timeline");
+    expect(query("[data-memory-chapter-stale]")?.textContent?.trim()).toBe("Out of date");
+    expect(query("[data-memory-chapter-remake]")?.textContent?.trim()).toBe("Make again");
+    for (const [coverage, story, chapters] of [
+        ["r2", "r1", "r1"],
+        ["r1", "r2", "r1"],
+        ["r1", "r1", "r2"],
+    ]) {
+        state.revision = coverage;
+        storyRevision = story;
+        chapterRevision = chapters;
+        click("[data-memory-panel-refresh]");
+        await settle();
+        expect(query(chapterBox(stored.id))?.textContent).toContain(stored.synopsis);
+        expect(query("[data-memory-chapter-stale]"), [coverage, story, chapters].join("/")).toBeNull();
+        expect(query("[data-memory-chapter-remake]")).toBeNull();
+    }
+});
+
+it.each(["replaced", "removed", "kept"] as const)(
+    "reports a %s remake and displays the reread chapters",
+    async (remade) => {
+        const current = { id: "boat", title: "The boat sailed" };
+        const revision = serveTimelineEvents([current]);
+        const old = chapter("moored", { ...current, title: "The boat docked" });
+        const fresh = chapter("sailed", current);
+        let stored = [old];
+        const getChapters = vi.fn(() => Response.json({ revision, chapters: stored }));
+        serveResponseAt(chaptersRoute, getChapters);
+        const job = deferred<Awaited<ReturnType<typeof io.runServerJob>>>();
+        io.runServerJob.mockReturnValueOnce(job.promise);
+        await open();
+        await chooseTab("timeline");
+        expect(query(`${chapterBox(old.id)} [data-memory-chapter-stale]`)?.textContent?.trim()).toBe("Out of date");
+        // Another tab can have removed the displayed chapter before the remake reaches the server.
+        if (remade === "removed") stored = [];
+        click(`${chapterBox(old.id)} [data-memory-chapter-remake]`);
+        await settle();
+        expectChapterCommand({ remake: old.id });
+        if (remade === "replaced") stored = [fresh];
+        job.resolve(previewAnswer({ kind: "memoryChapters", remade }));
+        await settle();
+        expect(alertToast).toHaveBeenCalledWith(language.structuredMemory.timeline.chapters[remade]);
+        if (remade === "kept") expect(query(chapterBox(old.id))?.textContent).toContain(old.synopsis);
+        else expect(query(chapterBox(old.id))).toBeNull();
+        if (remade === "replaced") {
+            expect(query(chapterBox(fresh.id))?.textContent).toContain(fresh.synopsis);
+            expect(query("[data-memory-chapter-stale]")).toBeNull();
+        }
+        if (remade === "removed") expect(query(`[data-memory-group] ${timelineRow("boat")}`)).not.toBeNull();
+        expect(getChapters).toHaveBeenCalledTimes(2);
+    },
+);
+
+it("removes only after confirmation and ignores a pre-removal read that finishes after the reread", async () => {
+    const event = { id: "boat" };
+    const revision = serveTimelineEvents([event, { id: "pier" }]);
+    const old = chapter("voyage", event);
+    const remaining = chapter("harbor", { id: "pier" });
+    const held = deferred<Response>();
+    const getChapters = vi
+        .fn<() => Response | Promise<Response>>()
+        .mockImplementationOnce(() => Response.json({ revision, chapters: [old] }))
+        .mockReturnValueOnce(held.promise)
+        .mockImplementation(() => Response.json({ revision, chapters: [remaining] }));
+    serveResponseAt(chaptersRoute, getChapters);
+    serveResponseAt(`${chaptersRoute}/remove`, () => Response.json({ removed: 1 }));
+    const confirmation = deferred<boolean>();
+    vi.mocked(alertConfirm).mockReturnValueOnce(confirmation.promise);
+
+    await open();
+    await chooseTab("timeline");
+    expect(query(chapterBox(old.id))?.textContent).toContain(old.title);
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(getChapters).toHaveBeenCalledTimes(2);
+    click(`${chapterBox(old.id)} [data-memory-chapter-remove]`);
+    await settle();
+    expect(alertConfirm).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(old.title));
+    expect(reads("chapters/remove")).toHaveLength(0);
+    confirmation.resolve(true);
+    await settle();
+    const posts = reads("chapters/remove");
+    expect(posts).toHaveLength(1);
+    expect(posts[0][1]?.method).toBe("POST");
+    expect(JSON.parse(posts[0][1]!.body as string)).toEqual({ ids: [old.id] });
+    expect(getChapters).toHaveBeenCalledTimes(3);
+    expect(query(chapterBox(old.id))).toBeNull();
+    expect(query(chapterBox(remaining.id))?.textContent).toContain(remaining.synopsis);
+
+    held.resolve(Response.json({ revision, chapters: [old] }));
+    await settle();
+    expect(query(chapterBox(old.id))).toBeNull();
+    expect(query(chapterBox(remaining.id))?.textContent).toContain(remaining.synopsis);
+
+    vi.mocked(alertConfirm).mockResolvedValueOnce(false);
+    click(`${chapterBox(remaining.id)} [data-memory-chapter-remove]`);
+    await settle();
+    expect(alertConfirm).toHaveBeenLastCalledWith(expect.stringContaining(remaining.title));
+    expect(reads("chapters/remove")).toHaveLength(1);
+    expect(query(chapterBox(remaining.id))).not.toBeNull();
+});
+
+it("disables Make synopses while read-only or when chat memory is off", async () => {
+    serveTimelineEvents([]);
+    await open();
+    await chooseTab("timeline");
+    const button = () => target.querySelector<HTMLButtonElement>(makeSynopses)!;
+    expect(button().textContent?.trim()).toBe("Make synopses");
+    expect(button().disabled).toBe(false);
+    const release = beginLocalSend(ref)!;
+    releases.push(release);
+    await settle();
+    expect(button().disabled).toBe(true);
+    button().click();
+    release();
+    await settle();
+    expect(button().disabled).toBe(false);
+    setChatMeta(ref, { memoryEnabled: false });
+    await settle();
+    expect(button().disabled).toBe(true);
+    button().click();
+    await settle();
+    expect(reads("chapters/cost")).toHaveLength(0);
+    expect(io.runServerJob).not.toHaveBeenCalled();
+});
+
+it("explains an empty or failed chapter cost without asking or sending a command", async () => {
+    serveTimelineEvents([]);
+    const confirm = vi.mocked(alertConfirm);
+    await open();
+    await chooseTab("timeline");
+    click(makeSynopses);
+    await settle();
+    expect(alertToast).toHaveBeenCalledWith(language.structuredMemory.timeline.chapters.nothing);
+
+    io.runServerJob.mockResolvedValue(previewAnswer({ kind: "memoryChapters", made: 1, failed: 0, left: 0 }));
+    serveResponseAt(chapterCostRoute, () => Response.json({ error: "Chapter count offline" }, { status: 503 }));
+    click(makeSynopses);
+    await settle();
+    expect(alertError).toHaveBeenCalledWith(expect.stringContaining("Chapter count offline"));
+    expect(confirm).not.toHaveBeenCalled();
+    expect(io.runServerJob).not.toHaveBeenCalled();
+});
+
+it("sends one due chapter request on a single press without confirmation", async () => {
+    serveTimelineEvents([]);
+    serveResponseAt(chapterCostRoute, () => Response.json({ units: 1 }));
+    const confirm = vi.mocked(alertConfirm);
+    io.runServerJob.mockResolvedValueOnce(previewAnswer({ kind: "memoryChapters", made: 1, failed: 0, left: 0 }));
+    await open();
+    await chooseTab("timeline");
+    click(makeSynopses);
+    await settle();
+    const cost = reads("chapters/cost");
+    expect(cost).toHaveLength(1);
+    expect(cost[0][0]).toBe(chapterCostRoute);
+    expect(cost[0][1]?.method ?? "GET").toBe("GET");
+    expect(confirm).not.toHaveBeenCalled();
+    expectChapterCommand({ limit: 1 });
+    expect(alertToast).toHaveBeenCalledWith(language.structuredMemory.timeline.chapters.result(1, 0, 0));
+});
+
+it.each([
+    [2, 2],
+    [21, 20],
+])("quotes and sends only the confirmed limit when %i chapter requests are due", async (units, limit) => {
+    serveTimelineEvents([]);
+    serveResponseAt(chapterCostRoute, () => Response.json({ units }));
+    const confirm = vi.mocked(alertConfirm).mockResolvedValueOnce(false);
+    const text = language.structuredMemory.timeline.chapters;
+    const result = { kind: "memoryChapters", made: limit - 2, failed: 2, left: units - limit };
+    io.runServerJob.mockResolvedValueOnce(previewAnswer(result));
+    await open();
+    await chooseTab("timeline");
+    click(makeSynopses);
+    await settle();
+    expect(confirm).toHaveBeenCalledTimes(1);
+    const [question] = confirm.mock.calls[0];
+    expect(question).toMatch(new RegExp(`\\b${limit}\\b`));
+    expect(question).toMatch(/chapter requests/i);
+    if (units > limit) expect(question).toContain(text.more);
+    else expect(question).not.toContain(text.more);
+    expect(io.runServerJob).not.toHaveBeenCalled();
+
+    confirm.mockResolvedValueOnce(true);
+    click(makeSynopses);
+    await settle();
+    expect(confirm).toHaveBeenCalledTimes(2);
+    expectChapterCommand({ limit });
+    expect(alertToast).toHaveBeenCalledWith(text.result(result.made, result.failed, result.left));
+});
+
+it.each(["together", "after the story"])(
+    "opens and scrolls to a focused chapter event when chapters arrive %s",
+    async (arrival) => {
+        const member = { id: "boat", sourceIndex: 0 };
+        const revision = serveTimelineEvents([member, { id: "shore", sourceIndex: 1 }]);
+        const response = Response.json({ revision, chapters: [chapter("voyage", member)] });
+        const held = deferred<Response>();
+        serveResponseAt(chaptersRoute, () => (arrival === "together" ? response : held.promise));
+        const scroll = spyOnRowScroll();
+        requestMemoryPanelTarget(ref, { tab: "timeline", id: "boat" });
+        await open();
+        if (arrival === "after the story") {
+            // Scrolling to the loose row now would consume the focus before its chapter arrives.
+            expect(scroll.mock.contexts.some((el) => el instanceof Element && el.matches(timelineRow("boat")))).toBe(
+                false,
+            );
+            held.resolve(response);
+            await settle();
+        }
+        expect(query(`${chapterBox("voyage")} > button`)?.getAttribute("aria-expanded")).toBe("true");
+        expect(query(`${chapterBox("voyage")} ${eventToggle("boat")}`)?.getAttribute("aria-expanded")).toBe("true");
+        expect(scroll.mock.contexts).toContain(query(timelineRow("boat")));
+    },
+);
+
+it("reveals a retracted event in Manage while the chapters read is pending", async () => {
+    const revision = serveTimelineEvents([{ id: "retired", status: "retracted" }]);
+    const held = deferred<Response>();
+    const getChapters = vi.fn(() => held.promise);
+    serveResponseAt(chaptersRoute, getChapters);
+    const scroll = spyOnRowScroll();
+    requestMemoryPanelTarget(ref, { tab: "timeline", id: "retired" });
+    await open();
+    expect(getChapters).toHaveBeenCalledTimes(1);
+    expect(timelineViewButton("manage")?.getAttribute("aria-pressed")).toBe("true");
+    expect(query(eventToggle("retired"))?.getAttribute("aria-expanded")).toBe("true");
+    expect(scroll.mock.contexts).toContain(query(timelineRow("retired")));
+    held.resolve(Response.json({ revision, chapters: [] }));
+    await settle();
+});
+
+it("keeps dated groups and their events readable when a chapters read fails", async () => {
+    const event = { id: "boat", storyTime: { text: "", date: { month: 4, day: 3 } } };
+    const revision = serveTimelineEvents([event]);
+    const stored = chapter("voyage", event);
+    serveResponseAt(chaptersRoute, () => Response.json({ revision, chapters: [stored] }));
+    await open();
+    await chooseTab("timeline");
+    expect(query(chapterBox(stored.id))).not.toBeNull();
+    serveResponseAt(chaptersRoute, () => Response.json({ error: "Chapters offline" }, { status: 503 }));
+    click("[data-memory-panel-refresh]");
+    await settle();
+    expect(query("[data-memory-chapters-failure]")?.textContent).toContain("Chapters offline");
+    expect(query(chapterBox(stored.id))).toBeNull();
+    expect(query("[data-memory-group] > button")?.textContent).toContain("04-03");
+    expect(query(`[data-memory-group] ${timelineRow("boat")}`)?.textContent).toContain("boat");
+});
 
 function serveTextSearch(answer: (query: string) => Response) {
     const fetch = io.authFetch.getMockImplementation()!;

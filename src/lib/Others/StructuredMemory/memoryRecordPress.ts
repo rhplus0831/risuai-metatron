@@ -1,9 +1,11 @@
 import { language } from "src/lang";
-import { alertConfirm, alertToast } from "src/ts/alert";
+import { alertConfirm, alertError, alertToast } from "src/ts/alert";
 import { runServerJob } from "src/ts/process/serverCommands";
 import {
+    memoryChaptersResultView,
     memoryTestResultView,
     type MemoryTestResultView,
+    readStructuredMemoryChapterCost,
     readStructuredMemoryCost,
 } from "src/ts/process/structuredMemory.svelte";
 import type { AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
@@ -16,12 +18,14 @@ import {
     normalizeStructuredMemorySettings,
     type StructuredMemoryRebuildMode,
 } from "../../../../shared/structuredMemory.ts";
+import { memoryReadFailureText } from "./memoryText";
 
 /**
  * Shared command presses for the panel, receipt line, and prompt settings. Requests cross
  * src/ts/process/serverCommands.ts's `runServerJob`, which flushes pending settings and owns job
- * errors; following a busy job is not a new recording or test result. Receipts remain server-written
- * copies: no press invents one locally. Rebuild command presses share this transport.
+ * errors. Following another action shows the busy toast. The server writes recording receipts and
+ * chapters. Chapter presses preview the batch size or remake one chapter, then report the job's
+ * result. Rebuild command presses share this transport.
  */
 
 /** The writer's settings of the target chat's memory preset, including unloaded chats. */
@@ -100,6 +104,49 @@ export async function pressMemoryTest(
         alertToast(language.structuredMemory.settings.testLost);
     }
     return view;
+}
+
+/** Makes a costed batch of synopses or remakes one chapter. The tab rechecks its target before dispatch. */
+export async function pressMemoryChapters(
+    owner: AnyClientCharacter,
+    chatRef: ChatRef,
+    remake?: string,
+    beforeSend: () => boolean = () => true,
+): Promise<void> {
+    const text = language.structuredMemory.timeline.chapters;
+    let command: Extract<GenerationCommand, { type: "memoryChapters" }>;
+    if (remake === undefined) {
+        const cost = await readStructuredMemoryChapterCost(chatRef);
+        if (cost.outcome !== "ok") {
+            alertError(memoryReadFailureText(cost));
+            return;
+        }
+        const { units } = cost.value;
+        if (units === 0) {
+            alertToast(text.nothing);
+            return;
+        }
+        const limit = Math.min(units, 20);
+        if (limit > 1 && !(await alertConfirm(text.confirm(limit) + (units > limit ? ` ${text.more}` : "")))) return;
+        command = { type: "memoryChapters", limit };
+    } else {
+        command = { type: "memoryChapters", remake };
+    }
+    if (!beforeSend()) return;
+    const { outcome, terminal } = await runServerJob(owner, chatRef, {
+        kind: "command",
+        command,
+        label: "memoryChapters",
+        context: { mode: "manual" },
+    });
+    if (outcome === "followed") {
+        alertToast(language.structuredMemory.receipt.busy);
+    } else if (terminal === "lost" || terminal?.type === "done") {
+        const result = terminal === "lost" ? null : memoryChaptersResultView(terminal.result);
+        if (!result) alertToast(text.lost);
+        else if ("remade" in result) alertToast(text[result.remade]);
+        else alertToast(text.result(result.made, result.failed, result.left));
+    }
 }
 
 /** Runs a `memoryRebuild` command and says how it went. The server starts or refuses it: this only asks. */

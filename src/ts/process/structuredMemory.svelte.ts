@@ -14,6 +14,8 @@ import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     isMemoryChapter,
+    memoryChapterMark,
+    memoryEventGroups,
     isSealedHypaV3Data,
     storedStoryDate,
     MEMORY_FIND_HITS_MAX,
@@ -42,6 +44,7 @@ import {
     STRUCTURED_MEMORY_LIMITS,
     STRUCTURED_MEMORY_PATH,
     STRUCTURED_MEMORY_REBUILD_MODES,
+    type MemoryChapter,
     type MemoryEvent,
     type MemoryManifestItem,
     type MemoryManifestItemKind,
@@ -55,8 +58,10 @@ import {
     type StructuredMemoryAdoptAnswer,
     type StructuredMemoryAdoption,
     type StructuredMemoryCadence,
+    type StructuredMemoryChapterCostAnswer,
     type StructuredMemoryChapterRemoveAnswer,
     type StructuredMemoryChaptersAnswer,
+    type StructuredMemoryChaptersResult,
     type StructuredMemoryContentsAnswer,
     type StructuredMemoryCostAnswer,
     type StructuredMemoryCostMode,
@@ -134,7 +139,9 @@ import { authFetch } from "../storage/serverAuth";
  * message list and a route has no job scope. `reconcileMemoryCoverage` brings those facts up to the held
  * messages first, with the same rule a send uses, so an edit shows at once and with no request.
  * `readStructuredMemoryStory` collects stored summaries at one revision for Timeline's Read view,
- * normalizing their display fields before the tab joins them by id with its coverage rows.
+ * normalizing their display fields before the tab joins them by id with its coverage rows. Stored
+ * chapters join those rows through `memoryChapterLayout`. The chapter cost and command result
+ * count the requests a batch needs and report its outcome.
  * `findStructuredMemory` collects text hits, or the events and threads naming a page, at one revision,
  * keeping at most MEMORY_FIND_HITS_MAX of each and saying whether it dropped hits.
  * `memoryRunView` turns a stored run into what a Log row shows, `memoryPageTree` and
@@ -790,8 +797,12 @@ function parseChaptersAnswer({ revision, chapters }: AnswerBody): StructuredMemo
         : null;
 }
 
+function isNonnegativeCount(value: unknown): value is number {
+    return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
 function parseChapterRemoveAnswer({ removed }: AnswerBody): StructuredMemoryChapterRemoveAnswer | null {
-    return typeof removed === "number" && Number.isSafeInteger(removed) && removed >= 0 ? { removed } : null;
+    return isNonnegativeCount(removed) ? { removed } : null;
 }
 
 function parseRevertAnswer(body: AnswerBody): StructuredMemoryRevertAnswer | null {
@@ -989,6 +1000,13 @@ export function readStructuredMemoryChapters(
     ref: ChatRef,
 ): Promise<StructuredMemoryResult<StructuredMemoryChaptersAnswer>> {
     return readAnswer(`${chatPath(ref)}/chapters`, parseChaptersAnswer);
+}
+
+/** How many chapter requests the chat currently needs. */
+export function readStructuredMemoryChapterCost(
+    ref: ChatRef,
+): Promise<StructuredMemoryResult<StructuredMemoryChapterCostAnswer>> {
+    return readAnswer(`${chatPath(ref)}/chapters/cost`, ({ units }) => (isNonnegativeCount(units) ? { units } : null));
 }
 
 export function removeStructuredMemoryChapters(
@@ -2289,6 +2307,80 @@ export function memoryTimelineRows<
     return rows.sort((a, b) => (a.position === b.position ? 0 : a.position - b.position));
 }
 
+type DatedEvent = { id: string; date?: MemoryStoryDate };
+type ChapterElement<E> = { kind: "chapter"; chapter: MemoryChapter; events: E[] };
+type TimelineElement<E extends DatedEvent> =
+    ChapterElement<E> | ({ kind: "group" } & ReturnType<typeof memoryEventGroups<E>>[number]);
+
+/**
+ * Anchors each chapter at its first listed survivor. Loose rows follow the latest anchor spanning them,
+ * and each uninterrupted run of loose rows gets its own date groups. The result is oldest first.
+ */
+export function memoryChapterLayout<E extends DatedEvent>(
+    rows: readonly E[],
+    chapters: readonly MemoryChapter[],
+    size: number,
+): TimelineElement<E>[] {
+    const groups = (run: readonly E[]) =>
+        memoryEventGroups(run, size).map((group) => ({ kind: "group" as const, ...group }));
+    if (!chapters.length) return groups(rows);
+    const indices = new Map(rows.map(({ id }, index) => [id, index]));
+    const members = new Set<number>();
+    const after = new Map<number, number>();
+    const placed: { anchor: number; item: ChapterElement<E> | { kind: "loose"; row: E } }[] = [];
+    for (const chapter of chapters) {
+        const positions = chapter.events.map(({ id }) => indices.get(id)).filter((index) => index !== undefined);
+        if (!positions.length) continue;
+        const anchor = positions[0];
+        positions.sort((a, b) => a - b);
+        for (const index of positions) members.add(index);
+        placed.push({ anchor, item: { kind: "chapter", chapter, events: positions.map((i) => rows[i]) } });
+        for (let i = positions[0] + 1; i < positions[positions.length - 1]; i++) {
+            after.set(i, Math.max(anchor, after.get(i) ?? -1));
+        }
+    }
+    // Stable sorting at a shared anchor keeps the chapter first and its loose rows in Read order.
+    rows.forEach((row, i) => {
+        if (!members.has(i)) placed.push({ anchor: after.get(i) ?? i, item: { kind: "loose", row } });
+    });
+    placed.sort((a, b) => a.anchor - b.anchor);
+    const elements: TimelineElement<E>[] = [];
+    let loose: E[] = [];
+    for (const { item } of placed) {
+        if (item.kind === "loose") {
+            loose.push(item.row);
+        } else {
+            for (const group of groups(loose)) elements.push(group);
+            elements.push(item);
+            loose = [];
+        }
+    }
+    return elements.concat(groups(loose));
+}
+
+/** Compares the chapter's listed ids and marks with its live members in current story order. */
+export function memoryChapterOutOfDate(
+    chapter: MemoryChapter,
+    rows: readonly Pick<MemoryTimelineRow, "event">[],
+    stories: ReadonlyMap<string, StructuredMemoryStoryEvent>,
+): boolean {
+    const members = new Set(chapter.events.map(({ id }) => id));
+    let matched = 0;
+    for (const { event } of rows) {
+        if (!members.has(event.id)) continue;
+        const listed = chapter.events[matched++];
+        const story = stories.get(event.id);
+        if (
+            event.status === "retracted" ||
+            listed?.id !== event.id ||
+            memoryChapterMark(event.title, story?.summary, story?.storyTime?.date) !== listed.mark
+        ) {
+            return true;
+        }
+    }
+    return matched !== chapter.events.length;
+}
+
 /** One type's rows in the Pages tree. */
 export type MemoryPageGroup<Row> = { type: MemoryPageType; rows: Row[] };
 
@@ -2629,6 +2721,18 @@ export function memoryRunView(run: unknown): MemoryRunView {
         warnings,
         customPrompt: stored.customPrompt === true,
     };
+}
+
+/** A chapter command's completed batch or remake, when the terminal still carries its result. */
+export function memoryChaptersResultView(result: unknown): StructuredMemoryChaptersResult | null {
+    if (!isPlainObject(result) || result.kind !== "memoryChapters") return null;
+    const { kind, remade, made, failed, left } = result;
+    if ("remade" in result) {
+        return remade === "replaced" || remade === "removed" || remade === "kept" ? { kind, remade } : null;
+    }
+    return isNonnegativeCount(made) && isNonnegativeCount(failed) && isNonnegativeCount(left)
+        ? { kind, made, failed, left }
+        : null;
 }
 
 /** What the settings page shows of a test run: the shared result with its lists as plain text and its answers as data. */

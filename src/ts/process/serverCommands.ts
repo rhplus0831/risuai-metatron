@@ -1060,9 +1060,10 @@ export type ServerCommandOutcome = "started" | "replayed" | "followed" | "refuse
 
 /**
  * What a server job runs as, for its refusal alerts: a send (every send kind), a Lua button, a manual
- * trigger, a start of the memory writer, a test run of it, or a start of a chat's memory rebuild.
+ * trigger, a recording, a writer test run, a chapter synopsis command, or a chat's memory rebuild.
  */
-export type ServerJobLabel = "send" | "button" | "trigger" | "memoryRecord" | "memoryTest" | "memoryRebuild";
+export type ServerJobLabel =
+    "send" | "button" | "trigger" | "memoryRecord" | "memoryTest" | "memoryChapters" | "memoryRebuild";
 
 /** What a server job runs, its caller's context, and the coded errors that caller can show itself. */
 export type ServerJobRequest = {

@@ -186,6 +186,14 @@ date in chat order and cut at the chat preset's `eventsPerGroup`; Manage holds t
 an event fetches its record. Timeline and Log share `MemoryEventFacts` for changes and `storyTimeText` for date, text
 and ordinal. Timeline resolves page and thread ids from contents; Log displays ids.
 
+Read also joins the [chapters](records.md#the-read-routes) with the groups: it reads them beside the story once per
+`refresh`, and again after its own removal or chapter command, and only the newest read installs. `memoryChapterLayout`
+(`structuredMemory.svelte.ts`) places each chapter and groups the loose runs around it; the component contract owns the
+layout and the reveal's wait for the chapters read. `memoryChapterOutOfDate` there owns the out-of-date rule, applied
+only when the coverage, story, and chapters reads name one memory revision. "Make synopses" and "Make again" run the
+`memoryChapters` command through `pressMemoryChapters` (`memoryRecordPress.ts`), which reads `/chapters/cost` first and
+asks before two or more requests. Manage shows no chapters.
+
 ### The Evidence missing tab
 
 The panel lists this tab only while contents' health counts flagged sections or it is selected, so resolving the last
@@ -383,6 +391,9 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
   ([cost preview](rebuild.md#the-cost-preview)). Decision: Structured Memory D3, archive.
 - Coverage counts tokens with the tab's scope, whose model settings fall back when a chat's binding is missing, and a
   refresh with unchanged texts does not recount after a tokenizer change.
+- Timeline rereads chapters only on `refresh` and after its own chapter actions: a chapter change from another tab, or
+  one that lands while another fence keeps the panel read-only, shows on the next `refresh`. Decision: Timeline Chapter
+  Synopses C16, 2026-11-18.
 - A test run refuses a Plugin `memory` slot or a `request` trigger, because a tab callback saves its mutations even when
   it throws. Decision: Structured Memory slice 7c, archive.
 - A test run leaves the request history row, its diagnostics event, and the job's generation receipt: the call's logs,

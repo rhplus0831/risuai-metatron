@@ -1,11 +1,13 @@
 <script lang="ts">
     import { ChevronDownIcon, ChevronRightIcon, XIcon } from "@lucide/svelte";
-    import { getAbortSignal, tick, untrack } from "svelte";
+    import { getAbortSignal, onDestroy, tick, untrack } from "svelte";
     import { SvelteMap } from "svelte/reactivity";
     import { language } from "src/lang";
     import { alertConfirm, alertError } from "src/ts/alert";
     import {
         editStructuredMemory,
+        memoryChapterLayout,
+        memoryChapterOutOfDate,
         memoryEventView,
         memoryItemsUsed,
         memoryPanelGreeting,
@@ -13,35 +15,39 @@
         memoryMessageIndexes,
         memoryTextSearch,
         memoryTimelineRows,
+        readStructuredMemoryChapters,
         readStructuredMemoryContents,
         readStructuredMemoryCoverage,
         readStructuredMemoryRecord,
         readStructuredMemoryStory,
         reconcileMemoryCoverage,
+        removeStructuredMemoryChapters,
         type MemoryPanelTabProps,
         type MemoryRunEventView,
         type MemoryTimelineRow,
         type StructuredMemoryCoverage,
     } from "src/ts/process/structuredMemory.svelte";
     import { characterList } from "src/ts/storage/characterStore.svelte";
+    import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
     import { chatEntry, findChat, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import SegmentedControl from "src/lib/UI/GUI/SegmentedControl.svelte";
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
-    import { chatHypaV3Preset } from "../../../../shared/chatMemory.ts";
+    import { chatHypaV3Preset, chatMemoryEnabled } from "../../../../shared/chatMemory.ts";
     import {
         ADOPTED_WRITER_RUN,
         formatStoryDate,
         MEMORY_FIND_HITS_MAX,
         MEMORY_FIND_QUERY_CHARS,
         memoryAnchorState,
-        memoryEventGroups,
         memoryRerecordTarget,
         normalizeStructuredMemorySettings,
         storedMemoryGreeting,
         STRUCTURED_MEMORY_LIMITS,
+        type MemoryChapter,
+        type StructuredMemoryChaptersAnswer,
         type StructuredMemoryCoverageEvent,
         type StructuredMemoryEdit,
         type StructuredMemoryStoryEvent,
@@ -49,16 +55,21 @@
     import MemoryEventFacts from "./MemoryEventFacts.svelte";
     import GreetingCitation from "./GreetingCitation.svelte";
     import MemoryLinkButton from "./MemoryLinkButton.svelte";
-    import { pressMemoryRecord } from "./memoryRecordPress";
+    import { pressMemoryChapters, pressMemoryRecord } from "./memoryRecordPress";
     import { codeText, memoryReadFailureText, memoryReasonText, storyTimeText } from "./memoryText";
 
     /**
      * Timeline opens in Read and holds the view choice while mounted. Coverage supplies titles and
      * status at one revision. Held messages reconcile those facts and place them in chat order through
-     * memoryTimelineRows. Read joins the story by id once per refresh and omits retracted events.
-     * Missing story data leaves the titles readable. memoryEventGroups keeps events in chat order
-     * within each date and splits long days at the chat preset's group size. Groups appear newest first,
-     * 30 at a time. The newest opens by default, and presses follow event ids when groups change.
+     * memoryTimelineRows. Read omits retracted events and reads stories and chapters together once per
+     * refresh. Missing stories leave titles readable. A failed chapter read leaves loose date groups.
+     * A chapter stands at its first listed member still in Read and shows its members in current chat
+     * order. Loose events inside its span follow the chapter (the latest anchor for overlapping spans).
+     * Each remaining run groups by date and the preset's group size separately. Chapters and groups
+     * appear newest first, 30 at a time, with the newest open by default. Presses follow chapter ids or
+     * loose event ids. The synopsis stays visible when collapsed. Only matching coverage, story and
+     * chapter revisions can label a chapter out of date. Each chapter action rereads chapters on
+     * settlement. Only the latest read can install, including after a removal or remake.
      *
      * Read can search memory text even with no events. Submitting replaces the groups with page and
      * event hits until the trimmed draft changes or Read closes. A page hit opens Pages. An event hit clears
@@ -70,17 +81,18 @@
      * counts stale or marked events once each and reveals the first in Manage without opening it.
      *
      * A jump opens its event in the current view, switching to Manage for a retracted event or an
-     * explicit Manage link. Reveals expand the group and list as needed and finish at the rendered
-     * row, after Read's dates settle. An absent id gets one coverage reread. Only an accepted,
-     * successful answer can establish that the event is gone. All record text stays plain.
+     * explicit Manage link. In Read the reveal waits for both the story and chapter reads to settle,
+     * then pages to the containing chapter or group, expands it and scrolls to the open event.
+     * Manage can reveal its row as soon as coverage places it. An absent id gets one coverage reread.
+     * Only an accepted, successful answer can establish that the event is gone. All record text stays plain.
      *
      * Repairs name the coverage revision and reread whether accepted or refused: a record answer alone
      * cannot replace a status derived from held messages. Keep sends the held anchor state; an unsaved
      * local edit can therefore be refused `changed`. Retract asks first because no control reverses it.
      * Re-record marks before pressing through `memoryRerecordTarget`; an existing mark goes straight to
      * the press, so a failed press remains retryable.
-     * Text edits and mark releases also reread the open record and the story in Read; a hidden
-     * story is invalidated for the next switch. The mark is held beside the display view. A draft keeps
+     * Edits and repairs refresh both stories and chapters in Read or invalidate both for the next
+     * switch from Manage. Text edits and mark releases also reread the open record. A draft keeps
      * its base title and summary: a read that changes either closes it with `changed`, and selecting
      * another event or closing the event discards it. Text edits share the repair's send guard; greeting
      * choices hold their own request guard and use the same revisioned repair route.
@@ -118,16 +130,27 @@
     );
     let stories = $state.raw<ReadonlyMap<string, StructuredMemoryStoryEvent>>(new Map());
     let storyFailure = $state<string | null>(null);
-    /** The `refresh` the story was last read at, including a failed read. */
-    let storyRead: number | null = null;
+    let storyRevision = $state<string | null>(null);
+    /** The refresh at which Read last requested both the story and the chapters, including failures. */
+    let readAtRefresh: number | null = null;
     let storyNumber = 0;
     let readingStory = $state(false);
+    let chapterAnswer = $state.raw<StructuredMemoryChaptersAnswer | null>(null);
+    let chapterFailure = $state<string | null>(null);
+    let chaptersNumber = 0;
+    let readingChapters = $state(false);
+    let chapterAction = $state(false);
+    let mounted = true;
+    onDestroy(() => {
+        mounted = false;
+    });
     /** One edit or repair at a time: while one is out the buttons are off. */
     let sending = $state(false);
 
     let shown = $state(ROWS_AT_ONCE);
-    let groupsShown = $state(GROUPS_AT_ONCE);
+    let elementsShown = $state(GROUPS_AT_ONCE);
     const groupPresses = new SvelteMap<string, boolean>();
+    const chapterPresses = new SvelteMap<string, boolean>();
     /** The expanded event, one at a time, and its record once read. */
     let openId = $state<string | null>(null);
     let openEvent = $state.raw<MemoryRunEventView | null>(null);
@@ -149,12 +172,10 @@
 
     const heldChat = $derived(findChat(chatRef));
     const messages = $derived(heldChat?.message ?? []);
-    const greeting = $derived(
-        memoryPanelGreeting(
-            characterList().find((entry) => entry?.chaId === chatRef.chaId),
-            heldChat,
-        ),
-    );
+    const owner = $derived(characterList().find((entry) => entry?.chaId === chatRef.chaId));
+    const greeting = $derived(memoryPanelGreeting(owner, heldChat));
+    const memoryOn = $derived(chatMemoryEnabled(chatEntry(chatRef), owner, chatMemorySettings()));
+    const chapterControlsOff = $derived(readOnly || chapterAction);
     const greetingAvailable = $derived(greeting?.source != null);
     const hashOf = memoryMessageHasher();
     // With no chat held there is nothing to compare, which says nothing of its events.
@@ -177,7 +198,7 @@
                 ?.settings.structured,
         ).eventsPerGroup,
     );
-    const groups = $derived.by(() => {
+    const elements = $derived.by(() => {
         const events = rows
             .filter(({ event }) => event.status !== "retracted")
             .map((row) => {
@@ -185,8 +206,11 @@
                 const story = stories.get(id);
                 return { ...row, id, story, date: story?.storyTime?.date };
             });
-        return memoryEventGroups(events, eventsPerGroup).reverse();
+        return memoryChapterLayout(events, chapterAnswer?.chapters ?? [], eventsPerGroup).reverse();
     });
+    const revisionsMatch = $derived(
+        storyRevision !== null && storyRevision === facts?.revision && storyRevision === chapterAnswer?.revision,
+    );
     const usedEvents = $derived(memoryItemsUsed(messages, "event"));
     const messageIndexes = $derived(memoryMessageIndexes(messages));
     const controlsOff = $derived(readOnly || sending);
@@ -217,23 +241,37 @@
         }
     });
 
-    type Group = (typeof groups)[number];
+    type ReadElement = (typeof elements)[number];
 
-    function groupOpen(group: Group, newest: boolean) {
-        if (group.events.some(({ id }) => groupPresses.get(id) === true)) return true;
-        return newest && !group.events.some(({ id }) => groupPresses.get(id) === false);
+    function elementOpen(element: ReadElement, newest: boolean) {
+        if (element.kind === "chapter") return chapterPresses.get(element.chapter.id) ?? newest;
+        if (element.events.some(({ id }) => groupPresses.get(id) === true)) return true;
+        return newest && !element.events.some(({ id }) => groupPresses.get(id) === false);
     }
 
-    function pressGroup(group: Group, expanded: boolean) {
-        for (const { id } of group.events) groupPresses.set(id, expanded);
+    function pressElement(element: ReadElement, expanded: boolean) {
+        if (element.kind === "chapter") {
+            chapterPresses.set(element.chapter.id, expanded);
+        } else {
+            for (const { id } of element.events) groupPresses.set(id, expanded);
+        }
     }
 
-    function turnRange(group: Group) {
-        const ages = group.events.map(({ turnsAgo }) => turnsAgo).filter((age) => age !== null);
+    function turnRange(element: ReadElement) {
+        const ages = element.events.map(({ turnsAgo }) => turnsAgo).filter((age) => age !== null);
         if (!ages.length) return "";
         const min = Math.min(...ages);
         const max = Math.max(...ages);
         return min === max ? text.turnsAgo(min) : text.turnsAgoRange(min, max);
+    }
+
+    function chapterDates(events: ReadElement["events"]) {
+        const first = events.find(({ date }) => date)?.date;
+        const last = events.findLast(({ date }) => date)?.date;
+        if (!first || !last) return "";
+        const start = formatStoryDate(first);
+        const end = formatStoryDate(last);
+        return start === end ? start : text.chapters.dates(start, end);
     }
 
     /** Reads the facts. An answer for another chat, or one a newer read replaced, changes nothing. */
@@ -280,11 +318,81 @@
         readingStory = false;
         if (result.outcome === "ok") {
             stories = new Map(result.value.events.map((event) => [event.id, event]));
+            storyRevision = result.value.revision;
             storyFailure = null;
         } else {
             stories = new Map();
+            storyRevision = null;
             storyFailure = memoryReadFailureText(result);
         }
+    }
+
+    async function readChapters() {
+        const ref = chatRef;
+        const number = ++chaptersNumber;
+        readingChapters = true;
+        const result = await readStructuredMemoryChapters(ref);
+        if (number !== chaptersNumber || !sameChat(ref)) return;
+        readingChapters = false;
+        chapterAnswer = result.outcome === "ok" ? result.value : null;
+        chapterFailure = result.outcome === "ok" ? null : text.chapters.readFailed(memoryReadFailureText(result));
+    }
+
+    function readStoryAndChapters() {
+        readAtRefresh = refresh;
+        return Promise.all([readStory(), readChapters()]);
+    }
+
+    /** A local edit can advance coverage without advancing the panel refresh. */
+    async function refreshAfterEdit() {
+        const coverage = read();
+        if (view === "read") {
+            await Promise.all([coverage, readStoryAndChapters()]);
+        } else {
+            readAtRefresh = null;
+            storyNumber++;
+            chaptersNumber++;
+            readingStory = false;
+            readingChapters = false;
+            storyRevision = null;
+            storyFailure = null;
+            chapterFailure = null;
+            stories = new Map();
+            chapterAnswer = null;
+            await coverage;
+        }
+    }
+
+    async function runChapterAction(press: (ref: ChatRef, beforeSend: () => boolean) => Promise<void>) {
+        if (chapterControlsOff) return;
+        const ref = chatRef;
+        chapterAction = true;
+        try {
+            await press(ref, () => {
+                if (!mounted || !sameChat(ref) || readOnly) return false;
+                ++chaptersNumber;
+                return true;
+            });
+        } finally {
+            if (mounted && sameChat(ref)) await readChapters();
+            chapterAction = false;
+        }
+    }
+
+    function makeChapters(remake?: string) {
+        if (!owner || (remake === undefined && !memoryOn)) return;
+        const character = owner;
+        return runChapterAction((ref, beforeSend) =>
+            pressMemoryChapters(character, ref, remake, () => (remake !== undefined || memoryOn) && beforeSend()),
+        );
+    }
+
+    function removeChapter({ id, title }: MemoryChapter) {
+        return runChapterAction(async (ref, beforeSend) => {
+            if (!(await alertConfirm(text.chapters.removeConfirm(title))) || !beforeSend()) return;
+            const result = await removeStructuredMemoryChapters(ref, [id]);
+            if (result.outcome !== "ok") alertError(memoryReadFailureText(result));
+        });
     }
 
     async function readOpen(id: string, noticed = false) {
@@ -334,10 +442,7 @@
             return;
         }
         untrack(() => {
-            if (storyRead !== atRefresh) {
-                storyRead = atRefresh;
-                void readStory();
-            }
+            if (readAtRefresh !== atRefresh) void readStoryAndChapters();
         });
     });
 
@@ -388,7 +493,7 @@
             alertError(memoryReadFailureText(result));
         }
         if (sameChat(ref)) {
-            await read();
+            await refreshAfterEdit();
         }
         return result.outcome === "ok";
     }
@@ -411,19 +516,9 @@
         if (result.outcome === "ok" && edit.kind === "eventText" && editor?.id === edit.eventId) {
             editor = null;
         }
-        const reads = [read()];
+        const reads = [refreshAfterEdit()];
         if (openId !== null) {
             reads.push(readOpen(openId, result.outcome === "refused" && result.reason === "changed"));
-        }
-        if (view === "read") {
-            storyRead = refresh;
-            reads.push(readStory());
-        } else {
-            storyRead = null;
-            storyNumber += 1;
-            readingStory = false;
-            stories = new Map();
-            storyFailure = null;
         }
         await Promise.all(reads);
     }
@@ -532,19 +627,18 @@
             view = "manage";
             return;
         }
-        if (!target.opened && target.source !== "notice") {
-            target.opened = true;
-            if (openId !== target.id || target.source === "focus") untrack(() => openRow(target.id));
-        }
         if (view === "manage") {
             shown = Math.max(shown, index + 1);
         } else {
-            // Press the final group so interim date-less group members do not inherit a press.
-            if (readingStory || search.showing) return;
-            const groupIndex = groups.findIndex((group) => group.events.some(({ id }) => id === target.id));
-            if (groupIndex < 0) return;
-            groupsShown = Math.max(groupsShown, groupIndex + 1);
-            pressGroup(groups[groupIndex], true);
+            if (readingStory || readingChapters || search.showing) return;
+            const elementIndex = elements.findIndex((element) => element.events.some(({ id }) => id === target.id));
+            if (elementIndex < 0) return;
+            elementsShown = Math.max(elementsShown, elementIndex + 1);
+            pressElement(elements[elementIndex], true);
+        }
+        if (!target.opened && target.source !== "notice") {
+            target.opened = true;
+            if (openId !== target.id || target.source === "focus") untrack(() => openRow(target.id));
         }
         const container = timeline;
         if (!container || failure !== null) return;
@@ -698,7 +792,7 @@
                             readOnly={controlsOff}
                             {jump}
                             {rebuild}
-                            refreshed={read}
+                            refreshed={refreshAfterEdit}
                         />
                     {/if}
                 {/if}
@@ -910,6 +1004,18 @@
             {/if}
         </div>
     {:else}
+        {#if view === "read"}
+            <button
+                type="button"
+                class="self-start px-2 py-1 border rounded-md border-darkborderc enabled:hover:bg-selected disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={chapterControlsOff || !memoryOn}
+                onclick={() => makeChapters()}
+                data-memory-chapters-make>{text.chapters.make}</button
+            >
+            {#if chapterFailure !== null}
+                <p role="alert" class="text-draculared" data-memory-chapters-failure>{chapterFailure}</p>
+            {/if}
+        {/if}
         {#if view === "read" && storyFailure !== null && failure === null}
             <p role="alert" class="text-draculared" data-memory-panel-failure>{storyFailure}</p>
         {/if}
@@ -928,39 +1034,72 @@
                 </div>
             {/if}
             {#if view === "read"}
-                {#if groups.length === 0}
+                {#if elements.length === 0}
                     <p class="text-textcolor2">{text.empty}</p>
                 {:else}
                     <ul class="flex flex-col min-w-0 gap-2">
-                        {#each groups.slice(0, groupsShown) as group, index (group.events[0].id)}
-                            {@const expanded = groupOpen(group, index === 0)}
-                            <li class="flex flex-col min-w-0 gap-1" data-memory-group>
+                        {#each elements.slice(0, elementsShown) as element, index (element.kind === "chapter" ? `chapter:${element.chapter.id}` : `group:${element.events[0].id}`)}
+                            {@const expanded = elementOpen(element, index === 0)}
+                            <li
+                                class="flex flex-col min-w-0 gap-1"
+                                data-memory-group={element.kind === "group" ? "" : undefined}
+                                data-memory-chapter={element.kind === "chapter" ? element.chapter.id : undefined}
+                            >
                                 <button
                                     type="button"
                                     class="flex min-w-0 items-start gap-2 rounded-md p-2 text-left hover:bg-selected"
                                     aria-expanded={expanded}
-                                    onclick={() => pressGroup(group, !expanded)}
+                                    onclick={() => pressElement(element, !expanded)}
                                 >
                                     {#if expanded}
                                         <ChevronDownIcon size={16} class="shrink-0 mt-0.5" />
                                     {:else}
                                         <ChevronRightIcon size={16} class="shrink-0 mt-0.5" />
                                     {/if}
-                                    <span class="flex flex-wrap items-baseline gap-x-2">
-                                        {#if group.date}
+                                    <span class="flex min-w-0 flex-wrap items-baseline gap-x-2 break-words">
+                                        {#if element.kind === "chapter"}
+                                            <span class="min-w-0 font-semibold">{element.chapter.title}</span>
+                                            <span>{chapterDates(element.events)}</span>
+                                        {:else if element.date}
                                             <span class="font-semibold">
-                                                {formatStoryDate(group.date)}{group.partCount > 1
-                                                    ? ` (${group.part})`
+                                                {formatStoryDate(element.date)}{element.partCount > 1
+                                                    ? ` (${element.part})`
                                                     : ""}
                                             </span>
                                         {/if}
-                                        <span>{text.eventCount(group.events.length)}</span>
-                                        <span class="text-textcolor2">{turnRange(group)}</span>
+                                        <span>{text.eventCount(element.events.length)}</span>
+                                        <span class="text-textcolor2">{turnRange(element)}</span>
                                     </span>
                                 </button>
+                                {#if element.kind === "chapter"}
+                                    <p class="whitespace-pre-wrap break-words" data-memory-chapter-synopsis>
+                                        {element.chapter.synopsis}
+                                    </p>
+                                    <div class="flex flex-wrap items-center gap-2">
+                                        {#if revisionsMatch && memoryChapterOutOfDate(element.chapter, rows, stories)}
+                                            <span class="text-textcolor2" data-memory-chapter-stale
+                                                >{text.chapters.stale}</span
+                                            >
+                                            <button
+                                                type="button"
+                                                class="px-2 py-1 border rounded-md border-darkborderc enabled:hover:bg-selected disabled:opacity-50 disabled:cursor-not-allowed"
+                                                disabled={chapterControlsOff}
+                                                onclick={() => makeChapters(element.chapter.id)}
+                                                data-memory-chapter-remake>{text.chapters.remake}</button
+                                            >
+                                        {/if}
+                                        <button
+                                            type="button"
+                                            class="px-2 py-1 border rounded-md border-darkborderc enabled:hover:bg-selected disabled:opacity-50 disabled:cursor-not-allowed"
+                                            disabled={chapterControlsOff}
+                                            onclick={() => removeChapter(element.chapter)}
+                                            data-memory-chapter-remove>{text.chapters.remove}</button
+                                        >
+                                    </div>
+                                {/if}
                                 {#if expanded}
                                     <ul class="flex flex-col min-w-0 gap-1">
-                                        {#each group.events as row (row.id)}
+                                        {#each element.events as row (row.id)}
                                             {@render eventRow(row, row.story)}
                                         {/each}
                                     </ul>
@@ -978,13 +1117,13 @@
                     {/each}
                 </ul>
             {/if}
-            {@const remaining = view === "read" ? groups.length - groupsShown : manageRows.length - shown}
+            {@const remaining = view === "read" ? elements.length - elementsShown : manageRows.length - shown}
             {#if remaining > 0}
                 <button
                     type="button"
                     class="self-start px-2 py-1 my-1 transition-colors border rounded-md border-darkborderc text-textcolor2 hover:text-textcolor"
                     onclick={() => {
-                        if (view === "read") groupsShown += GROUPS_AT_ONCE;
+                        if (view === "read") elementsShown += GROUPS_AT_ONCE;
                         else shown += ROWS_AT_ONCE;
                     }}
                 >
