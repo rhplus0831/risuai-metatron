@@ -7,7 +7,7 @@ GPT-6.2-Astra session in `full` mode, at the owner's request in place of plan-ru
 nine P3, all fixed in this text; the fixes narrowed C9, C11, and C12). The report and this line share the plan's
 last commit, so a plan-runner run skips its Plan audit unless the plan changes again. Starts after
 [Timeline Reading View](timeline-reading.md) lands: it builds on that plan's Read view, its rule for revealing an
-event, `memoryEventGroups`, and `eventsPerGroup`. Landed: 1 (`fda81e603`).
+event, `memoryEventGroups`, and `eventsPerGroup`. Landed: 1 (`fda81e603`), 2 (`0add033e0`).
 
 Sources: the owner's request and answers (2026-11-18: re-summarize runs of events into synopses, a structure the
 owner once built as a whole-story memory, now to show a person the story; a button to make them and a checkbox for
