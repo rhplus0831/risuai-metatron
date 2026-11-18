@@ -6,6 +6,7 @@ vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).cre
 import { alertConfirm, alertSelect } from "src/ts/alert";
 import { language } from "src/lang";
 import { setModules } from "src/ts/storage/collectionStore.svelte";
+import { applyRaw } from "src/ts/storage/records.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import ModuleSettings from "./ModuleSettings.svelte";
@@ -112,6 +113,39 @@ it("deletes the confirmed module row and keeps the other row with the same ID fi
     expect(alertConfirm).toHaveBeenLastCalledWith(`${language.removeConfirm}Second edition`);
     expect(moduleNames()).toEqual(["First edition"]);
     expect(settings.moduleFolders[0].data).toEqual(["same"]);
+    expect(settings.enabledModules).toEqual(["same"]);
+});
+
+it("keeps the replacement modules when the original row's deletion is confirmed", async () => {
+    const modules = [
+        { id: "same", name: "First edition" },
+        { id: "same", name: "Second edition" },
+    ];
+    installFlatDatabase({
+        modules,
+        moduleFolders: [{ id: "filed", name: "Filed", data: ["same"] }],
+        enabledModules: ["same"],
+    });
+    renderCatalog();
+
+    let resolveConfirmation!: (answer: boolean) => void;
+    const answer = new Promise<boolean>((resolve) => {
+        resolveConfirmation = resolve;
+    });
+    vi.mocked(alertConfirm).mockReturnValueOnce(answer);
+    moduleRow("Second edition").querySelector<HTMLButtonElement>("button:has(.lucide-trash)")!.click();
+    expect(alertConfirm).toHaveBeenLastCalledWith(`${language.removeConfirm}Second edition`);
+
+    const replacement = modules.map((module) => ({ ...module, description: "Updated from another tab" }));
+    applyRaw("modules", structuredClone(replacement));
+    flushSync();
+
+    resolveConfirmation(true);
+    await tick();
+    flushSync();
+
+    expect(settings.modules).toEqual(replacement);
+    expect(settings.moduleFolders).toEqual([{ id: "filed", name: "Filed", data: ["same"] }]);
     expect(settings.enabledModules).toEqual(["same"]);
 });
 
