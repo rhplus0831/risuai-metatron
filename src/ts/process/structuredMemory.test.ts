@@ -563,7 +563,7 @@ it("keeps valid Timeline dates and grades on partial rows and drops malformed va
     });
 });
 
-it("shows the ordinal in both the Timeline row and the opened event when story-time text is missing", async () => {
+it("formats the ordinal alike for a story row and an opened record when story-time text is missing", async () => {
     const stored = { id: "dated", storyTime: { date: { year: 2025, month: 4, day: 3 }, ordinal: 7 } };
     authFetch
         .mockResolvedValueOnce(Response.json({ revision: "r1", events: [stored], next: null }))

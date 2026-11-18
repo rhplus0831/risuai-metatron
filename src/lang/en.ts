@@ -3350,7 +3350,15 @@ export const languageEnglish = {
             release: "Remove this mark",
             releaseConfirm: (title: string) =>
                 `Remove the “Corrected by you” mark from “${title}”? The title and summary stay, but a re-record or rebuild may replace them.`,
-            views: { titles: "Titles", story: "Story" },
+            views: { read: "Read", manage: "Manage" },
+            openInManage: "Open in Manage",
+            checkNotice: (count: number) =>
+                count === 1 ? "1 event needs checking." : `${count} events need checking.`,
+            checkInManage: "Review in Manage",
+            eventGone: "This event is no longer recorded.",
+            eventCount: (count: number) => (count === 1 ? "1 event" : `${count} events`),
+            turnsAgoRange: (min: number, max: number) => `${min}–${max} turns ago`,
+            importantEvent: "Important event",
             empty: "This chat has no recorded events yet.",
             turnsAgo: (turns: number) => (turns === 1 ? "1 turn ago" : `${turns} turns ago`),
             stale: (reason: string) => (reason ? `Sources changed: ${reason}` : "Sources changed"),

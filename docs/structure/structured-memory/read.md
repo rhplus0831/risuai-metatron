@@ -43,8 +43,8 @@ Read each module's header or component contract, then read the named export's co
   `keepRecord`, `openAskedEntry`, `only`, `sectionReverts`, `keepAll`.
 - `src/lib/Others/StructuredMemory/UnsupportedTab.svelte`: the Evidence missing tab, `PagesTab` under
   `only="unsupported"`.
-- `src/lib/Others/StructuredMemory/TimelineTab.svelte`: event titles and story views and repairs; `reconciled`,
-  `readStory`, `sendRepair`, `rerecord`.
+- `src/lib/Others/StructuredMemory/TimelineTab.svelte`: event Read and Manage views, the check notice, and repairs;
+  `reconciled`, `readStory`, `reveal`, `sendRepair`, `rerecord`.
 - `src/lib/Others/StructuredMemory/ThreadsTab.svelte`: thread view and state editor; `read`, `setState`.
 - `src/lib/Others/StructuredMemory/LogTab.svelte`: run viewer; `readRound`, `exportLog`.
 - `src/lib/Others/StructuredMemory/MemoryEventFacts.svelte`: an event's state changes, knowledge, relationship shifts,
@@ -153,7 +153,7 @@ windows and the unloaded-chat exception. A newest reply otherwise reads `pending
 Coverage's first row is the greeting, when it can be cited or an event cites one. Coverage, Timeline, and Pages (from a
 section's provenance events) show a greeting citation as a Greeting source that jumps to the chat's top. One that
 matches neither the chat's greeting nor its `greetingKept` (`memoryGreetingChanged`) is labelled changed, with
-re-record, rebuild, and keep (`keepGreeting`); the label changes nothing else.
+re-record, rebuild, and keep (`keepGreeting`); the label changes nothing else. Timeline's Read view shows only the jump.
 
 `memoryItemsUsed` supplies last-send badges from the same newest-valid-report boundary as the meter; its comment owns
 badge selection.
@@ -177,10 +177,12 @@ badges and selection changes. Two reads cross the server boundary:
   Manage loads it when the event disclosure opens. The server orders by current message positions before it caps the
   list. `PagesTab.svelte` owns display of recent and important events and rejection of stale answers.
 
-Timeline takes titles from coverage. Story joins `readStructuredMemoryStory` by event id, skips retracted events and
-keeps titles when a summary is missing or the read fails. Its row reader keeps a valid date even when time text is
-missing. Opening an event fetches its record. Timeline and Log share `MemoryEventFacts` for changes and `storyTimeText`
-for date, text and ordinal. Timeline resolves page and thread ids from contents; Log displays ids.
+Timeline takes titles from coverage and opens in Read, the story read: it joins `readStructuredMemoryStory` by event id,
+skips retracted events, and keeps titles when a summary is missing or the read fails. Its row reader keeps a valid date
+even when time text is missing. Read groups events with `memoryEventGroups` (`shared/structuredMemory.ts`), by story
+date in chat order and cut at `STRUCTURED_MEMORY_LIMITS.eventsPerGroup`; Manage holds the badges, edits, and repairs.
+Opening an event fetches its record. Timeline and Log share `MemoryEventFacts` for changes and `storyTimeText` for date,
+text and ordinal. Timeline resolves page and thread ids from contents; Log displays ids.
 
 ### The Evidence missing tab
 

@@ -731,10 +731,25 @@ const editableThread = (): MemoryThread => ({
     openedBy: "event",
     closedBy: "event",
 });
+const storyRoute = "/api/memory/structured/c/k/story";
+/** One story round carrying each stored event's display fields as stored. */
+const storyAnswer = (revision: string, events: readonly Partial<MemoryEvent>[]) =>
+    Response.json({
+        revision,
+        events: events.map(({ id, summary, storyTime, participants, grade }) => ({
+            id,
+            summary,
+            storyTime,
+            participants,
+            grade,
+        })),
+        next: null,
+    });
 function serveMemory() {
     const state = {
         page: editablePage(),
         thread: editableThread(),
+        event: { id: "event", summary: "The gate opened", participants: ["p"] } as Partial<MemoryEvent>,
         revision: "read-revision",
         runs: [] as { id: string; result: string }[],
     };
@@ -768,10 +783,8 @@ function serveMemory() {
             return Response.json({ revision: state.revision, hits: [], next: null });
         if (url.endsWith("/records/threads/t")) return Response.json({ revision: state.revision, data: state.thread });
         if (url.endsWith("/records/events/event"))
-            return Response.json({
-                revision: state.revision,
-                data: { id: "event", summary: "The gate opened", participants: ["p"] },
-            });
+            return Response.json({ revision: state.revision, data: state.event });
+        if (url.startsWith(storyRoute)) return storyAnswer(state.revision, [state.event]);
         return fetch(url, init, options);
     });
     return state;
@@ -992,9 +1005,10 @@ it("reads what events and threads say of a page, keeps a long event list short, 
                 runs: [],
                 next: null,
             });
+        const stored = (event: (typeof events)[number]) => ({ ...event, summary: `Details: ${event.title}.` });
         const event = events.find(({ id }) => url.endsWith(`/records/events/${id}`));
-        if (event)
-            return Response.json({ revision: state.revision, data: { ...event, summary: `Details: ${event.title}.` } });
+        if (event) return Response.json({ revision: state.revision, data: stored(event) });
+        if (url.startsWith(storyRoute)) return storyAnswer(state.revision, events.map(stored));
         return fetch(url, init, options);
     });
     const eventLinks = () =>
@@ -1802,6 +1816,7 @@ it("badges only verified Pages and Timeline records from the newest valid report
     expect(dot.getAttribute("aria-label")).toBe(language.structuredMemory.panel.usedInLastSend);
     expect(query("[data-memory-used-legend]")?.textContent?.trim()).toBe(language.structuredMemory.pages.usedLegend(1));
     await chooseTab("timeline");
+    await chooseTimelineView("manage");
     expect(badged("[data-memory-event]", "data-memory-event")).toEqual(["event"]);
     patchMessage(ref, "a1", {
         generationInfo: { context: context({ kind: "hypaV3", tokens: 10, coverage: "covered" }) },
@@ -1920,7 +1935,7 @@ it("derives the writer line from current state and dispatches record and resume 
     expect(action()).toBeNull();
 });
 
-/** Coverage, record and edit I/O for the real Timeline; anchors come from the initial held chat. */
+/** Coverage, record and story I/O for the real Timeline; anchors come from the initial held chat. */
 function serveAnchoredEvent() {
     const messages = findChat(ref)!.message;
     const event: MemoryEvent = {
@@ -1950,6 +1965,7 @@ function serveAnchoredEvent() {
                 next: null,
             });
         if (url.endsWith("/records/events/e")) return Response.json({ revision: state.revision, data: state.event });
+        if (url.startsWith(storyRoute)) return storyAnswer(state.revision, [state.event]);
         if (url === "/api/memory/structured/c/k")
             return Response.json({
                 revision: state.revision,
@@ -1961,6 +1977,19 @@ function serveAnchoredEvent() {
         return fetch(url, init, options);
     });
     return state;
+}
+
+const timelineViewButton = (view: "read" | "manage") =>
+    [...target.querySelectorAll<HTMLButtonElement>("[data-memory-timeline] [data-segment-btn]")].find(
+        (button) => button.textContent?.trim() === language.structuredMemory.timeline.views[view],
+    );
+/** Timeline opens in Read on each mount; edits, repairs, badges and retracted events live in Manage. */
+async function chooseTimelineView(view: "read" | "manage") {
+    const button = timelineViewButton(view);
+    expect(button).toBeDefined();
+    button!.click();
+    await settle();
+    expect(button!.getAttribute("aria-pressed")).toBe("true");
 }
 
 it("sends an opened event's edited title and summary at the coverage revision and displays the new text", async () => {
@@ -1979,6 +2008,7 @@ it("sends an opened event's edited title and summary at the coverage revision an
     });
     await open();
     await chooseTab("timeline");
+    await chooseTimelineView("manage");
     click('[data-memory-event="e"] > button');
     await settle();
     press("[data-memory-event-edit]");
@@ -2018,6 +2048,7 @@ it("releases an event's correction badge only after confirmation and keeps its t
     });
     await open();
     await chooseTab("timeline");
+    await chooseTimelineView("manage");
     click('[data-memory-event="e"] > button');
     await settle();
     const badge = "[data-memory-event-corrected]";
@@ -2046,6 +2077,7 @@ it("shows a retracted event's details without an Edit control", async () => {
     state.event.status = "retracted";
     await open();
     await chooseTab("timeline");
+    await chooseTimelineView("manage");
     click('[data-memory-event="e"] > button');
     await settle();
     expect(query('[data-memory-event="e"]')?.textContent).toContain("The gate opened");
@@ -2065,7 +2097,7 @@ it("shows a recorded date without story text when a Timeline title is opened", a
     );
 });
 
-it("reads story once per refresh, showing unretracted summaries and recorded dates in message order and keeping titles on failure", async () => {
+it("reads story once per refresh in Read, grouping unretracted summaries by recorded date and keeping retracted events in Manage and titles on failure", async () => {
     serveMemory();
     const messages = findChat(ref)!.message;
     // A backfilled early event comes after the later event in storage and in both route answers.
@@ -2114,70 +2146,328 @@ it("reads story once per refresh, showing unretracted summaries and recorded dat
             });
         }
         if (url.endsWith("/records/events/earlier"))
-            return Response.json({ revision: "r1", data: { id: "earlier", summary: "Details of Mira's arrival." } });
+            return Response.json({
+                revision: "r1",
+                data: {
+                    id: "earlier",
+                    summary: "Details of Mira's arrival.",
+                    storyTime: { text: "Dawn", ordinal: 3, date: { year: 2025, month: 4, day: 3 } },
+                },
+            });
         return fetch(url, init, options);
     });
-    const viewButton = (view: "titles" | "story") =>
-        [...target.querySelectorAll<HTMLButtonElement>("[data-memory-timeline] [data-segment-btn]")].find(
-            (button) => button.textContent?.trim() === language.structuredMemory.timeline.views[view],
-        );
-    const chooseView = async (view: "titles" | "story") => {
-        const button = viewButton(view);
-        expect(button).toBeDefined();
-        button!.click();
-        await settle();
-        expect(button!.getAttribute("aria-pressed")).toBe("true");
-    };
     const rowIds = () =>
         [...target.querySelectorAll<HTMLElement>("[data-memory-event]")].map((row) => row.dataset.memoryEvent);
     const summaries = () =>
         [...target.querySelectorAll("[data-memory-event-summary]")].map((summary) => summary.textContent?.trim());
+    const groupHeads = () => [...target.querySelectorAll<HTMLButtonElement>("[data-memory-group] > button")];
 
     await open();
     await chooseTab("timeline");
-    expect(viewButton("titles")?.getAttribute("aria-pressed")).toBe("true");
-    expect(reads("story")).toHaveLength(0);
-    expect(summaries()).toEqual([]);
-    expect(rowIds()).toContain("retracted");
-
-    await chooseView("story");
+    expect(timelineViewButton("read")?.getAttribute("aria-pressed")).toBe("true");
     expect(reads("story")).toHaveLength(1);
     expect(query("[data-memory-panel-failure]")).toBeNull();
-    expect(rowIds()).toEqual(["earlier", "later", "missing"]);
-    expect(summaries()).toEqual([earlySummary, "The gate opened."]);
-    expect(query('[data-memory-event="earlier"]')?.textContent).toContain("Mira arrives");
-    expect(
-        [...query('[data-memory-event="earlier"] > button')!.querySelectorAll("span")].map((span) =>
-            span.textContent?.trim(),
-        ),
-    ).toContain(`${language.structuredMemory.log.storyTime}: 2025-04-03 · Dawn (3)`);
-    expect(query('[data-memory-event="earlier"] [data-memory-event-summary]')?.childElementCount).toBe(0);
-    expect(
-        [...query('[data-memory-event="later"] > button')!.querySelectorAll("span")].map((span) =>
-            span.textContent?.trim(),
-        ),
-    ).toContain(`${language.structuredMemory.log.storyTime}: 10-15`);
+    // Message order runs 2025-04-03 (earlier), then 10-15 (later, with the undated event after it).
+    // The newest group comes first and alone opens; events keep message order inside it.
+    expect(groupHeads().map((head) => head.getAttribute("aria-expanded"))).toEqual(["true", "false"]);
+    expect(groupHeads()[0].textContent).toContain("10-15");
+    expect(groupHeads()[1].textContent).toContain("2025-04-03");
+    expect(rowIds()).toEqual(["later", "missing"]);
+    expect(summaries()).toEqual(["The gate opened."]);
     expect(query('[data-memory-event="missing"]')?.textContent).toContain("An untold ending");
     expect(query('[data-memory-event="missing"] [data-memory-event-summary]')).toBeNull();
+    groupHeads()[1].click();
+    await settle();
+    expect(rowIds()).toEqual(["later", "missing", "earlier"]);
+    expect(rowIds()).not.toContain("retracted");
+    expect(summaries()).toEqual(["The gate opened.", earlySummary]);
+    expect(query('[data-memory-event="earlier"]')?.textContent).toContain("Mira arrives");
+    expect(query('[data-memory-event="earlier"] [data-memory-event-summary]')?.childElementCount).toBe(0);
 
     click('[data-memory-event="earlier"] > button');
     await settle();
     expect(query('[data-memory-event="earlier"] > button')?.getAttribute("aria-expanded")).toBe("true");
+    expect(
+        [...query('[data-memory-event="earlier"]')!.querySelectorAll("p")].map((paragraph) =>
+            paragraph.textContent?.trim(),
+        ),
+    ).toContain(`${language.structuredMemory.log.storyTime}: 2025-04-03 · Dawn (3)`);
+    // Manage keeps the open event and shows the record's own summary.
+    await chooseTimelineView("manage");
+    expect(query('[data-memory-event="earlier"] > button')?.getAttribute("aria-expanded")).toBe("true");
     expect(query('[data-memory-event="earlier"]')?.textContent).toContain("Details of Mira's arrival.");
     click('[data-memory-event="earlier"] > button');
-    await chooseView("titles");
     expect(summaries()).toEqual([]);
-    await chooseView("story");
+    expect(rowIds()).toEqual(["missing", "later", "retracted", "earlier"]);
+    await chooseTimelineView("read");
     expect(reads("story")).toHaveLength(1);
+    expect(summaries()).toEqual(["The gate opened.", earlySummary]);
 
     storyFails = true;
     click("[data-memory-panel-refresh]");
     await settle();
     expect(reads("story")).toHaveLength(2);
     expect(query("[data-memory-panel-failure]")?.textContent).toContain("story offline");
+    // Without dates every title falls into one date-less group, in message order.
+    expect(groupHeads()).toHaveLength(1);
+    expect(groupHeads()[0].getAttribute("aria-expanded")).toBe("true");
+    expect(groupHeads()[0].textContent).not.toMatch(/\d{2}-\d{2}/);
     expect(rowIds()).toEqual(["earlier", "later", "missing"]);
     for (const title of ["Mira arrives", "Gate opens", "An untold ending"]) expect(target.textContent).toContain(title);
     expect(summaries()).toEqual([]);
+});
+
+/** Serve the same events through the coverage, story and record routes, each with its own fields. */
+function serveTimelineEvents(events: (Partial<MemoryEvent> & { id: string; sourceIndex?: number })[]) {
+    const { revision } = serveMemory();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.includes("/coverage"))
+            return Response.json({
+                revision,
+                runs: [],
+                next: null,
+                events: events.map(({ id, title = id, status = "active", sources = [], sourceIndex, rerecord }) => ({
+                    id,
+                    title,
+                    status,
+                    sources,
+                    rerecord,
+                    messageIds: sources.map(({ messageId }) => messageId),
+                    sourceIndex: sourceIndex ?? sources[0]?.index ?? null,
+                })),
+            });
+        if (url.startsWith(storyRoute)) return storyAnswer(revision, events);
+        if (url.includes("/records/events/")) {
+            const event = events.find(({ id }) => url.endsWith(`/records/events/${id}`));
+            if (event) return Response.json({ revision, data: event });
+        }
+        return fetch(url, init, options);
+    });
+    return revision;
+}
+
+const timelineRow = (id: string) => `li[data-memory-event="${id}"][data-memory-event-status]`;
+const eventToggle = (id: string) => `${timelineRow(id)} > button[aria-expanded]`;
+function spyOnRowScroll() {
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {});
+    releases.push(() => scroll.mockRestore());
+    return scroll;
+}
+
+it("stars Read events at grades six and above", async () => {
+    serveTimelineEvents([5, 6, 7].map((grade) => ({ id: `grade-${grade}`, grade })));
+    await open();
+    await chooseTab("timeline");
+    for (const grade of [5, 6, 7]) {
+        const row = query(timelineRow(`grade-${grade}`));
+        expect(row?.textContent).toContain(`grade-${grade}`);
+        const star = row!.querySelector("[data-memory-event-star]");
+        expect(star !== null, `grade ${grade}`).toBe(grade >= 6);
+        if (star) {
+            const afterStar = document.createRange();
+            afterStar.selectNodeContents(row!);
+            afterStar.setStartAfter(star);
+            expect(afterStar.toString()).toContain(`grade-${grade}`);
+        }
+    }
+});
+
+it("counts each event needing a check once and reveals the first in Manage with unplaced rows last", async () => {
+    const sources = (index: number) => {
+        const msg = findChat(ref)!.message[index];
+        return [{ index, messageId: msg.chatId!, hash: memoryMessageHash(msg) }];
+    };
+    serveTimelineEvents([
+        { id: "unplaced", status: "retracted", rerecord: true },
+        { id: "marked", sources: sources(0), rerecord: true },
+        { id: "stale", sources: sources(1) },
+        { id: "both", sources: sources(2), rerecord: true },
+        { id: "healthy", sources: sources(3) },
+    ]);
+    const scroll = spyOnRowScroll();
+    await open();
+    await chooseTab("timeline");
+    const notice = "[data-memory-check-notice]";
+    expect(query(notice)?.textContent).toContain(language.structuredMemory.timeline.checkNotice(3));
+    setMessageText(ref, "a0", "A different reply");
+    await settle();
+    expect(query(notice)?.textContent).toContain(language.structuredMemory.timeline.checkNotice(4));
+    setMessageText(ref, "u1", "A different question");
+    await settle();
+    expect(query(notice)?.textContent).toContain(language.structuredMemory.timeline.checkNotice(4));
+    expect(query("[data-memory-event-badge]")).toBeNull();
+    click(`${notice} button`);
+    await settle();
+    expect(timelineViewButton("manage")?.getAttribute("aria-pressed")).toBe("true");
+    const rows = target.querySelectorAll("li[data-memory-event][data-memory-event-status]");
+    expect(rows[rows.length - 1].getAttribute("data-memory-event")).toBe("unplaced");
+    expect(query(eventToggle("both"))?.getAttribute("aria-expanded")).toBe("false");
+    expect(scroll.mock.contexts).toContain(query(timelineRow("both")));
+});
+
+it("offers the changed greeting jump alone in Read and its label and repairs in Manage", async () => {
+    const owner = characterList()[0];
+    if (owner.type !== "character") throw new Error("Expected a solo character");
+    owner.firstMessage = "Welcome back.";
+    setChatMeta(ref, { fmIndex: -1 });
+    const { event } = serveAnchoredEvent();
+    event.greeting = { fmIndex: -1, hash: memoryGreetingHash("Welcome home.") };
+    await open();
+    await chooseTab("timeline");
+    click(eventToggle("e"));
+    await settle();
+
+    const { greeting, timeline, rebuild } = language.structuredMemory;
+    const citation = '[data-memory-greeting-source="e"]';
+    const actions = () =>
+        [...target.querySelectorAll(`${citation} button`)].map((button) => button.textContent?.trim());
+    expect(query("[data-memory-check-notice]")).toBeNull();
+    expect(query("[data-memory-greeting-changed]")).toBeNull();
+    expect(actions()).toEqual([greeting.source]);
+
+    await chooseTimelineView("manage");
+    expect(query(`${citation} [data-memory-greeting-changed]`)?.textContent?.trim()).toBe(greeting.changed);
+    expect(actions()).toEqual(
+        expect.arrayContaining([greeting.source, timeline.repairs.rerecord, rebuild.rebuild, greeting.keep]),
+    );
+
+    await chooseTimelineView("read");
+    click(`${citation} button`);
+    await settle();
+    expect(pendingMessageJump()).toMatchObject({ ref, messageId: { greeting: true } });
+    expect(get(hypaV3ModalOpen)).toBe(false);
+});
+
+it("keeps the edited Read summary when a pre-edit story arrives after returning from Manage", async () => {
+    const state = serveAnchoredEvent();
+    const oldStory = deferred<Response>();
+    const original = storyAnswer(state.revision, [state.event]);
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.startsWith(storyRoute) && reads("story").length === 1) return oldStory.promise;
+        if (url.endsWith("/edits")) {
+            state.event.summary = JSON.parse(init!.body as string).edit.summary;
+            state.revision = "edited";
+            return Response.json({ revision: state.revision, kind: "events", data: state.event });
+        }
+        return fetch(url, init, options);
+    });
+    await open();
+    await chooseTab("timeline");
+    await chooseTimelineView("manage");
+    click(eventToggle("e"));
+    await settle();
+    press("[data-memory-event-edit]");
+    typePageField("[data-memory-event-editor] textarea", "The gate stayed locked.");
+    press("[data-memory-event-save]");
+    await settle();
+    expect(reads("story")).toHaveLength(1);
+    await chooseTimelineView("read");
+
+    const summary = () => query(`${timelineRow("e")} [data-memory-event-summary]`)?.textContent?.trim();
+    expect(summary()).toBe("The gate stayed locked.");
+    oldStory.resolve(original);
+    await settle();
+    expect(summary()).toBe("The gate stayed locked.");
+});
+
+it("scrolls a focus to its dated group beyond the first 30 and opens the same event beyond 200 rows in Manage", async () => {
+    // Seven events a day put the oldest event in group 31 in Read and row 211 in Manage.
+    const events = Array.from({ length: 211 }, (_, i) => ({
+        id: `e${i}`,
+        title: `Entry ${i}`,
+        summary: `Summary ${i}`,
+        sourceIndex: i,
+        storyTime: { text: "", date: { month: 1, day: 1 + Math.floor(i / 7) } },
+    }));
+    const revision = serveTimelineEvents(events);
+    await open();
+    await chooseTab("timeline");
+    expect(target.querySelectorAll("[data-memory-group]")).toHaveLength(30);
+    await chooseTimelineView("manage");
+    expect(target.querySelectorAll("li[data-memory-event]")).toHaveLength(200);
+    expect(query(timelineRow("e0"))).toBeNull();
+    await unmount(instance!);
+
+    const story = deferred<Response>();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url.startsWith(storyRoute) ? story.promise : fetch(url, init, options),
+    );
+    const scroll = spyOnRowScroll();
+    requestMemoryPanelTarget(ref, { tab: "timeline", id: "e0" });
+    await open();
+    // Count scrolls to the final dated row even if it reuses a node from the undated list.
+    scroll.mockClear();
+    story.resolve(storyAnswer(revision, events));
+    await settle();
+
+    expect(timelineViewButton("read")?.getAttribute("aria-pressed")).toBe("true");
+    const row = query(timelineRow("e0"));
+    expect(query(eventToggle("e0"))?.getAttribute("aria-expanded"), "focused Read event e0").toBe("true");
+    const heading = row?.closest("[data-memory-group]")?.querySelector(":scope > button[aria-expanded]");
+    expect(heading?.textContent).toContain("01-01");
+    expect(heading?.getAttribute("aria-expanded")).toBe("true");
+    expect(scroll.mock.contexts).toContain(row);
+
+    scroll.mockClear();
+    click(`${timelineRow("e0")} [data-memory-open-in-manage]`);
+    await settle();
+    expect(timelineViewButton("manage")?.getAttribute("aria-pressed")).toBe("true");
+    expect(query(eventToggle("e0"))?.getAttribute("aria-expanded"), "event e0 opened in Manage").toBe("true");
+    expect(query(timelineRow("e0"))?.textContent).toContain("Summary 0");
+    expect(scroll.mock.contexts).toContain(query(timelineRow("e0")));
+});
+
+it("opens a focused retracted event in Manage when the coverage reread finds it", async () => {
+    const { event } = serveAnchoredEvent();
+    event.status = "retracted";
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.includes("/coverage") && reads().length === 1) return Response.json({ ...facts(), events: [] });
+        return fetch(url, init, options);
+    });
+    const scroll = spyOnRowScroll();
+    requestMemoryPanelTarget(ref, { tab: "timeline", id: "e" });
+    await open();
+    expect(timelineViewButton("manage")?.getAttribute("aria-pressed")).toBe("true");
+    expect(query(eventToggle("e"))?.getAttribute("aria-expanded")).toBe("true");
+    expect(query(timelineRow("e"))?.textContent).toContain("The gate opened");
+    expect(scroll.mock.contexts).toContain(query(timelineRow("e")));
+});
+
+it.each([
+    {
+        outcome: "confirms the event is gone",
+        response: () => Response.json(facts()),
+        gone: ["This event is no longer recorded."],
+        failure: null,
+    },
+    {
+        outcome: "reports the coverage error",
+        response: () => Response.json({ error: "Coverage offline" }, { status: 500 }),
+        gone: [],
+        failure: language.structuredMemory.panel.readFailed("Coverage offline"),
+    },
+])("rereads coverage for a missing focus and $outcome", async ({ response, gone, failure }) => {
+    serveMemory();
+    const reread = deferred<Response>();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url.includes("/coverage") && reads().length > 1 ? reread.promise : fetch(url, init, options),
+    );
+    requestMemoryPanelTarget(ref, { tab: "timeline", id: "missing" });
+    await open();
+    expect(reads()).toHaveLength(2);
+    expect(query("[data-memory-event-gone]")).toBeNull();
+    reread.resolve(response());
+    await settle();
+    expect([...target.querySelectorAll("[data-memory-event-gone]")].map((line) => line.textContent?.trim())).toEqual(
+        gone,
+    );
+    expect(query("[data-memory-panel-failure]")?.textContent?.trim() ?? null).toBe(failure);
+    expect(reads()).toHaveLength(2);
 });
 
 it("shows an opened Timeline event's changes below its key lines, using page and thread titles with id fallbacks", async () => {
@@ -2228,6 +2518,7 @@ it("shows an opened Timeline event's changes below its key lines, using page and
 
     await open();
     await chooseTab("timeline");
+    await chooseTimelineView("manage");
     click('[data-memory-event="e"] > button');
     await settle();
 
@@ -2275,6 +2566,7 @@ it("moves edited held sources from covered to stale in Coverage and Timeline wit
     );
     expect(reads()).toHaveLength(requests);
     await chooseTab("timeline");
+    await chooseTimelineView("manage");
     expect(query('[data-memory-event="e"]')?.dataset.memoryEventStatus).toBe("stale");
     expect(query('[data-memory-event-badge="stale"]')?.textContent).toContain(
         language.structuredMemory.coverage.reasons.changed,
@@ -2307,6 +2599,7 @@ it("sends the seen keep state, explains a refusal, and confirms before retractin
     });
     await open();
     await chooseTab("timeline");
+    await chooseTimelineView("manage");
     click('[data-memory-event="e"] > button');
     await settle();
     const held = findChat(ref)!.message;
@@ -2352,6 +2645,7 @@ it("marks before pressing rerecord, retries a marked event, and disables it when
     io.runServerJob.mockResolvedValue(previewAnswer({}));
     await open();
     await chooseTab("timeline");
+    await chooseTimelineView("manage");
     click('[data-memory-event="e"] > button');
     await settle();
     press('[data-memory-repair="rerecord"]');
@@ -2541,6 +2835,7 @@ it("shows Originally adopted only in an open event whose writer run is the adopt
     state.event.writerRun = ADOPTED_WRITER_RUN;
     await open();
     await chooseTab("timeline");
+    await chooseTimelineView("manage");
     expect(query("[data-memory-event-adopted]")).toBeNull();
     click('[data-memory-event="e"] > button');
     await settle();
@@ -3571,6 +3866,7 @@ it.each(["retract", "purge", "merge", "split"] as const)(
         await open();
         if (action === "retract") {
             await chooseTab("timeline");
+            await chooseTimelineView("manage");
             click('[data-memory-event="e"] > button');
         } else {
             await chooseTab("pages");
@@ -4147,6 +4443,7 @@ it("labels changed greeting citations without changing history and hides the lab
     });
     await open();
     await chooseTab("timeline");
+    await chooseTimelineView("manage");
     click('[data-memory-event="e"] > button');
     await settle();
     const source = () => query('[data-memory-greeting-source="e"]');
@@ -4182,6 +4479,7 @@ it("labels changed greeting citations without changing history and hides the lab
     await chooseTab("coverage");
     expect(query('[data-memory-greeting-source="e"] [data-memory-greeting-changed]')).not.toBeNull();
     await chooseTab("timeline");
+    await chooseTimelineView("manage");
     if (!source()) {
         click('[data-memory-event="e"] > button');
         await settle();

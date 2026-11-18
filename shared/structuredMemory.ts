@@ -165,7 +165,7 @@ export const CHARACTER_SECTION_SLOTS = [
 ] as const;
 export type CharacterSectionSlot = (typeof CHARACTER_SECTION_SLOTS)[number];
 
-/** Bounds on stored records and the writer's prompt. Axes and grades are inclusive integers from 0. */
+/** Bounds for memory records, their display and the writer's prompt. Axes and grades are inclusive integers from 0. */
 export const STRUCTURED_MEMORY_LIMITS = {
     keyLinesPerEvent: 5,
     stateChangesPerEvent: 8,
@@ -195,6 +195,8 @@ export const STRUCTURED_MEMORY_LIMITS = {
     gradeMax: 9,
     /** The grade from which an event counts as important (`projectHypaV3Data`). */
     importantEventGrade: 6,
+    /** The most events a Timeline reading group shows together. */
+    eventsPerGroup: 10,
     /** Near-identical summaries: the character-bigram Jaccard index from which an event merges into the last one. */
     dedupeSimilarity: 0.8,
     eventTitleChars: 120,
@@ -432,6 +434,39 @@ export function formatStoryDate(date: MemoryStoryDate): string {
     const padded = (part: number, length: number) => String(part).padStart(length, "0");
     const monthDay = `${padded(date.month, 2)}-${padded(date.day, 2)}`;
     return date.year === undefined ? monthDay : `${padded(date.year, 4)}-${monthDay}`;
+}
+
+/**
+ * Groups events in the given story order. A new stated date starts a group, and undated events
+ * continue the preceding group (or start a date-less one). Each run splits into the fewest parts
+ * that fit `size`, sharing its events as evenly as possible, with the longer parts first.
+ */
+export function memoryEventGroups<E extends { id: string; date?: MemoryStoryDate }>(
+    events: readonly E[],
+    size: number,
+) {
+    if (!Number.isInteger(size) || size < 1) throw new RangeError("Group size must be a positive integer");
+    const groups: { date: MemoryStoryDate | null; events: E[]; part: number; partCount: number }[] = [];
+    let start = 0;
+    while (start < events.length) {
+        const date = events[start].date ?? null;
+        const key = date && formatStoryDate(date);
+        let end = start + 1;
+        while (end < events.length) {
+            const next = events[end].date;
+            if (next && formatStoryDate(next) !== key) break;
+            end++;
+        }
+        const count = end - start;
+        const partCount = Math.ceil(count / size);
+        const shorter = Math.floor(count / partCount);
+        for (let part = 1; part <= partCount; part++) {
+            const length = shorter + (part <= count % partCount ? 1 : 0);
+            groups.push({ date, events: events.slice(start, start + length), part, partCount });
+            start += length;
+        }
+    }
+    return groups;
 }
 
 /** A leap year, so a yearless February 29 keeps its day when neither date of a distance states a year. */

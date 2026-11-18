@@ -129,7 +129,7 @@ import { authFetch } from "../storage/serverAuth";
  * messages with the record facts the coverage route answers, because the tab holds the chat's whole
  * message list and a route has no job scope. `reconcileMemoryCoverage` brings those facts up to the held
  * messages first, with the same rule a send uses, so an edit shows at once and with no request.
- * `readStructuredMemoryStory` collects stored summaries at one revision for Timeline's story view,
+ * `readStructuredMemoryStory` collects stored summaries at one revision for Timeline's Read view,
  * normalizing their display fields before the tab joins them by id with its coverage rows.
  * `findStructuredMemory` collects text hits, or the events and threads naming a page, at one revision,
  * keeping at most MEMORY_FIND_HITS_MAX of each and saying whether it dropped hits.

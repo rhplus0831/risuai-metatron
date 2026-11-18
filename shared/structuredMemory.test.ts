@@ -4,6 +4,8 @@ import type { Message } from "./database.ts";
 import {
     type MemoryEvent,
     type MemoryManifestItem,
+    STRUCTURED_MEMORY_LIMITS,
+    memoryEventGroups,
     memoryGrade,
     memorySceneFieldLimit,
     memorySectionBudget,
@@ -437,6 +439,56 @@ describe("story dates", () => {
         expect(formatStoryDate({ year: 2025, month: 4, day: 3 })).toBe("2025-04-03");
         expect(formatStoryDate({ month: 10, day: 15 })).toBe("10-15");
         expect(formatStoryDate({ year: 1, month: 2, day: 9 })).toBe("0001-02-09");
+    });
+});
+
+describe("memoryEventGroups", () => {
+    it("keeps undated events with the preceding day and starts a new group for a flashback or an unstated year", () => {
+        const arrival = { year: 2025, month: 4, day: 3 };
+        const departure = { year: 2025, month: 4, day: 4 };
+        const yearless = { month: 4, day: 3 };
+        const groups = memoryEventGroups(
+            [
+                { id: "prologue" },
+                { id: "overture" },
+                { id: "arrival", date: arrival },
+                { id: "dinner" },
+                { id: "bedtime", date: { ...arrival } },
+                { id: "departure", date: departure },
+                { id: "flashback", date: arrival },
+                { id: "anniversary", date: yearless },
+            ],
+            10,
+        );
+        expect(groups.map(({ date, events }) => [date, events.map(({ id }) => id)])).toEqual([
+            [null, ["prologue", "overture"]],
+            [arrival, ["arrival", "dinner", "bedtime"]],
+            [departure, ["departure"]],
+            [arrival, ["flashback"]],
+            [yearless, ["anniversary"]],
+        ]);
+    });
+
+    it("splits a long day into balanced numbered parts and keeps a day at the size limit whole", () => {
+        expect(STRUCTURED_MEMORY_LIMITS.eventsPerGroup).toBe(10);
+        const firstDay = { month: 5, day: 1 };
+        const nextDay = { month: 5, day: 2 };
+        const events = Array.from({ length: 14 }, (_, i) => ({ id: String(i), date: i < 10 ? firstDay : nextDay }));
+        const groups = memoryEventGroups(events, 4);
+        expect(groups.map(({ date, part, partCount }) => [date, part, partCount])).toEqual([
+            [firstDay, 1, 3],
+            [firstDay, 2, 3],
+            [firstDay, 3, 3],
+            [nextDay, 1, 1],
+        ]);
+        expect(
+            groups
+                .slice(0, 3)
+                .map(({ events }) => events.length)
+                .sort((a, b) => a - b),
+        ).toEqual([3, 3, 4]);
+        expect(groups[3].events).toEqual(events.slice(10));
+        expect(groups.flatMap(({ events }) => events)).toEqual(events);
     });
 });
 

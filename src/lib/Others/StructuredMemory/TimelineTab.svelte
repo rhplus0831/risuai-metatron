@@ -1,6 +1,7 @@
 <script lang="ts">
     import { ChevronDownIcon, ChevronRightIcon } from "@lucide/svelte";
-    import { tick, untrack } from "svelte";
+    import { getAbortSignal, tick, untrack } from "svelte";
+    import { SvelteMap } from "svelte/reactivity";
     import { language } from "src/lang";
     import { alertConfirm, alertError } from "src/ts/alert";
     import {
@@ -17,7 +18,6 @@
         readStructuredMemoryStory,
         reconcileMemoryCoverage,
         type MemoryPanelTabProps,
-        type MemoryPanelTarget,
         type MemoryRunEventView,
         type MemoryTimelineRow,
         type StructuredMemoryCoverage,
@@ -30,7 +30,9 @@
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
     import {
         ADOPTED_WRITER_RUN,
+        formatStoryDate,
         memoryAnchorState,
+        memoryEventGroups,
         memoryRerecordTarget,
         storedMemoryGreeting,
         STRUCTURED_MEMORY_LIMITS,
@@ -45,23 +47,29 @@
     import { memoryReadFailureText, memoryReasonText, storyTimeText } from "./memoryText";
 
     /**
-     * Timeline reads server/src/routes/structuredMemory.ts's coverage answer, which already has each
-     * event's message ids, status, and title at one revision; the initial titles view reads no individual
-     * record. The view choice lasts while mounted. Story reads summaries once per refresh when chosen,
-     * joining them by id with the coverage rows and leaving out retracted events. Missing summaries or
-     * a failed story read leave the titles visible; coverage and story can come from different revisions.
-     * Rows use `reconcileMemoryCoverage` and `memoryTimelineRows` in src/ts/process/structuredMemory.svelte.ts
-     * over held messages, with a per-mount hash memo. An unloaded chat leaves the facts unreconciled.
-     * Storage sequence is not message order, especially after backfill. Opening an event reads its record
-     * and reads page and thread titles once per refresh. All model and message text stays plain;
-     * `ADOPTED_WRITER_RUN` identifies HypaV3 adoption without a model call.
+     * Timeline opens in Read and holds the view choice while mounted. Coverage supplies titles and
+     * status at one revision. Held messages reconcile those facts and place them in chat order through
+     * memoryTimelineRows. Read joins the story by id once per refresh and omits retracted events.
+     * Missing story data leaves the titles readable. memoryEventGroups keeps events in chat order
+     * within each date or part. Groups appear newest first, 30 at a time. The newest opens by default,
+     * and presses follow event ids when dates arrive and regroup them.
+     *
+     * Read shows summaries and important stars. An open event shows its story and links to pages and
+     * sources. Manage lists every event newest first, unplaced rows last, with badges, facts, edits
+     * and repairs. Both views share the open record and its page and thread titles. A check notice
+     * counts stale or marked events once each and reveals the first in Manage without opening it.
+     *
+     * A jump opens its event in the current view, switching to Manage for a retracted event or an
+     * explicit Manage link. Reveals expand the group and list as needed and finish at the rendered
+     * row, after Read's dates settle. An absent id gets one coverage reread. Only an accepted,
+     * successful answer can establish that the event is gone. All record text stays plain.
      *
      * Repairs name the coverage revision and reread whether accepted or refused: a record answer alone
      * cannot replace a status derived from held messages. Keep sends the held anchor state; an unsaved
      * local edit can therefore be refused `changed`. Retract asks first because no control reverses it.
      * Re-record marks before pressing through `memoryRerecordTarget`; an existing mark goes straight to
      * the press, so a failed press remains retryable.
-     * Text edits and mark releases also reread the open record and the chosen story view; a hidden
+     * Text edits and mark releases also reread the open record and the story in Read; a hidden
      * story is invalidated for the next switch. The mark is held beside the display view. A draft keeps
      * its base title and summary: a read that changes either closes it with `changed`, and selecting
      * another event or closing the event discards it. Text edits share the repair's send guard; greeting
@@ -72,6 +80,7 @@
 
     /** The rows a list renders at once; a long chat stays cheap behind "show more". */
     const ROWS_AT_ONCE = 200;
+    const GROUPS_AT_ONCE = 30;
     const { eventTitleChars, eventSummaryChars } = STRUCTURED_MEMORY_LIMITS;
 
     const text = language.structuredMemory.timeline;
@@ -84,16 +93,21 @@
     let facts = $state.raw<StructuredMemoryCoverage | null>(null);
     let failure = $state<string | null>(null);
     let readNumber = 0;
-    let view = $state<"titles" | "story">("titles");
+    type CoverageOutcome = "ok" | "failed" | "ignored";
+    let coverageRead = $state.raw<Promise<CoverageOutcome>>();
+    let view = $state<"read" | "manage">("read");
     let stories = $state.raw<ReadonlyMap<string, StructuredMemoryStoryEvent>>(new Map());
     let storyFailure = $state<string | null>(null);
     /** The `refresh` the story was last read at, including a failed read. */
     let storyRead: number | null = null;
     let storyNumber = 0;
+    let readingStory = $state(false);
     /** One edit or repair at a time: while one is out the buttons are off. */
     let sending = $state(false);
 
     let shown = $state(ROWS_AT_ONCE);
+    let groupsShown = $state(GROUPS_AT_ONCE);
+    const groupPresses = new SvelteMap<string, boolean>();
     /** The expanded event, one at a time, and its record once read. */
     let openId = $state<string | null>(null);
     let openEvent = $state.raw<MemoryRunEventView | null>(null);
@@ -111,7 +125,7 @@
     /** The `refresh` the titles were last read at. */
     let titlesRead: number | null = null;
     let titlesNumber = 0;
-    let list = $state<HTMLElement>();
+    let timeline = $state<HTMLElement>();
 
     const heldChat = $derived(findChat(chatRef));
     const messages = $derived(heldChat?.message ?? []);
@@ -128,7 +142,25 @@
         facts && heldChat ? reconcileMemoryCoverage(facts, messages, hashOf, greeting?.source ?? null) : facts,
     );
     const rows = $derived(reconciled ? memoryTimelineRows(reconciled.events, messages) : []);
-    const visibleRows = $derived(view === "story" ? rows.filter(({ event }) => event.status !== "retracted") : rows);
+    const manageRows = $derived(
+        [...rows].sort((a, b) => {
+            if (a.position === b.position) return 0;
+            if (a.position === Infinity) return 1;
+            if (b.position === Infinity) return -1;
+            return b.position - a.position;
+        }),
+    );
+    const toCheck = $derived(manageRows.filter(({ event }) => event.status === "stale" || event.rerecord));
+    const groups = $derived.by(() => {
+        const events = rows
+            .filter(({ event }) => event.status !== "retracted")
+            .map((row) => {
+                const id = row.event.id;
+                const story = stories.get(id);
+                return { ...row, id, story, date: story?.storyTime?.date };
+            });
+        return memoryEventGroups(events, STRUCTURED_MEMORY_LIMITS.eventsPerGroup).reverse();
+    });
     const usedEvents = $derived(memoryItemsUsed(messages, "event"));
     const messageIndexes = $derived(memoryMessageIndexes(messages));
     const controlsOff = $derived(readOnly || sending);
@@ -142,20 +174,45 @@
 
     const sameChat = (ref: ChatRef) => ref.chaId === chatRef.chaId && ref.chatId === chatRef.chatId;
 
+    type Group = (typeof groups)[number];
+
+    function groupOpen(group: Group, newest: boolean) {
+        if (group.events.some(({ id }) => groupPresses.get(id) === true)) return true;
+        return newest && !group.events.some(({ id }) => groupPresses.get(id) === false);
+    }
+
+    function pressGroup(group: Group, expanded: boolean) {
+        for (const { id } of group.events) groupPresses.set(id, expanded);
+    }
+
+    function turnRange(group: Group) {
+        const ages = group.events.map(({ turnsAgo }) => turnsAgo).filter((age) => age !== null);
+        if (!ages.length) return "";
+        const min = Math.min(...ages);
+        const max = Math.max(...ages);
+        return min === max ? text.turnsAgo(min) : text.turnsAgoRange(min, max);
+    }
+
     /** Reads the facts. An answer for another chat, or one a newer read replaced, changes nothing. */
-    async function read() {
+    async function readCoverage(): Promise<CoverageOutcome> {
         const ref = chatRef;
         const number = ++readNumber;
         const result = await readStructuredMemoryCoverage(ref);
         if (number !== readNumber || !sameChat(ref)) {
-            return;
+            return "ignored";
         }
         if (result.outcome === "ok") {
             facts = result.value;
             failure = null;
-        } else {
-            failure = memoryReadFailureText(result);
+            return "ok";
         }
+        failure = memoryReadFailureText(result);
+        return "failed";
+    }
+
+    async function read() {
+        coverageRead = readCoverage();
+        await coverageRead;
     }
 
     async function readTitles() {
@@ -172,10 +229,12 @@
     async function readStory() {
         const ref = chatRef;
         const number = ++storyNumber;
+        readingStory = true;
         const result = await readStructuredMemoryStory(ref);
         if (number !== storyNumber || !sameChat(ref)) {
             return;
         }
+        readingStory = false;
         if (result.outcome === "ok") {
             stories = new Map(result.value.events.map((event) => [event.id, event]));
             storyFailure = null;
@@ -228,7 +287,7 @@
 
     $effect(() => {
         const atRefresh = refresh;
-        if (view !== "story") {
+        if (view !== "read") {
             return;
         }
         untrack(() => {
@@ -313,12 +372,13 @@
         if (openId !== null) {
             reads.push(readOpen(openId, result.outcome === "refused" && result.reason === "changed"));
         }
-        if (view === "story") {
+        if (view === "read") {
             storyRead = refresh;
             reads.push(readStory());
         } else {
             storyRead = null;
             storyNumber += 1;
+            readingStory = false;
             stories = new Map();
             storyFailure = null;
         }
@@ -390,28 +450,70 @@
         });
     }
 
-    // The event a jump from another tab asked for: open, past "show more", and in view. The rows come
-    // after the mount, so this waits for them, and once it has shown its event no later rows run it.
-    let focused: MemoryPanelTarget | null = null;
+    type RevealSource = "focus" | "manage" | "notice";
+    type Reveal = { id: string; source: RevealSource; opened: boolean; retried: boolean };
+    let pending = $state.raw<Reveal | null>(null);
+    let eventGone = $state(false);
+
+    function reveal(id: string, source: RevealSource) {
+        if (source !== "focus") view = "manage";
+        eventGone = false;
+        pending = { id, source, opened: false, retried: false };
+    }
+
     $effect(() => {
-        const target = focus;
-        if (!target || target === focused) {
-            return;
-        }
-        const index = visibleRows.findIndex(({ event }) => event.id === target.id);
+        if (focus?.tab === "timeline") reveal(focus.id, "focus");
+    });
+
+    $effect(() => {
+        const target = pending;
+        if (!target) return;
+        const signal = getAbortSignal();
+        const index = manageRows.findIndex(({ event }) => event.id === target.id);
         if (index < 0) {
+            const latest = coverageRead;
+            void latest?.then((outcome) => {
+                if (signal.aborted || pending !== target || latest !== coverageRead || outcome === "ignored") return;
+                if (rows.some(({ event }) => event.id === target.id)) return;
+                if (target.retried) {
+                    eventGone = outcome === "ok";
+                    pending = null;
+                } else {
+                    target.retried = true;
+                    void read();
+                }
+            });
             return;
         }
-        focused = target;
-        untrack(() => {
+        if (view === "read" && manageRows[index].event.status === "retracted") {
+            view = "manage";
+            return;
+        }
+        if (!target.opened && target.source !== "notice") {
+            target.opened = true;
+            if (openId !== target.id || target.source === "focus") untrack(() => openRow(target.id));
+        }
+        if (view === "manage") {
             shown = Math.max(shown, index + 1);
-            openRow(target.id);
-            void tick().then(() => {
-                const row = [...(list?.querySelectorAll<HTMLElement>("[data-memory-event]") ?? [])].find(
-                    ({ dataset }) => dataset.memoryEvent === target.id,
-                );
-                row?.scrollIntoView?.({ block: "nearest" });
-            });
+        } else {
+            // Press the final group so interim date-less group members do not inherit a press.
+            if (readingStory) return;
+            const groupIndex = groups.findIndex((group) => group.events.some(({ id }) => id === target.id));
+            if (groupIndex < 0) return;
+            groupsShown = Math.max(groupsShown, groupIndex + 1);
+            pressGroup(groups[groupIndex], true);
+        }
+        const container = timeline;
+        if (!container || failure !== null) return;
+        void tick().then(() => {
+            if (signal.aborted || pending !== target) return;
+            const row = [...container.querySelectorAll<HTMLElement>("[data-memory-event]")].find(
+                ({ dataset }) => dataset.memoryEvent === target.id,
+            );
+            if (row) {
+                row.scrollIntoView?.({ block: "nearest" });
+                pending = null;
+            }
         });
     });
 </script>
@@ -423,67 +525,76 @@
         {:else if !openEvent}
             <p class="text-textcolor2">{panelText.loading}</p>
         {:else}
-            <div class="flex flex-wrap items-center gap-2">
-                {#if openCorrected}
-                    <button
-                        type="button"
-                        class="px-1.5 rounded-sm bg-darkbutton text-textcolor2 enabled:hover:text-textcolor enabled:cursor-pointer"
-                        disabled={controlsOff}
-                        title={text.release}
-                        data-memory-event-corrected
-                        onclick={releaseText}
-                    >
-                        {text.userCorrected}
-                    </button>
-                {/if}
-                {#if event.status !== "retracted" && !openRetracted}
-                    <Button size="sm" styled="outlined" disabled={controlsOff || editor !== null} onclick={startEdit}>
-                        <span data-memory-event-edit>{text.edit}</span>
-                    </Button>
-                {/if}
-            </div>
-            {#if editor?.id === event.id}
-                <fieldset class="flex flex-col min-w-0 gap-2" disabled={controlsOff} data-memory-event-editor>
-                    <label class="flex flex-col min-w-0 gap-1" data-memory-event-title>
-                        <span class="text-textcolor2">{text.title}</span>
-                        <TextInput size="sm" bind:value={draftTitle} disabled={controlsOff} fullwidth />
-                    </label>
-                    <span
-                        class={titleLength > eventTitleChars ? "text-draculared" : "text-textcolor2"}
-                        data-memory-event-title-count
-                    >
-                        {text.characters(titleLength, eventTitleChars)}
-                    </span>
-                    <label class="flex flex-col min-w-0 gap-1" data-memory-event-summary-input>
-                        <span class="text-textcolor2">{text.summary}</span>
-                        <TextAreaInput
-                            bind:value={draftSummary}
-                            height="36"
-                            optimaizedInput={false}
-                            popupEditor={false}
-                            ariaLabel={text.summary}
-                        />
-                    </label>
-                    <span
-                        class={draftSummary.length > eventSummaryChars ? "text-draculared" : "text-textcolor2"}
-                        data-memory-event-summary-count
-                    >
-                        {text.characters(draftSummary.length, eventSummaryChars)}
-                    </span>
-                    <div class="flex flex-wrap justify-end gap-2">
-                        <Button size="sm" styled="outlined" disabled={controlsOff} onclick={() => (editor = null)}>
-                            <span data-memory-event-cancel>{text.cancel}</span>
+            {#if view === "manage"}
+                <div class="flex flex-wrap items-center gap-2">
+                    {#if openCorrected}
+                        <button
+                            type="button"
+                            class="px-1.5 rounded-sm bg-darkbutton text-textcolor2 enabled:hover:text-textcolor enabled:cursor-pointer"
+                            disabled={controlsOff}
+                            title={text.release}
+                            data-memory-event-corrected
+                            onclick={releaseText}
+                        >
+                            {text.userCorrected}
+                        </button>
+                    {/if}
+                    {#if event.status !== "retracted" && !openRetracted}
+                        <Button
+                            size="sm"
+                            styled="outlined"
+                            disabled={controlsOff || editor !== null}
+                            onclick={startEdit}
+                        >
+                            <span data-memory-event-edit>{text.edit}</span>
                         </Button>
-                        <Button size="sm" disabled={controlsOff || !draftFits} onclick={saveText}>
-                            <span data-memory-event-save>{text.save}</span>
-                        </Button>
-                    </div>
-                </fieldset>
-            {:else}
-                <p class="whitespace-pre-wrap">{openEvent.summary}</p>
-            {/if}
-            {#if openEvent.writerRun === ADOPTED_WRITER_RUN}
-                <p class="text-textcolor2" data-memory-event-adopted>{language.structuredMemory.adopt.adoptedEvent}</p>
+                    {/if}
+                </div>
+                {#if editor?.id === event.id}
+                    <fieldset class="flex flex-col min-w-0 gap-2" disabled={controlsOff} data-memory-event-editor>
+                        <label class="flex flex-col min-w-0 gap-1" data-memory-event-title>
+                            <span class="text-textcolor2">{text.title}</span>
+                            <TextInput size="sm" bind:value={draftTitle} disabled={controlsOff} fullwidth />
+                        </label>
+                        <span
+                            class={titleLength > eventTitleChars ? "text-draculared" : "text-textcolor2"}
+                            data-memory-event-title-count
+                        >
+                            {text.characters(titleLength, eventTitleChars)}
+                        </span>
+                        <label class="flex flex-col min-w-0 gap-1" data-memory-event-summary-input>
+                            <span class="text-textcolor2">{text.summary}</span>
+                            <TextAreaInput
+                                bind:value={draftSummary}
+                                height="36"
+                                optimaizedInput={false}
+                                popupEditor={false}
+                                ariaLabel={text.summary}
+                            />
+                        </label>
+                        <span
+                            class={draftSummary.length > eventSummaryChars ? "text-draculared" : "text-textcolor2"}
+                            data-memory-event-summary-count
+                        >
+                            {text.characters(draftSummary.length, eventSummaryChars)}
+                        </span>
+                        <div class="flex flex-wrap justify-end gap-2">
+                            <Button size="sm" styled="outlined" disabled={controlsOff} onclick={() => (editor = null)}>
+                                <span data-memory-event-cancel>{text.cancel}</span>
+                            </Button>
+                            <Button size="sm" disabled={controlsOff || !draftFits} onclick={saveText}>
+                                <span data-memory-event-save>{text.save}</span>
+                            </Button>
+                        </div>
+                    </fieldset>
+                {:else}
+                    <p class="whitespace-pre-wrap" data-memory-event-summary>{openEvent.summary}</p>
+                {/if}
+                {#if openEvent.writerRun === ADOPTED_WRITER_RUN}
+                    <p class="text-textcolor2" data-memory-event-adopted>
+                        {language.structuredMemory.adopt.adoptedEvent}
+                    </p>
+                {/if}
             {/if}
             {#if storyTimeText(openEvent.storyTime) !== ""}
                 <p>
@@ -516,7 +627,9 @@
                     </blockquote>
                 {/each}
             {/if}
-            <MemoryEventFacts event={openEvent} {pageTitles} {threadTitles} />
+            {#if view === "manage"}
+                <MemoryEventFacts event={openEvent} {pageTitles} {threadTitles} />
+            {/if}
         {/if}
         {#if event.messageIds.length > 0 || storedMemoryGreeting(event.greeting)}
             <div class="flex flex-wrap items-center gap-1">
@@ -526,16 +639,25 @@
                         : text.sources}</span
                 >
                 {#if storedMemoryGreeting(event.greeting) && facts}
-                    <GreetingCitation
-                        {event}
-                        current={heldChat ? (greeting?.source ?? null) : undefined}
-                        {chatRef}
-                        revision={facts.revision}
-                        readOnly={controlsOff}
-                        {jump}
-                        {rebuild}
-                        refreshed={read}
-                    />
+                    {#if view === "read"}
+                        <span data-memory-greeting-source={event.id}>
+                            <MemoryLinkButton
+                                label={language.structuredMemory.greeting.source}
+                                onclick={() => jump({ greeting: true })}
+                            />
+                        </span>
+                    {:else}
+                        <GreetingCitation
+                            {event}
+                            current={heldChat ? (greeting?.source ?? null) : undefined}
+                            {chatRef}
+                            revision={facts.revision}
+                            readOnly={controlsOff}
+                            {jump}
+                            {rebuild}
+                            refreshed={read}
+                        />
+                    {/if}
                 {/if}
                 {#each event.messageIds as id}
                     {@const index = messageIndexes.get(id)}
@@ -548,7 +670,15 @@
                 {/each}
             </div>
         {/if}
-        {#if event.status === "stale"}
+        {#if view === "read"}
+            <div>
+                <MemoryLinkButton
+                    label={text.openInManage}
+                    data-memory-open-in-manage={event.id}
+                    onclick={() => reveal(event.id, "manage")}
+                />
+            </div>
+        {:else if event.status === "stale"}
             {@const off = readOnly || sending}
             <div class="flex flex-wrap gap-2 pt-1" data-memory-event-repairs>
                 <Button
@@ -571,98 +701,164 @@
     </div>
 {/snippet}
 
-<div class="flex flex-col min-w-0 gap-2 text-sm" data-memory-timeline data-read-only={readOnly}>
+{#snippet eventRow(row: MemoryTimelineRow, story?: StructuredMemoryStoryEvent)}
+    {@const { event, turnsAgo } = row}
+    {@const expanded = openId === event.id}
+    <li
+        class="flex flex-col min-w-0 border rounded-md border-darkborderc break-words"
+        data-memory-event={event.id}
+        data-memory-event-status={event.status}
+    >
+        <button
+            type="button"
+            class="flex items-start min-w-0 gap-2 p-2 text-left transition-colors hover:bg-selected"
+            aria-expanded={expanded}
+            onclick={() => toggle(event.id)}
+        >
+            {#if expanded}
+                <ChevronDownIcon size={16} class="shrink-0 mt-0.5" />
+            {:else}
+                <ChevronRightIcon size={16} class="shrink-0 mt-0.5" />
+            {/if}
+            {#if view === "read"}
+                <span class="w-4 shrink-0">
+                    {#if story?.grade !== undefined && story.grade >= STRUCTURED_MEMORY_LIMITS.importantEventGrade}
+                        <span
+                            role="img"
+                            aria-label={text.importantEvent}
+                            class="text-secondary-500"
+                            data-memory-event-star>★</span
+                        >
+                    {/if}
+                </span>
+            {/if}
+            <span class="flex flex-col flex-1 min-w-0">
+                <span class={event.status === "retracted" ? "line-through text-textcolor2" : ""}>
+                    {event.title}
+                </span>
+                {#if view === "manage"}
+                    <span class="flex flex-wrap gap-x-2 text-textcolor2">
+                        {#if turnsAgo !== null}
+                            <span>{text.turnsAgo(turnsAgo)}</span>
+                        {/if}
+                        {#if event.status === "stale"}
+                            <span class="text-draculared" data-memory-event-badge="stale">
+                                {text.stale(memoryReasonText(event.staleReason))}
+                            </span>
+                        {/if}
+                        {#if event.rerecord}
+                            <span data-memory-event-badge="rerecord">{repairText.waiting}</span>
+                        {/if}
+                        {#if event.suppressed}
+                            <span data-memory-event-badge="suppressed">{text.suppressed}</span>
+                        {/if}
+                        {#if usedEvents.has(event.id)}
+                            <span class="px-1.5 rounded-sm bg-darkbutton text-secondary-500" data-memory-used
+                                >{panelText.usedInLastSend}</span
+                            >
+                        {/if}
+                    </span>
+                {:else if story?.summary}
+                    <span class="whitespace-pre-wrap break-words" data-memory-event-summary>
+                        {story.summary}
+                    </span>
+                {/if}
+            </span>
+        </button>
+        {#if expanded}
+            {@render details(row)}
+        {/if}
+    </li>
+{/snippet}
+
+<div class="flex flex-col min-w-0 gap-2 text-sm" data-memory-timeline data-read-only={readOnly} bind:this={timeline}>
     <SegmentedControl
         bind:value={view}
         options={[
-            { value: "titles", label: text.views.titles },
-            { value: "story", label: text.views.story },
+            { value: "read", label: text.views.read },
+            { value: "manage", label: text.views.manage },
         ]}
         margin={false}
         size="sm"
         label={text.view}
     />
-    {#if view === "story" && storyFailure !== null && failure === null}
+    {#if eventGone}
+        <p role="status" class="text-textcolor2" data-memory-event-gone>{text.eventGone}</p>
+    {/if}
+    {#if view === "read" && storyFailure !== null && failure === null}
         <p role="alert" class="text-draculared" data-memory-panel-failure>{storyFailure}</p>
     {/if}
     {#if failure !== null}
         <p role="alert" class="text-draculared" data-memory-panel-failure>{failure}</p>
     {:else if !facts}
         <p class="text-textcolor2">{panelText.loading}</p>
-    {:else if visibleRows.length === 0}
-        <p class="text-textcolor2">{text.empty}</p>
     {:else}
-        <ul class="flex flex-col min-w-0 gap-2" bind:this={list}>
-            {#each visibleRows.slice(0, shown) as row (row.event.id)}
-                {@const { event, turnsAgo } = row}
-                {@const expanded = openId === event.id}
-                {@const story = view === "story" ? stories.get(event.id) : undefined}
-                <li
-                    class="flex flex-col min-w-0 border rounded-md border-darkborderc break-words"
-                    data-memory-event={event.id}
-                    data-memory-event-status={event.status}
-                >
-                    <button
-                        type="button"
-                        class="flex items-start min-w-0 gap-2 p-2 text-left transition-colors hover:bg-selected"
-                        aria-expanded={expanded}
-                        onclick={() => toggle(event.id)}
-                    >
-                        {#if expanded}
-                            <ChevronDownIcon size={16} class="shrink-0 mt-0.5" />
-                        {:else}
-                            <ChevronRightIcon size={16} class="shrink-0 mt-0.5" />
-                        {/if}
-                        <span class="flex flex-col flex-1 min-w-0">
-                            <span class={event.status === "retracted" ? "line-through text-textcolor2" : ""}>
-                                {event.title}
-                            </span>
-                            {#if story && storyTimeText(story.storyTime) !== ""}
-                                <span class="text-textcolor2">
-                                    {logText.storyTime}: {storyTimeText(story.storyTime)}
+        {#if view === "read" && toCheck.length > 0}
+            <div class="flex flex-wrap items-center gap-2" data-memory-check-notice>
+                <span>{text.checkNotice(toCheck.length)}</span>
+                <MemoryLinkButton label={text.checkInManage} onclick={() => reveal(toCheck[0].event.id, "notice")} />
+            </div>
+        {/if}
+        {#if view === "read"}
+            {#if groups.length === 0}
+                <p class="text-textcolor2">{text.empty}</p>
+            {:else}
+                <ul class="flex flex-col min-w-0 gap-2">
+                    {#each groups.slice(0, groupsShown) as group, index (group.events[0].id)}
+                        {@const expanded = groupOpen(group, index === 0)}
+                        <li class="flex flex-col min-w-0 gap-1" data-memory-group>
+                            <button
+                                type="button"
+                                class="flex min-w-0 items-start gap-2 rounded-md p-2 text-left hover:bg-selected"
+                                aria-expanded={expanded}
+                                onclick={() => pressGroup(group, !expanded)}
+                            >
+                                {#if expanded}
+                                    <ChevronDownIcon size={16} class="shrink-0 mt-0.5" />
+                                {:else}
+                                    <ChevronRightIcon size={16} class="shrink-0 mt-0.5" />
+                                {/if}
+                                <span class="flex flex-wrap items-baseline gap-x-2">
+                                    {#if group.date}
+                                        <span class="font-semibold">
+                                            {formatStoryDate(group.date)}{group.partCount > 1 ? ` (${group.part})` : ""}
+                                        </span>
+                                    {/if}
+                                    <span>{text.eventCount(group.events.length)}</span>
+                                    <span class="text-textcolor2">{turnRange(group)}</span>
                                 </span>
+                            </button>
+                            {#if expanded}
+                                <ul class="flex flex-col min-w-0 gap-1">
+                                    {#each group.events as row (row.id)}
+                                        {@render eventRow(row, row.story)}
+                                    {/each}
+                                </ul>
                             {/if}
-                            <span class="flex flex-wrap gap-x-2 text-textcolor2">
-                                {#if turnsAgo !== null}
-                                    <span>{text.turnsAgo(turnsAgo)}</span>
-                                {/if}
-                                {#if event.status === "stale"}
-                                    <span class="text-draculared" data-memory-event-badge="stale">
-                                        {text.stale(memoryReasonText(event.staleReason))}
-                                    </span>
-                                {/if}
-                                {#if event.rerecord}
-                                    <span data-memory-event-badge="rerecord">{repairText.waiting}</span>
-                                {/if}
-                                {#if event.suppressed}
-                                    <span data-memory-event-badge="suppressed">{text.suppressed}</span>
-                                {/if}
-                                {#if usedEvents.has(event.id)}
-                                    <span class="px-1.5 rounded-sm bg-darkbutton text-secondary-500" data-memory-used
-                                        >{panelText.usedInLastSend}</span
-                                    >
-                                {/if}
-                            </span>
-                            {#if story?.summary}
-                                <span class="whitespace-pre-wrap break-words" data-memory-event-summary>
-                                    {story.summary}
-                                </span>
-                            {/if}
-                        </span>
-                    </button>
-                    {#if expanded}
-                        {@render details(row)}
-                    {/if}
-                </li>
-            {/each}
-        </ul>
-        {#if visibleRows.length > shown}
+                        </li>
+                    {/each}
+                </ul>
+            {/if}
+        {:else if manageRows.length === 0}
+            <p class="text-textcolor2">{text.empty}</p>
+        {:else}
+            <ul class="flex flex-col min-w-0 gap-2">
+                {#each manageRows.slice(0, shown) as row (row.event.id)}
+                    {@render eventRow(row)}
+                {/each}
+            </ul>
+        {/if}
+        {@const remaining = view === "read" ? groups.length - groupsShown : manageRows.length - shown}
+        {#if remaining > 0}
             <button
                 type="button"
                 class="self-start px-2 py-1 my-1 transition-colors border rounded-md border-darkborderc text-textcolor2 hover:text-textcolor"
-                onclick={() => (shown += ROWS_AT_ONCE)}
+                onclick={() => {
+                    if (view === "read") groupsShown += GROUPS_AT_ONCE;
+                    else shown += ROWS_AT_ONCE;
+                }}
             >
-                {panelText.showMore(visibleRows.length - shown)}
+                {panelText.showMore(remaining)}
             </button>
         {/if}
     {/if}
