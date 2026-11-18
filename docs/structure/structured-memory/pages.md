@@ -4,13 +4,9 @@
 
 - Owns what a person does to a `structuredMemory` page as a whole: the trash, merge, split, rename, the alias list, a
   person's own note, the lorebook export, and importing a Markdown package.
-- Paths: `applyPageTool` and `parseMemoryPageTool` in `server/src/prompt/memory/structured/pages.ts`,
-  `server/src/prompt/memory/structured/importPackage.ts`, the `page-tools` and `import` routes in
-  `server/src/routes/structuredMemory.ts`, the tool controls of `src/lib/Others/StructuredMemory/PagesTab.svelte`, and
-  the tool and import calls of `src/ts/process/structuredMemory.svelte.ts`.
-- Not here:
-  - The records and how the package is written, the projection, what the writer does to a page, the panel and its other
-    tabs, what a copy or a chat file carries, and what a rebuild seeds → [the area README](README.md).
+- Page and section edits and the Markdown renderers are in [records](records.md). See
+  [the panel](read.md#pages-timeline-and-threads) for page navigation and [rebuild](rebuild.md#what-a-rebuild-keeps) for
+  the lifetime of personal changes.
 
 ## Files
 
@@ -44,35 +40,28 @@ tab's revision. The tab selects the answered page and rereads contents. Checks a
 
 ### A person's note
 
-`create` names no page: it makes a `note` titled `title` with `contextMode: "auto"`, `namedByUser`, one section
-(`heading`, `body`, empty `provenance` and `sources`, `userCorrected`, unlocked), and one `create` entry with no
-heading, `before`, or event. The title is trimmed and at most `labelChars`, the heading too, and the body non-blank
-within `sectionBodyChars`; no live `note` may already go by the title (`pageNames`), while other types do not count. A
-chat that waits for a choice on its HypaV3 summaries (`chatAdoptionHold`) refuses it 400, since any page would end that
-wait with nothing adopted. The tab's "new note" form has no held page, so it sends at the contents' revision, which
-every accepted edit advances, and shows the answered page in `manage`. The form sits over the tree and in an empty chat,
-not under `only="unsupported"` or while the chat waits for adoption. A person adds sections to a page with `sectionAdd`
-([the edit route](records.md#the-edit-route)). The writer may patch the note's unlocked sections like any
-`userCorrected` section, empty `provenance` is never flagged, and [a rebuild](rebuild.md#what-a-rebuild-keeps) seeds the
-page through `namedByUser` and its marked sections.
+`createNote` posts `create` using the contents revision because a new note has no page revision of its own. The route
+checks `chatAdoptionHold` in the same step as the write so the first note cannot silently settle a pending adoption
+choice. `applyPageTool` creates a personally named note with one unlocked, user-corrected section and empty evidence.
+The tab opens the returned page in Manage. Add another section with [the edit route](records.md#the-edit-route).
+
+The personal name and section survive [a rebuild](rebuild.md#what-a-rebuild-keeps). The writer can still patch an
+unlocked, corrected section. Empty provenance alone never makes it unsupported.
 
 ### Rename and aliases
 
-`rename` sets a live page's title; `aliases` replaces its whole alias list. Neither takes the scene or a trashed page,
-and no name may be one another live page of the type goes by (`pageNames`): trashed pages and other types do not count.
-A rename may take the page's own alias, which leaves the list; the old title joins the aliases unless its `nameKey`
-equals the new title's or an alias holds it. An alias list is trimmed, non-blank, at most `labelChars` each, distinct by
-`nameKey`, not the title, and at most `aliasesPerPage` long. A merge's `withAliases` never cuts, so a stored list can
-pass the cap: a rename refuses only a list it would grow past it, and the tab's alias editor saves a whole draft, so one
-save can bring the list back under the cap. An equal title or alias list writes nothing. Both set `namedByUser`, which
-[a rebuild](rebuild.md#what-a-rebuild-keeps) seeds, and neither writes history. In `manage`, an open rename or alias
-draft closes when a read brings another stored title or list, so it never overwrites a newer name.
+`renamedPage` and `aliasedPage` enforce name uniqueness among live pages of the same type. A rename normally keeps the
+old title as an alias. A merge can leave more aliases than the editor admits, so a rename may keep that list and the
+editor can replace it with a shorter one. Both edits set `namedByUser` without adding a history entry. The tab closes a
+naming draft when a reread shows a different stored title or list. [Rebuild](rebuild.md#what-a-rebuild-keeps) uses the
+mark to keep the person's naming.
 
 ### The trash
 
 `/records/pages/:id` still reads a trashed page for the panel; `/edits` page edits and `/revert` refuse it 400. Trash
 preserves reference ids, so a restore reconnects them. A `purge` leaves dangling references, which readers tolerate. The
-store also refuses a trashed scene independently of the tool.
+store also refuses a trashed scene independently of the tool. A writer may have reused the trashed name. Restore allows
+the collision and the merge tool can resolve it.
 
 ### What a merge or split does to history
 
@@ -94,9 +83,10 @@ inactive decorator. This chat write is outside the memory revision and fence.
 ### The import route
 
 1. `importPackage` captures the chat and contents revision before the file picker, retaining both through confirmation
-   and `importStructuredMemoryPackage`. `packageFiles` unzips with fflate in the tab, refusing `tooLarge` past
-   `MEMORY_RESTORE_BODY_BYTES` (the server's `restoreBodyBytes` cap), and sends Markdown to
-   `POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/import`, so the server never sees a zip.
+   and `importStructuredMemoryPackage`. `packageFiles` unzips with fflate in the tab and caps the sum of the Markdown
+   entries’ declared unpacked sizes at `MEMORY_RESTORE_BODY_BYTES`. The client sends Markdown to
+   `POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/import`, where the server applies its configured `restoreBodyBytes`
+   to the JSON request, including escaping and file paths.
 2. The route calls `parseMemoryPackage`, which reads the renderers' grammar, drops `trashedAt` so every page imports
    live, and validates each record through `parseRestoredRecords` in `restore.ts`. File and event refusals return in
    `StructuredMemoryImportAnswer`.

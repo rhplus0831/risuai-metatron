@@ -2,26 +2,15 @@
 
 ## Scope
 
-- Owns:
-  - plugin install, metadata parsing, and persistence,
-  - the v3 iframe sandbox RPC and host API,
-  - plugin permissions, plugin storage, plugin-provided AI providers, hooks, and UI extensions,
-  - the plugin reload and the idle rule it waits for.
-- Paths:
-  - `src/ts/plugins/` (`plugins.svelte.ts`, `pluginHooks.ts`, `pluginSafeClass.ts`) and `src/ts/plugins/apiV3/`
-    (`factory.ts`, `v3.svelte.ts`, `pluginContext.ts`, `permissionStore.ts`, `risuai.d.ts`, `developMode.ts`,
-    `transpiler.ts`); `v3.svelte.ts`'s projection refresh is structured-memory's
-  - `shared/plugins.ts`
-  - `plugins.md` (the plugin author guide, at the repository root)
-  - `src/ts/storage/pluginStorageStore.svelte.ts`
-  - `src/lib/Setting/Pages/PluginSettings.svelte`, `PluginDataSettings.svelte`
-  - `src/lib/Others/PluginDefinedIcon.svelte`
-  - `public/plugin_start.7z` (starter template)
-- Not here:
-  - The MCP client registry, the remote and internal clients, RisuAccess, a plugin's MCP client, and tool dispatch →
-    [mcp](mcp.md).
-  - The provider request loop that calls tools → `llm-requests.md`.
-  - TTS hook internals → `media-aux.md`.
+- Install, update, or reload an API 3.0 plugin. For metadata and the public API, see the
+  [plugin author guide](../../plugins.md). The starter is `public/plugin_start.7z`.
+- Change iframe RPC, permissions, storage, UI extensions, providers, or a hook's chat context. The
+  [hook entry points](#hook-entry-points) identify which process invokes each callback.
+- For the host's remote command or completion Web Push, see [remote sends](network-jobs.md#remote-send) and
+  [completion holds](server-generation.md#completion-holds). For unattended Chrome, see
+  [headless host](build-test-platforms.md#headless-host).
+- For neighboring dispatch paths see [MCP tools](mcp.md), [LLM requests and interception rules](llm-requests.md#flows),
+  [TTS](media-aux.md), and [structured memory](structured-memory/README.md) for `v3.svelte.ts`'s projection refresh.
 
 ## Files
 
@@ -74,23 +63,18 @@ entrypoints.
 
 ### Load and reset
 
-- `bootstrap.ts:loadData` calls `loadPluginsForBoot`, anything else `loadPlugins`; both run these steps.
-- Safe boot: while plugins are off for this page load (`safeBootOff("plugins")`, [app-shell](app-shell.md) Safe boot) a
-  load returns at once: nothing loads, nothing is reported, the remote listener of the
-  [deferred reload](#deferred-reload) is never registered (and a queued deferred reload also checks the flag), so the
-  settings toggle, removal, and import save without loading.
-- Chain: the hook reset and reload run on the `pluginReload` chain, each caller's enabled list captured before it waits.
-  The first load registers the remote `plugins` listener; every load cancels a waiting deferred reload.
-- Reset: `clearPluginHooks`, then `loadV3Plugins` with the enabled `'3.0'` plugins: it unloads a snapshot of the
-  instances, waits for their callbacks and termination, resets the providers and `customV3ProviderMetaStore` again,
-  removes every plugin event listener from its target, and starts the replacements.
-- Start (`executePluginV3`) lists an instance only after `SandboxHost.run` returns; a `run` that throws terminates the
-  host, removes its iframe, and rethrows.
-- Unload (`unloadV3Plugin`) unregisters each instance's MCP clients (an identifier replaced by another client is kept),
-  removes the plugin's replacers and script handlers, and rejects its pending callbacks.
-- `loadPluginsForBoot` captures its guests' startup right after `loadV3Plugins` (`captureBootGuests`): `ready` succeeds,
-  `failed` or a missing initial instance fails at once, a `stopped` one follows its replacement
-  ([app-shell](app-shell.md) Safe boot); `loadPlugins` does not inspect startup.
+- `bootstrap.ts:loadData` calls `loadPluginsForBoot`. It captures guest startup inside the reload chain.
+  `captureBootGuests` defines how a stopped guest follows its replacement or removal. See
+  [safe boot](app-shell.md#safe-boot). Other callers use `loadPlugins`, which returns after the loader runs.
+- Under `safeBootOff("plugins")`, UI edits persist but neither loader starts guests, reports unsupported entries or
+  installs deferred-reload listeners. Otherwise each captures its enabled list before joining the `pluginReload` chain.
+- `applyPluginLoad` calls `clearPluginHooks`, then `loadV3Plugins` for enabled API 3.0 entries. It unloads existing
+  instances before resetting providers, model metadata and DOM listeners and starting replacements. See
+  `executePluginV3` for failed-start cleanup and `unloadV3Plugin` for callback rejection, replacer teardown and
+  instance-specific MCP cleanup.
+- To use the hooks a guest registers during startup, wait for `pluginsStarted`. Remote host sends, job-channel resume
+  and takeover hold generation plugin work across that wait so a deferred reload cannot replace the hooks underneath
+  them.
 
 ### Hook entry points
 
@@ -101,7 +85,9 @@ The runners of the hooks that have a chat call each hook through `invokeHook` wi
   `handlerSet`) run between the script transform's two calls with read-only `purpose: "transform"`; the results, or a
   handler's error per target, go to `/api/transform/continue`. `runHandlers` bounds the wait without stopping guest
   code, and the handler set's identity is per document, mode, and ordered hook list.
-- `requestChatData` runs the before/after replacers, and `requestPlugin` for providers.
+- Tab `requestChatData` runs the before-request replacers on the prompt and the after-request replacers on a buffered
+  success. The inner dispatcher inserts [request interception rules](llm-requests.md#request-interception) before
+  model-specific formatting. A plugin's own `runLLMModel` enters that dispatcher directly, skipping the outer replacers.
 - Server jobs: the tab lists its hook names at job creation (`registeredHooks`, `src/ts/network/jobChannel.ts`), and the
   server calls back by name; the registry is read when the callback runs ([network jobs](network-jobs.md)).
 - `chatOutput` listeners: a server send's `runChatOutputListeners` (`server/src/prompt/runner.ts`) reaches them through
@@ -113,66 +99,45 @@ The runners of the hooks that have a chat call each hook through `invokeHook` wi
 Chat-bound HypaV3 summaries capture and pass their context; server callbacks, including image-view generation, run under
 the job targets.
 
-Called directly, without a context, `globalFetch` runs `bodyIntercepterStore`, and `ttsHooks.ts` runs the TTS pre- and
-postprocessors: the tab's selection, or an ambient context of the same plugin, applies, not a hook target.
+Body interceptors (`registerBodyIntercepter`, `bodyIntercepterStore`) run on opted-in fetches in `globalFetch`,
+`fetchNative` or `auxFetch`, or through a job's `bodyIntercepter` callback on the built provider body. They receive no
+explicit hook context. The TTS pre- and postprocessors in `ttsHooks.ts` also use the tab selection or the same
+instance's ambient context.
 
 ### Deferred reload
 
-A remote `plugins` change (another tab or device; `onRemoteRecordApplied` after a live record, a live patch, or a
-conflict reload) reloads the plugins here once plugin work is idle (`queueDeferredCheck`).
-
-- Only a change from the running signature counts; `loadSignature`'s JSDoc defines its fields and order. A
-  [permission reset](#state) of a plugin of the latest load forces one reload with an unchanged signature.
-- Idle (`pluginWorkIdle`, `src/ts/plugins/apiV3/v3.svelte.ts`; `onPluginWorkChange` hears changes) means all of:
-  - no send of this tab (`anyLocalSend`);
-  - no job of this tab that may still call its hooks (`generationPluginWorkActive`, `src/ts/network/generationJobs.ts`):
-    a job calls the hooks it listed at creation until it ends, so a reload between two callbacks would fail the later
-    one as an unregistered hook;
-  - no host-side hook invocation running (every wrapped hook, and a provider from before its permission prompt);
-  - every sandbox idle (`SandboxHost.isIdle`).
-- Idle scheduling and final checks: `queueDeferredCheck` JSDoc. Work that never ends defers reload
-  ([Limitations](#limitations)).
-- `reloadPluginsWhenIdle` (a host's remote `plugins` reload) asks for one deferred reload even with an unchanged
-  signature and resolves `applied` (the loader completed, not every guest's startup), `failed`, or at once `pluginsOff`
-  under safe boot. Every load, local or deferred, takes the waiters pending at its `applyPluginLoad` start, so a local
-  load satisfies them and leaves no second reload; a later request waits for the next load. `bootPluginLoadOutcome` is
-  the boot load's outcome, read by a host's `page` reload.
+- A remote `plugins` record, patch or conflict reload triggers `onRemoteRecordApplied`. A changed `loadSignature`, a
+  permission reset of a running plugin, or an explicit host reload queues `queueDeferredCheck`.
+- `pluginWorkIdle` requires no local send, no job still able to call this tab's hooks, no host hook in progress
+  (including provider consent), and every sandbox idle. `onPluginWorkChange` retries the check. The loader checks again
+  inside the chain before replacing hooks. Work that never settles defers reload ([Limitations](#limitations)).
+- The host's `reloadPluginsWhenIdle` forces one load even with the same signature. A local load satisfies requests
+  pending at its start. Outcomes are `applied`, `failed` or `pluginsOff`. A host page reload reads
+  `bootPluginLoadOutcome`. Both report the loader outcome independently of guest startup.
 
 ### Activity by plugin
 
-The host-hook count is also kept per plugin name beside the total that `pluginWorkIdle` reads.
-
-- `pluginBusy(name)`: the named instance's sandbox is not idle or its host hooks are running; false with no instance.
-- `onPluginActivity` hears the plugin's name on each of its sandbox's activity reports, each settled host hook of it,
-  and its unload; `notifyPluginWork` still runs on all of them. A report marks a settlement, not a start.
-- `waitForPluginsQuiet(targets, { capMs, signal, busy, onActivity })` (the plugin functions injected) gives each target
-  `{ name, quietMs }` a clock that starts with the wait and restarts on each report of its plugin, and resolves
-  `"quiet"` once every target is not busy and past its quiet time, `"cap"` at `capMs`, `"aborted"` on the signal; an
-  empty list is `"quiet"` at once. A busy target is looked at again on its next report, so no timer polls work in
-  flight; work that never settles waits for the cap. Duplicate names stay separate targets.
+- `pluginBusy(name)` checks the running instance's sandbox and host hooks. `onPluginActivity` reports the name when
+  sandbox work or a host hook settles, and on unload. `pluginWorkIdle` separately covers the whole tab.
+- At remote-send admission, `src/ts/network/remoteHost.ts` captures only enabled API 3.0 entries with a loaded instance
+  and a configured quiet period. With notifications enabled, that set can hold the send's completion Web Push.
+  `waitForPluginsQuiet` starts each target's clock at wait entry and restarts it on that plugin's reports. Its outcomes
+  are `quiet`, `cap` and `aborted`. The host rechecks activity across the save flush before release
+  ([remote host commands](network-jobs.md#remote-host-commands)).
 
 ### Permission list
 
-The user allows permissions ahead of a plugin's first request through `reviewPluginPermissions`
-(`src/ts/plugins/apiV3/v3.svelte.ts`, JSDoc): one `alertConfirmWithChecklist` dialog listing every permission.
+- A settings row or a regular import opens `reviewPluginPermissions` in a single `alertConfirmWithChecklist`. Imports
+  skip it for hot reload and the blank template. Updates preselect the replaced script's grants. Declining writes
+  nothing and the import continues.
+- Confirming calls `setStandingPermissionGrants`: checked grants belong to the script hash and skip periodic prompts.
+  Unchecked grants are revoked, including matching permissions on a running script of that name. A changed list bumps
+  the plugin's reset count, invalidates cached answers across tabs and reloads the plugin.
+- For a list that would write, `StalePermissionListError` guards the reset count across writes and conflicts.
+  `stillCurrent` guards script replacement, which alone does not bump that count. `importPlugin` rechecks the installed
+  script after review before replacing it. See `getPluginPermission` for sharing an in-flight check by plugin,
+  permission and reconfirm mode.
 
-- Opened by the Permissions button of a plugin's settings row, and by `importPlugin` before it saves and loads a new or
-  updated plugin (not for a hot reload or the blank template). An update checks the replaced script's grants; they move
-  to the new script only when the user confirms. The import goes on whatever the answer.
-- Confirming writes once (`setStandingPermissionGrants`): the checked permissions become `standing` grants of the
-  script, the unchecked ones are revoked (for a script of that name still running too), and the plugin's reset count
-  rises, so every tab reloads it as after a [reset](#state). The caller reloads this tab.
-- Declining writes nothing. Confirming writes nothing only when the list is already saved and no running script of the
-  name and no cached answer holds an unchecked permission.
-- A list that would write, opened before a reset of its plugin, is refused (`StalePermissionListError`): the write
-  compares the plugin's reset count with the one read when the list opened, on its fresh read and on every conflict
-  read. A reset, a removal, and another saved list all raise that count, in any tab.
-- A replacement of the script counts no reset, so each caller passes `stillCurrent`: a confirmed list whose plugin is no
-  longer installed with the script it was opened for is refused too. `importPlugin` then installs nothing over a plugin
-  that changed while the list was open (`pluginChangedDuringImport`; silent for an update whose plugin was removed).
-- A standing grant is not asked again `periodically`. It is bound to the script hash like any grant.
-- `getPluginPermission` shares one check among calls of a plugin for the same permission and reconfirm mode while it
-  decides, so calls repeated behind an open prompt open no second one.
 - `setChatPanel` HTML that carries a `style` element (HTML or SVG) needs `globalStyle`, asked once: the panel is
   inserted into the main document, where the rules reach the whole app. Denied, the panel is shown without its `style`
   elements. HTML without one asks nothing.
@@ -239,7 +204,7 @@ The user allows permissions ahead of a plugin's first request through `reviewPlu
 
 ## Coupling
 
-- Plugin consumers: `bootstrap.ts`, `PluginSettings.svelte`, `globalApi.svelte.ts`, `modellist.ts`
+- Plugin consumers: `bootstrap.ts`, `src/lib/Setting/Pages/PluginSettings.svelte`, `globalApi.svelte.ts`, `modellist.ts`
   (`customV3ProviderMetaStore`). Hook-registry consumers: `src/lib/Setting/Pages/Model/ModelProfileEditor.svelte`,
   `request.ts`, `transformClient.ts`, `jobChannel.ts`, `tokenizer.ts`.
 
@@ -248,23 +213,14 @@ The user allows permissions ahead of a plugin's first request through `reviewPlu
 - The plugin's internal `name` is its identity: storage, IPC allowlists, arguments and grant timestamps use it; grants
   use script hashes. Updates must keep the name.
 - Only API 3.0 exists. Plugins run only inside the iframe, never in the main document.
-- RPC values and streams: `v3.svelte.ts` and `factory.ts` module headers. A host callback's arguments are serialized
-  like call results, so a remote-required instance (a `SafeMutationObserver` record list) reaches the guest as a proxy.
-- A guest proxy releases its host instance when it is finalized: the guest posts the ref ids finalized in one turn as
-  one `RELEASE_INSTANCE` (`ids`), and a method taken from a proxy keeps the proxy alive. Ref ids count up per host, so a
-  release never names a later instance; a released ref passed back as an argument fails the call before the host API
-  runs.
-- The host caches callback wrappers weakly and releases the guest's copy once one is finalized (`RELEASE_CALLBACK`,
-  `factory.ts` header). Host code that calls a callback later holds the wrapper, not its id.
-- A host call's abort controllers (one the host creates per call, plus one per guest-supplied signal) live until every
-  response stream finishes (done, error, guest cancel, unread expiry, rollback, or termination). Calls and callbacks
-  that throw or return no streams release their controllers at once. Termination aborts the live ones and closes both
-  bridges; `nativeFetch` without a plugin signal uses the per-call one (`hostCallSignal`, read on its first line).
-- A guest callback's mirrored controllers likewise live until every returned stream ends, so a host abort still reaches
-  the plugin and requests using its signal after the callback returns.
-- Bridge copies define own properties, so a plain object's own `__proto__` key crosses the bridge as data.
-- The sandbox host never logs an RPC message or its answer: their arguments carry the plugin's `nativeFetch` headers
-  (API keys) and bodies.
+- `factory.ts` owns the RPC lifetime contract. Check `SandboxHost`, `RELEASE_INSTANCE` and `RELEASE_CALLBACK` before
+  changing serialization or teardown. Both peers verify the source window. Callback arguments use the result bridge
+  (including remote proxies); plain objects retain an own `__proto__` as data. Keep fetch headers and bodies out of RPC
+  logs.
+- `hostCallSignal` must be read synchronously on host API entry. Host and guest controllers outlive a returned stream
+  until its streams finish or are cleaned up. Termination aborts outstanding work and closes both bridges. See the
+  `factory.ts` header and the stream and proxy cases in `sandboxActivity.test.ts` and `guestBridge.test.ts`.
+
 - `risuFetch` and `nativeFetch` refuse a URL whose host is a blocked name or a subdomain of one (`urlBlacklist`,
   `assertPluginUrlAllowed`): the URL is parsed alone and against the page, the hostname lowercased and its trailing dots
   stripped. A blocked name in a path or query passes, and the transport receives the caller's original string.
@@ -329,6 +285,8 @@ The user allows permissions ahead of a plugin's first request through `reviewPlu
   2. Declare it in `risuai.d.ts:RisuaiPluginAPI`.
   3. Document it in `plugins.md`.
   4. Verify with a real v3 plugin, including the callback and error paths.
+- Change a per-plugin completion wait in `shared/plugins.ts`, `PluginSettings.svelte` and `pluginQuiet.ts`. For host
+  selection and release of the notification follow [Activity by plugin](#activity-by-plugin).
 - Add plugin metadata: `importPlugin`, `RisuPlugin` (`shared/plugins.ts`), `PluginSettings.svelte`, `risuai.d.ts`
   comments, and `plugins.md`.
 
@@ -359,7 +317,8 @@ The user allows permissions ahead of a plugin's first request through `reviewPlu
   plugin provider answers job callbacks from the sandbox) and `checkJobHandoff.mjs` (hooks move between two tabs). Its
   hidden-worker case covers a newly hidden tab. Hooks waiting on timers after prolonged background throttling still need
   a browser check.
-- Not tested: hot reload, and the remaining sandbox RPC surface.
+- `plugins.test.ts` covers import/update argument retention and hot reload's skipped consent review. The file-picker and
+  polling loop in `hotReloadPluginFiles` and the remaining sandbox RPC surface lack end-to-end coverage.
 
 ## Known Hazards
 

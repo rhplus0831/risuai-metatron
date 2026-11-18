@@ -14,25 +14,12 @@
 
 Module headers and export comments hold the contracts; these lists give lookup identifiers.
 
-- `src/ts/storage/chatStore.svelte.ts`: chat membership, loaded chats and summaries; boot reads summaries only. Readers:
-  `chatList`, `chatEntry`, `selectedChat`, `currentChatRef`, `selectedChatLoad`, `findChat`, `chatCount`,
-  `countChatEntries`, `chatSummaryList`, `chatMemberPage`.
-- Loads and pins: `ensureChatLoaded`, `loadChat`, `loadChats`, `pinChat`, `pinChats`, `trimLoadedChats`,
-  `MAX_LOADED_CHATS`, `CHAT_READ_DEADLINE_MS`. Boundaries: `withChatsCopy`, `withCompatChats`, `seedChats`,
-  `assembleChats`, `initializeChats`, `startChatDriftCheck` (dev only).
-- Writers: `createChat`, `ensureChat`, `deleteChat`, `reorderChats`, `selectChat`, `appendMessage`, `replaceMessage`,
-  `patchMessage`, `setMessageText`, `setMessageTranslation`, `selectCandidate`, `removeMessages`,
-  `removeMessagesUnasked`, `restoreUnsentRemoval`, `setChatMeta`, `mergeChatMeta`, `replaceChat`, `captureChatBaseline`,
-  `applyChatResult`, `reconcileCharacterChats`, `installChatProjection`.
-- Save-loop side: `takeChatWork`, `ackChatWork` (the acknowledged floor: `ackedRevisions`, `belowAckedRevision`),
-  `requeueChatWork`, `recoverChatConflicts` (`reanchorGoneAppends`, `dropLockedEdits`), `acceptRemoteChat`,
-  `acceptRemoteCollection`, `quarantineChat`, `unloadPendingChatWork`, `hasUnsavedChatWork`, `hasRefusedChatWork`,
-  `refusedChatItems`, `retryRefusedChat`, `discardRefusedChat`, `finishIdleChatRefresh`, `noteIdleChatRead`,
-  `idleChatRefreshes`, `idleSummaryRefreshes`, `hasIdleRefresh`, `settleSummaryRefresh`.
-- Live updates and jobs: `noteRemoteChat`, `applyRemoteSummary`, `applyRemoteCollection`, `canApplyRemoteCollection`,
-  `noteRemoteStreaming`, `onRemoteStreaming`, `replaceFeedLocks`, `markChatStale`, `applyServerGeneration`,
-  `applyServerGenerationChunk`, `heldStreamText`, `endServerJob`, `detachServerJob`, `hydrateChat`, `hydrateChatPatch`,
-  `chatHydrationHold`, `prepareChatHydrationRefresh`, `deferredReloads`, `finishDeferredReload`.
+- `src/ts/storage/chatStore.svelte.ts` owns membership, summaries, loaded chats, queued writes, refusals, and generation
+  locks. Boot reads summaries. Start with `chatEntry` for summary metadata or `findChat` for a loaded chat.
+  `ensureChatLoaded` loads a member. `chatMemberPage` reads an ordered page without loading message rows.
+- Write through the by-id or metadata operations below. For a bulk edit start at `captureChatBaseline` and
+  `applyChatResult`. For synchronization start at `takeChatWork`, `ackChatWork`, `requeueChatWork` and
+  `recoverChatConflicts`. The module header groups the other readers, writers and job boundaries.
 - `src/ts/storage/chatEdits.ts`: `editChat` (may await), `editChatSync`, `editCurrentChat`, `setCurrentChatMeta`, over a
   whole chat copy; `readChatsDetached` serves `src/ts/storage/exportAsDataset.ts` and `src/ts/characters.ts`;
   `readChatRefsDetached` serves plugin `getDatabase` and `getChats` via `withDetachedDatabaseChats` in
@@ -41,6 +28,9 @@ Module headers and export comments hold the contracts; these lists give lookup i
 - `src/ts/storage/chatFieldDraft.svelte.ts` (`createChatFieldDraft`, `loreWriteFenced`),
   `src/ts/storage/{localLoreDraft.svelte,loreOverridesDraft.svelte}.ts`: the editing copies of a selected chat's array
   fields and their send fence.
+- `src/ts/storage/messageEditorDrafts.svelte.ts` holds open message and stored-translation editors by chat, message id
+  and editor kind. It retains text across row remounts and chat eviction, then clears it on deletion or character
+  replacement. The [composer journal](draft-recovery.md#composer-api) serves the composer separately.
 - `src/ts/checkpoints/chatCheckpoints.svelte.ts`: checkpoint client (module header). `chatCheckpointsDialog` opens from
   `SideChatList.svelte`; while `checkpointLoadBusy`, the dialog disables its controls and `hotkey.ts` swallows shortcuts
   behind it and keeps Escape from closing it.
@@ -82,7 +72,7 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 
 ### Chat writes
 
-- Every write updates the mirror, bumps the chat's local version, and queues an op; the save loop
+- A local chat edit updates the mirror, bumps the chat's local version, and queues an op; the save loop
   ([resource sync](resource-sync.md)) sends a chat's unsent ops as one group (`takeChatWork`, `coalesce`: a
   generation-bearing op never coalesces, so every generation fence holds). An op's `before` is the
   [chat journal's](draft-recovery.md#chat-journal). A direct chat write fails `pnpm check` (STRUCTURE D1).
@@ -170,11 +160,9 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 
 ### Job chunks
 
-- Generation updates, frame flushes, and job hydration share the [by-id index](#by-id-ops); a stream shares one build.
-- A chunk (`GenerationChunkEvent`) that `applyServerGenerationChunk` cannot apply asks `resyncReply` once per follow
-  until an `accepted` arrives or the follow ends (`network/generationJobs.ts`); the job answers only its current
-  full-text `accepted` while live with a message id, also during a lock handoff
-  ([server generation](server-generation.md)). The recovery never marks stale or asks for the whole chat.
+- Generation updates and hydration share the [by-id index](#by-id-ops). A missed chunk in `applyServerGenerationChunk`
+  makes `network/generationJobs.ts` request `resyncReply` once per follow until the next full-text `accepted` frame or
+  the follow ends. This is a stream repair. A missed chat patch uses the separate [hydration path](#job-hydration).
 - `runServerJob` (`process/serverCommands.ts`) saves and reads a chat it knows is behind (`refreshStaleChat`, true once
   `isChatBehind` is false) before creating a job, once more when a change or notice arrived meanwhile; a chat still
   behind goes as it is and the server refuses its old revision ([chat pipeline](chat-pipeline.md)).
@@ -198,20 +186,14 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 
 ### Server memory writes
 
-- A job and the detached memory task ([memory](memory.md): `mergeHypaV3Write`, `mergeHypaV3SelectionWrite`) write
-  `hypaV3Data` one summary at a time, each a `meta` set built in one synchronous step from the value stored then, and a
-  job's selection last. A refused merge skips that write.
-- A task commits only while its input is current, checked at every write: the epoch (`ResourceEpochError` ends it), the
-  admitted revision (`context.chatRevision`, sent as `baseRevision`: `meta` applies on a stale revision of the same
-  chat, while a chat recreated under the same ids conflicts), and the source generation.
-- The source generation (`chatSourceGeneration`, `readChatSource`) changes once inside the commit of a chat delete, a
-  whole-chat `replace` by any writer, or a character cascade delete, never for `meta`, `append`, `setText`, `create`, or
-  `remove`. `onChatInvalidated` notices follow the commit, never a rollback, and cancel the chat's task. A job reads it
-  with the chat's snapshot (`loadJobScope`/`refreshChat`) and hands nothing off when it moved.
-- The HypaV3 modal, a whole-field writer, is fenced from a task's start or queueing until the mirror holds its
-  `terminalRevision` (`memoryTasks.svelte.ts`), a newer incarnation or a gone chat counting as reached. A read refused
-  for pending local work does not advance it; a disconnect, a `hello`, and time keep it; a null `terminalRevision` sets
-  no fence.
+- Server jobs and [detached memory tasks](memory.md#background-memory-task) merge each HypaV3 summary onto the currently
+  stored field. `mergeHypaV3Write` and `mergeHypaV3SelectionWrite` own these rules. The epoch, admitted chat incarnation
+  and source generation fence the task. A whole-chat replacement or deletion advances that source generation in the
+  store transaction. An ordinary by-id or metadata edit leaves it alone. A new epoch ends the task with
+  `ResourceEpochError`.
+- The HypaV3 modal waits until the tab reaches the task's `terminalRevision`, a newer incarnation, or a confirmed
+  deletion before allowing a whole-field edit. Preserve that fence across disconnects and dirty reads. See
+  [memory writes](memory.md#memory-writes).
 
 ### Chat checkpoints
 
@@ -282,6 +264,7 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   [`StoreBackedServer`](resource-sync.md#tests).
 - `src/ts/checkpoints/tests/checkpointServer.ts` wraps that store with the real checkpoint service and controls load
   admission, commit, and lost answers; its policy routes are real too.
+- `src/lib/ChatScreens/Chat.draft.test.ts` exercises the row editor across remounts.
 - `slow`: `src/ts/storage/tests/resourceSyncHydration.test.ts`, patches on a chat longer than a call's argument list.
 - `e2e`: `e2e/lazyChats.spec.ts`, lazy loading; `e2e/multiClient.spec.ts`, two clients;
   `e2e/multiClientGeneration.spec.ts`, lock readers.
@@ -311,11 +294,9 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   find metadata newer than its list and is refused. The send ends with its job error (no hook ran; the job's writes
   stay; a resend works). Decision: a barrier that cannot prove its `streaming` list current fails rather than install an
   older read that could retire live generations (`jobChannel.ts` `recoverJobChat`).
-- Two clients' `setText` on one message: the later-accepted one wins on any revision; no notice for the client it
-  overwrote. An open message or stored-translation editor keeps its text in tab memory outside the row
-  (`src/ts/storage/messageEditorDrafts.svelte.ts`), so a remount of the row or of the chat screen keeps it; when the
-  stored value changed under it the editor says so, and a save overwrites. The text does not survive a reload. Decision:
-  a per-message base makes slow edits conflict (Multi-Client Data Safety Checks Q3, archive).
+- Two clients can both save `setText` on one message. The later accepted edit wins without a notice to the earlier
+  writer. An open message or stored-translation editor warns if its base changed and keeps its draft within this tab
+  until saved, discarded, deleted or reloaded. Decision: Multi-Client Data Safety Checks Q3, archive.
 - A character this client never persisted (`takeChatWork`'s absent-character sweep, `dropCharacterWork(id, false)`)
   keeps its parked resends (`parkedResends`) until a same-id re-add, which replays one harmless resend first, or the
   next boot: no deletion acknowledgement or `forgetCharacter` comes for it. The leak is bounded to that session's

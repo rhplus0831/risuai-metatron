@@ -2,23 +2,16 @@
 
 ## Scope
 
-- Owns:
-  - The process shell of `server/src/**`, the Hono self-host server on Node (`@hono/node-server`): startup and shutdown,
-    route assembly, static `dist`, auth, asset storage and thumbnails, the reverse proxy, the hub proxy, and Web Push.
-  - Local TLS certificates.
-  - Docker packaging.
-  - The launcher scripts.
-  - The client/server contract of the above, seen from the server side.
-- Neighbors: [server resources](server-resources.md) owns the resource store, chats, checkpoints, snapshots, backups,
-  file imports, and their routes; [server generation](server-generation.md) owns jobs, transforms, and token routes;
-  [LLM requests](llm-requests.md#server-request-layer) owns the LLM routes; [live-update feed](live-update-feed.md) owns
-  the feed and its socket.
-- Domain-specific runtime semantics stay with their owner guides; request history and diagnostics have a dedicated
-  [owner](diagnostics.md).
-- Client counterparts, owned by other guides:
-  - `src/ts/storage/serverAuth.ts` → `persistence.md`; `src/ts/storage/assetClient.ts` → `assets.md`.
-  - `globalApi.svelte.ts` `fetchNative` → `network-jobs.md`.
-  - `characterCards.ts` `hubURL` → `characters-modules.md`.
+The Hono/Node process, HTTP middleware, static client, authentication, asset storage and cleanup, thumbnails, proxy, Web
+Push, remote-command relay, TLS, Docker and launch scripts.
+
+- For record, backup and file-import routes, use [server resources](server-resources.md). For generation jobs, their
+  socket and completion holds, use [server generation](server-generation.md). The provider routes belong to
+  [LLM requests](llm-requests.md#server-request-layer), and history, diagnostic reports and shares to
+  [diagnostics](diagnostics.md).
+- The [live-update feed](live-update-feed.md#presence) owns socket presence and addressed notices.
+  [Network jobs](network-jobs.md#remote-send) owns the sending and host tabs. For the browser side of asset transport,
+  use [assets](assets.md).
 
 ## Files
 
@@ -90,43 +83,20 @@ Route lookup order:
 
 ### Remote-command routes
 
-`server/src/routes/remoteCommands.ts` mounts `REMOTE_COMMANDS_PATH` (`/api/remote-commands`). All five routes use the
-authenticated limiter, JWT, `no-store`, and `x-resource-epoch` (412 `EpochMismatch` with the current epoch). Malformed
-bodies or ids answer 400; a non-participant sees 404 `unknownCommand`. Every POST has a 1 MiB body cap after auth.
-Shutdown refuses admission and clears the registry.
+`server/src/routes/remoteCommands.ts` mounts the relay at `REMOTE_COMMANDS_PATH`. `registerRemoteCommandRoutes` owns
+authentication, the body and epoch checks, and participant visibility. `server/src/remoteCommands.ts`
+`createRemoteCommands` owns admission, retry, attempt numbers, transitions and expiry. The wire types, action identity,
+host compatibility and size limits live in `shared/remoteCommands.ts` (`remoteCommandAction`,
+`remoteCommandNeedsActionSupport`).
 
-- `POST /api/remote-commands` accepts `{ clientId, target, commandId, command, uncertain? }`; a send's `requestId` must
-  equal `commandId`; its `userMessageId` is required with a nonempty input, and its optional `continue` (kept only when
-  true), `continueMessageId` and `rerollMessageId` (never with `continue`) join the action identity; `speakerChaId` does
-  not, as in the generation's `requestFingerprint`, so the first body's speaker stands. Answers state, attempted,
-  stopRequested, attempt, and optional code/result. New targets must be registered hosts (404 `targetUnavailable`).
-- A new id answers 409 `targetFull` at 16 open commands per target, or at the whole relay's bound: 1,024 entries, or 64
-  MiB counting an open command as its body plus a full result and a closed one as its result. Nothing accepted is
-  evicted for room.
-- `GET /api/remote-commands/:id?clientId=&contractVersion=` is target-only: an open command's body, state, attempted,
-  stopRequested and incremented attempt. It changes queued to delivered; a closed command answers 410 without a body. A
-  send with `continue`, `continueMessageId`, `rerollMessageId` or `speakerChaId` needs `contractVersion` 2
-  (`remoteCommandNeedsActionSupport`); a read without it delivers nothing, closes the command `refused` with code
-  `unsupported` (`uncertain` when attempted), and answers 410 `unsupported`.
-- `POST /api/remote-commands/:id/state` is target-only: `{ clientId, attempt, state, code?, result? }`. Reports may be
-  running, uncertain, done, or refused with a checked code. A lower attempt answers `superseded: true` without changes;
-  a future attempt or disallowed transition answers 409 `invalidTransition`. A repeated closed report is idempotent.
-  After an attempt's `uncertain`, its `running` (an abandoned copy) or a result-less `uncertain` (a reload recovery's
-  repeat) changes nothing. A result above the body cap as stored answers 413. The answer includes state, stopRequested
-  and attempt.
-- `POST /api/remote-commands/:id/cancel` takes `{ clientId }`, sender-only: queued closes cancelled; an open command
-  already read gets stopRequested, carried by every read, answer, and notice until the next matching post, and another
-  target notice. Closed commands stay closed. Answers state, stopRequested and attempt; an unknown id stores nothing.
-  The relay never cancels a generation itself.
-- `GET /api/remote-commands/:id/status?clientId=` is sender-only and returns the post's status shape. A missing id
-  answers 404 `unknownCommand`; absence proves nothing about a generation.
-
-Before host lookup, a changed action or another sender answers 409 `commandChanged`, even after the body was deleted.
-Open entries keep the first body and sender, and keep their target while it remains a host; otherwise a retry may move
-to a host within its cap. The sender re-posts only for a new Send, so a matching post of an open entry clears
-stopRequested before notifying the target again (a host's run already aborted stays aborted). Expired, cancelled and
-refused entries can be replaced by a matching post; done returns its retained result. `uncertain: true` preserves
-attempted knowledge on admission or an open retry. The relay never executes a command.
+- The sender posts a send or reload, polls `/:id/status` and can post `/:id/cancel`. The target host receives an
+  [addressed notice](live-update-feed.md#presence), reads `/:id` with its contract version, and posts `/:id/state` with
+  the attempt it read. Only a compatible read delivers the body. Version 2 preserves Continue, reroll and speaker fields
+  so an older host cannot accidentally execute an ordinary send.
+- The relay checks the original sender and action before retargeting or replay. Retrying an open command preserves the
+  first body and clears its stop request. A sender's cancel can close a queued command or request a stop from its host.
+  The host owns execution and cancellation. An absent command cannot establish whether a generation ran. See the
+  [tab recovery rules](network-jobs.md#remote-send).
 
 ### Rate limits
 
@@ -218,7 +188,7 @@ deletes past-grace candidates; its batches and synchronous turn are `sweep`'s co
 1. The tab keeps an ES256 key pair in IndexedDB and asks `/api/test_auth`. On first setup it posts the password digest
    to `/api/set_password`, then logs in; with an unknown key it calls `/api/login`, which registers the public-key hash
    and answers `{ status: "success" }`, with no token.
-2. Every HTTP and WebSocket request, the proxy routes included, carries a JWT the tab signs itself (`createAuth`,
+2. Subsequent authenticated HTTP requests and socket upgrades carry a JWT the tab signs itself (`createAuth`,
    `src/ts/storage/serverAuth.ts`, five minutes). `verifyJwt` needs a finite `exp`, not past and at most 24 hours ahead
    of the server clock (`MAX_JWT_FUTURE_SECONDS`). A failed check answers 400 (`failureBodies`), 401 on the asset route;
    sockets share the rule (`isAuthorizedToken`). The password digest is checked only by `/api/login`, never accepted as
@@ -226,21 +196,15 @@ deletes past-grace candidates; its batches and synchronous turn are `sweep`'s co
 
 ### Request bodies
 
-`server/src/routes/limitedBody.ts` `limitedBody` (`replaceAnswer`, `RequestBodyError`) applies the global cap
-(`MAX_BODY_BYTES`, 100 MiB; `RouteLimits.bodyBytes` in tests) and the route caps. A new self-capping route wraps itself
-in its own `limitedBody(<cap>)`, as `server/src/routes/auth.ts` and `server/src/routes/push.ts` do, and is added to
-`ownLimit` in `server/src/app.ts` (and the cap list in the comment above it), which skips the global cap. Cap owners:
-[resources](server-resources.md#files), [generation](server-generation.md#files), [storage](#storage-routes),
-[auth](#auth-routes), [push](#push-routes), [remote commands](#remote-command-routes) (1 MiB per POST), and
-[diagnostics](#request-history-and-diagnostics-routes).
+`server/src/routes/limitedBody.ts` `limitedBody` and `RequestBodyError` enforce the streaming body limit. A new
+self-capping route must install its cap at the required point relative to authentication and join `ownLimit` in
+`server/src/app.ts` to bypass the global 100 MiB cap. The app header lists exceptions and the route module specifies its
+limit.
 
-- A route that never reads its body (the snapshot restore) refuses an over-cap one only by its declared length.
-- A route must finish reading before it exposes a streamed response, as every capped route does: a later overflow cannot
-  become a 413.
-- The source is not read past the overflow: a client still sending gets the 413 and the connection closes 500 ms later
-  (`@hono/node-server`'s cleanup stalls behind the abandoned reader), except on `POST /api/assets/write`, which drains
-  first. That batch publishes each record as it completes, so an over-cap chunked one keeps the records renamed before
-  the overflow, as any batch failing midway does.
+- Finish reading a capped request before returning a response stream. A handler that skips the body entirely can only
+  reject its declared length.
+- A partial asset batch keeps completed records. Its route drains the rest of the request before answering an overflow
+  ([storage routes](#storage-routes)).
 
 ### Proxying
 
@@ -271,108 +235,51 @@ Runtime data defaults to `save/`; `RISU_DIAGNOSTICS_DIR` can place diagnostics e
 
 ### Auth and push files
 
-`routes/auth.ts` `createAuthStore` loads the auth files at startup (`readPasswordState`, `readKnownPublicKeys`).
-
-- `save/server/password`: the client-side SHA-256 digest via `/api/crypto`. Only a missing file opens setup (`ENOENT`;
-  other read errors throw). An empty or whitespace-only file logs a warning and keeps setup and password login closed
-  until the operator fixes or deletes it; registered JWT keys still work, and `/api/test_auth` checks them rather than
-  returning `unset`.
-- `RISU_PASSWORD_SHA256` can seed a missing file durably at startup, never overwrites an existing file (even an empty
-  one, with a warning that the seed was ignored), and changing the variable never rotates an existing password.
-- `POST /api/set_password` is one operation on the ordered writer (key `auth:password`): the state check, the
-  validation, the durable write, then the install, so of two concurrent calls one wins and the other answers
-  `already set`.
-- `save/server/known_public_key_hashes.json`: an array of strings, read into a set. A login's new key is one operation
-  (key `auth:keys`): it derives the next list from the current one, writes it durably, and installs it, so two
-  concurrent logins keep both keys; the login answers 200 after the write and 500 when it failed. A known key writes
-  nothing.
-- A missing key file means no known keys; malformed JSON or another shape (including an empty file) is renamed beside it
-  to `known_public_key_hashes.json.corrupt-<Date.now()>`, with a warning naming that path. Startup continues with no
-  known keys, so every tab logs in again with the password; other read errors throw. Deleting only `password` lets you
-  set a new one but does not revoke registered clients; delete this file too for that.
-- `save/server/web_push_vapid.json` (mode 600): the Web Push VAPID pair. Replacing it (or the `RISU_WEB_PUSH_VAPID_*`
-  variables) leaves every browser subscribed with the old key: each subscribes again the next time it opens the app, or
-  an open tab's page is shown again.
-- `save/server/push_subscriptions.json` (mode 600):
-  `{ version: 1, subscriptions: [{ endpoint, keys: { p256dh, auth }, expirationTime, failureCount, lastError?, updatedAt }] }`;
-  `updatedAt` is the last registration refresh, at most once per 24 h for an unchanged healthy entry. Skipped
-  registrations leave the stamp and list order unchanged; the 50-entry cap drops the least recently refreshed.
-- The list changes only in operations on the ordered writer (key `push:subscriptions`): a registration or removal
-  applies the delivery outcomes settled so far, derives the next list, writes it durably, and installs it after the
-  write, and its route answers 204 after that or 500. Delivery bookkeeping (failure counts, a 404/410 removal) is one
-  such operation per settled delivery batch, one write, awaited by no one; a failed bookkeeping write keeps memory and
-  marks the file uncertain.
+- `save/server/password` holds the SHA-256 password digest. `RISU_PASSWORD_SHA256` can seed a missing file. Only absence
+  opens setup. A damaged empty file disables password login and setup until repaired. Registered keys still work. See
+  `server/src/routes/auth.ts` `readPasswordState` and `createAuthStore` for startup and serialized writes.
+- `save/server/known_public_key_hashes.json` holds registered browser keys independently of the password. To revoke
+  those keys during a password reset, remove the key file too. `readKnownPublicKeys` quarantines malformed contents and
+  starts with no registered keys.
+- `save/server/web_push_vapid.json` and `save/server/push_subscriptions.json` persist the VAPID identity and browser
+  subscriptions outside resource backups. Changing the key pair requires browsers to subscribe again.
+  `server/src/push/pushService.ts` `createPushService` owns environment overrides, file modes, subscription refresh,
+  eviction, and delivery bookkeeping. See [push delivery](network-jobs.md#push-delivery) for re-registration.
 
 ### User files
 
-A logical key `assets/<name>` lives at `save/assets/<encodeFileName(name)>`, e.g. `assets/<sha>.png` or
-`assets/inlay_<sha256>.png`. The legacy `save/database` and `save/remotes` folders are left in place and never read, and
-files of the flat layout (hex file names and `__password` directly in `save/`) are neither read nor migrated. The
-[sweep](#asset-mark) deletes unreferenced assets; `/api/remove` handles explicit deletions.
-
-- `encodeFileName` keeps `a-z 0-9 . _ -` readable and writes every other UTF-8 byte (uppercase letters, `/`, `%`,
-  spaces, non-ASCII) as `%XX`. It also escapes a trailing dot and the first character of a Windows device name
-  (`con.png` → `%63on.png`). A name whose readable form exceeds 255 bytes is stored as `~<lowercase hex>`; longer than
-  that is rejected.
-- Only one encoding per name is canonical, and canonical names never differ by case alone, so case-insensitive
-  filesystems do not merge keys.
+`server/src/routes/storage.ts` `STORAGE_NAMESPACES`, `encodeFileName` and `decodeFileName` map logical keys under
+`assets/` to one reversible, case-safe path component in `save/assets/`. The encoded filename must fit the filesystem
+limit. Asset listing, backup asset selection and [sweep](#asset-mark) use this namespace. The old flat layout and the
+legacy `save/database` and `save/remotes` directories have no reader or migration.
 
 ### Thumbnail cache
 
-`cache/thumbnails/<sha256(key)>/<entry name>` holds the asset route's derived WebP thumbnails, with each key directory
-created when an entry is ready to be staged. `/api/list`, full and upstream exports (`listAssetKeys`), and snapshots
-never see it, and a restore or an import leaves it in place.
-
-- Each entry is `<sha256(key)>-w<size>-v<THUMBNAIL_VERSION>-<size>-<mtimeNs>-<ino>-<dev>` plus `.webp`, or `.orig`, an
-  empty marker for a deterministic "serve the original" decision (`createThumbnailService`'s comment has when). Entries
-  are staged under `.tmp/` and renamed into place, outside the maintenance gate.
-- Publication and removal touch only that key's directory: after publishing, the service lists it and drops entries
-  whose identity differs from the source file's current stat (all of them when the source is gone, including the one
-  just written), removing the directory if empty; `/api/remove` removes the directory.
-- A sweep after listen (`startBackgroundTasks`, aborted at shutdown) walks key directories and drops non-regular
-  entries, entries of a missing or changed source, entries of another `THUMBNAIL_VERSION`, and entries with an unknown
-  name or a hash that differs from their directory, then removes empty directories. It removes anything else at the top
-  level, including a flat cache layout; entries and other top-level paths whose mtime is at or after the sweep's start
-  are left alone.
+Derived WebP entries and deterministic original-image decisions survive restart under `cache/thumbnails/`, outside asset
+listing, exports, snapshots and restore. `server/src/http/assetThumbnails.ts` `ENTRY_NAME` binds each entry to its
+logical key, requested size, encoder version and source stat. `createThumbnailService` owns staging, per-key cleanup and
+the post-listen sweep. A generation must keep its opened source handle until the service finishes, including if another
+request replaces the key meanwhile.
 
 ### Process memory
 
-The module-level `assetVerification` and `assetLeases.ts` (key locks, leases) singletons are keyed by absolute paths so
-separate save directories do not collide. The remaining state is inside the `createServerContext` closure; the store's
-and the jobs' parts are in [store state](server-resources.md#process-memory) and
-[job state](server-generation.md#process-memory).
-
-- `password` and the known key hashes.
-- Rate-limit counters.
-- The thumbnail service (`thumbnails`): its single flights, generation slots and wait queue, per-key locks, and the
-  loaded encoder. A restart loses only work in flight; the disk cache stays.
-- The asset mark's last report, run identity, and export holds.
-- Remote commands: queued, delivered, running and uncertain are open; done, refused, expired and cancelled are closed.
-  Only a body read delivers; a running or uncertain report, or an uncertain post, makes attempted sticky. Refusal after
-  an attempt remains uncertain. Every open body read increments attempt, guarding against stale state reports. Closing
-  deletes the body but retains its type and SHA-256 action identity. Results are opaque JSON objects bounded by the POST
-  cap.
-- The command registry expires queued pickup after 30 s, retains closed entries 10 minutes, and forgets open entries 40
-  minutes after the last state change, notifying the sender with forgotten. One unref'd timer and access-time sweeps
-  enforce deadlines; every access silently drops other epochs. Shutdown clears all entries and the timer. Frames carry
-  only command identity/state; bodies travel by HTTP and never reach durable storage.
+- `assetVerification` and the locks and leases in `server/src/http/assetLeases.ts` use absolute paths across server
+  contexts. A context holds the auth state, rate counters, thumbnail work, asset mark's last report, run identity and
+  export holds. See [store state](server-resources.md#process-memory) and
+  [job state](server-generation.md#process-memory).
+- The [remote-command registry](#remote-command-routes) holds bodies until closure, then retains action identity and
+  bounded results for retry. It expires entries by state and drops obsolete epochs. Restart and shutdown forget the
+  registry. Notices contain identity and state, while bodies and results travel through authenticated HTTP.
 
 ## Coupling
 
-- Server dependencies:
-  - `hono` and `@hono/node-server`.
-  - `ws`, for the upgrade handler.
-  - `proxy-addr` and `ipaddr.js`.
-  - Node `crypto`/`fs`/`http`/`https`/`net`/`sqlite`.
-  - `sharp` 0.35.5, for the asset thumbnails. Its prebuilt `@img/sharp-*` binary loads without an install lifecycle
-    script; a host without a loadable encoder gets the `unavailable` redirect.
-  - All of the above are prod dependencies because the Docker runtime stage installs `--prod`.
-- Client dependencies that use this server: `serverAuth.ts`, `assetClient.ts`, `resourceClient.ts`, `globalApi` proxy
-  code, `characterCards.hubURL` (`/hub-proxy`), `util.ts` DPoP storage.
-- [Server resources](server-resources.md): its [maintenance](server-resources.md#maintenance) closes the storage writes
-  too, its restores and imports use the [content-name rule](server-resources.md#backup-and-import-internals) over these
-  asset files, and its uploads follow the [body rules](#request-bodies).
-- [Server generation](server-generation.md): the proxy's local-network streaming is one of its jobs.
+- `Dockerfile` installs production dependencies in the runtime stage. Asset thumbnails use the `sharp` binary. An
+  unavailable encoder redirects the browser to the original asset.
+- The browser signs requests in `src/ts/storage/serverAuth.ts`, reads and writes through the [asset client](assets.md),
+  and reaches the [Realm hub](backup-sync-hub.md#realm-access) through `hubURL`. Proxy requests originate in
+  [network jobs](network-jobs.md).
+- [Resource maintenance](server-resources.md#maintenance) also closes storage mutations. Imports and restores share the
+  [content-name verification rule](server-resources.md#backup-and-import-internals) with asset storage.
 
 ## Invariants
 
@@ -430,14 +337,11 @@ and the jobs' parts are in [store state](server-resources.md#process-memory) and
 Server tests live in `server/src/tests/` and select Vitest's Node environment. Runner, slow-test, and timing rules
 belong to [test-harness](test-harness.md); `slow` and `e2e` memberships are in its [Tests](test-harness.md#tests).
 
-- `testSupport.ts` `createTestServer` is the in-process server of the route and lifecycle tests in all three server
-  guides: a temporary root with a minimal `dist/index.html`, or a reused one for a restart, with injected kinds, clocks,
-  limits, and services. `testRestoreRunner` stages a restore in process, so a gate test starts no worker.
-- `createServerContext`'s test seams include `generationRunner`, `scriptWorkerOptions`, `routeLimits`, `cbsTimeLimits`,
-  `realmStagingTimer`, `memoryTaskOptions`, `remoteCommandOptions`, `thumbnailOptions`, and `restore`.
-- Remote commands: `pnpm --silent test:agent server/src/tests/{remoteCommands,events}.test.ts` (the registry's states,
-  deadlines on fake timers, caps, and epoch rule, and the routes; the `host` flag, addressed delivery, and the repeat on
-  registration). `remoteCommandOptions` passes clock and cap overrides through `createTestServer`.
+- `testSupport.ts` `createTestServer` is the in-process server for route and lifecycle tests: a temporary root with a
+  minimal `dist/index.html`, or a reused one for a restart, with injected kinds, clocks, limits, and services.
+  `testRestoreRunner` stages a restore in process, so a gate test starts no worker.
+- Remote relay and presence: `pnpm --silent test:agent server/src/tests/{remoteCommands,events}.test.ts`.
+  `remoteCommandOptions` injects the clock and caps through `createTestServer`.
 - `assetVerification.test.ts` uses injected hashers and latches to hold file reads while fake timers control the queue.
 - Boot, auth, limits, shutdown:
   `pnpm --silent test:agent server/src/tests/{app,listenConfig,shutdown,shutdownAdmission}.test.ts`.

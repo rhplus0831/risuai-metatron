@@ -2,15 +2,16 @@
 
 ## Scope
 
-- Owns the server side of generation: job admission, request identity, receipts, command sequences, the job channel, the
-  integration of the prompt, Lua, LLM, and translation runtimes, transforms, and the memory task and token routes.
-- The live-update feed and its socket → [live-update-feed](live-update-feed.md).
-- The tab's transform client (batching, provisional display, display-transform failure retries) →
-  [cbs-rendering](cbs-rendering.md#script-transform-client).
-- Contracts shared with the tab stay with [chat-pipeline](chat-pipeline.md); each domain's semantics stay with its
-  owner, listed in [Known Hazards](#known-hazards), and translation with [translation](translation.md).
-- Neighbors: [self-host server](self-host-server.md) owns the process, middleware, limiters, and auth;
-  [server resources](server-resources.md) owns the store and its routes.
+For job admission, receipts, owner and viewer sockets, handoff, command sequences, reply streaming or completion Web
+Push holds, start here. The registry also hosts the prompt, Lua, LLM, translation and memory runtimes.
+
+- [Chat pipeline](chat-pipeline.md) owns the tab's send lifecycle and prompt semantics. [LLM requests](llm-requests.md)
+  owns adapter behavior and request interception. [Memory](memory.md) and [translation](translation.md) own their jobs.
+- [Network jobs](network-jobs.md) owns the tab's job socket and remote host. The separate
+  [live-update feed](live-update-feed.md) broadcasts progress to every connected tab.
+- For display transform batching and retries see [the transform client](cbs-rendering.md#script-transform-client).
+  [Self-host server](self-host-server.md) owns auth and limiters, and [server resources](server-resources.md) owns the
+  store.
 
 ## Files
 
@@ -51,10 +52,10 @@ body, answer and statuses are the comment above its registration. "+ epoch" is t
 
 - `POST /api/generations` (`GenerationCreateBody`, optional `requestId`; `x-resource-epoch` checked by `create`, not by
   the route): `{ jobId }` or a replay ([Generation admission](#generation-admission)).
-- `GET /api/generations/current` and `POST /api/generations/stop` + epoch: the chat slot
-  ([Chat-slot lookup and stop](#chat-slot-lookup-and-stop)). `POST /api/generations/cancel` + epoch: by `requestId`,
-  whatever the owner. `POST /api/generations/completion-release` + epoch: `{ requestId }` → `{ released }`, a held
-  completion push ([Completion holds](#completion-holds)).
+- `GET /api/generations/current` reads the chat slot. `POST /api/generations/stop` requires the epoch and the confirmed
+  job id ([Chat-slot lookup and stop](#chat-slot-lookup-and-stop)). `POST /api/generations/cancel` + epoch: by
+  `requestId`, whatever the owner. `POST /api/generations/completion-release` + epoch: `{ requestId }` → `{ released }`,
+  a held completion push ([Completion holds](#completion-holds)).
 - `GET` and `DELETE /api/generations/:id`, `POST /api/generations/:id/memory-stop` + epoch, and
   `POST /api/generations/:id/drained` (`ChannelDrainedBody`): scoped by `clientId` ([Job handoff](#job-handoff)).
 - `POST /api/generations/:id/handoff` and `/takeover` + epoch: [Job handoff](#job-handoff).
@@ -126,63 +127,44 @@ refusal the memory step recovered from or outlived replaces no later error.
   send's order.
 - `assemblePrompt` runs per speaker; its `AssemblyHost` supplies the job's services. Assembly's prompt and lore behavior
   is owned by [chat pipeline](chat-pipeline.md); memory algorithms are owned by [memory](memory.md).
-- Right before assembly's final token recheck, `AssemblyHost.toolSchemaTokens` lists the job's MCP tools once
-  (`listTools`) and counts them in the resolved adapter's form ([LLM requests](llm-requests.md#server-request-layer));
-  the recheck keeps that charge free, and the send's request offers that set without listing again. A plain `preview`
-  job lists nothing; every other request lists its own.
-- `runSpeaker` also passes `AssemblyHost.insertedMessages`: the `start` and `end` messages of
-  `interceptionMessages(requestDb.requestInterceptions, "model")`, which the reply request's request layer will insert
-  ([LLM requests](llm-requests.md#flows)). The final recheck counts them with assembly's `tokenizeChat` and reserves
-  them with the tool schemas (budget, the required-tokens error, the `outputTokens` clamp, the trim headroom), for every
-  job kind, `preview` included; the report carries them as `interceptions`.
-- `context.stopOverLoreBudget` (kept by `parseCreateBody` only when true; not in `requestFingerprint`) asks a `send`,
-  `continue`, `group`, or `reroll` job to stop at its first assembly when lore activation is stopped
-  ([Lore](chat-pipeline.md#lore)): `assemblePrompt` returns an `alert` coded `loreOverBudget` before history, and the
-  `error` terminal carries `lore` (`parseLoreBudgetStop`). What ran before activation stays; no reply request is made.
-  Later rounds and speakers, previews, and command-sequence parts (the part view drops the field) never stop.
-- `context.inputOriginal` (accepted by `parseCreateBody` only as a string, for a `send`, `continue`, `reroll`, or
-  `group` job with `userMessageId` and a nonempty `input`; not in `requestFingerprint`, so a retry with another original
-  replays the first attempt) is what the user typed for a reviewed draft. When the input stage appends the user message,
-  the message carries it as a `translation` (`targetLanguage: "original"`, `sourceHash` of the text after `editinput`,
-  `translatedAt` the append time; [Translation](translation.md#send-hand-off)). A skipped input stage writes nothing.
-- `context.oocExchangeId` (kept by `parseCreateBody` for a `preview` only, refused for other kinds; in
-  `requestFingerprint` only when present) makes an OOC preview. After the `presetChain` pick, `runSend` reads the
-  exchange from the stored `oocLog` and sets `scope.detached`: the job's chat is its own copy, cut after the exchange's
-  anchor, with the `oocTail` rows appended under fresh message ids and `oocToggleValues` over its `GLGlobalVariables`.
-  The result carries `ooc: true`.
-- A detached scope: `refreshChat` and the metadata queue leave the copy alone, `writeChat` applies its ops to it
-  (`reduceChatOps` in `server/src/jobs/chatOpsReducer.ts`), and character, persona, and `risuAccess` resource writes
-  refuse. Media is stored as in any preview. No start trigger runs and memory requests list no tools. The registry's
-  `sentChat` and hydration stay on the stored chat.
-- OOC failure codes: `oocExchangeGone`, `oocAnchorGone`, and `oocMemoryAhead` (SupaMemory or legacy Hypa finds no cursor
-  in the cut history). A group chat is refused with a plain error.
-- After final chat writes, `runPromptSend` hands off translations and due memory input, detached, before returning.
-- A streamed reply is metered (`createOutputMeter`, `server/src/prompt/outputMeter.ts`): `readReply`'s `onRaw` hands it
-  each chunk's raw first value, before `removeIncompleteResponse` and the continue's prefix, so the count covers what
-  this request generated. A buffered answer has no meter.
-- A count starts at most every `OUTPUT_COUNT_INTERVAL_MS` (500) with none in flight and counts the part the last count
-  did not cover (a rewritten snapshot is counted whole and replaces the total) with the reply scope's `countLocal`; it
-  reports `{ type: "output", tokens, since, at }` through `job.emit`. No write or event waits for it. A failed count is
-  logged once (`generation.outputCount`) and stops the meter, which also stops when `readReply` returns. The tokenizer
-  runs on the server thread for the new part, or a whole rewritten snapshot.
-- Half Streaming (`providers.halfStreaming`, read only here, from the request db): with Response Streaming off, a send
-  is quiet unless it is a `previewPrompt` or its reply model is `LLMFormat.OobaLegacy` (`readReply` reads its string
-  snapshots as a one-key map; the format's quiet path is untested). Only its reply request gets `forceStreaming`;
-  memory, translation, and Lua or trigger requests keep their arguments. An answer that comes back buffered takes the
-  buffered path.
-- A quiet stream takes the streamed path (reply row, `begin`, `accepted`, meter, tail, and the final write on a stop or
-  read failure), but `readReply`'s `quiet` emits no `chunk`, writes no raw checkpoint, and keeps chunk sequence 0, so no
-  tab sees partial text. A stream on a send that is not quiet (Response Streaming on, or a plugin provider that streams
-  on its own) is read with chunks and checkpoints.
-- A buffered reply (a continue's combined text included) is stored under its generation before output processing, as a
-  streamed one is: a failing output hook leaves the raw answer in the chat, a successful one rewrites the same message,
-  and a failed in-place reroll still restores its previous candidate.
-- A streamed reply, quiet or not, skips what only a buffered `success` gets (`requestChatDataOuter`): the plugins'
-  after-request replacers and the banned-character-set check and retry; a failure after the stream returned does not
-  restart the request. The primary text is trimmed before the output scripts, a continue is processed once as the
-  combined text, alternative samples are stored as the last chunk holds them, Claude's buffered JSON extraction does not
-  run, and reasoning is wrapped as the adapter's streaming parser wraps it. The Half Streaming help names the replacers
-  and the retry.
+- The send reserves space at the final token recheck for MCP tool schemas and the messages that the reply's request
+  layer will insert. `AssemblyHost.toolSchemaTokens` lists tools once for this reply. A plain `preview` skips that
+  listing but still counts the interception messages in `AssemblyHost.insertedMessages`. The context report keeps
+  `toolSchemas` and `interceptions` separate from assembled input. The mode filter, message order and insertion point
+  belong to [LLM requests](llm-requests.md#request-interception).
+- With `context.stopOverLoreBudget`, the first assembly of a send, continue, group or reroll can end the admitted job
+  with `loreOverBudget` before history, memory and the reply request. Earlier writes, including the input, stand. The
+  tab owns the [lore stop and retry](chat-pipeline.md#lore). The flag and `inputOriginal` are outside
+  `requestFingerprint`. The input stage preserves the reviewed draft's original text on its appended message
+  ([translation](translation.md#send-hand-off)).
+- For an OOC question the tab starts a `preview` with `context.oocExchangeId`, part of its identity. After
+  `presetChain`, `runSend` detaches the chat at the stored exchange's anchor, then adds `oocTail` with fresh message ids
+  and applies `oocToggleValues`. `reduceChatOps` in `server/src/jobs/chatOpsReducer.ts` applies preview edits to this
+  copy. The registry hydrates only the stored chat.
+- OOC previews skip the start trigger and omit tools from memory requests. Character and persona writes refuse, while
+  media uses ordinary storage. `risuAccessHost` in `server/src/mcp/internal.ts` also refuses resource writes on a
+  detached scope.
+- A successful OOC result includes `ooc: true` before the tab can request the answer. A missing exchange, missing anchor
+  or legacy memory cursor ahead of the cut yields `oocExchangeGone`, `oocAnchorGone` or `oocMemoryAhead`. Groups are
+  refused. See [OOC question](chat-pipeline.md#ooc-question).
+- After final chat writes, `runPromptSend` hands translations and due memory input to their detached services. For how a
+  reply reaches those writes, see [streamed and buffered replies](#streamed-and-buffered-replies).
+
+### Streamed and buffered replies
+
+- `readReply` hands each raw first value to `createOutputMeter` before punctuation trimming or a continue's prefix. The
+  meter counts locally without waiting in the stream loop. Suffix counts accumulate, a rewrite replaces the total and a
+  failed count stops only the meter. The registry publishes the estimate on the feed
+  ([generation channels](#generation-channels)).
+- With Response Streaming off and Half Streaming on, only the actual reply requests `forceStreaming`. The
+  `previewPrompt` and OobaLegacy paths omit the flag. If a stream arrives in Half Streaming mode, it still has a reply
+  row, `accepted`, a meter, and final text on stop or failure. It publishes no partial text or raw checkpoints and keeps
+  chunk sequence zero. A buffered answer uses the buffered path.
+- Both paths store the raw answer under its generation before output processing. A failed output hook leaves that
+  answer, except a failed in-place reroll restores the previous candidate. A stream returned by the request layer skips
+  buffered after-request replacers and charset retries. With `escape`, the request layer consumes a provider that
+  streams anyway and processes its last snapshot as buffered. See `server/src/llm/outer.ts` `requestChatDataOuter` and
+  `runSpeaker` for output processing and candidate storage.
 
 ### Reroll in place
 
@@ -225,16 +207,14 @@ client (a participant's `DELETE` too) is attributed; `stop`'s comment holds the 
 - A job re-sending a failed provider request reports `{ type: "retry" }` (`JobEventInput`); the registry counts the
   reports since the stage last changed and sends the `retry` event with the count, then `retry: null` after a changed
   stage's event. The snapshot replays a count only, as it does the stage.
-- The registry publishes each job's progress to the live-update feed (`publishGeneration`, a `generation` frame): a
-  `running` entry once the job is admitted, before its runner starts, and again on each changed stage (after the retry
-  count it clears), each retry report, and each changed sequence part; an `ended` entry where `finalize` sets `endedAt`.
-  Every kind is published, previews included; a job of another epoch publishes nothing. `clientId` is the creator, as
-  `current`'s `owned` compares. A publisher's throw is logged (`generation.progressPublish`) and dropped.
-- An `output` report (registry-only, never on a job socket) becomes the entry's `output`, the reply being generated now:
-  `accepted` and a change to `preparing` clear it, and a report after the job ended or of another epoch is dropped
-  without throwing (it does not flush pending writes). Output alone publishes at once when
-  `GENERATION_PROGRESS_INTERVAL_MS` (1 s) has passed since the job's last `running` entry, else once by a timer with the
-  newest count; any other `running` entry carries the newest count and cancels the timer, and `finalize` clears it.
+- `publishProgress` sends a live-update `generation` frame at admission, each stage/retry/sequence change and job end.
+  It includes previews, identifies the creator across handoff, and fences on the current epoch. The feed's hello
+  snapshots running jobs for observers and reconnects ([live-update hello](live-update-feed.md#live-update-hello)).
+- Only the feed carries the latest reply's `output` estimate. `accepted` and a transition to `preparing` clear it.
+  `publishOutputProgress` coalesces count-only changes per job at `GENERATION_PROGRESS_INTERVAL_MS`. Other progress
+  publishes immediately with the latest count. A late count cannot reopen an ended job. For the tab's progress store see
+  [live updates](live-updates.md#files).
+
 - `sendSocket` allows one oversized frame on an empty queue for whole-chat recovery; with queued bytes, it terminates an
   owner or viewer whose queue plus the next frame exceeds 4 MiB, leaving as on a drop.
 - `provider` callbacks offer `chunks: "append"`: `handleMessage` joins appends for `onChunk`, asks `chunkResync` on gaps
@@ -248,8 +228,10 @@ client (a participant's `DELETE` too) is attributed; `stop`'s comment holds the 
   fetch through `runInJob` (`server/src/llm/requests.ts`).
 - On `disconnected`, request hooks (`editinput`, `editprocess`, `replacerbeforeRequest`, `bodyIntercepter`) end the job.
   A completed reply's hooks skip and the job goes on: `editoutput` and `replacerafterRequest` keep the text (later
-  scripts still run); `chatOutput` and image callbacks run nothing. The first three are kept in order as `done.skipped`
-  (`JobRunState.skippedHooks`); the tab runs the listeners late once it holds that revision (`replaySkippedListeners`).
+  scripts still run). A skipped image produces no image. The terminal records skipped text hooks for reporting; only
+  undelivered `chatOutput` listeners can run late, after the recipient holds the required revision
+  (`replaySkippedListeners`). A delivered listener that disconnected is marked missed; only the creator sees its
+  warning.
 - The hooks above are the tab's plugin callbacks; the character's and modules' Lua edit hooks run on the server and
   never wait for the tab (`runLuaEdit`, `createScriptProcessor`).
 
@@ -316,15 +298,10 @@ after the push service.
 `data/generation-jobs.sqlite` (plus `-wal`, `-shm`) holds the receipts (its header holds the schema check and degraded
 mode); like the request history, in no snapshot or archive.
 
-- Table `receipts`, one row per job: `job_id` (primary key), `request_id` and `fingerprint` (null for older clients;
-  unique `(epoch, request_id)`), `client_id`, `epoch`, `kind`, `character_id`, `chat_id`, `admitted_at`, `ended_at`
-  (null while the job runs; indexed), `progress` (the sequence's `{ total, sent }` JSON, otherwise null), and `status`,
-  the kept `GenerationStatus` JSON: no `result`, error message cut to 4 KiB, `sequence` intact.
-- A cancelled request uses the same table: `job_id = "cancel:" + requestId`, private `kind = "cancelled"`, empty
-  character/chat ids, `admitted_at = ended_at` at cancellation, and null fingerprint/status/progress. It is never served
-  by a job-status read and is pruned with compact rows.
-- Writes: the registry upserts a row synchronously at admission and at the job's end (every terminal path), and writes
-  sequence progress before the first part (`sent: 0`) and at each completed part boundary before its event.
+- `createGenerationReceipts` owns the schema, bounded retention and best-effort failure policy. The registry writes a
+  receipt synchronously on admission and terminal, plus sequence progress before the first part and at each completed
+  boundary. The stored outcome omits `result`, caps error text and keeps sequence progress. A request cancelled before
+  admission gets an identity tombstone that cannot be read as a job status.
 - Reads: a status answers from memory first (the live job, then its kept outcome); the disk answers only an id memory
   does not hold, only to the row's `client_id`, and only in the current epoch. Request lookup is shared across clients
   and returns the identity even when its status payload is gone (`readByRequest`).
@@ -375,13 +352,18 @@ mode); like the request history, in no snapshot or archive.
 
 ## Recipes
 
+- For a reply progress change, follow `runSpeaker` → `createOutputMeter` → `RunningJob.emit` → `publishProgress` and
+  `generationSnapshot`. Update `shared/events.ts` and the [tab progress reader](live-updates.md#files) if the feed
+  payload changes. Exercise a reconnecting observer and a quiet stream as well as the owner.
 - Change the job contract across `shared/jobs.ts`, `server/src/jobs/generationJobs.ts`,
   `server/src/routes/generations.ts`, and `src/ts/network/generationJobs.ts`; hydration belongs to
   [chat store](chat-store.md).
 
 ## Tests
 
-In-process harness, slow table: [shell's Tests](self-host-server.md#tests).
+The [server harness](self-host-server.md#tests) supplies the authenticated HTTP and WebSocket endpoints. Registry tests
+use a controlled runner and clock, and `outputMeter.test.ts` injects a counter and fake timers. For the opt-in receipt
+measurement and streaming timing checks see the [slow-test table](test-harness.md#slow-test-table).
 
 - Browser checks: `util/playwright/checkJobProtocol.mjs`, `checkJobHandoff.mjs`, and `checkServerRestartRaces.mjs`
   ([test-harness](test-harness.md)); `e2e`: `e2e/multiClientGeneration.spec.ts`, two-client lock.

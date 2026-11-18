@@ -2,26 +2,14 @@
 
 ## Scope
 
-- Owns the shared CBS evaluator/registry and variables, Markdown/HTML rendering and sanitization, CSS scoping, rendered
-  asset/inlay expansion, the tab's display-transform client and its failure retries, ChatML, partial edits, and CBS
-  editor highlighting/autocomplete.
-- Paths:
-  - `shared/cbs/{registry,evaluator,types,calc,limits}.ts` (the runtime both the client and the server run)
-  - `shared/prompt/toggles.ts` (toggle definitions and global-value resolution)
-  - `src/ts/cbs.ts`
-  - `src/ts/parser/{parser.svelte,chatVar.svelte,chatML,partialEdit}.ts`
-  - `src/ts/parser/{assetSearch,chatStyles,sentenceBreaks}.ts`
-  - `src/ts/gui/highlight.ts`
-  - `src/ts/gui/codearea/cbsMonaco.ts` (stub)
-  - `src/lib/Others/MonacoEditor.svelte`
-  - `src/lib/ChatScreens/PartialEditController.svelte`
-  - Static CBS docs: `src/etc/airisu.cbs`, `src/etc/docs/{cbs_docs,cbs_intro,docs_text}.cbs` (search-ignored)
-- Not here:
-  - Regex scripts that run inside rendering → `scripts-triggers.md`.
-  - The chat component tree → `ui-theming.md`.
-  - Translation of rendered HTML → `translation.md`.
-  - Bilingual sentence grouping before interleaving → `translation.md` (`parser/sentenceBreaks.ts`).
-  - Chat-toggle writes and saved toggle presets → `persistence.md` (`src/ts/toggles/`, `shared/togglePresets.ts`).
+This guide owns the shared CBS evaluator and variables, the tab’s Markdown, sanitized HTML and scoped CSS, display
+transforms, rendered assets and inlays, ChatML, partial edits and editor highlighting. The runtime, render entrypoints
+and editors are listed under **Files**. The static author docs are in `src/etc/airisu.cbs` and
+`src/etc/docs/{cbs_docs,cbs_intro,docs_text}.cbs` (search-ignored).
+
+Follow [scripts and triggers](scripts-triggers.md) for script execution, [UI](ui-theming.md#message-row) for row
+lifetimes, [translation](translation.md) for bilingual sentence grouping and translated HTML, and
+[persistence](persistence.md) for saved toggle values and presets.
 
 ## Files
 
@@ -114,8 +102,8 @@ inlay, whose tag stays as text. Images use `getFileSrc` ([assets](assets.md)). A
 
 - `src/ts/parser/chatML.ts`: the client ChatML splitter (`parseChatML`), used by `src/ts/process/memory/hypav3.ts`;
   prompt-card ChatML uses `server/src/prompt/triggers.ts` `parseChatML` from `server/src/prompt/assemble.ts`.
-- `src/ts/parser/partialEdit.ts`: rendered text back to markdown ranges (module header;
-  `findAllOriginalRangesFromText`/`FromHtml`, `replaceRange`, `EDITABLE_BLOCK_SELECTORS`).
+- `src/ts/parser/partialEdit.ts`: rendered text back to markdown ranges (module header; `findAllOriginalRangesFromText`,
+  `findAllOriginalRangesFromHtml`, `replaceRange`, `EDITABLE_BLOCK_SELECTORS`).
 - `src/ts/gui/highlight.ts`: editor highlighting and autocomplete (module header; `highlighter`, `removeHighlight`,
   `AllCBS`, and the hand-kept lists `normalCBS`, `normalCBSwithParams`, `displayRelatedCBS`, `nestedCBS`).
 - `src/ts/gui/codearea/cbsMonaco.ts`: `registerCBSMonaco`, empty, so `src/lib/Others/MonacoEditor.svelte` has no CBS
@@ -236,14 +224,17 @@ inlay, whose tag stays as text. Images use `getFileSrc` ([assets](assets.md)). A
   `ReloadGUIPointer` subscriber in `stores.svelte.ts` skips its first, synchronous call so that loading either module
   first never calls into the other before its bindings exist (`stores.importOrder.test.ts`); keep the module-level reads
   lazy.
-- `registerCBS` also feeds `PlaygroundDocs.svelte` (live docs from `description`) and `cbsMonaco.ts`, through `cbs.ts`.
+- `PlaygroundDocs.svelte` uses `registerCBS` through `cbs.ts` for the live function descriptions. The unused
+  `getMacroData` in `cbsMonaco.ts` references the same catalogue.
 
 ## Invariants
 
-- `ParseMarkdown` output must go through `trimMarkdown` before `{@html}`. `mode:'notrim'` is an intermediate result, not
-  a final one.
-- HTML chat exports and rich copy escape scalar names, including headings, titles, and model labels. Export bodies pass
-  through `sanitizeExportHtml` after translation or other transformations, without parsing Markdown again.
+- Before `{@html}`, pass rendered chat Markdown through `trimMarkdown` or `trimMarkdownSharingStyles`. The `notrim` mode
+  returns an intermediate result.
+- For custom GUI templates, `Chat.svelte` calls `risuChatParser` with `renderMode: "gui"`. The GUI host supplies
+  `formatName` to escape the `char`/`bot` and `user` substitutions before the template becomes HTML. Ordinary CBS hosts
+  keep raw names. HTML chat exports and rich copy also escape scalar names. Export bodies pass through
+  `sanitizeExportHtml` after transformations.
 - An aborted render still meets `ChatBody`'s run guards and the `isCurrent` fences.
 - Keep the DOMPurify hooks intact: class prefixing, the href policy (an `http(s)` link opens in a new tab with
   `rel="noopener noreferrer"`, any other value is emptied, and a supplied `rel` is replaced), the YouTube iframe
@@ -258,9 +249,9 @@ inlay, whose tag stays as text. Images use `getFileSrc` ([assets](assets.md)). A
   - Selectors are prefixed with `.chattext`.
   - Classes get the `x-risu-` prefix.
   - `<risu-style>` uses a hex round-trip so decoded CSS cannot re-enter the HTML parser.
-  - Both trim functions scope every `style` element of the sanitized tree, whatever its spelling, attributes, or nesting
-    in at-rules, so scoping never depends on the encoder having matched the tag. A selector that already starts with the
-    emitted `.chattext ` scope is kept, because translated HTML is trimmed twice.
+  - Both trim functions process every `style` element of the sanitized tree. Nested style rules are scoped, and an
+    already emitted scope survives a second trim of translated HTML. Imported stylesheets are an
+    [open exception](../backlog/found-issues.md#an-import-in-card-or-message-css-is-installed-without-scoping).
 - On the chat screen a row's shared `<style>` elements keep their attributes and an inert `/**/` comment, and custom-GUI
   and layer sheets remain at their row positions: [Shared styles](#shared-styles) has the rule and its cascade limits.
 - Code that serializes or clones a row (plugins reading `.chattext`, `html-to-image` screenshots, which inline computed
@@ -285,14 +276,11 @@ inlay, whose tag stays as text. Images use `getFileSrc` ([assets](assets.md)). A
     happen after an await.
   - `resetAssetsCache(charAssets, emoAssets, moduleAssets)` keeps its public signature and map shape; an explicit reset
     (including `[]` modules in the golden fixture) wins until live inputs change.
-- Parser fuzzy matching uses only character additional assets; `parser.svelte.ts` `getClosestMatch` owns tie, threshold
-  and cache rules. Keep `trimmer`'s `[_ -.]` range and UTF-16 code-unit semantics.
-- `ChatBody`'s image fallback scans character plus module assets with the existing prefix rule, first strict improvement
-  below 1000, and empty-path/none behavior. Its per-name hit/miss memo belongs to the `imageAssets` value, so unchanged
-  rows do not rescan; both fuzzy result memos clear at 10,000 names.
-- `getDistance` remains exported with its original results. Names beyond 32,767 code units can make its Int16 table wrap
-  negative: the bounded helper uses the same recurrence in two Int16 rows for those inputs, without unsound length/row
-  pruning, and the parser disables its distance-1 stop when overflow is possible.
+- Parser fuzzy matching uses only character additional assets. `getClosestMatch` owns the threshold, tie and cache
+  rules. `ChatBody.svelte` uses `findAssetPrefix` with character and module assets. Its hit/miss memo is tied to the
+  asset list. Preserve legacy UTF-16 distances, including Int16 overflow for long names. See `boundedDistance` and
+  `src/ts/parser/tests/assetFuzzy.test.ts` before changing either lookup.
+
 - CBS date and time functions on the server use the server's time zone and default locale; the tab's language reaches
   CBS only as `metadata::browserlang`.
 
@@ -327,6 +315,7 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
 - Server transform:
   `pnpm --silent test:agent server/src/tests/{transform,transformService,transformBudget,dynamicAssets}.test.ts`.
 - Shared toggles: `pnpm --silent test:agent shared/prompt/toggles.test.ts`.
+- `src/lib/ChatScreens/Chat.controls.test.ts` exercises GUI name substitutions against ordinary CBS output.
 - Editor component checks (`src/lib/ChatScreens/tests/PartialEditControllerIme.test.ts`,
   `src/lib/Others/MonacoEditor.test.ts`) run with the [UI checks](ui-theming.md#tests).
 - `src/ts/parser/tests/cbs/lib.ts`: the `cbs` helper writes a `{{op::args}}` string; `holdMockedChats` installs fixture
@@ -343,8 +332,9 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md).
   `server/src/tests/fixtures/baseline/markdown.json` (read, never written).
 - `slow`: the fresh-process cases of `server/src/tests/cbsLimits.test.ts`.
 - `src/ts/parser/tests/chatML.test.ts` has skipped and FIXME cases.
-- Not directly tested: most of `shared/cbs/registry.ts`, inlay images and dynamic-asset rendering, and the matcher's
-  anchor/fuzzy/bigram stages.
+- The browser golden fixture excludes stored inlays and embedding-based dynamic assets. Tab media paths have focused
+  coverage in `src/ts/parser/tests/{inlayAssets,parseMarkdownLifetime}.test.ts`. Not directly tested: many registry
+  functions and the partial-edit matcher’s anchor, fuzzy and bigram stages.
 - Not tested: direct transform key tests still omit per-chat `GLGlobalVariables`, changes of context preset/persona ids,
   the greeting index and background targets; preset/persona binding refusals are covered.
 

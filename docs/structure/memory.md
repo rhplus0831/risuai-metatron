@@ -2,22 +2,17 @@
 
 ## Scope
 
-- Owns: the summarization and retrieval memory algorithms (SupaMemory, HypaMemory V2, HypaMemory V3, Hanurai), the
+- Owns: per-chat memory settings, trim confirmation, the SupaMemory, HypaMemory V2/V3 and Hanurai algorithms, the
   embedding processors, the rate limiter, local Transformers.js models, the HypaV3 editor modal, the progress overlay,
   and the embedding playground.
-- Paths:
-  - Tab: `src/ts/process/memory/{contextualEmbedding,hypamemory,hypamemoryv2,hypav3,taskRateLimiter}.ts`,
-    `src/ts/process/{transformers,memoryTasks.svelte}.ts`
-  - Modal and overlay: `src/lib/Others/{HypaV3Modal,HypaV3Progress}.svelte`,
-    `src/lib/Others/HypaV3Modal/{bulk-edit-actions,bulk-resummary-result,category-manager-modal,modal-footer,modal-header,modal-summary-item,tag-manager-modal}.svelte`,
-    `src/lib/Others/HypaV3Modal/{taskStatusLine,types,utils}.ts`, `src/lib/Playground/PlaygroundEmbedding.svelte`
-  - Server: `server/src/prompt/memory/{supaMemory,hypav2,hypav3,hanurai,host,memoryTasks,memoryTaskHost}.ts`,
-    `server/src/prompt/{embeddings,transformers,transformersWorker}.ts`, `server/src/data/vectorCache.ts`
-  - Shared: `shared/{memory,hypaV3Presets,taskRateLimiter}.ts`
+- Start at `shared/chatMemory.ts` for settings, `server/src/prompt/memory/` for send and task execution,
+  `src/ts/process/memory/` for tab algorithms, and `src/lib/Others/HypaV3Modal.svelte` for the editor and its child
+  components. [Embedding processors](#embedding-processors) lists both runtimes and their caches.
 - Not here:
-  - The `structuredMemory` algorithm → [structured-memory](structured-memory/records.md).
-  - The job around the memory step (`server/src/prompt/runner.ts`) → `server-generation.md`.
-  - Settings UI placement → `settings-i18n.md` (`MemorySettings.svelte`, menu 2, `/settings/memory`).
+  - The `structuredMemory` algorithm → [structured-memory](structured-memory/README.md).
+  - The job around the memory step (`server/src/prompt/runner.ts`) →
+    [server generation](server-generation.md#prompt-job-execution).
+  - Settings UI placement → [settings](settings-i18n.md#pages) (`MemorySettings.svelte`, menu 2, `/settings/memory`).
 
 ## Files
 
@@ -62,36 +57,23 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 
 ### UI
 
-- `src/lib/SideBars/ChatMemoryPanel.svelte` edits the chat switch, mode, preset, and connection in
-  `OpenChatPanel.svelte` and `ChatBindingDialog.svelte`, including unloaded chats. The mode select offers Legacy (named
-  after the algorithm the settings select now), HypaV3, and Structured Memory; Legacy unsets `memoryMode`.
-  `src/ts/storage/chatMemory.svelte.ts` supplies the settings adapter, `setChatMemoryEnabled`, `setChatMemoryMode`,
-  `setChatMemoryPreset`, `setChatMemoryProfile`, and `initialChatMemory`; the character's Toggles panel has no memory
-  checkbox.
-- The preset select names the current default first (unsetting `memoryPresetId`), then each preset. A missing stored id
-  stays selected as deleted. The connection select likewise keeps a deleted id selected, offers the model preset's
-  memory slot first (unsetting `memoryProfileId`), then each connection by name from `settings.modelProfiles`. Its note
-  excludes fixed SupaMemory/HypaV2 summarization models, local summarization models, and embeddings; English and Korean
-  strings live under `chatMemory`.
-- `MemorySettings.svelte`'s selector is the algorithm of Legacy chats, and only the legacy algorithm's own settings
-  (Hanurai, HypaV2, SupaMemory) follow it. The preset picker and budget controls, then the Structured Memory and HypaV3
-  sections, show whatever it selects, since any chat can choose either. The page edits the open chat's existing memory
-  preset in place, otherwise the default; [settings UI](settings-i18n.md#pages) owns selection and import targeting. Its
-  Plugin-model warning resolves the open chat's memory connection; a deleted connection shows no such warning.
+- `src/lib/SideBars/ChatMemoryPanel.svelte` reads the chat-list entry, including for unloaded chats. Both
+  `OpenChatPanel.svelte` and `ChatBindingDialog.svelte` mount it. Its preset and connection pickers keep deleted ids
+  visible until changed. `src/ts/storage/chatMemory.svelte.ts` supplies `chatMemorySettings`, `setChatMemoryEnabled`,
+  `setChatMemoryMode`, `setChatMemoryPreset`, `setChatMemoryProfile`, and `initialChatMemory`.
+- `MemorySettings.svelte` selects the algorithm for Legacy chats. Preset, budget, Structured Memory and HypaV3 controls
+  apply to chats that select those modes directly. The page edits the open chat's existing preset or the default. See
+  [settings UI](settings-i18n.md#pages) for import targeting. The Plugin-model warning uses the open chat's resolved
+  memory connection.
 - `src/lib/Others/HypaV3Modal.svelte` and `src/lib/Others/HypaV3Modal/` children edit the current chat's synced
   `hypaV3Data` copy; its contract owns save, refresh, and discard. Jobs and tasks write send memory.
   `getCurrentHypaV3Preset(chat)` reads its chat's preset; `summarize` captures preset and connection from its context's
   chat-list entry (else current chat) before awaiting. Legacy composition keeps its room's settings and connection
   across waits.
-- `memoryWriteFence` checks `isLocalSend`/`generatingChatKeys` (`chatGenerating`) and `memoryTaskFenced`
-  (`src/ts/process/memoryTasks.svelte.ts`, `memoryTasks.editFenced`) per chat. See [Memory writes](#memory-writes),
-  [UI fence states](ui-theming.md), and [chat-store rules](chat-store.md#server-memory-writes).
-- Bulk resummary, in `src/lib/Others/HypaV3Modal.svelte`: `resummarizeBulkSelected` and `resolveBulkTargets`
-  (`BulkResummaryState.targets`, `hypaV3Modal.bulkResummaryTargetsGone`); the modal's contract says what a replacement
-  of the copy clears.
-- Task status, "Summarize now", and "Cancel": rendered by the modal itself below its header
-  (`src/lib/Others/HypaV3Modal/taskStatusLine.ts`, `showMemoryTaskResult`), calling `startMemoryTask` and
-  `cancelMemoryTask` in `src/ts/process/memoryTasks.svelte.ts`. Lore writes are not fenced by tasks.
+- In the modal, `memoryWriteFence` protects the edited copy ([memory writes](#memory-writes)). `resummarizeBulkSelected`
+  and `resolveBulkTargets` fence bulk results against replacement. The component contract owns copy refresh and discard.
+- `src/lib/Others/HypaV3Modal/taskStatusLine.ts` formats task status. The modal calls `startMemoryTask` and
+  `cancelMemoryTask` in `src/ts/process/memoryTasks.svelte.ts`; `showMemoryTaskResult` handles their answers.
 - `src/lib/Others/HypaV3Modal/utils.ts` `processRegexScript`: a summary's message through `risuChatParser` and the
   server transform's `editprocess` (`serverProcessScript`; `scripts-triggers.md`).
 - `src/lib/Others/HypaV3Progress.svelte`: the progress overlay for the `entry` `src/App.svelte` picks
@@ -103,22 +85,16 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 
 ### Selection, in `assemblePrompt`
 
-- Memory runs when `chatMemoryEnabled` in `shared/chatMemory.ts` resolves on and an algorithm is configured. A boolean
-  `memoryEnabled` wins; absent or malformed values use `alwaysToggleOn` under HypaV3 or Structured Memory, then the
-  owner's `supaMemory`. The preset default never writes the owner or chat.
-- The chat's algorithm is `chatMemoryAlgorithm`: a stored `memoryMode` of `structuredMemory` or `hypaV3` selects that
-  algorithm whatever the global flags say; absent or any other value is Legacy, the global order below. Every server
-  reader asks it: the send, task admission, record now and rebuild, the settings fingerprint, the projection, the
-  upstream export.
-- Every tab reader asks it too: the panel `App.svelte` mounts, the menu row and memory button, the receipt, the context
-  meter's estimate, health states per chat, message removal, the projection install and held-field guard, plugin reads
-  per ref, recovery per replayed write, and the inherit failure notice.
-- `legacyMemoryAlgorithm` shares the server priority with the settings view and selector: Structured Memory →
-  `hanuraiEnable` → `hypav2` → `hypaV3` → SupaMemory when `supaModelType` is not `none` → none.
-- SupaMemory, HypaV2, and HypaV3 return data for the current chat's algorithm field; Hanurai returns prompt history and
-  token counts or an overflow alert, with no persistent memory.
-- `memoryAlgorithmType`'s `structuredMemory` selects [its step](structured-memory/writer.md#the-writer-task) ahead of
-  that order for a Legacy chat; no other value is read.
+`shared/chatMemory.ts` supplies the same rules to assembly, task admission, exports and the tab (including unloaded list
+entries). Resolve the chat at the point the algorithm or switch is needed.
+
+- `chatMemoryAlgorithm` honors stored `memoryMode` values `structuredMemory` and `hypaV3`. Missing or malformed modes
+  use `legacyMemoryAlgorithm`, in this order: explicit Structured Memory, Hanurai, HypaV2, HypaV3, SupaMemory when
+  `supaModelType` differs from `none`, then none. The settings selector follows the same order.
+- `chatMemoryEnabled` uses an explicit chat boolean first. Without one, `alwaysToggleOn: true` in the applied preset
+  enables HypaV3 or Structured Memory. Otherwise the owner's `supaMemory` decides. A send needs both a configured
+  algorithm and an enabled switch. See
+  [Structured Memory selection and hand-off](structured-memory/read.md#the-read-path).
 
 ### Server
 
@@ -141,9 +117,11 @@ fingerprint check. A Structured Memory gap run leaves the gap and lets the send 
 
 `assemblePrompt` writes returned memory as chat metadata against the chat stored at write time. SupaMemory and HypaV2
 write at most once per step; Hanurai writes no memory field. HypaV3 checkpoints summaries, then writes its selection.
-The merge helpers in `shared/memory.ts` own stale-write behavior. Previews can write memory too, before any provider
-request. Algorithm error results use the job's `throwError`; Hanurai's alert result raises `SendError` without an inlay
-error message.
+The merge helpers in `shared/memory.ts` own stale-write behavior. Ordinary previews can write memory before the reply
+request. An [OOC preview](server-generation.md#prompt-job-execution) writes to its detached chat and refuses with
+`oocMemoryAhead` when `supaMemory` (including its legacy `asHyper` variant) finds no cursor in the anchored history.
+Algorithm error results use the job's `throwError`; Hanurai's alert result raises `SendError` without an inlay error
+message.
 
 ### HypaV3 parts
 
@@ -196,8 +174,10 @@ and legacy progress notices and clears them when [the job channel](network-jobs.
 ### Protection at the final re-check
 
 The history entries a select-only, initial, or `writeSkipped` selection kept (its protected tail) are never removable in
-the later token re-check (nor is a merged system message containing one; an `editRequest` result is removable only when
-it matches a removable entry), so a prompt still over the context with them ends with the too-many-tokens error.
+the final re-check. A merged system message containing one is protected too. An `editRequest` result is removable only
+when it matches a removable entry. The re-check reserves the reply and chat-reply interception messages. Sends and
+`previewPrompt` also reserve offered tool schemas; a messages-only `preview` skips tool listing. A protected tail that
+still exceeds the remaining budget fails the job. See [request accounting](llm-requests.md#limitations).
 
 ### The no-memory trim question
 
@@ -339,27 +319,22 @@ lookahead starts at stored coverage and does not defer summaries.
   when the change reaches the legacy composition the fixture pins, `HypaV3Settings`, `createHypaV3Preset`, and the
   settings bindings.
   - A memory-relevant setting the task reads also joins `memorySettingsFingerprint` (`server/src/jobs/jobScope.ts`).
-  - The shared constructor defaults invalid settings (numbers must be finite; `maxChatsPerSummary` and `queryChatCount`
-    must be integers >= 1, `gapConfirmTokens` and the three token amounts integers >= 0, `lookaheadHeadroomRatio` in [0,
-    1), `budgetMode` `"ratio"` or `"tokens"`; `structured` as
-    [the structured memory writer](structured-memory/writer.md) says), including through the server normalizer.
-  - A setting that sizes the budget goes through `resolveHypaV3Budget`, never a site's own formula (the tab's legacy
-    copy keeps its own ratio expressions).
-  - Server host capabilities also need `MemoryHost`, the runner adapter, and the fixture's `hostOf`.
-  - The server alone runs valid summary separators through `MemoryHost.regex`, sequentially with at most 1,000 ms per
-    operation and a 5,000 ms cumulative chunking budget (the production `MemoryHost.separatorLimits`); invalid patterns
-    keep the double-newline fallback. Worker errors return memory before embedding work starts. The tab keeps its
-    synchronous separator.
+  - `createHypaV3Preset` owns validation and defaults, including for imports through server normalization.
+    `resolveHypaV3Budget` owns the arithmetic. The tab's legacy composition keeps its own ratio expressions.
+  - Extend `MemoryHost`, the runner adapter and the fixture's `hostOf` together. `MemoryHost.separatorLimits` bounds
+    server regex splitting per operation and across the run. Invalid separators use double newlines and worker errors
+    return before embeddings. The tab uses a synchronous separator.
 - Add summary metadata: the serializable types in `shared/memory.ts` (with `HypaV3Data`, `Summary`, and `DISPLAY_MODE`),
   `HypaV3Modal/types.ts`, the modal, and its child components. Keep the modal's `$derived`/`$effect.pre` patterns.
 
 ## Tests
 
-- Switch and metadata checks span `shared/tests`,
+- `shared/tests/chatMemory.test.ts` checks fallback order. `src/lib/SideBars/ChatMemoryPanel.test.ts` exercises the
+  per-chat controls against loaded and unloaded entries. Metadata and persistence checks span
   `server/src/tests/{memoryJobs,memoryTasks,assemble,chatSummaries,upstreamExport}.test.ts`,
   `src/ts/storage/tests/{chatStore,bootCache,settingsViews,chatBindingNewChat}.test.ts`, and
-  `src/ts/plugins/apiV3/hostApiChats.test.ts`. UI checks include `src/lib/SideBars`,
-  `src/ts/process/chatStatus.test.ts`, and `src/lib/Others/StructuredMemory/StructuredMemoryPanel.test.ts`.
+  `src/ts/plugins/apiV3/hostApiChats.test.ts`. UI checks include `src/ts/process/chatStatus.test.ts` and
+  `src/lib/Others/StructuredMemory/StructuredMemoryPanel.test.ts`.
 - Not tested: the chat memory panel at phone width, two-tab switch synchronization, the three trim answers on a real
   send, and an exported backup opened in upstream with each character's derived switch.
 - Focused:

@@ -2,37 +2,18 @@
 
 ## Scope
 
-- Owns:
-  - the model catalogue and model-ID resolution,
-  - request dispatch by wire format,
-  - provider request builders and stream parsers (OpenAI Chat, OpenAI Responses, Anthropic/Bedrock, Google/Vertex,
-    NovelAI, Ooba, Ollama, Cohere, Horde, WebLLM, plugin providers),
-  - parameter application,
-  - tool-call loops (dispatch side),
-  - tokenizers,
-  - auxiliary-model routing,
-  - the named API keys (credential binding): which key a model sends (the slot table, the shared binding decision, the
-    server resolver) and their UI (the Model menu's API Keys tab, the per-model key select),
-  - the model-picker UI.
-- Paths:
-  - `src/ts/process/request/*` (including `tests/`)
-  - `server/src/llm/**`, `server/src/routes/llm.ts` (the server request layer)
-  - `shared/llm.ts`, `shared/llm/**` (the static catalogue and the `/api/llm/request` contract)
-  - `src/ts/model/*`
-  - `src/ts/process/webllm.ts`
-  - `src/ts/horde/getModels.ts`
-  - `src/ts/tokenizer.ts`, `src/ts/tokenCountField.ts`, `shared/tokenizerChoice.ts`,
-    `shared/prompt/{chatTokens,imageTokens}.ts`
-  - `server/src/prompt/tokens.ts`, `server/src/prompt/tokenizers/`, `server/assets/token/`
-  - `src/lib/UI/{ModelList,ModelGrid,OpenrouterProviderList,NanoGPTDashboard,NanoGPTProviderPicker}.svelte`
-  - `src/lib/Setting/Pages/Advanced/CustomModelsSettings.svelte`, `src/lib/Setting/Pages/ApiKeysSettings.svelte`,
-    `src/lib/UI/GUI/CredentialSelect.svelte`
-- Not here:
-  - The `credentials` collection, `llmSecrets.credentials` → `persistence.md` (the write-only record:
-    `server-resources.md`); [save path](resource-sync.md#credential-writes).
-  - Transport (`globalFetch`/`fetchNative`) → `network-jobs.md`.
-  - MCP tool definitions → `mcp.md`.
-  - Prompt assembly → `chat-pipeline.md`.
+- Resolve a catalogue or discovery model, a preset slot, a named profile, or the credential that model sends. See
+  [catalogue and model resolution](#catalogue-and-model-resolution), [model preset slots](#model-preset-slots), and
+  [credentials](#credentials). The model selectors and API Keys tab are in [settings pages](#settings-pages).
+- Change a provider request, wire format, streaming, retries, tool-call loop, or model parameter. For mode-specific
+  prompt insertion follow [request interception](#request-interception). For tab plugin callbacks see
+  [hook entry points](plugin-sandbox.md#hook-entry-points).
+- For token counts and playgrounds start at
+  [tokenizer selection and server counting](#tokenizer-selection-and-server-counting). The tab's WebLLM adapter uses
+  `src/ts/process/webllm.ts`. Horde model discovery uses `src/ts/horde/getModels.ts`.
+- Neighboring owners cover [prompt assembly](chat-pipeline.md), [MCP tool definitions](mcp.md),
+  [network transport](network-jobs.md), [credential storage](persistence.md) and
+  [credential writes](resource-sync.md#credential-writes).
 
 ## Files
 
@@ -50,7 +31,7 @@ and what to look up.
 - `shared/llm/thinkingResolver.ts` `resolveClaudeThinkingType`: stored versus displayed Claude thinking mode.
 - `shared/llm/interception.ts`: the request interception rules (`RequestInterception`, `MAX_REQUEST_INTERCEPTIONS`,
   `normalizeRequestInterceptions`) and their insertion (`interceptionMessages`, `applyRequestInterceptions`), stored as
-  `providers.requestInterceptions` ([Flows](#flows)).
+  `providers.requestInterceptions` ([request interception](#request-interception)).
 - `src/ts/model/modellist.ts`: the tab's registry and lookups: `LLMModels`, `isDynamicModel`, `registerModelDynamic`
   (with a `profileId`, as the profile editor's `ModelList.svelte` passes on open, it discovers that profile's provider
   with the profile's credential), `getModelInfo`, `getModelInfoForMode`, `getModelList`. The server's lookup is
@@ -139,10 +120,9 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
   uses it.
 - `shared/prompt/chatTokens.ts` `ChatTokenCounter`, `ChatTokenHost`, and `shared/prompt/imageTokens.ts` `imageTokens`: a
   prompt's token arithmetic, the same on both runtimes.
-- The context report (`shared/contextReport.ts`, written by `assemblePrompt`) makes no counts of its own: it records the
-  counts assembly already makes; `toolSchemas` is the send's schema estimate and `interceptions` the reply's request
-  interception messages, both outside `input`. Its `tokenScope` is the job scope's `tokenizerIdentityKey`
-  (`tokenScopeFor`, `pluginTokenizer: "none"`), so a tab comparing it uses that scope too.
+- `shared/contextReport.ts`: `assemblePrompt` records its existing counts, with `toolSchemas` and `interceptions`
+  outside `input`. Its `tokenScope` is the job's `tokenizerIdentityKey` (`tokenScopeFor`, `pluginTokenizer: "none"`).
+  Use the same scope when comparing a tab's count.
 
 ### Tab token counting
 
@@ -178,21 +158,19 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
 
 ## Flows
 
-- Every provider request except plugin providers and WebLLM runs on the server; a job's WebLLM request runs there too,
-  through the job's `ctx.localGeneration`, and a job calls plugin providers in its tab. Tab requests go through
-  `requestChatData` → `requestChatDataMain` → `requestServer`; jobs enter the server outer loop (`requestChatDataOuter`)
-  directly. Plugin v3 calls `requestChatDataMain` itself (`src/ts/plugins/apiV3/v3.svelte.ts`). Both runtimes apply
-  `applyReverseProxyOverride` (`shared/llm/reverseProxy.ts`) before dispatch.
-- Request interception: both `requestChatDataMain`s insert the messages of the enabled rules in
-  `providers.requestInterceptions` that list the request's mode into the cloned prompt before `reformater`, after the
-  replacers and the `request` trigger (the server for every format it dispatches; the tab for its own Plugin and
-  WebLLM). `start` messages lead in list order; `end` messages close it, before a last `assistant` entry (a prefill).
-  Each attempt clones afresh: a retry holds one copy. The text is sent without CBS; `prompt.name` is a label only.
-- The server passes the number of interception messages it inserted, when positive, to `ctx.describe` as
-  `interceptions`, the request history row's count ([diagnostics](diagnostics.md)); the tab's own Plugin and WebLLM
-  requests have no row.
-- Slot routing is `resolveSlotProfile`'s on both runtimes ([slot resolver](#model-preset-slots)): a refusal fails the
-  tab's attempt with `noRetry` and the server's before dispatch; no alternate profile is tried.
+### Request routing
+
+- A tab request enters `requestChatData` for retries and replacers, then `requestChatDataMain`. Plugin and WebLLM
+  dispatch locally; other formats go through `requestServer`. A job enters `requestChatDataOuter` on the server,
+  including its character's `request` trigger. Jobs run WebLLM through `ctx.localGeneration` and plugin providers
+  through a callback to their owning tab. Both dispatchers use `applyReverseProxyOverride` in
+  `shared/llm/reverseProxy.ts`.
+- A plugin's `runLLMModel` calls `requestChatDataMain` directly. It skips the outer retry and replacer loop, still
+  checks the chat binding and requires `allowPlugins` for any descriptor resolving to the Plugin format.
+- A chat request uses the chat's binding or its active job callback's captured IDs. See `chatRequestRefusal` in
+  `src/ts/process/request/request.ts` for the binding recheck across hook awaits. A named `profileId` takes precedence
+  over a `staticModel` or preset slot. `resolveSlotProfile` defines the remaining order and refusals on both runtimes
+  ([slot resolver](#model-preset-slots)).
 - Memory-host requests pass the chat's captured `memoryProfileId` as the named `profileId`; without one they use the
   model preset's `memory` slot. `resolveScopeMemoryModel` in `server/src/jobs/jobScope.ts` supplies the same resolution
   to fingerprints, task checks, and writer runs. The tab's HypaV3 `summarize` also passes the chat's named profile.
@@ -201,11 +179,27 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
 - An input hook (`src/ts/process/inputHooks.ts` `runInputHook`, [chat pipeline](chat-pipeline.md#input-hooks)) is a tab
   request in `otherAx` mode with the chat's `chatRef` and owner, so it runs on the chat's bound model preset; a hook
   whose model is a profile passes it as `profileId`. It passes `tools: []` (no tool-call record in the chat), but the
-  plugins' replacers still run and the request history and fetch log record it. It asks for a buffered, single reply and
-  treats a stream or a `multiline` result as a failure.
+  plugins' replacers still run. Server-dispatched attempts are recorded in request history. It asks for a buffered,
+  single reply and treats a stream or a `multiline` result as a failure.
 - The server builds a detached request context with profile roots, resolves the named credential, reforms the prompt
   from model flags, and dispatches by `LLMFormat`. A bound Vertex account populates `vertexCredential`; other bound keys
   replace `arg.key`. See [credential binding](#credentials).
+
+### Request interception
+
+- The [settings page](settings-i18n.md#pages) edits global `providers.requestInterceptions`. The runtime dispatching a
+  format calls `applyRequestInterceptions` exactly once on a cloned prompt, after any outer before-request replacers and
+  job request trigger, before `reformater`. It applies only enabled rules listing this mode with nonblank text. Rule
+  text is literal. The label stays out of the provider message.
+- Start and end groups each keep list order. End entries precede a trailing assistant prefill. The next request attempt
+  starts with a fresh clone. For later provider-body rewrites see [plugin hooks](plugin-sandbox.md#hook-entry-points).
+- Chat-reply assembly uses `interceptionMessages` to estimate tokens for its final recheck, including preview. This
+  estimate is `interceptions` in the context report. The same name in [request history](diagnostics.md) counts messages
+  the server dispatcher actually inserted. A zero count is omitted, and tab-local Plugin/WebLLM calls have no server
+  row.
+
+### Provider responses and tools
+
 - Server parsers produce cumulative `StreamResponseChunk` snapshots; `POST /api/llm/request` sends them as
   `set`/`append`/`remove` patches (legacy Ooba strings as `chunkText`), and `requestServer` rebuilds the snapshots. Job
   requests read the snapshots directly. Adapter comments own parser details. A tab request's tool calls go through the
@@ -313,6 +307,9 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
 
 ## Recipes
 
+- Change request interception end to end through `shared/llm/interception.ts`, both dispatchers, and the chat assembly
+  reservation in `server/src/prompt/runner.ts`. Check the provider payload, history count and preview token budget
+  separately ([request interception](#request-interception)).
 - Add a model to a static provider: add an `LLMModel` in `shared/llm/providers/<p>.ts` with a stable `id`, the
   wire-level `internalID`, and accurate flags, parameters, and tokenizer. Verify with `getModelInfo(id)`,
   `getModelList`, and a request preview.
@@ -354,6 +351,9 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
   for the tab and shared code;
   `pnpm --silent test:agent server/src/tests/{llm*,token*,toolSchemas,sseLines,imageTokens,auxOps,providerModels}.test.ts`
   for the server.
+- Interception coverage crosses `shared/llm/tests/interception.test.ts` (rule order and normalization),
+  `requestPresetScope.test.ts` (plugin provider), `llmRequests.test.ts` (server payload, retries and history), and
+  `server/src/tests/promptRunner.test.ts` (preview and send token budget).
 - `slow`:
   `pnpm --silent test:agent --tags-filter=slow server/src/tests/{llmCharsetRetries,tokenParity,tokenPlainNode}.test.ts`
   ([test-harness](test-harness.md) `Slow-test table`).
@@ -373,12 +373,11 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
 - `server/src/tests/llmCharsetRetries.test.ts` drives `requestChatDataOuter` with finite attempt scripts, where an extra
   attempt throws; its `slow` cases run a real group send in a child process the test kills.
 - Token fixtures: `server/src/tests/tokenFixtures.ts` loads the frozen ids in `fixtures/tokens/browser-ids.json` for the
-  tokenizer tests ([test-harness](test-harness.md) `Fixtures`).
+  tokenizer tests ([test fixtures](test-harness.md#fixtures)).
 - Browser checks outside the gate: `util/playwright/checkCredentialTraffic.mjs` (coverage and exclusions in the file)
   and `checkLlmTransport.mjs`.
-- Not tested: `globalFetch` routing beyond `fetchNative`'s transport-branch checks (see
-  [network jobs](network-jobs.md#tests)). `checkCredentialTraffic.mjs` omits non-OpenAI provider sends, several
-  discovery/account calls, previews, and Whisper through its component.
+- For transport routing coverage and gaps see [network jobs](network-jobs.md#tests). The `checkCredentialTraffic.mjs`
+  browser probe omits non-OpenAI sends, several discovery/account calls, previews, and Whisper through its component.
 - Not tested: aborting the last caller while `server/src/prompt/tokens.ts` `scheduleGoogleCount` waits for a limiter
   slot; `tokens.test.ts` covers active-call cancellation and queue draining, but not cancellation while queued.
 

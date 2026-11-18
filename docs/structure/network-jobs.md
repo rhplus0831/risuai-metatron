@@ -2,23 +2,17 @@
 
 ## Scope
 
-- Owns the tab's network: `globalFetch`/`fetchNative` routing and the proxy headers, this tab's in-memory request log,
-  `auxFetch` for calls that need a stored LLM credential, the local-network policy, the generation job client (ids,
-  saved jobs, the follow, events, stages, retry counts), the job channel dispatcher (notices, questions, hooks,
-  callbacks, MCP in the tab), and this browser's Web Push.
-- Paths: the fetch functions and log of `src/ts/globalApi.svelte.ts`, `src/ts/network/` except
-  `src/ts/network/requestHistory.ts` ([diagnostics](diagnostics.md)), `src/ts/network/eventFeed.ts` and
-  `src/ts/network/socketLiveness.ts` ([live-updates](live-updates.md)); `shared/localNetwork.ts` and
-  `shared/{logRedaction,notifications}.ts`. The hydration memory in `src/ts/network/jobChannel.ts` belongs to
-  [chat-store](chat-store.md).
-- Not here:
-  - The server job, its channel, and call dispatch → [server generation](server-generation.md#generation-channels).
-  - Plugin hooks and the API a plugin sees → [plugins](plugin-sandbox.md); the MCP clients a callback reaches →
-    [mcp](mcp.md).
-  - Provider request bodies → `llm-requests.md`; server-side proxy routes → `self-host-server.md`.
-  - The live-update feed's save loop → [live-updates](live-updates.md#feed-connection); the durable request history →
-    [diagnostics](diagnostics.md).
-  - The asset transport → [assets](assets.md); the alerts a notice maps to → [global-api](global-api.md).
+For a tab's outbound fetch, proxy selection, auxiliary credential, generation socket, remote host or Web Push, start
+here. A job handoff transfers responsibility for browser callbacks on an existing job. A remote send asks another
+browser to start the send and provide those callbacks.
+
+- [Server generation](server-generation.md#generation-channels) owns job admission and server-side channel dispatch.
+  [Live updates](live-updates.md) owns the tab's feed socket, including the progress snapshot an observing tab sees
+  before a reply. [Chat store](chat-store.md) owns hydration inside `src/ts/network/jobChannel.ts`.
+- [Plugins](plugin-sandbox.md) owns hook registration, consent and guest execution. [MCP](mcp.md) owns the clients
+  reached by tool callbacks. Provider requests and prompt interception belong to [LLM requests](llm-requests.md).
+- [Self-host server](self-host-server.md) owns the proxy and remote-command HTTP routes, [diagnostics](diagnostics.md)
+  the durable request history, [assets](assets.md) the asset transport, and [global API](global-api.md) the notice UI.
 
 ## Files
 
@@ -52,50 +46,15 @@ The transport below retains this tab's in-memory log.
 - `src/ts/network/handoff.ts`: local preferences, offers, acceptance, presence and manual requests; module contract,
   `replaceHandoffOffers`, `receiveHandoffOffer`, `setHandoffWork`, `connectedClients`, `handoffTargets`, `handOffJob`.
   `src/lib/Others/HandoffStatus.svelte` renders worker progress.
-- `src/ts/network/remoteHost.ts`: device-local `hostMode` (`localStorage` `risu-remote-host`, `preference`) and the
-  newest ten acknowledged command states (`hostCommandLog`, `noteHostCommand`). The home screen's card and Settings →
-  Device Link's button turn the mode on; the lock screen's control turns it off. The mode joins feed registration as
-  `host`; `jobChannel.ts` skips `tts` and `notification` notices while it is on; its completion Web Push can be held
-  (below).
-- `receiveHostCommand` reads a relay command over authenticated HTTP, holds plugin work through startup and the send,
-  pins and selects its chat, and runs `sendChat` with the sender's ids and returned reports. Duplicate frames stop the
-  active run or repeat its latest report. No composer or draft state enters the host's send.
-- Completion hold: when `notification` is on and an enabled `3.0` plugin with a running instance has
-  `pluginCompletionQuietMs`, the send passes `completionHoldMs` (the clamped `completionWaitMaxSeconds` plus
-  `COMPLETION_HOLD_MARGIN_MS`) and takes a `beginMutationScope` mark. A false settled send releases at once, an
-  unsettled one never; a changed epoch ends the wait unreleased.
-- After a true send's terminal report is queued, a detached wait (`completionReleasesSettled`; no pin, plugin work or
-  report held) runs `waitForPluginsQuiet`, then `flushResources` with the mark, and releases when the flush lost nothing
-  and no target reported or is busy since quiet; a report or busy target waits again, a failed or lossy flush releases
-  at the cap.
-- `util/headlessHost.mjs` runs a persistent headless host on loopback
-  ([settings](build-test-platforms.md#headless-host)). It logs and dismisses dialogs with Escape, never allowing,
-  confirming or choosing; only the terminal notice's OK and the supplied login password are exceptions. A dismissed
-  plugin permission stays denied until a person gives a standing grant on another device, which resets the plugin and
-  drops its cached denial.
-- A `reload` command (`mode` `plugins` or `page`) holds no plugin work. `plugins` reports `running`, awaits
-  `reloadPluginsWhenIdle` ([deferred reload](plugin-sandbox.md#deferred-reload)) and reports `done` with its `outcome`.
-  `page` saves its id (no save: `done` `notReloaded`, no reload), reports `running`, flushes with a bound and reloads;
-  the next page reports `done` with `bootPluginLoadOutcome`. A reload id runs once per page: recovery reserves it before
-  any await, and a later frame only repeats its report, never a second read (which would supersede the saved attempt).
-- `requestHostReload` is the requester: it offers the two modes, always confirms `page` (progress names a job's creator,
-  not a takeover's owner), posts a new command id and polls its status (state frames reach only `remoteSend.ts`'s
-  waiters) for up to two minutes, then shows one outcome toast. Settings → Device Link host rows and Settings → Plugins
-  offer it.
-- A send command's `continue`, `continueMessageId`, `rerollMessageId` and `speakerChaId` pass unchanged to `sendChat`
-  beside its input and ids. The read declares `contractVersion` (`REMOTE_COMMAND_CONTRACT_VERSION`); the relay refuses
-  those fields to a read without it (an older host would run them as a plain send).
-- Relay reads and serialized state reports use `/api/remote-commands`, the resource epoch and the read's attempt. Newer
-  states replace queued retries; transient failures retry with bounded waits for the open-command lifetime. Report texts
-  shrink to the body cap; acknowledged states enter the lock screen list, whose rows and connection state are also
-  `data-*` attributes for the headless host script ([lock screen](ui-theming.md#other-ui)).
-- `src/ts/network/remoteSend.ts`: the sender's side. Device-local `remoteSend` (off), `remoteSendHost` (a name;
-  `hostTargets` in `handoff.ts` picks its newest host registration) and `remoteSendFallback` (on); `remoteSendEligible`,
-  `sendChatRemotely`, `receiveRemoteCommandState` (the feed's `remoteCommandState` frames) and `reconcileRemoteSends`
-  (each same-epoch hello). The module header owns the contract; see [Remote send](#remote-send).
-- Remote send UI: Settings → Device Link (`RemoteHostControls.svelte`) edits the three preferences; the host is chosen
-  from the `hostTargets` rows ([settings](settings-i18n.md#pages)). The composer's `RemoteSendMarker.svelte` names the
-  host and whether it is connected ([UI](ui-theming.md#composer)).
+- `src/ts/network/remoteHost.ts` receives command frames and runs or reloads the selected host. `hostMode` is
+  device-local. `receiveHostCommand`, `recoverHostCommands` and `requestHostReload` handle a command, its saved attempt
+  and a requester's reload, respectively. See [remote host commands](#remote-host-commands).
+- `src/ts/network/remoteSend.ts` owns the sender's `remoteSendEligible`, `sendChatRemotely` and
+  `receiveRemoteCommandState`. Device-local preferences choose a host by name and allow local fallback.
+  `RemoteHostControls.svelte` in Settings → Device Link edits those preferences; `RemoteSendMarker.svelte` shows the
+  selected host's connection in the composer ([remote send](#remote-send)).
+- `util/headlessHost.mjs` runs an unattended host on loopback. For its dialog handling, configuration and standing
+  plugin grants, see [headless host](build-test-platforms.md#headless-host).
 
 ### Job channel
 
@@ -117,10 +76,15 @@ The transport below retains this tab's in-memory log.
 
 ### Plugin fetch boundary
 
+- Use `globalFetch` for a buffered result and `fetchNative` for a streamed `Response`. Both consult the local-network
+  classification on an explicit local route. The buffered path otherwise selects direct, userscript, or proxy fetch; the
+  streaming path selects userscript or direct fetch. Their function comments specify headers, error and abort behavior.
 - The plugin `nativeFetch` adapter in `src/ts/plugins/apiV3/v3.svelte.ts` defaults to GET and passes only method,
   headers, body, and signal to `fetchNative`. It normalizes record/pair headers before the sensitive-header scan,
   accepts string, ArrayBuffer, ArrayBufferView, and Blob bodies, supplies absent string/Blob content types, and refuses
-  GET/HEAD bodies. `fetchNative` owns internal routing and timeout behavior.
+  GET/HEAD bodies. Both plugin fetch adapters check the URL. Plugin body interceptors are opt-in transport hooks;
+  configured request interception inserts prompt messages in the
+  [LLM request layer](llm-requests.md#request-interception).
 
 ### Auxiliary credentials
 
@@ -148,6 +112,26 @@ The transport below retains this tab's in-memory log.
   reports `uncertain` before the same id can be read again, a saved `page` reload reports `done` after the boot's plugin
   load (not after resumed jobs or idle); other epochs are discarded.
 
+### Remote host commands
+
+- The host advertises `hostMode` on the live-update feed. `receiveHostCommand` reads the body through the
+  [authenticated relay](self-host-server.md#remote-command-routes). A send pins and selects the target chat and holds
+  plugin work through startup and the send. It passes the sender's ids, original draft, lore-stop flag and action fields
+  to `sendChat` under `localOnly`. The versioned read prevents older hosts from turning Continue or reroll into an
+  ordinary send.
+- The host serializes state reports for one read attempt. `hostCommandLog` holds the ten latest command states for the
+  lock screen. The host suppresses its job's TTS and page notification notices. When notifications and an opted-in
+  running v3 plugin are enabled, the send takes a mutation mark and requests a
+  [server push hold](server-generation.md#completion-holds).
+- A settled failure can release the hold immediately. On success the host queues its terminal report and waits for the
+  opted-in plugins to go quiet, then flushes the marked work. Activity during the flush requires another quiet period; a
+  failed or lossy flush waits until the cap. This wait holds neither the chat pin nor plugin work. An uncertain send or
+  epoch change leaves release to the server deadline.
+- `requestHostReload` polls HTTP status for one outcome. A plugins-only reload waits for
+  [deferred reload](plugin-sandbox.md#deferred-reload). A confirmed page reload saves its attempt before navigating and
+  reports the next boot's plugin load outcome. Without a saved attempt it reports `notReloaded`.
+  [Job recovery](#job-recovery) covers replay after reload.
+
 ### Remote send
 
 - `runSend` (`src/ts/process/index.svelte.ts`) routes an eligible send to `sendChatRemotely` after `beginLocalSend`: a
@@ -167,7 +151,8 @@ The transport below retains this tab's in-memory log.
   later replies unrecorded, so Undo loses the removed bundle; Undo (`rerollHistory.back`) has no settlement guard while
   the host's job may still write; and a host `busy` refusal is settled without `blockedChats`, so restoration could
   write the removed replies beside the host's other send.
-- The waiter is installed before the post. Frames are wakeups for status reads; a status is also read every
+- The waiter is installed before the post. Frames wake status reads; the relay's refused, expired, cancelled or
+  forgotten transition can itself settle the wait. Results come from HTTP. Status is also read every
   `REMOTE_COMMAND_PICKUP_MS` and after each hello. The post's own open answer is never an outcome, and a re-posted
   `uncertain` without a frame ends uncertain after `REMOTE_COMMAND_PICKUP_MS`. An `uncertain` ends the send; a later
   result is ignored.
@@ -189,6 +174,10 @@ The transport below retains this tab's in-memory log.
 - The send guard in `src/ts/process/request/request.ts` reads `channelCallTargets` using the captured
   `PluginCallContext.channelCall`. The callback registry is read when `runHook` runs, not when the job is created
   ([plugins](plugin-sandbox.md)); cancellation and the live lookup govern whether a captured context still applies.
+- After a disconnect only undelivered `chatOutput` listeners run late. `replaySkippedListeners` uses the current
+  listeners and captured chat after the terminal revision is held. The late-replay recipient sees the skipped text-hook
+  warning; only the creator sees the warning for delivered listeners whose outcome was missed
+  ([generation channels](server-generation.md#generation-channels)).
 
 ### Push delivery
 
@@ -245,6 +234,10 @@ The transport below retains this tab's in-memory log.
 
 ## Recipes
 
+- For a new remote action, change `shared/remoteCommands.ts`, the
+  [HTTP relay](self-host-server.md#remote-command-routes), and both tab adapters. Check replay identity, older hosts'
+  declared action support, cancellation and fallback under uncertainty. Exercise `remoteSend.test.ts` and
+  `remoteHost.test.ts` from both ends.
 - Change network routing:
   1. Edit `globalFetch`, `fetchWithProxy`, and `fetchNative`.
   2. Update `server/src/routes/proxy.ts` if the contract changes.
@@ -264,8 +257,9 @@ The transport below retains this tab's in-memory log.
   `fakeSubscription`/`FakeNotification`. Typed shared double: `src/ts/network/tests/generationJobsMock.ts`.
 - Browser probe: `util/playwright/checkJobProtocol.mjs` (a real v3 plugin provider answers job callbacks,
   [test-harness](test-harness.md)). `slow`: none.
-- `globalFetch`'s default content type per route (none for a GET): `src/ts/globalApiNativeFetch.test.ts`.
-- Not tested: `globalFetch` routing beyond `fetchNative` method/body handling and that default.
+- Not tested: the full `globalFetch` route-precedence matrix, including combinations of explicit routing, user
+  preference and userscript availability. `src/ts/globalApiNativeFetch.test.ts` covers buffered GET/POST headers on all
+  three routes and streaming transport, method/body and abort behavior.
 
 ## Known Hazards
 

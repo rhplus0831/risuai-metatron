@@ -38,6 +38,8 @@
 - `src/ts/storage/chatStore.svelte.ts`: the held field and its write guard; `keepsHeldHypaV3Data`, `keepsProjection`,
   `sendChat`, `noticeRefusedProjection`, `ChatProjectionState`, `chatProjectionState`, `installChatProjection`.
 - `src/ts/plugins/apiV3/v3.svelte.ts`: plugin-read refresh; `refreshChatProjections`, `rotatingWindow`, `chatsOfRead`.
+- `src/ts/plugins/apiV3/detachedChatCache.ts`: unloaded plugin reads; `cachedDetachedChatsForRead` checks the cached
+  body and its separate projection before reuse.
 - `src/ts/process/structuredMemory.svelte.ts`: the tab's route client; `readStructuredMemoryRevisions`,
   `readStructuredMemoryProjection`, `resetStructuredMemorySummaries`.
 - `server/src/data/upstream/exportDatabase.ts`: upstream compatibility projection; `projectUpstreamMemory`.
@@ -91,8 +93,9 @@ projection goes. `installChatProjection` is the field's one change outside a wri
 
 ### A plugin's read
 
-`getChar`, `getCharacter`, `getCharacterFromIndex`, `getChatFromIndex`, and `getDatabase` with `characters` await
-`refreshChatProjections` before copying. Writes and `getDatabase` without `characters` do not ask.
+Full chat reads through `getChar`, `getCharacter`, `getCharacterFromIndex`, `getChatFromIndex`, paged `getChats`, and
+`getDatabase` with `characters` refresh the chats they return. Loaded targets go through `refreshChatProjections`.
+Summary-only reads use list metadata. Writes and reads excluding characters skip the refresh.
 
 1. `refreshChatProjections` calls the tab client's `readStructuredMemoryRevisions`, then the revisions route calls
    `store.memory.readProjectionRevisions`. One request checks due chats within `MEMORY_REVISION_CHATS_MAX`, without
@@ -109,19 +112,21 @@ body's mode.
 
 `refreshChatProjections` defines eligibility, joined checks and the recheck window; `rotatingWindow` shares turns across
 caps. `MEMORY_REFRESH_DEADLINE_MS` bounds it (`readWithDeadline`) because a hook's read holds a send. Failure, refusal,
-or deadline returns the held value. An unloaded chat's cached body keeps its projection apart and checks revisions at
-every reuse, with no window (`cachedDetachedChatsForRead`); a failed check reads the chat whole. A cached body, an
-in-flight claim, and a returned read each carry their chat's classification, and `withDetachedDatabaseChats` fences
-assembly on the Legacy fallback captured at its flush: a chat whose classification moved drops and rereads only its own
-copy, a body whose mode disagrees with its list entry is loaded for that ref alone, and a change of the global fallback
-drops every copy and retries once.
+or deadline returns the held value. For unloaded chats, `cachedDetachedChatsForRead` keeps the projection apart from the
+body. Each reuse of a Structured Memory chat without real stored summaries checks revisions, with no recheck window; a
+failed check reads the chat whole. Other cached bodies need no projection read. A cached body, an in-flight claim, and a
+returned read each carry their chat's classification, and `withDetachedDatabaseChats` fences assembly on the Legacy
+fallback captured at its flush: a chat whose classification moved drops and rereads only its own copy, a body whose mode
+disagrees with its list entry is loaded for that ref alone, and a change of the global fallback drops every copy and
+retries once.
 
 ### The upstream export
 
 `readSnapshotFile` in `server/src/data/resourceStore.ts` walks the memory tables and keeps event rows for
-`projectUpstreamMemory` in `server/src/data/upstream/exportDatabase.ts`; a failed walk sets `memoryEvents` to null. The
-snapshot's `ui` record selects the algorithm; ownership follows the rule of a tab's read. The export writes the value
-unsealed so an upstream restore and a re-import here take it as plain HypaV3 data.
+`projectUpstreamMemory` in `server/src/data/upstream/exportDatabase.ts`; a failed walk sets `memoryEvents` to null. Each
+chat's stored mode selects the algorithm, with the snapshot's settings supplying the Legacy fallback. A chat with stored
+summaries keeps them. The export writes the value unsealed so an upstream restore and a re-import here take it as plain
+HypaV3 data.
 
 ### The reset
 
@@ -161,8 +166,9 @@ of a committed reset whose answer was lost says `reset: false`.
   scope, a memory task, the HypaV3 baseline, `chatBaseline`, and a checkpoint's capture read stored data.
 - A write never takes a sealed value, and a sealed value authorizes nothing. `installChatProjection` is the one change
   of the held field outside a write, and only for a chat as it found it before its first await.
-- A chat the projection answers for takes no unsealed `hypaV3Data` from a write but a checkpoint load's; a chat with no
-  event rows does, which is what the adoption choice is about.
+- The server refuses unsealed writes to a Structured Memory chat with events and no stored summaries, except during a
+  checkpoint load. An existing chat with no event rows can still receive summaries on the server. The tab guard has no
+  event count: an existing held Structured Memory chat with no real summaries retains its held field.
 - Metric indices are positions in the projected `summaries`, never in `events`.
 
 ## Recipes
@@ -182,10 +188,13 @@ of a committed reset whose answer was lost says `reset: false`.
   `memoryStore.test.ts` uses local records.
 - The tab: `src/ts/storage/tests/chatStore.test.ts`, `hostApi.test.ts`, `chatMemoryInherit.test.ts`, and
   `HypaV3Modal.fence.test.ts`; `hostApiMemory.test.ts` for a plugin read's refresh, on a scripted `authFetch`, and for a
-  read after the reset; `StructuredMemoryPanel.test.ts` for the reset control.
-- Focused command: `pnpm --silent test:agent structuredMemory hostApiMemory upstreamExport chatStore`. No `slow` or
+  read after the reset; `getDatabaseDetached.test.ts` for full, summary-only, paged and cached reads across mode
+  changes; `StructuredMemoryPanel.test.ts` for the reset control.
+- Focused command:
+  `pnpm --silent test:agent structuredMemory hostApiMemory getDatabaseDetached upstreamExport chatStore`. No `slow` or
   `e2e` membership of its own.
-- Not tested: a projection read that throws on the server, which answers the chat as stored and warns once.
+- Not tested: the resource whole-read overlay returning the stored chat and warning once when projection throws. The
+  dedicated projection route passes store failures to `storeErrorResponse`.
 
 ## Known Hazards
 
@@ -208,5 +217,5 @@ of a committed reset whose answer was lost says `reset: false`.
 
 ### Gotchas
 
-- `HypaV3Modal` takes a sealed value as no data: under this algorithm the modal shows no summaries, though a plugin's
-  read of the same chat projects them.
+- `HypaV3Modal` takes a sealed value as no data: the Structured Memory chat normally opens its own panel. After a mode
+  change the HypaV3 modal can still encounter a held seal and displays an empty editor.

@@ -11,7 +11,7 @@
 - Not here:
   - TTS, image generation, media compression, the aux-model selector, and the playground tools →
     [media-aux](media-aux.md).
-  - Aux-model request routing → `llm-requests.md` (`requestChatDataMain`).
+  - Aux-model request routing → [model preset slots](llm-requests.md#model-preset-slots) (`requestChatDataMain`).
   - The settings registry behind the Translation page, and the UI language → [settings-i18n](settings-i18n.md).
   - Input translation in the composer → [chat-pipeline](chat-pipeline.md) (`inputTranslation.svelte.ts`).
   - Markdown parsing and the sentence breaks the translator calls → [cbs-rendering](cbs-rendering.md).
@@ -36,7 +36,9 @@
 
 - `src/ts/translator/translator.ts`: LLM adapter and browser cache; `translateLLM`, `llmTranslationContext`,
   `getCurrentTranslatorPreset`, `llmTranslationCacheKey`, `readLLMCacheEntry`, `writeLLMCacheEntry`, `getLLMCache`,
-  `searchLLMCache`, `exportLLMCacheAsJSON`, `importLLMCacheFromJSON`, `clearLLMCache`.
+  `searchLLMCache`, `exportLLMCacheAsJSON`, `importLLMCacheFromJSON`, `clearLLMCache`. `translateLLM` protects the
+  renderer's entire encoded `<risu-style>` block with a placeholder and restores the block on output unless Send Text
+  As-Is is enabled. See [shared styles](cbs-rendering.md#shared-styles).
 - `shared/translation/hash.ts`: stored-source and cache-context hashing; `translationSourceHash`.
 
 ### Presets and `.risutl`
@@ -125,14 +127,12 @@ Chain-of-Thought exclusion. CBS is never evaluated in a translator prompt.
 - `src/lib/Setting/Pages/TranslationSettings.svelte`: Translation page composition; `translationSettingsHeader`,
   `translationSettingsSections`. Menu 21, `/settings/translation` holds all translator settings; Language keeps only the
   UI language ([settings-i18n](settings-i18n.md)).
-- `src/ts/setting/translationSettingsData.ts`: Translation page items and sections; `translationSettingsItems`,
-  `translationSettingsSections`. Sections: Translator, Behavior, Experimental, Cache. Behavior holds `adv.noWaitTrans`
-  and `acc.showTranslationLoading`; Experimental holds `adv.exp.googleTrans`, shown while experimental features are on.
+- `src/ts/setting/translationSettingsData.ts`: `translationSettingsItems` defines controls and visibility conditions,
+  and `translationSettingsSections` places them on the page.
 
-`lang.llmTranslationTarget` follows the preset editor for the LLM translator; `lang.translatorHistoryMaxTokens` follows
-it on `"message"`. `legacyTranslation` shows except for LLM on `"message"`; `translateBeforeHTMLFormatting` and
-`autoTranslateCachedOnly` show only for LLM on `"rendered"`. Hidden toggles retain their values and still drive previews
-on the rendered path; cache buttons remain for LLM. Auto-translate is a [chat setting](#state).
+`llmTranslationTarget` controls which settings the LLM editor shows. Hidden rendered-path options still apply to
+previews. The stored-path history budget also applies to [input hooks](chat-pipeline.md#input-hooks). Auto-translate is
+a [chat setting](#state).
 
 ## Flows
 
@@ -193,9 +193,10 @@ for non-blank input, fails the run (`EmptyTranslationError`) and stores nothing.
   requests translation. `ChatBody`'s `storedPath` renders `msgDisplay` without `translateHTML`, applies
   `applyEdittransToStoredTranslation` before Markdown when shown, and shows the pending spinner only with
   `settings.ui.showTranslationLoading` on (settings item `acc.showTranslationLoading`).
-- A fresh translation with nothing pending enables editing. `beginStoredTranslationEdit` captures the session;
-  `saveStoredTranslationEdit` queues `setMessageTranslation`. Refusal keeps the editor open, and an open editor retains
-  Save and Cancel across settings changes.
+- A fresh translation with nothing pending enables editing. `beginStoredTranslationEdit` captures the session.
+  `src/ts/storage/messageEditorDrafts.svelte.ts` keeps the stored editor's text and session across row remounts within
+  this tab. An outside edit raises an overwrite notice. `saveStoredTranslationEdit` queues `setMessageTranslation`.
+  Refusal keeps the editor open, and an open editor retains Save and Cancel across settings changes.
 - `src/lib/ChatScreens/PartialEditController.svelte` uses `Chat.svelte`'s `saveTranslation` callback for the shown
   stored translation. A false result retains its draft; saves do not overlap, and a completion after cancel or a newer
   edit leaves that editor alone. Both translation paths refuse a missing translation context instead of editing the
@@ -236,12 +237,9 @@ for non-blank input, fails the run (`EmptyTranslationError`) and stores nothing.
   - A new chat copies the character's selected chat's six fields under `newChatBinding: "inherit"`
     (`initialChatTranslation`, a deleted preset id kept) and none under `"empty"`; copies and branches keep them;
     `importChat` keeps them but drops a `translatorPresetId` that names no preset here (`importedChatTranslation`).
-  - The chat panel's `ChatTranslationPanel.svelte` (in `OpenChatPanel`, while a target language is set) edits
-    auto-translate and, for the LLM translator, the chat's preset ("Global (<name>)", or "Deleted, using global").
-  - With the stored translation and auto-translate on, the panel adds "bot replies only" (`translateBotOnly`: a send
-    hands over only its replies; it limits the automatic requests, not what a row shows); with the stored translation,
-    it adds the bilingual display check and, while it is on, its emphasis and pairing selects (line, or 1–10 sentences;
-    unset is the default). The suggestions' translate toggle starts from the chat's flag.
+  - `src/lib/SideBars/ChatTranslationPanel.svelte` edits these fields through the chat summary while a target language
+    is set. `translateBotOnly` limits the automatic hand-off; row display still follows `storedTranslationChoice` and
+    `chatAutoTranslate`. The suggestions' translate toggle starts from the chat's flag.
 - Translator DB fields: `translatorType`, `translator`, `translatorInputLanguage`, `translatorPresets`,
   `translatorPresetId` (an id; both travel in the `translatorPresets` record as `{ items, selectedId }`),
   `llmTranslationTarget`, `translatorHistoryMaxTokens` (2048 by default; the normalizer turns a value at or below 0 into

@@ -2,11 +2,11 @@
 
 ## Scope
 
-- Owns package/build config, the `dev:agent` / `dev:human` runner, documentation checks, the PWA worker and manifest,
-  the userscript bridge, release identifiers, and repo dotfiles.
+- Owns package and build config, the dev runners, the unattended system Chrome host (`pnpm host:headless`),
+  documentation tools, the PWA worker and manifest, the userscript bridge, release identifiers, and repo dotfiles.
 - Not here:
   - Test commands, Vitest/Playwright, and browser checks → [test-harness](test-harness.md).
-  - `globalApi.svelte.ts` `fetchNative` → [network-jobs](network-jobs.md).
+  - Remote Host behavior, handoff and `fetchNative` → [network-jobs](network-jobs.md).
   - Server process, routes, and Docker → [self-host-server](self-host-server.md).
 
 ## Files
@@ -39,13 +39,14 @@
   and e2e `tsc`, none skipped. Both `types` forms start their programs together, print one block per program as it ends,
   and end with a verdict line (`typeCheckVerdict`) naming every failed program; the exit code is 1 when any failed. Read
   the verdict line or the exit code: the last block is the slowest program, not the failed one.
-- `util/typeCheckCache.mjs` (`programKey`, `checkSettings`, `workingTreeFiles`, `cachedRun`): both `types` forms replay
-  a program's stored result, failures included, when nothing that program reads has changed; the block and the verdict
-  say so. Its header lists what a key holds. `util/workingTree.mjs` (`workingTreeId`) gives this cache and the test
-  wrapper the working tree's id.
-- Results are stored per program in `<git common dir>/type-check-cache/`, which every worktree shares, and deleted after
-  14 days. `--force` or `CI` in the environment runs every program: `util/ci/check.sh` passes `--force`. Why per
-  program, without docs, and shared: [measurements](../reports/measurements/type-check-time-2026-11-12.md).
+- `util/typeCheckCache.mjs` (`programKey`, `checkSettings`, `workingTreeFiles`, `cachedRun`) replays a stored result
+  when the program's input key matches, including a stored failure. The block and verdict identify replays. The key
+  includes git-ignored files under source roots. Before saving a result, the runner rechecks only the tree ID from
+  `util/workingTree.mjs` (`workingTreeId`), which omits those ignored files and is also used by the test wrapper.
+- Worktrees share the per-program results in `<git common dir>/type-check-cache/`. Saving a result prunes entries older
+  than 14 days. `--force` or a nonempty `CI` bypasses replay for each selected program. To run all three regardless of
+  changed paths or cached results, use `pnpm check --force`, as `util/ci/check.sh` does.
+  [Type-check measurements](../reports/measurements/type-check-time-2026-11-12.md).
 
 ### Documentation check
 
@@ -71,8 +72,8 @@
   - `pnpm docs:due [<guide>...]` (`util/docsDue.mjs`): per guide, the commits to its owned paths since the commit in
     `docs/structure/verified.json`, or since the guide was added when it has none; a report, exit 0.
     `pnpm docs:due --verified <guide>...` records `HEAD` for the guides a read-and-verify pass read.
-  - `pnpm docs:reads [--out <file>] [<dir>...]` (`util/guideReads.mjs`): guide reads counted over local session
-    transcripts, for a one-off `docs/reports/measurements/guide-reads-<date>.md`; not a gate.
+  - `pnpm docs:reads [--out <file>] [<dir>...]` (`util/guideReads.mjs`) counts guide reads from local Claude Code
+    session transcripts for a one-off `docs/reports/measurements/guide-reads-<date>.md`.
 
 ### Config files
 
@@ -80,17 +81,17 @@
   from `RISU_VITE_CACHE_DIR`). Look up `risu-node-flag` (dev only: `__NODE__`, and `__RISU_AI_DISCLOSURE__` from the
   shell), `risu-build-info` (build only: `dist/build-info.json`), and `define` (`__RISU_BUILD__`, read through
   `src/ts/buildInfo.ts`). Besides Svelte, `@tailwindcss/vite`, and `vite-plugin-wasm`, builds use
-  `@rollup/plugin-strip`, `build.target` `baseline-widely-available`, `build.minify` `oxc`, and no `manualChunks`;
-  `envPrefix` is Vite's default (`VITE_`).
+  `@rollup/plugin-strip`, target `baseline-widely-available`, and minify with `oxc`. Chunking and the client environment
+  prefix (`VITE_`) use Vite defaults.
 - `server/src/buildInfo.ts` `resolveBuildInfo`: `RISU_BUILD_COMMIT`, `RISU_BUILD_DATE`, `RISU_BUILD_DIRTY` give the
   build id without git, as the `Dockerfile` build arguments do; otherwise git. The id's shape is in [State](#state).
 - `util/compressDist.mjs`: after Vite, writes the smaller `.br` and `.gz` siblings into `dist/`; its extensions are
   `STATIC_COMPRESSIBLE_EXTENSIONS` from `server/src/http/staticCache.ts`, which serves them, and its header holds the
   size and quality rules.
 - These are JSON, so their facts stay here:
-  - `tsconfig.json`: includes `src/**/*`, `shared/**/*.ts`, and `public/sw.js`. `noEmit: true` and
-    `allowImportingTsExtensions: true`: Vite builds the client and Node runs the server, so `tsc` only type-checks, and
-    imports of `shared/` use explicit `.ts` extensions.
+  - `tsconfig.json` includes TypeScript, JavaScript and Svelte files under `src/`, `shared/**/*.ts`, and `public/sw.js`.
+    Its `exclude` omits TypeScript files directly under a client web directory. It enables `noEmit` and
+    `allowImportingTsExtensions` and leaves JavaScript diagnostics off. Vite builds the client and Node runs the server.
   - `server/tsconfig.json`: strict, `erasableSyntaxOnly`, `lib: es2023` without DOM; includes `src/**/*.ts` and
     `../shared/**/*.ts`, so `pnpm check` strict-checks the shared persisted types.
   - `e2e/tsconfig.json`: extends the root config and includes `**/*.ts` relative to `e2e/`, plus the existing client
@@ -147,12 +148,18 @@
 | `RISU_CHROME`                 | System Chrome binary. Unset or blank: the first existing path from `chromeCandidates` for the platform.                                                                   |
 | `RISU_HEADLESS_HOST_CONSOLE`  | Page console types written to the log: `error` (default), `warn` (adds warnings) or `all`. Lines are redacted and bounded like the rest, but `all` can carry app content. |
 
-The listener's TLS handshake chooses HTTPS or HTTP. A secret input dialog is left alone while the document's
-`/api/test_auth` answer is unread, since an early Escape would submit an empty password. Dialog policy and plugin
-standing grants: [generation job client](network-jobs.md#generation-job-client). The script logs ISO timestamps and
-redacted, bounded text; it retries failed loads with backoff and lets safe boot settle before retrying a page with
-plugins off. A console line ends with its resource or script position and a page error carries its stack. A URL keeps
-only its origin, except the app's own origin, which also keeps its path (never the query or fragment).
+The listener's TLS handshake chooses HTTPS or HTTP. In `util/headlessHost.mjs`, `handleDialog` waits for the document's
+`/api/test_auth` answer before touching a secret input. An unset server password ends the run. The host submits its
+configured password only at an identified login prompt, once per run. Subsequent starts can reuse the profile's login.
+
+The host presses Escape on ordinary app dialogs, dismisses native browser dialogs, and acknowledges a terminal notice
+with its button. A plugin permission prompt therefore denies the call. Use Settings → Plugins in a signed-in browser to
+give the plugin the standing grants its unattended work needs. See the
+[permission list](plugin-sandbox.md#permission-list).
+
+The script retries failed loads with backoff and lets safe boot settle before retrying a page with plugins off. It logs
+ISO timestamps and redacted, bounded text. A console line ends with its resource or script position and a page error
+carries its stack. URLs keep their origins and, for the app's own origin without credentials, the path.
 
 ### Analysis scripts
 
@@ -166,6 +173,8 @@ only its origin, except the app's own origin, which also keeps its path (never t
   read. Use trusted local files: upstream's decoder runs in this process.
 - `util/upstream/upstreamHarness.mjs` (`UPSTREAM_TARGETS`, the `REAL`, `EXTRACT`, and `OVERRIDES` tiers) loads one
   target per process, lists what neither target runs, and holds each target's approved stub uses.
+- `util/memoryEval.mjs` runs the [structured memory](structured-memory/README.md) fixture measurements outside Vitest.
+  Its header gives the section filters, inputs and export options.
 
 ### Service worker and PWA
 
@@ -346,6 +355,10 @@ Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
   stay under the compiler cache without writing generated files.
 - `util/agentDevHost.test.ts` and `util/agentDataSandbox.test.ts` (node) cover the `dev:agent` runner's host resolution
   and the sandbox.
+- `pnpm --silent test:agent util/headlessHostConfig.test.ts` checks host settings, Chrome paths on all supported
+  platforms, redaction and retry timing. For the real host's login, plugin dialogs, reload and shutdown, run
+  `util/playwright/offline.sh node util/playwright/checkHeadlessHost.mjs` on Linux. Windows and macOS process behavior
+  still needs manual verification.
 - `util/changedChecks.test.ts` (node) covers `typeCheckTargets`, `ownersLine`, `typeCheckVerdict`, and the default base
   (`resolveBase`) over temporary git repositories.
 - `util/typeCheckCache.test.ts` (node) covers which edits change which program's key (`programKeys`), the working-tree

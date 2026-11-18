@@ -41,8 +41,10 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   ([chat pipeline](chat-pipeline.md#state)) or a running feed job of another client (`foreignGeneration`,
   [live updates](live-updates.md#feed-connection)). Its ring takes `chat-process-stage-<n>` from that job's stage, the
   colors of the screen's own ring; a mark alone leaves it uncolored.
-- `src/lib/ChatScreens/messageJump.ts` `runMessageJump` and `messageJumpWindow`: jump decisions, testable without the
-  screen. The chat column width and `metatron` card theme are in `src/styles.css`.
+- `src/lib/ChatScreens/messageJump.ts` owns `runMessageJump` and `messageJumpWindow`. The screen supplies DOM lookups;
+  stored targets resolve their message id again after mounting, and a greeting target reveals the full history and finds
+  the row at `-1`. Structured Memory citations, bookmarks, and message search use the same screen jump. The chat column
+  width and `metatron` card theme are in `src/styles.css`.
 - Screenshot capture uses `src/lib/ChatScreens/screenshotCapture.ts` `prepareScreenshotCapture`; preserve its source
   contract. Follow [asset sources](assets.md#asset-sources) for `withFileSrcFetch` and `SCREENSHOT_CAPTURE_OPTIONS`.
 
@@ -55,19 +57,12 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `src/lib/ChatScreens/composerPlaceholder.ts` owns the main placeholder. `DefaultChatScreen.svelte` also handles
   incomplete chat bindings, the Stop button's `processStage` ring (the chat's foreign job's stage when it has no own
   staged job, as during a remote send), and the loading label beside Stop while a discovered job's chat loads.
-- `src/lib/ChatScreens/RemoteSendMarker.svelte`, on the left of the line above the composer row that the health badge
-  and the meter's chip share (never the playground): while remote sending is on and the tab is not a host, a button with
-  the host's name, plus the state in words while the host is away; the full sentence is its name and tooltip. It opens
-  Device Link's remote host section ([remote send](network-jobs.md#remote-send)).
-- The draft box sits under the composer row for a chat with a Draft hook chosen or draft text left (never the
-  playground; read-only while the binding is incomplete): a labelled textarea bound to `composer.draft` and Send Draft,
-  disabled while the draft is blank or the chat is busy or runs a hook. Stop carries a status label while a Draft hook
-  runs ([chat pipeline](chat-pipeline.md#send)).
-- The composer menu's BTW entry sits next to the OOC entry while the hook list holds a BTW hook (never the playground).
-  With several BTW hooks it opens `src/lib/ChatScreens/InputHookPicker.svelte`, a portal dialog that Escape and the
-  backdrop close. The displayed chat's BTW result shows in a panel above the composer row as plain text
-  (`whitespace-pre-wrap`, scrolling past 30vh) with a dismiss button; Stop carries a status label while a BTW hook runs
-  ([chat pipeline](chat-pipeline.md#input-hooks)).
+- `src/lib/ChatScreens/RemoteSendMarker.svelte` shows the sender's selected host above the composer and opens the Device
+  Link controls ([remote send](network-jobs.md#remote-send)).
+- Draft and BTW hooks are available outside the playground. The Draft textarea binds `composer.draft` and stays visible
+  while the selected id resolves to a Draft hook or draft text remains. The BTW menu opens
+  `src/lib/ChatScreens/InputHookPicker.svelte` when a choice is needed and shows plain-text results in the originating
+  chat. Keep busy, Stop, and retry behavior aligned with [input hooks](chat-pipeline.md#input-hooks).
 - `src/lib/ChatScreens/HandoffControls.svelte` renders handoff and take-back beside Stop from the screen's followed job
   ids; presence, target selection, and requests belong to [network jobs](network-jobs.md#generation-job-client).
 
@@ -93,7 +88,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 
 ### Message editors
 
-- `src/lib/ChatScreens/Chat.svelte`: original/translation editing, auto-popup eligibility, and `clickToEdit`.
+- `src/lib/ChatScreens/Chat.svelte` owns original and translation editing, auto-popup eligibility, and `clickToEdit`.
+  `src/ts/storage/messageEditorDrafts.svelte.ts` retains original-message and stored-translation drafts across screen or
+  row unmounts. It keys text by chat ref, message id, and editor kind, and drops it on owner replacement or deletion.
 - `src/lib/ChatScreens/messageEditPopup.ts`: the pure eligibility and stable-height rules.
 
 ### Context meter
@@ -121,11 +118,13 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   chat list, folders, filtering, and actions such as `completeOrder`.
 - `src/lib/SideBars/PinnedChatsRail.svelte` and `src/lib/SideBars/pinnedChats.ts` share the pinned-chat projection with
   home cards (`openPinnedChat`).
-- `src/lib/SideBars/OpenChatPanel.svelte`: the open chat's tab. New-chat defaults and translation behavior are
-  documented in [persistence](persistence.md) and [translation](translation.md).
-- `src/lib/SideBars/ChatDraftHookPanel.svelte`: the loaded chat's Draft hook choice (`draftHookId`, through
-  `setChatMeta`; None unsets it), mounted by `OpenChatPanel.svelte` under its loaded-chat gate. It shows while the hook
-  list holds a Draft hook or the chat holds an id; an id naming no Draft hook (`draftHookOf`) shows as a missing entry.
+- The sidebar's chat tab switches from `SideChatList` to `src/lib/SideBars/OpenChatPanel.svelte` when
+  `selection.chatOpen`. The playground keeps the list. Binding, memory (`src/lib/SideBars/ChatMemoryPanel.svelte`), and
+  translation panels work from the open chat's list entry before its messages load. The binding panel's picker receives
+  the chat ref ([binding](persistence.md#chat-binding)). The Chat settings dialog reuses the binding and memory panels.
+- The author note and `src/lib/SideBars/ChatDraftHookPanel.svelte` wait for the loaded chat. The hook panel writes
+  `draftHookId` with `setChatMeta` and keeps a missing choice visible. New-chat defaults, memory choices, and
+  translation behavior belong to [persistence](persistence.md), [memory](memory.md), and [translation](translation.md).
 - `src/lib/SideBars/DevTool.svelte` owns prompt/lore previews and autopilot; `src/lib/SideBars/Toggles.svelte` owns
   per-chat prompt toggles.
 
@@ -196,26 +195,17 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `src/lib/UI/RefusedDataBanner.svelte`, `src/lib/UI/refusedData.ts`: the save adapter's refusal inventory as a chat
   banner and an app-level pill (`refusedItemsFor`), and Record Export (`refusedRecordExportText`). `App` mounts the
   `app` form beside reload and terminal notices, below alerts.
-- `src/lib/Others/RemoteHostScreen.svelte`: the Remote Host Mode lock ([app shell](app-shell.md#entry-and-screens)),
-  fixed at `z-1050`, above plugin full-screen containers (1000) and below alerts (1100). It shows this browser's name
-  (`deviceLink.name`), the feed connection, this tab's running jobs (progress entries with this tab's client id), the
-  recent commands, whether dialogs wait, and its one control, "Leave host mode". While an alert or status overlay is
-  shown, a copy of the control sits above that layer (`z-1110`, top right): a `wait` or `progress` overlay has no button
-  of its own.
-- The lock screen's attributes are a contract the headless host script (`pnpm host:headless`) reads in place of its
-  translated text: the root carries `data-remote-host-screen`, `data-feed-connected`, `data-dialogs` (the
-  waiting-dialogs line's condition) and `data-plugins-off` (`safeBootOff("plugins")`, fixed for the page load), each
-  `"true"` or `"false"`; each command row carries `data-command-id`, `data-command-type`, `data-command-state` and, only
-  with a code, `data-command-code`. The script also reads the
-  [terminal and reload notices'](global-api.md#terminal-and-reload-notices) markers.
-- `src/lib/Others/GenerationProgressWindow.svelte`: the generation progress window `App` mounts after load, shown while
-  `ui.generationProgressWindow` is on and a non-preview job runs on the server. Rows come from
-  [live updates](live-updates.md#feed-connection) (the selected chat's first, then by start): names the tab holds, the
-  stage, elapsed seconds, retries, sequence parts, another client's name, and with `output` the "≈" count and speed. A
-  row opens its chat through `openPinnedChat`; there is no Stop button.
-- The window collapses to a pill (collapsed at mount below 768 px, in component memory only) and takes pointer events
-  only on itself. It shares the top right with `HypaV3Progress`: `App` passes `memoryProgressShown`, which moves the
-  window below the memory pill so the two never overlap; the memory overlay's expanded branch keeps its own container.
+- `src/lib/Others/RemoteHostScreen.svelte` renders the host lock between plugin containers and app alerts. Leave host
+  mode stays reachable above an alert or status overlay. Follow [app shell](app-shell.md#entry-and-screens) for screen
+  and drop behavior.
+- `util/headlessHost.mjs` reads the lock's `data-remote-host-screen` presence marker, `data-feed-connected`,
+  `data-dialogs`, `data-plugins-off`, and each command's `data-command-id`, `data-command-type`, `data-command-state`
+  and optional `data-command-code`. Change producer and reader together, including the
+  [terminal and reload notices](global-api.md#terminal-and-reload-notices). See
+  [headless host](build-test-platforms.md#headless-host).
+- `src/lib/Others/GenerationProgressWindow.svelte` reads non-preview jobs from the
+  [live feed](live-updates.md#feed-connection) when `ui.generationProgressWindow` is enabled. A row opens its chat
+  through `openPinnedChat`. `App` passes `memoryProgressShown` to keep the window below the memory progress overlay.
 - `src/lib/Mobile/MobileCharacters.svelte`: the list view of the character grid (`src/lib/Others/GridCatalog.svelte`).
   There is no separate mobile shell; small screens use the desktop layout.
 
@@ -248,10 +238,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `ReloadGUIPointer` signals structural UI changes; `ReloadChatPointer` remounts a row by `reloadChatKey` (message id or
   greeting index), so adding/removing earlier messages does not reset that row's counter. Reassign arrays after in-place
   mutations so Svelte observes them.
-- `src/ts/gui/itemFolderFold.svelte.ts` keeps the folded module and persona folder ids of this device in one
-  `localStorage` list per kind and writes nothing to the server. A folder is open by default; a refused write stays in
-  memory for the tab, a write re-renders this tab's mounted lists, and a write drops the ids of folders that no longer
-  exist.
+- `src/ts/gui/itemFolderFold.svelte.ts` shares per-device module fold state (`isFolderFolded`, `setFolderFolded`)
+  between the module catalog and the chat's module menu. Folder membership is server-backed. The persona grid navigates
+  into one folder in component state ([characters and modules](characters-modules.md#personas-and-conversion)).
 - Theme settings are `theme`, `colorScheme`, `colorSchemeName`, `customColorScheme`, `textTheme`, `customCSS`,
   `textAreaSize`, `sideBarSize`, and `textAreaTextSize`.
 
@@ -308,7 +297,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   fields) → `Chat`/`ChatBody`. Verify streaming, reroll, the first greeting, and custom HTML manually.
 - Add a sidebar chat operation: `SideChatList.svelte`, plus `Chat` in `shared/database.ts` if the shape changes. Write
   through the chat module, open a chat with `changeChatTo` (or only select it with `selectChat`), and bump
-  `ReloadGUIPointer`. Cross-character pins use `openPinnedChat`, selecting the chat before the character.
+  `ReloadGUIPointer` where the operation needs a structural refresh. Cross-character pins use `openPinnedChat`,
+  selecting the chat before the character.
 - Add a form primitive: follow the prop convention in `src/lib/UI/GUI/` and add cases to `guiRendering.test.ts`.
 - Add a popup or portal: a store in `stores.svelte.ts`, then the trigger and host, by
   [the rules](#dialogs-popovers-and-portals). Clean up mounts and listeners.

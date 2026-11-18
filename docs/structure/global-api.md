@@ -57,8 +57,8 @@
   Checkbox answers and the HypaV2 editor are documented on `src/ts/alert.ts` `alertConfirmWithCheckbox` and
   `showHypaV2Alert`.
 - `src/lib/Others/AlertToast.svelte` renders the bottom-right toast: `TOAST_DURATION_MS` (10 s) counted from its
-  appearance and again after the pointer and focus leave, held while hovered or focused, closed by a click or Enter (not
-  one that ends a text selection in it).
+  appearance and again after the pointer and focus leave. Click, Enter, and Space dismiss the toast. Dragging to select
+  its text leaves it open.
 - The error alert closes before opening request history. The viewer also closes around its delete confirmation and share
   errors; see `src/lib/Others/RequestLogs/RequestLogsPopup.svelte` and
   `src/lib/Others/RequestLogs/ServerRequestHistory.svelte` for that UI handoff.
@@ -107,9 +107,11 @@ before the queue advances. See `alertQueue.ts`, `hotkey.ts`, and `AlertComp.svel
 
 ## Coupling
 
-- `globalApi.svelte.ts` imports `database.svelte.ts`, `storage/assetClient.ts`, `stores.svelte.ts`, alerts,
-  `characterCards.ts` (`characterURLImport`), and the network helpers. It re-exports `storage/resourceSync.svelte.ts`,
-  `storage/characterOrder.ts`, and `chatFold.svelte.ts`.
+- `globalApi.svelte.ts` re-exports `saving` from `src/ts/storage/resourceSync.svelte.ts`, `checkCharOrder` from
+  `src/ts/storage/characterOrder.ts`, and the chat-fold helpers from `src/ts/chatFold.svelte.ts`.
+- For credential prompts, `alertInput` takes `{ secret: true }` as its fourth argument. `AlertComp` passes it to
+  `TextInput`, whose `data-plugin-secret` marker excludes even visible input from
+  [plugin keyboard listeners](plugin-sandbox.md).
 
 ## Invariants
 
@@ -137,7 +139,7 @@ before the queue advances. See `alertQueue.ts`, `hotkey.ts`, and `AlertComp.svel
 ## Tests
 
 - Vitest:
-  `pnpm --silent test:agent src/ts/alert{Queue,Terminal,CardExport}.test.ts src/lib/Others/AlertToast.test.ts src/ts/{sourcemap,util,globalApiDisclosure}.test.ts src/ts/util/koreanSearch.test.ts`.
+  `pnpm --silent test:agent src/ts/alert{Queue,Terminal,CardExport}.test.ts src/lib/Others/Alert{Toast,Comp}.test.ts src/ts/{sourcemap,util,globalApiDisclosure}.test.ts src/ts/util/koreanSearch.test.ts`.
 - `AppendableBuffer`: run `src/ts/globalApiRetention.test.ts`, included in the [assets test command](assets.md#tests).
 - Typed shared doubles: `src/ts/tests/alertMock.ts` and `src/ts/tests/globalApiMock.ts` (with `globalFetchFromResponse`,
   a `globalFetch` answer built from a `fetch`-shaped stub).

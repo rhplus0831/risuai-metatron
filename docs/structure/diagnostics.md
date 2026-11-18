@@ -42,9 +42,9 @@ The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credent
   HTTP/lifecycle in `server/src/app.ts` and `server/src/routes/backupsUpstream.ts`, runtime in
   `server/src/diagnostics/log.ts` and `server/src/main.ts`, push in `server/src/push/pushService.ts`, and command relay
   transitions in `server/src/remoteCommands.ts`.
-- The server-only `remoteCommand` kind projects exactly commandId (generation-id syntax), command (`send`), state
-  (including forgotten), and non-negative integer bytes. No command body, result, chat text, or client name is kept.
-  `ROUTE_TEMPLATES` includes all five remote-command endpoints for HTTP diagnostics.
+- For a remote send or reload, `server/src/remoteCommands.ts` records the command ID, command type, relay state and body
+  byte count. `projectServerEvent` checks the fields. Command and result text stay out of the journal. For HTTP
+  diagnostics, update `ROUTE_TEMPLATES` when a relay endpoint changes.
 - `server/src/diagnostics/share.ts` `createRequestShares`: support-copy content, redaction, ordering, and synchronous
   lifetime.
 - `server/src/routes/diagnostics.ts` `registerDiagnosticsRoutes`: `GET /api/diagnostics` reads memory;
@@ -84,7 +84,9 @@ The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credent
 - Each admitted `start`/`runInJob` attempt starts a history row through `createHistoryObserver`; retries have separate
   request ids under the same job. Exchanges and the outcome complete it. Tab requests also retain their separate `log`
   events; plugins' `getFetchLogs` still sees only that tab's in-memory list.
-- A checked failure reaches `alertJobError` (`src/ts/alert.ts`): Copy debug info (`jobDebugInfo`, from
+- A checked failure shown on the tab reaches `alertJobError` (`src/ts/alert.ts`). For ordinary non-abort failures,
+  `reportEnd` in `src/ts/process/serverCommands.ts` collects `jobErrorText` for the Remote Host sender when reporting is
+  enabled. Maintenance and caller-handled refusals have their own paths. Copy debug info (`jobDebugInfo`, from
   `src/lib/Others/AlertComp.svelte`) holds checked ids, time, version, build id, status, reason, stage, and provider
   code, never the message; Open in request history filters the viewer to its job ([chat-pipeline](chat-pipeline.md)).
 - Server events enter the journal; browser events stay local until the user saves a combined report. Copy and Download
@@ -92,10 +94,10 @@ The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credent
 - A Web Push completion crosses three records: the server's `push` event per subscription in the journal, the service
   worker's records in IndexedDB, and the page's `dismissedByPage` or `chatRefresh`; only a combined report puts them
   side by side.
-- Share for support on any request of a job copies every request in that job; a request without a job is copied alone. A
-  job is a generation, a translation run, or a detached memory task (`SHARE_JOB_ID` in `shared/requestHistory.ts`).
-  Update refreshes the snapshot; Withdraw removes it. Support deployment must restrict the sftp operator to the
-  diagnostics folder.
+- Share for support on any request of a job copies its retained rows at the time of sharing. Rows captured with content
+  off contribute only their summaries. A request without a job is copied alone. A job is a generation, a translation
+  run, or a detached memory task (`SHARE_JOB_ID` in `shared/requestHistory.ts`). Update refreshes the snapshot; Withdraw
+  removes it. Support deployment must restrict the sftp operator to the diagnostics folder.
 
 ## State
 
@@ -103,12 +105,9 @@ The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credent
   is on by default; a missing `providers.requestHistoryContent` field reads as on, while `false` applies to new rows.
   The row/count/byte bounds and pruning behavior are documented by `server/src/data/requestHistory.ts`;
   `server/src/app.ts` wires `RISU_REQUEST_HISTORY_MAX_BYTES` and the provider settings.
-- The file's schema version stays `"1"` across additive columns: a column is added in place (`ALTER TABLE` inside the
-  opening transaction, before the statements are prepared) because every query names its columns, so an older server
-  keeps working on the file, while a version bump would make it run without a history. `interceptions` (the request
-  interception prompts `requestChatDataMain` inserted, set by `describe`, null when none) is one such column; it is
-  summary metadata, kept with content capture off, carried by support shares, and shown in the viewer's expanded row
-  when positive.
+- `createRequestHistory` adds columns under schema version `"1"` so older servers can still open the file. The
+  `interceptions` count from `requestChatDataMain` is summary metadata. It survives disabled content capture and goes
+  into support shares and the viewer's expanded row when positive.
 - The diagnostics root defaults to `save/diagnostics/`; `RISU_DIAGNOSTICS_DIR` is resolved against `rootDir`, so an
   absolute path or `..` can place it elsewhere. `RISU_DIAGNOSTICS_MAX_BYTES` caps `events/` at 64 MiB by default; ring
   size, state schedule, and the `state.json`, `reports/`, and `shared/` file rules are in
@@ -158,8 +157,8 @@ The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credent
 - Use Share for support, Update, and Withdraw in the viewer for request content. Sharing a job includes its other
   requests, including memory and auxiliary LLM calls.
 - Configure sftp for only the resolved diagnostics directory, with group read access compatible with the file modes. In
-  Docker, map the actual diagnostics directory and verify the restriction from that account; this production check
-  remains a manual follow-up in the archive.
+  Docker, map the actual diagnostics directory and verify the restriction from that account. See the
+  [deployment checks](../backlog/manual-checks.md).
 - Add a diagnostic kind/field in shared projection/validation, the emitting source, report canonicalization if
   applicable, and focused tests. Keep raw provider/error content out of event fields.
 
@@ -185,10 +184,10 @@ The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credent
 - E2E coverage includes `e2e/settingsPages.spec.ts`, which opens Advanced settings and its accordions with page-error
   checks. The Diagnostics panel has mount smoke coverage. Report actions and the history/alert workflow have no
   dedicated browser assertions.
-- Not tested: the full viewer/alert flow, production Docker+sftp isolation, pulling and withdrawing a shared job, and
-  saving a phone browser report. These manual checks are tracked in [manual checks](../backlog/manual-checks.md). The
-  viewer, the failure alert's two buttons, the popup's job filter, and `LogField`'s copy failure state were never opened
-  in a browser. No test covers a global middleware's early return or a `http` event for an answer slower than 5 s.
+- Not tested end to end: the viewer's job filter, failure alert buttons, and copy-failure feedback. Production
+  Docker+sftp isolation, pulling and withdrawing a shared job, and saving a phone browser report are in
+  [manual checks](../backlog/manual-checks.md). No focused test covers an early middleware return or an `http` event for
+  an answer slower than 5 s.
 
 ## Known Hazards
 

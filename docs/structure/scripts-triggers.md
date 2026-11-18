@@ -2,24 +2,12 @@
 
 ## Scope
 
-- Owns:
-  - regex find/replace scripts (the shared engine and the editors),
-  - triggers v2 and Lua (data model, editors, runtime semantics, and the regex worker),
-  - the server's script entry points as the tab reaches them (Lua buttons, manual triggers, the script transform).
-- Paths:
-  - `shared/scripts/regex.ts`, `shared/triggers.ts`
-  - `server/src/lua/*`, `server/src/scripts/*` (Lua runtime and regex worker)
-  - `src/ts/process/regexFiles.ts`
-  - `src/ts/process/serverCommands.ts`
-  - `public/lua/json.lua` (read by the server's script workers)
-  - `src/lib/SideBars/Scripts/*`
-  - `src/lib/Playground/{PlaygroundSyntax,PlaygroundParser}.svelte`
-  - `src/etc/docs/regex.cbs` (example script documentation)
-- Not here:
-  - Prompt adapters and job orchestration: `server/src/prompt/{scripts,triggers,commands}.ts` → `server-generation.md`.
-  - `edittrans` regex application → `translation.md` (`translator.ts:applyEdittransRegex`, the one regex the tab still
-    runs: `RegExp` replacement on translation text with `<cbs>` input and the move actions, no Lua or trigger).
-  - Module-provided scripts are collected by `process/modules.ts` → `characters-modules.md`.
+This guide owns the shared regex engine, trigger and Lua semantics, their editors and the jobs that chat buttons, forms
+and manual triggers start. For prompt orchestration and request hooks, follow [server generation](server-generation.md).
+[CBS rendering](cbs-rendering.md#display-transform) owns the tab side of display transforms.
+[Translation](translation.md) owns the browser’s `applyEdittransRegex`, and
+[characters and modules](characters-modules.md) owns collection of enabled module scripts. The author examples are in
+`src/etc/docs/regex.cbs`.
 
 ## Files
 
@@ -38,11 +26,12 @@ Each module's contract is its header comment (a Svelte component's, the JSDoc bl
   `public/lua/json.lua`: the JSON library the workers load.
 - `server/src/lua/runtime.ts`: the Lua engine in a worker (`createLuaRuntime`, `LUA_PRELUDE`, `declareBuiltins`).
   `server/src/lua/bindings.ts`: a job's Lua and trigger host functions (`createLuaBindings`, `LuaJobFatalError`).
-  `server/src/lua/egress.ts`: Lua `request`'s guard (`serverLuaRequest`, `validateEgressUrl`).
+  `server/src/lua/egress.ts` guards Lua `request` (`serverLuaRequest`, `validateEgressUrl`). For a wasmoon upgrade,
+  check both private API consumers in the runtime, `installValueGuard` and `installHook`.
 - `src/ts/process/regexFiles.ts`: `exportRegex`/`importRegex` for the regex editors.
 - `src/ts/process/serverCommands.ts`: the tab's side of command and send jobs and their follow. `runServerButton`,
-  `runServerManualTrigger`, `runServerJob`, `followJobToEnd`, `resumeServerJobs`, `readChatAgain`,
-  `refreshChatAfterPush`, `followedJobs`, `followedJobsOf`, `stopChatJob`.
+  `runServerManualTrigger`, `runServerJob`, `followJobToEnd`. See [job recovery](network-jobs.md#job-recovery) for
+  follows, resume and push refreshes.
 - `src/lib/SideBars/Scripts/RegexData.svelte`, `src/lib/SideBars/Scripts/RegexList.svelte`: the regex editor.
 - `src/lib/SideBars/Scripts/TriggerList.svelte`: picks the editor mode (v2 or Lua); `triggerLegacyUnsupported`.
 - `src/lib/SideBars/Scripts/TriggerV2List.svelte`: the v2 editor. `effectCategories`, `checkSupported`,
@@ -81,9 +70,9 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
   `globalscript` record is not an execution source or edited in the UI, though `regexFiles.ts` uses it as the default
   export list. Characters store `customscript`, `triggerscript`, and `lowLevelAccess`; modules store `regex`, `trigger`,
   and `lowLevelAccess`.
-- Runtime variables live in `chat.scriptstate['$'+key]`; readers return text, while Lua setters preserve raw finite
-  numbers and booleans (see Invariants). Display/request triggers write temporary variables only. A reroll in place
-  restores what its previous reply set, unless changed since; a failed one undoes its own writes
+- Runtime variables live in `chat.scriptstate['$'+key]`. Readers return text, while Lua setters preserve raw finite
+  numbers and booleans. V2 setters in display and request mode keep their changes in temporary variables. A reroll in
+  place restores what its previous reply set, unless changed since; a failed one undoes its own writes
   ([server generation](server-generation.md#reroll-in-place)).
 - The tab starts command jobs and `/api/transform`; the server owns Lua, triggers, send-script stages, and request
   triggers. See [server-generation](server-generation.md) for job and host semantics, [cbs-rendering](cbs-rendering.md)
@@ -139,19 +128,14 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
 - The v2 effect list renders its summaries as HTML: every stored effect value, and a `type` shown without a language
   description, is HTML-escaped there, and `indent` is written as a number (`0` when it is not one). Only the language
   description templates are trusted markup; an imported card's or module's trigger is not.
-- Lua `request` restrictions (`server/src/lua/egress.ts`): HTTPS only, URL at most 120 characters, the three banned Risu
-  prefixes, no `localhost` and only public addresses, 30 requests per minute per server, a 10 s timeout and a 2 MB
-  answer; it requires low-level access.
-- Lua `getName` and `getCharacterFirstMessage` return `""` when no character resolves and the stored field (possibly
-  `undefined`) otherwise, without an access check. `getDescription` and `getBackgroundEmbedding` first return `nil` on
-  refused access; allowed reads use the same missing-character rule, except `getDescription` throws "Character is a
-  group" for a group. Character setters do not write a missing character. See
-  `server/src/lua/bindings.ts:createLuaBindings`.
-- Lua `setDescription` refuses a non-string value ("Invalid data type") and writes nothing.
-- The store refuses non-finite numbers. Lua `setChatVar`/`setChatVarChanged` store one as the text `getChatVar` returns
-  (`0/0` as "NaN"), other values raw; Lua message and local-lore text takes any number or boolean as its text. A trigger
-  variable holding one anywhere (JSON `1e400`) is stored as its `toString()`; lore insert orders must be finite (create
-  defaults to 100, modify keeps the old one).
+- Keep Lua network requests behind the owner's low-level grant. `createLuaBindings` returns Lua `nil` on a refused
+  `request(id, url)` before any network call. `server/src/lua/egress.ts` owns URL admission, address pinning and the
+  rate, time and response-size bounds.
+- Lua values cross a typed store boundary. `server/src/lua/bindings.ts` (`createLuaBindings`) and
+  `server/src/tests/luaBindings.test.ts` own each getter's missing-character and access results, setter value types, and
+  conversion of non-finite numbers. Trigger variable serialization and lore insert order are in
+  `server/src/prompt/triggers.ts`.
+
 - During rerolls, Lua getters and indexed setters share the carrier-hidden history view; setters write by message id,
   and insertions beside the carrier anchor as trigger insertions do. The server slash commands `/comment`, `/cut` and
   `/del` resolve "last" and indexes through the same view (`CommandHost.historyMessages`), so the carrier is never their
@@ -163,7 +147,6 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
   (without an id) changed; a patch the store refuses is a fatal failure that ends the job (`LuaJobFatalError`,
   `server/src/lua/bindings.ts`); `v2SetLorebookActivation` warns and changes nothing for a non-integer, negative, or
   missing lore index.
-- Lua `request(id, url)` returns `nil` at once, without any egress, when `id` has no low-level access.
 - `logMain` passes its text through as is; the Lua `log` wrapper JSON-encodes its value before calling it.
 
 ## Recipes
@@ -188,34 +171,21 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
 
 ## Tests
 
-- Regex engine: `server/src/tests/regex.test.ts` covers parsing, mode and order rules, effects, and final-output
-  caching. `server/src/tests/regexScriptsTask.test.ts` covers worker serialization, aborts, bounds, and failure fencing;
-  `src/ts/translator/edittransRegex.test.ts` covers the client-only translation mode.
-- Trigger and Lua runtime: `server/src/tests/triggerRuntime.test.ts` covers v2 effects, mode allowlists, aborts, the
-  job-wide effect limit, and mixed/unknown prompt counting provenance;
-  `server/src/tests/{luaRuntime,luaRuntimeCharge,luaBindings,luaBindingsFences}.test.ts` cover the Lua engine, budget,
-  host, and cancellation. `server/src/tests/{commandExecutor,manualTriggers,commandRunner}.test.ts` cover command jobs,
-  manual triggers, and forms; `server/src/tests/generations.test.ts` pins form-command validation.
-- Owner grants: `server/src/tests/commandSequences.test.ts` guards provider commands, shared-persona writes, and local
-  script/lore-preview token counting.
-- Send integration: `server/src/tests/promptRunner.test.ts` covers the server send's script stages with real Lua/regex
-  workers, a plugin hook, and a fake provider. The chat-pipeline guide also routes this shared send test.
-- Client job boundary: `src/ts/process/serverCommands.test.ts` covers job creation, following, and resume;
-  `src/ts/process/command.test.ts` covers `/trigger` dispatch; `src/lib/ChatScreens/Chat.test.ts` covers form submission
-  and click-to-edit behavior.
-- Worker and write boundaries:
-  `server/src/tests/{manualTriggerMetadata,chatMetadataCoalescing,chatResult,scriptWorker,scriptWorkerOptions}.test.ts`
-  pin metadata batching, final trigger application, Lua host values, and worker limits.
-- v2 editor summaries: `src/lib/SideBars/Scripts/triggerEffectDisplay.test.ts` covers escaping, the numeric indent, and
-  unchanged plain output.
-- Editor ownership: `src/lib/SideBars/Scripts/{TriggerList,RegexList}.test.ts` cover pending confirmations and imports;
-  `src/lib/SideBars/Scripts/TriggerV2List.test.ts` guards the persona setter's palette category and stored edit form.
-- Slow cases in `server/src/tests/{scriptWorker,luaRuntime,manualTriggers,triggerRuntime,promptRunner}.test.ts` require
-  an explicit opt-in; see the [slow-test table](test-harness.md#slow-test-table). Run an affected file with
-  `pnpm --silent test:agent --all <file>` to include its ordinary and slow cases.
-- Gaps: other v2 editor behavior and `Chat.svelte`'s trigger-id owner token are not directly tested.
-- Not tested: `src/ts/process/serverCommands.ts` `runPinnedServerJob` following the job after `onStart` throws;
-  `serverCommands.test.ts` exercises the normal callback only.
+- Regex and the worker boundary run with
+  `pnpm --silent test:agent server/src/tests/{regex,regexScriptsTask,scriptWorker,scriptWorkerOptions}.test.ts src/ts/translator/edittransRegex.test.ts`.
+- For triggers, permissions, Lua and command dispatch, use
+  `pnpm --silent test:agent server/src/tests/{triggerRuntime,luaRuntime,luaRuntimeCharge,luaBindings,luaBindingsFences,commandExecutor,manualTriggers,commandRunner,commandSequences}.test.ts`.
+  For form admission use `server/src/tests/generations.test.ts`.
+- For trigger writes use `server/src/tests/{manualTriggerMetadata,chatMetadataCoalescing,chatResult}.test.ts`.
+  `server/src/tests/promptRunner.test.ts` runs an end-to-end send through real Lua and regex workers with a fake
+  provider and a plugin hook.
+- For the editors and tab dispatch run
+  `pnpm --silent test:agent src/lib/SideBars/Scripts src/ts/process/{command,serverCommands}.test.ts src/lib/ChatScreens/Chat.test.ts`.
+  The rendered display integration runs in `e2e/transformGolden.spec.ts` and `e2e/serverTransform.spec.ts`.
+- Some worker, Lua, trigger and prompt cases are slow. Use `pnpm --silent test:agent --all <file>` for an affected file
+  and see the [slow-test table](test-harness.md#slow-test-table) for membership.
+- Not tested: most v2 block-editor interactions, the chat row's trigger-id owner token, and following a command job
+  after `runPinnedServerJob`'s `onStart` callback throws.
 
 ## Known Hazards
 
@@ -250,8 +220,7 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
 - `src/lib/Playground/PlaygroundRegex.svelte` is empty; it is not an implemented regex playground.
 - Job `scriptstate` and `note` setters batch until a microtask or explicit flush; yielding or awaiting can split writes.
   Other chat writes flush first, so their refusal preserves earlier setters.
-  - `applyTriggerChat` merges map fields (`CHAT_META_MERGE_KEYS`: `scriptstate`, `GLGlobalVariables`, `toolCalls`,
-    `bookmarkNames`) against the trigger baseline via `meta.merge`/`mergeUnset`; only changed keys win over concurrent
-    command/tab writes, so keys restored to baseline preserve concurrent values.
+  - `applyTriggerChat` merges map fields from `shared/chats.ts` (`CHAT_META_MERGE_KEYS`, including `oocLog`) against the
+    trigger baseline via `meta.merge`/`mergeUnset`. Only changed entries win over concurrent writes.
   - The metadata write also advances the revision, so that trigger's reorder may be dropped.
   - `server/src/tests/chatMetadataCoalescing.test.ts` pins the batching boundary.

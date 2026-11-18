@@ -2,22 +2,10 @@
 
 ## Scope
 
-- Owns what happens to a chat's `structuredMemory` records when the chat changes: reconciling events with the chat's
-  messages and the repairs a person applies, retraction when messages are deleted and re-recording when they are edited,
-  what a checkpoint holds and restores of the records, what a copied or branched chat starts with, what a chat file
-  carries and an imported chat restores, and how a chat's HypaV3 summaries are adopted.
-- Paths: `server/src/prompt/memory/structured/{reconcile,inherit,restore,adopt}.ts`, the repair and flagging rules of
-  `server/src/prompt/memory/structured/edits.ts`, `src/ts/process/chatMemoryInherit.svelte.ts`, the reconciliation rules
-  of `shared/structuredMemory.ts`, the memory parts of `server/src/data/checkpointStore.ts`,
-  `server/src/data/resourceStore.ts`, `shared/chatCheckpoints.ts`, and `src/ts/characters.ts`.
-- See [structured memory](records.md) for the records these rules act on, the tables and store, and the edit route that
-  carries a repair, and [the archive](../../archived-plan/README.md) for the design.
-- Not here:
-  - The records, the projection and the reset, the writer, the read path, the rebuild, and the page tools →
-    [the area README](README.md).
-  - The other algorithms, the selection chain, the memory task service, and embeddings → [memory](../memory.md).
-  - Checkpoint tables, snapshots, and the resource store's connection, epoch, and transactions →
-    [server resources](../server-resources.md).
+- Owns reconciliation against the transcript, repairs after message edits and deletes, checkpoint restore, copy and
+  branch inheritance, chat-file records, and adoption of HypaV3 summaries.
+- See [records](records.md) for storage and the edit route, [writer](writer.md) for re-recording, [rebuild](rebuild.md)
+  for staged replacement, and [server resources](../server-resources.md) for checkpoint tables and transactions.
 
 ## Files
 
@@ -68,8 +56,8 @@ The panel sends repairs through [the edit route](records.md#the-edit-route). A `
 run: the old event remains until [the writer commit](writer.md#the-writer-task) replaces it, and a replacement older
 than later evidence uses the [historical path](writer.md#a-writer-run).
 
-A person's re-record of the first event is the cheapest way to give one chat's previously unrecorded greeting a
-citation: it joins that event's window, with no separate analysis call.
+To cite a previously unrecorded greeting, re-record the earliest eligible event. The greeting joins its window without a
+separate analysis call. [Writer windows](writer.md#the-writers-windows) own the eligibility check.
 
 A person's event title and summary correction sets `userCorrected` without changing evidence, status, grades, or repair
 marks. `retireRerecorded` carries that corrected title and summary into the replacement, alongside the trust flags and
@@ -183,10 +171,9 @@ Import crosses the file adapter, chat creation, save loop and restore route:
    request answers `restored: false`. Only the three checked lists reach the store, which can still refuse invalid ids,
    a second scene page or an oversized record with 400.
 
-`parseRestoredRecords`, for a chat file and a Markdown package alike, admits an event's `storyTime.date` when
-`isStoryDate` holds and refuses the record when it does not, as any malformed field; an event without one restores as
-before. `MEMORY_PACKAGE_VERSION` stays 2: `metadataLines` already writes the field, and an older build's check leaves it
-alone.
+The same admission checks optional greeting citations and story dates on chat-file and Markdown-package imports.
+`isStoryDate` defines valid dates. Existing files without them still load. The current package format already serializes
+event metadata. See [the Markdown package](records.md#the-markdown-package).
 
 The body cap is `RouteLimits.memoryRestoreBodyBytes`, default `MEMORY_RESTORE_BODY_BYTES` (32 MiB), since a stored
 record can reach one read round. A 413 is `tooLarge` with a size notice. `restored: false` or a non-`epoch` refusal
@@ -222,8 +209,8 @@ The held chat gets no send gap question or writer hand-off ([writer](writer.md#t
 owner until the choice. While real summaries remain, the projection stands aside and plugins read them.
 
 Decline calls bodyless `POST .../decline`; only a held chat sets `adoptionDeclined` and moves the memory revision. The
-writer then starts from the oldest turn. A real HypaV3 value is not subject to this choice: plugin reads never ask about
-it and `readProjectionRevisions` answers null.
+writer then starts from the oldest turn. When real HypaV3 summaries remain, plugin reads return them and
+`readProjectionRevisions` answers null.
 
 Where a decline goes: snapshots carry it; a checkpoint's `replace` leaves it in memory state, even loading a pre-decline
 checkpoint. Inherit carries it with no records or none supported too, since the copy holds the same summaries. Chat
@@ -308,11 +295,10 @@ takes over.
 
 ### Limitations
 
-- A rebuild can regroup messages. If a staged event has no corrected standing event over exactly its message set, or has
-  more than one, it keeps the writer's title and summary and takes only the correction mark from overlapping standing
-  events. A replaced event's corrected text is then lost; a carried event keeps its text. Other corrected overlaps with
-  different message sets do not prevent a unique exact match from supplying its text. A fresh rebuild discards both text
-  and marks; backfill replaces no event.
+- Regrouping during rebuild can lose corrected wording. The correction mark carries across overlapping evidence, while
+  the wording requires one exact match on the message set and greeting presence.
+  [Rebuild preservation](rebuild.md#what-a-rebuild-keeps) describes each mode (`swappedEvent`).
+
 - `moved` and `inserted` are structural readings, not move detection. A single source or a whole block moved reads as
   whole, and a repeat appended after an earlier deletion can read as `inserted`, which a keep answers. The stored
   `index` holds no capture boundary. Decision: Structured Memory D4, archive.
@@ -355,11 +341,10 @@ takes over.
   archive.
 - Under `doNotSummarizeUserMessage` a summary cites only replies, so an adopted chat's user messages stay uncovered
   until [a backfill](rebuild.md#backfill). Decision: Structured Memory slice 6a, archive.
-- A backfill covers those user messages either way. With the preset's `omitUserMessages` off it records them as windows
-  of their own, one writer call each. With it on, its swap attaches each one, with no model call, to the newest live
-  event citing its reply that reads active, and leaves out a target the merged list would turn stale; a message whose
-  reply has no such event stays raw, as does every message of a target left out. Decision: Structured Memory Reply-Only
-  Recording, D5 and D11 to D13 (2026-11-13).
+- [Backfill](rebuild.md#backfill) can record the uncited user text or, with `omitUserMessages` on, attach its anchors to
+  an active event citing the same turn's reply. User messages with no suitable active event remain raw. Decision:
+  Structured Memory Reply-Only Recording D5 and D11–D13 (2026-11-13).
+
 - A declined chat is never reset, since its summaries have no other copy, so its plugins keep reading them without any
   later event. Selecting HypaV3 and using its modal is the way out. A held chat's send has no summaries or card, so its
   older history trims until the choice. Decision: Structured Memory slice 6c, archive.
@@ -369,10 +354,11 @@ takes over.
   archive.
 - `pinned` selects nothing in any lane, so an adopted important summary is no longer sent every time. Decision:
   Structured Memory slice 6a, archive.
-- A stored-stale adopted event has narrower repairs. A keep reads active, but with no source present retrieval leaves it
-  out as `not-relevant`. A re-record needs the newest cited message a send reads to be a reply. An edit of a surviving
-  source spends no automatic call, because the event reads `missing`, not `changed`. A copy drops an event with an
-  unanchored source or none, kept or not. Decision: Structured Memory slice 6a, archive.
+- A stale adopted event can be kept, but missing message evidence still limits retrieval. `memoryRerecordTarget`
+  normally needs the newest surviving eligible cited message to be a reply. If none survives, an event with a greeting
+  citation can still be re-recorded when the chat has a current greeting and an eligible anchor. An unanchored message
+  still prevents inheritance. Decision: Structured Memory slice 6a and Greeting Source, archive.
+
 - An all-chats export reads the chats first and their records after, so a chat can be older than its records. Each
   chat's read has its own 60 s bound, so a server that hangs by then holds the file a minute per chat. Decision:
   Structured Memory slice 5f, archive.

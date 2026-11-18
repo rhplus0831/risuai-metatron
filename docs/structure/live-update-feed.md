@@ -33,17 +33,16 @@
 
 ### Live-update hello
 
-`createEventSockets` samples epoch, locks (`streaming`), memory statuses (`memoryTasks`), open handoff offers
-(`handoffs`), running jobs' progress (`generations`, `generationSnapshot`), registered clients (`clients`), optional
-`hello.digest` (`revisionDigest`) and `hello.cursor` (`resources.cursor()`) synchronously before registration;
-`server/src/app.ts` wires the samplers. Failed digest/cursor samples omit that field; other failures close.
-[Reconciliation](live-updates.md#feed-connection) uses the map, bounded replay, or whole listing.
+`server/src/app.ts` wires the snapshots read by `createEventSockets`. Before registering a socket, hello synchronously
+samples the epoch, streaming locks, memory tasks, handoffs, running generation progress and registered clients. It also
+samples `revisionDigest` and `resources.cursor()`. A failure of either optional sample omits that field. Other snapshot
+failures close the socket. The [tab reconciles](live-updates.md#feed-connection) from its advertised revision map, a
+bounded replay, or a whole listing.
 
-- `hello.rerollInPlace` advertises [in-place rerolls](server-generation.md#reroll-in-place); `eventFeed.ts`
-  `serverRerollsInPlace` consumes it for the screen's [Reroll](chat-pipeline.md#reroll) decision.
-
-`change.cursor` is its refs' newest committed log row, nested commits included, never resampled during dispatch.
-Streaming-only frames have none; older servers omit both cursors.
+- `hello.rerollInPlace` advertises [in-place rerolls](server-generation.md#reroll-in-place) to `serverRerollsInPlace`
+  for the [screen's reroll decision](chat-pipeline.md#reroll).
+- `change.cursor` accompanies committed refs, including nested commits. A lock-only frame has no cursor, and older
+  servers may omit it.
 
 ### Frame admission
 
@@ -53,19 +52,14 @@ are on both): a socket that cannot take it is terminated, and its client [reconc
 
 ### Presence
 
-A socket's `register` message lists it in the `clients` frame every socket gets (rules: `createEventSockets` comment);
-the tab side is [feed connection](live-updates.md#feed-connection).
+On `register`, the socket publishes the presence list. `createEventSockets` owns registration validation and caps.
+`isHost`, `clientName` and `sendToClient` use the newest registration for an id, even outside the published list.
 
-`FeedClient.host` is optional; only a boolean registration value is stored, in both `clients` and `hello.clients`.
-`isHost`, `clientName`, and `sendToClient` all use the newest registration for an id, beyond the published list's cap. A
-newest false or absent `host` hides an older host. `sendToClient` sends only to that newest socket through `send` with
-the serialized frame's UTF-8 bytes; its boolean means a socket was found, not delivery.
-
-After storing and publishing registration, `onRegister` repeats each host's open
-[remote command](self-host-server.md#remote-command-routes), including its stop flag. A callback throw logs only its
-error name and leaves the socket open. `remoteCommand` carries epoch, command id, and optional `stop: true` to the
-target; `remoteCommandState` carries epoch, command id, state and optional refusal code to the sender. Neither frame
-broadcasts or carries a body, result, or chat text; only an authenticated HTTP body read delivers a command.
+After updating presence, `onRegister` reissues pending
+[remote-command notices](self-host-server.md#remote-command-routes) to a registered host. `remoteCommand` addresses the
+target and `remoteCommandState` the sender. These frames carry no body or result. Delivery depends on a compatible host
+HTTP read. A successful `sendToClient` lookup alone cannot confirm delivery. For tab registration and reconnect, see
+[live updates](live-updates.md#feed-connection).
 
 ### Own chat changes
 
@@ -79,14 +73,14 @@ broadcasts or carries a body, result, or chat text; only an authenticated HTTP b
 
 ### Feed chat entries
 
-`ChangeSet.chats[]` (`shared/resources.ts`) is built per by-id group in `applyGroup` and kept in a feed-only map by
-group result, never in `ChatGroupResult`, the HTTP body, or `ChatWriteChange`. An entry carries the group's summary
-knowledge (`ChatFeedPayloads`) and at most one body, chosen by size in `chatFeedChange` (rule: `ChangeSet`): a whole-row
-`patch` under `SMALL_FEED_PATCH_BYTES`, else a smaller `rowDelta` (per-row field and text diffs against the group's
-first read, `chatRowDiff`; a text diff names that read's length and `textHash`, hashed only once the `rowDelta` is
-chosen because the hex hash has a fixed size: a tab holding other text misses; without them (older servers) only the
-length is checked), else a fitting `patch`, else a `delta`, else a fitting `rows` manifest (`ChatRowsManifest`: base,
-row ids, removals, count, changed metadata field names).
+For a by-id group, `applyGroup` keeps the summary and optional body in a feed-only map, separate from the HTTP
+`ChatGroupResult` and the writer's `ChatWriteChange`. `chatFeedChange` in `server/src/data/chatStore.ts` selects at most
+one fitting body. The wire contract in `shared/resources.ts` (`ChangeSet`, `ChatRowsManifest`) gives the preference
+order for a whole-row patch, field/text diffs and a changed-row manifest.
+
+The receiver applies diffs only against the expected base. `chatRowDiff` includes the original text's length and
+`textHash` for a text change. A manifest asks the client to read named rows and changed metadata fields at the given
+revision. Follow [client patch handling](live-updates.md#chat-live-updates) when changing the contract.
 
 ### Coalescing and publish order
 
@@ -127,8 +121,9 @@ row ids, removals, count, changed metadata field names).
 - Resource, chat, and order refs in `change` frames describe only committed store writes
   ([Invariants](server-resources.md#invariants)); `publishStreaming` can publish locks without a write, and
   `memoryTask`, `handoff`, and `generation` frames describe process-local transitions (`shared/events.ts`). A
-  `generation` frame and `hello.generations` carry ids, times, the kind, the stage, and counts, never text, names, or a
-  model.
+  `generation` frame and `hello.generations` carry ids, times, the kind, optional stage, retry/sequence progress and
+  approximate output-token counts. Follow `GenerationProgressEntry` in `shared/events.ts` to keep these frames
+  content-free.
 - A frame is never split ([Publication budget](#publication-budget)); a frame a socket cannot take closes that socket
   ([Frame admission](#frame-admission)).
 - Addressed remote-command notices use `sendToClient`, never `feed.publish`; reconnect registration repeats open
@@ -143,13 +138,13 @@ row ids, removals, count, changed metadata field names).
 
 ## Tests
 
-The in-process harness and the slow table are in the [shell's Tests](self-host-server.md#tests).
+[Shell tests](self-host-server.md#tests) describe the in-process fixture.
 
 - `chatMetadataCoalescingEvents.test.ts` identifies the job fixture's SQLite connection by its epoch and counts
   transactions on it, so background writes in other stores cannot alter the coalescing assertion.
 - Feed:
   `pnpm --silent test:agent server/src/tests/{changeFeed,chatFeedPatches,events,chatMetadataCoalescingEvents}.test.ts`.
-- Not tested: none here; the client's reconnect and replay are [live-updates](live-updates.md)'s.
+- For client reconnect and replay tests, see [live updates](live-updates.md#tests).
 
 ## Known Hazards
 

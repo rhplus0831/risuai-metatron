@@ -5,15 +5,9 @@
 - Owns the `structuredMemory` writer: its settings and their overrides, the windows it records, its task kind in the
   memory task service, a writer run, the analysis and patch prompts, admission of the model's answer, the pages it
   maintains, and record now with the `memoryRecord` job.
-- Paths: `server/src/prompt/memory/structured/{window,writer,prompts,analysis,pages,patches,compact,recordJob}.ts`, the
-  writer's task kind in `server/src/prompt/memory/memoryTasks.ts`, and `structuredMemoryStep` in
-  `server/src/prompt/assemble.ts`.
-- Algorithm selection: [structured memory](records.md); design: [the archive](../../archived-plan/README.md).
-- Not here:
-  - The records, the projection, the read path, the lifecycle, the rebuild, and the page tools →
-    [the area README](README.md).
-  - The other algorithms, the selection chain, the memory task service, and embeddings → [memory](../memory.md).
-  - The resource store's connection, epoch, and transactions → [server resources](../server-resources.md).
+- Enter through `structuredMemoryStep` for a send, `runMemoryRecord` for a press and `createMemoryTasks` for a
+  background writer. The [memory guide](../memory.md#selection-in-assembleprompt) owns chat enablement and algorithm
+  selection. The [area index](README.md) routes record storage, read selection, repairs and rebuild.
 
 ## Files
 
@@ -65,24 +59,17 @@ A person's press takes every repair mark before ordinary work. Automatic work ta
 (`automaticRerecords`), so a restored mark or one whose text was put back waits for a press. Adopted event sources count
 as recorded, keeping [adoption](lifecycle.md#adopting-hypav3-summaries) from automatically recording them again.
 
-A window always cites every message of its turns, also under `omitUserMessages`: what the writer is shown narrows, not
-what it records over. `memoryWriterReads` is the one rule for what the writer reads, and the prompt, the cast slice,
-quote verification, and the `tokens` cadence all go through it. Every ordinary window `confirmedWindows` makes holds a
-reply, so it always has something to read. A rebuild window or the test run's newest run can hold none; neither makes a
-call on one that also has no greeting ([rebuild](rebuild.md#the-plan)). A greeting-only backfill window has the greeting
-to read and makes its analysis call.
+`omitUserMessages` changes what is shown and tokenized. Every message in the window still receives an anchor, so
+coverage, reconciliation and re-records use the same evidence. The prompt, cast slice, quote check and token cadence
+share `memoryWriterReads`. Ordinary windows include a reply. Rebuild and test runs can encounter a window containing
+only unread messages. [Rebuild planning](rebuild.md#the-plan) describes when they can still record a greeting.
 
-A solo chat's greeting (`writerGreeting`: none for a group or a reset history) joins the first ordinary window when no
-readable event cites a greeting and no eligible message before that window is recorded, so a new chat's first window
-reads it and a chat recorded before greetings were cited never gets it automatically. It is no turn: the turn cadences
-count as without it, and the `tokens` cadence adds its stored text. It is always read, `omitUserMessages` or not, and
-listed first in the prompt as `[greeting] <character name>:`; the event and the run store its source. A re-record keeps
-the greeting on an event that cited it, with the current greeting's source, and adds it to the event whose window starts
-the recorded history when no other event cites one. An event that cites the greeting and no message a send still reads
-re-records as a greeting-only window, ordered first and confirmed through the first eligible message, exclusive: a press
-with no user message to confirm through takes that ceiling (`greetingRerecordCeiling`), and a chat with no eligible
-message offers none. At commit, `windowStillConfirmed` refuses a greeting window whose greeting no longer matches the
-owner read from storage, and a window with no assistant message writes no chat receipt; its run keeps it.
+`confirmedWindows` adds the unrecorded solo greeting returned by `writerGreeting` to the first ordinary window only when
+no earlier eligible message is recorded. It counts toward token cadence and leaves turn cadence unchanged. The model
+reads it even under `omitUserMessages`, and both run and event store its citation separately. Re-recording the first
+event can pick up a greeting an older recording missed. A greeting-only repair requires a current greeting and an
+eligible anchor (`greetingRerecordCeiling`). The commit rechecks the greeting against the stored owner, and a window
+with no assistant message leaves its receipt on the run alone.
 
 ### The writer task
 
@@ -146,10 +133,11 @@ changed, so the dry run still reads `patchInput`.
 
 ### Record now
 
-A press past one window asks first, with [the cost preview](rebuild.md#the-cost-preview). Record now and resume use the
-`memoryRecord` command with a target message or none. A target is an inclusive `WriterCeiling`; the window planner still
-runs marked events first, then older ordinary work. The `recordJob.ts` header owns admission and the two execution
-paths. The tab calls `runServerJob` because `runServerCommand` refuses group chats.
+A press asks for confirmation when [the cost preview](rebuild.md#the-cost-preview) estimates two or more calls or is
+unavailable. Record now and resume use the `memoryRecord` command with a target message or none. A target is an
+inclusive `WriterCeiling`; the window planner still runs marked events first, then older ordinary work. The
+`recordJob.ts` header owns admission and the two execution paths. The tab calls `runServerJob` because
+`runServerCommand` refuses group chats.
 
 Without a tab-bound request, the job queues a fresh manual input and ends before the service starts; a later hand-off
 retains that manual start and target. With a Plugin memory connection, a `request` trigger, or no service, the job holds
@@ -177,14 +165,11 @@ page, scene and link changes by id for one store write.
 With `keyLineGuidance` on, the analysis call's `rules` slot gains the key-line selection rule, including custom frames
 through `{{slot::rules}}`; the default-prompts answer and patch and compaction calls never carry it.
 
-The analysis answer's `storyTime` holds the free `text` and a `date`, `YYYY-MM-DD` or `MM-DD`, that a message under
-"Messages to record" states; `RULES` asks for the last one stated and forbids calculating, guessing, or taking one from
-the context. `readStoryTime` keeps a string `parseStoryDate` accepts and drops anything else without a warning. `RULES`
-and `PATCH_RULES` also keep words that depend on the reading day (today, yesterday) out of summaries, facts, and pages.
-A custom frame gets the date format and both rules only through `{{slot::format}}` and `{{slot::rules}}` (a patch frame
-the second rule through `{{slot::rules}}`), and a replayed `input` sends what it was built with. A repeat folded into
-the chat's last event keeps the stored `storyTime.text` and takes the answer's valid date, so an event's date stays the
-last one its messages state; an answer with no date leaves the stored one.
+The analysis answer may supply a story date explicitly stated in the messages to record. `RULES` asks for the last such
+date and `readStoryTime` admits the formats accepted by `parseStoryDate`. An invalid date is dropped. `RULES` and
+`PATCH_RULES` discourage wording relative to the reading day. Custom frames supply these instructions via
+`{{slot::rules}}` and the analysis format via `{{slot::format}}`. A replay uses its saved instructions. Folding a repeat
+preserves the standing time text and uses the new date only when valid.
 
 `changeSection` starts evidence afresh for a replaced body, retains it when a disputed join or identical text remains,
 and keeps `disputed` while the body still holds the join. Highlights follow the chat-or-preset rule, with rebuilds using
@@ -238,9 +223,11 @@ Compaction changes no event, and a warning does not fail the run.
   the label of the message entry after it (the expansion found elsewhere in the input does not count).
 - `keyLineGuidance` defaults to false and applies to events recorded from then on; stored events keep their key lines
   until re-recorded or rebuilt.
-- `MemorySettings.svelte` exposes only the fields something reads, and shares with HypaV3 only the preset picker, the
-  budget mode, and the memory maximum. `screening`: [its rules](read.md#reply-screening). So a preset's
-  `summarizationModel` and `alwaysToggleOn` still apply with no control here.
+- `src/lib/Setting/Pages/MemorySettings.svelte` shows a shared preset and budget, then separate Structured Memory and
+  HypaV3 settings. The HypaV3 preset's local summarizer selection also affects structured writer admission
+  (`admitRecord`). `chatMemoryEnabled` applies the chat's explicit switch before preset `alwaysToggleOn` and the owner's
+  legacy switch. [Reply screening](read.md#reply-screening) owns the rules for excluding replies.
+
 - `cadenceTokens` is the `tokens` cadence's threshold under a `tokens` budget mode, and `cadenceRatio` its share of the
   max context under a `ratio` one; each mode keeps the other's field.
 - The read path's settings sit beside the writer's: `laneSplit` (`auto` by default, also for a preset stored without it)
@@ -295,7 +282,8 @@ Compaction changes no event, and a warning does not fail the run.
 ## Recipes
 
 - A new writer setting: `StructuredMemorySettings`, `normalizeStructuredMemorySettings`, and the fresh-boot fixture
-  `src/ts/storage/tests/fixtures/boot/boot-snapshot.json`. The whole object already joins the fingerprint.
+  `src/ts/storage/tests/fixtures/boot/boot-snapshot.json`. Verify its inclusion in `structuredMemoryFingerprint`.
+  History highlight settings are excluded.
 
 ## Tests
 
@@ -377,8 +365,6 @@ Compaction changes no event, and a warning does not fail the run.
 
 ### Gotchas
 
-- An event recorded before its chat had pages holds its title, summary, key lines, and thread changes: its participants
-  were removed and items naming a page left out.
 - A run holding its prompts costs about them in storage until [the prune](#a-writer-run). `inputTokens` counts one
   attempt though `host.request` may retry, and `maxResponse` bounds the answer, so a low value fails runs on truncated
   JSON.

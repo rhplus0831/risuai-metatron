@@ -3,7 +3,7 @@
 ## Scope
 
 - Owns the tab's MCP client registry and tool dispatch, the remote JSON-RPC client with its OAuth and sessions, the
-  internal clients (`internal:fs`, `internal:googlesearch`, `internal:graphmem`, `internal:aiaccess`,
+  internal clients (`internal:fs`, `internal:googlesearch`, `internal:dice`, `internal:graphmem`, `internal:aiaccess`,
   `internal:risuai`), the RisuAccess tools over the tab's host, a plugin's MCP client, remembered tool calls, and how a
   server job's and a tab request's tool calls reach them.
 - Paths: `src/ts/process/mcp/*` (including `risuaccess/`), `shared/mcp/*`, `server/src/mcp/*`,
@@ -23,7 +23,9 @@
 - `src/ts/process/mcp/mcp.ts`: the tab's client registry and tool dispatch, and the remembered calls. Look up
   `initializeMCPs` (identifier rules), `getTools`/`callTool` (over `getMCPTools`/`callMCPTool`), `readyTabClient`,
   `importMCPModule`, `encodeToolCall`/`decodeToolCall`, `MCPs`, `callOnlyMCPs`.
-- `src/lib/Playground/PlaygroundMCP.svelte`: the MCP Playground page; look up `refresh` and its `callMCPTool` handler.
+- `src/lib/Playground/PlaygroundMCP.svelte` owns manual listing and invocation. Look up `refresh` and `callMCPTool`. For
+  overlapping requests see `syncMCPs` and `releaseLeases` in `mcp.ts`. Each listing or call holds its own client set
+  through completion so a concurrent chat's registry refresh cannot destroy a client it is using.
 
 ### Remote MCP client
 
@@ -59,8 +61,8 @@
 
 - `server/src/mcp/jobTools.ts` `createJobTools`: a job's tool set and where each identifier runs; `createJobToolState`.
 - `server/src/mcp/internal.ts` `createInternalMcps`: `internal:aiaccess`, `internal:risuai`, `internal:graphmem` over
-  the job's data. `server/src/mcp/dice.ts` `callDiceTool`. `server/src/mcp/registry.ts` `McpRegistry`: the process's
-  remote clients.
+  the job's data. Read `createInternalMcps` for detached-scope write refusals and nested AI access.
+  `server/src/mcp/dice.ts` `callDiceTool`. `server/src/mcp/registry.ts` `McpRegistry`: the process's remote clients.
 - The services those tools run on (the `createJobTools` call, the job chat's `getChatVar`/`setChatVar`, a request's tool
   calls) are built in `server/src/lua/bindings.ts` ([scripts and triggers](scripts-triggers.md)).
 
@@ -121,7 +123,10 @@ The tab's own requests (`/api/llm/request`) run their tool loops on the server t
 
 ## Invariants
 
-- Tool names are resolved globally, first match wins. Adapters usually keep only text content.
+- Separate discovery from invocation. A provider can dispatch only a tool name in that request's offered descriptors
+  (`offeredNames` in `server/src/llm/request.ts`). The registry can still resolve call-only `internal:risuai` tools for
+  direct calls, even when no module offered them. The first matching client wins a name collision. See
+  [provider responses and tools](llm-requests.md#provider-responses-and-tools).
 - Both remote clients allow at most four outstanding ping replies per client, dropping excess pings without closing the
   session; success or failure releases a slot, and each admitted reply keeps its deadline.
 - Every `tools/list` page must have a successful HTTP status, no RPC error, and a `tools` array, which may be empty. A
@@ -147,6 +152,9 @@ The tab's own requests (`/api/llm/request`) run their tool loops on the server t
   or use `TAB_MCP_IDENTIFIERS` (`shared/jobs.ts`), `readyTabClient`, and `jobChannel.ts` for a tab client. Chat clients
   implement `callToolForChat(chatRef, name, args, scope?)` by stable id; their chat stays pinned and loaded during the
   request, and `callTool` remains the no-request path.
+- Change graph-memory reads or writes in `shared/mcp/graphmem.ts` (`callGraphMemTool`). The tab and job hosts supply the
+  chat's `graphmem_graph` variable and the embedding search. Check both with `graphmemHost.test.ts` and
+  `mcpInternal.test.ts`.
 - Change the tool loop: `mcp.ts` `getTools`/`callTool` plus every server adapter (`server/src/llm/openAI/requests.ts`,
   `openAI/responses.ts`, `google.ts`, `anthropic.ts`) and the callback leg (`server/src/llm/requests.ts`,
   `src/ts/process/request/transport.ts`).

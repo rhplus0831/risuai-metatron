@@ -8,7 +8,7 @@
   - Realm hub browse, terms acceptance, creator blocking, and staged card download,
   - the settings report export.
 - Paths:
-  - `src/ts/drive/*` (local backup UI and RisuAI-compatible import/export)
+  - `src/ts/drive/*` (local backup UI and RisuAI-compatible import/export), `shared/backups.ts` (partial archive assets)
   - `src/ts/realmBlocking.ts` (creator block-list rules used by the Realm UI and card entry points)
   - `src/ts/realmTerms.ts` (the RisuRealm terms acceptance every Realm entry point awaits)
   - `src/ts/storage/realmImportClient.ts` (the staged Realm import client)
@@ -17,8 +17,9 @@
   - `src/lib/UI/Realm/*`
   - `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte`
 - Not here:
-  - The save adapter → `resource-sync.md`; resources → `persistence.md`.
-  - The archive format, snapshots, and the backup routes → `server-resources.md`.
+  - The save adapter → [resource sync](resource-sync.md); resources → [persistence](persistence.md).
+  - The archive format, snapshots, and the backup routes →
+    [server resources](server-resources.md#backup-and-import-internals).
   - Hub URL and card codecs → `characters-modules.md` (`characterCards.ts`).
   - Node `/hub-proxy` → `self-host-server.md`.
   - `localNetwork.ts` → `network-jobs.md`.
@@ -39,9 +40,6 @@ and keeps what spans files.
     keys, the refusal banner's labels); the reload notice keeps its own store in `src/ts/alert.ts` and stays above the
     progress alerts; the partial categories are `shared/backups.ts` `selectPartialBackupAssets`, which the server route
     selects with and this file only labels with.
-  - `LoadLocalBackup`: `manifest.json` first goes to `POST /api/backups/import`; anything else (upstream RisuAI backups
-    and metatron's older `database.risudat` backups) goes to the upstream import, the one-way migration the
-    compatibility rule ([persistence](persistence.md#invariants)) owes.
 - `src/ts/drive/upstreamBackupClient.ts`: the client of the upstream import and export routes
   (`server/src/routes/backupsUpstream.ts`, `server/src/routes/backupsUpstreamExport.ts`). Import:
   `prepareUpstreamImport` (through `src/ts/storage/serverImportClient.ts` `importOverServer`), `commitUpstreamImport`
@@ -74,7 +72,7 @@ and keeps what spans files.
   `src/lib/UI/Realm/RealmLicense.svelte` (`CCLicenseData`): each states its rules in its `<script>` contract.
 - `src/lib/Setting/Pages/Advanced/SettingsExportButtons.svelte`: the redacted settings report (`buildSettingsReport` and
   its complete field projection are in [persistence](persistence.md)), the request logs popup (`alertRequestLogs`,
-  [global-api](global-api.md)), and statistics.
+  [diagnostics](diagnostics.md)), and statistics.
 - The `.bin` converters under `server/src/data/upstream/` (their workers and staging are
   [server-resources](server-resources.md)'s):
   - import: `server/src/data/upstream/importDatabase.ts` (`convertUpstreamDatabase`),
@@ -89,9 +87,9 @@ and keeps what spans files.
 
 ## Flows
 
-- Entry points:
-  - `UserSettings.svelte`: local backup buttons (full, partial, RisuAI-compatible), internal backup restore, dataset
-    export.
+- `src/lib/Setting/Pages/UserSettings.svelte` opens the file backup and restore dialogs, exports datasets, and links to
+  the Storage page for server snapshots. `LoadLocalBackup` sends a file with `manifest.json` first to
+  `POST /api/backups/import`; other files enter the upstream import flow.
 - RisuAI-compatible backup (`SaveUpstreamLocalBackup`, tab → server → tab):
   - After the button's confirmation, "Include API keys?" (`alertConfirm`): without the keys the auxiliary service keys,
     the characters' TTS keys, and the MCP OAuth secrets are blank too, unlike the version-2 archive, which keeps those.
@@ -113,10 +111,10 @@ and keeps what spans files.
     notice, which never waits for the commit's answer; a successful answer writes its own selection and reloads.
   - A prepared import not committed is cancelled on the server. Other tabs see the maintenance 503 retries, then the new
     epoch, and reload.
-- Realm: `MainMenu` (the Realm card) → `RealmMain` → `getRisuHub(search, page, nsfw, sort)` → `RealmPopUp` →
-  `downloadRisuHub`. There is no upload path. A block written in the popup reaches `settings.ui.blockedRealmCreators`,
-  which `getRisuHub` and `RealmMain`'s reactive filter both apply, so a block from either popup host or another tab
-  hides cards at once; cards without creator metadata stay visible.
+- Realm: `MainMenu` (the Realm card) → `RealmMain` → `getRisuHub` → `RealmPopUp` → `downloadRisuHub`. There is no upload
+  path. A block written in the popup reaches `settings.ui.blockedRealmCreators`, which `getRisuHub` and `RealmMain`'s
+  reactive filter both apply, so a block from either popup host or another tab hides cards at once; cards without
+  creator metadata stay visible.
 
 ### RisuRealm terms
 
@@ -169,9 +167,11 @@ and keeps what spans files.
   writes `database.risudat`; the route then streams the assets by basename and the database last.
 - Its settings steps are the job projection's (`server/src/data/databaseProjection.ts`: `projectSections`,
   `projectCollections`, `forwardSelectedPreset`, `forwardPersonaRoots`, `characterShell`, also used by `loadJobScope`).
-  A structured chat's `hypaV3Data` is [the projection](structured-memory/projection.md#the-hypav3-projection) of its
-  records, unsealed (`memory-projected`, `memory-unreadable`). Its pages and threads have no place in the format: the
-  report counts them as excluded `memory-pages` and `memory-threads`, and the confirmation points to the native backup.
+- `upstreamCharacters` folds the chats' memory switches into the upstream character's `supaMemory`: any enabled chat
+  enables it. For Structured Memory, existing HypaV3 summaries take priority. Otherwise the export can write
+  [an unsealed projection](structured-memory/projection.md#the-hypav3-projection) from the events (`memory-projected`,
+  `memory-unreadable`). The report counts excluded pages and threads (`memory-pages`, `memory-threads`) and the
+  confirmation points to the native backup.
 - `exportDatabase.ts` holds boot compatibility (`upstreamCharacters`), credentials (`placeNamedKeys`,
   `reportOmittedKeys`), presets and HypaV3 ratios (`upstreamPreset`, module header).
 - Settings upstream's `Database` lacks (`METATRON_ONLY_SETTINGS`, among them `inputHooks`, `requestInterceptions`,
@@ -182,7 +182,11 @@ and keeps what spans files.
   (`DEVICE_PLUGIN_STORAGE_KEYS`) from `pluginCustomStorage`, counting their entries as excluded `plugin-storage`; it
   also drops `_coldplugin`. Import still writes legacy `_pluginStorage`, served by owned read-through
   ([plugin storage](plugin-sandbox.md#state)).
-- Messages drop their reroll candidate fields (`message-candidates`, `upstreamChat`).
+- The compatible export includes assets referenced by retained plugin custom values (`collectUpstreamAssetReferences`).
+  Native full archives take all stored assets; native partial archives select only the categories in
+  `selectPartialBackupAssets`. Drafts held in a browser have no server backup source
+  ([draft recovery](draft-recovery.md)).
+- `upstreamChat` counts omitted translations and reroll candidates as `message-translations` and `message-candidates`.
 
 ## State
 
@@ -203,8 +207,8 @@ and keeps what spans files.
 
 - The archive format (version 2, `manifest.json` first) is defined by the server; the client only streams it and reads
   the manifest.
-  - An archive or snapshot whose resource database schema version differs from the server's current version (3, with
-    settings sections and collections) is refused with a message; metatron does not migrate these archive schemas.
+  - Native archives and snapshots must use the server's current resource schema; the restore validator refuses a
+    mismatch. See [server resources](server-resources.md#backup-and-import-internals).
   - Archives in the upstream format (upstream RisuAI and older metatron backups with `database.risudat`) are restored
     through the upstream import under the compatibility rule ([persistence](persistence.md#invariants)): a one-way,
     full-replace migration with a report before anything is replaced.
@@ -223,9 +227,8 @@ and keeps what spans files.
 - A backup restore replaces every resource and installs assets under
   [the content-name rule](server-resources.md#backup-and-import-internals) (`server/src/routes/backups.ts`
   `restoreValidated`); the app reloads afterwards because every revision the tab held is void (new epoch).
-- A refused snapshot or archive, one over the server's restore memory limit (`RISU_RESTORE_HEAP_MB`) included, is
-  refused before maintenance, so it ends no running job and takes no safety snapshot; the route's `error` text is what
-  the tab shows.
+- Validation failures, including the server's restore memory limit (`RISU_RESTORE_HEAP_MB`), precede maintenance. They
+  leave running jobs alone and take no safety snapshot. The tab shows the route's `error` text.
 - Full version-2 archives carry private data, including `googleSearchCredentials`, the Iris dialogue, plugin storage,
   and the plugin permission grants.
 
@@ -262,6 +265,7 @@ and keeps what spans files.
   `legacy` or `current` targets; `--bin` checks an existing export. The `current` target also runs upstream's plugin
   storage migration ([build/test platforms](build-test-platforms.md#files)).
 - Settings-report redaction: `pnpm --silent test:agent src/ts/storage/tests/snapshots.test.ts` (`buildSettingsReport`).
+- Snapshot flush and refusal notes: `pnpm --silent test:agent src/lib/Setting/Pages/Storage/storageController.test.ts`.
 - Not tested: terms-dialog rendering, `RealmMain` leaving on decline, `LocalWriter`/streamSaver integration, and a
   backup restored in upstream's own app. There is no dedicated e2e spec for this area; the compatibility script does not
   run upstream's `LoadLocalBackup` UI. `upstreamBackupClient.ts` `tabExportRequest` including the open chat as

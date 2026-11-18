@@ -5,17 +5,9 @@
 - Owns a chat's rebuild, fresh rebuild, and backfill: a run from its plan to its swap, the staged tables, what a rebuild
   keeps of a person's work and a fresh rebuild discards, the lock a run puts on the chat, and the cost preview that
   rebuild, backfill, and record now share.
-- Paths: `server/src/prompt/memory/structured/rebuild.ts`, the rebuild part of `server/src/prompt/memory/memoryTasks.ts`
-  (`rebuildWork`, `commitOfRebuild`, `swapRebuild`, `noteRebuildStop`), the `rebuild` surface of
-  `server/src/data/memoryStore.ts`, and the controls in `src/lib/Others/StructuredMemory/StructuredMemoryPanel.svelte`
-  and `memoryRecordPress.ts`.
-- See [structured memory](records.md) for records and a memory write, and [the archive](../../archived-plan/README.md)
-  for the design.
-- Not here:
-  - The records, the projection, the writer, the lifecycle, the read path with the rest of the panel, and the page tools
-    → [the area README](README.md).
-  - The memory task service's queue, retention, and ends → [memory](../memory.md#background-memory-task).
-  - Snapshots, the checkpoint tables, and transactions → [server resources](../server-resources.md).
+- Start with `rebuildPlan` for transcript selection, `rebuildWork` for execution and `rebuildChanges` for the swap. The
+  [writer](writer.md) owns each recording, the [memory task service](../memory.md#background-memory-task) owns task
+  admission, and [server resources](../server-resources.md) owns snapshots and transactions.
 
 ## Files
 
@@ -73,9 +65,10 @@ A run is a persisted row, outliving tasks and processes. The Structured Memory w
    `commitOfRebuild` owns the commit fence and ceiling; commits write no chat receipt and move no chat revision for the
    tab's fence.
 3. At `maxWriterWindows` or half of `taskDeadlineMs`, the task queues its input again and ends `done`
-   (`rebuildContinues`). The next task repeats `startChecks`: changed settings stop the run at that start, never
-   mid-task. A window that does not record stops spending until a person resumes. `noteRebuildStop` keeps its reason and
-   error on the row beyond the task's `terminalRetentionMs`.
+   (`rebuildContinues`). The next task repeats `startChecks`: a fingerprint mismatch stops the run at that start. A
+   switch away from Structured Memory is also detected [during a task](#during-a-run). A window that does not record
+   stops spending until a person resumes. `noteRebuildStop` keeps its reason and error on the row beyond the task's
+   `terminalRetentionMs`.
 4. Resume (`{ resume: true }`) passes the same admission with current settings. At the cursor's end `swapRebuild` checks
    the fence and live hold, computes `rebuildChanges` and swaps, ending `done` (`rebuilt`). The task service's rebuild
    comments own cursor progress, empty windows and `nothingRecorded`.
@@ -89,23 +82,17 @@ abandon and release read-only; the tab's task fence alone cannot release a run's
 
 ### The plan
 
-Read `rebuildPlan` in `server/src/prompt/memory/structured/rebuild.ts`.
+`rebuildPlan` persists message IDs and, when included, the greeting source in `{ ids, greeting }`. Rebuild and fresh
+attach the current solo greeting to the first message window. A normal rebuild skips sources cited exclusively by
+retracted readable events, greeting included. Backfill can create its own greeting window.
 
-Each persisted entry stays a message-id array unless it carries a greeting: `{ ids, greeting }` fixes that source at the
-start. Rebuild and fresh attach the current greeting to their first window without changing turn grouping; rebuild
-excludes one cited only by retracted readable events. Neither adds a window to an empty message plan. Groups, reset
-histories and empty greetings supply none. A malformed stored greeting reads as just its ids.
+`rebuildWindow` reads the owner's current greeting before any model call. A mismatch stops the run at the cursor with
+`windowChanged`; commit checks again. A greeting-only window uses the first eligible anchor as its exclusive ceiling.
+Other windows use their last retained message, inclusive.
 
-At window time `rebuildWindow` takes current greeting text from a direct owner read and keeps the stored source. A
-mismatch stops `windowChanged` before any model call and leaves the cursor for resume or abandon; the commit checks
-again for an in-flight change. A greeting-only window uses the first eligible anchored message as its exclusive ceiling,
-or moves past with no call if none remains. Other windows use their last message, inclusive.
-
-With the preset's `omitUserMessages` on, a turn with no reply left after the mode's exclusions is a window of its own,
-and only turns that keep a reply are grouped by `turns`, so a leftover user message is never cited by the next turn's
-event. A run keeps the plan it began with, so a resume after the switch changed records the old grouping.
-`rebuildWindow` returns null when neither a greeting nor a message is read (`memoryWriterReads`), so `rebuildWork` moves
-the cursor with no call; the cost preview counts neither its call nor its messages.
+With `omitUserMessages` on, a turn containing only unread user text after the mode's source exclusions gets its own
+window. A resume keeps the persisted grouping. When neither the greeting nor a message is readable, the worker advances
+the cursor without a model call. The cost preview uses the same planning rules.
 
 ### What a rebuild keeps
 
@@ -135,7 +122,8 @@ A fresh rebuild (`fresh`, the panel's Start over) keeps nothing: `rebuildSeed` g
 no message or greeting, a retraction included, and `rebuildChanges` removes every live event, page, thread, and trashed
 page, so marks, reverts, grades, context modes, merges, and a person's threads all go. Only the adoption lineage
 crosses: with any live event adopted or rebuilt over one, every staged event takes `adoptedSummaries`, so the stored
-summaries stay resettable. It is the one path that empties the trash in one write.
+summaries stay resettable. On a completed swap it empties the trash in one write. Like a normal rebuild it leaves live
+records intact when there is no staged event to install.
 
 ### Backfill
 
@@ -172,22 +160,22 @@ The lock is the run row, lasting until a completed resume or abandon. Job admiss
 send could write live records through a gap run or hand-off that the swap would lose. The fences span
 `server/src/jobs/generationJobs.ts`, `server/src/app.ts`, the writer's commit and the store's `rebuilding` read.
 
-| During a run                              | What happens                                                                 |
-| ----------------------------------------- | ---------------------------------------------------------------------------- |
-| Send, continue, command, `memoryRecord`   | Admission refuses 409 `memoryRebuilding`; the tab's words name the panel     |
-| Preview                                   | Allowed: no write                                                            |
-| `memoryRebuild`                           | Reaches admission; an existing run requires resume                           |
-| Panel edit, revert, adopt, decline, reset | 409 `fenced`; restore and inherit into the chat too                          |
-| Inherit from, chat file, checkpoint save  | Allowed: reads live records                                                  |
-| Checkpoint load                           | Refused as `generating` via `loadLocked`; `busy` would also bar saves        |
-| Chat deletion                             | `invalidate` ends the task; cascade removes run and staging                  |
-| Whole-chat replace                        | Task ends; `noteSourceReplaced` prevents resume; abandon still works         |
-| Message edit or confirmed delete          | `reconcileMessageChanges` reacts on live records, then staging               |
-| In-flight window's source changed         | Stops `windowChanged`; resume rereads that window                            |
-| Live writer past admission                | `commitWindow` refuses `windowChanged`; staged `rebuildStore` reports no run |
-| Algorithm switched away                   | `rebuilding` releases job/load locks; run waits for the panel to return      |
-| Maintenance, shutdown, restart            | Task ends, run stays; no automatic resume or startup scan                    |
-| Snapshot restore                          | `DELETE FROM chats` cascades the run away                                    |
+| During a run                                           | What happens                                                                 |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| Send, continue, command, `memoryRecord`                | Admission refuses 409 `memoryRebuilding`; the tab's words name the panel     |
+| Preview                                                | Allowed: no write                                                            |
+| `memoryRebuild`                                        | Reaches admission; an existing run requires resume                           |
+| Panel mutation (edit, page tool, import, adopt, reset) | 409 `fenced`, also for revert, decline, restore and inherit into this chat   |
+| Inherit from, chat file, checkpoint save               | Allowed: reads live records                                                  |
+| Checkpoint load                                        | Refused as `generating` via `loadLocked`; `busy` would also bar saves        |
+| Chat deletion                                          | `invalidate` ends the task; cascade removes run and staging                  |
+| Whole-chat replace                                     | Task ends; `noteSourceReplaced` prevents resume; abandon still works         |
+| Message edit or confirmed delete                       | `reconcileMessageChanges` reacts on live records, then staging               |
+| In-flight window's source changed                      | Stops `windowChanged`; resume rereads that window                            |
+| Live writer past admission                             | `commitWindow` refuses `windowChanged`; staged `rebuildStore` reports no run |
+| Algorithm switched away                                | `rebuilding` releases job/load locks; run waits for the panel to return      |
+| Maintenance, shutdown, restart                         | Task ends, run stays; no automatic resume or startup scan                    |
+| Snapshot restore                                       | `DELETE FROM chats` cascades the run away                                    |
 
 The algorithm is the chat's (`chatMemoryAlgorithm` on its stored mode and the global selection), so a switch of the
 global selection releases the run of every Legacy chat, and a chat's own mode change releases its run alone. A detached
@@ -203,8 +191,10 @@ abandoned.
 owns window counting, and the shared answer and `memoryCostTokens` own the
 [estimate](../../reports/measurements/structured-memory-2026-11-03.md).
 
-Rebuild and backfill count the stored greeting's UTF-8 bytes in its window and one analysis call for a greeting-only
-window, without adding to `messages`. Record now keeps its message-only estimate.
+Rebuild, fresh rebuild and backfill count the stored greeting's UTF-8 bytes in its window and one analysis call for a
+greeting-only window, without adding to `messages`. Record now counts message text only and can omit a greeting-only
+repair from the call count used for confirmation. See the
+[cost findings](../../research/found-issues.md#record-now-can-skip-confirmation-for-a-second-model-call).
 
 A backfill preview with `omitUserMessages` on also answers `folds`: the user messages the swap may attach, judged by the
 events' stored status without hashing, so an upper bound. `pressMemoryRebuild` asks for rebuild/backfill when cost is
@@ -248,7 +238,8 @@ beside the rebuild buttons. The comparison starts no work; a person must press. 
 - Only `swap` moves live records from a run. A staged write never touches a live table, and no reader but
   `store.memory.rebuild` reads a staged one.
 - A rebuild writes no chat: no receipt, no `hypaV3Data`.
-- A window that did not record spends nothing more until a person resumes.
+- A failed or refused recording stops the run until a person resumes. An unreadable planned window can advance the
+  cursor without recording.
 - In `rebuild` mode, an event is replaced only by what cites everything it said; `fresh` removes every live event when
   the run swaps.
 

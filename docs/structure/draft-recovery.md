@@ -49,10 +49,9 @@
   timing. The editable draft and a send hand-off remain separate browser-wide rows. Read `checkComposerValue` and the
   composer method comments for compatibility and atomic swaps; composer timing and guarded restore are in
   [chat pipeline](chat-pipeline.md#composer-and-drafts).
-- A composer row holding draft-box text (`draft`) or the draft-send marker (`sent: "draft"`) is written in composer
-  format 2; every other composer row keeps today's shape and format 1, and a reader of format 1 only keeps a format 2
-  row untouched on every path. The marker goes with the row's `userMessageId`; a draft send's hand-off restores both
-  boxes, the translation, and the attachments.
+- A nonempty draft box or a `sent: "draft"` marker selects composer format 2. The marker is tied to `userMessageId`.
+  Other composer rows and mutation/draft rows use format 1. An older reader preserves unfamiliar rows. A draft-send
+  hand-off can restore both boxes, the translation and attachments.
 - `onChatRemoved` in `chatStore.svelte.ts` notifies isolated listeners for local and remote single-chat deletion (a
   retained last chat included), collection removals, conflict reconciliation, and
   `forgetCharacterChats`/`forgetCharacter` (`chatId: null` for a character). The composer subscribes at app load and
@@ -71,14 +70,10 @@
   if due first. Continuous edits normally share that transaction; an idle acknowledgement gets cleanup. Both hide events
   flush even during a running save, including deferred large values. Throttle, cached projections and oversized-layer
   behavior live on `flushJournal`.
-- Inside the [restore halt](live-updates.md#restore-halt), `haltForRestore` synchronously calls `captureRestoreJournal`
-  before anything settles, taking desired/written/in-flight record views and every chat/order view, empty projections
-  included. `writeRestoreJournal` writes this snapshot and uncommitted conflict drafts outside the normal queue, under
-  the views' old epochs.
-- After capture, late answers, cycle cleanup, timers and hide events cannot enqueue new mutation-row writes. Before
-  showing the terminal notice, `haltForRestore` starts the snapshot write and a 1 s timeout for waiting on it. After
-  acknowledgement, reload waits only for that existing race; timeout or write failure does not prevent reload. The next
-  boot drafts remaining old-epoch rows rather than replaying them.
+- On [restore halt](live-updates.md#restore-halt), `captureRestoreJournal` synchronously captures the record, chat and
+  order views plus pending conflict drafts before any write settles. `writeRestoreJournal` persists the snapshot under
+  its old epochs outside the normal queue. Late answers and lifecycle handlers cannot replace it. The next boot drafts
+  surviving old-epoch rows. The halt bounds the journal wait before reload.
 
 ### Chat journal
 
@@ -97,11 +92,10 @@
 - A [split batch's](resource-sync.md#batch-composition) prefix is a resend marked `unconfirmed` under the batch's id.
   `takeChatWork` withholds it until the journal confirms: the id must not reach the server as a prefix while its
   recoverable row still names the whole batch.
-- `flushJournal` writes the whole chat projection, even unchanged, to obtain a per-item outcome. `written`, `skipped`
-  and `ineligible` call `chatJournal.confirmSplit`; `stale` requeues it. Failures count per split (`splitFailures`); the
-  second confirms anyway, and an off journal confirms immediately.
-- A [`flushResources`](resource-sync.md#flushresources) obligation on a split waits at most 20 s for the journal;
-  timeout rejects the flush without releasing the split.
+- The adapter's `flushJournal` hands the per-item outcome to `chatJournal.confirmSplit` or requeues the write. A stale
+  outcome retries. Skipped, ineligible, or repeatedly failed writes permit dispatch as described in
+  [Limitations](#limitations). A [flush](resource-sync.md#flushresources) can time out while waiting for confirmation
+  without releasing the prefix.
 
 ### Conflict capture
 
@@ -116,15 +110,11 @@
 
 ### Boot recovery
 
-- `bootstrap.ts` `loadData` awaits `recoverJournal` as boot-load step 4: after `assembleChats`, `initializeRecords` and
-  `applyFirstBootDefaults`, before the service-worker step, maintenance and `initializeChats`
-  ([boot load](resource-sync.md#boot-load)). The recovery module header defines its deadline, classification order and
-  replay/draft rules; record predicates live on `decideRecordRecovery`, chat/order predicates under
-  [Chat recovery](#chat-recovery).
-- Installation calls `writeCharacterFieldsAt` with validated own fields without import transforms, `replaceRecord` or
-  `removeCharacters`: characters, other records and `characterOrder` precede chats/orders, then selection and language.
-  Recovered whole-record intent wins over the first-boot overlay; an installed first chat needs no synthetic chat from
-  `initializeChats`.
+- `loadData` awaits `recoverJournal` after first-boot defaults and before maintenance and `initializeChats`. Recovery
+  classifies rows against the server baseline. It installs recovered character fields through `writeCharacterFieldsAt`
+  and other records through normal writers before installing chats/orders, then reconciles selection and language. This
+  preserves recovered first chats and avoids running import transforms again. See
+  [boot load](resource-sync.md#boot-load).
 - A recovered character deletion keeps the adapter's delete-first path: if an earlier update wins the race, the delete
   conflicts, `adoptInDoubt` recognizes the update during the read, and the next cycle deletes on its revision.
 - Replayed and satisfied rows hand their epoch and copied stored layers/versions to `adoptRecoveredRecord` or
@@ -134,23 +124,21 @@
 
 ### Chat recovery
 
-- `recoverJournal` uses `decideChatRecovery`, `decideChatOpsRecovery` and `decideOrderRecovery`, then calls
-  `chatStore.svelte.ts` `installRecoveredChat` and `installRecoveredOrder`. Absent parents, refusals, malformed rows and
-  uncertain work become drafts. Matching final values satisfy pending by-id work; otherwise matching before-values
-  replay only on the row's recorded `baseRevision` (a chat that moved on is drafted, since its ops may have landed in
-  another form). Classifier comments hold the revision, before-value and membership rules.
+- `recoverJournal` classifies with `decideChatRecovery` and `decideOrderRecovery`, then installs admitted work through
+  `installRecoveredChat` and `installRecoveredOrder`. Rows with missing parents, malformed data, or refusals become
+  drafts.
+- `decideChatOpsRecovery` checks final values for landed by-id work. Matching before-values permit replay only on the
+  revision the classifier received. For pending by-id work, `recoverJournal` currently pairs the boot summary revision
+  with the later whole-chat body. A change between those reads can go undetected.
 - Resends preserve original ops/base/id for `retry: true`; dependent pending work is atomically drafted first. For rows
   handed back to saving, installation and adapter adoption precede reservation release in `draftJournal.ts`; failed
   installations retain their reservations. Committed whole-row moves to drafts and expiry cleanup also free
   reservations; partial moves keep remaining layers reserved. A whole chat/order move that yields no draft aborts
   recovery, and expiry purges reservations even when `readOwn` omits those rows.
-- A replay first files as a memory-only draft each distinct real `hypaV3Data` its ops may lose (`replayedHypaV3Data`,
-  `keepRecoveryMemory`), as Apply does for a refused one: the server drops one written to a chat its projection answers
-  for, and the ops are sent unchanged. A filing that fails leaves the row a draft whole.
-- That walk judges each write by the mode in force at its op (the held mode, then earlier ops' sets, unsets, and
-  replacements, then its own; Legacy counts as Structured when the held or a replayed `ui` row selects it) and by the
-  ownership before it: real summaries own the field, and only a loaded Structured chat with neither a seal nor summaries
-  is known to have no projection. A later mode change does not cancel an earlier draft; a create is exempt.
+- Before replay, `replayedHypaV3Data` identifies real summary values a Structured Memory projection could supersede.
+  `keepRecoveryMemory` files each distinct value as a memory-only draft. If filing fails, the row becomes a draft whole.
+  The scratch walk accounts for mode changes inside the group and in recovered settings, preserving the original ops,
+  base revision and retry id. See the [projection rules](structured-memory/projection.md#the-hypav3-projection).
 
 ### Recovery drafts
 
@@ -195,7 +183,8 @@
 
 - `startResourceSync` connects the chat module (`chatJournal.setListener`, `setConflictListener`).
 - The adapter alone writes mutation rows; `journalRecovery.ts` moves and releases them.
-- `composerDrafts.svelte.ts` is the composer API's only caller.
+- `composerDrafts.svelte.ts` owns durable composer text. Open message and stored-translation editors live only in tab
+  memory and survive a component remount. See the [chat store](chat-store.md#files).
 - A remote send ([network jobs](network-jobs.md#remote-send)) ends with the local send's shapes, so a hand-off row's
   restore and its retained request id follow the same rules; the relay command id is that request id.
 - `bootCache.ts` `holdsCredential` also decides eligibility: a change there moves the journal's boundary.
@@ -213,7 +202,10 @@
 
 ## Recipes
 
-- Adding a setting or resource → [persistence](persistence.md#recipes).
+- Changing a composer payload requires checking the old and new row formats in `checkComposerValue`, draft and hand-off
+  writes in `createDraftJournal`, and restoration in `createComposer`.
+- For a new record kind, decide its [journal eligibility](#eligibility) and check its [boot recovery](#boot-recovery)
+  alongside the [persistence recipe](persistence.md#recipes).
 
 ## Tests
 

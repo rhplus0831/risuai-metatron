@@ -4,43 +4,19 @@
 
 - Owns the `structuredMemory` algorithm's records: their shapes and limits, the tables and store, read and edit routes,
   and the tab's client and Markdown package.
-- Paths: `shared/structuredMemory.ts`, `server/src/data/memoryStore.ts`, `server/src/routes/structuredMemory.ts`,
-  `server/src/prompt/memory/structured/` (the writer's files: [the writer guide](writer.md); the read path's:
-  [the read path guide](read.md); `reconcile.ts`, `inherit.ts`, and `restore.ts`: [the lifecycle guide](lifecycle.md);
-  `rebuild.ts`: [the rebuild guide](rebuild.md)), and `src/ts/process/structuredMemory.svelte.ts` (its receipt and panel
-  parts: [the read path guide](read.md)).
-- The Memory settings page selects it, ahead of the flags. Production has its [writer](writer.md), and `assemblePrompt`
-  runs [the read path](read.md). The page exposes only the preset fields something reads. Its design is in
-  [the archive](../../archived-plan/README.md).
-- Not here:
-  - The HypaV3 projection, its seal and the tab's mirror, a plugin read's refresh, and the reset →
-    [projection](projection.md).
-  - The writer, the read path, the lifecycle, the rebuild, and the page tools → [the area README](README.md).
-  - The other algorithms, the selection chain, the memory task service, and embeddings → [memory](../memory.md).
-  - `Chat.hypaV3Data` and its write rules → [memory](../memory.md), `shared/memory.ts`.
-  - The resource store's connection, epoch, and transactions → [server resources](../server-resources.md).
+- Start with the record contracts below. Chat algorithm selection and enablement use `shared/chatMemory.ts`. A stored
+  chat mode takes precedence over the legacy settings.
+  [Selection in assemblePrompt](../memory.md#selection-in-assembleprompt)
+- Follow [the area index](README.md) for projection, writers, lifecycle, rebuild and page tools, or
+  [server resources](../server-resources.md) for database transactions, snapshots and epochs.
 
 ## Files
 
-- `shared/structuredMemory.ts`: shared types, limits and pure rules, safe in tab and server.
-  - Records and evidence: `MemoryEvent`, `MemoryPage`, `MemorySection`, `MemoryThread`, `MemoryRun`, `MemoryReceipt`,
-    `MemorySource`, `MemoryAnchoredSource`, `MemoryUnanchoredSource`, `MemoryGreetingSource`; `storedMemoryGreeting`,
-    `greetingCited`, `memoryChatGreeting`, `memoryGreetingHashFields`.
-  - Writer and send shapes: `MemoryEventDraft`, `MemoryAnalysisResult`, `MemoryPageCandidate`, `MemoryManifest`,
-    `MemoryManifestItem`; `memoryGrade`, `memoryThreadEnded`, `writerPaused`.
-  - Limits and window: `STRUCTURED_MEMORY_ALGORITHM`, `ADOPTED_WRITER_RUN`, `STRUCTURED_MEMORY_LIMITS`,
-    `CHARACTER_SECTION_SLOTS`, `MEMORY_SECTION_BUDGETS`, `MEMORY_CHARACTER_SLOT_BUDGETS`, `memorySectionBudget`,
-    `memorySectionOverBudget`, `ReadEntry`, `RawWindow`, `rawWindow`, `coveredMessages`, `memoryEventCovers`.
-  - Read contracts: `STRUCTURED_MEMORY_PATH`, `MEMORY_RECORD_KINDS`, `MEMORY_RUNS_ROUND_ROWS`,
-    `StructuredMemoryContentsAnswer`, `StructuredMemoryRecordAnswer`, `StructuredMemoryPackageRound`,
-    `StructuredMemoryCoverageRound`, `StructuredMemoryStoryRound`, `StructuredMemoryFindHit`,
-    `StructuredMemoryPageMention`, `StructuredMemoryFindRound`, `MEMORY_FIND_QUERY_CHARS`, `MEMORY_FIND_EXCERPT_CHARS`,
-    `MEMORY_FIND_HITS_MAX`, `StructuredMemoryRunsRound`, `StructuredMemoryThreadsRound`, `StructuredMemoryLogRun`,
-    `StructuredMemoryHealthAnswer`.
-  - Edit and lifecycle contracts: `StructuredMemoryEdit`, `StructuredMemoryEditAnswer`, `StructuredMemoryRevertAnswer`,
-    `StructuredMemoryFileRecords`, `StructuredMemoryFileEntry`, `MEMORY_RESTORE_BODY_BYTES`,
-    `StructuredMemoryInheritAnswer`, `StructuredMemoryRestoreAnswer`, `StructuredMemoryAdoptAnswer`,
-    `StructuredMemoryDeclineAnswer`, `StructuredMemoryResetAnswer`, `StructuredMemoryAdoption`.
+- `shared/structuredMemory.ts` owns persisted record shapes (`MemoryEvent`, `MemoryPage`, `MemoryThread`, `MemoryRun`),
+  their limits (`STRUCTURED_MEMORY_LIMITS`), evidence (`MemorySource`, `MemoryGreetingSource`) and the tab/server
+  contracts under `STRUCTURED_MEMORY_PATH`. Follow the route's `satisfies` annotation to its exact answer type.
+  `MemoryReceipt` links the writer's result to the saved chat message and `MemoryManifest` describes the send.
+
 - `server/src/data/memoryStore.ts`: synchronous record storage; `createMemoryTables`, `MemoryChanges`, `MemoryContents`,
   `MemoryRowTexts`, `readContents`, `readKindPage`, `readRecord`, `write`, `checkMemoryRow`; `messageSourceHash`
   supplies source hashes and `greetingSourceHash` greeting hashes. The projection's part:
@@ -72,43 +48,34 @@ rate-limit and check the epoch (412 `EpochMismatch`). The route header owns path
 refusals. Epoch check and store reads share one synchronous step: each round is one snapshot; only the opaque `revision`
 comparison ties rounds together.
 
-- The panel reads contents (`adoption`, `rebuild`, `recordedLanguage` included) and records through
-  `store.memory.readContents` and `store.memory.readRecord`. A tab joins the panel's in-flight contents read unless a
-  write answer settled since it began. Coverage sends stored facts (`status`, `sources`, `keptState`, `rerecord`, the
-  normalized `greeting` and `greetingKept`, and whether a run read the greeting) for
-  [the tab to reconcile](read.md#the-memory-panel) against its held messages, reading no chat. A greeting citation's
-  `sourceIndex` is -1.
+- The panel reads contents and records through `store.memory.readContents` and `store.memory.readRecord`. Contents also
+  supplies adoption and rebuild state, the recorded language, health, and unsupported page IDs. When the stored chat
+  bindings resolve, `writerBlockingReason` uses its bound memory connection and request triggers to explain a blocked
+  background writer without loading messages. A tab joins the panel's in-flight contents read unless a write answer
+  settled since it began.
+- Coverage sends stored facts (`status`, `sources`, `keptState`, `rerecord`, the normalized `greeting` and
+  `greetingKept`, and whether a run read the greeting) for [the tab to reconcile](read.md#the-memory-panel) against its
+  held messages, reading no chat. A greeting citation's `sourceIndex` is -1.
 - `/story` sends each event's `summary`, `storyTime` and `participants` as stored, retracted events included, for
   [Timeline's story view](read.md#pages-timeline-and-threads), which joins them by id with the coverage rows it holds.
   Its rounds charge stored bytes as `/coverage`'s do. `readStructuredMemoryStory` gives the tab only well-shaped display
   fields, since a snapshot row can lack them.
-- `/find` takes exactly one of `q` (trimmed, 1 to `MEMORY_FIND_QUERY_CHARS`, 100, characters) and `page` (a resource
-  id); both, neither, or an invalid value is 400. Text search walks live pages then non-retracted events in contents
-  order; page lookup walks non-retracted events then threads. Retracted events are neither charged nor read. Both use
-  `roundOf`'s stored-byte budget, positional cursor, and revision checks, with the same query on every round.
-  - Text matching is a plain substring, lowercased per code point with offsets mapped back to the original text. A page
-    gives at most one title/alias hit together (first matching title, then aliases), plus a hit per matching section
-    body. An event gives one hit, preferring summary, key lines, then title for its excerpt.
-  - Page lookup finds participants, state-change pageIds, knowledge pageIds or knowers, and relationship from/to, with
-    an empty excerpt and a `mention` (`pageMention`): the event's grade and story time, the knowledge the page learned
-    or shares as a secret, and the shifts from or to it, texts capped at `factChars` and `labelChars` and lists at the
-    event's limits. A thread whose `who` names the page gives a hit with its title and state.
-  - Each hit's title, heading, and excerpt is capped at `MEMORY_FIND_EXCERPT_CHARS` (160); excerpts center on the first
-    match without splitting surrogate pairs. A page contributes at most `MEMORY_FIND_HITS_MAX` (200) hits, and a round
-    ends after the row that reaches that cap, with `next` at the following row (null at the list's end), so an answer
-    holds fewer than twice the cap even for restored records.
-  - `findStructuredMemory` collects at one revision, restarting with nothing kept on a change. A text search stops at
-    200 hits: `more` means hits were dropped or a round remains unread; exactly 200 with no round left is not truncated.
-    The client drops unknown hit kinds or non-string ids and normalizes display fields before
-    [Pages shows them](read.md#pages-timeline-and-threads).
-  - A page lookup resolves source message ids to current positions each round, while text search keeps stored positions.
-    It reads every round in storage order, sorts events by `sourceIndex`, unknown positions last, then keeps the newest
-    200 events and newest 200 threads; `more` means events were dropped.
+- `/find` accepts one trimmed text query (`q`) or one page ID (`page`). Both walk stored-byte rounds at one revision and
+  skip retracted events. Text search covers live pages and events. A page lookup returns events and threads naming that
+  page, including bounded facts about its knowledge and relationships (`pageMention`). Match and excerpt rules live
+  beside `findPageHits` and `findEventHits`.
+- `findStructuredMemory` restarts its collection on revision change. Text search stops at the hit cap. For a page lookup
+  it reads all rounds and keeps the newest capped lists using current message positions for the events.
+  [Pages and Timeline](read.md#pages-timeline-and-threads)
+
 - Package and [chat-file](lifecycle.md#chat-files) reads collect `/package` and `/threads` at one revision. A round
   reads the revision alone and lists only its kinds: `/runs` and `/threads` by `seq` cursor (`readKindPage`), the others
   by position. The byte budget comes from `RouteLimits.memoryPackageRoundBytes` in `server/src/app.ts`, default
   `MAX_READ_RESPONSE_BYTES`; `roundOf` defines charging before body reads and the soft first-record rule. `/runs` feeds
   the Log; `/cost` is [rebuild's cost preview](rebuild.md#the-cost-preview), with no record sent.
+- `GET /default-prompts` returns the server's prompt frames and slot text for the settings editor.
+  [Prompt fine-tuning](read.md#prompt-fine-tuning) owns that flow. The plugin's batched `POST /revisions` and per-chat
+  `GET .../projection` are in [projection](projection.md).
 - The Log and its JSON export show `patchInput` only for runs whose prompts [the prune](writer.md#a-writer-run) retains:
   every pending run and the newest failed or skipped run, even with a newer recorded run.
 - `readStructuredMemoryHealth` calls `POST /health` for [the badge](read.md#the-health-badge), charging live pages,
@@ -140,26 +107,16 @@ the greeting the panel showed: the route reads the owner for the chat's greeting
 equals that one and `invalid` for an event with no `greeting`, a retracted one, or a chat with no greeting, and
 otherwise stores it as `greetingKept`, keeping status, citation, and marks. Keeping again replaces it.
 
-An `eventText` changes only a standing event's `title`, `summary`, and `userCorrected: true`. The title is trimmed,
-non-blank, and at most `eventTitleChars`; the summary must be non-blank and at most `eventSummaryChars`, with its
-whitespace preserved. Nothing is cut. A retracted event refuses `invalid`; equal text is a no-op. An `eventRelease`
-removes only `userCorrected`, including on a retracted event, and is a no-op when the mark is not set. Both address
-`eventId`, read only the stored event, and write without reading the chat or calling `withRetractedEvidence`. Their
-no-ops still pass the revision check. Text and every other field stay after a release.
+Timeline sends `eventText` or `eventRelease` to change a standing event's title and summary or release its
+`userCorrected` mark. These edits read only the event. A retracted event still accepts release. The old text and
+evidence survive release. [Re-records](lifecycle.md#reconciliation-and-repairs) and
+[rebuilds](rebuild.md#what-a-rebuild-keeps) consult the mark when replacing an event.
 
-A `sectionKeep` is the one page edit that reads the events: the route hands `applyPageEdit` the contents' statuses, so
-the keep drops the retracted ids from the section's `provenance` with its `unsupported` flag. With the ids gone,
-`flagUnsupportedSections` leaves the section alone at the next retraction; evidence that is retracted later flags it
-again.
-
-A `sectionRelease` removes `userCorrected`, whether a body edit or a preserving keep set it, and nothing else: no body,
-lock, timestamp, or history changes. The writer may then rewrite and compact the text, and a full rebuild drops it.
-
-A `sectionAdd` appends a person's section: the heading is trimmed, non-blank, and at most `labelChars`, the body as for
-`section`. It has empty `provenance` and `sources`, `userCorrected`, no lock, and one `edit` entry with `before: null`
-and no `eventId`, so nothing can revert it. A `scene` or `character` page refuses it `invalid` (the scene is code's and
-a character page's headings are fixed slots), and so do a heading the page has and a page at `sectionsPerPage`; the
-trash refusal applies as for every page edit.
+`sectionKeep` also reads event statuses so it can drop retracted provenance when clearing `unsupported`. Choosing
+`preserve` marks the text as user-corrected for a rebuild. `sectionRelease` clears that mark and leaves the section's
+other protections intact. `sectionAdd` creates an unlocked, user-corrected section with empty evidence and a history
+entry carrying no event. It applies only to page types with free headings. The shared edit union, `parseMemoryEdit` and
+`applyPageEdit` define text limits, no-ops and refusals.
 
 ### The revert route
 
@@ -202,16 +159,17 @@ snapshots like a checkpoint write.
 
 ## State
 
-- A chat's records are events, pages, and threads, with the chat's own messages as the evidence. Each writer run leaves
-  a `MemoryRun`, and each recorded turn a `MemoryReceipt`.
+- A chat's records are events, pages, threads and writer runs. An event can cite transcript messages, the eligible solo
+  greeting, or both. A recorded window has a receipt on its run. [Writer commits](writer.md#the-writer-task) also copy
+  the receipt to eligible assistant messages.
 - `MemoryEventDraft` is what the writer returns; `MemoryEvent` adds what code owns (id, sources, status, grade, repeat
   count). `MemoryRun.analysis` keeps the bounded draft before evidence checks and deduplication, so the log shows what
   the model said even when `eventId` names something else. `MemoryRun.receipt` holds what the run listed; a message's
   `generationInfo.memory` is its copy, or what the send said ([Receipts](read.md#receipts)).
 - An event's `storyTime` is the writer's free `text`, an optional `ordinal`, and an optional `date` (`MemoryStoryDate`,
-  `{ year?, month, day }`): a calendar date the recorded messages state, copied by the writer. `parseStoryDate`,
-  `formatStoryDate`, and `isStoryDate` in `shared/structuredMemory.ts` own its forms and validity. An event recorded
-  before the field, or from messages that state no date, has none.
+  `{ year?, month, day }`). The prompt asks the writer for a date stated in the recorded messages. Admission validates
+  the date's form and calendar values. Existing records can omit it. `parseStoryDate`, `formatStoryDate` and
+  `isStoryDate` in `shared/structuredMemory.ts` define the shared contract.
 - The writer computes event and knowledge grades as the sum of their axes, 0 to 9, omitting `grade` without axes. Pages
   can hold a person's grade without axes; `gradeByUser` marks that choice (`applyPageEdit`).
 
@@ -246,9 +204,10 @@ group: no walk reads them.
 
 ## Coupling
 
-- The persisted value `memoryAlgorithmType` is a plain string in `shared/database.ts`; `structuredMemory` selects ahead
-  of the [selection chain](../memory.md#selection-in-assembleprompt) that reads the flags, which [memory](../memory.md)
-  owns.
+- `chatMemoryAlgorithm` in `shared/chatMemory.ts` resolves a chat's explicit mode or the global legacy settings.
+  Switching modes changes the send and projection readers while the stored records remain available through the panel
+  routes. [Selection in assemblePrompt](../memory.md#selection-in-assembleprompt)
+
 - The tables follow the [epoch rules](../server-resources.md#epoch-and-response-rules) and the snapshot walk of
   [server resources](../server-resources.md#snapshots-and-restore); the export's walk of them is
   [projection](projection.md#the-upstream-export)'s.
@@ -278,11 +237,13 @@ group: no walk reads them.
   `createdRevision` is within that row's revision, without being unique or the latest.
 - A memory revision is a token, `<epoch>:<chatSeq>:<revision>`, never a bare number: a chat recreated under the same ids
   restarts at 0, and only the token's `seq` tells the two apart. `readContents` and `readRecord` both answer one.
-- A stale write is refused whole and retried from a fresh read, never merged by field.
+- A stale write is refused whole. A retry requires a fresh revision. The store performs no field merge.
 - `createdRevision` is the store's: the committing revision on insert, the stored value on update, whatever the input
   held. A caller holds an opaque token, so a write takes `MemoryEventWrite`.
-- No record's stored text passes `MAX_READ_RESPONSE_BYTES`. `STRUCTURED_MEMORY_LIMITS` bounds no body, so this refusal
-  is what keeps a page's embedded sections within the read budget, and it is hard where the read budget is soft.
+- Every stored record must fit `MAX_READ_RESPONSE_BYTES`, including all of a page's embedded sections. Individual input
+  limits such as `sectionBodyChars` also apply to edits. The round budget can serve an oversized first row and charges
+  the stored representation. See [known issues](../../backlog/known-issues.md#structured-memory) for the difference
+  between stored and re-serialized bytes.
 - Table-of-contents statements never select `data`; `octet_length(data)` takes the size from the row's header. Column
   values come from the serialized record, so `toJSON` cannot make a column disagree with `data`.
 - The store checks what its columns and rows need, not a record's whole shape: the callers own that, and a record from
@@ -339,7 +300,8 @@ group: no walk reads them.
 
 ## Tests
 
-- `shared/structuredMemory.test.ts` drives `projectHypaV3Data` with plain records, no fakes.
+- `shared/structuredMemory.test.ts` exercises source eligibility, greeting citations, story dates and the HypaV3
+  projection on plain records.
 - `server/src/tests/memoryStore.test.ts` drives `createResourceStore` on a real file, with a read-only second connection
   to see the rows, a SQLite trigger to fail a write midway, and `installSnapshot` for restores.
 - `server/src/tests/restoreStage.test.ts` drives a crafted source through the real staging and install;

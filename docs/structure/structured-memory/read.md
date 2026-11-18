@@ -34,6 +34,8 @@ Read each module's header or component contract, then read the named export's co
   `GenerationPreviewResult`.
 - `src/lib/Others/StructuredMemory/StructuredMemoryPanel.svelte`: panel coordinator; `TABS`, `refresh`, `readOnly`.
 - `src/lib/ChatScreens/DefaultChatScreen.svelte` and `src/lib/SideBars/CharConfig.svelte`: panel openers.
+- `src/lib/Others/StructuredMemory/GreetingCitation.svelte` handles greeting-source navigation and revision-bound
+  repairs across Coverage, Timeline and Pages (`memoryPanelGreeting`, `memoryGreetingChanged`).
 - `src/lib/Others/StructuredMemory/CoverageTab.svelte`: message coverage view; `reconciled`, `coverage`, `countedChats`.
 - `src/lib/Others/StructuredMemory/PreviewTab.svelte`: preview view; `run`.
 - `src/lib/Others/StructuredMemory/PagesTab.svelte`: page read and manage views, title filter, text search, events
@@ -76,16 +78,18 @@ With `memoryJob.structuredMemory`, previews and service-free sends read as sends
 no memory report. Budget and lane settings come from the chat's memory preset applied by `loadJobScope`; missing,
 malformed, or deleted ids fall back to the Settings default through `chatHypaV3Preset`.
 
-1. The step drops unreadable events, then `selectMemory` reconciles events against stored messages before
-   `retrieveLanes` and `buildMemoryCard` run ([reconciliation](lifecycle.md#reconciliation-and-repairs)).
-   `coveredMessages` decides what history may leave; `recordedMessages` separately prevents the writer repeating
-   readable stored events. `retrieve.ts`'s header owns lane eligibility and scoring.
+1. `selectMemory` reconciles readable events against stored messages before `retrieveLanes` and `buildMemoryCard` run
+   ([reconciliation](lifecycle.md#reconciliation-and-repairs)). `coveredMessages` decides what history may leave;
+   `recordedMessages` separately prevents the writer repeating readable stored events. The greeting is a separate
+   source, outside the turn count. An active unsuppressed citation can cover a changed greeting, but only a matching
+   citation can offer its text as evidence. See `rawWindow` in `shared/structuredMemory.ts` and `evidenceItems` in
+   `retrieve.ts`.
 2. The card enters history as `memo: "supaMemory"`. With `volatileBeforeLastUser`, its volatile part bypasses history so
    it survives chat ranges; assembly places it after formatting by provenance before the latest user, else after the
    last memory entry, else at the end.
-3. `trimHistoryToContext` protects the window and older continue target and rechecks them after trimming. Uncovered
-   history trimmed from the prompt triggers an evidence reselection and `coverage: "gap"`; only `gapTokens` drives the
-   writer's question. An unfit tail fails the send.
+3. `trimHistoryToContext` protects the window and older continue target. Trimming nonblank uncovered history reports a
+   gap and can trigger a second evidence selection. A card with no items can also leave a gap when it replaces nonblank
+   covered history. Only trimmed `gapTokens` drive the writer's question. An unfit tail fails the send.
 4. Required pages that exceed the cap refuse before embedding; a budget with no room for optional lanes embeds nothing.
    Assembly raises `SendError` with the page and token details, including for previews and the gap run's second
    selection.
@@ -96,21 +100,15 @@ else coverage is unknown; a preview's `memoryBlock` indexes the holders. `report
 while `excludedTotal` counts all rows. `sendManifest` and `writerState` supply item and stage summaries; `due` is a
 hand-off request, not a queued task.
 
-The flow lane is a recent timeline. Under the flow target, a contiguous run of the newest events that left the window
-shows each in full (story time, title, summary, and key lines on the newest `flowKeyLineEvents`), and `flowEvents`
-titles follow it. An event is in full once, in the run or in the events lane, and selection takes the run's events out
-of the events lane's exclusions. A target of 0 keeps the title-only lane. `spendLanes`' doc owns the order.
+The flow lane shows a contiguous recent timeline outside the raw window, then older titles. A zero flow target keeps the
+title-only form. A full event appears once across flow and events. `spendLanes` owns admission, key-line fallback,
+lending and extension. `readBudget` derives `auto` targets from the maximum and preset `laneShares`, or uses
+`laneTargets` in `manual`. The shares need not add to 100%. `requiredCap` is separate. Warming checks whether pages or
+events are enabled through `structuredMemoryEmbeddingLanes`, independent of the maximum.
 
-Story dates: `retrieve.ts`'s header owns the story date and the distance labels on flow and events lines. With one, an
-anchor line under the rule header names it, counted in every frame; an undated chat's card is unchanged.
-
-Lane targets follow `laneSplit`. Under `auto`, the default and what an absent value reads as, `readBudget` gives each
-lane `floor(maximum × percent / 100)` of the applied maximum from the preset's `laneShares` (whole percents 0 to 100,
-defaulting to `STRUCTURED_MEMORY_LANE_SHARES`: flow 25%, pages 45%, events 15%, evidence 10%, threads 5%); under
-`manual` it gives the stored `laneTargets`. The shares' sum is not bounded: over 100%, the core round fills lanes in
-order until the maximum runs out. The shares decide only the core round: lending and the run's extension spend what the
-lanes leave. `requiredCap` is no share. Warming has no maximum (`structuredMemoryEmbeddingLanes`): it embeds for the
-events or pages lane when that lane's share (`auto`) or stored count (`manual`) is above 0.
+`prepareRetrieval` anchors story dates to the newest **placed, dated** event, including one still in the raw window.
+`card.ts` counts the anchor line with the frame; dated flow and event lines can show a distance from it. See
+`storyDateDistance` in `shared/structuredMemory.ts` for calendar rules. Undated chats keep the same card.
 
 The meter reads tokens and `memoryStatusWord`; its popover and Preview share `MemoryManifest`.
 
@@ -168,49 +166,21 @@ rounds; `memory_events.seq` is storage order. `memoryTimelineRows` owns message 
 `jump(target)`, a message id or `{ greeting: true }`, opens the chat with `setChatOpen`, calls `requestMessageJump`,
 then closes the panel.
 
-A page opens in `read`: its title, type and aliases, its links, and each section with a body as plain text under a small
-label, the marks as badges, `currentState` first and set apart. A section's `(was: ...)` lines are folded behind a count
-and show dimmed when opened; another selection folds them again. Read's record links use `MemoryLinkButton`'s `quiet`
-form and its text column is capped. `manage` is the checking view, with every control, provenance, and the history. The
-choice lasts while Pages is mounted; Evidence missing, a page in the trash, and a jump to a history entry show `manage`.
-The jump scrolls its row once, when the diff and the history list have rendered; another entry, page, target, or chat
-drops it. Links name live pages by title and select them; an id with no live page is a disabled button. A title filter
-narrows the tree before `memoryPageTree` groups it, so an emptied type loses its header; the trash list is not filtered.
+Pages opens in Read; Manage holds editing, provenance and history. A jump to a history entry opens Manage and scrolls
+once its diff has rendered. The component contract covers section display, links, local title filtering, last-send
+badges and selection changes. Two reads cross the server boundary:
 
-The tree marks a page the last send used with a dot, and one legend line above it names the dot and counts those among
-the listed pages. The title filter's Search text button or form submit reads `/find?q=...` through
-`findStructuredMemory`, including in chats with events but no pages. The button shows only for typed text whose hits are
-not shown; the action is disabled for over-100-character trimmed input and while reading, and a blank submit does
-nothing. The hits replace the tree, its no-match line, and show-more control while the trimmed input equals the searched
-text; any other edit drops the hits and restores the filtered tree. Page hits show title, heading when present, and
-excerpt and select that page; event hits show title and excerpt and open Timeline. Text stays plain. An empty read or
-failure has its own line; `more` says the list was cut at `MEMORY_FIND_HITS_MAX` (200). Active searches rerun on
-`refresh`; older answers from another chat, input, read, or refresh are dropped. Evidence missing has no search.
+- `findStructuredMemory` with a text query searches pages and events. This also works in chats with only events. A page
+  hit opens Pages, an event hit opens Timeline. Active queries rerun on refresh. See the
+  [read routes](records.md#the-read-routes) for the bounds.
+- `/find?page=...` joins a page to its knowledge, relationship changes, threads and events. Read loads it on selection;
+  Manage loads it when the event disclosure opens. The server orders by current message positions before it caps the
+  list. `PagesTab.svelte` owns display of recent and important events and rejection of stale answers.
 
-One page lookup (`/find?page=...`) per selection and `refresh` reads its events and threads. `read` fetches on selection
-and shows nonempty blocks below the sections: knowledge (one fact per line with believed/secret marks and its event
-link), the newest relationship shift per other page and direction, threads with their states (running first), and
-events. `manage` fetches when its closed event disclosure opens; both views share the answer until selection or
-`refresh` changes, keeping old rows during a refresh. The page's own `knowledge` and `relationships` sections are the
-writer's digest, which its rules keep short, so these blocks are where a fact recorded only on an event shows.
-
-The event list sorts by current source positions, unknowns last, before the 200-event cap; rows show story time and an
-Important mark from `importantEventGrade`. It shows the newest `RECENT_EVENTS` (5) and all important events until Show
-all. Event links open Timeline. Empty, failure, and truncated reads have their own lines. Selection, chat, refresh, and
-read-number guards discard old answers; search-hit and event-link buttons are disabled while a page edit is pending.
-
-An opened Timeline event shows what it changed under its key lines: state changes, knowledge, relationship shifts, and
-thread changes, through `MemoryEventFacts`, which the Log renders a run's extraction with. Timeline passes its
-`memoryEventView` unconverted, with page and thread titles from its contents read per `refresh`; an untitled id shows as
-the id, as in the Log, which passes no titles. Timeline's and the Log's story time lines come from `storyTimeText`: the
-date (`formatStoryDate`) and the text joined by a middle dot, then the ordinal; a date alone shows the line. Both reads
-keep only a stored date `isStoryDate` accepts.
-
-Timeline has two views, `titles` and `story`, kept while it is mounted. `story` lists the same rows in message order
-without retracted events, each with its story time and summary as plain text; a pressed row opens its details and
-repairs. Summaries come from `/story` (`readStructuredMemoryStory`), read when `story` is chosen and again when
-`refresh` moves while it is; old summaries stay until the new read settles. A row with no summary shows its title alone,
-and a failed read shows the failure line over rows that keep their titles.
+Timeline's initial titles come from coverage. The Story view joins `readStructuredMemoryStory` by event id, omits
+retracted events and keeps titles when a summary is missing or the read fails. Opening an event fetches its record.
+Timeline and Log share `MemoryEventFacts` for extracted changes and `storyTimeText` for the validated story date, text
+and ordinal. Timeline resolves page and thread ids from contents; Log displays ids.
 
 ### The Evidence missing tab
 
@@ -234,26 +204,14 @@ held anchors; Re-record marks then presses `memoryRecord` through `memoryRerecor
 before confirmation for `sendRepair`. `readOnly` disables controls; the server fence decides. Settings writes overrides
 with `setChatMeta` (`src/ts/storage/chatStore.svelte.ts`).
 
-Outside the trash a section's `userCorrected` badge is a button: after `alertConfirm` it sends `sectionRelease`, the one
-control that takes the mark off.
+In Manage, `sectionRelease` removes the user-corrected mark after confirmation; `sectionAdd` adds a heading and body to
+an eligible page. A [new note](pages.md#a-persons-note) uses the contents revision even when no page is open. An
+accepted edit advances that revision immediately so another edit can follow.
 
-Pages has two forms of a person's own text, both off under `controlsOff`. "New note" sits over the tree, and in an empty
-chat, but not under `only="unsupported"` or while the chat waits for adoption; it sends
-[`create`](pages.md#a-persons-note) at the contents' revision and selects the answered page in `manage`. Each accepted
-page edit advances that revision at once and rereads contents, so a note right after an edit is not refused as stale. In
-`manage`, a page that is not the scene, a character, or in the trash has "add section" (heading, body with its count),
-which sends `sectionAdd` through the held copy like a section's edit.
-
-Timeline's opened, non-retracted event has a title and summary editor with limit counts, Save, and Cancel. Blank or
-over-limit text is not saved. The draft keeps its stored title and summary; a reread that changes either closes it with
-the `changed` notice. Opening another event or closing this one discards the draft. Read-only or a pending send disables
-the controls, and every edit uses the coverage revision through `editStructuredMemory`. The corrected badge, held from
-the record beside `memoryEventView`, is a button confirming `eventRelease`, retracted events included. Text stays plain.
-
-After an accepted or refused `eventText` or `eventRelease`, Timeline rereads coverage and the opened event's record. It
-also rereads the story when chosen, else drops its cached read so the next switch fetches it. Chat, selection, and
-read-number guards discard older answers. Refusals use the repair notices; an accepted text edit closes its draft before
-the reread, while a refused draft survives only if its stored base matches.
+Timeline submits `eventText` for a non-retracted event or `eventRelease` to release its mark. Both use the coverage
+revision through `editStructuredMemory`. After either outcome `sendTextEdit` rereads coverage and the open record, and
+refreshes or invalidates the story read. A changed base title or summary discards the draft. The component contract
+defines the selection, revision and read-only guards.
 
 ### The writer line
 
@@ -382,8 +340,8 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
   `App.svelte` on fake timers with `authFetch` scripted, edits and refusals included; the two openers are in
   `DefaultChatScreen.drafts.test.ts` and `CharConfig.emotions.test.ts`.
 - Selection and the meter: `MemorySettings.structuredMemory.test.ts` compares the page's editable controls with the list
-  it may expose, so a new control fails it until something reads the field. `Toggles.test.ts` holds the toggle and
-  `alwaysToggleOn`, `ContextMeter.svelte.test.ts` the line and the popover's one read.
+  it may expose. `ChatMemoryPanel.test.ts` exercises the chat switch; `shared/tests/chatMemory.test.ts` covers
+  `alwaysToggleOn` precedence. `ContextMeter.svelte.test.ts` covers the line and popover.
 - Fine-tuning: `prompts.test.ts` for the frame rules, `memoryTasks.test.ts` for both modes, invalid frames, replay, and
   the size check, `memoryJobs.test.ts` for the test run on a real stack, `structuredMemoryRoutes.test.ts` for the
   default prompts, and `StructuredMemoryPrompts.test.ts` for the controls.
@@ -391,8 +349,11 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
   the read triggers, and the mark, `memoryJobs.test.ts` for the failure code on a real stack.
 - The preview: `memoryJobs.test.ts` and `promptRunner.test.ts` drive both kinds on a real stack, and
   `StructuredMemoryPanel.test.ts` scripts `runServerJob` for the tab.
+- `util/memoryEval.mjs` runs the [evaluation harness](../../../server/src/tests/fixtures/memory/structured/README.md)
+  over seeded chats with scripted writer answers and lexical embeddings. Use its section filters for retrieval, token
+  and timing comparisons. Real-model recall is a separate [manual check](../../backlog/manual-checks.md).
 - Focused command:
-  `pnpm --silent test:agent structuredMemory StructuredMemory memory/structured MemoryReceiptLine ContextMeter Toggles Chat.interactions DefaultChatScreen.drafts CharConfig.emotions memoryTasks memoryJobs promptRunner`.
+  `pnpm --silent test:agent structuredMemory StructuredMemory memory/structured MemoryReceiptLine ContextMeter ChatMemoryPanel Chat.interactions DefaultChatScreen.drafts CharConfig.emotions memoryTasks memoryJobs promptRunner`.
   No `slow` or `e2e` membership of its own.
 
 ## Known Hazards
@@ -402,8 +363,9 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
 - `verified` reads assembly's returned prompt. Plugin replacers and `request` triggers run later on every attempt, so
   removed lines still read verified; a provider gathering system entries (Ooba mode) undoes placement. A tag left in a
   kept message (an old echo, a paste) verifies a lost line. Decision: D8, archive.
-- A preview marks no record and asks nothing, but has side effects: it runs the start trigger, whose result can commit,
-  and counts in `statics.messages`. Decision: Structured Memory slice 3c, archive.
+- An ordinary preview runs the start trigger, whose edits can commit, and counts in `statics.messages`. An
+  [OOC preview](../server-generation.md#prompt-job-execution) skips the trigger and uses a detached chat. Decision:
+  Structured Memory slice 3c and OOC Session, archive.
 - A tab older than the `structuredMemory` kind reads such a report as none and shows an older one.
 - The receipt line knows nothing of the hold. On a held chat a newest reply with no receipt still offers record now, and
   the press gets the 409. After the choice an `awaitingAdoption` receipt keeps its words with no button until a run
@@ -441,25 +403,16 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
   characters near its budget can read differently.
 - A screened reply can stay in the writer's context-only `previous` slot, and a user message strands when the next reply
   is already recorded. Decision: Structured Memory slice 7e, archive.
-- `selectMemory` takes 520–584 ms on a 1,000-turn send, mostly tokenizing (296–356 ms) and cache reads. Counting each
-  text once per selection did not help (9 of about 2,190 counts were repeats); the gain needs it to reuse the counts
-  `assemble.ts` already took for `currentTokens`. Decision: Found Issues Decisions (owner, 2026-11-08),
-  [audit](../../reports/measurements/structured-memory-2026-11-03.md).
-- The recent timeline counts every offered full line, up to `flowCandidates` (200), before it spends, whatever the
-  budget: about 400 more counts on a 1,000-turn send, and `selectMemory` 44–88 ms slower than the title-only card. A
-  lower bound would cut the run where a 50,000 maximum reaches it. Decision: Recent Timeline D14 (owner, 2026-11-11),
-  [measured](../../reports/measurements/structured-memory-timeline-2026-11-11.md#selection-time).
-- Counting those lines on demand did not pay (tried and reverted, `b29a883a5`): it saved at most 164 of about 2,600
-  counts, none at 50,000, and counts one line at a time, which a network tokenizer cannot batch.
-- Small contexts starve the last lanes: at 16,384 tokens of context the `threads` lane gets nothing once event lines
-  carry three quotes, and a query naming two events loses one of them in a long chat at 32,768 too. Decision: Found
-  Issues Decisions (owner, 2026-11-08), [audit](../../reports/measurements/structured-memory-2026-11-03.md).
-- Under `auto` at 16,384 (a maximum of 3,276) the pages lane's 45% loses one long page on stage on every send of a
-  1,000-turn fixture chat, which the title-only card's 2,000 kept. Decision: Recent Timeline D14 (owner, 2026-11-11),
-  [measured](../../reports/measurements/structured-memory-timeline-2026-11-11.md#the-pages-lane-and-the-shares).
-- The story date is the newest record's, so it lags the chat by the unrecorded tail: one turn at the default cadence,
-  more under a sparser one or a paused or failing writer. A day change in that tail shortens every label until it is
-  recorded; the anchor line names the date used. Decision: Story Dates D6, plan.
+- Tokenization and cache reads dominate `selectMemory` in long chats. Recounting identical text within selection saved
+  little; assembly has counts that selection could reuse. Late lanes can starve at small contexts. Decision: Found
+  Issues Decisions, 2026-11-08 ([measurements](../../reports/measurements/structured-memory-2026-11-03.md)).
+- The recent timeline counts full candidates before spending. Counting on demand saved too little to justify losing
+  batching (`b29a883a5`, reverted). At small budgets the default page share can lose a long on-stage page. Decision:
+  Recent Timeline D14, 2026-11-11
+  ([costs and lane shares](../../reports/measurements/structured-memory-timeline-2026-11-11.md)).
+- Relative dates can lag a day change in the unrecorded or undated tail. A label follows the selected story date until a
+  newer placed event supplies a date or the anchoring date changes. Decision: Story Dates D6,
+  [design review](../../reports/audits/plan-runner/structured-memory-story-dates-2026-11-18.md).
 
 ### Gotchas
 
@@ -469,8 +422,8 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
 - `eventVectorTexts` is what the writer warms; a retrieval that embeds other text pays for every event again.
 - Every number in `RETRIEVAL_LIMITS` is a starting value, and a cosine threshold does not mean the same on every model.
   The stage is the scene page's `participants`, so a named thread waits for them.
-- A report stored on every reply grows with `items` and `excluded`, up to a few kilobytes a message. D5's
-  `memory_manifests` table is the way out if that matters.
+- Each reply's stored context report grows with `items` and `excluded`. `lastMemoryManifest` in
+  `server/src/data/memoryStore.ts` reads the newest report with an items list, including an empty list.
 - A job embeds at most `recordTexts` uncached record texts; the rest score 0 until the task service's silent
   `warmVectors` caches them, so a cold cache (a model change, an import) loses semantic matches for a send.
 - `readMemoryRecords` parses every page whole on every send, up to 60 history entries each that the prompt never reads.

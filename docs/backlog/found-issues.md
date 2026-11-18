@@ -102,12 +102,16 @@ that round's implementers read next to their fixes and left: none was run.
 
 ## Contents
 
+The [2026-11-18 structure audit findings](../research/found-issues.md) have their evidence and follow-up in one place.
+The HypaV2 entry below points to that record. The audit also retired the plugin guide size warning and verified that the
+JSON, Markdown, snapshot and checkpoint validators reject unknown event statuses.
+
 - [Backup and sync](#backup-and-sync): 3
 - [Chat screen](#chat-screen): 2
 - [Docs](#docs): 1
-- [Memory](#memory): 4
+- [Memory](#memory): 3
 - [Network jobs](#network-jobs): 1
-- [Plugins](#plugins): 2
+- [Plugins](#plugins): 1
 - [Remote commands](#remote-commands): 1
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 2
@@ -215,15 +219,11 @@ with the default budgets.
 **Suggested handling:** run a send with three 4,000-character scene fields; then the owner decides whether the
 editor's badge should also warn about it, or the block should be cut.
 
-### The other memory algorithms were not checked for a blank summarizer answer
+### HypaV2 accepts whitespace from two summarizers
 
-Fix round of 2026-11-17, read and not run. SupaMemory now treats a blank summarizer answer as a failed summarization
-(`server/src/prompt/memory/supaMemory.ts`). HypaV2, HypaV3, and Hanurai were outside that fix and were not read for
-the same case.
-
-**Why it matters:** a blank answer may replace or append an empty summary there.
-
-**Suggested handling:** one probe per algorithm with an empty successful answer.
+The structure audit reproduced this on HypaV2's local and submodel paths. The server's HypaV3 summarizer rejects blank
+answers, and Hanurai uses embeddings. Evidence and follow-up are in the
+[HypaV2 finding](../research/found-issues.md#hypav2-can-mark-messages-summarized-by-a-blank-answer).
 
 ### The story-date anchor line can be dropped while dated lines stay
 
@@ -242,20 +242,6 @@ without it the labels read as counted from the present, and the plan's manual ch
 
 **Suggested handling:** a Preview on a dated chat with only volatile items, and a send under a one-message chat range;
 then decide whether the header belongs with the volatile part or Preview should show a tagless header.
-
-### An event with an unknown status is placed in the card
-
-Structured Memory Story Dates run, 2026-11-18, from slice 2's challenger; read in the code, not run.
-`prepareRetrieval` in `server/src/prompt/memory/structured/retrieve.ts:1014` skips `retracted`, leaves out `stale`
-and `suppressed`, and places every other event, so one whose `status` is neither (a probe used `"alien"`) is placed
-like an active one. Reconciliation leaves an unknown status as it is, and `memoryEventHasReadableFields` does not check
-`status`.
-
-**Why it matters:** a malformed restored or imported record reaches the flow and events lanes, and since slice 2 it can
-become the event the story date is read from, skewing every label. Pre-existing, not introduced by the run.
-
-**Suggested handling:** check whether `coveredMessages` and restore's `isEvent` agree with the placement filter, then
-place only `active` events.
 
 ## Network jobs
 
@@ -295,17 +281,6 @@ confirmation, and chat creation; plugins are a second writer nobody documents.
 
 **Suggested handling:** an owner decision: exclude the binding keys from plugin chat writes, or document plugins as a
 binding writer in [persistence](../structure/persistence.md) Chat binding.
-
-### The plugin guide is over its size target
-
-`docs/structure/plugin-sandbox.md` is 36,553 bytes against the 36,000-byte target (limit 40,000): `pnpm check:docs`
-reports it `near` since the Limitation on last-writer-wins plugin storage was added on 2026-11-17. It was 35,983
-bytes before.
-
-**Why it matters:** the next facts added to the guide move it toward the limit, where a split has to land first.
-
-**Suggested handling:** a trim or split pass of its own (Size limits in `docs/structure/README.md`); Flows (about
-9,800 bytes) and Known Hazards (about 8,300) are the largest parts.
 
 ## Remote commands
 

@@ -8,8 +8,8 @@
 - Shapes and revisions belong to [persistence](persistence.md), chat writes to [chat-store](chat-store.md); the backup
   UI and the client's archive reader to [backup-sync-hub](backup-sync-hub.md).
 - Neighbors: [self-host server](self-host-server.md) owns the process, the middleware order, request bodies, limiters,
-  auth, asset storage, and the `save/` map; [server generation and live channels](server-generation.md) owns the jobs
-  and the live-update feed this store publishes to.
+  auth, asset storage, and the `save/` map. [Server generation](server-generation.md) owns jobs that write the store.
+  The [live-update feed](live-update-feed.md) distributes committed changes.
 
 ## Files
 
@@ -24,12 +24,11 @@ headers and method comments.
 - `server/src/data/chatStore.ts` (`openChatSchema`, `createChatTables`, `chatSummary`, `applyGroup`, `copyStagedChats`)
   and `server/src/data/chats.ts` (`normalizeChatMeta`, `normalizeMessage`): the chat tables, their summaries and memos,
   and chat validation.
-- `server/src/data/kinds.ts`: kind declarations (`DEFAULT_RESOURCE_KINDS`, `ResourceKind`), with normalizers in
-  `server/src/data/normalize/`. `inputHooks` materializes `defaultInputHooks()` (`shared/inputHooks.ts`), refuses a
-  write that is not a list, and drops a list's malformed entries instead of refusing them. `pluginStorage` declares
-  `nestedFields: PLUGIN_STORAGE_DICTIONARIES` (`shared/pluginStorage.ts`); `plugins` permits `itemKey: "name"`.
-- `moduleFolders` and `personaFolders` (same file) materialize `[]`, refuse a value that is not a list of objects, and
-  store `normalizeItemFolders` (`shared/itemFolders.ts`) of it.
+- `server/src/data/kinds.ts` declares normalization, projection and patch behavior in `DEFAULT_RESOURCE_KINDS`
+  (`ResourceKind`), with per-kind normalizers in `server/src/data/normalize/`. For input-hook and folder lists, follow
+  `server/src/data/normalize/collections.ts` to `shared/inputHooks.ts` and `shared/itemFolders.ts`. For plugin storage's
+  nested dictionaries and the plugin list's name-keyed patches, follow `PLUGIN_STORAGE_DICTIONARIES` in
+  `shared/pluginStorage.ts` and the kind declarations.
 - `server/src/data/checkpointStore.ts` (`createCheckpointTables`, `walkCheckpointSnapshot`) and
   `server/src/data/checkpointService.ts` (`createCheckpointService`: `save`, `load`, `autoSave`): checkpoints.
 - `server/src/data/snapshots.ts` (`createSnapshotManager`: the timer, `stageCopy`, `withMaintenance`;
@@ -78,9 +77,11 @@ Proxies must preserve encoded ids ([Gotchas](self-host-server.md#gotchas)). Shap
 
 ### Message search route
 
-`POST /api/chats/search` (`server/src/routes/messageSearch.ts` `registerMessageSearchRoutes`): `checkAuth`,
-authenticated limiter, `no-store`; `MessageSearchQuery` and `MessageSearchPage` (`shared/messageSearch.ts`); 429 past
-two running.
+`server/src/routes/messageSearch.ts` `registerMessageSearchRoutes` validates and admits `POST /api/chats/search`
+(`MessageSearchQuery`, `MessageSearchPage` in `shared/messageSearch.ts`). `resourceStore.ts` `searchMessages` owns the
+budget and cursor. Its newest-first walk in `chatStore.ts` uses literal matching with SQLite's ASCII-only case folding.
+Follow the [chat search client](chat-pipeline.md#slash-commands-groups-and-search) when changing snippet offsets or
+continuation.
 
 ### Chat checkpoint routes
 
@@ -122,8 +123,8 @@ Realm bodies capped at 4 KiB).
   `{ error: "EpochMismatch", epoch }` otherwise).
 - Mutations answer 503 with `Retry-After` while the maintenance gate is closed (a restore's or an import's install;
   their validation and the staged file's hash run outside it). During shutdown, new resource requests (including reads),
-  backup requests, and module and CharX imports also answer 503 with `Retry-After`; a typed store-closed error maps to
-  the same retryable response.
+  backup requests, and module, CharX and Realm imports also answer 503 with `Retry-After`; a typed store-closed error
+  maps to the same retryable response.
 - `/api/resources` responses are `Cache-Control: no-store` (the routes' `noStore` middleware), and `/api/llm-secrets`
   sets it on a success. Every read route and the PUT response answer a kind with `project` in its projected form:
   `llmSecrets` is masked.
@@ -142,20 +143,20 @@ out in `unanswered`; without it the answer is whole, so an older tab that takes 
 meets `unanswered`. The budget is soft: an answer's first group is served whatever its size, so an entry that outgrew it
 stays readable, and a chat or a collection is never split. The groups, their order, and the charge (a
 [projection](structured-memory/projection.md#the-hypav3-projection) read, asked by the routes and done under structured
-memory, `overlaysMemoryProjection`, adds the chats' `memory_events`) are `readRefsWithinBudget`'s comment. A `chatRows`
-entry is one budget group, charged its named rows and, when metadata fields are requested, the whole stored metadata. A
-served entry answers stored rows and fields (no projection) at the requested revision, or `moved` with the current
-revision (null: gone). Unserved entries appear in `unanswered.chatRows`; a moved entry costs zero but remains subject to
-the group-order cutoff.
+memory, charges stored `memory_events` only for eligible chats) are `readRefsWithinBudget`'s comment. A `chatRows` entry
+is one budget group, charged its named rows and, when metadata fields are requested, the whole stored metadata. A served
+entry answers stored rows and fields (no projection) at the requested revision, or `moved` with the current revision
+(null: gone). Unserved entries appear in `unanswered.chatRows`; a moved entry costs zero but remains subject to the
+group-order cutoff.
 
 ### Chat summaries
 
 - `chatSummary` (`chatStore.ts`), over the stored `chatSummaries.text`, answers the full summary listing, collection
   summary reads, and single-chat binding reads; a feed chat entry's `summary` has the same fields (`summaryWithTime`); a
   fresh projection is read without `meta` ([Summary projection](#summary-projection)).
-- Summaries include optional `lastMessageAt`: the finite numeric `time` of the last message by position, absent for an
-  empty chat or an undated final message. Its memo, invalidating writes, and transaction rule are the comment on
-  `lastMessageTimes` in `createChatTables`.
+- List reads include per-chat translation and memory settings projected by `chatTranslationSummary` and
+  `chatMemorySummary`. `lastMessageAt` comes from the final row by position when it has a finite numeric time.
+  `lastMessageTimes` in `createChatTables` defines invalidation and transaction rules.
 
 ### Chat activity
 
@@ -236,8 +237,9 @@ way (`staging.signal`). A version-2 import admitted before shutdown finishes, an
 - Import prepare's worker uses `stageValidatedSnapshot` on its build store and default kinds (`importStage.ts`).
 - Import reports changes for review; the commit's recheck, its 412 and `409 changedSinceReview`, and when the import is
   handed back are the comment above the commit route.
-- Export reads the snapshot without checkpoint tables, so upstream saves hold no named checkpoint history. A failed
-  memory walk does not stop it ([projection](structured-memory/projection.md#the-hypav3-projection)).
+- Export reads the snapshot without checkpoint tables, so upstream saves hold no named checkpoint history. The flat save
+  uses the eligible chats' memory projections and reports the count of omitted pages and threads. A failed memory walk
+  leaves the rest exportable ([projection](structured-memory/projection.md#the-hypav3-projection)).
 
 ### File imports
 
@@ -260,31 +262,19 @@ the [asset ledger](self-host-server.md#asset-mark) indexes each one's references
 
 ### Store tables
 
-`data/resources.sqlite` (plus `-wal` and `-shm`) is the resource store. `PRAGMA user_version` is the store version (3:
-settings sections and collections, no `root` record; tables as in version 2).
+`data/resources.sqlite` holds the resource and chat records. It uses WAL and schema version 3. Versions 1 and 2 use a
+root settings record and cannot be opened or restored here.
 
-- `resources` (`seq` autoincrement, `kind`, `id`, `revision`, `schemaVersion`, `data` JSON text, unique `(kind, id)`).
-- `meta` holds the random `epoch`, `summaryProjectionVersion`, and `normalizationStamp`.
-- `chats` (`seq`, `characterId`, `id`, `revision`, `schemaVersion`, `meta` JSON).
-- `data/chatStore.ts` `searchNextCharacterChat`, the per-character newest-first walk, must write `+characterId`, so
-  SQLite walks the rowid instead of sorting the `UNIQUE (characterId, id)` matches. `IF NOT EXISTS` can add a
-  `(characterId, seq)` index: the layout check reads only tables, by name.
-- `messages` (`chatSeq`, message `id`, integer `position`, `data` JSON, and the generation fence: `generationId`,
-  `generationSeq`, `generationFinal`, `generationHistory` of up to 8 earlier ids).
-- `openChatSchema` adds, when missing, `messages_role` on `(chatSeq, json_extract(data, '$.role'))`, which counts user
-  turns reading no row and refuses a non-JSON `data`, and `messages_checkpoints`, partial on the checkpoint keys' text,
-  so append cleanup reads only rows holding one. An older file's first open reads every row once.
-- `chatOrders` (`characterId`, `seq`, `revision`, `ids` JSON).
-- `changes` (`cursor` autoincrement, `kind`, `characterId`, `id`, `revision`): transactional refs/tombstones; order ids
-  are character ids. Created at open beside `openChatSchema`, outside `STORE_TABLES_SQL` and the layout check; no
-  version bump. Open-time writes bypass it.
-- The log prunes to 20,000 rows by cursor range (cursors are contiguous); deletes do not shrink the file. `replaceAll`
-  empties it, keeping the sequence. Whole-file snapshots and backups contain it; restore ignores it.
-- `chatGroups` (`seq` autoincrement, `chatSeq` referencing `chats.seq` with `ON DELETE CASCADE`, `groupId`, `revision`,
-  `result` JSON, unique `(chatSeq, groupId)`), created when missing at open, outside the layout check: never restored, a
-  restore leaves it empty (deleting the chats cascades).
-- The `memory_*` tables are created the same way, but a restore carries them as an optional group, like the
-  [checkpoint tables](#checkpoint-tables) ([structured memory](structured-memory/records.md#memory-tables)).
+- `server/src/data/resourceStore.ts` `STORE_TABLES_SQL` defines resources and metadata, including the epoch,
+  normalization stamp and summary projection version. `server/src/data/chatStore.ts` defines chats, ordered messages,
+  generation fences, chat orders and the indexes used for by-id edits, last-message reads and checkpoint cleanup.
+- The store records revision refs and tombstones in `changes` in the write's transaction. Open-time maintenance bypasses
+  the log. Reconnect reads it through `listChanges`; a whole-store replacement drops its entries while preserving the
+  cursor sequence. Snapshot copies include the log, and restore ignores it.
+- `chatGroups` keeps idempotency receipts for a chat incarnation. The local checkpoint barrier in `chatRestoreFloors`
+  also belongs to that incarnation. Both survive restart and are cleared by whole-store replacement. The
+  [checkpoint](#checkpoint-tables) and [memory](structured-memory/records.md#memory-tables) groups are optional snapshot
+  data.
 
 ### Summary projection
 
@@ -307,21 +297,15 @@ settings sections and collections, no `root` record; tables as in version 2).
 
 ### Checkpoint tables
 
-The checkpoint tables are created the same way and outside the required layout (a snapshot without them is valid), but a
-snapshot with any of them has them checked and restored (`walkCheckpointSnapshot`). The memory tables share its layout
-check, `snapshotTableGroup`.
+`server/src/data/checkpointStore.ts` `CHECKPOINT_SCHEMA_SQL` defines `chatCheckpoints`, content-addressed
+`checkpointPages`, `checkpointPageRefs` and `chatCheckpointPolicy`. A snapshot may omit the entire group.
+`walkCheckpointSnapshot` validates a present group with `snapshotTableGroup` and checks ordered message pages, field
+hashes and the [memory manifest](structured-memory/lifecycle.md#a-checkpoint). `chatRestoreFloors` is outside that
+group.
 
-- `chatCheckpoints` (`seq` autoincrement, `chatSeq` referencing `chats.seq` with `ON DELETE CASCADE`, `id`, `kind`
-  (`manual`, `auto`, `safety`), `name`, `createdAt`, `revision`, `chatRevision`, `userTurns`, `messageCount`, `preview`
-  JSON, `pages` JSON (the ordered message page hashes), `fields` JSON (captured field → page hash, plus
-  [the memory manifest](structured-memory/lifecycle.md#a-checkpoint)), unique `(chatSeq, id)`).
-- `checkpointPages` (`hash` primary key, `text`).
-- `checkpointPageRefs` (`checkpointSeq` referencing `chatCheckpoints.seq` with `ON DELETE CASCADE`, `hash`, indexed).
-- `chatCheckpointPolicy` (`chatSeq` primary key referencing `chats.seq` with `ON DELETE CASCADE`, `autoEvery`,
-  `autoKeep`, `lastAutoTurns`).
-- A checkpoint delete or prune removes only the pages its own checkpoints freed, in the caller's transaction, and scans
-  nothing else. Cascades leave unreferenced pages for store open or a scheduled `createAssetLifecycle` tick; a restore
-  keeps only referenced pages. See [Asset mark](self-host-server.md#asset-mark) for scheduling.
+Deleting or pruning a checkpoint removes its newly unreferenced pages in the same transaction. Chat deletion can leave
+pages for store open or a scheduled [asset mark](self-host-server.md#asset-mark) to collect. Restore keeps referenced
+pages only.
 
 ### Store open and normalization
 
@@ -343,8 +327,8 @@ default) replaces `FULL` on this connection only, for SD cards and slow local vo
   the backup import slot (the version-2 import and the upstream prepare and commit), the import slot the module, CharX,
   and Realm imports share, the staged Realm imports (`realmStaging`), and the prepared upstream imports
   (`upstreamStaging`) and exports (`upstreamExportStaging`).
-- The chat source generations, the `onChatInvalidated` listeners (one entry per chat deleted or replaced whole since the
-  open or the last restore; a restart starts them over), and the `onMessagesChanged` listeners.
+- The source-generation map tracks chats deleted or replaced whole since open or restore. The store also owns listener
+  sets for `onChatInvalidated` and `onMessagesChanged`.
 
 ## Coupling
 
@@ -356,6 +340,9 @@ default) replaces `FULL` on this connection only, for SD cards and slow local vo
   [token rule](server-generation.md#invariants), and `onChatInvalidated` has one production listener,
   `memoryTasks.invalidate` (`app.ts`). The transform loader does not subscribe: `prompt/displayScope.ts` keys its
   transcript cache by `chatSourceGeneration`.
+- Committed message rewrites and retractions reach
+  [memory reconciliation](structured-memory/lifecycle.md#retraction-and-edits) via `onMessagesChanged`; speaker changes
+  are identified even when a legacy content hash would miss them.
 - [Resource sync](resource-sync.md) and [backup-sync-hub](backup-sync-hub.md) hold the client side.
 
 ## Invariants
@@ -364,9 +351,10 @@ default) replaces `FULL` on this connection only, for SD cards and slow local vo
   restore floors, generation write fences, and optimistic recovery are detailed in
   [chat store](chat-store.md#restore-floor). The resource store publishes a change only after commit
   ([Publication budget](live-update-feed.md#publication-budget)).
-- Restore and import install under maintenance, after a safety snapshot, with reads open. The store replaces its
-  resource state atomically, in one transaction: a rollback leaves rows, epoch, write count, memos, and the feed as they
-  were, and a commit makes every earlier token stale and publishes one `epoch` event.
+- Restore and import install under maintenance, after a safety snapshot, with ordinary resource reads open during
+  maintenance. The store replaces its resource state atomically, in one transaction: a rollback leaves rows, epoch,
+  write count, memos, and the feed as they were, and a commit makes every earlier token stale and publishes one `epoch`
+  event.
 - Imports and restores follow the [content-name rule](#backup-and-import-internals).
 - A restore installs only a staged file this process wrote: exclusive, closed before it is reported, owned by its route
   until the install, and verified against the report. No row is checked on the serving thread for a restore, and
@@ -381,7 +369,9 @@ default) replaces `FULL` on this connection only, for SD cards and slow local vo
 - Add a resource kind: add a `ResourceKind` to `DEFAULT_RESOURCE_KINDS` with a pure, idempotent `normalize` (throw
   `ResourceValidationError` to reject), a `schemaVersion`, `singleton` if it has one record, and `materialize` if the
   store should create that record (then `normalize(undefined)` must return its default); the routes, snapshots, and
-  archives pick it up. Add the kind name to `RESOURCE_KIND` in `shared/resources.ts` for the client.
+  archives pick it up. Add the kind name to `RESOURCE_KIND` and set its `BOOT_CACHE_ELIGIBILITY` in
+  `shared/resources.ts`. For a settings collection, follow [field ownership](persistence.md) for section membership and
+  its client view.
 - Change the archive format: `server/src/data/archive.ts`, `planImport` and the export in `routes/backups.ts`,
   `BackupArchiveManifest`, and the client reader in `src/ts/drive/backuplocal.ts`; bump the manifest version.
 - Add a table a restore carries: its DDL in one of the schema strings a staged store shares with the live store
@@ -392,13 +382,14 @@ default) replaces `FULL` on this connection only, for SD cards and slow local vo
 
 ## Tests
 
-The in-process harness and the slow table are in the [shell's Tests](self-host-server.md#tests).
+[Shell tests](self-host-server.md#tests) describe the in-process fixture. Run worker and other timed checks through the
+[slow-test table](test-harness.md#slow-test-table).
 
 - `restore.runner` replaces what stages a restore, and `upstreamImport.runner` runs an upstream prepare in process.
 - In `backups.test.ts`, export admission is `snapshots.exclusive`; staged-directory visibility alone does not prove it
   has entered the queue.
 - Store, chats, and checkpoints:
-  `pnpm --silent test:agent server/src/tests/{resourceStore,chatStore,chatCheckpoints,chatCheckpointRoutes,sqliteSynchronous}.test.ts`.
+  `pnpm --silent test:agent server/src/tests/{resourceStore,chats,chatStore,chatSummaries,chatCheckpoints,chatCheckpointRoutes,sqliteSynchronous}.test.ts`.
 - Routes:
   `pnpm --silent test:agent server/src/tests/resources server/src/tests/{resourceCompression,messageSearch}.test.ts`.
 - Snapshots, archives, and imports:
@@ -451,11 +442,11 @@ The in-process harness and the slow table are in the [shell's Tests](self-host-s
   budget charges stored bytes, not wire bytes or heap. Nothing bounds how many large answers are in flight, and
   `readRefs` and `JSON.stringify` still run on the serving thread. Decision: Server Byte Budgets D2, D3, and Q3,
   archive.
-- The change log is bounded by rows, not bytes ([Store tables](#store-tables)): ids may be 512 UTF-16 units, so 20,000
-  rows made an 82 MB database in a 2026-11-05 probe (a few MB with UUID ids), and the `DELETE` prune never shrinks the
-  file. Every kept snapshot (20, plus up to 20 pinned) and backup carries it, so size snapshot storage as rows × id
-  length. Decision: Found Issues Clearance Q4 (owner, 2026-11-09): a byte bound costs a `SUM(length(id))` per prune, and
-  a VACUUM would stall every commit.
+- The change log is bounded by rows ([Store tables](#store-tables)): ids may be 512 UTF-16 units, so 20,000 rows made an
+  82 MB database in a 2026-11-05 probe (a few MB with UUID ids), and the `DELETE` prune never shrinks the file. Every
+  kept snapshot (20, plus up to 20 pinned) and backup carries it, so size snapshot storage as rows × id length.
+  Decision: Found Issues Clearance Q4 (owner, 2026-11-09): a byte bound costs a `SUM(length(id))` per prune, and a
+  VACUUM would stall every commit.
 - A version-2 export (`server/src/routes/backups.ts`) opens a custom-key asset while it streams without
   `claimAssetKey`'s lock, so a custom-key write (`server/src/routes/storage.ts`) during the export can pair the
   archive's database copy with later bytes; content-hash keys cannot change. Decision: Found Issues Clearance Q5 (owner,

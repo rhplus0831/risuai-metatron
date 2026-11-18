@@ -33,21 +33,15 @@
 
 ### Boot load
 
-`src/ts/bootstrap.ts` `loadData` hands the [boot cache](#boot-cache) snapshot to the resource owners:
+`loadData` in `src/ts/bootstrap.ts` seeds the server baselines for records, chats, inlays and plugin permissions before
+installing the [boot snapshot](#boot-cache). `loadSelection` precedes `installBootRecords`. Missing mandatory records
+fail installation. The server owns their defaults.
 
-1. `seedResources`, `seedChats`, `seedInlays`, `seedPluginPermissions` record server state before any local change.
-2. `loadSelection`, then `installBootRecords` installs into the record and chat owners. A missing section, collection,
-   or `presets` record is an error: the server creates and normalizes every record, the client none.
-3. `assembleChats` replaces the chat module's inventory; `initializeRecords` establishes unique character ids before
-   wrappers exist.
-4. `applyFirstBootDefaults`, then [boot recovery](draft-recovery.md#boot-recovery) (`recoverJournal`).
-5. The service worker may reload. `maintainCharacters` runs `checkCharOrderAtBoot` over the complete recovered inventory
-   before saving/feed startup; `initializeChats` gives a chatless character a chat. Recovered creation reruns no import
-   transform.
-6. `startResourceSync` starts saving boot's local writes; unchanged records are not sent.
-7. `importBrowserLocalData`, remote-record owners, `startEventFeed`, `loadPluginsForBoot`, UI flags. Owners registered
-   through `setRemoteResourceOwner` are `noteRemoteInlay`/`reconcileInlays` and `refreshPluginPermissions` (three
-   retries 5 s apart).
+`applyFirstBootDefaults` precedes [journal recovery](draft-recovery.md#boot-recovery) so recovered intent wins.
+Maintenance repairs character order over the recovered inventory and `initializeChats` fills chatless characters. The
+service worker can request a reload before either step. Saving starts before the browser-local import, remote owner
+registration, feed, and plugins. See the `loadData` contract for each startup step and `watchRemoteRecords` for the
+handlers that reapply UI settings and repair incoming orders.
 
 ### Boot cache
 
@@ -89,13 +83,12 @@
 
 ### Serialization
 
-- Adapter entrypoints: `projectCollection`, `characterProjection`, `moduleProjection`, `savedProjection`,
-  `shareSavedText`, `canonicalCharacter`, `canonicalShape`. Record wrapper stamps and copy rules belong to
-  [persistence](persistence.md#record-wrappers). Across the boundary, serialization preparation must succeed before
-  cache taint is committed; a local `reloadKeys` value holding record state is detached before adoption.
-- A module or character projection equal to the saved text is the saved string itself, in the field-text caches and in
-  the journal's cached projection, whichever path projected. String identity has no unit test:
-  `util/playwright/measureHeap.mjs` checks that no step holds a duplicated large record text.
+- `characterProjection`, `moduleProjection`, and `projectCollection` use the
+  [record wrapper stamps](persistence.md#record-wrappers). Serialization must succeed before the wrapper commits cache
+  taint. The wrapper detaches record state assigned to its local `reloadKeys` field. `canonicalCharacter` repairs a
+  character projection before saving.
+- `savedProjection` and `shareSavedText` let field caches and the journal reuse equal saved strings.
+  `util/playwright/measureHeap.mjs` checks for retained duplicate large record texts.
 
 ### Batch composition
 
@@ -180,12 +173,10 @@
 - `mergeConcurrentChange` uses `recordMerge.ts`'s three-way field/tuple/item policy. A success applies detached data
   raw, rebases through `adoptMergedBase`, and keeps the key dirty without a draft or notice; equal server values produce
   no echo. Taken fields reach `onRemoteRecordApplied`; a failure takes [whole-record acceptance](#conflicts).
-- For module lists accepted by `itemIds`, a fresh-id addition merges with independent remote changes and rebases without
-  a discard.
-- `moduleFolders` and `personaFolders` merge per folder (`items`, the whole folder one unit): changes of different
-  folders merge and equal changes of one folder converge. Differing changes of one folder (a rename here, a move into it
-  elsewhere) fail, and the record takes the server's list. Their writers replace the list, so `BY_ID_FIELDS` has
-  neither.
+- Modules and the `moduleFolders` and `personaFolders` collections use item ids. A fresh addition merges with
+  independent remote changes. Each folder is one conflict unit, including its name and all membership. Concurrent moves
+  of one item into separate folders can retain both memberships. `folderOfItem` in `shared/itemFolders.ts` resolves this
+  by folder order. Differing edits to the same folder take [whole-record acceptance](#conflicts).
 - `pluginStorage` merges by key, one level down in each `PLUGIN_STORAGE_DICTIONARIES` entry, other top-level keys whole
   (`mergePluginStorage`). Conflicting reserved values that cannot merge as dictionaries fail; unchanged or equal values
   still converge. `onPluginStorageDiscarded` hears replaced keys after acceptance settles the record.
@@ -239,7 +230,8 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
 
 - `flushResources` captures queued record generations, membership, chat/order sequences and credential ops. Its comment
   defines the ten-attempt budget and relevant dependency reads; it does not wait for unrelated background reads. After a
-  [restore halt](live-updates.md#restore-halt) it rejects (`assertSaveAdmission`) even with nothing pending.
+  [restore halt](live-updates.md#restore-halt) it rejects (`assertSaveAdmission`) even with nothing pending. An
+  individual batch write can still wait indefinitely for its HTTP answer.
 - Unanswered pagehide and stalled split-journal dependencies each wait at most 20 s. Timeout rejects without releasing
   the split prefix.
 - The result is `{ discarded, refused }` with `<kind>/<id>`, `chats/<chaId>/<chatId>` or order `chats/<chaId>` keys. Its
@@ -280,8 +272,9 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
 
 - The chain is the records and the chat module → `resourceSync.svelte.ts` → `resourceClient.ts` → `authFetch`
   (`serverAuth.ts`) → `/api/resources`.
-- `bootstrap.ts`: [boot load](#boot-load). `drive/backuplocal.ts`: `flushResources` and the backup routes; the Storage
-  page's snapshot restore uses the routes only (no flush).
+- `bootstrap.ts` owns [boot load](#boot-load). File export and Storage's Take snapshot action call `flushResources`
+  before asking the server for a backup. Snapshot restore replaces the live epoch. See
+  [backup and sync](backup-sync-hub.md) and [restore halt](live-updates.md#restore-halt).
 - `permissionStore.ts`, `inlays.ts`: own resources through `resourceClient.ts`. `refreshPluginPermissions` keeps a newer
   copy it holds. An inlay metadata read begun before an invalidation or this tab's write fills no cache; an on-demand
   read retries twice, then returns uncached.
@@ -306,7 +299,8 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
 - Boot-cache suites: see [app-shell](app-shell.md#tests).
 - Transport and pure merge:
   `pnpm --silent test:agent src/ts/storage/tests/resourceClient.test.ts src/ts/storage/tests/recordMerge.test.ts`.
-- Adapter tests use the real Svelte module, a fresh module graph, and fake timers per test.
+- `src/ts/storage/tests/resourceSyncScheduling.test.ts` spies on the chat refresh readers. Repeated remote notices
+  should reuse an already scheduled refresh without walking the idle chat lists again.
 - `src/ts/storage/tests/fakeResourceServer.ts`: an in-memory `authFetch` resource-route fake with batch, lost-answer,
   failure, and ordering hooks; `src/ts/storage/tests/serverKinds.ts` and `materialize(fake)` keep its record set aligned
   with the server.

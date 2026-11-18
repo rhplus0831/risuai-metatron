@@ -21,9 +21,8 @@ codes; the entries name the role and the identifiers to look up.
   stderr, the rerun, and the locks (`GATE_LOCK_PORT`, `E2E_LOCK_PORT`, `MAX_RERUN_FILES`, `FLAKY_LOG`).
 - `util/agentTestReporter.ts` `AgentTestReporter`: the Vitest reporter the wrapper installs: failures only, one summary
   line, the `SLOW` warning (`MAX_SLOW_TESTS`), the caps (`MAX_FRAMES`, `MAX_LOG_LINES`, ...).
-- `util/agentTestResults.mjs`: what the reporter and the wrapper share: `summaryLine`
-  (`OK <n> passed, <n> skipped (<files>, <s>s)` or `FAIL <n> failed, <n> passed, ... (<k> of <files> failed, <s>s)`),
-  `RESULTS_FILE_ENV`, `planRerun`, `mergeRerun`, `withoutFilters`.
+- `util/agentTestResults.mjs` owns the result file (`RESULTS_FILE_ENV`), the final verdict (`summaryLine`) and which
+  failed files to retry alone (`planRerun`, `withoutFilters`, `mergeRerun`).
 - `util/agentE2e.mjs`: which specs a change reaches (`selectSpecs`, `EVERY_SPEC_FILES`, `reachesBrowser`).
 - `util/overloadTest.mjs`: `test:overload`, the gated tests under the reference overload (one CPU, eight burners).
 
@@ -69,7 +68,7 @@ codes; the entries name the role and the identifiers to look up.
 - `util/playwright/stack.mjs`: `startStack` (server in a temporary working directory plus Vite, `restartServer` with an
   optional server environment; `deniedEgress` lists what the server's `fetch` tripwire refused, and a
   `serverEnv.NODE_OPTIONS` of the check's own replaces that tripwire), `isolateContext`, `unexpectedEgress`, `openApp`,
-  `openCharacterChat`, `clearSafeBootAttempts(contextOrPage)`, `pluginFixtureOp` (a v3 plugin installed by seed).
+  `openCharacterChat`, `clearSafeBootAttempts`, `pluginFixtureOp` (a v3 plugin installed by seed).
 - `util/playwright/offline.sh` (prefix a check's command): a check with loopback only (`unshare -rn`), the boundary that
   keeps the stack, the browser, and the mocks off public services.
 - `util/playwright/modelProfiles.mjs` and `util/playwright/modelProfiles.browser.mjs`: model and chat-binding fixtures
@@ -86,24 +85,24 @@ None is in the gate; all are in `util/playwright/`.
   `checkAssetLifecycle.mjs` (asset sweep via the dev clock offset), `checkSidebarChatStatus.mjs`, `checkBootCache.mjs`,
   `checkServerRestartRaces.mjs`, and, with real v3 plugins under `offline.sh`, `checkJobProtocol.mjs` and
   `checkJobHandoff.mjs` (two tabs hand a job off).
-- `checkHeadlessHost.mjs` (dev stack, `offline.sh`): runs `util/headlessHost.mjs` as a child on the Vite port with
-  temporary profiles: the exit for an unset password (first, before a context sets one); the host in another context's
-  presence; a fixture plugin's `alert` and `db` prompt dismissed (call denied, no grant); a SIGTERM stop, then a start
-  on the same profile without the password; a page reload command; a SIGINT stop. After each end no process holds the
-  profile (`--user-data-dir` in `/proc`). The sender opens with `?safe=plugins`, so only the host runs the plugin.
+- `util/playwright/checkHeadlessHost.mjs` checks that the child exits when the server password is unset. Another context
+  sets it, then the host logs in and a second run reuses its profile without a password. The driver also checks
+  presence, plugin dialog denial, remote reload and cleanup after SIGTERM and SIGINT. Its header gives the Linux
+  `offline.sh` command. The sender uses `?safe=plugins` so only the host runs the plugin.
 - Harness noise in two drivers: `checkJobProtocol.mjs` names a page reload the driver did not start as a failed case's
   cause (`HARNESS`) and reruns the case once when Vite logged its dependency reload (`RERUN`); `checkServerSend.mjs`
   prints any open alert's text before each chat open (`ALERT`).
 - `measurePluginData.mjs`: dev-stack database reads, storage/toggle write bytes, unchanged `getDatabase` → `setDatabase`
-  setter costs, then the developer recorder check.
+  setter costs, then the developer recorder check. Seed the plugin's `dbWrite` grant and last-grant time for setter
+  measurements and the handoff fixture. See [plugin permissions](plugin-sandbox.md#invariants).
 - Against a running production server, normally the Docker image on a fresh volume (`--base`, `--password`,
   `--provider-host`): `checkRecordsSmoke.mjs`, `checkLazyChatsSmoke.mjs`, `checkTwoClientSmoke.mjs`,
   `checkServerSend.mjs`, `checkServerButton.mjs`, `checkServerTrigger.mjs`, `checkServerJobMatrix.mjs`; the last four
   start a dev stack without `--base`.
 - Measurements of a production build in headless Chrome: `measureRecords.mjs`, `measureCharacters.mjs`,
-  `measureChats.mjs`, `measureHeap.mjs`, `measureBoot.mjs` (also the fixture builder
-  `buildBootFixture`/`seedBootFixture`), and `measureFileSources.mjs`. `measureTransformLua.mjs` runs the server in
-  process; `probeDirectAssets.mjs` probes the direct asset mechanics on its own server, not the app.
+  `measureChats.mjs`, `measureHeap.mjs` (including duplicate large record strings), `measureBoot.mjs` (also the fixture
+  builder `buildBootFixture`/`seedBootFixture`), and `measureFileSources.mjs`. `measureTransformLua.mjs` runs the server
+  in process; `probeDirectAssets.mjs` probes the direct asset mechanics on its own server, not the app.
 - `measureRenderWork.mjs` (dev stack, under `offline.sh`, Linux): render work of a styled, auto-translated chat when it
   opens and after a switch away, its mount trace, its screenshot's peak memory
   ([results](../reports/measurements/render-work-budget-2026-11-05.md)).
@@ -137,9 +136,8 @@ None is in the gate; all are in `util/playwright/`.
 
 1. The wrapper keys the cache by the working tree's `git write-tree` (`workingTreeId` in `util/workingTree.mjs`),
    versions, and arguments; a hit replays the stored output before any lock.
-2. A whole-suite run (no file filter) takes the machine-wide lock, so whole-suite runs from every checkout and worktree
-   queue instead of sharing the CPUs; queued runs finish one after another in the single run's time
-   ([timings](../reports/measurements/test-suite-lock-2026-10-30.md)).
+2. A whole-suite run waits up to 15 minutes for the machine-wide lock, then runs even if the lock is still held. File
+   filters bypass the lock. See the [parallel run timings](../reports/measurements/test-suite-lock-2026-10-30.md).
 3. The Vitest child (`AGENT_TEST=1`) runs with the reporter, which holds its output and writes per-file results to the
    file `RISU_REPORT_RESULTS_FILE` names.
 4. When at most `MAX_RERUN_FILES` files failed and no error was unhandled, the wrapper reruns each alone with the file
@@ -153,8 +151,8 @@ Playwright specs for agents (`pnpm test:e2e` is for people; Playwright arguments
 through `node_modules/@playwright/test/cli.js test --reporter=dot` with the same held stderr and cache. Run the specs
 the change reaches, not the whole set.
 
-- The wrapper asks `util/agentE2e.mjs` which specs the changed files reach; when none, it lists the specs and exits with
-  2, so the agent names the specs that cover the behavior it changed.
+- With no named spec, selection uses uncommitted and untracked files by default. Pass `--e2e-since=<rev>` to include
+  committed changes. When no change reaches a spec, the wrapper lists the specs and exits 2. Name a covering spec.
 - A harness change selects the specs that import it, including through extensionless relative imports:
   `e2e/multiClient.ts` selects both two-client specs, and `e2e/fixtures.ts` selects every importing spec.
 - Selection is by name, not coverage: a component no spec names (a chat screen file, say) selects nothing even when a
@@ -176,7 +174,8 @@ util-linux.
 
 ## State
 
-- `node_modules/.cache/agent-test/<args hash>.json`: the wrapper's stored result.
+- `node_modules/.cache/agent-test/<args hash>.json` holds the last result for those arguments, including failures. The
+  wrapper replays it only for a matching key.
 - `node_modules/.cache/agent-test/flaky.jsonl`: one JSON line per flaky test (time, tree, arguments, name, message).
 - Lock ports, held by listening: 6198 for whole-suite runs, 6199 for e2e runs.
 - Stack ports: the e2e stack is fixed at server 6101, Vite 5201 (`util/playwright/globalSetup.mjs`). A check's default
@@ -233,20 +232,8 @@ People and CI use `pnpm test`, `pnpm test:slow`, `pnpm test:all`, and `pnpm test
 
 ## Tests
 
-Use the [Recipes](#recipes) commands. A `FLAKY` block means a test failed in the full run and passed when its file ran
-alone; the wrapper counts it as passed and records it in `flaky.jsonl`. Recurring entries warrant a separate V3 fix,
-checked under the overload runner. Report warnings with the current run rather than treating a passing exit as proof of
-stability.
-
-Focused tests belong to the guide for the code under test: use
-[STRUCTURE's task router](../../STRUCTURE.md#choose-by-task) instead of copying those inventories here. Domain guides
-retain their harnesses and browser gaps. Discover current files with:
-
-```sh
-rg --files src server/src shared | rg '\.test\.ts$'
-rg --files e2e | rg '\.spec\.ts$'
-rg --files util/playwright
-```
+A `FLAKY` warning records tests that passed on the isolated rerun. Report it with the verdict. Investigate recurring
+failures under the [overload runner](#overload-runner). Domain guides list the focused tests for their code.
 
 - Setup, module reset, icon rewriting, and the network guard: `vitest.setup.test.ts`, `vitest.resetModules.test.ts`,
   `vitest.lucideImports.test.ts`, `vitest.testNetwork.test.ts` (happy-dom), and `vitest.testNetwork.node.test.ts`
@@ -291,16 +278,13 @@ A module mocked in more than one test file gets one shared, typed factory in a `
 factories' doc comments say what their defaults answer. Load a factory inside the hoisted `vi.mock` factory and pass the
 file's own handles as `overrides`. A partial mock over `importOriginal` needs no factory.
 
-- `src/ts/tests/alertMock.ts` `createAlertMock(overrides)`: shared typed defaults for client `alert` mocks; load it
-  inside the hoisted `vi.mock` factory and pass the test's own handles as overrides.
+- `src/ts/tests/alertMock.ts` provides `createAlertMock` for client alerts.
 - `src/ts/tests/storesMock.ts` `createStoresMock(overrides)`: all handwritten stores mocks use it.
-- `src/ts/tests/bootMocks.ts` `createBootMock(module, overrides)`: typed boot service defaults for both bootstrap suites
-  and every whole `resourceSync` mock; each `vi.mock` stays in its test file and loads it inside so hoisting stays
-  local.
+- `src/ts/tests/bootMocks.ts` provides `createBootMock` for bootstrap services and whole `resourceSync` mocks.
 - `src/ts/storage/tests/resourceClientMock.ts` `createResourceClientMock(overrides)`,
   `src/ts/storage/tests/chatStoreMock.ts` `createChatStoreMock(overrides)`, and `src/ts/tests/globalApiMock.ts`
-  `createGlobalApiMock(overrides)`: every mock of these three most mocked modules that does not spread the real module
-  uses them. The resource client's factory is async because it loads the real module for its error classes.
+  `createGlobalApiMock(overrides)` cover whole-module replacements. The resource client factory loads the real error
+  classes asynchronously.
 - Their overrides are `ModuleMockOverrides<Module>` (`src/ts/tests/mockOverrides.ts`); an export only the test drives
   goes beside the factory's result, not into its overrides.
 - `src/ts/network/tests/generationJobsMock.ts` `createGenerationJobsMock(overrides)` covers the job transport (with
@@ -334,16 +318,10 @@ Playwright's server `fetch` tripwire is `util/playwright/stack.mjs` `egressGuard
 
 ### Timeouts
 
-- The gate's Vitest timeout is a hang guard, not a performance budget: a test whose result does not depend on real time
-  may take as long as the machine's load makes it take, and only a test that never settles should fail on the timeout.
-- So `vitest.config.ts` sets `testTimeout` and `hookTimeout` to 60 s instead of Vitest's 5 s and 10 s, and a gated test
-  or hook gets no explicit shorter budget (a `slow` test keeps its own).
-- Slow tests are reported on request instead of failing: `pnpm --silent test:agent --slow-tests` lists the ones over 1
-  s.
-- Real-time dependencies (sleeps, real deadlines, bounded polls, elapsed-time assertions) are still V3 violations at any
-  timeout.
-- Verify a timing fix under CPU load with `pnpm --silent test:overload <files>` ([Overload runner](#overload-runner));
-  the slow tier is not run under it.
+- `vitest.config.ts` gives tests and hooks a 60 s hang guard. Gated tests and hooks inherit that timeout. Use
+  `pnpm --silent test:agent --slow-tests` to list passing tests over 1 s. A `slow` test can supply its own timeout.
+- Verify a gate timing fix under CPU load with `pnpm --silent test:overload <files>`
+  ([Overload runner](#overload-runner)); the slow tier is not run under it.
 - `server/src/tests/testSupport.ts` `waitFor` has no polling deadline by default: the test's Vitest timeout reports a
   condition that never holds as a failure. An explicit `timeoutMs` cap is for slow-tier tests only; prefer awaiting the
   event where one exists.
@@ -353,7 +331,8 @@ Playwright's server `fetch` tripwire is `util/playwright/stack.mjs` `egressGuard
 Slow tests cover real wall-clock/production limits, cold tokenizers, or fresh Node processes. Select them when touching
 the last column of the [slow-test table](#slow-test-table). Discover current tags with
 `rg -n 'module-tag slow|tags:.*slow' server/src shared src` rather than relying on a count or timing estimate. To tag a
-test, follow [Recipes](#recipes); `readSlowTable` in `util/testInventory.mjs` has the row format.
+test, follow [Recipes](#recipes). `readSlowTable` in `util/testInventory.mjs` has the row format. The fast effect-limit
+case stays in `triggerRuntime.test.ts` ("ends an endless loop with the limit").
 
 ### Slow-test table
 
@@ -368,8 +347,7 @@ test, follow [Recipes](#recipes); `readSlowTable` in `util/testInventory.mjs` ha
 | `upstreamExportWorker.test.ts` (the whole file)                       | cold worker boot   | `server/src/{data/upstream/export*,routes/backupsUpstreamExport}.ts` |
 | `diagnosticsCrash.test.ts` (the whole file)                           | fresh Node process | `server/src/{diagnostics/journal,main}.ts`                           |
 | `scriptWorker.test.ts` "caps sleep at 2 s..."                         | production caps    | `server/src/{lua/runtime.ts,scripts/}`                               |
-| `scriptWorker.test.ts` "charges a C-level...own 10 s give-up"         | real 10 s give-up  | `server/src/scripts/`                                                |
-| `scriptWorker.test.ts` "charges a C-level...shortened give-up..."     | real 1 s give-up   | `server/src/scripts/`                                                |
+| `scriptWorker.test.ts` "...10 s give-up", "...shortened give-up..."   | 10 s / 1 s limits  | `server/src/scripts/`                                                |
 | `luaRuntime.test.ts` "pins the address..."                            | real 10 s deadline | `server/src/lua/egress.ts`                                           |
 | `manualTriggers.test.ts` "ends the job with an error past..."         | production limit   | `server/src/{prompt/triggers.ts,jobs/}`                              |
 | `triggerRuntime.test.ts` "ends a privileged self-recursion..."        | production limit   | `server/src/prompt/triggers.ts`                                      |
@@ -400,8 +378,6 @@ test, follow [Recipes](#recipes); `readSlowTable` in `util/testInventory.mjs` ha
 | `assetLifecycle.test.ts` "rejects 20,000 unterminated..."             | elapsed bound      | `server/src/data/assetLifecycle.ts` (`recognize`)                    |
 | `src/ts/storage/tests/resourceSyncHydration.test.ts` "applies the..." | 150,000 messages   | `src/ts/storage/chatStore.svelte.ts`                                 |
 
-`triggerRuntime.test.ts` "ends an endless loop with the limit" still covers the effect limit in the default agent suite.
-
 ## Known Hazards
 
 ### Gotchas
@@ -409,11 +385,12 @@ test, follow [Recipes](#recipes); `readSlowTable` in `util/testInventory.mjs` ha
 - Import lucide icons as plain names (`import { X, Check as Ok } from "@lucide/svelte"`). Another form (a type, `icons`,
   a default or namespace import) keeps that statement on the package's main entry, and every test that reaches it
   repeats the package main entry and its icon exports; `vitest.lucideImports.test.ts` fails on it.
-- `vi.resetModules()` re-evaluates `src/`, `server/`, and test helpers only: a package or `shared/` module keeps its
-  module-level state (the Svelte runtime, a memoization cache) for the whole test file. The reset after a `vi.doMock` or
-  `vi.doUnmock` is Vitest's full one, because a kept module may import the mocked one. The kept set saves about 4 s of
-  the gate ([measurements](../reports/measurements/test-gate-cpu-profile-2026-11-12.md)); `vitest.resetModules.ts` reads
-  Vitest's worker state, and `vitest.resetModules.test.ts` fails when an upgrade changes it.
+- `vi.resetModules()` keeps evaluated packages and product modules under `shared/`. Their module-level state (the Svelte
+  runtime or a memoization cache) survives the reset. Test helpers in `shared/` are re-evaluated. The reset after a
+  `vi.doMock` or `vi.doUnmock` is Vitest's full one, because a kept module may import the mocked one. The kept set saves
+  about 4 s of the gate ([measurements](../reports/measurements/test-gate-cpu-profile-2026-11-12.md));
+  `vitest.resetModules.ts` reads Vitest's worker state, and `vitest.resetModules.test.ts` fails when an upgrade changes
+  it.
 - `expect(buffer).toEqual(buffer)` walks a Buffer byte by byte (over a second for a database file): compare with
   `Buffer.equals`, or as strings. A fixture of one repeated letter costs the tokenizer quadratic time: use spaced words.
 - A Vitest file that reaches the settings views or the records needs the client environment (happy-dom): the records use
@@ -429,8 +406,7 @@ test, follow [Recipes](#recipes); `readSlowTable` in `util/testInventory.mjs` ha
   unmounts without `flushSync()` in between sees the old values there, and the cleanup under test does nothing.
 - A `src/` test must not import `server/src/tests/testSupport.ts`: the root `tsconfig.json` is not strict, and compiling
   the server app under it breaks union narrowing in the server routes, so `pnpm check` fails while the tests pass.
-- Large fixtures: `isMember` in `chatStore.svelte.ts` scans a character's chat list, so spread many chats over
-  characters; V8 refuses a spread of about 125,000 arguments, so split such a case into a gated size and a `slow` one.
+- For a chat large enough to exceed V8's argument limit, keep a small gated case and run the full-size case in the slow
+  tier. See `src/ts/storage/tests/resourceSyncHydration.test.ts`.
 - A probe under `docs/reports/audits/*/probes/` asserts the defect: a passing probe means the bug is present.
-- Stop a background run by its PID. `pkill -f` on the command text also matches the calling shell and the runs of other
-  worktrees.
+- Stop a background run by its PID. Matching the command text can also stop the calling shell or another worktree's run.

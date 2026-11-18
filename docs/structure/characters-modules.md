@@ -6,7 +6,7 @@
   CharX zip read and write, modules (the `.risum` codec, activation, the effective-set getters),
   module/character/persona conversion, personas, and the character and lorebook editor UI.
 - Paths:
-  - `src/ts/{characterCards,characters,persona,pngChunk,interchangeability,assetList}.ts`
+  - `src/ts/{characterCards,characters,persona,pngChunk,interchangeability,assetList,lowLevelAccessImport}.ts`
   - `src/ts/process/{processzip,modules}.ts`
   - `src/ts/rpack/` (client bridge to the shared codec)
   - `shared/{charxImport,moduleImport,rpack}.ts`
@@ -15,7 +15,7 @@
   - `src/lib/SideBars/LoreBook/{LoreBookSetting,LoreBookList,LoreBookData,LoreEntryFields,LoreOverrideList,LoreOverrideRow}.svelte`
   - `src/lib/Setting/Pages/Module/{ModuleSettings,ModuleMenu,ModuleChatMenu,ModuleFolderRow}.svelte`,
     `src/lib/Setting/Pages/Module/moduleCatalog.ts`
-  - `src/lib/Setting/Pages/PersonaSettings.svelte`
+  - `src/lib/Setting/Pages/PersonaSettings.svelte`, `src/lib/Setting/Pages/personaGrid.ts`
   - `src/lib/Setting/listedPersona.svelte`
   - `src/lib/Others/GridCatalog.svelte`
   - `src/lib/ChatScreens/AssetInput.svelte`
@@ -75,15 +75,11 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 - `src/ts/persona.ts`: `changeUserPersona(id, target)` (through `pickBinding`, `src/ts/storage/chatBindingPick.ts`: a
   `ChatRef` binds that chat, `null` selects for the tab), `selectUserImg`, `exportUserPersona`/`importUserPersona`
   (returns the new persona's id, or null on every path that adds none).
-- `src/lib/Setting/Pages/PersonaSettings.svelte` (the persona grid and editor) and
-  `src/lib/Setting/listedPersona.svelte`. The grid shows one view of the persona folders at a time: the root (folder
-  tiles by name, then the personas in no folder in list order, then the add tile) or one open folder (`openFolderId`: a
-  back tile, its personas in list order, the add tile). The page opens at the root and returns there when the open
-  folder disappears.
-- A persona folder tile shows the name, the member count, and the selection ring when it holds the tab's selected
-  persona. The editor's Folder select files the shown persona (`moveItemToFolder` for `editedPersonaRecord()` at the
-  change), next to New folder and, in a folder view, Rename and Delete folder (the personas stay). The reorder rule is
-  `reorderShown` in `src/lib/Setting/Pages/personaGrid.ts` ([settings](settings-i18n.md#pages)).
+- `src/lib/Setting/Pages/PersonaSettings.svelte` edits the tab's persona. The grid opens at the root or shows one folder
+  (`openFolderId`); the editor's Folder control acts on `editedPersonaRecord()`. Drag sorting uses
+  `src/lib/Setting/Pages/personaGrid.ts` `reorderShown`, preserving the list positions of personas outside this view.
+- `src/lib/Setting/listedPersona.svelte` is the separate flat picker, including when opened from a chat's binding panel.
+  It passes its `chatRef` or `null` to `changeUserPersona`.
 
 ### Character editor
 
@@ -120,25 +116,16 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 - Catalog export/delete captures the module id before its dialog and resolves it afterwards, cancelling if absent;
   exporters receive detached records. `ModuleMenu` regex, lorebook, and asset imports capture backing-module identity
   before picking and recheck after upload, cancelling on navigation, replacement, removal, or editor destruction.
-- `src/lib/Setting/Pages/Module/moduleCatalog.ts` is the one row order of the catalog and the chat menu: module folders
-  by name, each with its modules by name, then the root modules by name. Membership is resolved with the folders in
-  stored order (`groupByFolder`) before the folder rows are sorted. A search lists the modules whose name matches; a
-  folder with no match is left out and the rest show open whatever their fold state. Without one an empty folder is
-  listed.
-- `src/lib/Setting/Pages/Module/ModuleFolderRow.svelte` draws a folder row (a blank name shows as "Unnamed folder");
-  fold state is per device ([UI](ui-theming.md#state)).
-- The catalog's move button captures the module id and `folderChoices` (folders by name, then "No folder"; each ASCII
-  `|` of a label shown as `｜` so `alertSelect`'s `||` encoding holds) before the dialog, always passes a display line,
-  and maps the answer through `choiceForAnswer`: an answer that is not an index within the list (cancel, Escape) does
-  nothing, and `moveItemToFolder` runs only while the module and the chosen folder exist. Folder rename and delete (the
-  modules stay) and the new-folder button use `src/ts/storage/collectionStore.svelte.ts`; the trash button is
-  `removeModule`.
-- "Switch all" never makes a folder an activation unit: the catalog's globe (`switchAllGlobally`) removes every member
-  from `enabledModules` when all are there and otherwise adds the missing ones, in one assignment; the chat menu's check
-  (`switchAllForChat`) acts on the members not globally enabled, removing them from the chat's `modules` when all are
-  there and otherwise adding the missing ones, in one `setCurrentChatMeta`, and its folder row counts "on / total".
-  Members are the modules the read rules place in the folder, whatever the search; the character's `modules` stay per
-  module.
+- `src/lib/Setting/Pages/Module/moduleCatalog.ts` builds both the catalog and chat menu rows (`moduleCatalog`,
+  `catalogRows`). It resolves membership in stored folder order before sorting by name. Search forces matching folders
+  open. `src/lib/Setting/Pages/Module/ModuleFolderRow.svelte` renders the shared folder row with
+  [device-local fold state](ui-theming.md#state).
+- A catalog move captures the module id and `folderChoices` before asking. After the answer, `choiceForAnswer` maps to
+  the captured folder id or the root. `moveItemToFolder` requires the module and any chosen folder to still exist. Use
+  the collection store for folder writes. Folder deletion keeps the modules.
+- A folder's switch acts on every current member, even while search shows only matches. `switchAllGlobally` changes
+  `enabledModules` once. `switchAllForChat` changes the chat's `modules` once via `setCurrentChatMeta`, skipping
+  globally enabled modules. Character activation stays per module.
 
 ### Asset pickers and lists
 
@@ -172,7 +159,9 @@ and commit contract is owned by [backup-sync-hub](backup-sync-hub.md#realm-downl
 
 ### Import results
 
-- The global lore import (`importLoreBook`) writes through `updateCharacter` by the id captured before the file dialog.
+- `importLoreBook("global")` writes the character's lore through `updateCharacter`, using the id captured before the
+  file dialog. The `"local"` path targets the captured chat and respects the [send fence](#lorebook-rows-and-writers).
+  Settings-level global lore pages have no import action here.
 - A chat's JSON file carries its structured memory beside `data`, which `importChat` restores behind the action:
   [Chat files](structured-memory/lifecycle.md#chat-files).
 
@@ -193,14 +182,11 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
 
 - Character, group, and persona fields belong to resource records; chats live in the chat module, not on the character
   record ([persistence](persistence.md)). `shared/personas.ts` owns persona defaults and canonical module links.
-- Module and persona folders are an overlay: the `moduleFolders` and `personaFolders` records list member ids
-  (`ItemFolder`, `shared/itemFolders.ts`), while `modules` and `personas` stay the source of what is listed and in what
-  order. A folder only organizes; `getModules`, `jobModules`, and every module link ignore it, and neither a module nor
-  a persona record carries a folder field, so no export or import sees one. Readers go through `folderOfItem` or
-  `groupByFolder`, which apply three rules instead of a repair pass:
-  - an item no folder names is at the root;
-  - an item several folders name belongs to the first of them in list order;
-  - a member id that names no item is ignored and left as stored.
+- Module and persona folder records (`moduleFolders`, `personaFolders`) name member ids. The item lists remain
+  authoritative for which items exist. Read membership with `folderOfItem` or `groupByFolder` in
+  `shared/itemFolders.ts`, including for conflicting or stale member ids. Folders affect neither `getModules` /
+  `jobModules` nor an individual module or persona file. See [resource records](persistence.md#resources) for merging
+  and [upstream database export](backup-sync-hub.md#upstream-database-export) for compatibility.
 - `lastInteraction` is preserved stored data; home ordering derives from it only when no chat has a timestamp. Plugin
   snapshots may expose that derived value without saving it back (`src/ts/plugins/apiV3/v3.svelte.ts`); upstream export
   has its own cold-storage rule ([backups](backup-sync-hub.md#upstream-database-export)).
@@ -230,7 +216,8 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
 - `exportModuleLegacy` refuses modules with an icon before encoding or writer initialization
   (`moduleLegacyExportIconUnsupported`); CharX carries the portrait.
 - `importCharacterCardSpec` maps a well-formed `extensions.depth_prompt` to the native field. `createBaseV2` omits
-  emotions and additional assets; V3 carries every field.
+  emotions and additional assets; `createBaseV3` includes both. Local fields such as `customNotificationMessage` stay
+  out of both card formats.
 - Every card and module export passes asset bytes through `compressImage`
   (`src/ts/media/compressImage/compressImage.ts`): with `db.imageCompression` on, the default, a JPEG, PNG, GIF, or BMP
   is re-encoded as WebP at quality 0.75 with its longer side capped at 3000 px, so no export form keeps those bytes.
@@ -312,11 +299,8 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
 - `removePersona` (`collectionStore.svelte.ts`) is the store's deletion: it refuses the last persona, moves the tab's
   selection off the deleted one first, and takes the id out of `personaFolders` in the same batch. The folder record and
   the item record save apart, so a deletion that saves alone leaves a stale member id, which the read rules ignore.
-- The persona grid's Sortable sees one view's tiles only: persona tiles carry `data-risu-id`, and the folder, back, and
-  add tiles carry `no-sort` (with `preventOnFilter: false`, so they keep their click). `onEnd` assigns
-  `reorderShown(settings.personas, shownIds)` once: the shown personas take, in their new order, the list positions they
-  held, and every persona not shown keeps its position, so a drag inside a folder never moves a root persona and never
-  changes a folder. A view change rebuilds the grid (`{#key sorted}`) and its Sortable as a reorder does.
+- In the grid only persona tiles participate in a drag. Sorting reorders the visible personas without moving other
+  personas or changing folder membership (`reorderShown`). Changing folders rebuilds the Sortable instance.
 - A persona created with the add tile, or imported by either import button, while a folder is open is filed into the
   folder that was open at the click, when it still exists; a created one is selected for the tab, an imported one is
   not. The page's deletion goes through `removePersona`.
@@ -334,6 +318,9 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
   wrappers or collection mutations; membership and assets invalidate synchronously without a refresh call.
 - Change the lorebook editor: `LoreBookSetting`/`LoreBookList`/`LoreBookData`, `LoreEntryFields`,
   `LoreOverrideList`/`LoreOverrideRow`. Keep `mode`, `id`, `folder`, and `bookVersion`.
+- Change module or persona folders: update the shared folder reader for membership rules and the collection store for
+  writes. For display or ordering, change `moduleCatalog` (catalog and chat menu) or `PersonaSettings` and
+  `reorderShown` (grid). Verify deletion, a filtered or folder-only view, and a stale member id.
 - Change character CRUD: `characters.ts`, `GridCatalog.svelte`, `CharConfig.svelte`. Verify trash restore and groups.
 
 ## Tests
@@ -342,6 +329,8 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
   `pnpm --silent test:agent src/ts/characterCards src/ts/characters src/ts/exportBatches src/ts/assetList src/ts/personaImport src/ts/process/modulesImport src/ts/process/lorebook src/lib/SideBars/LoreBook src/lib/SideBars/CharConfig src/lib/Setting/Pages/Module src/lib/Setting/Pages/PersonaSettings src/lib/Setting/Pages/personaGrid src/ts/storage/tests/{moduleCache,personaModuleLinks,moduleImportClient,charxImportClient}`.
 - Persona picker and catalog UI tests:
   `pnpm --silent test:agent src/lib/Setting/listedPersona.test.ts src/lib/Others/GridCatalog.test.ts`.
+- Folder readers, mutations, and device-local fold state:
+  `pnpm --silent test:agent shared/itemFolders.test.ts src/ts/storage/tests/collectionStore.test.ts src/ts/gui/itemFolderFold.test.ts`.
 - Focused server/shared tests:
   `pnpm --silent test:agent server/src/tests/{importCharx,importModule,importRealm,jobModules}.test.ts shared/tests/{rpack,personaModules}.test.ts`.
 - `slow`: `pnpm --silent test:agent --tags-filter=slow server/src/tests/{importPngCaps,importCharx}.test.ts`; `e2e`:

@@ -5,16 +5,15 @@ agent needs to choose files, change a contract, and verify the result.
 
 ## Place the fact
 
-- Keep repository-wide rules in [STRUCTURE.md](../../STRUCTURE.md#repository-wide-invariants). A rule belongs there only
-  when a change that never opens the owning guide can break it. Every other rule is the owning guide's invariant,
-  because every add/change task reads the index section whole.
+- A rule belongs in [STRUCTURE.md](../../STRUCTURE.md#repository-wide-invariants) when an edit outside its owning guide
+  can break it. Every add/change task reads that section. Keep area-specific invariants with their guide.
 - Document a single module's invariant, order, or failure behavior in a header or on the governing export. See
   `shared/sections.ts` for an example. Put interactions across modules, processes, or tabs in the owning guide and link
   to that contract elsewhere.
-- Put measurements from a run in `docs/reports/measurements/` and an audit's findings in `docs/reports/audits/`. Keep
-  the editing consequence and report link in the guide. The [plan archive](../archived-plan/README.md) indexes completed
-  plans and takes no run notes: what a plan left open goes to `docs/backlog/`. The [docs index](../README.md) says which
-  folder takes what.
+- Put measurements in `docs/reports/measurements/`, audit reports in `docs/reports/audits/`, and open work in
+  `docs/backlog/`. Keep the consequence for editors and the report link in the guide. The
+  [plan archive](../archived-plan/README.md) indexes completed plans. See the [docs index](../README.md) for other
+  destinations.
 
 Use paths and current identifiers as lookup anchors. A `db.<field>` name refers to the flat persisted `Database` field,
 which settings views and server projections can expose. Describe present behavior and its reason (STRUCTURE T5). Source,
@@ -48,26 +47,24 @@ prefix. Indexes and READMEs have a free outline.
 2. For a trim, pointer rewrite, or move, record each removed fact and its destination in the commit message. Name a
    source path and identifier, a guide heading, or `derivable:` plus the entrypoint. Keep the old heading anchor or
    update its inbound links.
-3. Run `pnpm docs:ledger <guide>` after the edit. Add `--strict` for guides naming globs. The tool compares the base's
-   `Files` and `Flows` identifiers with the guide and the files it names. Review the meaning and destinations on the
-   combined tree, especially when several guides lose related text.
+3. Run `pnpm docs:ledger <guide>` after the edit. It checks identifiers in the base revision's `Files` and `Flows`
+   against the edited guide and the files it names. Add `--strict` for guides naming globs. Review moves on the combined
+   tree so parallel trims keep a destination for each fact.
 4. For a new, moved, or deleted source path, check `pnpm docs:owner <path>`. Update `ownership.json` if the path has no
    rule, routes to the wrong guide, or leaves a rule without matches. Exact and shared rules precede directory
    fallbacks.
-5. Format changed files with Prettier and run `pnpm check:docs`. It checks relative Markdown links and anchors,
-   repository paths in code spans, the guide outline, budgets, the ownership manifest, and the verification record. It
-   expands braces and globs for path checks and allows git-ignored runtime paths. Verify identifiers and bare file names
-   in source. Run `pnpm check:tests` after changing the slow-test table.
-6. A guide whose `pnpm docs:ledger --stale` count rises, or that leads `pnpm docs:due` (the commits to its paths since
-   it was last read against the code), is due a read-and-verify pass: one session, section by section against the
-   source, fixing what drifted and recording the rest in the issue inbox. The pass runs
-   `pnpm docs:due --verified <guide>` before its commit, which records the revision it read in
-   `docs/structure/verified.json`. No other edit of a guide updates the record.
-7. Between full audits there is no whole-tree pass. The owner calls a full audit from time to time: every guide and the
-   index get the read-and-verify pass in one run, the findings are checked by a second reader before they land, and the
-   run records every guide with `pnpm docs:due --verified`, writes its report under `docs/reports/audits/`, and updates
-   the `Last full audit` line in [STRUCTURE.md](../../STRUCTURE.md#doc-maintenance) with its date, the revision it read,
-   and the report.
+5. Format changed files with Prettier and run `pnpm check:docs` for outlines, budgets, links, path spans, ownership and
+   verification records. Check bare file names and identifiers in source. Run `pnpm check:tests` after a slow-test table
+   edit. See the [checker](build-test-platforms.md#documentation-check) for brace expansion, git-ignored runtime paths
+   and report mode.
+6. A rising `pnpm docs:ledger --stale` count or a leading `pnpm docs:due` entry calls for a focused pass. Read the guide
+   section by section against source in one session, fix drift and file outstanding findings. Only after this pass, run
+   `pnpm docs:due --verified <guide>` to record the source revision in `docs/structure/verified.json`.
+7. For an owner-requested full audit, read every guide, this README and the index against the same source revision. Have
+   a second reader check the findings. Before committing, run `pnpm docs:due --verified <guide>...` with all the guide
+   names listed by `pnpm docs:due`. The root index and this maintenance README are covered in the audit report. Write
+   the report under `docs/reports/audits/` and update [Last full audit](../../STRUCTURE.md#doc-maintenance) with the
+   date, source revision and report link. Between full audits, verify the individual guides that are due.
 
 ## Size limits
 
@@ -82,38 +79,29 @@ reach the target.
 | List item or table row, including continuation text and code spans |              | 600 characters |
 | Nested parentheses outside code spans                              |              |       2 levels |
 
-`pnpm check:docs` reports `near` over a target and fails over a limit. Its verdict line also prints the bytes of the
-guides and the index together, a trend figure with no limit: a reader takes one section at a time, so the leaf and item
-limits bound a read, not the tree. The index is the exception: every add/change task reads its invariants whole, so that
-section has a limit over its subsections.
+`pnpm check:docs` reports `near` above a target and fails above a limit. Tree bytes track growth across the guides and
+index. The size limits apply at the units in the table.
 
-A change adds its facts to the owning guide and does not trim a guide it would not otherwise touch. A target does not
-stop it: a change that leaves a new `near` line still records its facts, names the line in its report, and adds a
-[found issues](../backlog/found-issues.md) entry for the split or trim unless one already names that guide. Splits and
-trims are passes of their own, aimed first at `near` lines and at large guides that `pnpm docs:reads` shows are rarely
-read. Only a limit stops a change, and then the split lands first, as its own commit. Trims that run in parallel each
-list the facts they leave to another guide, and the lists are checked on the combined tree before the last trim lands:
-two trims can each drop a fact that the other guide still held at their base. Run `pnpm check:docs` again after merging
-another branch into the working branch. See the [documentation checker](build-test-platforms.md#documentation-check) for
-exact rule coverage and its report mode.
+Add new facts to their owning guide. If that introduces a `near` warning, name it in the change report and file the trim
+or split in [found issues](../backlog/found-issues.md) once per guide. Above a hard limit, land the split first in its
+own commit. Schedule unrelated trims separately. Prioritize `near` warnings and large, seldom-read guides.
+`pnpm docs:reads` samples local Claude Code transcripts and misses Codex reads. Re-run `pnpm check:docs` after merging
+guide edits from another branch.
 
 ## Known hazards and the issue inbox
 
 Under `Known Hazards`, use these `###` headings in order. Omit empty headings and give each distinct finding its own
 bullet.
 
-- `Issues` holds unreproduced claims, each prefixed `Unconfirmed:`. Confirmed defects and advertised but unwired
-  behavior live in [known issues](../backlog/known-issues.md), one queue over every guide (moved there on 2026-11-10): a
-  confirmed claim moves there, and an entry is deleted when the defect is fixed.
+- `Issues` holds unreproduced claims, each prefixed `Unconfirmed:`. Move confirmed defects and advertised but unwired
+  behavior to the owning guide's section in [known issues](../backlog/known-issues.md). Retire the entry when fixed.
 - `Limitations` holds behavior the owner chose or a consequence of a recorded choice. End the bullet with a short
   decision reference. If the decision is reversed, move the outstanding defect to known issues.
 - `Gotchas` holds facts that can mislead an editor, such as ordering requirements, test environment differences, or a
   plausible-looking file with no callers.
 
-Use [found issues](../backlog/found-issues.md) for out-of-scope findings that still need verification or an owner. When
-a finding is checked and placed, describe it under its owning guide's section of known issues (or in the guide itself as
-a Limitation or Gotcha) and retire the inbox entry. For a confirmed limitation, include the owner's decision.
+Use [found issues](../backlog/found-issues.md) for out-of-scope findings that need verification or an owner. Retire the
+inbox entry once it is fixed or placed under known issues, Limitations or Gotchas.
 
-Triage a security finding on the server as if the server were reachable from the internet: the owner's is not, and other
-deployments may be. Offer the cheapest change that closes the worst path, and record a larger redesign (authentication
-on more routes, say) as its own entry. Decision: owner, 2026-11-10 (known-issues review).
+Triage server security findings for internet-reachable deployments. Record the lowest-cost change that closes the worst
+exposure and give any larger redesign its own entry (owner decision, 2026-11-10, known-issues review).

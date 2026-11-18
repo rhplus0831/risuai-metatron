@@ -12,7 +12,7 @@
   - `src/ts/setting/*`, `src/ts/settingsMenu.ts`
   - `src/lib/Setting/**`, except the files other guides own (`pnpm docs:owner <path>`):
     - [characters-modules](characters-modules.md): `Pages/Module/` (the module catalog, its share button's export and
-      alert handling, and the editor), `Pages/PersonaSettings.svelte`, `listedPersona.svelte`;
+      alert handling, and the editor), `Pages/PersonaSettings.svelte`, `Pages/personaGrid.ts`, `listedPersona.svelte`;
     - `llm-requests.md`: `Pages/Advanced/CustomModelsSettings.svelte`, `Pages/ApiKeysSettings.svelte`,
       `Pages/ModelProfilesSettings.svelte`, `Pages/Model/ModelProfileEditor.svelte`,
       `Pages/Model/ProfileSlotSelect.svelte`;
@@ -100,20 +100,12 @@ Each module's rules are in its header or on its exports, and each component's in
 
 ### Pages
 
-These live in `src/lib/Setting/Pages/`. `DeviceLinkSettings` (menu 25, `deviceLink` strings) holds the device-local
-controls of [network jobs](network-jobs.md). Above its sections sit a note that they are saved in this browser only and
-`Device/DeviceNameInput.svelte` (item `deviceLink.name`: `clientName` of `src/ts/network/handoff.ts`, the one name both
-mechanisms register). Then comes one section per mechanism with a rule between, remote host first.
-
-- `Device/RemoteHostControls.svelte` (item `display.remoteHost`) is the sending side (`remoteSend`, `remoteSendHost`,
-  `remoteSendFallback` in `src/ts/network/remoteSend.ts`, `serverJob.remoteSend.settings` strings). The host is chosen
-  from one row per connected host name (`hostTargets`), never typed; a remembered name with no connected host keeps a
-  row with Clear. The empty name gets no such row: it is both "none chosen" and an unnamed host's name.
-- `Device/HostModeButton.svelte` (item `deviceLink.startHost`) turns on `hostMode` (`src/ts/network/remoteHost.ts`). It
-  is a button, as on the home screen ([app shell](app-shell.md#home-screen)), because the mode's lock screen replaces
-  the page and holds the only control that leaves it.
-- `Device/HandoffToggles.svelte` (item `display.handoff`) edits `acceptHandoffs` and `preferHandoff` of
-  `src/ts/network/handoff.ts` under a warning that recommends remote host, with `serverJob.handoff` strings.
+Pages live in `src/lib/Setting/Pages/`. In `DeviceLinkSettings`, `Device/DeviceNameInput.svelte` edits this browser's
+`clientName`, shared by host commands and handoff. The remote host section pairs
+`src/lib/Setting/Pages/Device/RemoteHostControls.svelte` (sending browser, host selection by name, reload and fallback)
+with `Device/HostModeButton.svelte` (enter the host lock screen). `Device/HandoffToggles.svelte` edits handoff
+preferences. These controls use browser-local stores. Follow [network jobs](network-jobs.md#remote-send) for command
+delivery and [app shell](app-shell.md#home-screen) for the home entry point.
 
 - Declarative: `AccessibilitySettings`, `InteractionSettings`, `AdvancedSettings`, `StorageSettings`, and
   `DeviceLinkSettings` (the header array, then `SettingsSections`), `DisplaySettings` (sectioned per tab),
@@ -143,24 +135,16 @@ mechanisms register). Then comes one section per mechanism with a rule between, 
 - `StorageSettings` (menu 23): its sections read the page's `Storage/storageController.svelte.ts` (via
   `Storage/storageContext.ts`), so polling ends with the page.
 - `HotkeySettings` (menu 15): `activeHotkeys` (`src/ts/hotkey.ts`) hides `quickSettings` ([app-shell](app-shell.md)).
-- `InputHookSettings` (menu 24): the hook list (`settings.inputHooks`, [persistence](persistence.md)). Each edit finds
-  its hook by id and assigns a new array (no draft layer). Add stops at `MAX_INPUT_HOOKS`; a card edits name, type
-  (Draft to BTW drops `translation`), model (as the translator step editor), and prompt (the hook id as
-  `popupEditorContext`). No `SettingItem`: search finds the page by title. `language.inputHooks` also holds the strings
-  of the chat's Draft hook panel ([UI](ui-theming.md#sidebar)).
-- A Draft hook's card also has the Translation mode checkbox, which writes `translation: true` or removes the key
-  ([translation](translation.md#send-hand-off)).
-- `personaGrid.ts` holds `reorderShown`, the reorder rule of the persona grid, which shows the root or one persona
-  folder: the shown personas take, in their new order, the list positions they held, and every other persona keeps its
-  position. The page and its folders belong to [characters-modules](characters-modules.md#personas-and-conversion).
-- `RequestInterceptionSettings` (menu 26, slug `request-interception`, `requestInterception` strings): the rule list
-  (`settings.providers.requestInterceptions`; what a rule does is in [LLM requests](llm-requests.md#flows)). Add stops
-  at `MAX_REQUEST_INTERCEPTIONS`; a new rule is enabled, targets `model`, sits at `start`, and holds an empty `system`
-  plain prompt. Notes under the list state the feature's limits. No `SettingItem`: search finds the page by title.
-- Each rule is a `PromptDataItem` row narrowed to the plain item without CBS, with the enabled toggle, the mode
-  checkboxes, and the position select in its `extra` snippet. Those edits and the list edits find the rule by id and
-  assign a new array; the row's name, text, and role edits write the prompt in place. List order is insertion order, so
-  reordering, removal, and the opened rows follow `PromptSettings`'s index handling.
+- `src/lib/Setting/Pages/InputHookSettings.svelte` edits the global `settings.inputHooks` list. A card addresses its
+  hook by id, including for popup text edits. Only Draft hooks carry the optional `translation` flag. The chat's hook
+  choice and composers consume these definitions ([UI](ui-theming.md#sidebar),
+  [input hooks](chat-pipeline.md#input-hooks)).
+- `src/lib/Setting/Pages/RequestInterceptionSettings.svelte` edits `settings.providers.requestInterceptions`. Rule
+  controls use `liveRule` to resolve the current id on each read or write, and replace the list when a rule field
+  changes. `PromptDataItem` edits the wrapped prompt in place. Display order determines insertion order. The shared rule
+  limit, accepted modes, and request behavior belong to [LLM requests](llm-requests.md#flows).
+- Input hooks and request interception are handwritten pages. Their titles are searchable through `searchIndex.ts` and
+  their rows have no individual `SettingItem` anchors.
 - Other handwritten pages: `PromptSettings`, `OobaSettings`, `OpenrouterSettings`, `UserSettings`, `ThanksPage`,
   `UpstreamImportReport`, `Advanced/BanCharacterSetSettings`, `Display/*`, and `Device/*`.
 
@@ -171,8 +155,6 @@ mechanisms register). Then comes one section per mechanism with a rule between, 
 - A pick uses `pickBinding` (`src/ts/storage/chatBindingPick.ts`): a list opened for a chat (`chatRef`, the binding
   panel's rows) binds that chat; any other list, Ctrl+1..9, and the Persona page change the tab's selection, also with a
   chat open ([chat bindings](persistence.md#chat-binding)).
-- The Model, Prompt, and Persona pages show the tab's selection with no note comparing it with the open chat's binding;
-  the binding panel shows the chat's own.
 - `src/ts/storage/presets.svelte.ts` `importPreset` returns the new id after success, or no value for a cancelled picker
   or a refused file (alerted). The share receiver consumes its cached preset only after success.
 
@@ -207,7 +189,8 @@ mechanisms register). Then comes one section per mechanism with a rule between, 
   `finishJump` (an available page or tab hit only navigates), across `src/ts/setting/searchIndex.ts`,
   `src/ts/setting/settingJump.svelte.ts`, and the consumers in [Settings search and jumps](#settings-search-and-jumps).
 - Preset switching on the settings screen changes the tab's selected record, never a chat's binding; only the binding
-  panel binds. The field and chat-binding rules are in [persistence](persistence.md#chat-binding).
+  panel changes an existing chat's binding through these pickers. The field and chat-binding rules are in
+  [persistence](persistence.md#chat-binding).
 - A language switch is the `lang.uiLanguage` `onChange` in `src/ts/setting/languageSettingsData.svelte.ts`.
 - SillyTavern import computes `PresensePenalty` from `presence_penalty`; a missing value becomes `NaN`, then
   `normalizePreset` replaces it with the `PRESET_DEFAULTS` value.
@@ -301,6 +284,9 @@ mechanisms register). Then comes one section per mechanism with a rule between, 
 
 ## Recipes
 
+- Add a settings page: give it a menu index in `src/ts/settingsMenu.ts`, a slug in `SETTINGS_PAGES`, a navigation entry
+  and mount branch in `Settings.svelte`, and a page hit in `searchIndex.ts` (`PAGES`). Register its section arrays for
+  item search when applicable. Check the route, page search and `e2e/settingsPages.spec.ts`.
 - Add a declarative setting:
   1. `Database`, its place in `shared/sections.ts`, and its default in the server normalizer.
   2. A `SettingItem` in the page's data file (`src/ts/setting/*Data.ts` or `*Data.svelte.ts`).
@@ -329,6 +315,9 @@ mechanisms register). Then comes one section per mechanism with a rule between, 
 
 - Focused:
   `pnpm --silent test:agent src/ts/setting src/lib/Setting src/ts/storage/tests/settingsViews.test.ts src/ts/storage/tests/settingWrappers.test.ts src/lib/UI/GUI/guiRendering.test.ts src/lang`.
+- Shared prompt row and popup identity:
+  `pnpm --silent test:agent src/lib/UI/PromptDataItem.test.ts src/lib/UI/popupRowContext.svelte.test.ts`. The
+  interception page also exercises the row over real settings records in `RequestInterceptionSettings.test.ts`.
 - Prompt diff: `pnpm --silent test:agent src/lib/Others/PromptDiffModal.escape.test.ts`; its header describes the
   comparison, alert, and global-hotkey isolation contract.
 - `slow`: none in this area.

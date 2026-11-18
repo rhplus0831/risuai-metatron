@@ -21,8 +21,8 @@
 - Not here:
   - Translation, its presets and settings, the stored translation, and bilingual display →
     [translation](translation.md).
-  - Aux-model request routing → `llm-requests.md` (`requestChatDataMain`).
-  - Inlay storage → `chat-pipeline.md` (`files/inlays.ts`).
+  - Aux-model request routing → [model preset slots](llm-requests.md#model-preset-slots).
+  - Inlay storage → [chat pipeline](chat-pipeline.md) (`files/inlays.ts`).
 
 ## Files
 
@@ -73,16 +73,16 @@ here, under `src/lib/Playground/`:
 ### Settings
 
 - `src/lib/Setting/Pages/Model/AuxModelSelectors.svelte`: the model preset's `seperateModelsForAxModels` toggle and the
-  four `auxSlots` (`ProfileSlotSelect` each); its contract holds the slot states
-  ([model profiles and slots](llm-requests.md); routing in `llm-requests.md`).
+  four `auxSlots` (`ProfileSlotSelect` each). Edits target `editedModelPreset`; see
+  [model preset slots](llm-requests.md#model-preset-slots) for resolution at request time.
 
 ## Flows
 
-- TTS entry points: the `src/lib/ChatScreens/Chat.svelte` button (`sayTTS(null, msg)`), the `speak` command
-  (`src/ts/process/command.ts`), and auto speech: with `db.ttsAutoSpeech`, the server send
-  (`server/src/prompt/runner.ts`) posts a `tts` job notice, and `src/ts/network/jobChannel.ts` calls
-  `sayTTS(character, text)` for a non-group character in the tab's list. Stop is `stopTTS`, in the
-  `src/lib/ChatScreens/DefaultChatScreen.svelte` menu whenever the character has a `ttsMode`.
+- TTS entry points: the `src/lib/ChatScreens/Chat.svelte` button reads the original message or the raw streaming text,
+  even while a translation is shown. The `speak` command in `src/ts/process/command.ts` passes its argument to `sayTTS`.
+  With `db.ttsAutoSpeech`, the server send (`server/src/prompt/runner.ts`) posts a `tts` job notice, and
+  `src/ts/network/jobChannel.ts` calls `sayTTS(character, text)` for a non-group character in the tab's list. Stop is
+  `stopTTS`, in the `src/lib/ChatScreens/DefaultChatScreen.svelte` menu whenever the character has a `ttsMode`.
 - Emotion images: the server send's `imggen` view asks the tab's `imggen` callback (`jobChannel.ts`), which runs
   `stableDiff` with the job's chat ref, plugin context, `check`, and abort signal; `generateAIImage(..., "")` updates
   `CharEmotion`, and the callback answers `shown !== false`.
@@ -111,13 +111,11 @@ here, under `src/lib/Playground/`:
   `transformers.ts:runVITS` (synthesis only; it never opens an `AudioContext`), and plugin v3 (hook registration).
 - OpenAI TTS's per-character `oaiTTSConfig` and stored-key path, DALL-E/Imagen, and Whisper follow
   [network jobs: Auxiliary credentials](network-jobs.md#auxiliary-credentials), including the custom TTS URL/key rule.
-- The VITS model import (`transformers.ts` `registerOnnxModel`, the character's TTS settings) takes the picked zip as a
-  `File` and reads it by its central directory (`process/zipFile.ts` over `shared/charxImport.ts`'s parsers), never
-  scanning entry bytes for signatures.
-  - Each kept member (`.onnx`, under 10 MB compressed, or a `.git` path; no directories) is read and inflated only when
-    its `saveAssets` slot is free (two at once) and the members are written in batches; a member over
-    `MAX_ONNX_MEMBER_BYTES` (100 MiB less 64 KiB, so its record fits the server's body limit) is skipped and named in
-    the closing message. An unreadable zip or a failed save alerts and returns nothing.
+- ElevenLabs and Hugging Face speech use `globalFetch` for audio bytes. Stability sends multipart bytes and their
+  boundary together through `fetchNative`. The [network wrappers](network-jobs.md) control routing for these calls.
+- The character's VITS/ONNX model import runs `registerOnnxModel` in `src/ts/process/transformers.ts`, using
+  `src/ts/process/zipFile.ts` and `shared/charxImport.ts` to read the central directory and `saveAssets` to store
+  selected members. `MAX_ONNX_MEMBER_BYTES` leaves room for the server's batch framing.
 - `stableDiff` depends on `requestChatData`, `CharEmotion`, `processZip`, and `readAsset` (character images).
 - The media utilities are used by card import/export, modules, and inlays.
 
@@ -173,8 +171,10 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
 - `auxFetchJson` abort: [network tests](network-jobs.md#tests).
 - Playground preview/retry and deletion: `src/ts/process/imageDelivery.test.ts` and
   `src/lib/Playground/PlaygroundInlayExplorer.test.ts`.
-- Not tested: full provider request-body coverage, live-provider integration, real audio decoding, Stop-menu visibility,
-  and interactive playground flows beyond image-preview retry and inlay-preview/deletion.
+- Not tested: full provider request-body coverage, real audio decoding, Stop-menu visibility, and interactive playground
+  flows beyond image-preview retry and inlay-preview/deletion. The
+  [real-provider checks](../backlog/manual-checks.md#real-providers-and-external-services) cover pending speech and
+  image requests through the server and plain-fetch routes.
 
 ## Known Hazards
 

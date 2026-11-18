@@ -59,6 +59,24 @@
       "shared": true,
       "part": "sealedMemoryProjection"
     },
+    {
+      "match": "server/src/data/resourceStore.ts",
+      "guide": "live-update-feed",
+      "shared": true,
+      "part": "publishing committed resource and chat changes"
+    },
+    {
+      "match": "server/src/data/chatStore.ts",
+      "guide": "server-resources",
+      "shared": true,
+      "part": "chat operations, revisions and persistence"
+    },
+    {
+      "match": "server/src/data/chatStore.ts",
+      "guide": "live-update-feed",
+      "shared": true,
+      "part": "chatFeedChange and the payload for subscribers"
+    },
     { "match": "src/ts/plugins/apiV3/v3.svelte.ts", "guide": "plugin-sandbox", "shared": true, "part": "the rest" },
     {
       "match": "src/ts/plugins/apiV3/v3.svelte.ts",
@@ -77,6 +95,84 @@
       "guide": "structured-memory",
       "shared": true,
       "part": "projectUpstreamMemory"
+    },
+    {
+      "match": "src/ts/process/serverCommands.{ts,test.ts}",
+      "guide": "chat-pipeline",
+      "shared": true,
+      "part": "send admission, creation and replay"
+    },
+    {
+      "match": "src/ts/process/serverCommands.{ts,test.ts}",
+      "guide": "network-jobs",
+      "shared": true,
+      "part": "following jobs, recovery and handoff"
+    },
+    {
+      "match": "src/ts/process/serverCommands.{ts,test.ts}",
+      "guide": "scripts-triggers",
+      "shared": true,
+      "part": "button and manual trigger jobs"
+    },
+    {
+      "match": "src/ts/process/command.{ts,test.ts}",
+      "guide": "chat-pipeline",
+      "shared": true,
+      "part": "composer slash commands and multisend"
+    },
+    {
+      "match": "src/ts/process/command.{ts,test.ts}",
+      "guide": "scripts-triggers",
+      "shared": true,
+      "part": "manual trigger dispatch"
+    },
+    {
+      "match": "shared/contextReport.{ts,test.ts}",
+      "guide": "chat-pipeline",
+      "shared": true,
+      "part": "context report parsing, token budgets and history"
+    },
+    {
+      "match": "shared/contextReport.{ts,test.ts}",
+      "guide": "structured-memory",
+      "shared": true,
+      "part": "Structured Memory coverage and exclusions"
+    },
+    {
+      "match": "shared/ooc.{ts,test.ts}",
+      "guide": "persistence",
+      "shared": true,
+      "part": "stored exchange, segment and toggle validation"
+    },
+    {
+      "match": "shared/ooc.{ts,test.ts}",
+      "guide": "chat-pipeline",
+      "shared": true,
+      "part": "question history, pruning and effective toggles"
+    },
+    {
+      "match": "shared/{inputHooks.ts,tests/inputHooks.test.ts}",
+      "guide": "chat-pipeline",
+      "shared": true,
+      "part": "hook selection, history and request messages"
+    },
+    {
+      "match": "shared/{inputHooks.ts,tests/inputHooks.test.ts}",
+      "guide": "persistence",
+      "shared": true,
+      "part": "hook settings shape, limits and normalization"
+    },
+    {
+      "match": "shared/itemFolders.{ts,test.ts}",
+      "guide": "characters-modules",
+      "shared": true,
+      "part": "folder membership and grouping for modules and personas"
+    },
+    {
+      "match": "shared/itemFolders.{ts,test.ts}",
+      "guide": "persistence",
+      "shared": true,
+      "part": "stored folder shape and normalization"
     },
     {
       "match": "src/ts/{alertUpstreamImportReport,characterCardsRealmImport,realmBlocking}.test.ts",
@@ -100,7 +196,7 @@
     },
     { "match": "server/src/tests/llm*.test.ts", "guide": "llm-requests" },
     {
-      "match": "server/src/tests/{auxOps,imageTokens,providerModels,sseLines,tokenParity,tokenPlainNode,tokens}.test.ts",
+      "match": "server/src/tests/{auxOps,imageTokens,providerFetch,providerModels,sseLines,tokenParity,tokenPlainNode,tokens}.test.ts",
       "guide": "llm-requests"
     },
     { "match": "server/src/tests/tokenFixtures.ts", "guide": "llm-requests" },
@@ -114,23 +210,26 @@
       "guide": "scripts-triggers"
     },
     {
-      "match": "server/src/tests/{chatBinding,commandSequences,dynamicAssets,generation*,jobChannel,jobMetadataScope,jobModules,jobRequestModelPreflight,jobScope*,promptRunner,thoughts,tokenRoutes,transform,transformService,translate}.test.ts",
+      "match": "server/src/tests/{chatBinding,commandSequences,completionHolds,dynamicAssets,generation*,jobChannel,jobMetadataScope,jobModules,jobRequestModelPreflight,jobScope*,outputMeter,promptRunner,thoughts,tokenRoutes,transform,transformService,translate}.test.ts",
       "guide": "server-generation"
     },
     {
-      "match": "server/src/tests/{backups,chatCheckpoint*,chatPatch,chatSourceGeneration,chatStore,chatSummaries,importCharx,importModule,importRealm,kinds,messageSearch,normalizationPass,normalizeCharacters,normalizeModules,normalizeSections,recordPatchText,resource*,restoreWorker,snapshots,sqliteSynchronous}.test.ts",
+      "match": "server/src/tests/{backups,chatCheckpoint*,chatPatch,chats,chatSourceGeneration,chatStore,chatSummaries,importCharx,importModule,importRealm,kinds,messageSearch,normalizationPass,normalizeCharacters,normalizeModules,normalizeSections,recordPatchText,resource*,restoreWorker,snapshots,sqliteSynchronous}.test.ts",
       "guide": "server-resources"
     },
     {
       "match": "server/src/tests/{memoryStore,normalizeCollections,restoreStage,structuredMemoryRoutes}.test.ts",
       "guide": "structured-memory"
     },
-    { "match": "server/src/tests/{chats.test.ts,testSupport.ts}", "guide": "test-harness" },
+    { "match": "server/src/tests/testSupport.ts", "guide": "test-harness" },
     { "match": "server/src/tests/fixtures/cbs-parity.json", "guide": "cbs-rendering" },
     { "match": "server/src/tests/fixtures/memoryPackage.json", "guide": "structured-memory" },
     { "match": "server/src/tests/fixtures/baseline/markdown.json", "guide": "cbs-rendering" },
     { "match": "server/src/tests/fixtures/memory/algorithms.json", "guide": "memory" },
-    { "match": "shared/{contextReport,structuredMemory}.test.ts", "guide": "structured-memory" },
+    { "match": "shared/structuredMemory.test.ts", "guide": "structured-memory" },
+    { "match": "server/src/tests/fixtures/memory/structured/**", "guide": "structured-memory" },
+    { "match": "util/memoryEval.mjs", "guide": "structured-memory" },
+    { "match": "shared/tests/{chatMemory,supaMemoryOnCount}.test.ts", "guide": "memory" },
     { "match": "shared/tests/assetBatch.test.ts", "guide": "assets" },
     { "match": "shared/tests/backups.test.ts", "guide": "backup-sync-hub" },
     { "match": "shared/tests/{personaModules,rpack}.test.ts", "guide": "characters-modules" },
@@ -144,7 +243,18 @@
     { "match": "src/lib/ChatScreens/InputHookPicker.svelte", "guide": "ui-theming" },
     { "match": "src/lib/ChatScreens/PartialEditController.test.ts", "guide": "translation" },
     { "match": "src/lib/ChatScreens/Chat.test.ts", "guide": "ui-theming" },
-    { "match": "src/lib/Others/AlertComp.test.ts", "guide": "app-shell" },
+    {
+      "match": "src/lib/Others/AlertComp.test.ts",
+      "guide": "app-shell",
+      "shared": true,
+      "part": "dialog keyboard handling and focus restoration"
+    },
+    {
+      "match": "src/lib/Others/AlertComp.test.ts",
+      "guide": "global-api",
+      "shared": true,
+      "part": "alert prompts and branch dialogs"
+    },
     { "match": "src/lib/Others/ChatCheckpointsDialog.{svelte,test.ts}", "guide": "chat-store" },
     { "match": "src/lib/Setting/Pages/MemorySettings.*.test.ts", "guide": "memory" },
     { "match": "src/lib/Setting/Pages/Advanced/DiagnosticsPanel.test.ts", "guide": "diagnostics" },
@@ -166,14 +276,13 @@
     { "match": "src/ts/tokenizer.test.ts", "guide": "llm-requests" },
     { "match": "src/ts/globalApiNativeFetch.test.ts", "guide": "network-jobs" },
     { "match": "src/ts/{chatLoadPages,stores.popupEditorSession,tokenCountField}.test.ts", "guide": "ui-theming" },
-    { "match": "src/ts/network/{generationJobs,pushNotifications}.test.ts", "guide": "diagnostics" },
+    { "match": "src/ts/network/{generationJobs,pushNotifications,requestHistory}.test.ts", "guide": "diagnostics" },
     { "match": "src/ts/network/eventFeed.test.ts", "guide": "live-updates" },
     { "match": "src/ts/network/generationJobsPluginWork.test.ts", "guide": "plugin-sandbox" },
     { "match": "src/ts/network/tests/eventSocket.ts", "guide": "live-updates" },
     { "match": "src/ts/process/prompt.tokenize.test.ts", "guide": "llm-requests" },
     { "match": "src/ts/process/imageDelivery.test.ts", "guide": "media-aux" },
     { "match": "src/ts/process/memoryTasks.test.ts", "guide": "memory" },
-    { "match": "src/ts/process/{command,serverCommands}.test.ts", "guide": "scripts-triggers" },
     { "match": "src/ts/process/structuredMemory.test.ts", "guide": "structured-memory" },
     { "match": "src/ts/storage/tests/{bootCache,bootCacheServer}.test.ts", "guide": "app-shell" },
     {
@@ -226,8 +335,10 @@
     { "match": "server/src/prompt/memory/**", "guide": "memory" },
     { "match": "server/src/prompt/{embeddings,transformers,transformersWorker}.ts", "guide": "memory" },
     { "match": "server/src/data/vectorCache.ts", "guide": "memory" },
-    { "match": "shared/{taskRateLimiter,memory,hypaV3Presets}.ts", "guide": "memory" },
+    { "match": "shared/{chatMemory,taskRateLimiter,memory,hypaV3Presets}.ts", "guide": "memory" },
     { "match": "src/ts/process/{transformers,memoryTasks.svelte}.ts", "guide": "memory" },
+    { "match": "src/ts/storage/chatMemory.svelte.ts", "guide": "memory" },
+    { "match": "src/lib/SideBars/ChatMemoryPanel.{svelte,test.ts}", "guide": "memory" },
     { "match": "src/lib/Others/HypaV3*", "guide": "memory" },
     { "match": "src/lib/Others/HypaV3*/**", "guide": "memory" },
     { "match": "src/lib/Playground/PlaygroundEmbedding.svelte", "guide": "memory" },
@@ -252,7 +363,7 @@
     },
     { "match": "src/lib/UI/GUI/CredentialSelect.svelte", "guide": "llm-requests" },
     {
-      "match": "src/ts/storage/{chatEdits,chatFieldDraft.svelte,localLoreDraft.svelte,loreOverridesDraft.svelte}.ts",
+      "match": "src/ts/storage/{chatEdits,chatFieldDraft.svelte,localLoreDraft.svelte,loreOverridesDraft.svelte,messageEditorDrafts.svelte}.ts",
       "guide": "chat-store"
     },
     { "match": "src/ts/checkpoints/**", "guide": "chat-store" },
@@ -268,7 +379,7 @@
     { "match": "shared/{chatCheckpoints,togglePresets}.ts", "guide": "persistence" },
     { "match": "src/ts/messageSearch.svelte.ts", "guide": "chat-pipeline" },
     { "match": "src/ts/ooc/**", "guide": "chat-pipeline" },
-    { "match": "shared/{messageSearch,contextReport,eligibleHistory}.ts", "guide": "chat-pipeline" },
+    { "match": "shared/{messageSearch,eligibleHistory}.ts", "guide": "chat-pipeline" },
     { "match": "shared/lore/**", "guide": "chat-pipeline" },
     { "match": "shared/cbs/**", "guide": "cbs-rendering" },
     { "match": "shared/prompt/toggles.ts", "guide": "cbs-rendering" },
@@ -289,7 +400,7 @@
     { "match": "shared/scripts/**", "guide": "scripts-triggers" },
     { "match": "shared/triggers.ts", "guide": "scripts-triggers" },
     { "match": "server/src/{scripts,lua}/**", "guide": "scripts-triggers" },
-    { "match": "src/ts/process/{regexFiles,serverCommands}.ts", "guide": "scripts-triggers" },
+    { "match": "src/ts/process/regexFiles.ts", "guide": "scripts-triggers" },
     { "match": "src/lib/SideBars/Scripts/**", "guide": "scripts-triggers" },
     { "match": "src/lib/Playground/Playground{Regex,Syntax,Parser}.svelte", "guide": "scripts-triggers" },
     { "match": "public/lua/**", "guide": "scripts-triggers" },
@@ -301,7 +412,7 @@
     { "match": "src/ts/network/requestHistory.ts", "guide": "diagnostics" },
     { "match": "src/lib/Others/RequestLogs/**", "guide": "diagnostics" },
     { "match": "src/lib/Setting/Pages/Advanced/DiagnosticsPanel.svelte", "guide": "diagnostics" },
-    { "match": "shared/plugins.ts", "guide": "plugin-sandbox" },
+    { "match": "shared/plugins.{ts,test.ts}", "guide": "plugin-sandbox" },
     { "match": "src/ts/storage/pluginStorageStore.svelte.ts", "guide": "plugin-sandbox" },
     { "match": "src/ts/plugins/**", "guide": "plugin-sandbox" },
     { "match": "plugins.md", "guide": "plugin-sandbox" },
@@ -324,6 +435,7 @@
     { "match": "src/lib/SideBars/LoreBook/**", "guide": "characters-modules" },
     { "match": "src/lib/Setting/Pages/Module/**", "guide": "characters-modules" },
     { "match": "src/lib/Setting/Pages/PersonaSettings.svelte", "guide": "characters-modules" },
+    { "match": "src/lib/Setting/Pages/personaGrid.{ts,test.ts}", "guide": "characters-modules" },
     { "match": "src/lib/Setting/listedPersona.svelte", "guide": "characters-modules" },
     { "match": "src/lib/Others/GridCatalog.svelte", "guide": "characters-modules" },
     { "match": "src/lib/ChatScreens/AssetInput.svelte", "guide": "characters-modules" },
@@ -366,6 +478,7 @@
     { "match": "src/ts/util/**", "guide": "global-api" },
     { "match": "src/ts/{alert,alertQueue,dragTypes,sourcemap,iris,licenses}*.ts", "guide": "global-api" },
     { "match": "src/lib/Others/{AlertComp,IrisModal,ReloadNotice,TerminalNotice}.svelte", "guide": "global-api" },
+    { "match": "src/lib/Others/AlertToast.{svelte,test.ts}", "guide": "global-api" },
     { "match": "src/ts/tests/{alertMock,globalApiMock}.ts", "guide": "global-api" },
     { "match": "src/ts/tests/lowLevelAccessDialog.ts", "guide": "characters-modules" },
     { "match": "src/ts/globalApiDisclosure.test.ts", "guide": "global-api" },
@@ -373,7 +486,7 @@
     { "match": "src/ts/setting/**", "guide": "settings-i18n" },
     { "match": "src/ts/settingsMenu.ts", "guide": "settings-i18n" },
     { "match": "src/lang/**", "guide": "settings-i18n" },
-    { "match": "src/lib/UI/PromptDataItem.svelte", "guide": "settings-i18n" },
+    { "match": "src/lib/UI/PromptDataItem.{svelte,test.ts}", "guide": "settings-i18n" },
     { "match": "src/lib/Others/PromptDiffModal.svelte", "guide": "settings-i18n" },
     { "match": "index.html", "guide": "app-shell" },
     { "match": "src/{main,boot,startApp}.ts", "guide": "app-shell" },
@@ -393,7 +506,7 @@
     { "match": "shared/greetings.ts", "guide": "ui-theming" },
     { "match": "src/etc/bg.jpg", "guide": "ui-theming" },
     {
-      "match": "server/src/data/{resourceStore,chatStore,chats,kinds,snapshots,archive,checkpointStore,checkpointService}.ts",
+      "match": "server/src/data/{chats,kinds,snapshots,archive,checkpointStore,checkpointService}.ts",
       "guide": "server-resources"
     },
     { "match": "server/src/data/{databaseProjection,recordPatchText}.ts", "guide": "server-resources" },
@@ -410,6 +523,7 @@
     { "match": "server/src/data/changeFeed.ts", "guide": "live-update-feed" },
     { "match": "server/src/routes/events.ts", "guide": "live-update-feed" },
     { "match": "server/src/jobs/**", "guide": "server-generation" },
+    { "match": "server/src/push/completionHolds.ts", "guide": "server-generation" },
     { "match": "server/src/data/generationReceipts.ts", "guide": "server-generation" },
     {
       "match": "server/src/routes/{generations,transform,translate,memoryTasks,tokens}.ts",

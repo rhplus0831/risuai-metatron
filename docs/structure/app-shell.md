@@ -83,11 +83,10 @@
 
 ### Home screen
 
-- `src/lib/UI/MainMenu.svelte`: the home screen (pinned chats, recent characters, More); it fetches nothing from Realm
-  itself. More always shows: its Realm card hides under `settings.ui.hideRealm`, its import card opens the card file
-  picker directly (`src/ts/characters.ts` `importCharacterAndSelect`, not the add dialog), and its remote host card
-  turns on `hostMode` ([network jobs](network-jobs.md#generation-job-client)). The recent list is
-  `src/lib/UI/mainMenuProjection.ts` `collectHomeRecentCharacters`.
+- `src/lib/UI/MainMenu.svelte` owns home. Its pinned chats use the shared sidebar projection and its recent characters
+  use `src/lib/UI/mainMenuProjection.ts` (`collectHomeRecentCharacters`). Under More, Realm sets `OpenRealmStore` to
+  show `RealmMain` in place of home, import calls `src/ts/characters.ts` `importCharacterAndSelect`, and Remote Host
+  turns on `hostMode`. `settings.ui.hideRealm` hides only the Realm card.
 - `src/lib/UI/Title.svelte`: the seasonal logo and mini-game, used only by `MainMenu.svelte`.
 
 ## Flows
@@ -101,11 +100,11 @@
    records, applies first-boot defaults, then awaits [draft recovery](draft-recovery.md#boot-recovery) before
    registering the service worker. A failed snapshot read alerts and stops boot; there is no local snapshot fallback.
    Snapshot cache rules are in [resource sync](resource-sync.md#boot-cache).
-3. Boot maintenance and chat initialization run before the safe-boot content stage and presentation setup. Then the save
-   adapter and remote-record watchers start, followed by URL/share imports, legacy-data migration, the event feed, and
-   plugin loading. The ordering matters: imports can await save acknowledgements and consume link query/hash data before
-   the router canonicalizes the URL. `bootPluginLoadOutcome` is the plugin load's outcome (boot goes on after a
-   failure), which a Remote Host `page` reload reports ([network jobs](network-jobs.md#generation-job-client)).
+3. Maintenance and chat setup precede the safe-boot content stage and theme. Then the save adapter and remote-record
+   watchers start, then `characterURLImport` starts without being awaited. It captures link parameters before the router
+   canonicalizes the URL and can await a save acknowledgement independently. Boot awaits browser-local migration, starts
+   the event feed, then awaits plugin loading. `bootPluginLoadOutcome` is the plugin load's outcome (boot goes on after
+   a failure), which a Remote Host `page` reload reports ([network jobs](network-jobs.md#generation-job-client)).
 4. `loadedStore` is set only after records, maintenance, and theme setup. The safe-boot settle window and router start
    next; notifications, job resume, observers, and remaining startup hooks follow. `startResourceSync()` and
    `startRouter()` each run once.
@@ -146,7 +145,7 @@ This is `App.svelte`'s render order, checked top down. A new screen or overlay f
 Inside `DefaultChatScreen.svelte`:
 
 - No selected character (`currentCharacter === undefined`) and `$PlaygroundStore === 0` → `MainMenu`.
-- `$PlaygroundStore > 0` → lazy `PlaygroundMenu`.
+- No selected character and a nonzero `PlaygroundStore` → lazy `PlaygroundMenu`.
 - A character whose chat is not open (`selection.chatOpen` false; not the playground chat) → `ClosedChatScreen` (its
   name and an "Open most recent chat" button for its selected chat).
 - Otherwise the chat.
@@ -187,33 +186,28 @@ Escape priority is below; the global `initHotkey` handler also applies its termi
 3. The lore budget stop dialog, then a picker list (persona, model preset, prompt preset), the Checkpoints dialog, or
    the chat binding dialog (`src/ts/gui/dialogLayers.ts` `topBindingLayer`, handled in `hotkey.ts`; also from a focused
    text field). A held Escape's repeats do not answer the next waiting lore budget stop.
-4. The message search panel (`MessageSearch.svelte`) or the bookmark list (`BookmarkList.svelte`), each a capture
+4. The BTW hook chooser (`InputHookPicker`, a window capture listener) yields to alerts, the terminal notice, and
+   `topBindingLayer()`; it takes Escape before the document handlers for search and OOC.
+5. The message search panel (`MessageSearch.svelte`) or the bookmark list (`BookmarkList.svelte`), each a capture
    listener that yields to those layers.
-5. The OOC panel (`OocPanel.svelte`), a capture listener that also yields to the message search panel and acts only on
+6. The OOC panel (`OocPanel.svelte`), a capture listener that also yields to the message search panel and acts only on
    an Escape from inside the panel or the page body.
-6. Settings.
-7. The grid.
+7. Settings. Escape in its focused search field first clears a nonempty query.
+8. The grid.
 
 A checkpoint load blocks other hotkeys until its save, request, and refresh finish.
 
 ### Alert dialog keys
 
-Escape's place among the other layers is in [Escape order](#escape-order).
+The main dialog panel in `AlertComp` takes focus, or focuses the input for a text question. The legacy `wait2` dialog
+skips initial focus. When the dialog queue empties, the component restores the previous focus if the element is still
+connected and the user has not moved focus elsewhere. The status slot (`wait`, `progress`, `toast`) is separate. See
+[alert helpers](global-api.md#alert-helpers-and-alertcomp).
 
-- A newly shown dialog of `AlertComp`'s main branch (not the `wait`, `wait2`, or `progress` statuses) takes the focus:
-  the panel itself (`tabindex="-1"`, so a stray Space clicks no button) or an `input` dialog's own field.
-- Once no dialog is shown or queued, `AlertComp` restores the saved focus only if the original element remains connected
-  and the active element is null, the body, or inside the dialog; focus moved elsewhere is preserved. The saved element
-  lives at module scope across dialog unmounts. The dialog's initial focus lets Enter and Escape reach `hotkey.ts` over
-  the composer.
-- The dialog key gate (`createDialogKeyGate`) decides whether a stroke may answer: Enter calls
-  `answerConfirm(true, shown)` for `ask` (preserving checkbox state;
-  [alert helpers](global-api.md#alert-helpers-and-alertcomp)), answers `normal`/`error` with "yes" and `input` with its
-  field's value, leaves a fresh Enter on a dialog button to its click, and Escape answers "".
-- While a dialog is shown or queued, Escape stops at the document (window listeners of panels underneath never see it)
-  and plain-key hotkeys (Space's `focusInput`) do not run.
-- Settings close with an Escape only when no dialog remains after it, so a rejected Escape leaves the dialog and
-  settings open, while one that answers the last dialog closes both.
+`initHotkey` feeds each Enter/Escape stroke to `createDialogKeyGate` before dispatch. A held key cannot answer a newly
+shown dialog. A fresh Enter activates the focused dialog button or answers the eligible dialog (`answerConfirm`
+preserves checkbox choices). Escape dismisses the shown dialog and stops at the document even when rejected. It can also
+close settings when it answered the last dialog and no binding layer remains.
 
 ## State
 
@@ -287,10 +281,10 @@ selection lives in `src/ts/storage/selection.svelte.ts`.
 2. Add its branch or overlay in `App.svelte`, respecting the branch order.
 3. Set the store from the caller.
 4. A screen of its own gets a route (a modal or overlay does not): a `Route` kind with `formatRoute`/`parseRoute` in
-   `router/routes.ts`; a new first path segment in `CLIENT_ROUTE_SEGMENTS` (`shared/routes.ts`) so the server serves the
-   client there; in `router.svelte.ts` the store mapping in `baseRouteOfState` or `layerRouteOfState` and its
-   application in `applyBase` or `applyLayer`; tests in `routes.test.ts` and `router.test.ts`. A new settings page or
-   playground tool needs only its slug in the table.
+   `router/routes.ts`; any new first segment in `shared/routes.ts` (`CLIENT_ROUTE_SEGMENTS`); in `router.svelte.ts` the
+   store mapping in `baseRouteOfState` or `layerRouteOfState` and its application in `applyBase` or `applyLayer`; tests
+   in `routes.test.ts` and `router.test.ts`. A settings page or playground tool needs only a new slug in the router. For
+   settings navigation and search also follow the [settings page recipe](settings-i18n.md#recipes).
 5. Verify with `pnpm check`, a fresh load, and a reload on the new screen.
 
 ### Change startup
@@ -320,7 +314,7 @@ Runner, slow-test, and timing rules belong to [test-harness](test-harness.md). T
 - Router: `pnpm --silent test:agent src/ts/router`.
 - Hotkeys and dialogs: `pnpm --silent test:agent src/ts/hotkey*.test.ts src/lib/Others/AlertComp.test.ts`.
 - Observers and home:
-  `pnpm --silent test:agent src/ts/observer*.test.ts src/ts/keepAliveAudio.test.ts src/lib/UI/mainMenuProjection.test.ts`.
+  `pnpm --silent test:agent src/ts/observer*.test.ts src/ts/keepAliveAudio.test.ts src/lib/UI/mainMenuProjection.test.ts src/lib/UI/MainMenu.*.test.ts`.
 - `e2e`: `e2e/openChat.spec.ts` drives the chat routes in a browser; `e2e/0-idleReload.spec.ts` the first boot's
   defaults.
 - `src/ts/tests/bootMocks.ts`: the complete typed service defaults the bootstrap suites share; each suite keeps its

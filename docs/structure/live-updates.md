@@ -38,16 +38,13 @@ Identifiers the flows below name are not repeated here.
 - A same-epoch `hello` replaces feed locks before `reconcileRemote`; a different epoch [halts](#restore-halt). Refs
   reach the resource adapter, with chat bodies and summaries following [Chat live updates](#chat-live-updates). Handoff
   offers and presence go to `src/ts/network/handoff.ts`; socket resume/liveness is in `socketLiveness.ts`.
-- The registration carries the name, the worker preference, and `host` (Remote Host Mode,
-  [network jobs](network-jobs.md#generation-job-client)); a change of any of them registers again on the current
-  connection. Presence keeps `host` only when an entry carries it (an older server sends none). `feedConnected` is true
-  from a same-epoch `hello` until the connection retires or its epoch mismatches (the host lock screen shows it).
-- Running generation jobs: a same-epoch `hello`'s `generations` replaces the set (absent: empty), and a `generation`
-  frame of the loaded epoch upserts or removes one job. The offset is the newest entry's `at` against the tab's clock;
-  speed uses the samples' own `at`. Readers: the [progress window and the Stop-other ring](ui-theming.md#chat-screen).
-- `retire()` and every place memory tasks are reset for another epoch (including a reconciliation read's epoch mismatch,
-  which keeps the socket open) clear the running jobs, their output samples, and the clock offset, so a missed `ended`
-  frame cannot leave a job listed.
+- Each same-epoch hello registers the tab and reconciles outstanding remote commands on both sides. `remoteCommand`
+  wakes the host to fetch the command over HTTP. `remoteCommandState` wakes its sender to read the result. Presence
+  advertises host mode alongside the tab's name and worker preference. A change to any of these registers again.
+  `feedConnected` drives the host lock screen. See [remote send](network-jobs.md#remote-send).
+- `replaceGenerations` takes the hello's running jobs. A same-epoch `generation` frame adds, updates or ends one.
+  Retiring the connection or detecting an epoch mismatch clears progress, output samples, and the server clock offset.
+  `memoryTask` frames and the hello's task snapshot feed the [memory task fences](memory.md#background-memory-task).
 - `hello.rerollInPlace` feeds `serverRerollsInPlace`; its connection-scoped contract is on the export in `eventFeed.ts`,
   and its screen consumer is [Reroll](chat-pipeline.md#reroll).
 
@@ -117,15 +114,16 @@ Identifiers the flows below name are not repeated here.
 
 ## State
 
-- The advertised map: the last revision the feed advertised per record, independent of the held records. `remoteRecords`
-  holds the entries waiting for a read, and each cycle and refresh pass retries the patches that could not apply.
-- Per chat, `feedLocks`: the message ids a frame or a whole read last listed as locked, replaced list for list, without
-  the generations this tab retired.
-- The connection's `generation`: one connection is current; late results do nothing except an older listing's
-  epoch-mismatch error, which still resets the advertised map, memory tasks, and running generation jobs.
-- The running generation jobs by `jobId`, with each job's `output` samples of the last 5 s and one server clock offset;
-  held for the current connection only.
-- The translator and HypaV3 `selectedId` are shared across tabs; preset and persona selections stay per tab.
+- `advertised` holds server-announced revisions independently of the tab's installed records. `remoteRecords` holds
+  entries awaiting adoption or a read. A connection's `generation` fences late results, except an old read that
+  discovers a replacement epoch.
+- `feedLocks` holds the last announced message locks after filtering locally retired generations. The job follow owns
+  streamed text. See [locks and streaming](chat-store.md#locks-and-streaming).
+- `runningGenerations` describes current jobs even before they have a message lock. The
+  [progress window](ui-theming.md#chat-screen) uses each job's server-timestamped output samples for speed and the
+  connection's clock offset for elapsed time.
+- Translator and HypaV3 preset collections share their `selectedId` across tabs. Prompt preset, model preset and persona
+  selections are local to each tab. See [chat binding](persistence.md#chat-binding).
 
 ## Coupling
 
@@ -147,8 +145,9 @@ Identifiers the flows below name are not repeated here.
   read decides, and one written locally but unsaved is not adopted. The one discard is a remote character deletion,
   which discards its chats' unsent work with the reload notice.
 - A feed lock is a lock only: it holds no text, retires nothing, and never holds the save loop.
-- A `hello` or `epoch` frame of another epoch halts; different-epoch `change`, `memoryTask`, and `generation` frames are
-  ignored. After the halt every write is refused until the page reloads.
+- A `hello` or `epoch` frame of another epoch halts writes until reload. Other epoch-bearing frames apply only to the
+  loaded epoch, including remote command notifications. Presence (`clients`) has no epoch and requires the currently
+  registered socket.
 - One connection is current: a late answer of an older connection applies nothing, except its replay or listing's
   epoch-mismatch error.
 
@@ -167,7 +166,7 @@ Identifiers the flows below name are not repeated here.
 - The adapter tests and fakes are [resource-sync](resource-sync.md#tests)'s: `FakeResourceServer`, and
   `StoreBackedServer`, whose `streamingForChat` supplies whole-read lock lists (none by default: an older server).
 - `src/ts/network/tests/eventSocket.ts` (`FakeSocket`): the shared fake browser socket.
-- Not tested: only the adapter tests' gaps ([resource-sync](resource-sync.md#tests)).
+- For the adapter's summary-boot coverage gap, see [resource sync](resource-sync.md#tests).
 
 ## Known Hazards
 

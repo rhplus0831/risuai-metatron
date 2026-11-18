@@ -3,7 +3,7 @@
 ## Scope
 
 - Owns the persisted `Database` model and field-to-resource map; the settings, preset, and character records; the
-  mutation modules; the settings views and selection; the browser-local import and device stores.
+  mutation modules, settings views and selection, browser-local import, and device stores.
 - Paths: `src/ts/storage/` except the files the guides below own, `src/ts/toggles/`, `src/ts/chatLoadPages.ts`, and the
   persisted shapes in `shared/` (a shape's meaning stays with its original module's guide, such as `shared/llm.ts` →
   [LLM requests](llm-requests.md)).
@@ -22,24 +22,18 @@ and the module headers.
 
 `shared/` is consumed by the client and strict server; its runtime restrictions are in
 [STRUCTURE T2](../../STRUCTURE.md#repository-wide-invariants). The shared modules are the contracts to read with their
-callers:
+callers. Pure shared runtimes such as lore activation (`shared/lore/activation.ts`) and template rendering
+(`shared/prompt/chatTemplate.ts`) take their application context from their caller.
 
-- Runtime exceptions (`cbs/`, `scripts/regex.ts`, `lore/`, `prompt/{chatTemplate,templateCheck,chatTokens}.ts`,
-  `tokenizerChoice.ts`) reach application state through an injected object and may import the pure packages
-  `@risuai/ccardlib` and `@huggingface/jinja`; their domain guides own the behavior.
 - `shared/sections.ts`: `SECTION_FIELDS`, `COLLECTION_FIELDS`, `FORWARDED_ROOT_KEYS`, `DROPPED_FIELDS`.
 - `shared/resources.ts` and `shared/chats.ts`: resource and chat wire types and revision helpers.
 - `shared/presets.ts`, `shared/characters.ts`, `shared/personas.ts`, `shared/translatorPresets.ts`,
   `shared/togglePresets.ts`: record schemas and normalizers.
 - `shared/recordPatch.ts`, `shared/mutationValidation.ts`: patch validation/application and mutation errors.
-- `shared/ooc.ts`: the OOC session's stored shapes, limits, validators, and pure readers (`oocTail`, `oocToggleValues`,
-  `oocPrune`).
-- `shared/inputHooks.ts`: the input hook shape, limit (`MAX_INPUT_HOOKS`), default list, and normalizer, and the pure
-  prompt helpers (`draftHookOf`, `inputHookHistoryCounts`, `inputHookMessages`), which fill the slots in one pass and
-  reuse the translator's ChatML parser and history format.
-- `shared/itemFolders.ts`: the folder shape of `moduleFolders` and `personaFolders` (`ItemFolder`), its normalizer
-  (`normalizeItemFolders`), and the pure readers and list builders (`folderOfItem`, `groupByFolder`, `withItemInFolder`,
-  `withoutItem`). The read rules are in [characters and modules](characters-modules.md#state).
+- `shared/ooc.ts` validates stored OOC data. `shared/inputHooks.ts` owns the hook schema and defaults. The
+  [chat pipeline](chat-pipeline.md) owns both features at execution time.
+- `shared/itemFolders.ts` defines `ItemFolder`, `normalizeItemFolders` and membership readers for both folder
+  collections. Their [display and membership rules](characters-modules.md#state) apply even after concurrent moves.
 - `shared/chatCheckpoints.ts`, `shared/jobs.ts`, `shared/chatBinding.ts`, `shared/chatLoadPages.ts`, `shared/ids.ts`:
   checkpoint, job, binding, chat load-count, and id helpers; their domain guides own semantics.
 
@@ -70,18 +64,15 @@ auxiliary mode while other changes can apply. An object value must be plain (`is
 prototype `Object.prototype` or `null`), so a `Map`, a `Date`, or a class instance is refused.
 
 - `src/ts/storage/characterStore.svelte.ts`: characters (`characterList`, `characterSnapshot`, `selectedCharacter`,
-  `addCharacter`, `adoptCharacter`, `updateCharacter`, `CHARACTER_FIXED_FIELDS`, `replaceCharacterAt`,
-  `removeCharacter`, `removeCharacters`, `selectCharacter`).
+  `addCharacter`, `updateCharacter`, `CHARACTER_FIXED_FIELDS`, `replaceCharacterAt`, `removeCharacter`,
+  `removeCharacters`, `selectCharacter`).
 - `src/ts/storage/collectionStore.svelte.ts`: settings and collection writes (`updateSettings`, `addAuthRefresh`,
   `addCredential`, `deleteCredential`, `copyModelProfile`, `deleteModelProfile`, `incrementStatic`). A deleted
   credential or profile leaves the bindings naming it, which refuse their requests
   ([LLM requests](llm-requests.md#invariants)).
-  - Folder writes take the collection (`"moduleFolders"` or `"personaFolders"`): `addItemFolder` (returns the id),
-    `renameItemFolder`, `removeItemFolder` (the folder only), and `moveItemToFolder` (`null` is the root). A blank
-    folder name throws `MutationValidationError`; a folder that is gone returns `false` without a write. Each installs
-    the whole list in its canonical form, and a move never writes the module or the persona.
-  - `removeModule` and `removePersona` also take the id out of the folders, in the deletion's `batchRecordWrites` scope.
-    `setModules` and `setPersonas` leave the folders as they are.
+  - `addItemFolder`, `renameItemFolder`, `removeItemFolder`, and `moveItemToFolder` replace the canonical folder
+    collection. Moving an item writes only its folder membership. `removeModule` and `removePersona` remove membership
+    in the item's deletion batch. The bulk setters leave folders alone.
 - `src/ts/storage/pluginStorageStore.svelte.ts`: `pluginCustomStorage` ([plugins](plugin-sandbox.md)).
 
 ### Record wrappers
@@ -110,18 +101,13 @@ Kinds (`shared/resources.ts`):
   (`SECTION_FIELDS`) and the collections of `COLLECTION_FIELDS`, served under the same flat names. `translatorPresets`
   and `hypaV3Presets` hold `{ items, selectedId }` (served as `translatorPresetId`, `hypaV3PresetId`); `togglePresets`
   is a plain list, default `[]`.
-- `moduleFolders` and `personaFolders` are plain lists of `{ id, name, data }` folders (`shared/itemFolders.ts`),
-  default `[]`, merged per folder. Each is its own kind, and its `data` lists module ids or persona ids: no field of a
-  module or a persona names a folder. The server keeps only those three fields, re-keys an invalid or repeated `id`, and
-  never checks a member id against the item list.
-- `inputHooks` is a plain list merged whole (`recordMerge.ts`); a missing record is materialized with
-  `defaultInputHooks()` (one Draft hook), a saved empty list stays empty, and the server refuses a write that is not a
-  list but drops malformed entries from one. It is its own kind, not a section field, so a tab that does not know it
-  never writes it.
-- `providers.requestInterceptions` (default `[]`) is one field of its section, so the whole list is one conflict unit.
-  `normalizeRequestInterceptions` (`shared/llm/interception.ts`, [LLM requests](llm-requests.md#flows)) drops an entry
-  without a non-blank unique `id` or a string `prompt.text` and keeps 32, repairs the other fields, and rebuilds each
-  rule in a fixed key order. The settings report and the plugin database API leave it out; backups keep it.
+- `moduleFolders` and `personaFolders` are separate lists of folders, defaulting to `[]`. Each folder lists its member
+  ids in `data`. Conflicts merge [by folder](resource-sync.md#record-merge).
+- `inputHooks` is a whole-list conflict unit. A missing record gets `defaultInputHooks()`, a saved empty list stays
+  empty, and an older tab that does not know the kind leaves it alone.
+- `providers.requestInterceptions` is a single field and conflict unit. `normalizeRequestInterceptions` in
+  `shared/llm/interception.ts` defines admission and defaults. Native backups retain the rules. Settings reports and the
+  plugin database projection omit them. See [LLM requests](llm-requests.md).
 - `llmSecrets` is write-only and read masked; it also holds the entry map `credentials` (`SECRET_ENTRY_MAPS`), each
   named API key's `key` by id ([credential binding](llm-requests.md)), and normalization drops older `modelPresets` and
   `customModels` maps.
@@ -169,9 +155,8 @@ write, read back, then delete only a local entry still holding the imported valu
 
 ### Device caches
 
-The browser-local stores that remain are rebuildable caches or this device's own state, not user data: a backup does not
-carry them. The Translation page can clear `LLMTranslateCache` through `clearLLMCache`
-(`src/ts/translator/translator.ts`).
+The browser keeps both rebuildable caches and original device data. In particular, composer rows and eligible unsaved
+changes live in the [draft journal](draft-recovery.md). Server snapshots and file backups omit them.
 
 - `hypaVector` (LocalForage): embeddings of the browser's `HypaProcesser`, by text and model, for file attachments,
   graph memory, the embedding playground, and the HypaV3 modal.
@@ -179,9 +164,11 @@ carry them. The Translation page can clear `LLMTranslateCache` through `clearLLM
   registration in `CharConfig.svelte` saves server assets through `registerOnnxModel` and `saveAssets`; `character.vits`
   holds the asset map that `runVITS` reads.
 - `LLMTranslateCache` (LocalForage): translations keyed `llm:<hash>:<source>`, hashing the pipeline signature, the
-  languages, and the translator note ([translation](translation.md)); bare-source entries are never read or migrated.
+  languages, and the translator note. The Translation page clears the cache with `clearLLMCache`. Legacy bare-source
+  entries are ignored. See [translation](translation.md).
 - `localStorage`: `risu-selection`, `risu-selected-chats`, the plugin `SafeLocalStorage` (`safe_plugin_*`, documented to
-  plugins as device-specific).
+  plugins as device-specific), and the device link preferences. Remote Host saves its unfinished command identities in
+  `sessionStorage` for recovery after reload ([network jobs](network-jobs.md#remote-send)).
 - `sessionStorage`: `risu-selection`, `risu-generation-client` and `risu-generation-jobs` (a reloaded tab reattaches:
   `resumeServerJobs`), `risu-generation-client-claim` (a copied session gets a new id).
 - `DPoPDB` (IndexedDB): this browser's non-extractable auth key pair, written and read by `src/ts/storage/serverAuth.ts`
@@ -189,18 +176,13 @@ carry them. The Translation page can clear `LLMTranslateCache` through `clearLLM
 
 ### Character order repair
 
-`src/ts/storage/characterOrder.ts` (its module header): `checkCharOrder` after a change in this tab,
-`checkCharOrderAtBoot` over the boot's complete inventory, `queueRemoteCharOrderRepair` for another writer's order.
+`src/ts/storage/characterOrder.ts` uses three repair paths. Local changes run `checkCharOrder`. Boot runs
+`checkCharOrderAtBoot` with a complete inventory, so it can remove unknown ids. Another writer's order reaches
+`watchRemoteRecords` in boot through `onRemoteRecordApplied`, which queues `queueRemoteCharOrderRepair`.
 
-- Another writer's order (a conflict reload, a live update, a whole read) reaches `onRemoteRecordApplied`, which the
-  boot (`watchRemoteRecords`) routes to `queueRemoteCharOrderRepair`, not to `checkCharOrder`. In a microtask after the
-  apply step it reads the live characters that order lists nowhere from the server (`readRefs`) and appends at the root
-  each one the server holds untrashed, or holds none of while the save adapter has no saved revision of it (this tab's
-  create, refused together with its order write): the server's copy decides, since this tab's may be older.
-- A read during which another order arrived or the order changed here is dropped, and the repair restarts from the
-  newest order.
-- It never removes or moves an entry, so an id this tab has not read yet keeps its folder, and it writes only when it
-  appends.
+The remote repair reads missing candidates with `readRefs` and appends at the root only when the server confirms a live
+character or the tab has an unsaved create. It preserves unknown entries and their folders. The source comment on
+`queueRemoteCharOrderRepair` defines the restart fence when the order changes during the read.
 
 ### Selection and deletion
 
@@ -227,11 +209,11 @@ carry them. The Translation page can clear `LLMTranslateCache` through `clearLLM
 
 - `ChatMeta` is defined in `shared/chats.ts`; fields are stored largely as sent, with defaults at their readers. The
   translation lists are owned by [translation](translation.md). Non-obvious field rules:
-- Memory preferences are `memoryEnabled?: boolean`, `memoryMode?: "hypaV3" | "structuredMemory"`,
-  `memoryPresetId?: string`, and `memoryProfileId?: string`. Only `memoryEnabled` affects behavior; the rest are carried
-  metadata. All four and numeric `memoryTrimAck` are summary fields. Checkpoints keep current preferences; upstream
-  export strips them and derives the owner's switch. Readers default malformed values without rewriting stored chats
-  ([memory](memory.md#state)).
+- `memoryEnabled`, `memoryMode`, `memoryPresetId`, and `memoryProfileId` control the memory switch, algorithm, HypaV3
+  preset, and connection. They and `memoryTrimAck` appear in summaries. New-chat buttons copy the source's effective
+  switch and valid choices independently of `newChatBinding`, leaving out its trim acknowledgement. Checkpoint loads
+  retain the current preferences. Upstream export strips them and derives the owner's switch. See
+  [memory resolution and fallbacks](memory.md#state) and `initialChatMemory` in `src/ts/storage/chatMemory.svelte.ts`.
 - `loreOverrides?` (`shared/lore/overrides.ts`) is not defaulted on write: readers use `?? []`. `normalizeChatMeta`
   refuses a present value that is not an array of `{ entry: { id: non-empty string, … }, off: boolean }`
   (`assertLoreOverrides`) and keeps only the first override per `entry.id`, the one the merge applies. The upstream
@@ -243,12 +225,10 @@ carry them. The Translation page can clear `LLMTranslateCache` through `clearLLM
 - `loreBudgetWarnOff?: true` silences the context meter's left-out lore warning ([UI theming](ui-theming.md)) and turns
   off the screen's lore budget send stop ([chat pipeline](chat-pipeline.md#send)); present only while set, not a summary
   field. Copies and chat imports keep it, checkpoints keep the current value, the upstream export strips it.
-- OOC session (`shared/ooc.ts`): `oocLog?` (exchanges by id, a merge key), `oocSegment?` (current segment and anchor
-  message id), `oocToggles?` (the chat's forced toggle values, replacing the preset's whole). `normalizeChatMeta`
-  refuses a malformed value, an exchange over `MAX_OOC_EXCHANGE_BYTES`, and a log over `MAX_OOC_EXCHANGES`. Not summary
-  fields. Checkpoints keep all three (the log is not story state), copies and imports keep them (an import refuses a
-  value the server would, `validateChatInput`), a branch drops `oocLog` and `oocSegment`, the upstream export strips
-  them.
+- OOC exchanges merge by id in `oocLog`. `oocSegment` anchors a segment and `oocToggles` overrides the preset map.
+  `oocPrune` targets `MAX_OOC_EXCHANGES`; `oocLogError` permits `OOC_LOG_CONCURRENCY_SLACK` additional entries after
+  concurrent writes. Chat imports and server writes share the validators. Summaries omit all three fields, checkpoint
+  loads keep their current values, and a branch drops the log and segment. Upstream export strips all three.
 - `isStreaming`/`activeStreamingDisplayOptimizationMode` remain in the type for old data, never stored; a chat's
   streaming message is its `streamingEntry`.
 
@@ -259,8 +239,9 @@ carry them. The Translation page can clear `LLMTranslateCache` through `clearLLM
 - `chatBinding.svelte.ts`: `chatBinding` for a send; `chatDisplayIds` for a render (per field the bound id when its
   record exists, else the tab's); `chatBindingPatch` through `setChatMeta`.
 - `pickBinding(field, id, target)` (`chatBindingPick.ts`): the target is required; a `ChatRef` binds that chat, `null`
-  selects for the tab, also with a chat open. Only the binding panel's pickers (`ChatBindingPanel.svelte`, the store's
-  `{ chatRef }`) name a chat; the settings, their lists, and Ctrl+1..9 pass `null`.
+  selects for the tab, also with a chat open. Among first-party pickers, only the binding panel's pickers
+  (`ChatBindingPanel.svelte`, the store's `{ chatRef }`) name a chat; the settings, their lists, and Ctrl+1..9 pass
+  `null`.
 - `settingsViews.svelte.ts` serves two families. The active one (`active*`, `current*Record`, `readSettingsRoot`) reads
   the selected chat's bound record first, else the tab's selection, for every chat-side reader. The edited one
   (`edited*`, `readEditedRoot`/`writeEditedRoot`, `editedScope()`) resolves the tab's selection only, for the settings
@@ -293,10 +274,8 @@ carry them. The Translation page can clear `LLMTranslateCache` through `clearLLM
 - `Message` is defined in `shared/database.ts`; `chatId` is its stable per-chat id, assigned by the module.
 - `generationInfo.context` (`ContextReport`) is stored as the server wrote it: it travels in checkpoints, exports,
   backups, and every generation patch of its message, and a text edit keeps it.
-- Context reports have one section per kind, an 8-entry trim queue, up to 8 named rejected lore entries, and at most
-  three HypaV3 budget reductions. Structured Memory also adds manifest items (`memory.items` has no fixed row cap) and
-  up to `CONTEXT_MEMORY_EXCLUDED` excluded rows ([structured memory](structured-memory/README.md#scope)). Readers use
-  `parseContextReport`; data without a valid report reads as none.
+- `parseContextReport` defines which stored reports a reader accepts. For report fields and budgeting see the
+  [chat pipeline](chat-pipeline.md#context-report) and [Structured Memory](structured-memory/README.md).
 - `candidates`, `selected`, `candidatesRevision`, `scriptstateCheckpoint` (`shared/rerollCandidates.ts`): a reply's
   alternatives, its own fields the selected one's. Op writes refuse a bad field; imports and reads drop it. The store
   owns `candidatesRevision`; an append clears other checkpoints.
@@ -342,16 +321,12 @@ carry them. The Translation page can clear `LLMTranslateCache` through `clearLLM
 - Every preset of each kind and every persona carries an `id`, assigned synchronously at creation (`normalizePreset`,
   `newPersonaId`, `createTranslatorPreset`, `createHypaV3Preset`, `createTogglePreset`). Copies and imports get fresh
   ids; the `.risup`, `.risutl`, and HypaV3 JSON exports carry none.
-- Preset and profile objects carry no credentials: `openAIKey` is a global `llmSecrets` field, the reverse proxy's and a
-  custom model's key is a named key a profile binds, `proxyKey` is dropped. The normalizers keep only their record's
-  fields, so the server drops any key from stored records. `downloadPreset` exports only the record and prompt field
-  lists, so a secret never joins them.
-- The `customModels` normalizer drops a legacy `key` and `credentialId`: the profile that uses a custom model binds the
-  key. The `credentials` normalizer drops a `key` (and keeps `clientEmail`/`projectId` only on `vertex`); a named key's
-  value exists only in `llmSecrets.credentials`.
-- `exportAsDataset` does no redaction. The settings report (`buildSettingsReport`) drops every root in
-  `SECTION_FIELDS.llmSecrets` and `SECTION_FIELDS.secrets`, `REPORT_REMOVED_KEYS` (personal or bulky keys, those holding
-  URLs, free text, or third-party names), and every key whose name contains `key`, `proxy`, or `hypa`.
+- Keep credentials out of preset/profile records and exports. Provider default credentials and named key values live in
+  `llmSecrets`, while profiles refer to a named key by id. The server normalizers remove legacy credential fields.
+  `downloadPreset` exports the preset's field lists. See [credential binding](llm-requests.md).
+- `exportAsDataset` does no redaction. `buildSettingsReport` in `src/ts/storage/snapshots.svelte.ts` omits both secret
+  sections, private and bulky fields in `REPORT_REMOVED_KEYS`, and credential-like root names. Review that list when a
+  new setting holds free text or identifies a person or service.
 - Compatibility rule: data in an upstream RisuAI format is owed a one-way migration into the current store: an upstream
   `.bin` backup (`database.risudat`, its cold-storage records and assets) and an older metatron backup holding
   `database.risudat`. That file is upstream's legacy MessagePack save or the block save; both import, and a live block
@@ -389,16 +364,13 @@ carry them. The Translation page can clear `LLMTranslateCache` through `clearLLM
 - `src/ts/storage/tests/bootSnapshot.test.ts` pins server-normalized defaults; intentional default changes update the
   normalizer (or `PRESET_DEFAULTS`) and `fixtures/boot/boot-snapshot.json` together, including omitted `llmSecrets`
   fields held as `""` ([fixture rule](../../src/ts/storage/tests/fixtures/boot/README.md)).
-- `src/ts/storage/tests/presetIds.test.ts` pins exact `.risup` export shape (including explicit `undefined` keys) and
-  the pre-normalization reader over a second cycle; `src/ts/storage/tests/settingsViews.test.ts` derives its oracle from
-  the shared partition tables, and `src/ts/storage/tests/characterOrderRepair.test.ts` defers `readRefs`.
+- `src/ts/storage/tests/presetIds.test.ts` checks preset interchange against a pre-normalization reader.
+  `src/ts/storage/tests/settingsViews.test.ts` checks projections against the shared partition.
 - `slow`: two real-time comparisons in `src/ts/storage/tests/projectionBindings.test.ts`. `e2e`:
   `e2e/0-idleReload.spec.ts`, `settingsPages`, `recordsCharacters`, `presetSelection`, `personaBinding`, `chatBinding`.
-- Boot order repair: `src/ts/bootstrap.journalRecovery.test.ts` drives `maintainCharacters` after a recovered character
-  deletion and checks its order cleanup; `src/ts/storage/tests/characterOrderRepair.test.ts` checks complete-inventory
-  repair directly.
-- Settings-report secrecy: `src/ts/storage/tests/snapshots.test.ts` guards exclusion of both secret sections while
-  ordinary report fields and full settings snapshots retain their values.
+- For order repair across boots and delayed reads, run
+  `pnpm --silent test:agent bootstrap.journalRecovery characterOrderRepair`. For report redaction, run
+  `pnpm --silent test:agent snapshots`.
 - Not tested: the records' cost beyond a loose bound: the benchmark asserts nested-write ratios under 10× and nothing
   about the lorebook drag or preset reorder; `measureRecords.mjs` and `measureCharacters.mjs` are manual.
 
