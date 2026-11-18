@@ -56,10 +56,11 @@ comparison ties rounds together.
 - Coverage sends stored facts (`status`, `sources`, `keptState`, `rerecord`, the normalized `greeting` and
   `greetingKept`, and whether a run read the greeting) for [the tab to reconcile](read.md#the-memory-panel) against its
   held messages, reading no chat. A greeting citation's `sourceIndex` is -1.
-- `/story` sends each event's `summary`, `storyTime` and `participants` as stored, retracted events included, for
-  [Timeline's story view](read.md#pages-timeline-and-threads), which joins them by id with the coverage rows it holds.
-  Its rounds charge stored bytes as `/coverage`'s do. `readStructuredMemoryStory` gives the tab only well-shaped display
-  fields, since a snapshot row can lack them.
+- `/story` sends each event's `summary`, `storyTime`, `participants` and `grade` as stored, retracted events included,
+  for [Timeline's story read](read.md#pages-timeline-and-threads), which joins them by id with the coverage rows it
+  holds; an ungraded event has no `grade` key. Its rounds charge stored bytes as `/coverage`'s do.
+  `readStructuredMemoryStory` gives the tab only well-shaped display fields, since a snapshot row can lack them or carry
+  any number: it keeps a `grade` only as an integer from 0 to `gradeMax`.
 - `/find` accepts one trimmed text query (`q`) or one page ID (`page`). Both walk stored-byte rounds at one revision and
   skip retracted events. Text search covers live pages and events. A page lookup returns events and threads naming that
   page, including bounded facts about its knowledge and relationships (`pageMention`). Match and excerpt rules live

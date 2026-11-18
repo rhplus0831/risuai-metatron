@@ -504,10 +504,10 @@ type RoundRead = {
  *   package round.
  * - `GET /api/memory/structured/:characterId/:chatId/story?cursor=N&revision=R`: one round of the chat's
  *   events in contents order, including retracted events, answered `StructuredMemoryStoryRound`: each
- *   event's id, summary, story time, and participants as stored, without cutting or normalizing. Title,
- *   status, and order are not repeated: the tab joins by id with the coverage facts it holds. Rounds
- *   charge stored bytes like the package round. Bytes, `cursor`, `revision`, and refusals work as in
- *   the package round.
+ *   event's id, summary, story time, participants, and optional grade as stored, without cutting or
+ *   normalizing. Title, status, and order are not repeated: the tab joins by id with the coverage facts
+ *   it holds. Rounds charge stored bytes like the package round. Bytes, `cursor`, `revision`, and
+ *   refusals work as in the package round.
  * - `GET /api/memory/structured/:characterId/:chatId/find?cursor=N&revision=R`: exactly one of `q` (trimmed,
  *   1..MEMORY_FIND_QUERY_CHARS characters) and `page` (a resource id), otherwise 400. Text search walks
  *   live pages then non-retracted events; page lookup walks non-retracted events then threads, in
@@ -952,8 +952,8 @@ export function registerStructuredMemoryRoutes(
             const { rows, next } = roundOf(listed, cursor, packageRoundBytes);
             const events: StructuredMemoryStoryEvent[] = [];
             for (const row of rows) {
-                const { id, summary, storyTime, participants } = read("events", row.id);
-                events.push({ id, summary, storyTime, participants });
+                const { id, summary, storyTime, participants, grade } = read("events", row.id);
+                events.push({ id, summary, storyTime, participants, ...(grade === undefined ? {} : { grade }) });
             }
             return { revision, events, next } satisfies StructuredMemoryStoryRound;
         }),

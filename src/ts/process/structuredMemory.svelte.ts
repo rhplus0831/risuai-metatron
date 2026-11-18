@@ -37,6 +37,7 @@ import {
     reconcileMemoryEvents,
     sealedHypaV3DataIntact,
     sealedHypaV3DataRevision,
+    STRUCTURED_MEMORY_LIMITS,
     STRUCTURED_MEMORY_PATH,
     STRUCTURED_MEMORY_REBUILD_MODES,
     type MemoryEvent,
@@ -353,6 +354,11 @@ function storedItems(value: unknown): Record<string, unknown>[] {
 const storedText = (value: unknown) => (typeof value === "string" ? value : undefined);
 
 const storedCount = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
+
+const storedGrade = (value: unknown) =>
+    typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= STRUCTURED_MEMORY_LIMITS.gradeMax
+        ? value
+        : undefined;
 
 /** A stored story date as its three fields alone; nothing for a malformed one. */
 const storedDate = (value: unknown): MemoryStoryDate | undefined =>
@@ -699,6 +705,7 @@ function parseStoryRound(body: AnswerBody, cursor: number): StructuredMemoryStor
                         ...present("date", storedDate(storyTime.date)),
                     },
                     participants: storedTexts(event.participants),
+                    ...present("grade", storedGrade(event.grade)),
                 },
             ];
         }),

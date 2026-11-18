@@ -518,18 +518,33 @@ it("restarts the story after a second-round revision conflict, discarding earlie
     ]);
 });
 
-it("keeps a valid Timeline date when the restored event has no story-time text", async () => {
+it("keeps valid Timeline dates and grades on partial rows and drops malformed values", async () => {
     const date = { year: 2025, month: 4, day: 3 };
-    authFetch.mockResolvedValueOnce(
-        Response.json({
-            revision: "r1",
-            events: [
-                { id: "dated", storyTime: { date } },
-                { id: "malformed-date", storyTime: { date: { month: 2, day: 30 } } },
-            ],
-            next: null,
-        }),
-    );
+    const emptyFields = { summary: "", storyTime: { text: "" }, participants: [] };
+    authFetch
+        .mockResolvedValueOnce(
+            Response.json({
+                revision: "r1",
+                events: [
+                    { id: "dated", storyTime: { date } },
+                    { id: "malformed-date", storyTime: { date: { month: 2, day: 30 } } },
+                ],
+                next: 2,
+            }),
+        )
+        .mockResolvedValueOnce(
+            Response.json({
+                revision: "r1",
+                events: [
+                    { id: "zero-grade", grade: 0 },
+                    { id: "max-grade", grade: 9 },
+                    { id: "string-grade", grade: "5" },
+                    { id: "fractional-grade", grade: 1.5 },
+                    { id: "above-max-grade", grade: 10 },
+                ],
+                next: null,
+            }),
+        );
 
     expect(await readStructuredMemoryStory(ref)).toStrictEqual({
         outcome: "ok",
@@ -538,6 +553,11 @@ it("keeps a valid Timeline date when the restored event has no story-time text",
             events: [
                 { id: "dated", summary: "", storyTime: { text: "", date }, participants: [] },
                 { id: "malformed-date", summary: "", storyTime: { text: "" }, participants: [] },
+                { id: "zero-grade", ...emptyFields, grade: 0 },
+                { id: "max-grade", ...emptyFields, grade: 9 },
+                { id: "string-grade", ...emptyFields },
+                { id: "fractional-grade", ...emptyFields },
+                { id: "above-max-grade", ...emptyFields },
             ],
         },
     });

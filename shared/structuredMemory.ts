@@ -1121,8 +1121,11 @@ export type StructuredMemoryCoverageRound = {
     next: number | null;
 };
 
-/** An event's story as stored, joined by id with the coverage facts for its title, status, and order. */
-export type StructuredMemoryStoryEvent = Pick<MemoryEvent, "id" | "summary" | "storyTime" | "participants">;
+/**
+ * An event's story as stored, joined by id with the coverage facts for its title, status, and order.
+ * Ungraded events omit `grade`.
+ */
+export type StructuredMemoryStoryEvent = Pick<MemoryEvent, "id" | "summary" | "storyTime" | "participants" | "grade">;
 
 /**
  * One round of the story route, including retracted events. `next` is the position to continue from

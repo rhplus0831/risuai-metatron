@@ -899,11 +899,12 @@ it("serves coverage facts in storage order without reading recorded runs or disc
     }
 });
 
-it("serves story in stored-byte rounds including retracted events with exactly four stored fields", async () => {
+it("serves stored-byte story rounds including retracted events and grades when stored", async () => {
     const oversized = {
         ...event("z", "Mira reached the gate."),
         storyTime: { text: "Dawn", ordinal: 2 },
         participants: ["mira", "captain"],
+        grade: 0,
         keyLines: [{ speaker: "Mira", text: "문😀".repeat(500) }],
     };
     const retracted = { ...event("a", "The rumor was withdrawn."), status: "retracted" as const };
@@ -919,6 +920,7 @@ it("serves story in stored-byte rounds including retracted events with exactly f
             summary: "Mira reached the gate.",
             storyTime: { text: "Dawn", ordinal: 2 },
             participants: ["mira", "captain"],
+            grade: 0,
         },
         { id: "a", summary: "The rumor was withdrawn.", storyTime: { text: "Morning" }, participants: [] },
         { id: "m", summary: "The gate opened.", storyTime: { text: "Morning" }, participants: [] },
@@ -933,7 +935,9 @@ it("serves story in stored-byte rounds including retracted events with exactly f
     expect(second).toEqual({ revision, events: expected.slice(1), next: null });
     const joined = [...first.events, ...second.events];
     expect(joined).toEqual(expected);
-    for (const record of joined) {
+    const [graded, ...ungraded] = joined;
+    expect(Object.keys(graded).sort()).toEqual(["grade", "id", "participants", "storyTime", "summary"]);
+    for (const record of ungraded) {
         expect(Object.keys(record).sort()).toEqual(["id", "participants", "storyTime", "summary"]);
     }
 });
