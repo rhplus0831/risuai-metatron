@@ -152,7 +152,7 @@ Two tabs, two browsers, or a dropped connection:
 - [ ] **Asset Lifecycle**: a Docker volume on a nearly full disk: the 507 answers of the restore, the backup import, the upstream commit, the upstream export prepare, and the manual snapshot; the snapshot tick logging once and skipping.
 - [ ] **Static Audit Fixes (SA12)**: durable writes on Windows, macOS, and network mounts, and under real power loss.
 - [ ] **Boot Resource Cache**: the reporting user comparing DevTools Timing on their own server before and after.
-- [ ] **Headless Host**: the server restarted under a running `pnpm host:headless` (the host is listed again without a restart of the script); a server with HTTPS files (the script connects, and a second start reuses the profile); the `PORT`/`RISU_HOST` forms of the owner's own setup (a service unit, a Tailscale-bound server), where the refusal message must be clear when the server is not on loopback.
+- [ ] **Headless Host**: the server restarted under a running `pnpm host:headless` (the host is listed again without a restart of the script); a server with HTTPS files (the script connects, and a second start reuses the profile); the `PORT`/`RISU_HOST` forms of the owner's own setup (a service unit, a Tailscale-bound server), where the refusal message must be clear when the server is not on loopback. On Windows: a start with `Port` or `Risu_Chrome` spelled in mixed case finds the server's port and the Chrome binary (checked on Linux with the Windows lookup only). With HTTPS files whose certificate does not verify: the page loads, and its public stylesheets still load (only the local listener's key is excepted).
 
 ## Scripts, specs, and measurements nobody ran
 
