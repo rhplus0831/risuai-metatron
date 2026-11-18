@@ -132,11 +132,18 @@ const COMPONENT_REMOVED_KEYS = [
 ];
 
 /**
- * Removed later: the saved toggle presets, the input hooks' prompts, and the module and persona
- * folder names hold free user text like `globalChatVariables` and `customPromptTemplateToggle`,
- * and the blocked Realm creators are third-party ids and names.
+ * Removed later: the saved toggle presets, the input hooks' prompts, the request interception rules, and the module
+ * and persona folder names hold free user text like `globalChatVariables` and `customPromptTemplateToggle`, and the
+ * blocked Realm creators are third-party ids and names.
  */
-const LATER_REMOVED_KEYS = ["togglePresets", "inputHooks", "moduleFolders", "personaFolders", "blockedRealmCreators"];
+const LATER_REMOVED_KEYS = [
+    "togglePresets",
+    "inputHooks",
+    "requestInterceptions",
+    "moduleFolders",
+    "personaFolders",
+    "blockedRealmCreators",
+];
 
 /** The report's filter: the component's removal list, the later removals, and whether `key` is dropped. */
 function componentDropped(key: string): boolean {
@@ -390,6 +397,30 @@ describe("buildDatabaseSubset (the plugin getDatabase)", () => {
 });
 
 describe("buildSettingsReport", () => {
+    it("omits non-empty request interceptions from the settings report", () => {
+        const requestInterceptions = [
+            {
+                id: "private-rule",
+                enabled: true,
+                modes: ["model"],
+                position: "start",
+                prompt: {
+                    type: "plain",
+                    type2: "normal",
+                    role: "system",
+                    text: "Private instruction.",
+                    name: "Private label",
+                },
+            },
+        ];
+        installFlatDatabaseWithChats({ ...fixture(), requestInterceptions });
+
+        expect(rootSnapshot().requestInterceptions).toEqual(requestInterceptions);
+        const report = buildSettingsReport();
+        expect(report).not.toHaveProperty("requestInterceptions");
+        expect(JSON.stringify(report)).not.toContain("Private instruction.");
+    });
+
     it("omits every owned secret field while keeping ordinary settings and the full settings snapshot intact", () => {
         const secretFields = [...SECTION_FIELDS.llmSecrets, ...SECTION_FIELDS.secrets];
         const secrets: Record<string, unknown> = {

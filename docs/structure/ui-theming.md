@@ -103,6 +103,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   `displacement`, `position`, `loreBudgetWarnOff`. Task wording follows `MemoryTaskStatus.kind`; [memory](memory.md)
   owns outcomes and forecasts. The popover's `loreBudgetWarnOff` toggle also turns the chat's lore budget send stop off
   and on ([chat pipeline](chat-pipeline.md#send)).
+- The occupied count and percentage are `input` plus the report's `toolSchemas` and `interceptions`, each also a row of
+  its own (`contextUsage.toolSchemas`, `contextUsage.interceptions`) sorted among the sections. A rule edited since the
+  last reply shows in the meter only after the next one (`estimateBasis` does not track the rules).
 - The line's memory word is the chat's memory now (`memoryNow`: `chatMemoryAlgorithm` and `chatMemoryEnabled`, as the
   next send resolves them), so a chat with memory set up has a line before its first reply; the last reply's coverage is
   the word only while that memory is still on (`reportedNow`). It warns on a gap, and on memory off with history left

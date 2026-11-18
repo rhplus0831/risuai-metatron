@@ -32,6 +32,7 @@ import type { requestDataResponse } from "../llm/request.ts";
 import { messages } from "../llm/messages.ts";
 import { loadRequestDb, tokenScopeFor } from "../llm/settings.ts";
 import { watchFirstByte } from "../llm/transport.ts";
+import { requestChatDataOuter } from "../llm/outer.ts";
 import { createTokenCounter } from "../prompt/tokens.ts";
 import type { Tokenizers } from "../prompt/tokenizers/index.ts";
 import { allowListenerOrigin, sleep, waitFor } from "./testSupport.ts";
@@ -507,6 +508,118 @@ describe("a buffered request", () => {
             ),
         );
         await registry.dispose();
+    });
+});
+
+describe("request interceptions at the provider", () => {
+    const requestInterceptions = [
+        {
+            id: "instruction",
+            enabled: true,
+            modes: ["memory"],
+            position: "start",
+            prompt: {
+                type: "plain",
+                type2: "normal",
+                role: "system",
+                text: "Global instruction.",
+                name: "Private label",
+            },
+        },
+        {
+            id: "reminder",
+            enabled: true,
+            modes: ["memory"],
+            position: "end",
+            prompt: { type: "plain", type2: "normal", role: "user", text: "Remember this." },
+        },
+    ];
+
+    it("sends interception messages only for a listed request mode", async () => {
+        const records = makeRecords({
+            preset: { enableCustomFlags: true, customFlags: [LLMFlags.hasFullSystemPrompt] },
+        });
+        records.providers = normalizeProviders({ requestInterceptions });
+        const { registry, calls } = harness(records, () => chat("answer"));
+        try {
+            for (const mode of ["memory", "translate"] as const) {
+                const { events } = await run(registry, body({}, { mode }));
+                expect(terminal(events)).toEqual([{ type: "result", response: { type: "success", result: "answer" } }]);
+            }
+            expect(calls.map((call) => JSON.parse(call.body).messages)).toEqual([
+                [
+                    { role: "system", content: "Global instruction." },
+                    { role: "user", content: "hi" },
+                    { role: "user", content: "Remember this." },
+                ],
+                [{ role: "user", content: "hi" }],
+            ]);
+        } finally {
+            await registry.dispose();
+        }
+    });
+
+    it("joins a start interception to the first system block before sending", async () => {
+        const records = makeRecords({
+            preset: { enableCustomFlags: true, customFlags: [LLMFlags.hasFirstSystemPrompt] },
+        });
+        records.providers = normalizeProviders({ requestInterceptions });
+        const { registry, calls } = harness(records, () => chat("answer"));
+        try {
+            await run(
+                registry,
+                body(
+                    {
+                        formated: [
+                            { role: "system", content: "Existing instruction." },
+                            { role: "user", content: "hi" },
+                        ],
+                    },
+                    { mode: "memory" },
+                ),
+            );
+            expect(calls.map((call) => JSON.parse(call.body).messages)).toEqual([
+                [
+                    { role: "system", content: "Global instruction.\n\nExisting instruction." },
+                    { role: "user", content: "hi" },
+                    { role: "user", content: "Remember this." },
+                ],
+            ]);
+        } finally {
+            await registry.dispose();
+        }
+    });
+
+    it("sends exactly one copy of each interception on a retried request", async () => {
+        const records = makeRecords({
+            preset: { enableCustomFlags: true, customFlags: [LLMFlags.hasFirstSystemPrompt] },
+        });
+        records.providers = normalizeProviders({ requestInterceptions, requestRetrys: 1 });
+        const { registry, calls } = harness(records, (_call, index) =>
+            index === 0 ? json({ error: { message: "Please retry" } }, 400) : chat("answer"),
+        );
+        const { spec } = jobSpec(records);
+        spec.mode = "memory";
+        spec.arg.formated = [
+            { role: "system", content: "Existing instruction." },
+            { role: "user", content: "hi" },
+        ];
+        try {
+            const result = await requestChatDataOuter(spec.arg, spec.mode, {
+                db: spec.loaded.db,
+                signal: spec.signal,
+                attempt: (arg) => registry.runInJob({ ...spec, arg }),
+            });
+            expect(result).toMatchObject({ type: "success", result: "answer" });
+            const expected = [
+                { role: "system", content: "Global instruction.\n\nExisting instruction." },
+                { role: "user", content: "hi" },
+                { role: "user", content: "Remember this." },
+            ];
+            expect(calls.map((call) => JSON.parse(call.body).messages)).toEqual([expected, expected]);
+        } finally {
+            await registry.dispose();
+        }
     });
 });
 

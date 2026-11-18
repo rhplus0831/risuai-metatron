@@ -52,6 +52,8 @@ export type RequestContext = {
         profileId: string | null;
         profileName: string | null;
         provider: string | null;
+        /** The request interception prompts inserted into `formated`; given only when positive. */
+        interceptions?: number;
     }) => void;
     /** `alertError(message)` in the client's tab (an `Error` sends its message). */
     alertError: (message: string | Error) => void;

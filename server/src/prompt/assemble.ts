@@ -207,6 +207,12 @@ export type AssemblyHost = {
     tokenizer: ChatTokenCounter;
     /** Lists and estimates this request's tool schemas once, just before the final token recheck. */
     toolSchemaTokens?: () => Promise<number>;
+    /**
+     * The messages the reply request's request layer will insert (Request Interception). They are
+     * not part of the assembled prompt: the final token recheck counts them and keeps that many
+     * tokens free, like the tool schemas.
+     */
+    insertedMessages?: readonly OpenAIChat[];
     /** `tokenizerIdentityKey` of the scope `tokenizer` counts with (the context report's `tokenScope`). */
     tokenScope: string;
     getModelInfo(id: string): LLMModel;
@@ -2577,6 +2583,13 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
 
     const toolSchemaTokens = host.toolSchemaTokens ? await host.toolSchemaTokens() : 0;
     host.fence();
+    // The request layer inserts these after assembly, so they are counted apart from the prompt.
+    let interceptionTokens = 0;
+    for (const chat of host.insertedMessages ?? []) {
+        interceptionTokens += await tokenizeChat(chat);
+    }
+    /** What the request adds to the assembled prompt: the offered schemas and the inserted messages. */
+    const reservedTokens = toolSchemaTokens + interceptionTokens;
     // Recount the final prompt and record removals for Structured Memory's gap report.
     let inputTokens = 0;
     /** Each entry's count in the recheck, before any removal. */
@@ -2587,9 +2600,10 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
         inputTokens += tokens;
         recheckTokens.set(chat, tokens);
     }
-    // Keep the response reservation and offered schemas free. This also frees HypaV2's legacy
-    // response reservation, which earlier counts omit (its last two chats are protected).
-    const promptBudget = maxContextTokens - db.maxResponse - toolSchemaTokens;
+    // Keep the response reservation, the offered schemas, and the messages the request layer
+    // inserts free. This also frees HypaV2's legacy response reservation, which earlier counts
+    // omit (its last two chats are protected).
+    const promptBudget = maxContextTokens - db.maxResponse - reservedTokens;
     if (inputTokens > promptBudget) {
         // Overlapping ranges can share an entry: clearing it removes every occurrence from the prompt.
         const keptTokens = () =>
@@ -2603,7 +2617,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                     error:
                         TOO_MUCH_TOKEN +
                         "\n\nAt token rechecking. Required Tokens: " +
-                        (inputTokens + toolSchemaTokens + db.maxResponse),
+                        (inputTokens + reservedTokens + db.maxResponse),
                 };
             }
             if (formated[pointer].removable && keptEntry(formated[pointer])) {
@@ -2623,8 +2637,8 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
 
     // estimate tokens
     let outputTokens = db.maxResponse;
-    if (inputTokens + toolSchemaTokens + outputTokens > maxContextTokens) {
-        outputTokens = maxContextTokens - inputTokens - toolSchemaTokens;
+    if (inputTokens + reservedTokens + outputTokens > maxContextTokens) {
+        outputTokens = maxContextTokens - inputTokens - reservedTokens;
     }
     const generationInfo: MessageGenerationInfo = {
         model: getGenerationModelString(db),
@@ -2637,6 +2651,7 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
             input,
             inputTokens,
             toolSchemaTokens,
+            interceptionTokens,
             maxContextTokens,
             formated,
             provenanceOf,
@@ -2952,6 +2967,8 @@ function buildContextReport(arg: {
     input: AssembleInput;
     inputTokens: number;
     toolSchemaTokens: number;
+    /** The count of the messages the request layer inserts (`AssemblyHost.insertedMessages`). */
+    interceptionTokens: number;
     maxContextTokens: number;
     /** The final prompt. */
     formated: readonly OpenAIChat[];
@@ -3038,6 +3055,7 @@ function buildContextReport(arg: {
         maxResponse: arg.db.maxResponse,
         input: arg.inputTokens,
         ...(arg.toolSchemaTokens > 0 ? { toolSchemas: arg.toolSchemaTokens } : {}),
+        ...(arg.interceptionTokens > 0 ? { interceptions: arg.interceptionTokens } : {}),
         sections,
         adjustment: arg.inputTokens - sectionSum,
         attributionExact,
@@ -3231,7 +3249,7 @@ function contextTrim(
     if (continued?.empty) {
         return null;
     }
-    let headroom = ledger.headroom - arg.toolSchemaTokens;
+    let headroom = ledger.headroom - arg.toolSchemaTokens - arg.interceptionTokens;
     const queue: ContextTrimEntry[] = [];
     for (const chat of ledger.next) {
         const source = arg.sourceOf.get(chat);

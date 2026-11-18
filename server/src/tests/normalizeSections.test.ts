@@ -4,6 +4,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_NEW_CHAT_BINDING } from "../../../shared/chatBinding.ts";
 import { defaultColorScheme } from "../../../shared/colorScheme.ts";
+import { MAX_REQUEST_INTERCEPTIONS } from "../../../shared/llm/interception.ts";
+import { MODEL_MODES } from "../../../shared/llm/request.ts";
 import { normalizeModelProfile } from "../../../shared/presets.ts";
 import { DROPPED_FIELDS, SECTION_FIELDS, type SectionKind } from "../../../shared/sections.ts";
 import { valueKindOf } from "../../../shared/valueKinds.ts";
@@ -191,8 +193,8 @@ describe("every section normalizer", () => {
 
 /**
  * The section-specific migrations rewrite a few kept containers, so the "kept as sent" expectation
- * tolerates them: the hypaCustomSettings rebuild, the NAI v4 fields, the quote colors, and the
- * chat load pages.
+ * tolerates them: the hypaCustomSettings rebuild, the NAI v4 fields, the quote colors, the
+ * chat load pages, and the dropped entries of the id-keyed lists.
  */
 function mutationTolerant(section: SectionKind, kept: Record<string, unknown>): Record<string, unknown> {
     const out = { ...kept };
@@ -207,10 +209,112 @@ function mutationTolerant(section: SectionKind, kept: Record<string, unknown>): 
         // An entry without an id is not a blocked creator.
         out.blockedRealmCreators = [];
     }
+    if (section === "providers") {
+        // An entry without an id or prompt text is not a request interception rule.
+        out.requestInterceptions = [];
+    }
     return out;
 }
 
 describe("providers", () => {
+    it("defaults, drops, repairs, and caps request interceptions idempotently", () => {
+        const valid = {
+            id: "kept",
+            enabled: true,
+            modes: ["model"],
+            position: "end",
+            prompt: { type: "plain", type2: "normal", text: "Keep this text", role: "system", name: "Label" },
+        };
+        const cases: { label: string; input: unknown; expected: unknown[] }[] = [
+            ...[undefined, null, {}, "rules"].map((input) => ({ label: "default list", input, expected: [] })),
+            ...[null, false, "rule", [], { ...valid, id: undefined }, { ...valid, id: 1 }, { ...valid, id: " \t" }].map(
+                (entry) => ({
+                    label: "invalid entry or id",
+                    input: [entry],
+                    expected: [],
+                }),
+            ),
+            ...[undefined, null, {}, { text: 1 }].map((prompt) => ({
+                label: "missing string text",
+                input: [{ ...valid, prompt }],
+                expected: [],
+            })),
+            {
+                label: "first valid id wins",
+                input: [{ ...valid, prompt: { text: false } }, valid, { ...valid, position: "start" }],
+                expected: [valid],
+            },
+            ...[undefined, null, false, 1, "true"].map((enabled) => ({
+                label: "only true enables",
+                input: [{ ...valid, enabled }],
+                expected: [{ ...valid, enabled: false }],
+            })),
+            {
+                label: "known modes once each",
+                input: [{ ...valid, modes: [...MODEL_MODES, "unknown", ...MODEL_MODES, 7] }],
+                expected: [{ ...valid, modes: [...MODEL_MODES] }],
+            },
+            {
+                label: "repaired fields and rebuilt prompt",
+                input: [
+                    {
+                        ...valid,
+                        modes: "model",
+                        position: "middle",
+                        extra: "discard",
+                        prompt: {
+                            type: "jailbreak",
+                            type2: "custom",
+                            text: " \n ",
+                            role: "assistant",
+                            name: 4,
+                            extra: 1,
+                        },
+                    },
+                ],
+                expected: [
+                    {
+                        id: "kept",
+                        enabled: true,
+                        modes: [],
+                        position: "start",
+                        prompt: { type: "plain", type2: "normal", text: " \n ", role: "system" },
+                    },
+                ],
+            },
+            {
+                label: "missing fields",
+                input: [{ id: "minimal", prompt: { text: "" } }],
+                expected: [
+                    {
+                        id: "minimal",
+                        enabled: false,
+                        modes: [],
+                        position: "start",
+                        prompt: { type: "plain", type2: "normal", text: "", role: "system" },
+                    },
+                ],
+            },
+            ...["user", "bot", "system"].map((role) => ({
+                label: "known role and start position",
+                input: [{ ...valid, position: "start", prompt: { ...valid.prompt, role } }],
+                expected: [{ ...valid, position: "start", prompt: { ...valid.prompt, role } }],
+            })),
+            {
+                label: "first 32 valid entries",
+                input: [null, ...Array.from({ length: 34 }, (_, i) => ({ ...valid, id: `rule-${i}` }))],
+                expected: Array.from({ length: 32 }, (_, i) => ({ ...valid, id: `rule-${i}` })),
+            },
+        ];
+        expect(MAX_REQUEST_INTERCEPTIONS).toBe(32);
+        expect(normalizeProviders(undefined).requestInterceptions).toEqual([]);
+        for (const { label, input, expected } of cases) {
+            const normalized = normalizeProviders(deepFreeze({ requestInterceptions: input }));
+            expect(normalized.requestInterceptions, label).toEqual(expected);
+            expectIdempotent(normalizeProviders, normalized);
+        }
+    });
+
     it("drops the former keep-on-switch copies and their three toggles: they are preset fields now", () => {
         const out = normalizeProviders({
             seperateModels: { memory: "m", emotion: "", translate: "", otherAx: "" },

@@ -174,6 +174,35 @@ async function admittedRequest(s: ResourceTestClient): Promise<string> {
 }
 
 describe("GET /api/request-history", () => {
+    it("includes interceptions as a number or null in list and detail responses with content capture off", async () => {
+        const s = await server();
+        begin(s, ["intercepted", "untouched"], { content: false });
+        s.context.requestHistory.describe("intercepted", { interceptions: 2 });
+        for (const id of ["intercepted", "untouched"]) {
+            s.context.requestHistory.finish(id, { status: "success" });
+        }
+        const page = await list(s);
+        expect(page.res.status).toBe(200);
+        expect(page.page!.items.map(({ id, interceptions }) => ({ id, interceptions }))).toEqual([
+            { id: "untouched", interceptions: null },
+            { id: "intercepted", interceptions: 2 },
+        ]);
+        for (const [id, interceptions] of [
+            ["intercepted", 2],
+            ["untouched", null],
+        ] as const) {
+            const res = await get(s, id);
+            expect(res.status).toBe(200);
+            expect(await res.json()).toMatchObject({
+                id,
+                interceptions,
+                content: false,
+                prompt: null,
+                exchanges: null,
+            });
+        }
+    });
+
     it("requires a JWT, answers no-store, and pages the summaries newest first through the next cursor", async () => {
         const s = await server();
         begin(s, ["r1", "r2", "r3", "r4", "r5", "r6", "r7"]);

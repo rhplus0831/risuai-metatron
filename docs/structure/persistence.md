@@ -118,6 +118,10 @@ Kinds (`shared/resources.ts`):
   `defaultInputHooks()` (one Draft hook), a saved empty list stays empty, and the server refuses a write that is not a
   list but drops malformed entries from one. It is its own kind, not a section field, so a tab that does not know it
   never writes it.
+- `providers.requestInterceptions` (default `[]`) is one field of its section, so the whole list is one conflict unit.
+  `normalizeRequestInterceptions` (`shared/llm/interception.ts`, [LLM requests](llm-requests.md#flows)) drops an entry
+  without a non-blank unique `id` or a string `prompt.text` and keeps 32, repairs the other fields, and rebuilds each
+  rule in a fixed key order. The settings report and the plugin database API leave it out; backups keep it.
 - `llmSecrets` is write-only and read masked; it also holds the entry map `credentials` (`SECRET_ENTRY_MAPS`), each
   named API key's `key` by id ([credential binding](llm-requests.md)), and normalization drops older `modelPresets` and
   `customModels` maps.

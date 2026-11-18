@@ -91,6 +91,8 @@ export type RequestModel = {
     profileName: string | null;
     /** The `LLMFormat` name. */
     provider: string | null;
+    /** The request interception prompts inserted into the request; given only when positive. */
+    interceptions?: number;
 };
 
 /**

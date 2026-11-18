@@ -34,6 +34,7 @@ const PAGES: [number, string][] = [
     [10, "language"],
     [21, "translation"],
     [24, "input hooks"],
+    [26, "request interception"],
     [22, "interaction"],
     [11, "accessibility"],
     [14, "modules"],

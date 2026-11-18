@@ -10,6 +10,7 @@ import {
     type PresetScope,
 } from "../../storage/settingsViews.svelte";
 import { plainClone, presetFieldValue } from "../../../../shared/presets.ts";
+import { applyRequestInterceptions } from "../../../../shared/llm/interception.ts";
 import { applyReverseProxyOverride } from "../../../../shared/llm/reverseProxy.ts";
 import { credentialFor } from "../../model/credentials";
 import { language } from "../../../lang";
@@ -661,8 +662,10 @@ export function reformater(
  * preset, with the request's `profileId`); a refusal fails with `noRetry`. `LLMFormat.Plugin` and `LLMFormat.WebLLM`
  * run here with a detached copy of the resolved profile (its system replacement, plugin provider, and chat template)
  * and its named-key decision (`credentialFor`; a refused binding fails with `noRetry`), through `requestPlugin` and
- * `requestWebLLM` after `reformater`. Every other format goes to the server through `requestServer`
- * (`src/ts/process/request/transport.ts`) with the caller's arguments as they came.
+ * `requestWebLLM` after `reformater`. Before `reformater`, the request interception rules of the request's mode
+ * (`settings.providers.requestInterceptions`, `shared/llm/interception.ts`) are inserted into the cloned prompt. Every
+ * other format goes to the server through `requestServer` (`src/ts/process/request/transport.ts`) with the caller's
+ * arguments as they came; the server inserts into those.
  *
  * It mutates its argument object: do not reuse the argument after the call. Plugin v3 calls it directly
  * (`src/ts/plugins/apiV3/v3.svelte.ts`), skipping `requestChatData`'s retries and replacers.
@@ -745,7 +748,11 @@ export async function requestChatDataMain(
         return { type: "fail", noRetry: true, result: language.sharedApiKeys.refused[credential.reason] };
     }
 
-    targ.formated = safeStructuredClone(arg.formated);
+    targ.formated = applyRequestInterceptions(
+        safeStructuredClone(arg.formated),
+        settings.providers.requestInterceptions,
+        model,
+    ).formated;
     targ.maxTokens = arg.maxTokens ?? (scopedPresetRoot(scope, "maxResponse") as number);
     targ.temperature = arg.temperature ?? (scopedPresetRoot(scope, "temperature") as number) / 100;
     targ.bias = arg.bias;

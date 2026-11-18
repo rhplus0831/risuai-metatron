@@ -233,6 +233,7 @@ function sharedRecord(record: RequestHistoryRecord, redactor: Redactor): Record<
         profileId: record.profileId,
         profileName: record.profileName,
         provider: record.provider,
+        interceptions: record.interceptions,
         startedAt: record.startedAt,
         firstByteAt: record.firstByteAt,
         completedAt: record.completedAt,

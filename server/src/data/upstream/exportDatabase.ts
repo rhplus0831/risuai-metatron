@@ -141,6 +141,7 @@ const METATRON_ONLY_SETTINGS = [
     "inputHooks",
     "moduleFolders",
     "personaFolders",
+    "requestInterceptions",
     "credentials",
     "modelPresets",
     "modelProfiles",

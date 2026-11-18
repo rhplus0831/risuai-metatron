@@ -613,6 +613,28 @@ describe("buildUpstreamDatabase: presets and the root", () => {
 });
 
 describe("buildUpstreamDatabase: settings", () => {
+    it("omits non-empty request interceptions and reports them as excluded metatron settings", async () => {
+        const snapshot = await snapshotOf((w) => {
+            w.put(SECTION_KIND.providers, "main", {
+                requestInterceptions: [
+                    {
+                        id: "private-rule",
+                        enabled: true,
+                        modes: ["model"],
+                        position: "start",
+                        prompt: { type: "plain", type2: "normal", role: "system", text: "Private instruction." },
+                    },
+                ],
+            });
+        });
+        const { db, report } = exportOf(snapshot);
+
+        expect(db).not.toHaveProperty("requestInterceptions");
+        expect(excluded(report, "metatron-settings")).toMatchObject({
+            examples: expect.arrayContaining(["requestInterceptions"]),
+        });
+    });
+
     it("omits the input hook list and Draft hook ids from every exported chat", async () => {
         const snapshot = await snapshotOf((w) => {
             w.put("inputHooks", "main", [

@@ -1,3 +1,4 @@
+import { normalizeRequestInterceptions } from "../../../../shared/llm/interception.ts";
 import type { SectionResource } from "../../../../shared/resources.ts";
 import { REQUEST_HISTORY_DEFAULT_LIMIT } from "../requestHistory.ts";
 import { normalizeSection, type SectionSpec } from "./shared.ts";
@@ -51,9 +52,11 @@ const spec: SectionSpec<"providers"> = {
     presetChain: ["string"],
     requestHistoryContent: ["boolean", true],
     requestHistoryLimit: ["number", REQUEST_HISTORY_DEFAULT_LIMIT],
+    requestInterceptions: ["array", []],
 };
 
 export function normalizeProviders(input: unknown): SectionResource<"providers"> {
     const record = normalizeSection("providers", spec, input);
+    record.requestInterceptions = normalizeRequestInterceptions(record.requestInterceptions);
     return record as SectionResource<"providers">;
 }

@@ -133,6 +133,7 @@ const REPORT_REMOVED_KEYS: ReadonlySet<string> = new Set([
     "inputHooks",
     "moduleFolders",
     "personaFolders",
+    "requestInterceptions",
     "credentials",
     "mcpURLs",
     "authRefreshes",

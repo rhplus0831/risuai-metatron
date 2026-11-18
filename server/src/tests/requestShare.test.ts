@@ -251,6 +251,28 @@ describe("loadStoredSecrets", () => {
 });
 
 describe("the share module: the copy", () => {
+    it("keeps interception counts in each shared request summary, including with content capture off", () => {
+        const { shared, history, shares } = open();
+        for (const [id, content, interceptions] of [
+            [REQ(1), true, 2],
+            [REQ(2), false, 1],
+            [REQ(3), false, null],
+        ] as const) {
+            history.begin(row(id, { content }));
+            if (interceptions !== null) {
+                history.describe(id, { interceptions });
+            }
+            history.finish(id, { status: "success" });
+        }
+        expect(shares.share({ jobId: JOB })).toMatchObject({ ok: true });
+        const copy = readShare(shared, `${stamp(clock)}-job-${JOB}.json`);
+        expect(copy.requests).toEqual([
+            expect.objectContaining({ id: REQ(1), content: true, interceptions: 2 }),
+            expect.objectContaining({ id: REQ(2), content: false, interceptions: 1 }),
+            expect.objectContaining({ id: REQ(3), content: false, interceptions: null }),
+        ]);
+    });
+
     it("shares a request's whole job as `shared/<stamp>-job-<id>.json` (0640): the head with the checked app version, the rows oldest first (a content-off row its summary only), the job's events and its last error, the rows marked, the state counting the file", async () => {
         const { dir, shared, history, journal, shares, published } = open();
         seed(history);

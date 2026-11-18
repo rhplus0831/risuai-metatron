@@ -793,6 +793,76 @@ describe("the caps", () => {
 });
 
 describe("the lifecycle", () => {
+    it("adds interceptions to a populated version 1 file without losing rows or changing its version, and persists a described count", () => {
+        const file = tempFile();
+        // The schema before interception counts existed, independent of the current store's CREATE TABLE.
+        const legacy = new DatabaseSync(file);
+        try {
+            legacy.exec("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID");
+            legacy.exec("INSERT INTO meta (key, value) VALUES ('version', '1')");
+            legacy.exec(
+                "CREATE TABLE requests (" +
+                    "seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, job_id TEXT, source TEXT NOT NULL, mode TEXT NOT NULL, " +
+                    "cha_id TEXT, chat_id TEXT, message_id TEXT, model_id TEXT, profile_id TEXT, profile_name TEXT, provider TEXT, " +
+                    "started_at INTEGER NOT NULL, first_byte_at INTEGER, completed_at INTEGER, status TEXT NOT NULL, " +
+                    "http_status INTEGER, provider_code TEXT, error TEXT, request_bytes INTEGER, response_bytes INTEGER, " +
+                    "content INTEGER NOT NULL, prompt TEXT, exchange_count INTEGER NOT NULL DEFAULT 0, " +
+                    "exchanges_stored INTEGER NOT NULL DEFAULT 0, truncation TEXT, shared_at INTEGER, bytes INTEGER NOT NULL)",
+            );
+            legacy.exec(
+                "CREATE TABLE exchanges (" +
+                    "request_seq INTEGER NOT NULL REFERENCES requests (seq) ON DELETE CASCADE, idx INTEGER NOT NULL, " +
+                    "url TEXT NOT NULL, header TEXT NOT NULL, body TEXT NOT NULL, response TEXT NOT NULL, " +
+                    "success INTEGER NOT NULL, status INTEGER, date TEXT NOT NULL, response_type TEXT, " +
+                    "PRIMARY KEY (request_seq, idx)) WITHOUT ROWID",
+            );
+            legacy
+                .prepare(
+                    "INSERT INTO requests (id, source, mode, started_at, completed_at, status, content, bytes) " +
+                        "VALUES ('old', 'send', 'main', 100, 200, 'success', 0, ?)",
+                )
+                .run(beginBytes(row("old", { content: false })));
+        } finally {
+            legacy.close();
+        }
+
+        const store = open({ file, now: () => 300 });
+        expect(store.available()).toBe(true);
+        expect(store.get("old")).toMatchObject({
+            id: "old",
+            source: "send",
+            mode: "main",
+            startedAt: 100,
+            completedAt: 200,
+            status: "success",
+            content: false,
+            interceptions: null,
+        });
+        store.begin(row("new", { content: false }));
+        store.describe("new", { modelId: "gpt-5", interceptions: 2 });
+        store.finish("new", { status: "success" });
+        store.close();
+
+        const reopened = open({ file, now: () => 400 });
+        expect(reopened.get("new")).toMatchObject({ id: "new", interceptions: 2, content: false, status: "success" });
+        expect(reopened.list().items.map(({ id, interceptions }) => ({ id, interceptions }))).toEqual([
+            { id: "new", interceptions: 2 },
+            { id: "old", interceptions: null },
+        ]);
+        const check = new DatabaseSync(file);
+        try {
+            expect(check.prepare("PRAGMA table_info(requests)").all()).toEqual(
+                expect.arrayContaining([
+                    expect.objectContaining({ name: "interceptions", type: "INTEGER", notnull: 0 }),
+                ]),
+            );
+            expect(check.prepare("SELECT value FROM meta WHERE key = 'version'").get()).toEqual({ value: "1" });
+        } finally {
+            check.close();
+        }
+        expect(warn).not.toHaveBeenCalled();
+    });
+
     it("sweeps pending rows to interrupted at reopen and keeps the totals", () => {
         const file = tempFile();
         const store = open({ file, now: () => 100 });

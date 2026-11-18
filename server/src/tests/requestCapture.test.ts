@@ -873,6 +873,94 @@ describe("the history observer (createHistoryObserver)", () => {
 // ---------------------------------------------------------------------------------------------
 
 describe("a request's row (over the request layer)", () => {
+    it("records only the interception prompts inserted for the request's mode, or null when none apply, with capture on or off", async () => {
+        const records = makeRecords({
+            providers: {
+                requestInterceptions: [
+                    {
+                        id: "start",
+                        enabled: true,
+                        modes: ["model"],
+                        position: "start",
+                        prompt: { role: "system", text: "First instruction" },
+                    },
+                    {
+                        id: "end",
+                        enabled: true,
+                        modes: ["model"],
+                        position: "end",
+                        prompt: { role: "user", text: "Last instruction" },
+                    },
+                    {
+                        id: "memory",
+                        enabled: true,
+                        modes: ["memory"],
+                        position: "start",
+                        prompt: { role: "system", text: "Memory instruction" },
+                    },
+                ],
+            },
+        });
+        for (const content of [true, false]) {
+            const { registry, calls, history } = harness(records, () => chat("ok"), { content });
+            try {
+                const intercepted = await run(registry, body());
+                const untouched = await run(registry, body({}, { mode: "translate" }));
+                expect(terminal(intercepted.events)).toEqual([
+                    { type: "result", response: { type: "success", result: "ok" } },
+                ]);
+                expect(terminal(untouched.events)).toEqual([
+                    { type: "result", response: { type: "success", result: "ok" } },
+                ]);
+                expect(calls).toHaveLength(2);
+                expect(history.get(intercepted.id)).toMatchObject({
+                    mode: "model",
+                    interceptions: 2,
+                    content,
+                    status: "success",
+                });
+                expect(history.get(untouched.id)).toMatchObject({
+                    mode: "translate",
+                    interceptions: null,
+                    content,
+                    status: "success",
+                });
+            } finally {
+                await registry.dispose();
+            }
+        }
+    });
+
+    it("keeps interceptions null when a missing profile or browser-only format refuses the request before insertion", async () => {
+        const providers = {
+            requestInterceptions: [
+                { id: "model", enabled: true, modes: ["model"], prompt: { role: "system", text: "An instruction" } },
+            ],
+        };
+        for (const refused of ["missing-profile", LLMFormat.WebLLM] as const) {
+            const { registry, calls, history } = harness(
+                makeRecords({
+                    providers,
+                    ...(typeof refused === "number" ? { preset: { customAPIFormat: refused } } : {}),
+                }),
+                () => chat("unexpected"),
+            );
+            try {
+                const { id, events } = await run(
+                    registry,
+                    body(refused === "missing-profile" ? { profileId: "missing" } : {}),
+                );
+                expect(terminal(events)).toEqual([
+                    expect.objectContaining({ type: "result", response: expect.objectContaining({ type: "fail" }) }),
+                ]);
+                expect(calls).toHaveLength(0);
+                expect(history.get(id)).toMatchObject({ status: "error", interceptions: null, exchangeCount: 0 });
+            } finally {
+                await registry.dispose();
+            }
+        }
+    });
+
     it("a tab's buffered request: the row with its chat, prompt (redacted), model, first byte, one exchange with its sizes and status, and a success", async () => {
         const { registry, calls, history } = harness(makeRecords(), () => chat("hi there"));
         const { id, events } = await run(

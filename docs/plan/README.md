@@ -4,8 +4,6 @@ Plans live here while work is in progress. Current architecture guides describe
 shipped behavior; [the archive](../archived-plan/README.md) indexes completed plans with
 their last commit and path, and the [backlog](../README.md) holds what they left open.
 
-- [Request interception](request-interception.md): a global rule list that inserts prompts into every request of the
-  chosen modes, as the last step before the request is shaped for its model.
 - [Structured Memory story dates](structured-memory-story-dates.md): the writer records a date the messages state,
   and the memory card says how long ago each dated event was.
 

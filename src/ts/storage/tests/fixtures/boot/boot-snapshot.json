@@ -695,6 +695,7 @@
   "saveSignatures": false,
   "requestHistoryContent": true,
   "requestHistoryLimit": 1000,
+  "requestInterceptions": [],
   "keepSessionAlive": "off",
   "longPressToPopupEditor": false,
   "disableAutoPopupMessageEditor": false,

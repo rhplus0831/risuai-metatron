@@ -153,6 +153,14 @@ mechanisms register). Then comes one section per mechanism with a rule between, 
 - `personaGrid.ts` holds `reorderShown`, the reorder rule of the persona grid, which shows the root or one persona
   folder: the shown personas take, in their new order, the list positions they held, and every other persona keeps its
   position. The page and its folders belong to [characters-modules](characters-modules.md#personas-and-conversion).
+- `RequestInterceptionSettings` (menu 26, slug `request-interception`, `requestInterception` strings): the rule list
+  (`settings.providers.requestInterceptions`; what a rule does is in [LLM requests](llm-requests.md#flows)). Add stops
+  at `MAX_REQUEST_INTERCEPTIONS`; a new rule is enabled, targets `model`, sits at `start`, and holds an empty `system`
+  plain prompt. Notes under the list state the feature's limits. No `SettingItem`: search finds the page by title.
+- Each rule is a `PromptDataItem` row narrowed to the plain item without CBS, with the enabled toggle, the mode
+  checkboxes, and the position select in its `extra` snippet. Those edits and the list edits find the rule by id and
+  assign a new array; the row's name, text, and role edits write the prompt in place. List order is insertion order, so
+  reordering, removal, and the opened rows follow `PromptSettings`'s index handling.
 - Other handwritten pages: `PromptSettings`, `OobaSettings`, `OpenrouterSettings`, `UserSettings`, `ThanksPage`,
   `UpstreamImportReport`, `Advanced/BanCharacterSetSettings`, `Display/*`, and `Device/*`.
 
@@ -172,6 +180,11 @@ mechanisms register). Then comes one section per mechanism with a rule between, 
 
 - `src/lib/UI/PromptDataItem.svelte` (one `PromptItem`) and `src/lib/Others/PromptDiffModal.svelte` (saved presets'
   templates, preferences in `db.promptDiffPrefs`).
+- `PromptDataItem` reads no preset: `PromptSettings` passes the preset's `promptSettings` (the `cot` type option, the
+  `chatAsOriginalOnSystem` checkbox). Its defaults are the template editor's; the request interception page narrows them
+  with `allowedTypes` (the type select is hidden when it offers one type), `showType2={false}` (no special type select),
+  `cbs={false}` (plain text areas, no CBS highlighting or autocomplete), and an `extra` snippet at the top of the opened
+  row.
 - `src/lib/Setting/OocToggleEditor.svelte`: a forced-toggle map editor over plain props (`definitionsText`, `value`,
   `onchange` with a new map). Per value toggle it offers "as in the chat" (key absent) or a forced value in the toggle
   kind's control; keys the definitions no longer hold are listed as stale and removable. `PromptSettings` shows it for

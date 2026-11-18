@@ -18,6 +18,7 @@ import {
 } from "vitest";
 import { type GenerationEvent, type GenerationTerminalEvent, NO_GENERATION_HOOKS } from "../../../shared/jobs.ts";
 import type { Chat } from "../../../shared/database.ts";
+import type { RequestInterception } from "../../../shared/llm/interception.ts";
 import type { ChangeFeed, ChangeFeedEvent } from "../data/changeFeed.ts";
 import type { EventFeedFrame } from "../../../shared/events.ts";
 import { completionNotificationTag } from "../../../shared/notifications.ts";
@@ -1827,6 +1828,125 @@ describe("a send", () => {
             });
         }
     });
+
+    it.each(["model", "memory"] as const)(
+        "reserves only applicable %s interception rules in preview and the sent reply",
+        async (ruleMode) => {
+            const preset = (await single("presets")).data.find((item: any) => item.id === presetId);
+            const profile = (await single("modelProfiles")).data.find((item: any) => item.id === profileId);
+            const providers = (await single("providers")).data;
+            const tokenizers = createTokenizers({ rootDir: REPO_ROOT });
+            const start = "instruction ".repeat(160).trim();
+            const end = "reminder ".repeat(80).trim();
+            const old = "old ".repeat(80).trim();
+            const recent = "question";
+            // Count the literal request messages independently: o200k text plus three per message.
+            const count = async (text: string) => (await tokenizers.count("o200k_base", text)) + 3;
+            const insertedTokens = (await count(start)) + (await count(end));
+            const recentTokens = await count(recent);
+            const allHistoryTokens = (await count("Hi!")) + (await count(old)) + recentTokens;
+            const maxResponse = 100;
+            const maxContext = insertedTokens + recentTokens + maxResponse;
+            const rules: RequestInterception[] = [
+                {
+                    id: "start",
+                    enabled: true,
+                    modes: [ruleMode],
+                    position: "start",
+                    prompt: { type: "plain", type2: "normal", role: "system", text: start },
+                },
+                {
+                    id: "end",
+                    enabled: true,
+                    modes: [ruleMode],
+                    position: "end",
+                    prompt: { type: "plain", type2: "normal", role: "user", text: end },
+                },
+                {
+                    id: "disabled",
+                    enabled: false,
+                    modes: ["model"],
+                    position: "start",
+                    prompt: { type: "plain", type2: "normal", role: "system", text: start.repeat(3) },
+                },
+                {
+                    id: "blank",
+                    enabled: true,
+                    modes: ["model"],
+                    position: "end",
+                    prompt: { type: "plain", type2: "normal", role: "user", text: " \n\t " },
+                },
+            ];
+            try {
+                await patchPreset("modelProfiles", profileId, { maxContext });
+                await patchPreset("presets", presetId, {
+                    maxResponse,
+                    regex: [],
+                    promptTemplate: [{ type: "chat", rangeStart: 0, rangeEnd: "end" }],
+                    promptSettings: { ...preset.promptSettings, trimStartNewChat: true, sendName: false },
+                });
+                await patchProviders({ useStreaming: false, requestInterceptions: rules });
+                const chaId = await seedCharacter({
+                    name: "Interceptions",
+                    extra: { firstMessage: "Hi!", desc: "" },
+                    messages: [
+                        { role: "user", data: old, chatId: "old" },
+                        { role: "user", data: recent, chatId: "recent" },
+                    ],
+                });
+                const applicable = ruleMode === "model";
+                const assembled = applicable
+                    ? [{ role: "user", content: recent }]
+                    : [
+                          { role: "assistant", content: "Hi!" },
+                          { role: "user", content: old },
+                          { role: "user", content: recent },
+                      ];
+                const expectedInput = applicable ? recentTokens : allHistoryTokens;
+                const before = bodies.length;
+                const preview = await job("preview", chaId);
+                expect(preview.terminal?.type, JSON.stringify(preview.terminal)).toBe("done");
+                const result = (preview.terminal as any).result;
+                expect(
+                    result.messages.map(({ role, content }: { role: string; content: string }) => ({ role, content })),
+                ).toEqual(assembled);
+                expect(bodies).toHaveLength(before);
+
+                const sent = await job("send", chaId);
+                expect(sent.terminal?.type, JSON.stringify(sent.terminal)).toBe("done");
+                expect(bodies.slice(before)).toHaveLength(1);
+                expect(bodies.at(-1).messages).toEqual(
+                    applicable
+                        ? [{ role: "system", content: start }, ...assembled, { role: "user", content: end }]
+                        : assembled,
+                );
+                const info = (await readChat(chaId)).data.message.at(-1).generationInfo;
+                expect(info.inputTokens).toBe(expectedInput);
+                expect(info.outputTokens).toBe(maxResponse);
+                for (const context of [result.context, info.context]) {
+                    expect(parseContextReport(context)).toMatchObject({
+                        input: expectedInput,
+                        maxContext,
+                        maxResponse,
+                    });
+                    if (applicable) {
+                        expect(context.interceptions).toBe(insertedTokens);
+                        expect(context.input + context.interceptions + maxResponse).toBe(maxContext);
+                    } else {
+                        expect(context).not.toHaveProperty("interceptions");
+                    }
+                }
+            } finally {
+                await tokenizers.dispose();
+                await patchPreset("modelProfiles", profileId, profile);
+                await patchPreset("presets", presetId, { ...preset, promptTemplate: preset.promptTemplate });
+                await patchProviders({
+                    useStreaming: providers.useStreaming,
+                    requestInterceptions: providers.requestInterceptions,
+                });
+            }
+        },
+    );
 
     it("sends unchanged prompt messages without request-trigger errors when the character and modules have no triggers", async () => {
         const chaId = await seedCharacter({

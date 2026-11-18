@@ -143,7 +143,9 @@
         whole > 0 ? Math.min(100, Math.max(0, (part / whole) * 100)) : part > 0 ? 100 : 0;
 
     const promptBudget = $derived(report ? report.maxContext - report.maxResponse : 0);
-    const occupied = $derived(report ? report.input + (report.toolSchemas ?? 0) : 0);
+    // What the reply request holds: the counted messages, the offered tool schemas, and the
+    // messages Request Interception inserts (the report keeps the last two apart from `input`).
+    const occupied = $derived(report ? report.input + (report.toolSchemas ?? 0) + (report.interceptions ?? 0) : 0);
     const fixed = $derived(report ? fixedShare(report) * 100 : 0);
     const fixedOver = $derived(report !== null && fixed > warn);
     const memoryName = $derived(report?.memory ? language.contextUsage.memoryKinds[report.memory.kind] : "");
@@ -621,12 +623,17 @@
               : null,
     );
 
-    // Sections with tokens, largest first; ties keep the report's order. Dots identify their group.
+    // Sections with tokens, largest first; ties keep the report's order. The tool schemas and the
+    // inserted Request Interception messages are rows of their own among them. Dots identify their group.
     const rows = $derived.by(() => {
         if (!report) {
             return [];
         }
-        return [...report.sections, { kind: "toolSchemas" as const, tokens: report.toolSchemas ?? 0 }]
+        return [
+            ...report.sections,
+            { kind: "toolSchemas" as const, tokens: report.toolSchemas ?? 0 },
+            { kind: "interceptions" as const, tokens: report.interceptions ?? 0 },
+        ]
             .filter((section) => section.tokens > 0)
             .sort((a, b) => b.tokens - a.tokens)
             .map((section) => ({
@@ -1195,7 +1202,9 @@
                             <span class="grow"
                                 >{row.kind === "toolSchemas"
                                     ? language.contextUsage.toolSchemas
-                                    : language.contextUsage.sections[row.kind]}</span
+                                    : row.kind === "interceptions"
+                                      ? language.contextUsage.interceptions
+                                      : language.contextUsage.sections[row.kind]}</span
                             >
                             <span class="tabular-nums">{language.contextUsage.tokens(fmt(row.tokens))}</span>
                             {#if promptBudget > 0}

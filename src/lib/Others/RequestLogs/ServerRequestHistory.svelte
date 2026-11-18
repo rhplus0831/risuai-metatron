@@ -273,6 +273,12 @@
             [language.requestHistoryLabels.source, `${sourceLabel(record.source)} (${record.mode})`],
             [language.requestHistoryLabels.provider, record.provider],
             [language.requestHistoryLabels.profile, record.profileName ?? record.profileId],
+            [
+                language.requestHistoryLabels.interceptions,
+                typeof record.interceptions === "number" && record.interceptions > 0
+                    ? language.requestHistoryLabels.interceptedPrompts(record.interceptions)
+                    : null,
+            ],
             [language.requestHistoryLabels.httpStatus, record.httpStatus === null ? null : String(record.httpStatus)],
             [language.requestHistoryLabels.providerCode, record.providerCode],
             [

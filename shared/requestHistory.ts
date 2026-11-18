@@ -37,6 +37,8 @@ export type RequestHistorySummary = {
     profileId: string | null;
     profileName: string | null;
     provider: string | null;
+    /** The request interception prompts inserted into the request; null when none was recorded. */
+    interceptions: number | null;
     startedAt: number;
     firstByteAt: number | null;
     completedAt: number | null;

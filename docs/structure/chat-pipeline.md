@@ -87,7 +87,9 @@
 ### Context report
 
 - `shared/contextReport.ts`: generation context accounting (`ContextReport`, `parseContextReport`, `historyDigest`).
-  Structured Memory's coverage: [its report](structured-memory/read.md#the-read-path).
+  `input` is the assembled messages alone; `toolSchemas` and `interceptions` (the reply's request interception messages)
+  are the final recheck's reservations, kept apart and added to `fixedShare`. Structured Memory's coverage:
+  [its report](structured-memory/read.md#the-read-path).
 - `shared/eligibleHistory.ts`: stored-history selection (`eligibleHistory`).
 
 ### Composer and drafts

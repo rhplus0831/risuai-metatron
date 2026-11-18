@@ -10,6 +10,7 @@ import type {
     SerializableHypaV2Data,
     SerializableHypaV3Data,
 } from "./memory.ts";
+import type { RequestInterception } from "./llm/interception.ts";
 import type { ToolCallRecord } from "./llm/request.ts";
 import type { RisuModule } from "./modules.ts";
 import type { OocLog, OocSegment } from "./ooc.ts";
@@ -609,6 +610,11 @@ export interface Database {
     requestHistoryContent?: boolean;
     /** The request history's row cap, clamped to 10–10,000 where it is read (at every prune). */
     requestHistoryLimit?: number;
+    /**
+     * The global request interception rules (`shared/llm/interception.ts`): the request layer
+     * inserts each applying rule's prompt into the request, before `reformater`.
+     */
+    requestInterceptions: RequestInterception[];
     keepSessionAlive: "off" | "pip" | "sound";
     longPressToPopupEditor?: boolean;
     disableAutoPopupMessageEditor?: boolean;

@@ -131,6 +131,11 @@ export type ContextReport = {
     /** Estimated tokens of the offered tool schemas, separate from the counted messages. */
     toolSchemas?: number;
     /**
+     * Estimated tokens of the messages Request Interception inserts into the reply request, separate
+     * from the counted messages. Present only when positive.
+     */
+    interceptions?: number;
+    /**
      * One row per kind, in first-counted order; kinds that counted nothing are left out. Kinds are counted
      * where assembly already counts (`addSection` in `server/src/prompt/assemble.ts`), except three its
      * `buildContextReport` adds: memory as the traced memory entries in the final prompt, by their
@@ -335,6 +340,9 @@ export function parseContextReport(value: unknown): ContextReport | null {
         return null;
     }
     if (value.toolSchemas !== undefined && !isCount(value.toolSchemas)) {
+        return null;
+    }
+    if (value.interceptions !== undefined && !isCount(value.interceptions)) {
         return null;
     }
     if (typeof value.attributionExact !== "boolean" || typeof value.tokenScope !== "string") {
@@ -604,14 +612,15 @@ export function turnCount(report: ContextReport, unit: ContextMeterTurnUnit): { 
 
 /**
  * The share of the prompt budget (`maxContext − maxResponse`) the fixed sections take: every
- * section but history and memory, plus tool schemas, `adjustment` left out. In [0, 1]; 1 without a budget.
+ * section but history and memory, plus tool schemas and interceptions, `adjustment` left out. In
+ * [0, 1]; 1 without a budget.
  */
 export function fixedShare(report: ContextReport): number {
     const budget = report.maxContext - report.maxResponse;
     if (budget <= 0) {
         return 1;
     }
-    let fixed = report.toolSchemas ?? 0;
+    let fixed = (report.toolSchemas ?? 0) + (report.interceptions ?? 0);
     for (const section of report.sections) {
         if (section.kind !== "history" && section.kind !== "memory") {
             fixed += section.tokens;
