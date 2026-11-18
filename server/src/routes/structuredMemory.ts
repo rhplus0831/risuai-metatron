@@ -634,8 +634,9 @@ type RoundRead = {
  * - `POST /api/memory/structured/:characterId/:chatId/inherit` `{ sourceChatId }`: gives a copied or
  *   branched chat the records of the character's chat it came from, as far as its messages support them
  *   (`structured/inherit.ts`), answered `StructuredMemoryInheritAnswer`. The server builds them from the
- *   source chat, whose runs stay behind, and the tab sends no record. A new chat that holds a row of any
- *   kind, trash included, which is what a repeat finds, answers `inherited: false` and writes nothing.
+ *   source chat, whose runs stay behind, and the tab sends no record. After the record write, the server
+ *   copies chapters whose events all crossed and are unclaimed in the target. This is best effort.
+ *   A target that already holds a memory record, trash included, answers `inherited: false` and writes nothing.
  *   This target-row check precedes reading the source chat: a repeat answers 200 `inherited: false`
  *   even when the source is gone, while an empty target with a missing source answers 404 `chatGone`.
  *   A source's decline of adoption crosses in the write that takes its records, also with no record to take,
@@ -1472,8 +1473,14 @@ export function registerStructuredMemoryRoutes(
                 messages: chat.message,
                 hashOf: messageSourceHash,
             });
+            const writtenRevision = store.memory.write(characterId, chatId, options, { ...changes, ...declined });
+            try {
+                store.memory.chapters.copy(characterId, sourceChatId, chatId, epoch);
+            } catch {
+                // The records have committed. A chapter failure leaves the inheritance answer intact.
+            }
             return compressedJson(c, {
-                revision: store.memory.write(characterId, chatId, options, { ...changes, ...declined }),
+                revision: writtenRevision,
                 inherited: [changes.pages, changes.events, changes.threads].some((list) => list?.length),
             } satisfies StructuredMemoryInheritAnswer);
         } catch (error) {

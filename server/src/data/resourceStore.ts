@@ -2258,6 +2258,15 @@ export function createResourceStore(options: {
                         return removed;
                     });
                 },
+                copy(characterId: string, sourceChatId: string, chatId: string, epoch: string | undefined) {
+                    assertWritable();
+                    assertEpochNow(epoch);
+                    return transactionInScope(() => {
+                        const copied = memoryTables.chapters.copy(characterId, sourceChatId, chatId);
+                        if (copied > 0) countWrite();
+                        return copied;
+                    });
+                },
             },
             readContents(...args: Parameters<typeof memoryTables.readContents>) {
                 assertOpen();

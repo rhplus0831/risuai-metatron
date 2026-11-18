@@ -25,6 +25,7 @@ import type { OpenAIChat } from "../../../shared/openai.ts";
 import {
     CHARACTER_SECTION_SLOTS,
     coveredMessages,
+    memoryChapterMark,
     MEMORY_SECTION_BUDGETS,
     type MemoryEventDraft,
     type MemoryPage,
@@ -2748,7 +2749,7 @@ describe("structured memory tasks", () => {
 
     const beginStagedRun = (
         t: Harness,
-        mode: "rebuild" | "backfill" = "rebuild",
+        mode: "rebuild" | "fresh" | "backfill" = "rebuild",
         plan: readonly MemoryRebuildPlanEntry[] = [
             ["m1", "m2"],
             ["m3", "m4"],
@@ -2759,6 +2760,36 @@ describe("structured memory tasks", () => {
         t.store.memory.rebuild.begin("c", "k1", { epoch: t.store.epoch(), mode, plan }, rebuildSeed(mode, live));
         return { ...writerInput(t), rebuild: true as const };
     };
+
+    it.each([
+        ["rebuild", "removes"],
+        ["fresh", "removes"],
+        ["backfill", "keeps"],
+    ] as const)("a completed %s swap %s the chat's chapters", async (mode, effect) => {
+        const t = structuredHarness();
+        const old = memoryRecords(["opening"]).events[0];
+        const chapter = {
+            id: "arrival",
+            title: "Arrival",
+            synopsis: old.summary,
+            events: [{ id: old.id, mark: memoryChapterMark(old.title, old.summary, old.storyTime.date) }],
+        };
+        for (const chatId of ["k1", "k2"]) {
+            writeMemory(t.store, "c", chatId, { events: [old] });
+            t.store.memory.chapters.add("c", chatId, t.store.epoch(), chapter);
+        }
+        const terminal = t.nextTerminal("k1");
+        expect(t.service.rebuild(beginStagedRun(t, mode, [["m1", "m2"]])).outcome).toBe("queued");
+        const request = await nextPatch(t, 0, terminal);
+        expect(t.store.memory.chapters.list("c", "k1")).toMatchObject({ chapters: [chapter] });
+        request.answer(JSON.stringify(analysis()));
+        await finishRecording(t, terminal);
+        expect((await terminal).status).toMatchObject({ reason: "rebuilt" });
+        expect(t.store.memory.chapters.list("c", "k1")).toMatchObject({
+            chapters: effect === "keeps" ? [chapter] : [],
+        });
+        expect(t.store.memory.chapters.list("c", "k2")).toMatchObject({ chapters: [chapter] });
+    });
 
     it("runs and swaps a greeting-only backfill historically without changing current pages or threads", async () => {
         const t = structuredHarness();

@@ -263,6 +263,28 @@ it("adds chapters only for current, unretracted, unclaimed events in the current
     expect(contents(store).revision).toBe(revision);
 });
 
+it("copies chapters only in the current epoch and preserves both memory revisions", () => {
+    const { store } = fileStore();
+    seed(store);
+    store.applyChanges({ chats: [group(null, [{ op: "create", chat }], "c", "branch")] });
+    const events = records(["opening"]).events;
+    const sourceRevision = write(store, contents(store).revision, { events });
+    const targetRevision = write(store, contents(store, "c", "branch").revision, { events }, "c", "branch");
+    const saved = chapter("arrival", ...events);
+    const chapters = store.memory.chapters;
+    chapters.add("c", "k", store.epoch(), saved);
+
+    expect(() => chapters.copy("c", "k", "branch", "old-epoch")).toThrow(ResourceEpochError);
+    expect(chapters.list("c", "branch")).toEqual({ revision: targetRevision, chapters: [] });
+
+    chapters.copy("c", "k", "branch", store.epoch());
+    expect(chapters.list("c", "branch")).toEqual({
+        revision: targetRevision,
+        chapters: [{ ...saved, id: expect.any(String) }],
+    });
+    expect(chapters.list("c", "k")).toEqual({ revision: sourceRevision, chapters: [saved] });
+});
+
 it("replaces an existing chapter atomically under a fresh id at the end of storage order", () => {
     const { store, file } = fileStore();
     seed(store);
@@ -1748,6 +1770,28 @@ function beginRebuild(store: ResourceStore) {
         records(["staged"]),
     );
 }
+
+it("keeps the chapter and its events when the rebuild swap rolls back", () => {
+    const { store, file } = fileStore();
+    seed(store);
+    const events = records(["opening"]).events;
+    const revision = write(store, contents(store).revision, { events });
+    const saved = chapter("arrival", ...events);
+    const epoch = store.epoch();
+    store.memory.chapters.add("c", "k", epoch, saved);
+    beginRebuild(store);
+    store.memory.rebuild.advance("c", "k", epoch);
+    editFile(
+        file,
+        "CREATE TRIGGER refuse_swap BEFORE DELETE ON memory_rebuilds BEGIN SELECT RAISE(ABORT, 'swap refused'); END;",
+    );
+
+    expect(() =>
+        store.memory.rebuild.swap("c", "k", { epoch, baseRevision: revision }, { remove: { events: ["opening"] } }),
+    ).toThrow("swap refused");
+    expect(store.memory.chapters.list("c", "k")).toEqual({ revision, chapters: [saved] });
+    expect(contents(store).events.map(({ id }) => id)).toEqual(["opening"]);
+});
 
 it("persists greeting-bearing rebuild entries and reads legacy id arrays unchanged after reopen", () => {
     const greeting = { fmIndex: 1, hash: greetingSourceHash("Welcome") };

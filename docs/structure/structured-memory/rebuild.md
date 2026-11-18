@@ -125,6 +125,11 @@ crosses: with any live event adopted or rebuilt over one, every staged event tak
 summaries stay resettable. On a completed swap it empties the trash in one write. Like a normal rebuild it leaves live
 records intact when there is no staged event to install.
 
+A completed rebuild or fresh rebuild drops every [chapter](records.md#chapter-writes) of the chat at
+[the swap](#the-swap); the chapters are made again on request. A backfill keeps them, since its folds keep event ids and
+text, though a fold that moves an event can leave a chapter's events out of their listed order, which the Timeline reads
+as out of date. A run that stops, fails, or is abandoned leaves them.
+
 ### Backfill
 
 When no readable event in any status cites the greeting, backfill puts a greeting-only window first, provided an
@@ -143,7 +148,9 @@ events and new pages.
 `swapRebuild` reads live records and their revision, builds `rebuildChanges`, then calls `store.memory.rebuild.swap`.
 `server/src/data/resourceStore.ts` wraps `server/src/data/memoryStore.ts`'s swap in one transaction: one ordinary live
 `write`, moving the memory revision exactly once. The store's comments own validation, scene and `createdRevision`
-rules, staged-run transfer and cleanup.
+rules, staged-run transfer and cleanup. In the same transaction, after that write, the inner swap deletes the chat's
+chapters with its own statement unless the run's stored mode is `backfill`; no flag is passed in, and a failure there
+rolls the whole swap back.
 
 In a backfill whose preset has `omitUserMessages` on as stored at the swap (the task's snapshot is not read),
 `backfillFolds` attaches every user message no live or staged event cites, in a turn whose reply a live event cites, to
@@ -254,10 +261,10 @@ beside the rebuild buttons. The comparison starts no work; a person must press. 
 
 - `structured/rebuild.test.ts` drives the plan, window, cost, seed, and `rebuildChanges` on plain records; one preview
   pins the 3,000-token overhead per call as a literal.
-- `memoryStore.test.ts` drives the staged tables, the swap, a reopened file, and a snapshot taken mid-run on a real
-  file.
-- `memoryTasks.test.ts` drives a run on `createMemoryTasks` over a real store with the scripted provider, and a service
-  built again over the same store stands in for a restart.
+- `memoryStore.test.ts` drives the staged tables, the swap (chapters kept on a rollback included), a reopened file, and
+  a snapshot taken mid-run on a real file.
+- `memoryTasks.test.ts` drives a run on `createMemoryTasks` over a real store with the scripted provider, the chapters
+  each mode's swap drops or keeps included, and a service built again over the same store stands in for a restart.
 - `structuredMemoryRoutes.test.ts` drives the routes, the lock, the fence, the command's admission, and the reaction to
   a chat write on a real app.
 - `StructuredMemoryPanel.test.ts` and `MemoryReceiptLine.svelte.test.ts` drive the controls and the press, and

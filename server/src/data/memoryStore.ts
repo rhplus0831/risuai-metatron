@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync, StatementSync } from "node:sqlite";
 import { parseContextReport } from "../../../shared/contextReport.ts";
 import type { Message } from "../../../shared/database.ts";
@@ -686,6 +686,7 @@ function createChapterTables(db: DatabaseSync, selectChat: StatementSync, revisi
     const hasChapter = db.prepare("SELECT 1 FROM memory_chapters WHERE chatSeq = ? AND id = ?");
     const addChapter = db.prepare("INSERT INTO memory_chapters (chatSeq, id, data) VALUES (?, ?, ?)");
     const deleteChapter = db.prepare("DELETE FROM memory_chapters WHERE chatSeq = ? AND id = ?");
+    const hasEvent = db.prepare("SELECT 1 FROM memory_events WHERE chatSeq = ? AND id = ?");
     const memberEvent = db.prepare(
         "SELECT data FROM memory_events WHERE chatSeq = ? AND id = ? AND status != 'retracted'",
     );
@@ -704,12 +705,28 @@ function createChapterTables(db: DatabaseSync, selectChat: StatementSync, revisi
         return chat.seq;
     }
 
-    function save(seq: number, chapter: MemoryChapter, oldId: string | null) {
+    // Even a chapter the display cannot read still owns the event ids in its stored array.
+    function* ownedEventIds(seq: number, exceptChapterId: string | null) {
+        for (const row of otherChapters.iterate(seq, exceptChapterId)) {
+            const other = parsed(row.data as string);
+            if (!isPlainObject(other) || !Array.isArray(other.events)) continue;
+            for (const entry of other.events) {
+                if (isPlainObject(entry) && typeof entry.id === "string") yield entry.id;
+            }
+        }
+    }
+
+    function serializeChapter(chapter: MemoryChapter) {
         const { stored, text } = serialize(chapter);
         if (Buffer.byteLength(text, "utf8") > MAX_READ_RESPONSE_BYTES) {
             throw new ResourceValidationError(`Stored chapter is longer than ${MAX_READ_RESPONSE_BYTES} bytes`);
         }
         if (!isMemoryChapter(stored)) throw new ResourceValidationError("Invalid memory chapter");
+        return { stored, text };
+    }
+
+    function save(seq: number, chapter: MemoryChapter, oldId: string | null) {
+        const { stored, text } = serializeChapter(chapter);
         if (hasChapter.get(seq, stored.id)) throw new ResourceValidationError("Chapter id already exists");
 
         for (const { id, mark } of stored.events) {
@@ -724,15 +741,9 @@ function createChapterTables(db: DatabaseSync, selectChat: StatementSync, revisi
                 throw new ResourceValidationError("Chapter event has changed");
             }
         }
-        // Even a chapter the display cannot read still owns the event ids in its stored array.
         const ids = new Set(stored.events.map(({ id }) => id));
-        for (const row of otherChapters.iterate(seq, oldId)) {
-            const other = parsed(row.data as string);
-            if (
-                isPlainObject(other) &&
-                Array.isArray(other.events) &&
-                other.events.some((entry) => isPlainObject(entry) && typeof entry.id === "string" && ids.has(entry.id))
-            ) {
+        for (const id of ownedEventIds(seq, oldId)) {
+            if (ids.has(id)) {
                 throw new ResourceValidationError("Chapter event already belongs to another chapter");
             }
         }
@@ -773,6 +784,31 @@ function createChapterTables(db: DatabaseSync, selectChat: StatementSync, revisi
             let removed = 0;
             for (const id of ids) removed += Number(deleteChapter.run(chat.seq, id).changes);
             return removed;
+        },
+        /**
+         * Reads well-shaped source chapters in storage order. Carries a chapter if every listed event
+         * has a target row, regardless of status or text, and no target chapter claims any of its events.
+         * Claims include malformed chapters and chapters copied earlier in this call. Each copy gets a
+         * fresh id and keeps its title, synopsis, and events (ids and marks). Returns the number carried.
+         * The caller owns the transaction and epoch. A missing source or target chat throws ResourceConflictError.
+         * A copy over the stored byte limit throws and rolls back the transaction.
+         */
+        copy(characterId: string, sourceChatId: string, chatId: string): number {
+            const sourceSeq = requireChatSeq(characterId, sourceChatId);
+            const seq = requireChatSeq(characterId, chatId);
+            const owned = new Set(ownedEventIds(seq, null));
+            let copied = 0;
+            for (const row of chapterRows.iterate(sourceSeq)) {
+                const chapter = parsed(row.data as string);
+                if (!isMemoryChapter(chapter)) continue;
+                if (chapter.events.some(({ id }) => owned.has(id) || !hasEvent.get(seq, id))) continue;
+
+                const { stored, text } = serializeChapter({ ...chapter, id: randomUUID() });
+                addChapter.run(seq, stored.id, text);
+                for (const { id } of stored.events) owned.add(id);
+                copied++;
+            }
+            return copied;
         },
     };
 }
@@ -878,6 +914,7 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
             "WHERE chatSeq = (SELECT seq FROM chats WHERE characterId = ? AND id = ?)",
     );
     const deleteRun = db.prepare("DELETE FROM memory_rebuilds WHERE chatSeq = ?");
+    const deleteChapters = db.prepare("DELETE FROM memory_chapters WHERE chatSeq = ?");
     const stagedRunColumns = writtenColumns(MEMORY_STAGED_TABLES.runs).join(", ");
     // Text for text, in the order the run wrote them, so a staged run is parsed by nothing.
     const copyStagedRuns = db.prepare(
@@ -1340,13 +1377,12 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
             },
 
             /**
-             * Ends the run: `write` of `changes` on the live tables at `baseRevision`, so every check of a
-             * write holds and the revision moves up by exactly one, then the staged runs join the live ones
-             * by their text, in the order written, and the staged rows and the run go. The history this
-             * leaves, live runs then staged, is pruned of its run prompts as a settling commit prunes
-             * (`pruneRunPrompts`), in the same transaction: the swap settles the run's windows for good. A
-             * chat with no run is refused as a missing chat. A refused write leaves everything to the
-             * caller's rollback.
+             * Ends the run in the caller's transaction. The live `write` applies `changes` at `baseRevision`
+             * with its usual revision rules. Rebuild and fresh swaps then delete the chat's chapters.
+             * A backfill keeps them. The staged runs join the live history in storage order, their text
+             * copied verbatim. The swap prunes the combined history's prompts as a settling commit does
+             * (`pruneRunPrompts`), then removes the staged rows and the run. A chat with no run is
+             * refused as a missing chat. A failure at any step rolls back the whole swap.
              */
             swap(characterId: string, chatId: string, baseRevision: string, changes: MemoryChanges): MemoryWriteResult {
                 const found = runOf(characterId, chatId);
@@ -1354,6 +1390,7 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
                     throw new ResourceConflictError(null);
                 }
                 const written = write(characterId, chatId, baseRevision, changes);
+                if (found.run.mode !== "backfill") deleteChapters.run(found.seq);
                 copyStagedRuns.run(found.seq);
                 live.pruneRunPrompts(found.seq);
                 removeRun(found.seq);

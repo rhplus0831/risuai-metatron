@@ -115,14 +115,22 @@ leave a created chat without memory. An inherited section still marked `unsuppor
 
 The route checks the epoch and target fence, reads both chats and source records, builds via `inheritedRecords`, then
 writes the target synchronously at its read revision; only the target needs a fence because a source writer cannot enter
-between reads. The builder's header owns source-to-target evidence mapping and page-history rewind. Any target row, runs
-included, prevents inheritance. Runs stay behind, so receipts are stripped from the copied chat and coverage comes from
-event sources. A decline crosses with the records; `inherited` reports record transfer only. For refusal and repeat
-answers, see the route header. Imports instead [restore their file](#chat-files).
+between reads. The builder's header owns source-to-target evidence mapping and page-history rewind. Any target record
+row, runs included, prevents inheritance; a chapter row does not. Runs stay behind, so receipts are stripped from the
+copied chat and coverage comes from event sources. A decline crosses with the records; `inherited` reports record
+transfer only. For refusal and repeat answers, see the route header. Imports instead [restore their file](#chat-files).
 
 Greeting-only events cross both copies and branches. Mixed events still require every message source to map; `greeting`
 and `greetingKept` cross verbatim because the copy shares the recorded past. When the target greeting differs, the panel
 labels its citation "changed".
+
+[Chapters](records.md#chapter-writes) cross after the records. Right after its write, with no `await` between, the route
+calls `store.memory.chapters.copy`, a transaction of its own under the same epoch. It carries, under a fresh id and with
+its marks unchanged, each source chapter whose listed events all exist in the target, whatever their status or text now
+is, and none of whose events a target chapter already lists, a malformed one included. The newest-ten rule governs
+making, not carrying; whether a carried chapter reads out of date is derived in the target from its own rows. A branch
+that cuts through a chapter leaves it behind. The route swallows a failed copy: the answer is the same, and the target
+has fewer chapters or none.
 
 ### Chat files
 
@@ -275,9 +283,9 @@ takes over.
 - `chatCheckpoints.test.ts` and `chatCheckpointRoutes.test.ts` drive a checkpoint's memory through the checkpoint
   service; `restoreStage.test.ts` forges its manifests and chunks.
 - `structured/inherit.test.ts` drives the build with plain records and an injected `hashOf`,
-  `structuredMemoryRoutes.test.ts` the inherit route on a real app, and `chatMemoryInherit.test.ts` the tab's wait on
-  fake timers, with the save loop and `authFetch` scripted. `Chat.test.ts` and `SideChatList.test.ts` drive the two
-  sites.
+  `structuredMemoryRoutes.test.ts` the inherit route on a real app, the chapters it carries included, and
+  `chatMemoryInherit.test.ts` the tab's wait on fake timers, with the save loop and `authFetch` scripted. `Chat.test.ts`
+  and `SideChatList.test.ts` drive the two sites.
 - `structured/restore.test.ts` drives the shape check with plain records, `structuredMemoryRoutes.test.ts` the restore
   route and a round trip onto a second store on real apps, and `structuredMemory.test.ts` the file read with `authFetch`
   scripted. `chatMemoryInherit.test.ts` drives the restore's wait.
@@ -324,6 +332,11 @@ takes over.
   ([measured](../../reports/measurements/structured-memory-2026-11-03.md#checkpoint-save)). Old runs keep their prompts
   until that commit, also after an older checkpoint's restore. A load parses every record on top. Decision: Structured
   Memory slice 5d, archive; the prune, owner, 2026-11-08.
+- A checkpoint, a chat file, the Markdown package, and a restored or imported database carry no chapters
+  ([records](records.md#limitations)). A checkpoint load leaves the chapter rows as they are, and the Timeline decides
+  each from its events as they now are: one made after the capture stays current when its events, their text and dates,
+  and their order were the same then, and reads out of date or is hidden otherwise. The next chapter command removes one
+  none of whose events exists unretracted. Decision: Timeline Chapter Synopses C9 (2026-11-18).
 - A tab closed before [the inherit](#copies-and-branches) posts leaves the new chat with no records and no notice:
   nothing retries it. Decision: Structured Memory slice 5c, archive.
 - A send that reaches the new chat before the inherit is fenced or finds records, so that chat keeps a gap. Decision:

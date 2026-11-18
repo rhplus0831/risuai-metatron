@@ -103,12 +103,15 @@ const event = (id: string, summary = "Event body"): MemoryEvent => ({
     createdRevision: 1,
 });
 
-function chapter(e: MemoryEvent) {
+function chapter(first: MemoryEvent, ...rest: MemoryEvent[]) {
     return {
-        id: `chapter-${e.id}`,
-        title: e.title,
+        id: `chapter-${first.id}`,
+        title: first.title,
         synopsis: "부두에 도착했다.",
-        events: [{ id: e.id, mark: memoryChapterMark(e.title, e.summary, e.storyTime.date) }],
+        events: [first, ...rest].map((e) => ({
+            id: e.id,
+            mark: memoryChapterMark(e.title, e.summary, e.storyTime.date),
+        })),
     };
 }
 
@@ -466,6 +469,88 @@ it.each([false, true])(
     },
 );
 
+it("a branch copies whole chapters with their original marks after event edits and retractions", async () => {
+    const s = await inheritanceServer(true);
+    const [early, late] = s.events;
+    const edited = { ...event("edited"), sources: early.sources };
+    const crossing = { ...event("crossing"), sources: early.sources };
+    writeMemory(s.store, characterId, "other", { events: [edited, crossing] });
+    const whole = chapter(early, edited);
+    const cut = chapter(crossing, late);
+    for (const row of [cut, whole]) s.store.memory.chapters.add(characterId, "other", s.epoch, row);
+    writeMemory(s.store, characterId, "other", {
+        events: [
+            { ...early, status: "retracted" },
+            { ...edited, summary: "A correction written after the chapter." },
+        ],
+    });
+
+    const inherited = await answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }));
+    expect(inherited.inherited).toBe(true);
+    const listed = await answer(await s.request(`${base}/chapters`));
+    expect(listed).toEqual({ revision: inherited.revision, chapters: [{ ...whole, id: expect.any(String) }] });
+    expect([whole.id, cut.id]).not.toContain(listed.chapters[0].id);
+});
+
+it("skips populated chats and copies only unclaimed chapters after an empty checkpoint is loaded", async () => {
+    const s = await inheritanceServer(false);
+    const [early, late] = s.events;
+    const original = chapter(early);
+    const later = chapter(late);
+    const chapters = s.store.memory.chapters;
+    const checkpoint = s.store.checkpoints.save(characterId, chatId, "Empty memory", "manual")!;
+    const inherit = async () => answer(await s.json(`${base}/inherit`, { sourceChatId: "other" }));
+    const list = async () => answer(await s.request(`${base}/chapters`));
+
+    chapters.add(characterId, "other", s.epoch, original);
+    const first = await inherit();
+    const listed = await list();
+    expect(listed).toEqual({ revision: first.revision, chapters: [{ ...original, id: expect.any(String) }] });
+    const [kept] = listed.chapters;
+
+    chapters.add(characterId, "other", s.epoch, later);
+    expect(await inherit()).toEqual({ revision: first.revision, inherited: false });
+    expect(await list()).toEqual(listed);
+
+    await answer(
+        await s.json("/api/chat-checkpoints/load", {
+            characterId,
+            chatId,
+            id: checkpoint.id,
+            chatBaseRevision: s.store.chatRevision(characterId, chatId),
+        }),
+    );
+    const extra = { ...event("extra"), sources: early.sources };
+    writeMemory(s.store, characterId, "other", { events: [extra] });
+    chapters.replace(characterId, "other", s.epoch, original.id, chapter(extra, early));
+    const restored = await inherit();
+    expect(restored.inherited).toBe(true);
+    const afterLoad = await list();
+    expect(afterLoad.chapters).toHaveLength(2);
+    expect(afterLoad).toEqual({
+        revision: restored.revision,
+        chapters: expect.arrayContaining([kept, { ...later, id: expect.any(String) }]),
+    });
+});
+
+it("returns the committed inheritance answer when inserting a copied chapter fails", async () => {
+    const s = await inheritanceServer(true);
+    const [early] = s.events;
+    s.store.memory.chapters.add(characterId, "other", s.epoch, chapter(early));
+    const db = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"));
+    cleanups.push(() => db.close());
+    db.exec(
+        "CREATE TRIGGER refuse_copy BEFORE INSERT ON memory_chapters BEGIN SELECT RAISE(ABORT, 'copy refused'); END;",
+    );
+
+    const response = await s.json(`${base}/inherit`, { sourceChatId: "other" });
+    expect(response.status).toBe(200);
+    const copied = s.store.memory.readRecord(characterId, chatId, "events", early.id)!;
+    expect(copied.data).toEqual({ ...early, createdRevision: 1 });
+    expect(await response.json()).toEqual({ revision: copied.revision, inherited: true });
+    expect(await answer(await s.request(`${base}/chapters`))).toEqual({ revision: copied.revision, chapters: [] });
+});
+
 it.each(memoryKinds)("writes nothing when the destination already holds only a %s row", async (kind) => {
     const s = await inheritanceServer(true);
     const records = {
@@ -789,7 +874,7 @@ it("counts eligible chapter units without writing or cleaning up orphans", async
 
 it("lists chapters with the memory revision and refuses an oversized list before reading any chapter body", async () => {
     const events = [event("first"), event("second")];
-    const [first, second] = events.map(chapter);
+    const [first, second] = events.map((e) => chapter(e));
     const s = await server({ routeLimits: { memoryPackageRoundBytes: bytes(first) + bytes(second) - 1 } });
     const revision = s.write({ events });
     const chapters = s.store.memory.chapters;
@@ -814,7 +899,7 @@ it("removes only the requested chapters with a current epoch and an open write f
     const s = await server();
     const events = [event("first"), event("kept"), event("last")];
     const revision = s.write({ events });
-    const chapters = events.map(chapter);
+    const chapters = events.map((e) => chapter(e));
     for (const row of chapters) s.store.memory.chapters.add(characterId, chatId, s.epoch, row);
     const remove = { ids: [chapters[0].id, chapters[2].id] };
     const route = `${base}/chapters/remove`;
