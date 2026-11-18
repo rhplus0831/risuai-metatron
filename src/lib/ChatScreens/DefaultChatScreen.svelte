@@ -2070,7 +2070,9 @@
                         <button
                             type="button"
                             class="p-3 rounded-md border border-darkborderc text-textcolor hover:bg-darkbutton transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                            disabled={!composer.draft.trim() || (displayedChat !== null && isScreenBusy(displayedChat))}
+                            disabled={!composer.draft.trim() ||
+                                (displayedChat !== null &&
+                                    (isLocalSend(displayedChat, $localSends) || isScreenBusy(displayedChat)))}
                             onclick={sendDraftMessage}>{language.inputHooks.sendDraft}</button
                         >
                     </div>

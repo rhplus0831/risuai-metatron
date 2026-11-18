@@ -2229,6 +2229,35 @@ it.each(["Continue", "slash command", "empty main", "playground", "missing hook"
     },
 );
 
+it("enables the draft Send button after a slash command releases its reservation", async () => {
+    const ui = await mountHookComposer();
+    const { isLocalSend } = await import("src/ts/process/localSends");
+    const ref = { chaId: "c", chatId: "a" };
+    let finish!: () => void;
+    io.speak.mockImplementationOnce(
+        () =>
+            new Promise<void>((resolve) => {
+                finish = resolve;
+            }),
+    );
+    ui.type("/speak hello");
+    ui.sendKey();
+    await until(() => io.speak.mock.calls.length === 1);
+    const reviewed = "reviewed while waiting";
+    ui.enter(ui.draft()!, reviewed);
+    expect(ui.sendDraft().disabled).toBe(true);
+
+    finish();
+    await until(() => !isLocalSend(ref) && ui.input().value === "");
+    expect(ui.sendDraft().disabled).toBe(false);
+
+    io.createJob.mockImplementationOnce(() => new Promise(() => {}));
+    ui.click(ui.sendDraft());
+    await until(() => io.createJob.mock.calls.length > 0);
+    expect(io.createJob).toHaveBeenCalledTimes(1);
+    expect(io.createJob.mock.calls[0][0].context.input).toBe(reviewed);
+});
+
 async function attachHookAudio(ui: Awaited<ReturnType<typeof mountHookComposer>>) {
     const written = new Promise<void>((resolve) => {
         io.inlayWritten = resolve;
