@@ -1,7 +1,10 @@
 # Timeline Reading View Plan
 
 Status: drafted 2026-11-18 at `de5357ca5` from the owner's request; the owner accepted D1 to D7 the same day
-(Decisions). Not audited yet. Landed: none.
+(Decisions); audited the same day by a read-only GPT-6.2-Astra session in `full` mode, at the owner's request in
+place of plan-runner's own audit ([report](../reports/audits/plan-runner/timeline-reading-2026-11-18.md): one P1,
+seven P2, and thirteen P3, all fixed in this text). The report and this line share the plan's last commit, so a
+plan-runner run skips its Plan audit unless the plan changes again. Landed: none.
 
 Sources: the owner's request and answers (2026-11-18: the Timeline lists the oldest event first, and as turns pile up
 it reads as a log viewer for the data the model uses, not as a page a person refers to; the most frequent use is
@@ -46,12 +49,14 @@ original messages (its own session, proposed on 2026-11-18).
   event opens at a time (`openId`); opening reads its record (`readOpen`) and shows the edit control, the summary,
   the story time, participants, key lines, `MemoryEventFacts`, the source links, and, for a stale event, the repairs.
 - `StructuredMemoryStoryEvent` is `Pick<MemoryEvent, "id" | "summary" | "storyTime" | "participants">`. The `/story`
-  round copies exactly those four fields as stored, retracted events included, and the route test asserts exactly
-  four keys ("serves story in stored-byte rounds including retracted events with exactly four stored fields"). The
-  client's row reader keeps a `storyTime.date` only when `isStoryDate` accepts it and drops fields it does not name.
-- `MemoryEvent.grade` is optional, 0 to `STRUCTURED_MEMORY_LIMITS.gradeMax` (9), the sum of the three axes; an event
-  without complete axes has none. `STRUCTURED_MEMORY_LIMITS.importantEventGrade` is 6, which Pages uses for its
-  "important" badge and the HypaV3 projection for its important mark.
+  round projects those four named fields as stored, retracted events included; the route test asserts four keys on
+  fully populated fixtures ("serves story in stored-byte rounds including retracted events with exactly four stored
+  fields"), and the client reader tolerates rows that lack some. The reader keeps a `storyTime.date` only when
+  `isStoryDate` accepts it and builds its rows from the fields it names.
+- `MemoryEvent.grade` is optional, 0 to `STRUCTURED_MEMORY_LIMITS.gradeMax` (9). The writer stores the sum of the
+  three axes only when they are complete; a restored chat file can carry any finite number, so slice 1 validates
+  the value before the Timeline sees it. `STRUCTURED_MEMORY_LIMITS.importantEventGrade` is 6, which Pages uses for its "important" badge and
+  the HypaV3 projection for its important mark.
 - `formatStoryDate` renders a `MemoryStoryDate` as `YYYY-MM-DD` or, without a year, `MM-DD`. No helper compares two
   dates for equality or order; `storyDateDistance` is anchor-relative.
 - `PagesTab.svelte` has the Read/Manage split this plan copies (`view`, default `"read"`, `text.views.read` and
@@ -80,7 +85,8 @@ for one marked _hard_.
 - **Checks.** The slice's tests (under "Test"), then `pnpm check`, the focused command
   `pnpm --silent test:agent structuredMemory StructuredMemory memory/structured MemorySettings normalizeCollections memoryTaskHost`,
   then `pnpm --silent test:agent` once whole after the last source edit, `pnpm format:check`, and `pnpm check:docs`
-  for a guide edit. Run `pnpm check` again after the last test edit. V4 (`rg` each changed export, wire field, and
+  for a guide edit, and `pnpm check:tests` after adding or moving a test. Run `pnpm check` again after the last test
+  edit. V4 (`rg` each changed export, wire field, and
   language key) and V6 (each new test shown failing once with its guarded line broken).
 - **Strings.** New user-visible text goes in `src/lang/en.ts` under `structuredMemory`, with its Korean in
   `src/lang/ko.ts` in the same slice, in the terms the panel already uses (사건, 문서, 기억, 원문과 어긋남).
@@ -101,11 +107,13 @@ for one marked _hard_.
 
 ## Order
 
-Serial: 1 → 2 → 3 → 4. Slices 2, 3, and 4 all edit `TimelineTab.svelte`, `StructuredMemoryPanel.test.ts`,
-`src/lang/en.ts`, and `src/lang/ko.ts`; slices 1, 2, and 4 edit `src/ts/process/structuredMemory.svelte.ts`. Slice 1
-is first because slice 2 marks important events from its field. Slice 3 follows slice 2 so that the preset field is
-exposed only once the reading view reads it. If the run stops early, slices 1 and 2 stand alone with a fixed group
-size.
+Serial: 1 → 2 → 3 → 4. Files more than one slice edits: `TimelineTab.svelte`, `StructuredMemoryPanel.test.ts`,
+`src/lang/en.ts`, and `src/lang/ko.ts` (slices 2 and 3 always, slice 4 the tab and the test always and the language
+files only for a missing label); `shared/structuredMemory.ts` (slices 1, 2, 3);
+`src/ts/process/structuredMemory.svelte.ts` and `src/ts/process/structuredMemory.test.ts` (slices 1, 2, 4);
+`read.md` (slices 2, 3, 4). Slice 1 is first because slice 2 marks important events from its field. Slice 3 follows
+slice 2 so that the preset field is exposed only once the reading view reads it. If the run stops early, slices 1
+and 2 stand alone with a fixed group size.
 
 ## Slice 1. The story read carries each event's grade (_small_, `structured-memory/records.md`)
 
@@ -113,21 +121,27 @@ Files: `shared/structuredMemory.ts`, `server/src/routes/structuredMemory.ts`,
 `src/ts/process/structuredMemory.svelte.ts`, `server/src/tests/structuredMemoryRoutes.test.ts`,
 `src/ts/process/structuredMemory.test.ts`, `records.md`.
 
-- `StructuredMemoryStoryEvent` gains `grade` from `MemoryEvent` (optional). The `/story` round copies the stored
-  `grade` beside the four fields it copies today, as stored, and omits the key when the event has none.
+- `StructuredMemoryStoryEvent` gains `grade` from `MemoryEvent` (optional). The `/story` round projects the stored
+  `grade` beside the four fields it projects today, as stored; an event without one has no key in the answer.
 - The client's story row reader keeps `grade` only when it is an integer from 0 to
-  `STRUCTURED_MEMORY_LIMITS.gradeMax`, and drops any other value, as it drops a malformed date.
+  `STRUCTURED_MEMORY_LIMITS.gradeMax`, and drops any other value, as it drops a malformed date. It keeps reading
+  partial rows (a restored event can lack fields) as it does today.
 - An older tab ignores the field and an older server omits it; neither is an error, and a row without it is an
   ungraded event.
-- `records.md`: the read routes' `/story` line names the fifth field.
-- Test: the route test's exact-field assertion becomes five fields for a graded event and four for an ungraded one;
-  the client reader keeps a valid grade, drops a string, a fraction, and a value above the maximum, and still reads
-  a round without the field.
+- `records.md`: the read routes' `/story` line names the fifth field and says "Timeline's story read" instead of
+  naming a view.
+- Test: the route test's exact-field assertion becomes five fields for a graded fixture and four for an ungraded
+  one; the client reader keeps a valid grade, drops a string, a fraction, and a value above the maximum, and still
+  reads a round without the field. The two client tests that compare parsed rows with `toStrictEqual` keep passing
+  for rows without a grade.
+- Manual checks: none of its own. The route and reader tests cover the wire field, and slice 2 checks the star.
 
 ## Slice 2. The Timeline opens as a reading view, with Manage beside it (_hard_, `structured-memory/read.md`)
 
-Files: `shared/structuredMemory.ts`, a test beside it under `shared/tests/`, `TimelineTab.svelte`,
-`src/lang/en.ts`, `src/lang/ko.ts`, `StructuredMemoryPanel.test.ts`, `read.md`.
+Files: `shared/structuredMemory.ts`, `shared/structuredMemory.test.ts`, `TimelineTab.svelte`,
+`src/ts/process/structuredMemory.svelte.ts` and `src/ts/process/structuredMemory.test.ts` (comments and a test title
+that name the story view or the Timeline row), `GreetingCitation.svelte` only if rendering the jump alone needs a
+prop, `src/lang/en.ts`, `src/lang/ko.ts`, `StructuredMemoryPanel.test.ts`, `read.md`.
 
 - **Groups, a pure rule.** `memoryEventGroups(events, size)` in `shared/structuredMemory.ts` takes events in story
   order (oldest first), each with an id and an optional `MemoryStoryDate`, and returns groups in the same order:
@@ -143,10 +157,11 @@ Files: `shared/structuredMemory.ts`, a test beside it under `shared/tests/`, `Ti
   language files.
 - **Manage** is today's Titles view with one change: rows are listed newest first, and rows no message or stored
   position places (`position: Infinity`) come last (D9). It keeps retracted events, every badge, the open-event
-  details with the edit control, `MemoryEventFacts`, the sources, the repairs, and `ROWS_AT_ONCE`.
-  `memoryTimelineRows` itself does not change.
-- **Read** reads the story as today's Story view does (once per `refresh`, the guards and the invalidation after a
-  text edit as they are) and leaves out retracted events.
+  details with the edit control, `MemoryEventFacts`, the sources with the full greeting citation and its repairs,
+  the stale repairs, and `ROWS_AT_ONCE`. `memoryTimelineRows` itself does not change.
+- **Read** reads the story as today's Story view does (once per `refresh`, with `storyRead`, `storyNumber`, and the
+  invalidation after a text edit keyed to this view as they are keyed to Story today) and leaves out retracted
+  events.
   - It lists groups newest first and the events inside a group oldest first. The newest group is open; the others
     are closed until pressed, and a pressed group stays open while the tab is mounted. Groups are shown 30 at a time
     behind "show more".
@@ -156,46 +171,66 @@ Files: `shared/structuredMemory.ts`, a test beside it under `shared/tests/`, `Ti
   - An event's row shows its title and its summary, with a star before the title when its grade is
     `importantEventGrade` or above. No badge and no `turnsAgo` on the row.
   - Pressing an event opens it (one at a time, the record read as today) and shows the story time text, the key
-    lines, the participants as links to Pages, the source links that jump to the chat, and one button, "Open in
-    Manage", which switches the view and opens the same event there. No edit control, no repair, and no
-    `MemoryEventFacts` in Read.
+    lines, the participants as links to Pages, the links that jump to the cited messages, a greeting citation as its
+    jump alone, and one button, "Open in Manage", which switches the view and opens the same event there. No edit
+    control, no repair, no greeting repair buttons, and no `MemoryEventFacts` in Read.
   - A story read that failed, or a row whose summary is missing, keeps the titles readable: with no dates every
     event falls into date-less groups cut by size, so the view still reads as ranges of turns.
 - **The check notice.** Above the groups in Read, when one or more events read `stale` after reconciliation or carry
-  a `rerecord` mark, one line says how many and offers a button that switches to Manage and scrolls to the first of
-  them. Nothing is shown when there is none.
-- **Focus.** A target from another tab (`focus`) keeps the current view when its event is listed there: Read opens
-  the event's group, opens the event, and scrolls to it. A retracted event, which Read does not list, switches the
-  view to Manage first.
-- Keep `data-memory-event`, `data-memory-event-status`, `data-memory-source`, `data-memory-participant`, and
-  `data-memory-event-summary` on the rows of both views, so the links that land on the Timeline from Pages keep
-  their selectors.
-- `read.md`: Pages, Timeline, and Threads names the two views, the shared grouping rule, and that Read is the story
-  read; the component's contract comment owns the view rules.
+  a `rerecord` mark, one line says how many (each event once) and offers a button that switches to Manage and
+  reveals the first of them. Nothing is shown when there is none. A changed greeting on an event that is neither
+  stale nor marked is not counted; its label and repairs stay in Manage.
+- **Revealing an event.** One rule serves a `focus` from another tab, "Open in Manage", and the notice's button.
+  - It finds the event by id among all reconciled rows, not among the rows a view lists.
+  - The view: "Open in Manage" and the notice's button select Manage first. A `focus` keeps the current view when
+    that view lists the event and switches to Manage for a retracted event.
+  - It makes the row visible: in Manage by raising the row limit past it, in Read by opening its group and raising
+    the group limit past it.
+  - A `focus` and "Open in Manage" then open the event as a press does (`openRow`: the record read and the expanded
+    details); the notice's button only reveals the row.
+  - The target stays pending, and is not marked handled, until its row is rendered and scrolled to: across the view
+    switch, and while a story read is out, since the dates that arrive can move the event into another group.
+  - When the coverage read has settled and has no row with that id, the tab reads coverage once more, since the
+    target can be newer than the rows it holds. After an accepted, successful reread it reveals the event if the id
+    is there, and otherwise shows one line saying the event is no longer recorded and drops the target. A failed or
+    refused reread shows the coverage error and proves nothing about the event; a superseded or wrong-chat answer
+    is ignored.
+- **Selectors.** Each rendered row keeps `data-memory-event` and `data-memory-event-status`, with the event's toggle
+  button as its direct child carrying `aria-expanded`; `data-memory-source`, `data-memory-participant`, and
+  `data-memory-event-summary` stay on those elements wherever they render. Each fixture of the panel test that
+  lands on the Timeline from Pages serves `/story` rows from its own events, the page-mentions test's local events
+  included, so those tests run through the ordinary Read path with their assertions as they are.
+- `read.md`: Pages, Timeline, and Threads and the Files entry for the tab name the two views, the shared grouping
+  rule, and that Read is the story read; the component's contract comment owns the view rules.
 - Test:
-  - `memoryEventGroups`: a date change opens a group; an undated event joins the group before it; leading undated
-    events form a date-less group; a flashback is its own group; a long group is cut into near-equal parts; a group
-    at exactly `size` is not cut.
+  - `memoryEventGroups`, in `shared/structuredMemory.test.ts`: a date change opens a group; an undated event joins
+    the group before it; leading undated events form a date-less group; a flashback is its own group; a long group
+    is cut into near-equal parts; a group at exactly `size` is not cut.
   - Panel: the tab opens in Read with the story read made once; groups are newest first and events oldest first
     inside; only the newest group is open; a graded event at or above the threshold shows the star; a retracted
     event is absent from Read and present in Manage; Manage lists newest first with unplaced rows last; the notice
-    counts stale and marked events and its button lands on the first in Manage; a focus on a retracted event
-    switches to Manage; a failed story read still lists titles in groups.
+    counts stale and marked events and its button lands on the first in Manage; a changed greeting shows its jump
+    without repairs in Read and with them in Manage; a failed story read still lists titles in groups; an old story
+    answer arriving after Read → an edit in Manage → Read is rejected.
+  - Revealing: a focus opens the event (its toggle reads `aria-expanded="true"`) in the current view and switches
+    to Manage for a retracted one; a focus on an event beyond the first 30 groups, and "Open in Manage" on one
+    beyond the first 200 rows, raise the limit and scroll; a focus that arrives before the story read settles lands
+    on the event in its final group; a focus on an id a successful coverage reread still lacks shows the one-line
+    notice, and a failed reread shows the coverage error instead.
   - The existing Timeline tests that edit, repair, or read badges switch to Manage first; the titles/story test is
     rewritten for the two views.
 - Manual checks: the reading view on a phone-width screen (group headings wrap, the star does not shift the title);
   a real chat with dated events groups by day and reads top to bottom as expected; "Open in Manage" lands on the
   same event.
 
-## Slice 3. The group size is a memory preset option (_small_, `settings-i18n.md`)
+## Slice 3. The group size is a memory preset option (_small_, `structured-memory/writer.md`, `read.md`)
 
 Files: `shared/structuredMemory.ts`, `server/src/jobs/jobScope.ts`,
 `src/lib/Setting/Pages/MemorySettings.svelte`, `TimelineTab.svelte`, `src/lang/en.ts`, `src/lang/ko.ts`,
 `server/src/tests/normalizeCollections.test.ts`, `server/src/tests/memoryTaskHost.test.ts`,
 `src/lib/Setting/Pages/MemorySettings.structuredMemory.test.ts`,
 `src/lib/Setting/Pages/MemorySettings.hypaV3Export.test.ts`, `StructuredMemoryPanel.test.ts`,
-`src/ts/storage/tests/fixtures/boot/boot-snapshot.json` if the boot test compares normalized presets, and
-`settings-i18n.md` or `memory.md` where the Structured Memory preset fields are listed.
+`src/ts/storage/tests/fixtures/boot/boot-snapshot.json`, `writer.md`, `read.md`.
 
 - `StructuredMemorySettings.eventsPerGroup`: an integer from 3 to 30, default
   `STRUCTURED_MEMORY_LIMITS.eventsPerGroup` (10), normalized with `integerIn` like the other counts, so a missing or
@@ -203,10 +238,16 @@ Files: `shared/structuredMemory.ts`, `server/src/jobs/jobScope.ts`,
 - `structuredMemoryFingerprint` leaves the field out, beside the three highlight fields: it changes what a person
   sees, not what the writer records, so changing it must not end a queued task as `staleInput` (D10).
 - The Memory settings page gains one count control for it (the `structuredCount` snippet), with a label and one line
-  of help saying that a day with more events is shown in parts and that it also sets how many events a chapter
-  covers once chapters exist. Add it to the list `MemorySettings.structuredMemory.test.ts` allows.
-- `TimelineTab.svelte` reads the chat's preset as `CoverageTab.svelte` does and passes the value to
-  `memoryEventGroups`. A change of the preset regroups the view with no read.
+  of help: a day with more events is shown in parts, and the same number is the target size of a chapter once
+  chapters exist. Add it to the list `MemorySettings.structuredMemory.test.ts` allows.
+- `TimelineTab.svelte` reads the chat's preset as `CoverageTab.svelte` does: it resolves `preset` with
+  `chatHypaV3Preset(...)` and passes `normalizeStructuredMemorySettings(preset?.settings.structured).eventsPerGroup`
+  to `memoryEventGroups`. A change of the preset regroups the view with no read.
+- The fresh-boot fixture's preset entry gains `eventsPerGroup: 10`, and the normalizer suite's full `structured`
+  default and custom expectations gain the field: the boot test compares preset entries whole and the suite compares
+  the `structured` object whole.
+- `writer.md`: the preset fields and the fingerprint's exceptions name the new display-only field. `read.md`: the
+  panel components that resolve a chat's preset include the Timeline.
 - Test: the normalizer keeps a valid value and falls back for a missing one, a string, 2, and 31, through preset
   creation and collection normalization; the fingerprint is equal across a change of the field; the settings control
   writes the field only in the selected preset; an exported and re-imported preset keeps a non-default value; the
@@ -219,25 +260,31 @@ Files: `src/ts/process/structuredMemory.svelte.ts`, `PagesTab.svelte`, `Timeline
 `src/lang/ko.ts` only if a label is missing, `StructuredMemoryPanel.test.ts`,
 `src/ts/process/structuredMemory.test.ts`, `read.md`.
 
-- Move the text search's request and its guards out of `PagesTab.svelte` into one helper in
-  `structuredMemory.svelte.ts` that both tabs call: the submitted query, the hits, the failure, the in-progress
-  flag, the request number, and the rejection of an answer when the chat, `refresh`, or the query moved, with the
-  rerun of an active query on `refresh`. `PagesTab.svelte` keeps its title filter, its form, and its rendering, and
-  its behavior and tests do not change.
-- The Timeline's Read view gains the same form above the check notice: an input bounded by
+- Move the text search's request lifecycle out of `PagesTab.svelte` into one helper in `structuredMemory.svelte.ts`
+  that each mounted tab instantiates with getters for its chat, its `refresh`, and its trimmed draft: the submitted
+  query, the hits, the failure, the in-progress flag, the request number, the rejection of an answer when the chat,
+  `refresh`, or the query moved, and the rerun of an active query on `refresh`. `PagesTab.svelte` keeps everything
+  else as it is: its raw `query` and the title filter it drives, the bound it applies to the trimmed submission
+  (not to typing), its IME state, its display gates, its form, and its rendering. Its behavior and tests do not
+  change.
+- The Timeline's Read view gains its own form at the top of the view, outside the branch that shows the empty
+  state, so it is there in a chat that has pages and no events: a native input with `maxlength` of
   `MEMORY_FIND_QUERY_CHARS`, submitted with Enter or its button, never while typing and never during IME
   composition, and a clear control that restores the groups.
 - While a search is showing, its hits replace the groups: event hits with title and excerpt, and page hits with
-  title, heading, and excerpt. Pressing an event hit clears the search and opens that event in Read (its group
-  opened, scrolled into view); pressing a page hit calls `open({ tab: "pages", id })`. Thread hits are not listed,
-  as in Pages. The "more than `MEMORY_FIND_HITS_MAX`" notice, the empty result, and the failure are shown as Pages
-  shows them, reusing its strings.
-- `/find` skips retracted events, so no hit needs the Manage view.
+  title, heading, and excerpt. Pressing a page hit calls `open({ tab: "pages", id })`. Thread hits are not listed,
+  as in Pages. The empty result, the failure, and the notice Pages shows when the collected result sets `more`
+  ("Showing the first 200 matches") reuse Pages' strings.
+- Pressing an event hit clears the search and reveals the event through slice 2's rule, as a `focus` does. Search
+  and coverage are read independently, so a hit can be an event the coverage read shows retracted, which opens in
+  Manage, or one coverage does not have, which takes the rule's last step (one more coverage read, then the
+  one-line notice only when that read succeeded without the id).
 - `read.md`: Pages, Timeline, and Threads says the text search is one helper with a form in both tabs.
 - Test: the helper rejects an answer after the query, the chat, or `refresh` moved and reruns on `refresh`
   (`structuredMemory.test.ts`); in the panel, a Timeline search lists event and page hits, an event hit opens the
-  event in its group with the search cleared, a page hit opens Pages, clearing restores the groups, and the Pages
-  search test still passes unchanged.
+  event in its group with the search cleared, a hit whose event the coverage read shows retracted opens in Manage,
+  a hit whose id coverage lacks shows the notice, a page hit opens Pages, clearing restores the groups, the form is present with no events, and the Pages search
+  test still passes unchanged.
 - Manual checks: Korean IME composition does not submit early; a search on a phone-width screen keeps the input and
   the button on one line.
 
@@ -249,9 +296,10 @@ The owner accepted D1 to D7 on 2026-11-18. D8 to D10 are this plan's own, found 
   no "titles only" mode.
 - D2. Read lists groups newest first and the events inside a group in story order.
 - D3. A group is a run of events on one story date; a day with more events than the group size is shown in parts.
-  The owner's chats track the date in every message, so nearly every event is dated.
+  The owner reports that their chats track the story's date in every message and expects most events to be dated;
+  the rule also handles events with no date.
 - D4. The group size is one option of the memory preset, default 10, so it follows the preset a chat selects. The
-  same number sets how many events a chapter covers in the chapter plan.
+  same number is the target size of a chapter in the chapter plan.
 - D5. An important event (grade 6 or above, the threshold Pages already uses) is starred in Read.
 - D6. Work order: this view and its ordering, then search in the Timeline, then chapter synopses (their own plan).
   A search of the original messages is outside this work.
