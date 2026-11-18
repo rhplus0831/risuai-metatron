@@ -1,6 +1,14 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { mentions, reachesBrowser, selectSpecs, specSummary, staticImports } from "./agentE2e.mjs";
+import {
+    mentions,
+    pageImportUses,
+    reachesBrowser,
+    selectSpecs,
+    specSummary,
+    staticImports,
+    touchedNames,
+} from "./agentE2e.mjs";
 
 function spec(file: string, text: string, imports: string[] = ["util/playwright/stack.mjs"]) {
     return { file, text, imports: new Set(imports) };
@@ -80,6 +88,7 @@ describe("selectSpecs", () => {
             selected: [],
             unnamed: ["src/lib/ChatScreens/Chat.svelte"],
             ignored: ["docs/structure/persistence.md", "src/ts/storage/x.test.ts"],
+            narrowed: [],
         });
     });
 
@@ -117,7 +126,141 @@ describe("selectSpecs", () => {
             selected: [{ file: "e2e/a.spec.ts", because: ["e2e/multiClient.ts"] }],
             unnamed: [],
             ignored: [],
+            narrowed: [],
         });
+    });
+
+    describe("a script the spec only imports in the page", () => {
+        const store = "src/ts/storage/chatStore.svelte.ts";
+        const before = "export const selectedChatId = 1;\nexport const draft = 1;\n";
+        const handles = [
+            spec("e2e/a.spec.ts", `const { selectedChatId } = await import("/${store}");`),
+            spec("e2e/b.spec.ts", `const { draft } = await import("/${store}");`),
+        ];
+        const select = (after: string | null, specs = handles, file = store) =>
+            selectSpecs({ specs, changed: [file], tracked, versions: () => ({ before, after }) });
+
+        it("selects only the specs that use a name the change touches, and reports the rest", () => {
+            expect(select("export const selectedChatId = 1;\nexport const draft = 2;\n")).toEqual({
+                selected: [{ file: "e2e/b.spec.ts", because: [store] }],
+                unnamed: [],
+                ignored: [],
+                narrowed: [{ file: store, touched: ["draft"], skipped: ["e2e/a.spec.ts"] }],
+            });
+        });
+
+        it("selects no spec for a change that touches no name any of them uses", () => {
+            expect(select(`// A comment.\n${before}export const added = 3;\n`)).toEqual({
+                selected: [],
+                unnamed: [],
+                ignored: [],
+                narrowed: [{ file: store, touched: ["added"], skipped: ["e2e/a.spec.ts", "e2e/b.spec.ts"] }],
+            });
+        });
+
+        it("selects every naming spec when the reach of the change cannot be read", () => {
+            const both = ["e2e/a.spec.ts", "e2e/b.spec.ts"];
+            const files = (result: ReturnType<typeof select>) => result.selected.map(({ file }) => file);
+            expect(files(select(null))).toEqual(both);
+            expect(files(select(`${before}init();\n`))).toEqual(both);
+            const component = "src/lib/Others/TerminalNotice.svelte";
+            const mounted = [spec("e2e/c.spec.ts", `const { draft } = await import("/${component}");`)];
+            expect(files(select(`${before}export const added = 3;\n`, mounted, component))).toEqual(["e2e/c.spec.ts"]);
+        });
+
+        it("selects a spec that also names the script outside a page import", () => {
+            const noted = spec("e2e/a.spec.ts", `// Covers ${store}.\nconst { draft } = await import("/${store}");`);
+            const result = select(`${before}export const added = 3;\n`, [noted]);
+            expect(result.selected).toEqual([{ file: "e2e/a.spec.ts", because: [store] }]);
+            expect(result.narrowed).toEqual([]);
+        });
+    });
+});
+
+describe("pageImportUses", () => {
+    const file = "src/ts/stores.svelte.ts";
+    const uses = (text: string) => {
+        const names = pageImportUses(text, file);
+        return names && [...names].sort();
+    };
+
+    it("reads the destructured names, a namespace's members, and a member of the awaited import", () => {
+        expect(
+            uses(`
+                test("a", async ({ page }) => {
+                    await page.evaluate(async () => {
+                        const {
+                            settingsOpen,
+                            SettingsMenuIndex: index,
+                        } = await import("/${file}");
+                        const { settings } = await import("/src/ts/storage/settingsViews.svelte.ts");
+                        settingsOpen.set(settings.open);
+                        index.set(1);
+                    });
+                    await page.evaluate(async () => {
+                        const stores = await import("/${file}");
+                        stores.sideBarStore.set(false);
+                        return other.stores;
+                    });
+                    await page.evaluate(async () => (await import("/${file}")).alertStore.set(null));
+                });
+            `),
+        ).toEqual(["SettingsMenuIndex", "alertStore", "settingsOpen", "sideBarStore"]);
+    });
+
+    it("is null when the spec depends on the whole file", () => {
+        expect(uses(`// Reads ${file}.\nconst { a } = await import("/${file}");`)).toBeNull();
+        expect(uses(`await import("/${file}");`)).toBeNull();
+        expect(uses(`const stores = await import("/${file}");\nseed(stores);`)).toBeNull();
+        expect(uses(`const { a, ...rest } = await import("/${file}");`)).toBeNull();
+        expect(uses(`import("/${file}").then((stores) => stores.a);`)).toBeNull();
+        expect(uses('const { a } = await import("/src/ts/other.ts");')).toBeNull();
+    });
+});
+
+describe("touchedNames", () => {
+    const touched = (before: string, after: string) => {
+        const names = touchedNames(before, after);
+        return names && [...names].sort();
+    };
+    const base = [
+        'import { writable } from "svelte/store";',
+        'export { PROMPT_MENU, MODEL_MENU } from "./settingsMenu";',
+        "const limit = 3;",
+        "function clamp(value: number) {\n    return Math.min(value, limit);\n}",
+        "/** The open page. */\nexport const page = writable(clamp(0));",
+        "export const sideBar = writable(false);",
+    ];
+    const edit = (from: string, to: string) => base.join("\n").replace(from, to);
+
+    it("touches a changed declaration and the declarations that refer to it", () => {
+        expect(touched(base.join("\n"), edit("writable(false)", "writable(true)"))).toEqual(["sideBar"]);
+        expect(touched(base.join("\n"), edit("limit = 3", "limit = 4"))).toEqual(["clamp", "limit", "page"]);
+        expect(touched(base.join("\n"), `${base.join("\n")}\nexport const added = page;`)).toEqual(["added"]);
+        expect(touched(base.join("\n"), base.slice(0, -1).join("\n"))).toEqual(["sideBar"]);
+    });
+
+    it("touches one binding of an import or export list, not the list", () => {
+        expect(touched(base.join("\n"), edit("MODEL_MENU }", "MODEL_MENU, HOOKS_MENU }"))).toEqual(["HOOKS_MENU"]);
+        expect(touched(base.join("\n"), edit("{ writable }", "{ writable, readable }"))).toEqual(["readable"]);
+        expect(touched(base.join("\n"), edit('"svelte/store"', '"./store"'))).toEqual(["page", "sideBar", "writable"]);
+    });
+
+    it("touches nothing for a change to comments or types", () => {
+        expect(touched(base.join("\n"), edit("The open page.", "The page on screen."))).toEqual([]);
+        expect(
+            touched(
+                `${base.join("\n")}\nexport type Page = number;`,
+                `${base.join("\n")}\nexport type Page = string;\nexport interface Menu {}\nimport type { A } from "./a";`,
+            ),
+        ).toEqual([]);
+    });
+
+    it("is null when the change runs for every importer or cannot be parsed", () => {
+        expect(touched(base.join("\n"), `${base.join("\n")}\npage.set(1);`)).toBeNull();
+        expect(touched(base.join("\n"), `import "./polyfill";\n${base.join("\n")}`)).toBeNull();
+        expect(touched(base.join("\n"), `${base.join("\n")}\nexport * from "./more";`)).toBeNull();
+        expect(touched(base.join("\n"), edit("limit = 3;", "limit = ;"))).toBeNull();
     });
 });
 

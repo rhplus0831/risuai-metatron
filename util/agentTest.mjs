@@ -30,8 +30,9 @@
 // the same cache. Named specs (`e2e/openChat.spec.ts` or `openChat.spec.ts`) run as named and `--all`
 // runs every spec; otherwise the specs are the ones the change reaches (`util/agentE2e.mjs`): the
 // files changed since HEAD (uncommitted and untracked), or since `--e2e-since=<rev>` for committed
-// work too. When the change reaches no spec, nothing runs and the specs are listed so the agent can
-// name the ones that cover the behavior it changed. One e2e run at a time per machine: the stack's
+// work too. A spec that only imports a changed script in the page is left out when the change touches
+// no name it uses; those are reported. When the change reaches no spec, nothing runs and the specs are
+// listed so the agent can name the ones that cover the behavior it changed. One e2e run at a time per machine: the stack's
 // ports are fixed, so a run waits for E2E_LOCK_PORT and then for the stack's ports to be free. There
 // is no rerun of failed specs alone: the specs share one stack's store in file order.
 // See `docs/structure/test-harness.md`.
@@ -42,7 +43,7 @@ import { createConnection, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { changedFiles, loadSpecs, repositoryFiles, selectSpecs, specSummary } from "./agentE2e.mjs";
+import { changedFiles, fileVersions, loadSpecs, repositoryFiles, selectSpecs, specSummary } from "./agentE2e.mjs";
 import { MAX_RERUN_FILES, RESULTS_FILE_ENV, mergeRerun, planRerun, withoutFilters } from "./agentTestResults.mjs";
 import { E2E_SERVER_PORT, E2E_VITE_PORT } from "./playwright/globalSetup.mjs";
 import { workingTreeId } from "./workingTree.mjs";
@@ -151,7 +152,8 @@ function isSpecArg(arg) {
 
 // The spec files of an `--e2e` run, as Playwright's file filters (none: every spec). Prints what was
 // selected and why; exits with 2 when nothing can be selected.
-// Automatic selection shows up to three selecting changed paths per spec, with a count of the rest.
+// Automatic selection shows up to three selecting changed paths per spec, with a count of the rest,
+// and up to four touched names per changed script that left specs out.
 function e2eSpecArgs() {
     const specs = loadSpecs(root);
     const known = new Set(specs.map((spec) => spec.file));
@@ -178,7 +180,12 @@ function e2eSpecArgs() {
     } catch (error) {
         usage(`e2e: cannot list the files changed since ${since}: ${error.message}`);
     }
-    const { selected, unnamed, ignored } = selectSpecs({ specs, changed, tracked: repositoryFiles(root) });
+    const { selected, unnamed, ignored, narrowed } = selectSpecs({
+        specs,
+        changed,
+        tracked: repositoryFiles(root),
+        versions: (file) => fileVersions(root, since, file),
+    });
     const files = (count) => `${count} ${since === "HEAD" ? "uncommitted " : ""}${count === 1 ? "file" : "files"}`;
     const sinceText = since === "HEAD" ? "" : ` changed since ${since}`;
     const listSpecs = () => {
@@ -202,6 +209,17 @@ function e2eSpecArgs() {
     if (unnamed.length > 0) {
         log(`e2e: no spec names ${unnamed.length === 1 ? "this changed file" : "these changed files"}:`);
         for (const file of unnamed) log(`  ${file}`);
+    }
+    if (narrowed.length > 0) {
+        log("e2e: left out the specs that import a changed script in the page and use no name its change touches:");
+        const NAMES = 4;
+        for (const { file, touched, skipped } of narrowed) {
+            const more = touched.length > NAMES ? `, +${touched.length - NAMES} more` : "";
+            const names = touched.length === 0 ? "no declaration" : `${touched.slice(0, NAMES).join(", ")}${more}`;
+            log(
+                `  ${file}  touches ${names}; left out ${skipped.map((spec) => spec.replace(/^e2e\//, "")).join(", ")}`,
+            );
+        }
     }
     if (selected.length === 0) {
         log(`e2e: no spec is selected; ${guidance}. The specs:`);

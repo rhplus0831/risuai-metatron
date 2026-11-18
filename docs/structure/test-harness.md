@@ -23,7 +23,8 @@ codes; the entries name the role and the identifiers to look up.
   line, the `SLOW` warning (`MAX_SLOW_TESTS`), the caps (`MAX_FRAMES`, `MAX_LOG_LINES`, ...).
 - `util/agentTestResults.mjs` owns the result file (`RESULTS_FILE_ENV`), the final verdict (`summaryLine`) and which
   failed files to retry alone (`planRerun`, `withoutFilters`, `mergeRerun`).
-- `util/agentE2e.mjs`: which specs a change reaches (`selectSpecs`, `EVERY_SPEC_FILES`, `reachesBrowser`).
+- `util/agentE2e.mjs`: which specs a change reaches (`selectSpecs`, `EVERY_SPEC_FILES`, `reachesBrowser`,
+  `pageImportUses`, `touchedNames`).
 - `util/overloadTest.mjs`: `test:overload`, the gated tests under the reference overload (one CPU, eight burners).
 
 ### Human gate
@@ -160,6 +161,11 @@ the change reaches, not the whole set.
   `e2e/multiClient.ts` selects both two-client specs, and `e2e/fixtures.ts` selects every importing spec.
 - Selection is by name, not coverage: a component no spec names (a chat screen file, say) selects nothing even when a
   spec drives it.
+- A spec that names a script only by importing it in the page (`await import("/src/...")`) is selected only when the
+  change touches a top-level name the spec reads off that import, or a declaration that refers to one. The wrapper lists
+  the specs it left out: name one that drives the changed code through the UI. Any other mention (a comment, a static
+  import), a file that is not a script, an added or deleted file, and a change outside a named declaration still select
+  the spec.
 - One e2e run at a time per machine: the run holds the e2e lock port, then waits for the stack's ports, and Playwright's
   `globalSetup` starts the stack.
 - It still shares Vite's `node_modules/.vite` with any other dev stack of the checkout (`pnpm dev:human`, a
