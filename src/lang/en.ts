@@ -3519,6 +3519,9 @@ export const languageEnglish = {
             eventsPerGroup: "Events per Timeline group",
             eventsPerGroupHelp:
                 "A story day with more events is shown in parts. Chapters use the same number as their target size once they exist.",
+            chapterAuto: "Make chapter synopses automatically",
+            chapterAutoHelp:
+                "After a recording, one chapter is made from older events when enough have accrued. Each chapter costs one model request.",
             sections: {
                 recording: "Recording",
                 budget: "Memory block budget",

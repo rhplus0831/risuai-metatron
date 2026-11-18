@@ -991,8 +991,10 @@ export interface StructuredMemorySettings {
     highlightKinds: StructuredMemoryHighlightKind[];
     /** The grade from which a listed `change` is highlighted, 0 to `STRUCTURED_MEMORY_LIMITS.gradeMax`. */
     highlightChangeGrade: number;
-    /** Display-only Timeline group size. A story day with more events is shown in parts. */
+    /** Timeline group size and target number of events in a new chapter. */
     eventsPerGroup: number;
+    /** Makes at most one chapter when a detached writer finishes recording its windows. Defaults to false. */
+    chapterAuto: boolean;
     /** The memory card's volatile part goes right before the latest user message, the stable part stays. */
     volatileBeforeLastUser: boolean;
 }
@@ -2218,6 +2220,7 @@ export function normalizeStructuredMemorySettings(input: unknown): StructuredMem
             STRUCTURED_MEMORY_LIMITS.eventsPerGroupMin,
             STRUCTURED_MEMORY_LIMITS.eventsPerGroupMax,
         ),
+        chapterAuto: typeof source.chapterAuto === "boolean" ? source.chapterAuto : false,
         volatileBeforeLastUser:
             typeof source.volatileBeforeLastUser === "boolean" ? source.volatileBeforeLastUser : false,
     };

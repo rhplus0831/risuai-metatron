@@ -3398,6 +3398,9 @@ export const languageKorean = {
             eventsPerGroup: "타임라인 묶음당 사건 수",
             eventsPerGroupHelp:
                 "하루의 사건이 이보다 많으면 여러 부분으로 나누어 보여 줍니다. 챕터가 생기면 같은 수를 챕터의 목표 크기로 씁니다.",
+            chapterAuto: "장 줄거리 자동으로 만들기",
+            chapterAutoHelp:
+                "오래된 사건이 충분히 쌓이면 기록이 끝날 때마다 한 장의 줄거리를 만듭니다. 한 장을 만들 때 모델 요청을 한 번 사용합니다.",
             sections: {
                 recording: "기록",
                 budget: "기억 블록 예산",

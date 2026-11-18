@@ -166,6 +166,7 @@ it("edits only consumed settings in the Structured Memory section and shares the
             ...Object.values(text.highlightKinds).map(kindBox),
             ...(conditional ? [control(conditional)] : []),
             control(text.eventsPerGroup),
+            kindBox(text.chapterAuto),
         ];
         // Exhaustive editable controls: an unconsumed setting must not acquire an editor here.
         const hypaV3Section = [...target.querySelectorAll("h3")].find(
@@ -256,26 +257,23 @@ it("edits only consumed settings in the Structured Memory section and shares the
     expect((control(hypa.memoryBudgetTokensLabel) as HTMLInputElement).value).toBe("4321");
 });
 
-it("writes omitUserMessages only in the selected preset when its checkbox is toggled", () => {
+it.each([
+    ["omitUserMessages", "omit-user-messages", "omitUserMessagesHelp"],
+    ["chapterAuto", "chapter-auto", "chapterAutoHelp"],
+] as const)("writes %s only in the selected preset when its checkbox is toggled", (key, attribute, help) => {
     settings.ui.memoryAlgorithmType = "structuredMemory";
     open();
     change(selectWith("first"), "second");
-    const wrapper = target.querySelector("[data-structured-memory-omit-user-messages]");
-    expect(wrapper?.textContent).toContain(text.omitUserMessages);
-    expect(target.querySelector("[data-structured-memory-omit-user-messages-help]")?.textContent).toContain(
-        text.omitUserMessagesHelp,
-    );
+    const wrapper = target.querySelector(`[data-structured-memory-${attribute}]`);
+    expect(wrapper?.textContent).toContain(text[key]);
+    expect(target.querySelector(`[data-structured-memory-${attribute}-help]`)?.textContent).toContain(text[help]);
     const checkbox = wrapper!.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
     expect(checkbox.checked).toBe(false);
     for (const expected of [true, false]) {
         checkbox.click();
         flushSync();
-        expect(
-            settings.hypaV3Presets.items.find(({ id }) => id === "second")!.settings.structured.omitUserMessages,
-        ).toBe(expected);
-        expect(
-            settings.hypaV3Presets.items.find(({ id }) => id === "first")!.settings.structured.omitUserMessages,
-        ).toBe(false);
+        expect(settings.hypaV3Presets.items.find(({ id }) => id === "second")!.settings.structured[key]).toBe(expected);
+        expect(settings.hypaV3Presets.items.find(({ id }) => id === "first")!.settings.structured[key]).toBe(false);
     }
 });
 

@@ -538,6 +538,7 @@
           "highlightKinds": ["create", "contradiction", "delete"],
           "highlightChangeGrade": 5,
           "eventsPerGroup": 10,
+          "chapterAuto": false,
           "volatileBeforeLastUser": false
         }
       }

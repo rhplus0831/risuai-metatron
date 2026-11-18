@@ -1038,6 +1038,15 @@
         STRUCTURED_MEMORY_LIMITS.eventsPerGroupMax,
         text.eventsPerGroupHelp,
     )}
+    <div class="mb-2 flex items-center" data-structured-memory-chapter-auto>
+        <Check
+            name={text.chapterAuto}
+            bind:check={
+                () => structured.chapterAuto, (value) => setStructured(preset, (next) => (next.chapterAuto = value))
+            }
+        />
+    </div>
+    <span class="mb-4 text-xs text-textcolor2" data-structured-memory-chapter-auto-help>{text.chapterAutoHelp}</span>
 {/if}
 
 <div class="mb-8"></div>

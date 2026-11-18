@@ -96,6 +96,16 @@ after the choice. Send notices and `writerNotice` receipts are described in [rea
 `maxWriterWindows` from a fresh scope and runs them in order; the first non-recorded result ends the task. The service
 comment defines `total`, `done`, zero-work and cap behavior.
 
+With `chapterAuto` on in the preset the task loaded, a task that recorded at least one window and has none left fixes
+its `done` end, then runs one [chapter call](#the-chapter-call) step (`makeChapters` at `limit: 1`) before publishing
+it. The step is skipped unless the task's timer has more than `chapterStepMs` (2 minutes) plus `chapterStepMarginMs`
+left. It runs on its own host from the task's dependency factory, with its own signal (the task's, or the step
+deadline), so a failure there never reaches the task's host or signal. Its guard is that signal, the gate, and the
+input's epoch and source generation. The task waits through `untilAborted` on the step host's signal, so a provider that
+ignores the abort ends the wait at the deadline; the abandoned call stays in the task's `pendingCalls` until it settles,
+and a late answer finds the guard refused. Everything the step does or throws is swallowed; a task cancelled meanwhile
+ends as a cancelled one.
+
 The synchronous `commit(baseRevision, changes)` crosses the service, repair logic and writer in this order:
 
 1. `memoryTasks` checks the task is live (throws after its end), the gate is open, and the service, epoch and source
@@ -242,6 +252,7 @@ avoiding wording relative to the reading day.
   follows `db.language`. A chat's `structuredMemoryHighlight` wins over the preset's `highlightMode`.
 - `eventsPerGroup` (3 to 30, default `STRUCTURED_MEMORY_LIMITS.eventsPerGroup`) sets the Timeline's display group size
   and the target size for new chapters. Chapter eligibility reads the chat's currently bound memory preset.
+- `chapterAuto` (default false) turns on the writer task's chapter step. A change applies from the next task.
 - `omitUserMessages` defaults to false and applies to events recorded from then on. On, the writer is handed no user
   message, as a window message or a context line, and a quote only a user message holds is `quoteNotFound`; its events
   still cite the user messages, so coverage and reconciliation read them as before, and turning it off leaves no message
@@ -288,11 +299,11 @@ avoiding wording relative to the reading day.
 - Overrides are read only through `structuredMemoryLanguageOverride` and `structuredMemoryHighlightOverride`, which
   treat a bad stored value as unset. No normalizer deletes one: the tab holds what it sent, so a server-only deletion
   would make a later conflict merge against a record the server does not have.
-- `memorySettingsFingerprint` digests `structured` without its highlight fields and `eventsPerGroup`, the language
-  overrides (not the chat's highlight either: a highlight only marks a commit), and `db.language` only while the chat's
-  algorithm is Structured Memory, so a change to them never marks another algorithm's queued task stale. The stored mode
-  itself is not digested: a mode change that resolves to the same algorithm keeps a queued task. Its preset is the
-  scope's chat preset, so changing another preset leaves that task current.
+- `memorySettingsFingerprint` digests `structured` without its highlight fields, `eventsPerGroup`, and `chapterAuto`,
+  the language overrides (not the chat's highlight either: a highlight only marks a commit), and `db.language` only
+  while the chat's algorithm is Structured Memory, so a change to them never marks another algorithm's queued task
+  stale. The stored mode itself is not digested: a mode change that resolves to the same algorithm keeps a queued task.
+  Its preset is the scope's chat preset, so changing another preset leaves that task current.
 - A message is recorded when a readable stored event cites it, in any status, retracted and stale included: that stops
   the writer recording it again automatically, so nothing brings back what the user retracted. It is not coverage:
   dropping raw history asks whether an active event covers it, and never reads this set. The greeting is recorded the
@@ -312,7 +323,7 @@ avoiding wording relative to the reading day.
 
 - A new writer setting: `StructuredMemorySettings`, `normalizeStructuredMemorySettings`, and the fresh-boot fixture
   `src/ts/storage/tests/fixtures/boot/boot-snapshot.json`. Verify its inclusion in `structuredMemoryFingerprint`.
-  History highlight settings and the Timeline and chapter group size (`eventsPerGroup`) are excluded.
+  History highlight settings, the Timeline and chapter group size (`eventsPerGroup`), and `chapterAuto` are excluded.
 
 ## Tests
 
@@ -346,6 +357,9 @@ avoiding wording relative to the reading day.
 
 - A retried window replays its snapshot only with unchanged message grouping: cadence regrouping a failed manual partial
   window rebuilds its prompt. Replay resends the original context. Decision: Structured Memory D3, archive.
+- An automatic chapter's failure is silent: the task's status never names it, and the next recording tries again. Only
+  the detached writer task makes one; a record-now press that runs in its job, a send that records inside its job, a
+  rebuild, and a task that ends early or `windowsLeft` make none. Decision: Timeline Chapter Synopses C12.
 - An interrupted run never counts toward the pause, so a model that only ever overruns the task deadline does not pause
   recording. Decision: Structured Memory D3, archive.
 - `due` is captured before the reply, so an edit alone cannot make that send hand off a writer. A hand-off already due

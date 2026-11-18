@@ -52,7 +52,7 @@ import {
     refreshChat,
     scopeChat,
 } from "../../jobs/jobScope.ts";
-import { moduleTriggers } from "../../jobs/runSetup.ts";
+import { moduleTriggers, untilAborted } from "../../jobs/runSetup.ts";
 import { RequestTargetGoneError } from "../../llm/settings.ts";
 import { hasRequestTriggers } from "../triggers.ts";
 import { HypaProcesser } from "../embeddings.ts";
@@ -69,6 +69,7 @@ import {
     warmHypaV3Vectors,
 } from "./hypav3.ts";
 import { createMemoryTaskHost, MemoryHostFailure, type MemoryTaskHostDeps } from "./memoryTaskHost.ts";
+import { makeChapters } from "./structured/chapters.ts";
 import {
     backfillFolds,
     readRecordSet,
@@ -89,7 +90,13 @@ import {
     type WriterCeiling,
     type WriterWindow,
 } from "./structured/window.ts";
-import { chatAdoptionHold, commitWindow, createStructuredWriter, writerHostDeps } from "./structured/writer.ts";
+import {
+    chatAdoptionHold,
+    commitWindow,
+    createStructuredWriter,
+    writerHostDeps,
+    writerSettings,
+} from "./structured/writer.ts";
 
 /**
  * The server's detached memory tasks, one service per server: work a finished job hands off for its
@@ -112,6 +119,10 @@ export type MemoryTaskLimits = {
     maxRetainedBytes: number;
     /** One task's lifetime from its start; past it the task fails and writes nothing more. */
     taskDeadlineMs: number;
+    /** How long a recording waits for its optional chapter. */
+    chapterStepMs: number;
+    /** Time to reserve before the task deadline when starting a chapter. */
+    chapterStepMarginMs: number;
     /** How long a terminal status stays reported (`status`, `snapshot`). */
     terminalRetentionMs: number;
     /** How long `drain` waits for unsettled work. */
@@ -133,6 +144,8 @@ export const MEMORY_TASK_LIMITS: Readonly<MemoryTaskLimits> = {
     maxPendingChats: 32,
     maxRetainedBytes: 64 * 1024 * 1024,
     taskDeadlineMs: 30 * 60_000,
+    chapterStepMs: 120_000,
+    chapterStepMarginMs: 60_000,
     terminalRetentionMs: 10 * 60_000,
     drainWaitMs: 5000,
     maxWriterWindows: 8,
@@ -243,7 +256,7 @@ type Task = {
     /** Set at the terminal: the write fence is closed from then on. */
     ended: TerminalState | null;
     workSettled: boolean;
-    /** Host calls the host stopped waiting for that have not settled (a worker regex, a Google count). */
+    /** Unsettled calls the task can stop waiting for (regex, token counts, and the optional chapter). */
     pendingCalls: number;
 };
 
@@ -341,7 +354,8 @@ const statusKind = (input: Pick<AnyMemoryTaskInput, "kind">) =>
  *   continues them, under `manual` only after another person's start. Otherwise a returned `warmingError`
  *   ends `done warmingFailed` with its redacted error; a throw during warming propagates after the
  *   recorded commit to `endFromError`. A `MemoryHostFailure` fails a live task; an ended task keeps
- *   its terminal.
+ *   its terminal. After recording at least one window with none left, an opted-in task with enough
+ *   time tries one chapter on a separate host. Its outcome never changes the recording's terminal.
  * - Rebuild work: the run holds what the task works, so a task takes its plan once and goes on from the
  *   run's cursor, `done` and `total` counting the whole run. Each window reads the chat as stored
  *   (`rebuildWindow`) and the greeting from a direct owner read. A greeting that differs from the stored
@@ -871,29 +885,27 @@ export function createMemoryTasks(deps: {
         }
     };
 
-    /** The host's dependencies with the calls it may stop waiting for counted until they settle. */
-    const trackedHostDeps = (task: Task): MemoryTaskHostDeps => {
-        const track = <T>(promise: Promise<T>): Promise<T> => {
-            task.pendingCalls++;
-            const settle = () => {
-                task.pendingCalls--;
-                releaseAlive(task);
-            };
-            promise.then(settle, settle);
-            return promise;
+    /** Keep an abandoned call counted for capacity and drain until its underlying promise settles. */
+    const trackCall = <T>(task: Task, promise: Promise<T>): Promise<T> => {
+        task.pendingCalls++;
+        const settle = () => {
+            task.pendingCalls--;
+            releaseAlive(task);
         };
-        return {
-            ...hostDeps,
-            tokens: {
-                encode: (text, scope) => track(hostDeps.tokens.encode(text, scope)),
-                count: (text, scope) => track(hostDeps.tokens.count(text, scope)),
-            },
-            scriptWorkers: {
-                regex: (...args: Parameters<MemoryTaskHostDeps["scriptWorkers"]["regex"]>) =>
-                    track(hostDeps.scriptWorkers.regex(...args)),
-            },
-        };
+        promise.then(settle, settle);
+        return promise;
     };
+
+    const trackedHostDeps = (task: Task): MemoryTaskHostDeps => ({
+        ...hostDeps,
+        tokens: {
+            encode: (text, scope) => trackCall(task, hostDeps.tokens.encode(text, scope)),
+            count: (text, scope) => trackCall(task, hostDeps.tokens.count(text, scope)),
+        },
+        scriptWorkers: {
+            regex: (...args) => trackCall(task, hostDeps.scriptWorkers.regex(...args)),
+        },
+    });
 
     /** The chat as stored now with its owner's stored greeting (a window's source validation). */
     const readCurrent = (input: MemoryTaskInput, ownerIsGroup: boolean): HypaV3CurrentSource | null => {
@@ -1153,6 +1165,40 @@ export function createMemoryTasks(deps: {
             });
         };
 
+    /** Give the chapter its own deadline and host so a host failure only aborts this step. */
+    async function makeTaskChapter(task: Task, input: StructuredMemoryTaskInput, scope: JobScope) {
+        const own = new AbortController();
+        const signal = AbortSignal.any([task.controller.signal, own.signal]);
+        const guard = () => {
+            signal.throwIfAborted();
+            gate.assertOpen();
+            if (task.ended || closed || !inputCurrent(input)) throw new Error("The recording is no longer current");
+        };
+        const deadline = setTimeout(() => own.abort(), limits.chapterStepMs);
+        try {
+            deadline.unref?.();
+            const { host } = createMemoryTaskHost({
+                scope,
+                input,
+                deps: writerHostDeps(trackedHostDeps(task)),
+                signal,
+                fence: guard,
+            });
+            const chapter = makeChapters({
+                store,
+                scope,
+                host,
+                chatRef: input.chatRef,
+                epoch: input.epoch,
+                guard,
+                limit: 1,
+            });
+            await untilAborted(trackCall(task, chapter), host.signal);
+        } finally {
+            clearTimeout(deadline);
+        }
+    }
+
     /**
      * A Structured Memory task's work on its checked scope: the windows open in the chat as stored, after
      * those of the marked events it re-records, each through the writer, in order. The first window that
@@ -1237,7 +1283,19 @@ export function createMemoryTasks(deps: {
             endRunning(task, "done", { reason: "windowsLeft" });
             return;
         }
-        endRunning(task, "done", warming !== undefined ? { reason: "warmingFailed", error: host.redact(warming) } : {});
+        const details = warming !== undefined ? { reason: "warmingFailed", error: host.redact(warming) } : {};
+        try {
+            if (
+                task.done > 0 &&
+                writerSettings(host).chapterAuto &&
+                task.deadlineAt - now() > limits.chapterStepMs + limits.chapterStepMarginMs
+            ) {
+                await makeTaskChapter(task, input, scope);
+            }
+        } catch {
+            // The recording has finished. Even a chapter host or store failure leaves its result intact.
+        }
+        endRunning(task, "done", details);
     }
 
     /** The write fence every step of a rebuild checks: what `commitOf` does, as a yes or no for the input. */

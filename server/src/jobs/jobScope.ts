@@ -465,9 +465,9 @@ export function memorySettingsFingerprint(scope: JobScope): string {
 }
 
 /**
- * What Structured Memory's writer adds to `memorySettingsFingerprint`. Highlights only mark commit
- * history, and `eventsPerGroup` only changes Timeline grouping. Both leave the writer's input unchanged,
- * so edits to these settings keep queued runs current.
+ * What Structured Memory's writer adds to `memorySettingsFingerprint`. Highlights mark commit history,
+ * `eventsPerGroup` sizes Timeline groups and chapters, and `chapterAuto` applies after recording.
+ * Edits to these settings keep queued runs current because the writer's input stays the same.
  */
 function structuredMemoryFingerprint(scope: JobScope, preset: HypaV3Preset | undefined): unknown {
     const owner = scope.db.characters.find((entry) => entry?.chaId === scope.characterId);
@@ -479,6 +479,7 @@ function structuredMemoryFingerprint(scope: JobScope, preset: HypaV3Preset | und
               highlightKinds: _kinds,
               highlightChangeGrade: _grade,
               eventsPerGroup: _eventsPerGroup,
+              chapterAuto: _chapterAuto,
               ...rest
           }) => rest)(structured)
         : null;

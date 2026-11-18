@@ -2716,10 +2716,10 @@ describe("structured memory tasks", () => {
         Promise.race([
             t.provider.request(index),
             terminal.then(({ status }) => {
-                throw new Error(`Patch did not run: ${JSON.stringify(status)}`);
+                throw new Error(`Model request ${index + 1} did not run: ${JSON.stringify(status)}`);
             }),
         ]);
-    const finishRecording = async (t: Harness, terminal: Promise<MemoryTaskEvent>) => {
+    const finishRecording = async (t: Harness, terminal: Promise<MemoryTaskEvent>, windows = 1) => {
         const ended = await Promise.race([
             terminal,
             t.provider.request(t.provider.requests.length).then(() => {
@@ -2727,7 +2727,8 @@ describe("structured memory tasks", () => {
             }),
         ]);
         await t.service.drain();
-        expect(ended.status).toMatchObject({ state: "done", done: 1, total: 1 });
+        expect(ended.status).toMatchObject({ state: "done", done: windows, total: windows });
+        return ended.status;
     };
     const recordOnly = async (t: Harness, answer: object, input = writerInput(t, "m3")) => {
         const { request, terminal } = await beginAnalysis(t, input);
@@ -2760,6 +2761,145 @@ describe("structured memory tasks", () => {
         t.store.memory.rebuild.begin("c", "k1", { epoch: t.store.epoch(), mode, plan }, rebuildSeed(mode, live));
         return { ...writerInput(t), rebuild: true as const };
     };
+
+    describe("automatic Timeline chapters", () => {
+        const limits = { taskDeadlineMs: 100, chapterStepMs: 20, chapterStepMarginMs: 10, maxWriterWindows: 1 };
+        const chapter = { title: "Arrival", synopsis: "The crew reached the harbor." };
+        const timeline = ({
+            chapterAuto = true,
+            priorEvents = 15,
+            ...options
+        }: {
+            chapterAuto?: boolean;
+            priorEvents?: number;
+        } & Pick<HarnessOptions, "ignoreAbort" | "embeddingFail"> = {}) => {
+            const t = structuredHarness({
+                ...options,
+                limits,
+                hypaSettings: { structured: { cadence: "everyTurn", chapterAuto, eventsPerGroup: 3 } },
+            });
+            // One more recording gives two groups of three older events ahead of the newest ten.
+            const messages = Array.from({ length: priorEvents }, (_, i) => m(`old-${i}`, `Earlier turn ${i}`, "char"));
+            t.write("k1", [{ op: "append", anchor: { start: true }, messages }]);
+            writeMemory(t.store, "c", "k1", {
+                events: messages.map((message, index) =>
+                    event(`e${index}`, [{ messageId: message.chatId!, index, hash: messageSourceHash(message) }]),
+                ),
+            });
+            return t;
+        };
+        const beginChapter = async (t: Harness) => {
+            const { request, terminal } = await beginAnalysis(t);
+            request.answer(JSON.stringify(analysis()));
+            return { request: await nextPatch(t, request.index + 1, terminal), terminal };
+        };
+
+        it("makes only the oldest ready chapter when the preset loaded for the recording enables it", async () => {
+            const t = timeline();
+            const { request, terminal } = await beginAnalysis(t);
+            t.replace("hypaV3Presets", (data) => {
+                data.items[0].settings.structured.chapterAuto = false;
+                return data;
+            });
+            request.answer(JSON.stringify(analysis()));
+            (await nextPatch(t, 1, terminal)).answer(JSON.stringify(chapter));
+            const status = await finishRecording(t, terminal);
+            expect(status).not.toHaveProperty("reason");
+            expect(t.provider.requests).toHaveLength(2);
+            expect(t.store.memory.chapters.list("c", "k1")).toMatchObject({
+                chapters: [{ ...chapter, events: [{ id: "e0" }, { id: "e1" }, { id: "e2" }] }],
+            });
+        });
+
+        it.each([
+            { when: "the preset disables chapters", chapterAuto: false },
+            { when: "only the newest ten events exist", priorEvents: 9 },
+            { when: "the task records no window", confirmedBefore: "m1", windows: 0 },
+            { when: "another window is left", confirmedBefore: "m5", reason: "windowsLeft" },
+            { when: "only the step deadline and margin remain", recordingMs: 70 },
+        ])(
+            "makes no chapter request when $when",
+            async ({ chapterAuto, priorEvents, confirmedBefore = "m3", windows = 1, reason, recordingMs = 0 }) => {
+                const t = timeline({ chapterAuto, priorEvents });
+                const terminal = t.nextTerminal("k1");
+                t.service.handOff(writerInput(t, confirmedBefore));
+                if (windows) {
+                    const request = await nextPatch(t, 0, terminal);
+                    t.clock.now += recordingMs;
+                    request.answer(JSON.stringify(analysis()));
+                }
+                const status = await finishRecording(t, terminal, windows);
+                expect("reason" in status ? status.reason : undefined).toBe(reason);
+                expect(t.provider.requests).toHaveLength(windows);
+                expect(t.store.memory.chapters.list("c", "k1")).toMatchObject({ chapters: [] });
+            },
+        );
+
+        it("keeps the recording's warming failure when the chapter reply fails", async () => {
+            const t = timeline({ embeddingFail: true });
+            const { request, terminal } = await beginChapter(t);
+            request.fail("Chapter unavailable");
+            expect(await finishRecording(t, terminal)).toMatchObject({
+                reason: "warmingFailed",
+                error: expect.stringContaining("the embedding provider is down"),
+            });
+            expect(t.store.memory.chapters.list("c", "k1")).toMatchObject({ chapters: [] });
+        });
+
+        it("finishes the recording when the chapter host fails with a request outstanding", async () => {
+            const t = timeline({ ignoreAbort: true });
+            const requests = vi.spyOn(t.hostDeps.llm, "runInJob");
+            const { request, terminal } = await beginChapter(t);
+            const [[writerHost], [chapterHost]] = requests.mock.calls;
+            chapterHost.endJob("Chapter host stopped");
+            expect(writerHost.signal.aborted).toBe(false);
+            await turns(1);
+            expect(t.service.status(ref("k1"))).toMatchObject({ state: "done", done: 1, total: 1 });
+            request.answer(JSON.stringify(chapter));
+            const status = await finishRecording(t, terminal);
+            expect(status).not.toHaveProperty("reason");
+            expect(status).not.toHaveProperty("error");
+            expect(t.store.memory.chapters.list("c", "k1")).toMatchObject({ chapters: [] });
+        });
+
+        it.each([
+            ["honors", false],
+            ["ignores", true],
+        ] as const)("ends the recording at the chapter deadline when the provider %s abort", async (_, ignoreAbort) => {
+            const t = timeline({ ignoreAbort });
+            const { request } = await beginChapter(t);
+            await vi.advanceTimersByTimeAsync(limits.chapterStepMs - 1);
+            expect(t.service.status(ref("k1"))?.state).toBe("running");
+            await vi.advanceTimersByTimeAsync(1);
+            const status = t.service.status(ref("k1"));
+            expect(status).toMatchObject({ state: "done", done: 1, total: 1 });
+            expect(status).not.toHaveProperty("reason");
+            expect(status).not.toHaveProperty("error");
+            expect(request.signal.aborted).toBe(true);
+            const drained = vi.fn();
+            const drain = t.service.drain().then(drained);
+            if (ignoreAbort) {
+                await turns(1);
+                expect(drained).not.toHaveBeenCalled();
+                request.answer(JSON.stringify(chapter));
+            }
+            await drain;
+            expect(t.store.memory.chapters.list("c", "k1")).toMatchObject({ chapters: [] });
+        });
+
+        it("stays cancelled when a chapter answer arrives after cancellation", async () => {
+            const t = timeline({ ignoreAbort: true });
+            const { request, terminal } = await beginChapter(t);
+            expect(t.service.cancel(ref("k1"))).toBe(true);
+            expect(request.signal.aborted).toBe(true);
+            const cancelled = (await terminal).status;
+            expect(cancelled).toMatchObject({ state: "cancelled", reason: "cancelled", done: 1, total: 1 });
+            request.answer(JSON.stringify(chapter));
+            await t.service.drain();
+            expect(t.service.status(ref("k1"))).toEqual(cancelled);
+            expect(t.store.memory.chapters.list("c", "k1")).toMatchObject({ chapters: [] });
+        });
+    });
 
     it.each([
         ["rebuild", "removes"],

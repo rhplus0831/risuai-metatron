@@ -569,6 +569,7 @@ const structuredDefaults = {
     highlightKinds: ["create", "contradiction", "delete"],
     highlightChangeGrade: 5,
     eventsPerGroup: 10,
+    chapterAuto: false,
     volatileBeforeLastUser: false,
 };
 
@@ -596,27 +597,29 @@ const structuredCustom = {
     highlightKinds: ["change", "create"],
     highlightChangeGrade: 9,
     eventsPerGroup: 30,
+    chapterAuto: true,
     volatileBeforeLastUser: true,
 };
 
 describe("Structured Memory settings", () => {
-    it("defaults absent or non-boolean omitUserMessages to false and preserves booleans through presets", () => {
-        for (const [structured, expected] of [
-            [undefined, false],
-            [{}, false],
-            [{ omitUserMessages: false }, false],
-            [{ omitUserMessages: true }, true],
-            [{ omitUserMessages: "true" }, false],
-        ] as const) {
-            expect(normalizeStructuredMemorySettings(structured).omitUserMessages).toBe(expected);
-            const preset = createHypaV3Preset("Reply only", { structured }, "reply-only");
-            expect(preset.settings.structured.omitUserMessages).toBe(expected);
-            expect(
-                normalizeHypaV3Presets({ items: [preset], selectedId: preset.id }).items[0].settings.structured
-                    .omitUserMessages,
-            ).toBe(expected);
-        }
-    });
+    it.each(["omitUserMessages", "chapterAuto"] as const)(
+        "defaults absent or non-boolean %s to false and preserves booleans through presets",
+        (key) => {
+            for (const [structured, expected] of [
+                [undefined, false],
+                [{}, false],
+                [{ [key]: false }, false],
+                [{ [key]: true }, true],
+                [{ [key]: "true" }, false],
+            ] as const) {
+                expect(normalizeStructuredMemorySettings(structured)[key]).toBe(expected);
+                const settings = { structured };
+                expect(createHypaV3Preset("Stored", settings, "stored").settings.structured[key]).toBe(expected);
+                const stored = { items: [{ id: "stored", name: "Stored", settings }], selectedId: "stored" };
+                expect(normalizeHypaV3Presets(stored).items[0].settings.structured[key]).toBe(expected);
+            }
+        },
+    );
 
     it("defaults absent or invalid key-line guidance to false and preserves stored booleans", () => {
         for (const input of [undefined, {}, { keyLineGuidance: "true" }, { keyLineGuidance: false }]) {
