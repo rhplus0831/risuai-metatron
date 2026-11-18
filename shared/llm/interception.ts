@@ -5,8 +5,8 @@ import { MODEL_MODES, type ModelModeExtended } from "./request.ts";
 
 /**
  * Request interception rules: the global list (`Database.requestInterceptions`) whose prompts the
- * request layer inserts into every request of the listed modes, before `reformater`. Both runtimes
- * normalize and insert with this module, so a rule reads the same on the server and in the tab.
+ * request layer inserts into every request of the listed modes, before `reformater`. The server
+ * normalizes stored rules with this module. Both runtimes use it to insert rules.
  */
 
 export type RequestInterception = {
