@@ -83,6 +83,13 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `Chats.svelte` owns scroll anchors and reply-stream following. `DefaultChatScreen` follows a swiped reroll, while
   `openRoute` asks the screen to reveal the newest message even when its chat was already open
   ([app shell](app-shell.md)).
+- Scroll input releases the anchor (`release`), except while an opening still hides its newest row; a sideways wheel is
+  not input. An anchor whose row left the DOM falls to `latestAnchor()`.
+- A row whose `Chat` is mounted again keeps its height until the new instance has rendered, then its top is put back
+  (`keepRowHeight`, `settleRowHeight`). The height comes from a per-row `ResizeObserver` and the offset from scroll
+  events: a layout read at the remount sees a row already collapsed and sets off the browser's scroll anchoring. The
+  browser's anchoring stays on (no `overflow-anchor` rule) and holds a reader through other growth. Measurements and the
+  cases left: [fork chat scroll](../reports/surveys/fork-chat-scroll.md).
 
 ### Message row
 
@@ -322,7 +329,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   `e2e/welcomeAndChatSettings.spec.ts` (catalog and home icons, chat screen settings).
 - `installFlatDatabase.ts` ([persistence](persistence.md#tests)) gives most component tests their records.
 - `Chats.rows.svelte.test.ts` stands in for `IntersectionObserver` with its own `Observer` class and fakes
-  `requestAnimationFrame`.
+  `requestAnimationFrame`; its anchor cases stand in for `ResizeObserver` and report the rows' sizes (`sizes`), and end
+  an opening's reveal (`endReveal`) before the reader's input.
 - `ContextMeter.svelte.test.ts` stubs the chip's rectangle (happy-dom has no layout) and the count route: each count is
   one request the test answers when it chooses, so fake timers and deferred answers drive the debounce and the races.
 - `OocPanel.test.ts` mocks the OOC module and stands in for `ChatBody` with `tests/OocChatBodyStub.svelte`; the panel's
@@ -339,7 +347,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   `LazyCharImageFixture.svelte` awaits the image as real consumers do. `ChatStyleProviderFixture.svelte`
   (`src/lib/ChatScreens/tests/`) provides the `ChatStyleRegistry` the chat screen would.
 - Browser scripts: `util/playwright/measureChats.mjs` checks production row counts, memory, and streaming cost;
-  `util/playwright/checkSidebarChatStatus.mjs` covers the status badges.
+  `util/playwright/checkSidebarChatStatus.mjs` covers the status badges;
+  `docs/reports/surveys/fork-chat-scroll/probeChatScroll.mjs` prints the reader's position through openings, chat writes
+  and streams (no assertions; happy-dom has no layout, so this is the check for a scroll change).
 - Not tested: the search-to-transcript claim and scroll wiring, sidebar composition, mobile interactions, and a failed
   screenshot's restore need a browser check. The mounted `DefaultChatScreen.svelte` bookmark path through
   `scrollToMessageId` is also untested; `messageJump.test.ts` drives only the pure helper.
@@ -358,6 +368,10 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   from its rendered height. A fix would restore a reader anchor (the visible row nearest the view's top and its offset)
   at `scrollend`, not mid-animation, once the hold releases. Decision: owner deferred anchor restoration in commit
   `0aad24ce5`.
+- A reader's place can still move in these cases: a chat write that returns every message without its id is taken for an
+  opening (the reader goes to the newest message's start); a row that changes size in the same window as another row's
+  remount gets a partial correction; a scroll written by other code in the task of a remount skips its correction.
+  Decision: left by the scroll fixes of 2026-11-18, [report](../reports/surveys/fork-chat-scroll.md#10-fixes).
 - A far row's fixed-position or overflowing custom content is contained while it is far. Near rows are deliberately
   uncontained; do not apply `content-visibility` to every row or to the transcript ancestor. Decision: `src/styles.css`,
   `.chat-message-container.far`.

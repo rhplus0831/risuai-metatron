@@ -7,7 +7,8 @@ Survey date 2026-11-18. Two parts:
 2. A diagnosis of two symptoms the owner reported in metatron, reproduced in a real browser and checked by a separate
    verifier (sections 4 to 7).
 
-Nothing in `src/` changed. The owner's report was:
+The survey and the diagnosis changed nothing in `src/`; the fixes that followed the same day are section 10, and
+sections 4 to 6 describe the transcript before them. The owner's report was:
 
 - **Symptom 1.** When a scroll event occurs while loading, the scroll stops in the middle of a message.
 - **Symptom 2.** When a plugin modifies the chat, the message goes down to the very bottom.
@@ -353,7 +354,65 @@ Not a plan. Each line names the mechanism and what a fork does about it.
   was not exercised.
 - The plugin path was exercised at `applyChatResult`, not through an installed plugin.
 - The other events that remount a row (an edit save, a reroll, a translation, a reload pointer) were read in the
-  code, not run, except as the verification section says.
+  code, not run, except as the verification section and the review of the fixes say.
+
+## 10. Fixes
+
+The owner asked for M2, M1 and M3 to be fixed and left M4. All three are in `src/lib/ChatScreens/Chats.svelte`.
+
+- **M2.** Scroll input keeps the anchor while an opening still hides its newest row (`release`,
+  `revealBatch?.next === 0`). The reveal ends at its 1,200 ms deadline at the latest. Input during that mask no longer
+  takes the view over: a reader who scrolls while the rows are hidden ends at the newest message's start.
+- **M1.** A row whose `Chat` is mounted again keeps its height (`min-height`) until the new instance has rendered
+  (`keepRowHeight`, `settleRowHeight`), so there is no collapse for the browser's anchoring to answer. When the new
+  text is longer or shorter, the row's top is put back by the height difference, unless the app's anchor holds the
+  view, the row is above the view, the reader gave scroll input since, or the offset changed.
+- **M3.** A `start` anchor whose row left the DOM falls to `latestAnchor()`: the start of the row that is newest now
+  (the owner's choice for a deleted newest message), or the bottom while that row streams or waits.
+- A sideways wheel (`deltaY` 0) no longer counts as scroll input.
+
+After the fixes, the scenarios of section 5 that ended in the wrong place:
+
+| Scenario                                                        | Before                         | After                                         |
+| --------------------------------------------------------------- | ------------------------------ | --------------------------------------------- |
+| Scrolled up 500 px, newest message's text changed, id kept      | Bottom                         | Same place                                    |
+| The same, the newest message got ten more paragraphs            | Bottom                         | Same paragraph, same offset                   |
+| Two-message chat, scrolled up 400 px, newest text changed       | Bottom                         | Same place                                    |
+| No input since opening, newest message came back without its id | Bottom                         | Message's start (the bottom for three frames) |
+| No input since opening, newest text changed                     | Bottom for two to three frames | No movement                                   |
+| Scrolled up 5,000 px, newest text changed                       | Away and back within a frame   | No movement                                   |
+| Wheel event when the opening's mask first appears               | Bottom of the newest message   | Message's start                               |
+| The same with late images                                       | Middle of the newest message   | Message's start                               |
+| Real wheel notches of 1 px while opening                        | Middle of the newest message   | Message's start plus the 146 px scrolled      |
+| Wheel up 100 px during a stream, at its end                     | Bottom of the reply            | Same paragraph, same offset                   |
+| Scrolled up 5,000 px, every message came back without its id    | Newest message's start         | Unchanged: M4 was left                        |
+
+### Review of the fixes
+
+One Sol reviewer, three rounds, each with its own browser runs. What it found and what was done:
+
+| Round | Finding                                                                                                    | Outcome                                                                                            |
+| ----- | ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| 1     | The height was measured at the remount, after a reload pointer or an edit save had already emptied the row | Fixed: heights come from a per-row `ResizeObserver`, the offset from scroll events                 |
+| 1     | A `min-height` stayed on a row remounted again after it had moved far from the view                        | Fixed: the kept height lives on the row and the newest instance's render clears it                 |
+| 1     | A test's negative assertions had become vacuous under the new guard                                        | Fixed                                                                                              |
+| 2     | A correction's offset, remembered globally, let a later unrelated correction override the reader           | Fixed: a correction updates only the rows still waiting from the same offset; scroll input cancels |
+| 2     | A row that changes size in the same window as another row's remount is corrected only in part              | Left: the reproduction needed an image `load` handler that edits another message                   |
+| 2     | A scroll written by other code in the task of a remount skips the correction                               | Reduced: the transcript's own writes update the remembered offset; other writers reach it by event |
+| 3     | A sideways wheel cancelled a correction                                                                    | Fixed                                                                                              |
+
+It confirmed in the browser: a reload of every row, the UI's re-render, an edit save, a candidate switch, a reroll
+(streamed and whole), a deletion of the newest message, and a remount during a real wheel scroll.
+
+### Left open
+
+- M4, by the owner's choice.
+- The two "left" and "reduced" rows above, recorded as a limitation in the
+  [UI guide](../../structure/ui-theming.md#limitations).
+- Opening the inline editor moves the view before any save. Both reviewers saw it; the cause was not looked for.
+- A render that takes seconds (a slow display transform) followed by the reader's own scrolling gets no correction, as
+  before the fixes.
+- Still Chrome only: Safari, Firefox, a phone and touch input were not run.
 
 ## Files
 
