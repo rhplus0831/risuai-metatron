@@ -100,6 +100,15 @@ Sixteen of the seventeen were fixed the same day and the last is a Limitation of
 ([known issues](known-issues.md) has the account). The six entries marked "fix round of 2026-11-17" below are what
 that round's implementers read next to their fixes and left: none was run.
 
+The twenty-seventh batch is the post-verification of seven retired plans of 2026-11-18 at `504a7af45` (one read-only
+verifier per plan, then a second reader that tried to refute each P1 and P2): twenty-four entries below, each marked
+"post-verification of 2026-11-18" with the finding's id. The seventeen P1 and P2 findings that stood were each
+reproduced by a probe kept with the review material outside the repository and traced by both readers; the P3 ones
+were filed by one reader and not re-read, and are grouped where they are alike. Two filed findings have no entry: a
+plugin's refused edit of a locked reply is in the plugin guide, and a hook's screen-local busy state is the plan's
+own decision. The method, the cost, and the ratings are in
+[its report](../reports/audits/plan-post-verification-2026-11-18.md).
+
 ## Contents
 
 The [2026-11-18 structure audit findings](../research/found-issues.md) have their evidence and follow-up in one place.
@@ -107,14 +116,19 @@ The HypaV2 entry below points to that record. The audit also retired the plugin 
 JSON, Markdown, snapshot and checkpoint validators reject unknown event statuses.
 
 - [Backup and sync](#backup-and-sync): 3
-- [Chat screen](#chat-screen): 2
-- [Docs](#docs): 1
-- [Memory](#memory): 3
-- [Network jobs](#network-jobs): 1
+- [Chat screen](#chat-screen): 5
+- [Docs](#docs): 2
+- [Headless host](#headless-host): 5
+- [LLM requests](#llm-requests): 2
+- [Memory](#memory): 5
+- [Modules and personas](#modules-and-personas): 5
+- [Network jobs](#network-jobs): 2
 - [Plugins](#plugins): 1
 - [Remote commands](#remote-commands): 1
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 2
+- [Settings](#settings): 4
+- [Tests](#tests): 1
 - [Translation](#translation): 1
 
 ## Backup and sync
@@ -182,6 +196,30 @@ partial-edit popover, and the editor of a rendered (cached) translation in `src/
 
 **Suggested handling:** reproduce each; the popup can hand its text back to its owner on destruction.
 
+### Sending newer text overwrites a failed send that was waiting to be placed back
+
+Post-verification of 2026-11-18 (IH-1), reproduced by two readers; older than the Input Hooks plan, which widened it. A chat has one send hand-off row and one in-memory entry (`putComposerSend` in `src/ts/storage/draftJournal.ts`, `sendDraft.ts`). When a send fails before its user message lands while the composer holds newer text, the failed text is not placed back and stays only there. The next send of the newer text overwrites both, and its success removes the row. The first text is then in neither the composer, the journal, nor the chat. Since the plan, a failed draft send is also kept out by a newer draft, translation, or attachment alone, and its row holds both boxes.
+
+**Why it matters:** the user loses a message they wrote (and, for a draft send, the reviewed draft) without a notice. It needs a send that fails while the user has already typed the next message.
+
+**Suggested handling:** kept as recorded by the owner's rule for the fix round (the trigger is uncommon and the fix adds a second kept snapshot to the journal and its budget). If it is taken up: keep the displaced snapshot under its message id and offer it through the composer's recovery.
+
+### A send that fails after a Settings round trip is not placed back until the chat is shown again
+
+Post-verification of 2026-11-18 (IH-3), reproduced by two readers; older than the Input Hooks plan, which extended it to a draft send's whole snapshot. Opening and closing Settings remounts the chat screen. A send that was pending across the remount settles into the destroyed composer (`placeSend` in `src/ts/process/composerDrafts.svelte.ts` returns on `destroyed`), and the new screen is not told.
+
+**Why it matters:** the composer stays empty after the refusal. The text is in the hand-off row and returns on a chat switch, another remount, or a reload.
+
+**Suggested handling:** kept as recorded by the owner's rule for the fix round. If it is taken up: have `settleSend` notify the mounted composer of that chat to run its guarded restore.
+
+### Send Draft can stay disabled after a slash command or a send ends
+
+Post-verification of 2026-11-18 (IH-4), reproduced by two readers. The button's `disabled` in `src/lib/ChatScreens/DefaultChatScreen.svelte` calls `isScreenBusy`, which reads the local send state with `get(sends)` and so does not subscribe to its release.
+
+**Why it matters:** with a draft typed during a slash command or a send, the button stays disabled until the draft is edited. Enter still sends.
+
+**Suggested handling:** read `$localSends` in the binding.
+
 ## Docs
 
 ### Two entries of the plan audit re-check list no longer match the code
@@ -202,6 +240,85 @@ Interception plan (2026-11-18) and not run:
 is gone or no longer universal.
 
 **Suggested handling:** re-read both mechanisms, then reword or drop the entries in the README.
+
+### Guide sentences the post-verification found missing or wrong
+
+Post-verification of 2026-11-18, each filed P3 by one reader and not re-read:
+
+- (IH-5) `chat-pipeline.md` does not say that a hook prompt takes no CBS and that hooks cannot be imported or exported; deferred work has no Input Hooks entry.
+- (HH-6) `build-test-platforms.md`, Headless host: no word that a new server build needs a restart of the script or a remote "Reload page", and that a feed that stays disconnected is left to the app's reconnect.
+- (HH-7) `README.md` says the host dismisses every dialog with Escape; the script clicks OK on the terminal notice after a restore.
+- (CN-5) `plugin-sandbox.md` and `network-jobs.md` do not say that a plugin waiting on its own timer reads as quiet and that a switched-on plugin busy with another chat delays the notification.
+- (SB-2) `persistence.md`: a remote deletion of the selected preset can select an archived one while an active one remains.
+- (SB-3) `settings-i18n.md:249` and the header of `PersonaSettings.test.ts` still describe the settings as following the open chat.
+- (SB-4) `settings-i18n.md`: which profiles keep their provider after a plugin is removed.
+- (MF-6) `characters-modules.md`: the folder exclusions of the plan (no folders in the chat's persona picker, the binding panel, and the persona's module links; no nesting; no pruning of ids deleted elsewhere) are in no Limitations list.
+- (RI-6) `llm-requests.md:198` says the history count is omitted when there is none; the list and detail JSON carry `null`.
+- (SD-3) `structured-memory/read.md` says undated chats keep the same card; that holds for the same stored records only, since the new writer rules apply to every chat. The lag, the missing-year rule, and the other calendars of the plan's Limits are not in a guide.
+
+**Why it matters:** these are the limits and exclusions an owner or a later session looks for in the guides, and three sentences are wrong after later commits.
+
+**Suggested handling:** read each against the code, then write the sentences in one docs commit.
+
+## Headless host
+
+### The headless host's Chrome ignores certificate errors for every origin
+
+Post-verification of 2026-11-18 (HH-1), reproduced by two readers. `util/headlessHost.mjs` starts its persistent context with `ignoreHTTPSErrors: true`. The plan called that safe because the app's address is loopback, but the setting covers the whole context: the page's two public stylesheets (`index.html`), and every HTTPS request a plugin or a provider call makes from the host page.
+
+**Why it matters:** someone on the host's network path can answer those requests with any certificate, including requests that carry an API key.
+
+**Suggested handling:** no exception when the app is served over HTTP; for an HTTPS app, trust only the local server's certificate.
+
+### A restart of the headless host's page loses a pending command's receipt
+
+Post-verification of 2026-11-18 (HH-2), reproduced by two readers. A remote command's attempt is kept in the tab's `sessionStorage` (`src/ts/network/remoteHost.ts`). The script's own restarts (a crashed or closed page, a failed load, a dialog it cannot dismiss, the plugins-off reload) close the tab and open a new one (`openPage` in `util/headlessHost.mjs`), which has no record and a new client id. A remote "Reload page" keeps the tab and is not affected.
+
+**Why it matters:** the requesting device waits two minutes and shows "no answer", and the relay keeps the entry until it drops it. No chat data is lost.
+
+**Suggested handling:** kept as recorded by the owner's rule for the fix round (rare, and the fix changes where attempts are stored). If it is taken up: reuse the tab on a restart where the page is still alive, or keep attempts where a new tab of the same profile reads them.
+
+### The headless host's restart wait resets while the page is down
+
+Post-verification of 2026-11-18 (HH-3), reproduced by two readers. The loop in `util/headlessHost.mjs` calls `resetWait(Date.now())` after the retry wait against the failed load's `readyAt`, so the time after the crash counts as ready time. A renderer that crashes one second after ready waits 5, 10, 20, 40, 80, then 10 seconds again instead of reaching the five-minute cap.
+
+**Why it matters:** a host that keeps crashing is relaunched more often than the plan's D5 allows.
+
+**Suggested handling:** stop counting ready time when a restart is scheduled.
+
+### On Windows the headless host does not find an environment key spelled in another case
+
+Post-verification of 2026-11-18 (HH-4), reproduced by two readers on Linux with the Windows code path; no Windows run. The script reads its settings from `{ ...process.env }`, which loses Windows' case-insensitive lookup. With `Port=7100` the server (which reads `process.env.PORT`) listens on 7100 and the script waits on 6001; `Risu_Chrome` is likewise ignored. The documented upper-case spelling works.
+
+**Why it matters:** a Windows setup with such a key starts the server and never gets a ready host.
+
+**Suggested handling:** look the script's keys up without regard to case when the platform is Windows.
+
+### A console message from a script URL with a query loses its position in the headless host's log
+
+Post-verification of 2026-11-18 (HH-5), filed P3 by one reader and not re-read. `consoleLocationText` in `util/headlessHostConfig.mjs` appends the line and column to the URL before the credential redaction, which then removes everything from the `?` on.
+
+**Why it matters:** a dev stack's Vite modules carry a version query, so the log names the file without the position.
+
+**Suggested handling:** redact the URL first, then append the position.
+
+## LLM requests
+
+### A command job's later parts use request interception rules edited after it started
+
+Post-verification of 2026-11-18 (RI-2), reproduced by two readers. The parts loop of `server/src/jobs/commandRunner.ts` calls `runPromptSend`, which loads the job scope again (`loadJobScope` in `server/src/prompt/runner.ts`), so a rule saved while a `/multisend` command runs reaches its later parts. The plan says a job's later requests use the list the job started with; a group send keeps one list.
+
+**Why it matters:** work already under way changes instructions between its parts. It needs a multi-part command and a rule edit during it.
+
+**Suggested handling:** kept as recorded by the owner's rule for the fix round. If it is taken up: capture the list at command setup and hand it to each part; otherwise reword the guide to say a command's parts each read the list.
+
+### The interception module's header says the tab normalizes stored rules
+
+Post-verification of 2026-11-18 (RI-5), filed P3 by one reader and not re-read. Only `normalizeProviders` on the server calls `normalizeRequestInterceptions`; the header of `shared/llm/interception.ts` says the tab does too.
+
+**Why it matters:** a reader may rely on a repair the tab does not make.
+
+**Suggested handling:** correct the comment.
 
 ## Memory
 
@@ -243,6 +360,64 @@ without it the labels read as counted from the present, and the plan's manual ch
 **Suggested handling:** a Preview on a dated chat with only volatile items, and a send under a one-message chat range;
 then decide whether the header belongs with the volatile part or Preview should show a tagless header.
 
+### Page compaction has no rule against day-relative words
+
+Post-verification of 2026-11-18 (SD-1), reproduced by two readers with a scripted answer; a live model's wording was not measured. The Story Dates plan added "never write a word that depends on the day it is read" to `RULES` and `PATCH_RULES` (`server/src/prompt/memory/structured/prompts.ts`). The compaction rules, the third call that writes text a later send reads, lack it, so a compacted page section can turn a dated sentence into "yesterday".
+
+**Why it matters:** the page then contradicts the card's date anchor, which is the error the plan set out to remove.
+
+**Suggested handling:** give the compaction rules the same sentence.
+
+### The Timeline row drops an event's date when the event has no time text
+
+Post-verification of 2026-11-18 (SD-2), reproduced by two readers; only a hand-made backup stores such an event (the writer and the chat file restore always store a text). The story row reader in `src/ts/process/structuredMemory.svelte.ts` keeps `storyTime` only when its `text` is a string, while the opened-event reader and retrieval check the date by itself.
+
+**Why it matters:** the row shows no date although the opened event and the card use it.
+
+**Suggested handling:** default a missing text to `""` in the row reader, as the opened-event reader does.
+
+## Modules and personas
+
+### With two modules of one id, the trash button removes the other one
+
+Post-verification of 2026-11-18 (MF-1), reproduced by two readers; the removal is older than the folders plan. An upstream database import and a plugin's whole-list write both keep two modules with one id, and the pair survives a save and a reload. The catalog confirms by name and calls `removeModule(id)` (`src/ts/storage/collectionStore.svelte.ts`), which removes the first module with the id. New with the folders plan: filing either row moves both, and the removal clears the id from its folder.
+
+**Why it matters:** the user confirms the removal of one module and loses the other's content.
+
+**Suggested handling:** remove the row the dialog named; keep the folder membership and the enabled id while another module still has the id.
+
+### Equal folder membership in another order counts as a conflict
+
+Post-verification of 2026-11-18 (MF-2), reproduced by two readers. `mergeUnit` in `src/ts/storage/recordMerge.ts` compares a folder's `data` by position, and `withItemInFolder` appends in click order. Two tabs that file the same items into one folder in another order therefore conflict, although the plan says the order means nothing and equal changes converge. The losing tab takes the server's folder list, and an unrelated folder rename it held is dropped.
+
+**Why it matters:** it needs one tab holding unsaved folder changes (an outage) while another device files the same items the other way round; the cost is one rename.
+
+**Suggested handling:** kept as recorded by the owner's rule for the fix round. If it is taken up: compare member ids as sets in the three-way merge of the two folder kinds.
+
+### An item whose id is only whitespace cannot be filed
+
+Post-verification of 2026-11-18 (MF-3), reproduced by two readers. An upstream database import can store a persona or module whose id is one space (`shared/ids.ts` accepts any nonempty string). The folder helpers and `normalizeItemFolders` keep nonblank ids only: the persona page's Folder select returns silently, and the module move throws inside the store without an alert.
+
+**Why it matters:** that one item stays at the root; everything else about it works.
+
+**Suggested handling:** kept as recorded by the owner's rule for the fix round. If it is taken up: use the item records' nonempty-string rule in the folder helpers and both filing guards.
+
+### The module's own enable button removes one entry of a repeated id
+
+Post-verification of 2026-11-18 (MF-4), reproduced by two readers; older than the folders plan. An upstream import can store one id twice in `enabledModules`. The module row's button splices one occurrence (`ModuleSettings.svelte`), so the module stays on; the folder's switch filters every occurrence.
+
+**Why it matters:** the same list reads differently depending on which control was used.
+
+**Suggested handling:** remove every occurrence in the row's button too.
+
+### The module picker shows a folder's total without the enabled count
+
+Post-verification of 2026-11-18 (MF-5), filed P3 by one reader and not re-read. `ModuleChatMenu.svelte` returns the member count alone in alert mode (the "Apply module" picker), where the plan's slice 2 describes "on / total" for a folder row.
+
+**Why it matters:** the picker omits which members are already on.
+
+**Suggested handling:** check the plan's text for alert mode; show the same count or record the exception in the guide.
+
 ## Network jobs
 
 ### The send preflight waits for a resource write's answer without a bound
@@ -264,6 +439,14 @@ that neither ends nor stops.
 **Suggested handling:** in `prepareServerJob`, race the wait for the shared flush against the send's signal and a
 deadline, answer a refusal that keeps the request's uncertainty, and never go on to a create after the timeout. Do not
 abort the shared write or count it as saved: it may be committed, and other callers wait on the same answer.
+
+### The job request's context type does not name the completion hold
+
+Post-verification of 2026-11-18 (CN-4), filed P3 by one reader and not re-read. `ServerJobRequest.context` in `src/ts/process/serverCommands.ts` is a `Pick` that ends at `oocExchangeId`; `serverGeneration.ts` passes `completionHoldMs` through a conditional spread, which type-checks, while a plain object literal would be rejected.
+
+**Why it matters:** the type does not describe a field the code sends.
+
+**Suggested handling:** add the field to the `Pick`.
 
 ## Plugins
 
@@ -368,6 +551,50 @@ the context is too small.
 
 **Suggested handling:** reproduce with a template-only prompt and a reservation larger than the history, then decide
 whether the recheck should keep the last user message or refuse when nothing of the chat is left.
+
+## Settings
+
+### A template drag in progress when its preset is deleted reorders another preset
+
+Post-verification of 2026-11-18 (SB-1), reproduced by two readers; older than the Sidebar-Only Chat Binding plan. `PromptDataItem.svelte` remembers only the dragged row's index. When another tab deletes the shown preset during the drag, the page falls back to another preset and the drop in `PromptSettings.svelte` reorders that one.
+
+**Why it matters:** a preset the user did not touch gets a row moved; it is visible and one inverse move undoes it.
+
+**Suggested handling:** remember the preset id at drag start and drop nothing when the page shows another preset.
+
+### A live settings update discards the text typed in a rule's popup editor
+
+Post-verification of 2026-11-18 (RI-1), reproduced by two readers. A live update of the `providers` section installs new rule objects, so the row identity (`recordValueIdentity` in `PromptDataItem.svelte`) of an unchanged rule changes, `TextAreaInput.svelte` closes the popup session as stale, and the popup's text is not written back. Any provider setting saved by another tab or device while the popup is open does it; removing an earlier rule also collapses the row.
+
+**Why it matters:** the text typed in the popup since it was opened is lost. Saved text and inline edits are not.
+
+**Suggested handling:** kept as recorded by the owner's rule for the fix round (it needs the user's own second device, and the fix changes the shared popup guard). If it is taken up: key the interception page's popup by rule id and write back while the rule's stored text is still what the popup started from.
+
+### A rule's popup editor previews CBS that the request sends as written
+
+Post-verification of 2026-11-18 (RI-3), reproduced by two readers. The Request interception page passes `cbs={false}`, which `PromptDataItem.svelte` gives only to the inline `highlight`. The popup still opens as Markdown, and its Preview and token count run the display parser.
+
+**Why it matters:** the preview shows `GREEN` for a rule that sends `{{upper::green}}`.
+
+**Suggested handling:** open the popup as plain text when `cbs` is off.
+
+### The completion time limit box keeps showing a value the server clamped
+
+Post-verification of 2026-11-18 (CN-2), filed P3 by one reader and not re-read. The numeric item in `src/ts/setting/displaySettingsData.svelte.ts` declares bounds, but a typed 900 stays in the tab's setting after the save; the server stores 600 and the host uses 600.
+
+**Why it matters:** the box and the plugin help show a limit that is not the one in use.
+
+**Suggested handling:** clamp to the item's bounds when the control commits.
+
+## Tests
+
+### Two tests of retired plans pass with their guarded line broken
+
+Post-verification of 2026-11-18, each shown by one reader's break-test and not re-read. (CN-3) `server/src/tests/promptTail.test.ts`, "holds a group send's notifications and releases only the last speaker's completion": both speakers' notifications are identical, so it passes with the replacement assignment removed from `server/src/push/completionHolds.ts` (the unit test of the holds does guard the replacement). (RI-4) `server/src/tests/assemble.test.ts`: all cases pass when the `outputTokens` clamp in `server/src/prompt/assemble.ts` leaves the interception tokens out; the recheck before it already enforces the inequality, so the branch may be unreachable.
+
+**Why it matters:** a regression in either line would not be caught where the plan said it would.
+
+**Suggested handling:** make the two group notifications distinguishable; for the clamp, either remove the redundant branch or say in the test which invariant it proves.
 
 ## Translation
 
