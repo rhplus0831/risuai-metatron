@@ -408,12 +408,13 @@ async function tick() {
     const document = load;
     if (!page || page.isClosed() || browserGone) return;
     const screen = await page.$("[data-remote-host-screen]");
-    if (!isCurrent(page, document)) {
+    if (!isCurrent(page, document) || (restart && !restart.pluginsOff)) {
         await screen?.dispose();
         return;
     }
     const ready = !!screen;
-    if (ready && document.readyAt === null) {
+    if (!ready) document.readyAt = null;
+    else if (document.readyAt === null) {
         document.readyAt = Date.now();
         log("Remote Host ready");
     }
@@ -516,7 +517,9 @@ async function main() {
         try {
             if (restart && Date.now() >= restart.at) {
                 const reason = restart.reason;
-                resetWait(Date.now());
+                // Only a live plugins-off page can accrue ready time during the wait.
+                if (restart.pluginsOff) resetWait(Date.now());
+                if (load) load.readyAt = null;
                 restartWait = nextRestartWait(restartWait);
                 restart = null;
                 log(`Restarting: ${reason}`);
