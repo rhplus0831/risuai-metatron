@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, seven more plan-leftover collections from memory the same day, the seventeenth (the Found Issues Decisions run) on 2026-11-09, the nineteenth (the Upstream Intake 2 run) on 2026-11-10, the twentieth (the Memory Panel Readability run) on 2026-11-11, the twenty-first (the Structured Memory Recent Timeline run) the same day, the twenty-second (the Per-Chat Memory run) on 2026-11-13, the twenty-third (the Lore Budget Send Stop run) the same day, the Generation Progress Window run's two findings the same day, and the OOC Session run's two findings the same day, the Remote Host run's finding on 2026-11-16, the Completion Notification After Plugin Work run's finding the same day, and the Sidebar-Only Chat Binding run's finding on 2026-11-17, the Request Interception run's two findings on 2026-11-18, and the Structured Memory Story Dates run's two findings the same day; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, seven more plan-leftover collections from memory the same day, the seventeenth (the Found Issues Decisions run) on 2026-11-09, the nineteenth (the Upstream Intake 2 run) on 2026-11-10, the twentieth (the Memory Panel Readability run) on 2026-11-11, the twenty-first (the Structured Memory Recent Timeline run) the same day, the twenty-second (the Per-Chat Memory run) on 2026-11-13, the twenty-third (the Lore Budget Send Stop run) the same day, the Generation Progress Window run's two findings the same day, and the OOC Session run's two findings the same day, the Remote Host run's finding on 2026-11-16, the Completion Notification After Plugin Work run's finding the same day, and the Sidebar-Only Chat Binding run's finding on 2026-11-17, the Request Interception run's two findings on 2026-11-18, and the Structured Memory Story Dates run's two findings the same day, and the Timeline Reading View run's finding on 2026-11-19; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. An entry is a `###` heading under its area section, a paragraph saying what and where (`file:line`), then a **Why it matters:** line and a **Suggested handling:** line; the Contents list at the top counts each area's entries. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's section of [known issues](known-issues.md) (or to the guide's Known Hazards `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -134,7 +134,7 @@ JSON, Markdown, snapshot and checkpoint validators reject unknown event statuses
 - [Docs](#docs): 1
 - [Headless host](#headless-host): 2
 - [LLM requests](#llm-requests): 1
-- [Memory](#memory): 3
+- [Memory](#memory): 4
 - [Modules and personas](#modules-and-personas): 4
 - [Network jobs](#network-jobs): 2
 - [Plugins](#plugins): 1
@@ -328,6 +328,22 @@ without it the labels read as counted from the present, and the plan's manual ch
 
 **Suggested handling:** a Preview on a dated chat with only volatile items, and a send under a one-message chat range;
 then decide whether the header belongs with the volatile part or Preview should show a tagless header.
+
+### A Timeline reveal settles on held coverage, so a reread that retracts the event leaves Read without its row
+
+Timeline Reading View run, 2026-11-19, from slice 4's challenger; reproduced in a scratch panel test, not in the app.
+The pending-reveal effect of `src/lib/Others/StructuredMemory/TimelineTab.svelte` (`reveal`, the `$effect` on
+`pending`, at the `manageRows.findIndex` line) picks Read or Manage from the coverage the tab holds: when the target
+id is there as an active event, the reveal finishes at once in Read. If a coverage reread is out and its answer marks
+the event retracted, the tab stays in Read and the opened row leaves the groups instead of the view switching to
+Manage. The rule waits for coverage only when the id is absent.
+
+**Why it matters:** a search hit, a `focus` from Pages, or "Open in Manage" pressed right after a refresh can land on
+nothing visible. The race is narrow: the event must be retracted between the held read and the one in flight.
+
+**Suggested handling:** reproduce in the app (retract an event in another tab, then follow a Pages link to it before
+the panel's refresh settles); then either keep the target pending while a coverage read is out, or have an open event
+that turns retracted switch the view to Manage.
 
 ## Modules and personas
 
