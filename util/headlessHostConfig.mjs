@@ -143,12 +143,12 @@ export function cutDialogText(text) {
  * the URL is the resource itself, at position 0:0; otherwise it is the script. Playwright counts
  * lines and columns from 0; the log counts from 1, like a stack frame.
  */
-export function consoleLocationText(location) {
+export function consoleLocationText(location, redactUrl = (url) => url) {
     if (!location?.url) return "";
     const { lineNumber: line, columnNumber: column } = location;
     const position = line || column ? `:${line + 1}:${column + 1}` : "";
-    // No closing bracket: the redactor's URL match would take it with a hidden query.
-    return ` at ${location.url}${position}`;
+    // Redact the URL on its own so a hidden query or path cannot swallow the position.
+    return ` at ${redactUrl(location.url)}${position}`;
 }
 
 /**

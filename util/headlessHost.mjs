@@ -49,8 +49,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const safeText = (text) => redactCredentials(text, settings?.password, rootUrl && new URL(rootUrl).origin);
 const dialogText = (text) => cutDialogText(safeText(text));
 
-function log(message) {
-    const line = oneLine(safeText(message));
+function log(message, location) {
+    const line = oneLine(safeText(message) + consoleLocationText(location, safeText));
     console.log(`${new Date().toISOString()} ${line.slice(0, LOG_TEXT_LIMIT)}`);
 }
 
@@ -269,7 +269,7 @@ async function openPage() {
     page.on("console", (message) => {
         const type = message.type();
         if (!consoleTypeLogged(settings.consoleLevel, type)) return;
-        log(`Page console ${type}: ${message.text()}${consoleLocationText(message.location())}`);
+        log(`Page console ${type}: ${message.text()}`, message.location());
     });
     // The stack starts with the message in Chrome; its frames say which script threw.
     page.on("pageerror", (error) => log(`Page error: ${error.stack || error.message}`));

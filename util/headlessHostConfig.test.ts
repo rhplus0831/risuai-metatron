@@ -242,4 +242,16 @@ describe("redactCredentials", () => {
         );
         expect(consoleLocationText({ url: "", lineNumber: 0, columnNumber: 0 })).toBe("");
     });
+
+    it("keeps console source coordinates after redacting the script URL", () => {
+        const app = "http://127.0.0.1:6001";
+        const location = (url: string) =>
+            consoleLocationText({ url, lineNumber: 11, columnNumber: 4 }, (text: string) =>
+                redactCredentials(text, undefined, app),
+            );
+
+        expect(location(`${app}/src/main.ts?v=42#entry`)).toBe(` at ${app}/src/main.ts[redacted]:12:5`);
+        expect(location(`${app}/src/main.ts`)).toBe(` at ${app}/src/main.ts:12:5`);
+        expect(location("https://cdn.example.com/private/main.ts")).toBe(" at https://cdn.example.com/[redacted]:12:5");
+    });
 });
