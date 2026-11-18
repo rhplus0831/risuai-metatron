@@ -138,6 +138,45 @@ before, compared against the renderer before the plan; Request Interception's "o
 every path that reaches a model; the state table of the completion hold; both isolated browser runs of the headless
 host check.
 
+## Fixes
+
+The owner asked for the report to be committed, the findings filed, and the fixes made at once, with one rule: a fix
+whose cost is out of proportion to how often its trigger happens is recorded and not made.
+
+- **Fixed** (sixteen findings, `67c093c09..9130641f3` on `dev`): HH-1 (no certificate exception for an HTTP app or
+  a listener whose certificate verifies; otherwise Chrome trusts only the local listener's own key, checked with the
+  system Chrome against a second self-signed listener), HH-3, HH-4, HH-5, IH-4, SB-1, MF-1 (the trash button removes
+  the row its dialog named; the folder membership and the enabled id stay while another module has the id), MF-4,
+  MF-5, RI-3 (a literal popup mode, also used by the hook prompt and the translator step, which had the same
+  preview), RI-5, SD-1, SD-2, CN-2, CN-4, and CN-3's test.
+- **Recorded, not fixed** (seven entries of [found issues](../../backlog/found-issues.md), each saying so): IH-1,
+  IH-3, HH-2, MF-2, MF-3, RI-1, RI-2. RI-4 stays as a test entry. CN-1 and IH-2 have no entry.
+- **Guides**: the ten guide sentences of the P3 findings and the sentences the fixes needed, in one commit
+  (`5ac1483f9`).
+
+How it was done: four implementers in separate worktrees (GPT-6.2 Astra for the headless host, GPT-6.2 Sol for the
+rest), each with the reviewers' probes and a decision per finding, writing no tests; a GPT-6.2 Sol test writer per
+worktree; the orchestrating session read every diff, sent two back (a predicate repeated inline, an item id named in
+a generic control), accepted the key-scoped certificate exception the host implementer had stopped on, and ran each
+new test against its fix reverted. Then each of the seven verifiers read the fixes of its own findings in its
+original thread.
+
+The re-verification found every trigger closed and no fix that broke a neighbor. It found four new tests weaker than
+their fixes (each got a case that fails under the verifier's break), two siblings worth the same small fix (the hook
+and translator popups; the Timeline row's ordinal), and five that were recorded: an uncaught page error still loses
+its position in the host's log, the catalog's other row actions and the character's module toggle still go by the
+first id, a row removed by another tab during a drag still shifts the index, and two reroll fields are missing from
+the request type. An emptied time limit box stays blank while the server stores the default.
+
+After the last commit the whole suite (11 554 tests), `pnpm check`, `pnpm check:docs`, `pnpm check:tests`, and
+`pnpm format:check` passed on `dev`. Two checks need a person and are in
+[manual checks](../../backlog/manual-checks.md): the mixed-case environment keys on a real Windows, and an HTTPS
+server with a certificate that does not verify.
+
+Cost of the fix round: implementers 7 to 25 minutes and 4 to 9 M tokens each, test writers 7 to 14 minutes and 4 to
+8 M, the guide writer 9 minutes and 3 M (about 50 M together); the seven re-verify turns 4 to 8 minutes and 3 to
+6 M each (about 34 M).
+
 ## The 6.2 models against the earlier runs
 
 |                                  | GPT-6 Astra (2026-11-14, 2026-11-16) | GPT-6.2 Astra (this run) |
