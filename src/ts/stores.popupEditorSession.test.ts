@@ -58,6 +58,16 @@ describe("popup editor sessions", () => {
         expect(isPopupEditorSessionCurrent(second)).toBe(true);
     });
 
+    it("opens the next default session in Markdown after closing a literal session", () => {
+        const literal = openPopupEditorSession("Show {{upper::green}}", undefined, "literal");
+        expect(popUpEditorStore).toMatchObject({ open: true, mode: "literal", language: "plaintext" });
+        expect(closePopupEditorSession(literal)).toBe(true);
+        expect(popUpEditorStore.open).toBe(false);
+
+        openPopupEditorSession("New draft");
+        expect(popUpEditorStore).toMatchObject({ open: true, mode: "default", language: "markdown" });
+    });
+
     it("closes only the current session, so a stale opener leaves a newer popup open", () => {
         const first = openPopupEditorSession("first draft");
         const second = openPopupEditorSession("second draft");
