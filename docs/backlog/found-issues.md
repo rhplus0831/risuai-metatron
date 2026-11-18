@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, seven more plan-leftover collections from memory the same day, the seventeenth (the Found Issues Decisions run) on 2026-11-09, the nineteenth (the Upstream Intake 2 run) on 2026-11-10, the twentieth (the Memory Panel Readability run) on 2026-11-11, the twenty-first (the Structured Memory Recent Timeline run) the same day, the twenty-second (the Per-Chat Memory run) on 2026-11-13, the twenty-third (the Lore Budget Send Stop run) the same day, the Generation Progress Window run's two findings the same day, and the OOC Session run's two findings the same day, the Remote Host run's finding on 2026-11-16, the Completion Notification After Plugin Work run's finding the same day, and the Sidebar-Only Chat Binding run's finding on 2026-11-17, the Request Interception run's two findings on 2026-11-18, and the Structured Memory Story Dates run's two findings the same day, and the Timeline Reading View run's finding on 2026-11-19; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, seven more plan-leftover collections from memory the same day, the seventeenth (the Found Issues Decisions run) on 2026-11-09, the nineteenth (the Upstream Intake 2 run) on 2026-11-10, the twentieth (the Memory Panel Readability run) on 2026-11-11, the twenty-first (the Structured Memory Recent Timeline run) the same day, the twenty-second (the Per-Chat Memory run) on 2026-11-13, the twenty-third (the Lore Budget Send Stop run) the same day, the Generation Progress Window run's two findings the same day, and the OOC Session run's two findings the same day, the Remote Host run's finding on 2026-11-16, the Completion Notification After Plugin Work run's finding the same day, and the Sidebar-Only Chat Binding run's finding on 2026-11-17, the Request Interception run's two findings on 2026-11-18, and the Structured Memory Story Dates run's two findings the same day, and the Timeline Reading View run's finding on 2026-11-19, and the Timeline Chapter Synopses run's four findings the same day; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. An entry is a `###` heading under its area section, a paragraph saying what and where (`file:line`), then a **Why it matters:** line and a **Suggested handling:** line; the Contents list at the top counts each area's entries. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's section of [known issues](known-issues.md) (or to the guide's Known Hazards `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -129,12 +129,12 @@ The [2026-11-18 structure audit findings](../research/found-issues.md) have thei
 The HypaV2 entry below points to that record. The audit also retired the plugin guide size warning and verified that the
 JSON, Markdown, snapshot and checkpoint validators reject unknown event statuses.
 
-- [Backup and sync](#backup-and-sync): 4
+- [Backup and sync](#backup-and-sync): 5
 - [Chat screen](#chat-screen): 4
-- [Docs](#docs): 1
+- [Docs](#docs): 2
 - [Headless host](#headless-host): 2
 - [LLM requests](#llm-requests): 1
-- [Memory](#memory): 4
+- [Memory](#memory): 6
 - [Modules and personas](#modules-and-personas): 4
 - [Network jobs](#network-jobs): 2
 - [Plugins](#plugins): 1
@@ -199,6 +199,17 @@ Storage page nor the backup dialogs say so.
 **Suggested handling:** one line on the Storage page, or accept it as a Limitation of
 [draft recovery](../structure/draft-recovery.md).
 
+### The boot cache keeps its own copy of the resource id rule
+
+Timeline Chapter Synopses run, 2026-11-19, from slice 1; read, not run. `isValidResourceId` moved from
+`server/src/data/resourceStore.ts` to `shared/resources.ts` (the store re-exports it), so the tab can import it.
+`src/ts/storage/bootCache.ts:38-55` still holds a hand-copied duplicate (`MAX_RECORD_ID_LENGTH` and the function),
+with the comment "Match isValidResourceId in server/src/data/resourceStore.ts".
+
+**Why it matters:** the copy can drift from the server's check, and its comment names the rule's old home.
+
+**Suggested handling:** import `isValidResourceId` from `shared/resources.ts` in `bootCache.ts` and drop the copy.
+
 ## Chat screen
 
 ### Back and forward between multi-reply bundles swaps the messages only
@@ -260,6 +271,21 @@ Interception plan (2026-11-18) and not run:
 is gone or no longer universal.
 
 **Suggested handling:** re-read both mechanisms, then reword or drop the entries in the README.
+
+### The records guide says chapters sit outside every lifecycle walk
+
+Timeline Chapter Synopses run, 2026-11-19, from slice 5; read. `docs/structure/structured-memory/records.md:240`
+(Memory tables) says `memory_chapters` "sits outside the memory table group and all lifecycle walks". Since that run
+the rebuild swap deletes a chat's chapters for every mode but backfill (`server/src/data/memoryStore.ts`, `swap`) and
+the `/inherit` route copies them (`store.memory.chapters.copy`); the record walks of a restore, the package, chat
+files, and checkpoints still skip the table.
+
+**Why it matters:** a reader of the records guide would conclude that no lifecycle path touches chapters and miss the
+swap's delete and the copy.
+
+**Suggested handling:** reword the sentence to name the record walks that skip the table and point at
+[lifecycle](../structure/structured-memory/lifecycle.md) and [rebuild](../structure/structured-memory/rebuild.md),
+which describe the two paths that do touch it.
 
 ## Headless host
 
@@ -344,6 +370,31 @@ nothing visible. The race is narrow: the event must be retracted between the hel
 **Suggested handling:** reproduce in the app (retract an event in another tab, then follow a Pages link to it before
 the panel's refresh settles); then either keep the target pending while a coverage read is out, or have an open event
 that turns retracted switch the view to Manage.
+
+### A malformed chapter row still claims its events, so every press pays for a failed chapter
+
+Timeline Chapter Synopses run, 2026-11-19, from slice 2's challenger; reproduced in a scratch SQLite database, not in
+the app. The chapter list (`createChapterTables` `list`, `server/src/data/memoryStore.ts:755`) leaves out a row that
+fails `isMemoryChapter`, but `save` (`:728`, through `ownedEventIds` at `:709`) still counts every event id in such a
+row's `events` array as owned. `chapterUnits` (`server/src/prompt/memory/structured/chapters.ts:83`) takes ownership
+from the list, so an event claimed only by a malformed row looks loose: `/chapters/cost` counts its unit, the model is
+called, and `add` refuses with "already belongs to another chapter", counted as failed, on every press.
+
+**Why it matters:** each press pays one model request for nothing. Only a malformed row reaches it (another build's
+shape, a manual edit, corruption); every row this build writes passes `isMemoryChapter`.
+
+**Suggested handling:** give `chapterUnits` a store read of claimed event ids that shares `save`'s extraction rule, or
+have the maker's first step remove malformed rows.
+
+### The Korean group-size help calls a chapter 챕터
+
+Timeline Chapter Synopses run, 2026-11-19, from slice 4; read. `eventsPerGroupHelp` in `src/lang/ko.ts:3400` reads
+"챕터가 생기면 같은 수를 챕터의 목표 크기로 씁니다", while the chapters plan's string rule fixes 장 for a chapter and
+줄거리 for its text, and the new `chapterAuto` help beside it and the Read view's strings use 장.
+
+**Why it matters:** the Korean Memory settings page shows two words for one thing.
+
+**Suggested handling:** reword the line with 장 in `ko.ts`.
 
 ## Modules and personas
 
