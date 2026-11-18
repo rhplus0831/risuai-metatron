@@ -36,17 +36,21 @@ vi.mock("src/ts/process/modules", () => ({
 }));
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
-vi.mock("src/ts/util", () => ({
+vi.mock("src/ts/util", async (original) => ({
     selectSingleFile: vi.fn(),
     decryptBuffer: vi.fn(),
     encryptBuffer: vi.fn(),
-    sleep: vi.fn(async () => undefined),
+    sleep: (await original<typeof import("src/ts/util")>()).sleep,
 }));
 
 import { language } from "src/lang";
+import PopupEditor from "src/lib/Others/PopupEditor.svelte";
+import * as popupEditorMode from "src/ts/gui/popupEditorMode";
+import * as serverAuth from "src/ts/storage/serverAuth";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { DEFAULT_MODEL_PROFILE_ID, normalizeModelProfile } from "../../../../../shared/presets.ts";
+import { buildTranslatorStepMessages } from "../../../../../shared/translation/pipeline.ts";
 import { isTranslatorPreset } from "../../../../../shared/translatorPresets.ts";
 import TranslatorPresetSettings from "./TranslatorPresetSettings.svelte";
 
@@ -110,12 +114,14 @@ beforeEach(() => {
     } as any);
 });
 
-afterEach(() => {
+afterEach(async () => {
     for (const instance of mounted.splice(0)) {
-        unmount(instance);
+        await unmount(instance);
     }
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
 });
 
 describe("selection by id", () => {
@@ -361,6 +367,44 @@ describe("the step editor", () => {
             "a",
         );
     }
+
+    it("counts a translator step prompt as written in the popup and fills only its slot in the request", async () => {
+        vi.useFakeTimers();
+        const prompt = "Polish {{slot::prev}}. Show {{upper::green}}";
+        settings.providers.useTokenizerCaching = false;
+        vi.spyOn(popupEditorMode, "readPopupEditorMonaco").mockReturnValue(false);
+        const count = vi.spyOn(serverAuth, "authFetch").mockResolvedValue(Response.json({ counts: [8] }));
+
+        threeSteps();
+        stepsOf()[1].prompt = prompt;
+        const page = render();
+        expect(
+            buildTranslatorStepMessages(stepsOf()[1], {
+                sourceText: "source text",
+                prevOutput: "previous translation",
+                outputsByKey: new Map(),
+                from: "en",
+                to: "ko",
+                translatorNote: "",
+            }),
+        ).toEqual([{ role: "system", content: "Polish previous translation. Show {{upper::green}}" }]);
+        button(box(page, "s2"), language.hotkeyDesc.popupEditor)!.click();
+        flushSync();
+
+        const popupTarget = document.createElement("div");
+        page.target.append(popupTarget);
+        mounted.push(mount(PopupEditor, { target: popupTarget }));
+        flushSync();
+        await vi.advanceTimersByTimeAsync(0);
+        flushSync();
+        expect(popupTarget.querySelector("textarea")?.value).toBe(prompt);
+        expect
+            .soft([...popupTarget.querySelectorAll("button")].map((button) => button.textContent?.trim()))
+            .not.toContain(language.preview);
+        const requests = count.mock.calls.map(([path, init]) => [path, JSON.parse(String(init?.body)).texts]);
+        expect.soft(requests).toEqual([["/api/tokens/count", [prompt]]]);
+        expect(popupTarget.textContent).toContain(`${language.tokens}: 8`);
+    });
 
     it("adds steps in their normalized form, each under a fresh id, up to five, and then hides the button", () => {
         const page = render();

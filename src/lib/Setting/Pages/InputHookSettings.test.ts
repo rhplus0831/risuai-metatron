@@ -14,11 +14,14 @@ vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: str
 vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 
 import { language } from "src/lang";
+import PopupEditor from "src/lib/Others/PopupEditor.svelte";
 import { alertConfirm } from "src/ts/alert";
+import * as popupEditorMode from "src/ts/gui/popupEditorMode";
 import { recordData } from "src/ts/storage/records.svelte";
+import * as serverAuth from "src/ts/storage/serverAuth";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
-import { MAX_INPUT_HOOKS, type InputHook } from "../../../../shared/inputHooks.ts";
+import { inputHookMessages, MAX_INPUT_HOOKS, type InputHook } from "../../../../shared/inputHooks.ts";
 import { normalizeModelProfile } from "../../../../shared/presets.ts";
 import InputHookSettings from "./InputHookSettings.svelte";
 
@@ -57,6 +60,7 @@ afterEach(async () => {
     if (component) await unmount(component);
     component = undefined;
     target.remove();
+    vi.restoreAllMocks();
     vi.useRealTimers();
 });
 
@@ -124,6 +128,40 @@ function beforeEdit() {
 }
 
 describe("InputHookSettings", () => {
+    it("counts a hook prompt as written in the popup and fills only its slot in the request", async () => {
+        const prompt = "Translate {{slot::content}}. Show {{upper::green}}";
+        settings.providers.useTokenizerCaching = false;
+        vi.spyOn(popupEditorMode, "readPopupEditorMonaco").mockReturnValue(false);
+        const count = vi.spyOn(serverAuth, "authFetch").mockResolvedValue(Response.json({ counts: [7] }));
+
+        render();
+        const editor = expand("Translate draft");
+        edit(field<HTMLTextAreaElement>(editor, language.inputHooks.prompt), prompt);
+        expect(inputHookMessages(storedHooks()[0], { content: "source text", draft: "draft text" })).toEqual([
+            { role: "user", content: "Translate source text. Show {{upper::green}}" },
+        ]);
+        editor.querySelector<HTMLButtonElement>(`button[aria-label="${language.hotkeyDesc.popupEditor}"]`)!.click();
+        flushSync();
+
+        const popupTarget = document.createElement("div");
+        target.append(popupTarget);
+        const popup = mount(PopupEditor, { target: popupTarget });
+        try {
+            flushSync();
+            await vi.advanceTimersByTimeAsync(0);
+            flushSync();
+            expect(popupTarget.querySelector("textarea")?.value).toBe(prompt);
+            expect
+                .soft([...popupTarget.querySelectorAll("button")].map((button) => button.textContent?.trim()))
+                .not.toContain(language.preview);
+            const requests = count.mock.calls.map(([path, init]) => [path, JSON.parse(String(init?.body)).texts]);
+            expect.soft(requests).toEqual([["/api/tokens/count", [prompt]]]);
+            expect(popupTarget.textContent).toContain(`${language.tokens}: 7`);
+        } finally {
+            await unmount(popup);
+        }
+    });
+
     it("shows Translation mode only on Draft cards and replaces the list when toggling it", () => {
         render();
         const editor = expand("Translate draft");
