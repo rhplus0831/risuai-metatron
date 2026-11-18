@@ -4,6 +4,7 @@
  * and supplies Escape, the terminal notice's OK, or the password once. It never clears safe boot.
  * Run state (passwordUsed and restartWait) survives pages and browser relaunches; load state does not.
  */
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import net from "node:net";
@@ -44,6 +45,7 @@ let passwordUsed = false;
 let stopping = false;
 let shutdownPromise;
 let rootUrl;
+let listenerSpki;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const safeText = (text) => redactCredentials(text, settings?.password, rootUrl && new URL(rootUrl).origin);
@@ -112,12 +114,14 @@ async function listenerScheme(host, port) {
         const socket = tls.connect({ host, port, rejectUnauthorized: false });
         // A wall-clock bound, not an idle timeout: even a peer sending bytes cannot extend it.
         const timer = setTimeout(() => finish("http"), 3_000);
-        function finish(scheme) {
+        function finish(scheme, certificate) {
             clearTimeout(timer);
             socket.destroy();
-            resolve(scheme);
+            resolve({ scheme, certificate });
         }
-        socket.once("secureConnect", () => finish("https"));
+        socket.once("secureConnect", () =>
+            finish("https", socket.authorized ? undefined : socket.getPeerX509Certificate()),
+        );
         socket.once("error", () => finish("http"));
         socket.once("end", () => finish("http"));
     });
@@ -164,8 +168,10 @@ async function launchBrowser() {
             handleSIGINT: false,
             handleSIGTERM: false,
             handleSIGHUP: !windows,
-            // Ignoring certificate errors is safe here only because the configured address is loopback.
-            ignoreHTTPSErrors: true,
+            // The exception trusts only the local listener's own public key.
+            // Chrome accepts any origin presenting that key.
+            ignoreHTTPSErrors: false,
+            args: listenerSpki ? [`--ignore-certificate-errors-spki-list=${listenerSpki}`] : [],
         });
         context = await launchingContext;
     } catch (error) {
@@ -503,8 +509,12 @@ async function main() {
     await mkdir(settings.profileDir, { recursive: true, mode: 0o700 });
     await waitForListener(settings.host, settings.port);
     if (stopping) return;
-    const scheme = await listenerScheme(settings.host, settings.port);
+    const { scheme, certificate } = await listenerScheme(settings.host, settings.port);
     if (stopping) return;
+    if (certificate) {
+        const spki = certificate.publicKey.export({ type: "spki", format: "der" });
+        listenerSpki = createHash("sha256").update(spki).digest("base64");
+    }
     rootUrl = hostRootUrl(scheme, settings.host, settings.port);
     log(`Starting ${JSON.stringify(settings.name)} at ${rootUrl}`);
     try {

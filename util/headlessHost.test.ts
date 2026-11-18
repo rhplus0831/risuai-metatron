@@ -1,13 +1,19 @@
 // @vitest-environment node
+import { createHash, createPublicKey } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { expect, it, onTestFinished, vi } from "vitest";
 import * as hostConfig from "./headlessHostConfig.mjs";
 
-// Run the CLI with its process, browser, and listener I/O replaced.
+// Run the CLI entry point with a fake clock and mocked I/O.
 const source = readFileSync(new URL("./headlessHost.mjs", import.meta.url), "utf8");
 const body = source.slice(source.indexOf("const windows = ")).replace('await import("playwright-core")', "driver");
+const listenerKey = createPublicKey({
+    key: Buffer.from("MCowBQYDK2VwAyEA11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=", "base64"),
+    format: "der",
+    type: "spki",
+});
 
 function connectedSocket(event: string) {
     const socket = Object.assign(new EventEmitter(), { setTimeout() {}, destroy() {} });
@@ -29,7 +35,7 @@ function createPage(pluginsOff: boolean) {
     });
 }
 
-function runHost({ pluginsOff = false } = {}) {
+function runHost({ pluginsOff = false, tlsAuthorized }: { pluginsOff?: boolean; tlsAuthorized?: boolean } = {}) {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const lines: string[] = [];
     const processStub = Object.assign(new EventEmitter(), {
@@ -54,10 +60,14 @@ function runHost({ pluginsOff = false } = {}) {
         newCDPSession: async () => Object.assign(new EventEmitter(), { send() {} }),
         newPage: async () => (page = createPage(pluginsOff)),
     });
+    const launchPersistentContext = vi
+        .fn<(profileDir: string, options: { ignoreHTTPSErrors: boolean; args?: string[] }) => Promise<typeof context>>()
+        .mockResolvedValue(context);
     runInNewContext(body, {
         ...hostConfig,
+        createHash,
         rootDir: "/test",
-        driver: { chromium: { launchPersistentContext: async () => context } },
+        driver: { chromium: { launchPersistentContext } },
         process: processStub,
         URL,
         Date,
@@ -67,16 +77,47 @@ function runHost({ pluginsOff = false } = {}) {
         mkdir: async () => {},
         existsSync: () => true,
         net: { connect: () => connectedSocket("connect") },
-        tls: { connect: () => connectedSocket("end") },
+        tls: {
+            connect: () =>
+                Object.assign(connectedSocket(tlsAuthorized === undefined ? "end" : "secureConnect"), {
+                    authorized: tlsAuthorized,
+                    getPeerX509Certificate: () => ({ publicKey: listenerKey }),
+                }),
+        },
     });
     return {
         lines,
+        launchPersistentContext,
         currentPage() {
             if (!page) throw new Error("Headless host has not opened a page");
             return page;
         },
     };
 }
+
+it.each([
+    { listener: "HTTP", scheme: "http", tlsAuthorized: undefined, expectedArgs: [] },
+    { listener: "verified HTTPS", scheme: "https", tlsAuthorized: true, expectedArgs: [] },
+    {
+        listener: "unverified HTTPS",
+        scheme: "https",
+        tlsAuthorized: false,
+        expectedArgs: ["--ignore-certificate-errors-spki-list=BuP9j9opu2CrWVV95h7bCuzbIxE0vjDnW0Vfjht5L6k="],
+    },
+])("scopes certificate exceptions for $listener", async ({ scheme, tlsAuthorized, expectedArgs }) => {
+    const host = runHost({ tlsAuthorized });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(host.lines).toContainEqual(expect.stringContaining(` at ${scheme}://127.0.0.1:6001/`));
+    const [, options] = host.launchPersistentContext.mock.calls[0];
+    const certificateArgs = (options.args ?? []).filter(
+        (arg) => arg.startsWith("--ignore-certificate-errors") || arg.startsWith("--allow-insecure-localhost"),
+    );
+    expect({ ignoreHTTPSErrors: options.ignoreHTTPSErrors, certificateArgs }).toEqual({
+        ignoreHTTPSErrors: false,
+        certificateArgs: expectedArgs,
+    });
+});
 
 it("backs off through repeated crashes and resets after a full minute ready", async () => {
     const host = runHost();
