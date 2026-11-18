@@ -7,7 +7,7 @@
 export const popUpEditorStore = $state({
     open: false,
     value: "",
-    mode: "default" as "default",
+    mode: "default" as "default" | "literal",
     language: "markdown" as string,
     sessionId: 0,
 });
@@ -26,12 +26,16 @@ let currentSessionId = 0;
  * editor closes, then writes the text back only while `isPopupEditorSessionCurrent` still holds, so an opener a newer
  * session replaced can neither write into it nor close it.
  */
-export function openPopupEditorSession(value: string, language = "markdown"): number {
+export function openPopupEditorSession(
+    value: string,
+    language = "markdown",
+    mode: typeof popUpEditorStore.mode = "default",
+): number {
     const sessionId = ++nextPopupEditorSessionId;
     currentSessionId = sessionId;
     popUpEditorStore.value = value;
-    popUpEditorStore.mode = "default";
-    popUpEditorStore.language = language;
+    popUpEditorStore.mode = mode;
+    popUpEditorStore.language = mode === "literal" ? "plaintext" : language;
     popUpEditorStore.sessionId = sessionId;
     popUpEditorStore.open = true;
     return sessionId;

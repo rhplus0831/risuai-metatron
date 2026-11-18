@@ -4,6 +4,10 @@ import { flushSync, mount, unmount } from "svelte";
 import { get } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const mocks = vi.hoisted(() => ({ authFetch: vi.fn<typeof import("src/ts/storage/serverAuth").authFetch>() }));
+vi.mock("src/ts/storage/serverAuth", async () =>
+    (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock({ authFetch: mocks.authFetch }),
+);
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 vi.mock("src/ts/process/modules", async (original) => ({
@@ -12,6 +16,9 @@ vi.mock("src/ts/process/modules", async (original) => ({
 }));
 
 import { language } from "src/lang";
+import PopupEditor from "src/lib/Others/PopupEditor.svelte";
+import PromptDataItem from "src/lib/UI/PromptDataItem.svelte";
+import { writePopupEditorMonaco } from "src/ts/gui/popupEditorMode";
 import { recordData } from "src/ts/storage/records.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
@@ -129,6 +136,69 @@ function rowAction(id: string, icon: "arrow-up" | "arrow-down" | "x") {
     button!.click();
     flushSync();
 }
+
+describe("expanded prompt editor", () => {
+    const literal = "Show {{upper::green}}";
+    const monacoPreference = "risu-popup-editor-monaco";
+    let previousMonaco: string | null;
+    let popup: ReturnType<typeof mount> | undefined;
+
+    beforeEach(() => {
+        previousMonaco = localStorage.getItem(monacoPreference);
+        writePopupEditorMonaco(false);
+    });
+
+    afterEach(async () => {
+        if (popup) await unmount(popup);
+        popup = undefined;
+        if (previousMonaco === null) localStorage.removeItem(monacoPreference);
+        else localStorage.setItem(monacoPreference, previousMonaco);
+        mocks.authFetch.mockReset();
+    });
+
+    function expandPrompt(editor: ParentNode) {
+        editor.querySelector<HTMLButtonElement>(`button[aria-label="${language.hotkeyDesc.popupEditor}"]`)!.click();
+        flushSync();
+        const popupTarget = document.createElement("div");
+        target.append(popupTarget);
+        popup = mount(PopupEditor, { target: popupTarget });
+        flushSync();
+        return popupTarget;
+    }
+
+    const previewButton = (editor: ParentNode) =>
+        [...editor.querySelectorAll("button")].find((button) => button.textContent?.trim() === language.preview);
+
+    it("counts the literal rule text in the popup without offering Preview", async () => {
+        settings.providers.requestInterceptions[0].prompt.text = literal;
+        settings.providers.useTokenizerCaching = false;
+        const requests: string[][] = [];
+        mocks.authFetch.mockImplementation(async (path, init) => {
+            expect(path).toBe("/api/tokens/count");
+            const { texts } = JSON.parse(String(init?.body)) as { texts: string[] };
+            requests.push(texts);
+            return Response.json({ counts: texts.map((text) => (text === literal ? 6 : 2)) });
+        });
+        render();
+        const editor = expandPrompt(open("first"));
+        expect(editor.querySelector("textarea")?.value).toBe(literal);
+        expect.soft(editor.textContent).toContain("plaintext");
+        expect.soft(previewButton(editor)).toBeUndefined();
+        await vi.advanceTimersByTimeAsync(0);
+        flushSync();
+        expect.soft(requests).toEqual([[literal]]);
+        expect(editor.textContent).toContain(`${language.tokens}: 6`);
+    });
+
+    it("offers Preview for a CBS-enabled template prompt", () => {
+        component = mount(PromptDataItem, {
+            target,
+            props: { promptItem: { ...first().prompt, text: literal }, isOpened: true },
+        });
+        flushSync();
+        expect(previewButton(expandPrompt(target))).toBeDefined();
+    });
+});
 
 describe("RequestInterceptionSettings", () => {
     it("appends an enabled model/start plain system rule and disables Add at 32 rules", () => {

@@ -48,6 +48,7 @@
         highlight?: boolean;
         onchange?: (e: { currentTarget: HTMLTextAreaElement | HTMLDivElement }) => void;
         popupLanguage?: string;
+        popupMode?: typeof popUpEditorStore.mode;
         popupEditor?: boolean | "auto";
         popupEditorContext?: unknown;
         ariaLabel?: string;
@@ -69,6 +70,7 @@
         highlight = false,
         onchange = () => {},
         popupLanguage = "markdown",
+        popupMode,
         popupEditor = "auto",
         popupEditorContext = undefined,
         ariaLabel = undefined,
@@ -104,7 +106,7 @@
         const initialContext = popupEditorContext;
         const initialContextRevision = popupEditorContextRevision;
         hideAutoComplete();
-        const sessionId = openPopupEditorSession(value, popupLanguage);
+        const sessionId = openPopupEditorSession(value, popupLanguage, popupMode);
         activePopupEditorSessionId = sessionId;
 
         const fieldIsCurrent = () =>

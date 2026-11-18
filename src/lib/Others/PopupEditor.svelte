@@ -20,6 +20,7 @@
      */
 
     const sessionId = untrack(() => popUpEditorStore.sessionId);
+    const countLiteralTokens = untrack(() => popUpEditorStore.mode === "literal");
     let languageMode = $state(popUpEditorStore.language || "markdown");
     let previewing = $state(false);
     let tokens = $state(0);
@@ -40,8 +41,8 @@
         return risuChatParserForDisplay(popUpEditorStore.value);
     });
 
-    type PreviewTokenCountInput = { text: string; scope: string } | { error: unknown };
-    const tokenField = createTokenCountField<PreviewTokenCountInput>({
+    type PopupTokenCountInput = { text: string; scope: string } | { error: unknown };
+    const tokenField = createTokenCountField<PopupTokenCountInput>({
         count: async (input, signal) => {
             if ("error" in input) throw input.error;
             return countTokens(input.text, undefined, signal);
@@ -51,13 +52,16 @@
     });
 
     $effect(() => {
-        if (!previewing) {
+        if (!previewing && !countLiteralTokens) {
             tokenField.reset();
             return;
         }
-        let input: PreviewTokenCountInput;
+        let input: PopupTokenCountInput;
         try {
-            input = { text: chatParserValue, scope: tokenScopeKey() };
+            input = {
+                text: countLiteralTokens ? popUpEditorStore.value : chatParserValue,
+                scope: tokenScopeKey(),
+            };
         } catch (error) {
             input = { error };
         }
@@ -114,6 +118,9 @@
                     </button>
                 {:else}
                     <span class="bg-bgcolor border-none rounded px-2 py-1 text-sm">{languageMode}</span>
+                    {#if countLiteralTokens}
+                        <span class="text-sm">{language.tokens}: {tokens}</span>
+                    {/if}
                 {/if}
                 <button
                     class="bg-red-500 text-white px-3 py-1 rounded hover:bg-red-600 transition"

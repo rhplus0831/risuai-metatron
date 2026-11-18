@@ -17,8 +17,7 @@
      * The defaults are the prompt template editor's (`PromptSettings.svelte`, which passes the preset's
      * `promptSettings`); the request interception page narrows them: `allowedTypes` limits the type select
      * (hidden, with its label, when it offers one type), `showType2` hides the special type select, `cbs`
-     * off renders the text areas as plain textareas (no CBS highlighting or `{{` autocomplete), and `extra`
-     * is rendered at the top of the opened row.
+     * off renders plain textareas with literal-text popups, and `extra` is rendered at the top of the opened row.
      */
 
     /** Every type the select can offer, in its order; `cot` is offered only with `customChainOfThought`. */
@@ -59,7 +58,7 @@
         promptSettings?: Pick<PromptSettings, "customChainOfThought" | "sendChatAsSystem">;
         /** Whether the special type (normal, main, global note) select is shown for plain items. */
         showType2?: boolean;
-        /** Whether the prompt text areas get CBS highlighting and autocomplete. */
+        /** Whether prompt text areas get CBS highlighting, autocomplete, and popup Preview. */
         cbs?: boolean;
         /** Rendered at the top of the opened row, before the name field. */
         extra?: Snippet;
@@ -87,6 +86,7 @@
         extra = undefined,
     }: Props = $props();
 
+    const popupMode = $derived(cbs ? "default" : "literal");
     const typeOptions = $derived(
         allowedTypes.filter((type) => type !== "cot" || !!promptSettings?.customChainOfThought),
     );
@@ -379,7 +379,12 @@
                 </SelectInput>
             {/if}
             <span>{language.prompt}</span>
-            <TextAreaInput highlight={cbs} bind:value={promptItem.text} popupEditorContext={rowPopupEditorContext} />
+            <TextAreaInput
+                highlight={cbs}
+                bind:value={promptItem.text}
+                {popupMode}
+                popupEditorContext={rowPopupEditorContext}
+            />
             <span>{language.role}</span>
             <SelectInput bind:value={promptItem.role}>
                 <OptionInput value="user">{language.user}</OptionInput>
@@ -389,7 +394,12 @@
         {/if}
         {#if promptItem.type === "chatML"}
             <span>{language.prompt}</span>
-            <TextAreaInput highlight={cbs} bind:value={promptItem.text} popupEditorContext={rowPopupEditorContext} />
+            <TextAreaInput
+                highlight={cbs}
+                bind:value={promptItem.text}
+                {popupMode}
+                popupEditorContext={rowPopupEditorContext}
+            />
         {/if}
         {#if promptItem.type === "cache"}
             <span>{language.depth}</span>
@@ -467,6 +477,7 @@
                 <TextAreaInput
                     highlight={cbs}
                     bind:value={promptItem.innerFormat}
+                    {popupMode}
                     popupEditorContext={rowPopupEditorContext}
                 />
                 <CheckInput
