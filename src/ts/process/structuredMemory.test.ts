@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import type { Message } from "../../../shared/database.ts";
 import { strFromU8, strToU8, zipSync, unzipSync } from "fflate";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { storyTimeText } from "src/lib/Others/StructuredMemory/memoryText";
 import { RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import type {
     MemoryEvent,
@@ -540,6 +541,23 @@ it("keeps a valid Timeline date when the restored event has no story-time text",
             ],
         },
     });
+});
+
+it("shows the ordinal in both the Timeline row and the opened event when story-time text is missing", async () => {
+    const stored = { id: "dated", storyTime: { date: { year: 2025, month: 4, day: 3 }, ordinal: 7 } };
+    authFetch
+        .mockResolvedValueOnce(Response.json({ revision: "r1", events: [stored], next: null }))
+        .mockResolvedValueOnce(Response.json({ revision: "r1", data: stored }));
+
+    const story = await readStructuredMemoryStory(ref);
+    if (story.outcome !== "ok") throw new Error(JSON.stringify(story));
+    const opened = await readStructuredMemoryRecord(ref, "events", stored.id);
+    if (opened.outcome !== "ok") throw new Error(JSON.stringify(opened));
+
+    expect({
+        row: storyTimeText(story.value.events[0].storyTime),
+        opened: storyTimeText(memoryEventView(opened.value.data).storyTime),
+    }).toEqual({ row: "2025-04-03 (7)", opened: "2025-04-03 (7)" });
 });
 
 it("stops collecting find rounds at 200 hits and reports more", async () => {
