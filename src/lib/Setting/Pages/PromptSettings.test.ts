@@ -166,6 +166,7 @@ it("reorders within a preset and discards a drag when its source preset is delet
         const target = render();
         const handles = () => [...target.querySelectorAll<HTMLElement>('[draggable="true"][style*="cursor"]')];
         const displayedOrder = () => handles().map((handle) => handle.querySelector("span")?.textContent);
+        const draggingRows = () => handles().filter((handle) => handle.parentElement?.classList.contains("opacity-50"));
         const savedPresets = () => server.record("presets", "main")!.data as botPreset[];
         const savedOrder = (id: string) =>
             savedPresets()
@@ -188,8 +189,21 @@ it("reorders within a preset and discards a drag when its source preset is delet
 
         expect(activePreset.id).toBe("X");
         expect(displayedOrder()).toEqual(["Y1", "Y2", "Y3"]);
+        const refusedDrag = startDrag(handles()[0]);
+        expect(draggingRows()).toHaveLength(1);
+        selectPreset("X");
+        flushSync();
+        refusedDrag(handles()[2], "dragover");
+        refusedDrag(handles()[2], "drop");
+        expect(draggingRows()).toHaveLength(0);
+
+        // Revisit the source without firing dragend, which also clears the drag state.
+        selectPreset("Y");
+        flushSync();
+        expect.soft(draggingRows()).toHaveLength(0);
         const [source, , destination] = handles();
         const drag = startDrag(source);
+        expect.soft(displayedOrder()).toEqual(["Y1", "Y2", "Y3"]);
         drag(destination, "dragover");
         drag(destination, "drop");
         drag(source, "dragend");
