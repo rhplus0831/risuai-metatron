@@ -688,15 +688,15 @@ function parseStoryRound(body: AnswerBody, cursor: number): StructuredMemoryStor
             if (typeof event.id !== "string") {
                 return [];
             }
-            const storyTime =
-                isPlainObject(event.storyTime) && typeof event.storyTime.text === "string" ? event.storyTime : {};
+            const storyTime = isPlainObject(event.storyTime) ? event.storyTime : {};
+            const text = storedText(storyTime.text);
             return [
                 {
                     id: event.id,
                     summary: storedText(event.summary) ?? "",
                     storyTime: {
-                        text: storedText(storyTime.text) ?? "",
-                        ...present("ordinal", storedCount(storyTime.ordinal)),
+                        text: text ?? "",
+                        ...present("ordinal", text === undefined ? undefined : storedCount(storyTime.ordinal)),
                         ...present("date", storedDate(storyTime.date)),
                     },
                     participants: storedTexts(event.participants),

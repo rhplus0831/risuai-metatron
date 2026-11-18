@@ -517,6 +517,31 @@ it("restarts the story after a second-round revision conflict, discarding earlie
     ]);
 });
 
+it("keeps a valid Timeline date when the restored event has no story-time text", async () => {
+    const date = { year: 2025, month: 4, day: 3 };
+    authFetch.mockResolvedValueOnce(
+        Response.json({
+            revision: "r1",
+            events: [
+                { id: "dated", storyTime: { date } },
+                { id: "malformed-date", storyTime: { date: { month: 2, day: 30 } } },
+            ],
+            next: null,
+        }),
+    );
+
+    expect(await readStructuredMemoryStory(ref)).toStrictEqual({
+        outcome: "ok",
+        value: {
+            revision: "r1",
+            events: [
+                { id: "dated", summary: "", storyTime: { text: "", date }, participants: [] },
+                { id: "malformed-date", summary: "", storyTime: { text: "" }, participants: [] },
+            ],
+        },
+    });
+});
+
 it("stops collecting find rounds at 200 hits and reports more", async () => {
     const hits = Array.from({ length: 201 }, (_, index) => ({
         kind: "event" as const,
