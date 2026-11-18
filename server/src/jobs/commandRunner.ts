@@ -3,6 +3,7 @@ import type { Chat, character } from "../../../shared/database.ts";
 import type { GenerationCommand, SkippedHook } from "../../../shared/jobs.ts";
 import type { triggerscript } from "../../../shared/triggers.ts";
 import { LuaJobFatalError } from "../lua/bindings.ts";
+import { runMemoryChapters } from "../prompt/memory/structured/chapters.ts";
 import { runMemoryRebuild } from "../prompt/memory/structured/rebuild.ts";
 import { runMemoryRecord } from "../prompt/memory/structured/recordJob.ts";
 import { runMemoryTest } from "../prompt/memory/structured/testRun.ts";
@@ -37,9 +38,9 @@ export type { GenerationRunnerDeps } from "./runSetup.ts";
 
 /**
  * The server's generation runner: `command` jobs run here (Lua buttons, forms, and manual triggers),
- * but for a start of the memory writer (`recordJob.ts`), a test run of it (`testRun.ts`), or a chat's
- * rebuild (`rebuild.ts`); every other kind (a send, a continue, a reroll, a group chat's send, or a
- * preview) is a prompt job (`prompt/runner.ts` `runPromptJob`).
+ * but for a start of the memory writer (`recordJob.ts`), a test run of it (`testRun.ts`), chapter
+ * synopses (`chapters.ts`), or a chat's rebuild (`rebuild.ts`); every other kind (a send, a continue,
+ * a reroll, a group chat's send, or a preview) is a prompt job (`prompt/runner.ts` `runPromptJob`).
  */
 export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRunner {
     return async (job) => {
@@ -49,6 +50,10 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
         }
         if (job.command?.type === "memoryTest") {
             await runMemoryTest(job, deps);
+            return;
+        }
+        if (job.command?.type === "memoryChapters") {
+            await runMemoryChapters(job, deps);
             return;
         }
         if (job.command?.type === "memoryRebuild") {

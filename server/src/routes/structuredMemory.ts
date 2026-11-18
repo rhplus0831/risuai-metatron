@@ -28,6 +28,7 @@ import {
     type MemoryPage,
     type StructuredMemoryAbandonAnswer,
     type StructuredMemoryAdoptAnswer,
+    type StructuredMemoryChapterCostAnswer,
     type StructuredMemoryChapterRemoveAnswer,
     type StructuredMemoryChaptersAnswer,
     type StructuredMemoryContentsAnswer,
@@ -74,6 +75,7 @@ import { readChatBindingLookup } from "../jobs/chatBinding.ts";
 import { loadJobScope } from "../jobs/jobScope.ts";
 import { jobMemoryBlockingReason } from "../prompt/runner.ts";
 import { adoptedEvents } from "../prompt/memory/structured/adopt.ts";
+import { chapterUnits } from "../prompt/memory/structured/chapters.ts";
 import {
     applyEventRepair,
     applyEventRelease,
@@ -563,6 +565,8 @@ type RoundRead = {
  * - `GET /api/memory/structured/:characterId/:chatId/chapters` answers `StructuredMemoryChaptersAnswer`:
  *   the current memory revision and well-shaped chapters in storage order. 404 `chatGone`, or 413
  *   `tooLarge` if the chapters' total stored bytes exceed `packageRoundBytes`, checked before reading bodies.
+ * - `GET /api/memory/structured/:characterId/:chatId/chapters/cost` counts the eligible chapter units
+ *   (`StructuredMemoryChapterCostAnswer`) from stored events, chapters and writer settings. 404 `chatGone`.
  * - `POST /api/memory/structured/:characterId/:chatId/chapters/remove` accepts `{ ids }`, 1 to 256
  *   resource ids under the 64 KiB edit body cap. Other shapes or invalid ids are 400. After the epoch,
  *   fence and maintenance checks, it removes matching rows and answers `StructuredMemoryChapterRemoveAnswer`
@@ -1155,6 +1159,23 @@ export function registerStructuredMemoryRoutes(
             if (listed === null) return c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
             if (listed === "tooLarge") return c.json({ error: REFUSAL_TEXT.chaptersTooLarge, reason: "tooLarge" }, 413);
             return compressedJson(c, listed satisfies StructuredMemoryChaptersAnswer);
+        } catch (error) {
+            return storeErrorResponse(c, error);
+        }
+    });
+
+    app.get(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/chapters/cost`, limiter, authenticated, (c) => {
+        const { characterId, chatId } = c.req.param();
+        if (!isValidResourceId(characterId) || !isValidResourceId(chatId)) {
+            return c.json({ error: "characterId and chatId must be ids" }, 400);
+        }
+        if (c.req.header(RESOURCE_EPOCH_HEADER) !== store.epoch()) {
+            return c.json({ error: "EpochMismatch", epoch: store.epoch() }, 412);
+        }
+        try {
+            const units = chapterUnits(store, { chaId: characterId, chatId });
+            if (units === null) return c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
+            return compressedJson(c, { units: units.length } satisfies StructuredMemoryChapterCostAnswer);
         } catch (error) {
             return storeErrorResponse(c, error);
         }

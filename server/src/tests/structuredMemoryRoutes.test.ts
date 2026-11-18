@@ -718,6 +718,75 @@ function observeMemoryRows(kinds = ["pages", "events", "threads", "runs"]) {
     return { metadata, bodies, statements, restore: () => spies.forEach((spy) => spy.mockRestore()) };
 }
 
+it("admits both chapter command shapes and rejects malformed commands before dispatch", async () => {
+    const admitted: RunningJob["command"][] = [];
+    const s = await server({
+        generationRunner: async (job) => {
+            admitted.push(job.command);
+            job.emit({ type: "done", revision: job.context.chatRevision });
+        },
+    });
+    const context = bindChat(s);
+    const post = (fields: Record<string, unknown>) =>
+        s.json("/api/generations", {
+            kind: "command",
+            clientId: "tab",
+            context,
+            command: { type: "memoryChapters", ...fields },
+        });
+
+    for (const fields of [
+        { limit: 0 },
+        { limit: 21 },
+        { limit: 1.5 },
+        { limit: 1, remake: "old" },
+        { remake: "" },
+        { remake: ".." },
+    ]) {
+        expect((await post(fields)).status, JSON.stringify(fields)).toBe(400);
+    }
+    const accepted = [{ limit: 1 }, { limit: 20 }, { remake: "chapter-문" }];
+    for (const fields of accepted) {
+        expect((await post(fields)).status, JSON.stringify(fields)).toBe(200);
+        await s.context.generationJobs.drain();
+    }
+    expect(admitted).toEqual(accepted.map((fields) => ({ type: "memoryChapters", ...fields })));
+});
+
+it("counts eligible chapter units without writing or cleaning up orphans", async () => {
+    const s = await server();
+    bindChat(s);
+    const events = Array.from({ length: 30 }, (_, i) => ({
+        ...event(`e${i}`),
+        sources: [{ messageId: "u", index: 0, hash: messageSourceHash({ role: "user", data: "A gate." }) }],
+    }));
+    const gone = event("gone");
+    const orphan = chapter(gone);
+    s.write({ events: [...events, gone] });
+    s.store.memory.chapters.add(characterId, chatId, s.epoch, orphan);
+    const revision = s.write({ events: [{ ...gone, status: "retracted" }] });
+    const reader = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"), { readOnly: true });
+    cleanups.push(() => reader.close());
+    const version = reader.prepare("PRAGMA data_version");
+    const cost = async () => {
+        const before = version.get();
+        const result = await answer(await s.request(`${base}/chapters/cost`));
+        expect(version.get()).toEqual(before);
+        return result;
+    };
+    const model = vi.spyOn(s.context.llmRequests, "runInJob");
+    try {
+        expect(await cost()).toEqual({ units: 2 });
+        const existing = chapter(events[0]);
+        s.store.memory.chapters.add(characterId, chatId, s.epoch, existing);
+        expect(await cost()).toEqual({ units: 1 });
+        expect(s.store.memory.chapters.list(characterId, chatId)).toEqual({ revision, chapters: [orphan, existing] });
+        expect(model).not.toHaveBeenCalled();
+    } finally {
+        model.mockRestore();
+    }
+});
+
 it("lists chapters with the memory revision and refuses an oversized list before reading any chapter body", async () => {
     const events = [event("first"), event("second")];
     const [first, second] = events.map(chapter);

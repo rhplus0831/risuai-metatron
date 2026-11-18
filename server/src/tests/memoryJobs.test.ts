@@ -4400,6 +4400,92 @@ describe("structured memory job hand-offs", () => {
         const testJob = (chaId: string, hooks?: Record<string, unknown>) =>
             job("command", chaId, { mode: "manual" }, { command: { type: "memoryTest" }, ...(hooks ? { hooks } : {}) });
 
+        it("reports the made chapter in done and remakes it with the same frame under fine-tuning", async () => {
+            const settings = { eventsPerGroup: 3, instructions: "Keep harbor names.", language: "English" };
+            await patchHypaV3({ structured: settings });
+            const chaId = await seedCharacter({ count: 16 });
+            await setChatMeta(chaId, { structuredMemoryLanguage: "Korean" });
+            const store = testStore();
+            onTestFinished(() => store.close());
+            const messages = store.readChatSource(chaId, "k").data!.message;
+            const events = memoryRecords(messages.map((_, i) => `e${i}`)).events.map((event, i) => ({
+                ...event,
+                sources: [{ messageId: messages[i].chatId!, index: i, hash: messageSourceHash(messages[i]) }],
+            }));
+            const revision = writeMemory(store, chaId, "k", { events });
+            const first = { title: "Crossing", synopsis: "Mira found the ferry." };
+            const second = { title: "The ferry", synopsis: "Mira reached the landing." };
+            state.summaries = [JSON.stringify(first), JSON.stringify(second)];
+            const command = (fields: Record<string, unknown>) =>
+                job("command", chaId, { mode: "manual" }, { command: { type: "memoryChapters", ...fields } });
+            const made = await command({ limit: 1 });
+            expect(made.terminal).toMatchObject({
+                type: "done",
+                result: { kind: "memoryChapters", made: 1, failed: 0, left: 1 },
+            });
+            const route = `/api/memory/structured/${chaId}/k/chapters`;
+            const saved = (await api(route)).body;
+            expect(saved).toMatchObject({
+                revision,
+                chapters: [{ ...first, events: [{ id: "e0" }, { id: "e1" }, { id: "e2" }] }],
+            });
+
+            await patchHypaV3({
+                structured: {
+                    ...settings,
+                    fineTuning: true,
+                    analysisPrompt: "Custom analysis frame",
+                    patchPrompt: "Custom patch frame",
+                },
+            });
+            const remade = await command({ remake: saved.chapters[0].id });
+            expect(remade.terminal).toMatchObject({
+                type: "done",
+                result: { kind: "memoryChapters", remade: "replaced" },
+            });
+            const updated = (await api(route)).body;
+            expect(updated).toMatchObject({ revision, chapters: [{ ...second, events: saved.chapters[0].events }] });
+            expect(updated.chapters[0].id).not.toBe(saved.chapters[0].id);
+            const prompts = summaries().map(({ body }) => body.messages);
+            expect(prompts).toHaveLength(2);
+            expect(JSON.stringify(prompts[0])).toContain("Korean");
+            expect(JSON.stringify(prompts[0])).toContain(settings.instructions);
+            expect(prompts[1]).toEqual(prompts[0]);
+            expect(store.memory.readContents(chaId, "k")!.runs).toEqual([]);
+        });
+
+        it.each([
+            ["queued writer", /writer is working/i],
+            ["running writer", /writer is working/i],
+            ["plugin memory model", /plugin model/i],
+            ["request trigger", /request trigger/i],
+            ["memory off", /memory is turned off/i],
+        ] as const)("refuses the chapter command for %s", async (reason, message) => {
+            const chaId = await seedCharacter({
+                messages,
+                extra: reason === "request trigger" ? { lowLevelAccess: true, triggerscript: [requestTrigger] } : {},
+            });
+            if (reason === "queued writer" || reason === "running writer") {
+                fake.setStatus({
+                    kind: "structuredMemory",
+                    taskId: "writer",
+                    state: reason === "queued writer" ? "queued" : "running",
+                    done: 0,
+                    total: 1,
+                });
+            }
+            if (reason === "plugin memory model") await pluginSlot(true);
+            if (reason === "memory off") await setChatMeta(chaId, { memoryEnabled: false });
+            const result = await job(
+                "command",
+                chaId,
+                { mode: "manual" },
+                { command: { type: "memoryChapters", limit: 1 }, hooks: pluginHooks },
+            );
+            expect(result.terminal).toMatchObject({ type: "error", message: expect.stringMatching(message) });
+            expect(upstream).toHaveLength(0);
+        });
+
         it("re-records a greeting through the job without a message id or eligible user and expands plain-text names", async () => {
             const storedText = "{{char}} greets {{user}}.";
             const held = [

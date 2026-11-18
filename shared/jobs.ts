@@ -117,9 +117,10 @@ export const MAX_TRIGGER_NAME_BYTES = 4096;
  * `/trigger`) by name (its `risu-id` is `context.triggerId`), a person's start of Structured
  * Memory's writer: "record now" through the message `messageId`, which that press confirms, or resume
  * without one, a test run of that writer over the chat's last window, which saves nothing and answers
- * on `done.result` (`StructuredMemoryTestResult`), or a rebuild of the chat's records from its
- * transcript: a start in windows of `turns` turns, or a resume of the run the chat holds. The memory
- * commands are the only ones a group chat runs.
+ * on `done.result` (`StructuredMemoryTestResult`), chapter synopses (up to `limit` requests or a
+ * remake of one chapter by id, returning `StructuredMemoryChaptersResult`), or a rebuild of the
+ * chat's records from its transcript: a start in windows of `turns` turns, or a resume of the run
+ * the chat holds. The memory commands are the only ones a group chat runs.
  */
 export type GenerationCommand =
     | { type: "button"; data: string }
@@ -127,6 +128,8 @@ export type GenerationCommand =
     | { type: "manual"; name: string }
     | { type: "memoryRecord"; messageId?: string }
     | { type: "memoryTest" }
+    | { type: "memoryChapters"; limit: number }
+    | { type: "memoryChapters"; remake: string }
     | { type: "memoryRebuild"; mode: StructuredMemoryRebuildMode; turns: 1 | 2 }
     | { type: "memoryRebuild"; resume: true };
 

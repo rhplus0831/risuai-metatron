@@ -121,10 +121,10 @@ refusal the memory step recovered from or outlived replaces no later error.
 ### Prompt job execution
 
 - `createGenerationRunner`'s comment in `server/src/jobs/commandRunner.ts` owns dispatch, including the `memoryRecord`,
-  `memoryTest`, and `memoryRebuild` exceptions. Button, form, and manual commands use `runCommand`; other kinds use
-  `runPromptJob`. `runPromptJob` delegates one send to `runPromptSend` and emits `done` after it returns; command
-  sequences use `runPromptSend` per part ([Command sequences](#command-sequences)). `runPromptJob`'s comment is the
-  send's order.
+  `memoryTest`, [`memoryChapters`](structured-memory/writer.md#the-chapter-call), and `memoryRebuild` exceptions.
+  Button, form, and manual commands use `runCommand`; other kinds use `runPromptJob`. `runPromptJob` delegates one send
+  to `runPromptSend` and emits `done` after it returns; command sequences use `runPromptSend` per part
+  ([Command sequences](#command-sequences)). `runPromptJob`'s comment is the send's order.
 - `assemblePrompt` runs per speaker; its `AssemblyHost` supplies the job's services. Assembly's prompt and lore behavior
   is owned by [chat pipeline](chat-pipeline.md); memory algorithms are owned by [memory](memory.md).
 - The send reserves space at the final token recheck for MCP tool schemas and the messages that the reply's request

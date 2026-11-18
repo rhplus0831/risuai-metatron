@@ -4,7 +4,7 @@
 
 - Owns the `structuredMemory` writer: its settings and their overrides, the windows it records, its task kind in the
   memory task service, a writer run, the analysis and patch prompts, admission of the model's answer, the pages it
-  maintains, and record now with the `memoryRecord` job.
+  maintains, record now with the `memoryRecord` job, and Timeline synopses with the `memoryChapters` job.
 - Enter through `structuredMemoryStep` for a send, `runMemoryRecord` for a press and `createMemoryTasks` for a
   background writer. The [memory guide](../memory.md#selection-in-assembleprompt) owns chat enablement and algorithm
   selection. The [area index](README.md) routes record storage, read selection, repairs and rebuild.
@@ -25,7 +25,7 @@
   `windowStillConfirmed`, `windowOf`.
 - `server/src/prompt/memory/structured/prompts.ts`: prompt frames and safe slot filling; `analysisSlots`,
   `assembleAnalysisPrompt`, `patchSlots`, `assemblePatchPrompt`, `compactSlots`, `assembleCompactPrompt`,
-  `parseCustomFrame`, `defaultPrompts`, `sceneTakenBackLines`.
+  `chapterSlots`, `assembleChapterPrompt`, `parseCustomFrame`, `defaultPrompts`, `sceneTakenBackLines`.
 - `server/src/prompt/memory/structured/analysis.ts`: answer parsing and evidence admission; `parseAnalysis`,
   `admitAnalysis`.
 - `server/src/prompt/memory/structured/pages.ts`: writer page planning and changes; `castSlice`, `planPages`,
@@ -36,7 +36,11 @@
 - `server/src/prompt/memory/structured/compact.ts`: section compaction admission; `compactionTargets`, `readCompaction`,
   `applyCompactions`.
 - `server/src/prompt/memory/structured/writer.ts`: run lifecycle and guarded writes; `createStructuredWriter`,
-  `commitWindow`, `writerRequestDb`, `writerHostDeps`, `adoptionHold`, `chatAdoptionHold`, re-exported `writerPaused`.
+  `commitWindow`, `writerRequestDb`, `writerHostDeps`, `writerSettings`, `writerLanguage`, `adoptionHold`,
+  `chatAdoptionHold`, re-exported `writerPaused`.
+- `server/src/prompt/memory/structured/testRun.ts` supplies `detachedHostDeps` for test runs and chapter commands.
+- `server/src/prompt/memory/structured/chapters.ts` owns `chapterUnits`, `readChapter`, `makeChapters`, `remakeChapter`
+  and the command runner `runMemoryChapters`.
 - `server/src/prompt/memory/structured/recordJob.ts`: manual recording jobs and send-approved gaps; `runMemoryRecord`,
   `admitRecord`, `recordGapInJob`, `RECORD_REFUSALS`.
 - `server/src/prompt/memory/memoryTasks.ts`: writer task kind in the shared service; `createMemoryTasks`,
@@ -205,6 +209,28 @@ target exclusions and answer warnings. The final commit recomputes pages with st
 applies shorter bodies through `changeSection` so the patch and compaction each get a history entry in one write.
 Compaction changes no event, and a warning does not fail the run.
 
+### The chapter call
+
+`memoryChapters` uses record admission and the detached writer host. A plugin memory model, a request trigger, or a
+queued or running writer task refuses the command. Each call sends one unit's story dates, titles and summaries in
+message order. Its code-owned frame applies even with `fineTuning` on and adds the preset's bounded `instructions`. It
+asks for a JSON title and synopsis within `eventTitleChars` and `chapterSynopsisChars`, in the writer language (chat
+override, owner, preset, then app). The synopsis may say only what the events say, preserving names and stated dates and
+avoiding wording relative to the reading day.
+
+- With `limit` (1 to 20), the command first removes chapters with no surviving unretracted member. It reads the
+  [eligible units](records.md#state) from the current store before each request, then tries the oldest set of ordered
+  IDs it has yet to send. It reports `made`, `failed` and the fresh count `left`. A failed, blank or unusable reply, a
+  unit that changed during the call, or a store validation refusal counts as one failure.
+- With `remake`, only the named chapter's placed, unretracted members go into the call, regardless of age or group size.
+  A successful replacement gets a fresh ID. An absent chapter or one with no surviving unretracted member answers
+  `removed`, including a repeat after removal. If all surviving members are unplaced, the answer fails, the ordered
+  members change, or the store refuses the replacement, the command reports `kept`.
+- The command takes no writer lease. One process owns the database, so the guard, a fresh check of ordered IDs and
+  marks, and the synchronous add or replace run without an intervening write. The guard checks cancellation, the job's
+  write permission, the store epoch and the chat source generation. A refused guard or thrown host failure ends the
+  command with earlier chapters and the orphan cleanup kept. Chapter calls write no writer run or model or token totals.
+
 ## State
 
 - The records a writer run leaves, and the tables holding them: [structured memory](records.md#memory-tables).
@@ -214,8 +240,8 @@ Compaction changes no event, and a warning does not fail the run.
   the chat's stored id to `readWriterSettings`.
 - A chat's `structuredMemoryLanguage` wins over its owner's, and the owner's over the preset's `language`, where `""`
   follows `db.language`. A chat's `structuredMemoryHighlight` wins over the preset's `highlightMode`.
-- `eventsPerGroup` (3 to 30, default `STRUCTURED_MEMORY_LIMITS.eventsPerGroup`) is display-only: the Timeline's group
-  size, which the writer never reads.
+- `eventsPerGroup` (3 to 30, default `STRUCTURED_MEMORY_LIMITS.eventsPerGroup`) sets the Timeline's display group size
+  and the target size for new chapters. Chapter eligibility reads the chat's currently bound memory preset.
 - `omitUserMessages` defaults to false and applies to events recorded from then on. On, the writer is handed no user
   message, as a window message or a context line, and a quote only a user message holds is `quoteNotFound`; its events
   still cite the user messages, so coverage and reconciliation read them as before, and turning it off leaves no message
@@ -286,7 +312,7 @@ Compaction changes no event, and a warning does not fail the run.
 
 - A new writer setting: `StructuredMemorySettings`, `normalizeStructuredMemorySettings`, and the fresh-boot fixture
   `src/ts/storage/tests/fixtures/boot/boot-snapshot.json`. Verify its inclusion in `structuredMemoryFingerprint`.
-  History highlight settings and the display-only `eventsPerGroup` are excluded.
+  History highlight settings and the Timeline and chapter group size (`eventsPerGroup`) are excluded.
 
 ## Tests
 
@@ -305,6 +331,9 @@ Compaction changes no event, and a warning does not fail the run.
   pure pieces with plain values; `prompts.test.ts` parses with the real CBS evaluator. The one-scene rule is in
   `memoryStore.test.ts` and `restoreStage.test.ts`.
 - Compaction's calls and its one commit: `memoryTasks.test.ts`.
+- The chapter call: `structured/chapters.test.ts` drives the maker and the remake with a scripted host over a real
+  store; `prompts.test.ts` the frame; `memoryStore.test.ts` the chapter order; `structuredMemoryRoutes.test.ts` the
+  command shapes and `/chapters/cost`; `memoryJobs.test.ts` the command and its refusals on a real stack.
 - Record now: `memoryTasks.test.ts` for the lock refusal and `through`; `memoryJobs.test.ts` for the job's two paths on
   a real stack.
 - Focused command:

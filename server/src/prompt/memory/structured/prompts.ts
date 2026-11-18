@@ -9,7 +9,9 @@ import {
     MEMORY_PATCH_OPS,
     MEMORY_THREAD_STATES,
     type MemoryPage,
+    type MemoryStoryDate,
     type MemoryThread,
+    formatStoryDate,
     memorySectionBudget,
     memorySceneFieldLimit,
     memoryThreadEnded,
@@ -26,8 +28,8 @@ import type { PatchRow } from "./patches.ts";
 import type { WriterWindow } from "./window.ts";
 
 /**
- * The writer's three prompts: ChatML frames with named slots, read through the task host's parser. The
- * frame and the preset's `instructions` go through ChatML and CBS. The slot values are filled in
+ * The writer and chapter prompts: ChatML frames with named slots, read through the task host's parser.
+ * The frame and the preset's `instructions` go through ChatML and CBS. The slot values are filled in
  * afterwards, in one pass over the parsed messages, so chat and model text never reach CBS and cannot
  * start a ChatML message, and a value that holds a slot's name stays as it is.
  *
@@ -35,8 +37,8 @@ import type { WriterWindow } from "./window.ts";
  * call (`parseCustomFrame`): the same parser and the same filling, with `instructions` left out, since
  * the person writes the frame. A custom frame is checked after CBS and before filling, so a CBS branch
  * cannot hide a slot: it must quote the call's required slots, because a call without its messages or
- * its pages has nothing to validate against. The compaction frame stays code's in both modes, and so does
- * what the slots hold, which is why the answer's validation is the same whatever the frame.
+ * its pages has nothing to validate against. Code owns the compaction and chapter frames in both modes
+ * and defines what the slots hold, so the answer's validation is the same whatever the frame.
  * The preset's `keyLineGuidance` adds one rule to the analysis `rules` slot, including in a custom frame
  * that quotes it; default-prompts answers, patch calls, and compaction calls keep their rules.
  *
@@ -240,8 +242,8 @@ Messages to record:
 }
 
 /**
- * The preset's text as the patch and compaction frames add it, cut to `promptPatchChars`, which is what
- * keeps the patch prompt within the run's margin.
+ * The preset's text as the patch, compaction and chapter frames add it, cut to `promptPatchChars`,
+ * which is what keeps the patch prompt within the run's margin.
  */
 function addedInstructions(instructions: string): string {
     const text = clampText(instructions.trim(), LIMITS.promptPatchChars);
@@ -430,6 +432,24 @@ export function compactSlots({ language, target }: CompactInput): CompactSlots {
     };
 }
 
+/** One JSON row per event, in story order, with the same text and date its mark covers. */
+export function chapterSlots({
+    language,
+    events,
+}: {
+    language: string;
+    events: readonly { date?: MemoryStoryDate; title: string; summary: string }[];
+}) {
+    return {
+        language: clampText(language, LIMITS.labelChars),
+        events: events
+            .map(({ date, title, summary }) =>
+                JSON.stringify({ date: date ? formatStoryDate(date) : null, title, summary }),
+            )
+            .join("\n"),
+    };
+}
+
 /** The parsed `messages` with their slots filled in one pass; a name that is no slot stays as it is. */
 export function fillSlots(messages: readonly OpenAIChat[], slots: Record<string, string>): OpenAIChat[] {
     return messages.map((message) => ({
@@ -535,4 +555,19 @@ export function assembleCompactPrompt(
     slots: CompactSlots,
 ): OpenAIChat[] {
     return assemblePrompt(host, compactFrame(instructions), slots);
+}
+
+/** The chapter frame always reads the ordered events through slots, including under fine-tuning. */
+export function assembleChapterPrompt(
+    host: Pick<MemoryHost, "parseChatML">,
+    instructions: string,
+    slots: ReturnType<typeof chapterSlots>,
+): OpenAIChat[] {
+    const frame = `<|im_start|>system<|im_sep|>Write a chapter synopsis of these events in story order. Say only what the events say. Keep the names and dates they give. Avoid wording relative to the day someone reads the synopsis.
+
+Answer with one JSON object, { "title": "...", "synopsis": "..." }. Use at most ${LIMITS.eventTitleChars} characters for the title and ${LIMITS.chapterSynopsisChars} for the synopsis.
+Write both in this language: {{slot::language}}${addedInstructions(instructions)}<|im_end|>
+<|im_start|>user<|im_sep|>Events:
+{{slot::events}}<|im_end|>`;
+    return assemblePrompt(host, frame, slots);
 }

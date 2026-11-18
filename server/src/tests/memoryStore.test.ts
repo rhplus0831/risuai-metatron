@@ -27,6 +27,7 @@ import {
     type ResourceStore,
     ResourceValidationError,
 } from "../data/resourceStore.ts";
+import { chapterUnits } from "../prompt/memory/structured/chapters.ts";
 import { readRecordSet, rebuildChanges } from "../prompt/memory/structured/rebuild.ts";
 import { installSnapshot, stageSnapshot } from "./stagedRestore.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
@@ -206,6 +207,27 @@ function chapter(id: string, ...events: MemoryEvent[]): MemoryChapter {
         })),
     };
 }
+
+it("orders chapter events by their earliest current message and excludes retracted and unplaced events before grouping", () => {
+    const { store } = fileStore();
+    seed(store);
+    const messages = Array.from({ length: 20 }, (_, i) => ({ chatId: `m${i}`, role: "user" as const, data: `m${i}` }));
+    store.applyChanges({
+        chats: [group(store.chatRevision("c", "k"), [{ op: "append", anchor: { end: true }, messages }])],
+    });
+    const placed = messages.map(({ chatId }, i) => eventCiting(`e${i}`, i === 0 ? ["m19", chatId] : [chatId]));
+    placed[2].status = "stale";
+    write(store, contents(store).revision, {
+        events: [
+            { ...eventCiting("retracted", ["m0"]), status: "retracted" },
+            eventCiting("unplaced", ["gone"]),
+            ...placed.toReversed(),
+        ],
+    });
+    expect(chapterUnits(store, { chaId: "c", chatId: "k" })?.map((unit) => unit.map(({ id }) => id))).toEqual([
+        placed.slice(0, 10).map(({ id }) => id),
+    ]);
+});
 
 it("adds chapters only for current, unretracted, unclaimed events in the current epoch", () => {
     const { store } = fileStore();

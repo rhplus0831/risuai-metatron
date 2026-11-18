@@ -1200,6 +1200,14 @@ export type StructuredMemoryTestResult = {
     outputTokens: number;
 };
 
+/** The chapter cost route counts currently eligible units. */
+export type StructuredMemoryChapterCostAnswer = { units: number };
+
+/** The chapter command's done result. A remake of an already absent chapter also answers `removed`. */
+export type StructuredMemoryChaptersResult =
+    | { kind: "memoryChapters"; made: number; failed: number; left: number }
+    | { kind: "memoryChapters"; remade: "replaced" | "removed" | "kept" };
+
 /**
  * The input tokens of `calls` analysis calls over windows of `windowBytes` UTF-8 bytes. An estimate at three
  * bytes a token, because a route has no job scope to reach a real tokenizer.

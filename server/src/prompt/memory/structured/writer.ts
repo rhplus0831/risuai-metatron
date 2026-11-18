@@ -224,7 +224,7 @@ export function chatAdoptionHold(
     return adoptionHold(contents, () => store.chatMeta(chaId, chatId)?.data.hypaV3Data);
 }
 
-const writerSettings = (host: MemoryHost) =>
+export const writerSettings = (host: MemoryHost) =>
     normalizeStructuredMemorySettings(selectedHypaV3Preset(host.db)?.settings?.structured);
 
 /**
@@ -287,7 +287,13 @@ function readPages(store: Pick<WriterStore, "memory">, arg: WriterArg, contents:
 }
 
 /** The language a run writes in: the chat's override, its owner's, the preset's, then the app's. */
-function writerLanguage({ scope, host, input }: WriterArg): string {
+export function writerLanguage({
+    scope,
+    host,
+    input,
+}: Pick<WriterArg, "scope" | "host"> & {
+    input: Pick<WriterArg["input"], "chatRef">;
+}): string {
     const owner = scope.db.characters.find((entry) => entry?.chaId === input.chatRef.chaId);
     return structuredMemoryWriterLanguage(scopeChat(scope), owner, writerSettings(host).language, host.db.language);
 }

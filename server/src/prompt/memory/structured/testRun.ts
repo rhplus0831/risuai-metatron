@@ -76,7 +76,7 @@ const TEST_REFUSALS: Readonly<Record<NonNullable<ReturnType<typeof jobMemoryBloc
 const NO_SLOT_WARNINGS: StructuredMemorySlotWarnings = { unquoted: [], unknown: [] };
 
 /** The host dependencies of a detached run from the job runner's. */
-function detachedHostDeps(deps: GenerationRunnerDeps): MemoryTaskHostDeps {
+export function detachedHostDeps(deps: GenerationRunnerDeps): MemoryTaskHostDeps {
     return {
         llm: deps.llm,
         embeddings: deps.embeddings,

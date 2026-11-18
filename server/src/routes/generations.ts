@@ -78,7 +78,7 @@ function parseCommand(kind: string, value: unknown): GenerationCommand | undefin
         return value === undefined ? undefined : "command is only for a command job";
     }
     const invalidShape =
-        'command must be { type: "button", data: string }, { type: "form", key: string, values: Record<string, string | string[]> }, { type: "manual", name: string }, { type: "memoryRecord", messageId?: string }, { type: "memoryTest" }, { type: "memoryRebuild", mode: "rebuild" | "backfill", turns: 1 | 2 }, or { type: "memoryRebuild", resume: true }';
+        'command must be { type: "button", data: string }, { type: "form", key: string, values: Record<string, string | string[]> }, { type: "manual", name: string }, { type: "memoryRecord", messageId?: string }, { type: "memoryTest" }, { type: "memoryChapters", limit: integer from 1 to 20 }, { type: "memoryChapters", remake: chapterId }, { type: "memoryRebuild", mode: "rebuild" | "backfill", turns: 1 | 2 }, or { type: "memoryRebuild", resume: true }';
     if (isPlainObject(value) && value.type === "memoryRecord") {
         if (value.messageId === undefined) {
             return { type: "memoryRecord" };
@@ -89,6 +89,14 @@ function parseCommand(kind: string, value: unknown): GenerationCommand | undefin
     }
     if (isPlainObject(value) && value.type === "memoryTest") {
         return { type: "memoryTest" };
+    }
+    if (isPlainObject(value) && value.type === "memoryChapters") {
+        if (Object.keys(value).length !== 2) return invalidShape;
+        const { limit, remake } = value;
+        if (typeof limit === "number" && Number.isInteger(limit) && limit >= 1 && limit <= 20) {
+            return { type: "memoryChapters", limit };
+        }
+        return isValidResourceId(remake) ? { type: "memoryChapters", remake } : invalidShape;
     }
     if (isPlainObject(value) && value.type === "memoryRebuild") {
         if (value.resume === true) {

@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { expect, it } from "vitest";
+import { createHypaV3Preset } from "../../../../../shared/hypaV3Presets.ts";
 import type { Database, Message } from "../../../../../shared/database.ts";
 import { memoryRecords } from "../../../tests/memoryFixtures.ts";
 import { showTargets } from "./patches.ts";
@@ -20,6 +21,8 @@ import {
     promptThreads,
     assembleAnalysisPrompt,
     assembleCompactPrompt,
+    assembleChapterPrompt,
+    chapterSlots,
     compactSlots,
     type AnalysisInput,
     type AnalysisSlots,
@@ -181,6 +184,57 @@ it("expands named slots once after ChatML and CBS parse the frame and instructio
     expect(messages[1].content).toBe(
         `Pages:\nCast names\n\nScene:\nAt the inn\n\nOpen threads:\nOpen promise\n\nBefore these messages:\nEarlier context\n\nMessages to record:\n${literal}`,
     );
+});
+
+it("asks for a chapter in the writer language with the preset instructions and each event in order", () => {
+    const slots = chapterSlots({
+        language: "Korean",
+        events: [
+            { date: { year: 2026, month: 5, day: 7 }, title: "Crossing", summary: "Uma crossed the river." },
+            { date: { year: 2026, month: 4, day: 3 }, title: "Recollection", summary: "Uma recalled the inn." },
+        ],
+    });
+    function assemble(fineTuning: boolean) {
+        const preset = createHypaV3Preset(
+            "Story",
+            {
+                structured: {
+                    fineTuning,
+                    instructions: "Keep {{user}}'s spelling.",
+                    analysisPrompt: "Custom analysis frame",
+                    patchPrompt: "Custom patch frame",
+                },
+            },
+            "story",
+        );
+        const db = {
+            characters: [],
+            username: "Uma",
+            hypaV3Presets: [preset],
+            hypaV3PresetId: preset.id,
+        } as unknown as Database;
+        const { risuChatParser } = createNodeCbsEvaluator(db, { selectedCharID: -1 });
+        const host = { db, parseChatML: (text: string) => parseChatML(text, risuChatParser) };
+        return assembleChapterPrompt(host, preset.settings.structured!.instructions, slots);
+    }
+    const messages = assemble(false);
+    expect(assemble(true)).toEqual(messages);
+    const prompt = messages.map(({ content }) => content).join("\n");
+    expect(prompt).toContain("Korean");
+    expect(prompt).toContain("Keep Uma's spelling.");
+    expect(prompt).toMatch(/"title"/);
+    expect(prompt).toMatch(/"synopsis"/);
+    // Story order can run backwards in calendar time. Each date and summary belongs to its own title.
+    const spans = [
+        "2026-05-07",
+        "Crossing",
+        "Uma crossed the river.",
+        "2026-04-03",
+        "Recollection",
+        "Uma recalled the inn.",
+    ].map((text) => prompt.indexOf(text));
+    expect(Math.min(...spans)).toBeGreaterThanOrEqual(0);
+    expect(Math.max(...spans.slice(0, 3))).toBeLessThan(Math.min(...spans.slice(3)));
 });
 
 it("inserts the entire compaction section after CBS and ChatML parse without expanding its slots", () => {

@@ -1561,32 +1561,34 @@ function lastMemoryManifest(messages: readonly Message[]): MemoryManifest | null
     return null;
 }
 
-/**
- * A chat's `hypaV3Data` as its stored `events` and `messages` make it, unsealed: reconciled first.
- * `shared/structuredMemory.ts`'s `reconcileMemoryEvents` turns an active event with a changed source
- * stale unless a person kept its current source state (`keptState`). Events follow the current position
- * of their earliest source, with a greeting citation at -1: HypaV3 readers take `summaries` as chronological,
- * while `seq` is storage order and a re-record lands last. An event with no greeting or source in
- * `messages` goes last, and ties keep `seq` order. A malformed stored event can throw; the callers each decide what that means.
- */
-export function projectChatMemory(
-    events: readonly MemoryEvent[],
-    messages: readonly Message[],
-): SerializableHypaV3Data {
+/** Stable story order by earliest current source. A greeting places at -1 and no surviving source at Infinity. */
+export function orderMemoryEvents(events: readonly MemoryEvent[], messages: readonly Message[]) {
     const positions = new Map<string, number>();
     messages.forEach(({ chatId }, index) => {
         if (chatId !== undefined) {
             positions.set(chatId, index);
         }
     });
-    const placed = reconcileMemoryEvents(events, messages, messageSourceHash).map((event) => {
+    const placed = events.map((event) => {
         let position = storedMemoryGreeting(event.greeting) ? -1 : Infinity;
         for (const { messageId } of storedMemorySources(event.sources)) {
             position = Math.min(position, positions.get(messageId) ?? Infinity);
         }
         return { event, position };
     });
-    placed.sort((a, b) => (a.position < b.position ? -1 : a.position > b.position ? 1 : 0));
+    return placed.sort((a, b) => (a.position < b.position ? -1 : a.position > b.position ? 1 : 0));
+}
+
+/**
+ * A chat's unsealed HypaV3 projection. Reconciliation marks changed sources stale unless a person
+ * kept them. HypaV3 readers expect chronological summaries even when a re-record was stored last.
+ * A malformed stored event can throw; the callers each decide what that means.
+ */
+export function projectChatMemory(
+    events: readonly MemoryEvent[],
+    messages: readonly Message[],
+): SerializableHypaV3Data {
+    const placed = orderMemoryEvents(reconcileMemoryEvents(events, messages, messageSourceHash), messages);
     return projectHypaV3Data(
         placed.map(({ event }) => event),
         lastMemoryManifest(messages),

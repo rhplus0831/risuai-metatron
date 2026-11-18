@@ -20,7 +20,8 @@
 
 - `server/src/data/memoryStore.ts`: synchronous record storage; `createMemoryTables`, `MemoryChanges`, `MemoryContents`,
   `MemoryRowTexts`, `readContents`, `readKindPage`, `readRecord`, `write`, `checkMemoryRow`; `messageSourceHash`
-  supplies source hashes and `greetingSourceHash` greeting hashes. The projection's part:
+  supplies source hashes and `greetingSourceHash` greeting hashes. `orderMemoryEvents` places events by their earliest
+  source for chapters and for `projectChatMemory` after reconciliation. The projection's part:
   [projection](projection.md#files).
 - `server/src/data/chatStore.ts`: table declarations; `MEMORY_TABLES_SQL`, `MEMORY_CHAPTERS_SQL`,
   `CHAT_OPEN_SCHEMA_SQL`.
@@ -69,9 +70,11 @@ comparison ties rounds together.
   storage order. An existing chat with no chapters answers an empty list. The store sums every chapter row's
   `octet_length(data)` before selecting bodies. Over `memoryPackageRoundBytes` the route answers 413 `tooLarge` and the
   tab's read fails. A malformed row is omitted, and the tab also checks each row with `isMemoryChapter`.
+- `GET .../chapters/cost` returns `StructuredMemoryChapterCostAnswer` with the current count of eligible units as
+  `{ units }`. It reads the chat, stored events, chapters and bound preset settings without a model call or a write.
 - `POST .../chapters/remove` takes `{ ids }` with 1 to 256 valid resource IDs and a 64 KiB body limit. A malformed
   request receives 400. The route checks the epoch, the edit fence (409 `fenced`) and maintenance, then removes by
-  stored ID. `StructuredMemoryChapterRemoveAnswer` gives the number removed, including zero for a repeat. Both chapter
+  stored ID. `StructuredMemoryChapterRemoveAnswer` gives the number removed, including zero for a repeat. All chapter
   routes answer 404 `chatGone` for a missing chat.
 - `/find` accepts one trimmed text query (`q`) or one page ID (`page`). Both walk stored-byte rounds at one revision and
   skip retracted events. Text search covers live pages and events. A page lookup returns events and threads naming that
