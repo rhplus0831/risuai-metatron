@@ -112,7 +112,7 @@ delivery and [app shell](app-shell.md#home-screen) for the home entry point.
   `ChatFormatSettings`, and `LanguageSettings` (the UI language only).
 - Display's Notifications section holds `display.notification` (`NotificationToggle`) and then
   `display.completionWaitMaxSeconds`, the remote host's longest wait for plugins before a completion notification
-  ([plugin sandbox](plugin-sandbox.md#state)).
+  ([plugin sandbox](plugin-sandbox.md#state)). The time limit clamps finite entries to 10–600 seconds on commit.
 - Hybrid handwritten/registry pages: `ModelSettings` (the model preset and the aux selector owned by
   [media-aux](media-aux.md); its handwritten provider toggles include `saveSignatures`, shown for a `geminiThinking`
   model whether or not streaming is on, and `halfStreaming`, shown under Response Streaming only while that is off, as
@@ -166,7 +166,7 @@ delivery and [app shell](app-shell.md#home-screen) for the home entry point.
   `chatAsOriginalOnSystem` checkbox). Its defaults are the template editor's; the request interception page narrows them
   with `allowedTypes` (the type select is hidden when it offers one type), `showType2={false}` (no special type select),
   `cbs={false}` (plain text areas, no CBS highlighting or autocomplete), and an `extra` snippet at the top of the opened
-  row.
+  row. With `cbs={false}`, the expanded editor opens in plain text and shows the literal token count, with no Preview.
 - `src/lib/Setting/OocToggleEditor.svelte`: a forced-toggle map editor over plain props (`definitionsText`, `value`,
   `onchange` with a new map). Per value toggle it offers "as in the chat" (key absent) or a forced value in the toggle
   kind's control; keys the definitions no longer hold are listed as stale and removable. `PromptSettings` shows it for
@@ -245,8 +245,8 @@ delivery and [app shell](app-shell.md#home-screen) for the home entry point.
 - `SettingSelect`/`SettingSegmented` reset, at mount and when their visible options change, a value whose option is
   hidden. Both read and write that value untracked, so a preset switch that leaves the options as they are does not
   reset it: a preset holding a hidden option (for example `thinkingType: "adaptive"` under a budget-only Claude model)
-  keeps it. Both track only the visible option values (`JSON.stringify`), so a context rebuilt with the same options (a
-  fresh model info after a chat's prompt binding changes) does not run the reset.
+  keeps it. Both track only the visible option values (`JSON.stringify`), so rebuilding the context with the same
+  options after the tab's model preset selection changes does not run the reset.
 - `SettingSelect` keeps its last-visible-option fallback. `SettingSegmented` takes the same value sources as the other
   wrappers.
 - A preset-owned field must be added to `botPreset` and `PRESET_DEFAULTS` in `shared/presets.ts` (the canonical list
@@ -345,6 +345,9 @@ delivery and [app shell](app-shell.md#home-screen) for the home entry point.
 
 ### Limitations
 
+- Removing a plugin clears its provider setting only on `activeMainProfile`, which follows the open chat's model preset
+  binding when it resolves. Other profiles keep their provider setting. See the
+  [decision in the archive](../archived-plan/README.md) at `a8f624aff`.
 - `PromptSettings.svelte` updates its token-count fields from template items and `tokenScopeKey` only;
   `tokenCountField.ts` `createTokenCountField` runs counts untracked, so changing a CBS value alone does not refresh
   prompt-template totals. Decision: Combine Audit Fixes, slice 2, [archive](../archived-plan/README.md).

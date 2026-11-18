@@ -3,11 +3,9 @@
 import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The persona page binds the selected persona through `activePersona`. The large-portrait checkbox
-// is the one control that keeps its old index binding's rule: it writes the persona the selection
-// resolves to (the first one when the selection names none), where `activePersona`'s setter would
-// drop the write. The name and description inputs write the selected persona through the view, and
-// follow a selection change.
+// The name and description inputs write the tab's selected persona through `editedPersona` and
+// follow tab selection changes. The large-portrait checkbox writes through `editedPersonaRecord`,
+// which can resolve to the first persona when the selection names none.
 
 // happy-dom cannot drag: capture the grid and invoke a drop after moving its actual tiles.
 const sortables = vi.hoisted(() => [] as { el: HTMLElement; options: { onEnd: () => Promise<void> } }[]);

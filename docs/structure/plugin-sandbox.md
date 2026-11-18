@@ -324,6 +324,9 @@ instance's ambient context.
 
 ### Limitations
 
+- The completion wait estimates quiet from in-flight plugin work, so a plugin waiting on its own timer can read as
+  quiet. Busy work in another chat by an opted-in plugin delays the notification until it goes quiet or the time limit
+  passes. See the [decision in the archive](../archived-plan/README.md) at `41d8239df`.
 - The [deferred reload](#deferred-reload) never interrupts, so work that never ends defers it until this tab reloads or
   a local `loadPlugins` runs: a top-level script that never settles, a hook or guest callback that never answers, a
   stream bridged either way never finished (a host stream the guest never pulls expires at 60 s), or a job this tab

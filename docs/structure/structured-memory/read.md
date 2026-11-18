@@ -106,9 +106,9 @@ lending and extension. `readBudget` derives `auto` targets from the maximum and 
 `laneTargets` in `manual`. The shares need not add to 100%. `requiredCap` is separate. Warming checks whether pages or
 events are enabled through `structuredMemoryEmbeddingLanes`, independent of the maximum.
 
-`prepareRetrieval` anchors story dates to the newest **placed, dated** event, including one still in the raw window.
-`card.ts` counts the anchor line with the frame; dated flow and event lines can show a distance from it. See
-`storyDateDistance` in `shared/structuredMemory.ts` for calendar rules. Undated chats keep the same card.
+`prepareRetrieval` anchors the story date to the newest **placed, dated** event, even in the raw window. `card.ts`
+counts the anchor line with the frame. Dated flow and event lines can show the distance (`storyDateDistance` in
+`shared/structuredMemory.ts`). With no valid date, the same stored records yield the same undated card.
 
 The meter reads tokens and `memoryStatusWord`; its popover and Preview share `MemoryManifest`.
 
@@ -177,10 +177,10 @@ badges and selection changes. Two reads cross the server boundary:
   Manage loads it when the event disclosure opens. The server orders by current message positions before it caps the
   list. `PagesTab.svelte` owns display of recent and important events and rejection of stale answers.
 
-Timeline's initial titles come from coverage. The Story view joins `readStructuredMemoryStory` by event id, omits
-retracted events and keeps titles when a summary is missing or the read fails. Opening an event fetches its record.
-Timeline and Log share `MemoryEventFacts` for extracted changes and `storyTimeText` for the validated story date, text
-and ordinal. Timeline resolves page and thread ids from contents; Log displays ids.
+Timeline takes titles from coverage. Story joins `readStructuredMemoryStory` by event id, skips retracted events and
+keeps titles when a summary is missing or the read fails. Its row reader keeps a valid date even when time text is
+missing. Opening an event fetches its record. Timeline and Log share `MemoryEventFacts` for changes and `storyTimeText`
+for date, text and ordinal. Timeline resolves page and thread ids from contents; Log displays ids.
 
 ### The Evidence missing tab
 
@@ -410,8 +410,8 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
   batching (`b29a883a5`, reverted). At small budgets the default page share can lose a long on-stage page. Decision:
   Recent Timeline D14, 2026-11-11
   ([costs and lane shares](../../reports/measurements/structured-memory-timeline-2026-11-11.md)).
-- Relative dates can lag a day change in the unrecorded or undated tail. A label follows the selected story date until a
-  newer placed event supplies a date or the anchoring date changes. Decision: Story Dates D6,
+- The story date can lag in an unrecorded or undated tail. Only Gregorian dates get distance labels, and a date without
+  a year counts as within the past year of the story. See the
   [design review](../../reports/audits/plan-runner/structured-memory-story-dates-2026-11-18.md).
 
 ### Gotchas

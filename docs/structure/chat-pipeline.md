@@ -355,6 +355,9 @@ lore.
 
 ### Limitations
 
+- A hook prompt fills only `{{slot::content}}`, `{{slot::draft}}`, `{{slot::history::N}}`, and
+  `{{slot::historytrans::N}}`, with CBS left literal. The hook editor has no import or export. See the
+  [decision in the archive](../archived-plan/README.md) at `00e88ceba`.
 - `src/ts/process/chatStatus.svelte.ts` keeps `unseenChatKeys` and `recoveryChatKeys` only in this tab's memory, so
   reloading clears both marks; they are not durable unread or recovery records. Decision: Sidebar Chat Status 4,
   [archive](../archived-plan/README.md).

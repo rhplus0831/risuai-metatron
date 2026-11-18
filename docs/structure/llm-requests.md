@@ -194,9 +194,9 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
 - Start and end groups each keep list order. End entries precede a trailing assistant prefill. The next request attempt
   starts with a fresh clone. For later provider-body rewrites see [plugin hooks](plugin-sandbox.md#hook-entry-points).
 - Chat-reply assembly uses `interceptionMessages` to estimate tokens for its final recheck, including preview. This
-  estimate is `interceptions` in the context report. The same name in [request history](diagnostics.md) counts messages
-  the server dispatcher actually inserted. A zero count is omitted, and tab-local Plugin/WebLLM calls have no server
-  row.
+  estimate is `interceptions` in the context report, omitted when zero. The server dispatcher reports a positive count
+  of inserted messages through `describe`. [Request history](diagnostics.md) list and detail JSON carry
+  `interceptions: null` when there is no count. Tab-local Plugin/WebLLM calls have no server row.
 
 ### Provider responses and tools
 

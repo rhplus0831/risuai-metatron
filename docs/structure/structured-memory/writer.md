@@ -166,8 +166,9 @@ With `keyLineGuidance` on, the analysis call's `rules` slot gains the key-line s
 through `{{slot::rules}}`; the default-prompts answer and patch and compaction calls never carry it.
 
 The analysis answer may supply a story date explicitly stated in the messages to record. `RULES` asks for the last such
-date and `readStoryTime` admits the formats accepted by `parseStoryDate`. An invalid date is dropped. `RULES` and
-`PATCH_RULES` discourage wording relative to the reading day. Custom frames supply these instructions via
+date and `readStoryTime` admits the formats accepted by `parseStoryDate`. An invalid date is dropped. Analysis
+(`RULES`), patch (`PATCH_RULES`), and compaction (`compactRules`) rules tell the model to avoid wording relative to the
+reading day in every chat. Compaction also tells it to keep dates the section names. Frames get these instructions via
 `{{slot::rules}}` and the analysis format via `{{slot::format}}`. A replay uses its saved instructions. Folding a repeat
 preserves the standing time text and uses the new date only when valid.
 

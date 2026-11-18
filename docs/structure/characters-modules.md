@@ -113,16 +113,17 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
 - `src/lib/Setting/Pages/Module/ModuleSettings.svelte` (edit and create modes, the share button,
   `clearStaleExportWait`), `src/lib/Setting/Pages/Module/ModuleMenu.svelte` (the module editor), and
   `src/lib/Setting/Pages/Module/ModuleChatMenu.svelte` (the chat's and character's module toggles).
-- Catalog export/delete captures the module id before its dialog and resolves it afterwards, cancelling if absent;
-  exporters receive detached records. `ModuleMenu` regex, lorebook, and asset imports capture backing-module identity
-  before picking and recheck after upload, cancelling on navigation, replacement, removal, or editor destruction.
+- Catalog export captures the module id before its dialog and resolves it afterwards, cancelling if absent. Exporters
+  receive detached records. Catalog deletion captures the named row's identity before confirmation and cancels if that
+  row is removed or replaced. `ModuleMenu` regex, lorebook, and asset imports capture backing-module identity before
+  picking and recheck after upload, cancelling on navigation, replacement, removal, or editor destruction.
 - `src/lib/Setting/Pages/Module/moduleCatalog.ts` builds both the catalog and chat menu rows (`moduleCatalog`,
   `catalogRows`). It resolves membership in stored folder order before sorting by name. Search forces matching folders
   open. `src/lib/Setting/Pages/Module/ModuleFolderRow.svelte` renders the shared folder row with
   [device-local fold state](ui-theming.md#state).
 - A catalog move captures the module id and `folderChoices` before asking. After the answer, `choiceForAnswer` maps to
-  the captured folder id or the root. `moveItemToFolder` requires the module and any chosen folder to still exist. Use
-  the collection store for folder writes. Folder deletion keeps the modules.
+  the captured folder id or the root, filing rows with the same id together. `moveItemToFolder` requires the module and
+  any chosen folder to still exist. Use the collection store for folder writes. Folder deletion keeps the modules.
 - A folder's switch acts on every current member, even while search shows only matches. `switchAllGlobally` changes
   `enabledModules` once. `switchAllForChat` changes the chat's `modules` once via `setCurrentChatMeta`, skipping
   globally enabled modules. Character activation stays per module.
@@ -253,8 +254,8 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
   persona-link matching differ; the server's `jobModules` in `server/src/jobs/cbsHost.ts` must stay aligned.
 - Persona links use the chat's bound persona, match stored modules by id, and skip MCP modules. The bound persona's
   embedded module resolves to a stored module with its id when present; otherwise the embedded object is appended.
-- `addModule` refuses duplicate ids; `removeModule` also clears the id from global `enabledModules` and from
-  `moduleFolders`. Persona, character and chat module links keep their ids.
+- `addModule` refuses duplicate ids. `removeModule` clears the id from global `enabledModules` and `moduleFolders` when
+  the last row with that id is deleted. Persona, character and chat module links keep their ids.
 - Keep `character.modules`, `chat.modules`, `enabledModules`, and `moduleIntergration` distinct. Membership revisions
   invalidate the `getModules` memo synchronously; `getModuleAssets` returns detached tuples and must not be mutated.
 
@@ -348,6 +349,9 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
 
 ### Limitations
 
+- Folders are one level deep, and the chat's persona picker, the binding panel, and a persona's module links are flat.
+  Folder reads ignore member ids whose items are gone, even if a remote deletion leaves the ids stored. See the
+  [decision in the archive](../archived-plan/README.md) at `50c75d147`.
 - `CharConfig.svelte`'s additional-asset picker and `characters.ts` `addCharEmotion` call `savePickedFiles` without
   `onProgress`, so picked-file saves show no upload progress. Decision: Large Asset Import and Export, kept limits,
   [archive](../archived-plan/README.md).

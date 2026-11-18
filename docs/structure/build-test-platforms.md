@@ -148,18 +148,25 @@
 | `RISU_CHROME`                 | System Chrome binary. Unset or blank: the first existing path from `chromeCandidates` for the platform.                                                                   |
 | `RISU_HEADLESS_HOST_CONSOLE`  | Page console types written to the log: `error` (default), `warn` (adds warnings) or `all`. Lines are redacted and bounded like the rest, but `all` can carry app content. |
 
-The listener's TLS handshake chooses HTTPS or HTTP. In `util/headlessHost.mjs`, `handleDialog` waits for the document's
-`/api/test_auth` answer before touching a secret input. An unset server password ends the run. The host submits its
-configured password only at an identified login prompt, once per run. Subsequent starts can reuse the profile's login.
+Environment lookup uses exact names, including blank values. On Windows it also tries a case-insensitive match when the
+exact name is absent, including for the Chrome install folders.
+
+The startup TLS handshake chooses HTTPS or HTTP. If Node cannot verify the loopback listener's certificate, Chrome gets
+a certificate exception for that listener's public key alone. Restart the script after replacing the certificate to
+repeat the check. In `util/headlessHost.mjs`, `handleDialog` waits for the document's `/api/test_auth` answer before
+touching a secret input. An unset server password ends the run. The host submits its configured password only at an
+identified login prompt, once per run. Subsequent starts can reuse the profile's login.
 
 The host presses Escape on ordinary app dialogs, dismisses native browser dialogs, and acknowledges a terminal notice
 with its button. A plugin permission prompt therefore denies the call. Use Settings → Plugins in a signed-in browser to
 give the plugin the standing grants its unattended work needs. See the
 [permission list](plugin-sandbox.md#permission-list).
 
-The script retries failed loads with backoff and lets safe boot settle before retrying a page with plugins off. It logs
-ISO timestamps and redacted, bounded text. A console line ends with its resource or script position and a page error
-carries its stack. URLs keep their origins and, for the app's own origin without credentials, the path.
+Failed loads retry with a wait that starts at 5 seconds and doubles up to 300 seconds. A full minute with a live, ready
+page resets it. A page with plugins off gets time for safe boot to settle. See the [reload limits](#limitations).
+
+The script logs ISO timestamps and redacted, bounded text. A console line ends with its resource or script position and
+a page error carries its stack. URLs keep their origins and, for the app's own origin without credentials, the path.
 
 ### Analysis scripts
 
@@ -384,6 +391,9 @@ Test commands, rules, and the slow-test table: [test-harness](test-harness.md).
 
 ### Limitations
 
+- To pick up a new server build, restart the headless script or send “Reload page” from another device. The script logs
+  a sustained feed outage and the app owns reconnection. See the [decision in the archive](../archived-plan/README.md)
+  at `f545e0fb8`.
 - `vite.config.ts`'s `server.proxy` forwards uploads, but Vite's HTTP listener keeps Node's 300 s `requestTimeout`; the
   backend's four-hour upload allowance does not extend the dev listener's deadline. Decision: Large Asset Import and
   Export, kept limits, [archive](../archived-plan/README.md).

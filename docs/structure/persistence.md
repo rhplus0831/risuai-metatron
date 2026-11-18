@@ -71,8 +71,9 @@ prototype `Object.prototype` or `null`), so a `Map`, a `Date`, or a class instan
   credential or profile leaves the bindings naming it, which refuse their requests
   ([LLM requests](llm-requests.md#invariants)).
   - `addItemFolder`, `renameItemFolder`, `removeItemFolder`, and `moveItemToFolder` replace the canonical folder
-    collection. Moving an item writes only its folder membership. `removeModule` and `removePersona` remove membership
-    in the item's deletion batch. The bulk setters leave folders alone.
+    collection. Moving an item writes only its folder membership. `removePersona` clears membership in the deletion
+    batch. `removeModule` clears it in the deletion batch for the last row with that id. The bulk setters leave folders
+    alone.
 - `src/ts/storage/pluginStorageStore.svelte.ts`: `pluginCustomStorage` ([plugins](plugin-sandbox.md)).
 
 ### Record wrappers
@@ -186,10 +187,11 @@ character or the tab has an unsaved create. It preserves unknown entries and the
 
 ### Selection and deletion
 
-- Deleting the selected prompt preset selects the first remaining active one, else the first; a selected model preset or
-  persona, the first remaining. Deleting another keeps the selection, and a reorder keeps the selected id
-  (`botpreset.svelte`, `removeModelPreset`, `PersonaSettings.svelte`, `removePersona`). The last persona is never
-  deleted.
+- Deleting the selected prompt preset locally selects the first remaining active one, else the first
+  (`botpreset.svelte`). If another device deletes the selected prompt preset, `resolveTabPreset` selects the first
+  remaining preset in collection order, even if archived. Deleting the selected model preset or persona selects the
+  first remaining (`removeModelPreset`, `PersonaSettings.svelte`, `removePersona`). Deleting another record or
+  reordering keeps the selected id. The last persona is never deleted.
 - A deletion moves only the tab's selection, never a chat's binding: chats bound to the record show it as deleted and
   are not sent until another one is picked; the confirmation names how many (`chatsBoundTo`).
 
