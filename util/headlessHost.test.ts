@@ -22,6 +22,7 @@ function connectedSocket(event: string) {
 }
 
 function createPage(pluginsOff: boolean) {
+    let lockScreenVisible = true;
     const screen = {
         getAttribute: () => "false",
         evaluate: () => ({ feed: "true", pluginsOff, commands: [] }),
@@ -29,7 +30,10 @@ function createPage(pluginsOff: boolean) {
     };
     return Object.assign(new EventEmitter(), {
         isClosed: () => false,
-        $: (selector: string) => (selector === "[data-remote-host-screen]" ? screen : null),
+        $: (selector: string) => (lockScreenVisible && selector === "[data-remote-host-screen]" ? screen : null),
+        hideLockScreen() {
+            lockScreenVisible = false;
+        },
         async close() {},
         async goto() {},
     });
@@ -137,6 +141,22 @@ it("backs off through repeated crashes and resets after a full minute ready", as
     await vi.advanceTimersByTimeAsync(59_000);
     host.currentPage().emit("crash");
     expect(host.lines.at(-1)).toContain("Restart in 5 s: page crashed");
+});
+
+it("keeps the crash backoff when the lock screen disappears before a ready minute", async () => {
+    const host = runHost();
+    await vi.advanceTimersByTimeAsync(0);
+    host.currentPage().emit("crash");
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(host.lines.at(-1)).toContain("Feed up");
+
+    const replacement = host.currentPage();
+    await vi.advanceTimersByTimeAsync(50_000);
+    replacement.hideLockScreen();
+    await vi.advanceTimersByTimeAsync(12_000);
+    replacement.emit("crash");
+
+    expect(host.lines.at(-1)).toContain("Restart in 10 s: page crashed");
 });
 
 it("lets a live plugins-off page settle before reloading it", async () => {
