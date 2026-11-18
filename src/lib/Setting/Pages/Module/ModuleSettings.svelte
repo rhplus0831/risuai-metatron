@@ -210,12 +210,7 @@
                                 use:tooltip={language.enableGlobal}
                                 onclick={async (e) => {
                                     e.stopPropagation();
-                                    if (settings.enabledModules.includes(rmodule.id)) {
-                                        settings.enabledModules.splice(settings.enabledModules.indexOf(rmodule.id), 1);
-                                    } else {
-                                        settings.enabledModules.push(rmodule.id);
-                                    }
-                                    settings.enabledModules = settings.enabledModules;
+                                    settings.enabledModules = switchAllGlobally([rmodule.id], settings.enabledModules);
                                     charConversionMode = false;
                                 }}
                             >

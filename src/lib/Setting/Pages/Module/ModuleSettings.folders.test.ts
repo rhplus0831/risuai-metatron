@@ -114,3 +114,33 @@ it("deletes the confirmed module row and keeps the other row with the same ID fi
     expect(settings.moduleFolders[0].data).toEqual(["same"]);
     expect(settings.enabledModules).toEqual(["same"]);
 });
+
+it("clears every stored copy of a globally disabled module's ID and enables it once", () => {
+    const enabled = ["other", "m", "another", "m", "other"];
+    const unrelated = ["other", "another", "other"];
+    installFlatDatabase({
+        modules: [
+            { id: "m", name: "Module" },
+            { id: "other", name: "Other" },
+            { id: "another", name: "Another" },
+        ],
+        enabledModules: enabled,
+        moduleFolders: [{ id: "filed", name: "Filed", data: ["m"] }],
+    });
+    renderCatalog();
+
+    const globe = moduleRow("Module").querySelector<HTMLButtonElement>("button:has(.lucide-globe)")!;
+    globe.click();
+    flushSync();
+    expect(settings.enabledModules).toEqual(unrelated);
+
+    globe.click();
+    flushSync();
+    expect(settings.enabledModules).toEqual([...unrelated, "m"]);
+
+    settings.enabledModules = enabled;
+    flushSync();
+    folderToggle().parentElement!.querySelector<HTMLButtonElement>("button:has(.lucide-globe)")!.click();
+    flushSync();
+    expect(settings.enabledModules).toEqual(unrelated);
+});
