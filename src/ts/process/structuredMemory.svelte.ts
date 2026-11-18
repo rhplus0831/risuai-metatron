@@ -2,6 +2,7 @@ import type { MessageJumpTarget } from "src/lib/ChatScreens/messageJump";
 import { greetingText } from "../../../shared/greetings.ts";
 import { Sha256 } from "@aws-crypto/sha256-js";
 import { strFromU8, strToU8, unzipSync, zipSync, type Zippable } from "fflate";
+import { untrack } from "svelte";
 import {
     eligibleHistory,
     parseContextReport,
@@ -1360,6 +1361,8 @@ export function readStructuredMemoryStory(ref: ChatRef): Promise<StructuredMemor
     });
 }
 
+export type StructuredMemoryFindResult = { hits: StructuredMemoryFindHit[]; more: boolean };
+
 /**
  * Bounded hits at one revision; a changed round restarts with no hits or truncation state kept. A text
  * search stops at the cap. A page lookup reads every round, because the list is in storage order and
@@ -1370,7 +1373,7 @@ export function readStructuredMemoryStory(ref: ChatRef): Promise<StructuredMemor
 export function findStructuredMemory(
     ref: ChatRef,
     query: { q: string } | { page: string },
-): Promise<StructuredMemoryResult<{ revision: string; hits: StructuredMemoryFindHit[]; more: boolean }>> {
+): Promise<StructuredMemoryResult<StructuredMemoryFindResult & { revision: string }>> {
     const search = "q" in query ? `q=${encodeURIComponent(query.q)}` : `page=${encodeURIComponent(query.page)}`;
     return readAtOneRevision(async () => {
         let hits: StructuredMemoryFindHit[] = [];
@@ -1399,6 +1402,107 @@ export function findStructuredMemory(
         }
         return read.outcome === "ok" ? { outcome: "ok", value: { revision: read.value, hits, more } } : read;
     });
+}
+
+/** A mounted tab's submitted text search. Refresh repeats it while the chat and trimmed draft still match. */
+export function memoryTextSearch({
+    chat,
+    refresh,
+    draft,
+}: {
+    chat: () => ChatRef;
+    refresh: () => number;
+    draft: () => string;
+}) {
+    let searched = $state<string | null>(null);
+    let result = $state.raw<StructuredMemoryFindResult | null>(null);
+    let failure = $state.raw<Unanswered | null>(null);
+    let searching = $state(false);
+    let requestNumber = 0;
+    let readRefresh: number | null = null;
+
+    function clear() {
+        requestNumber += 1;
+        searched = null;
+        result = null;
+        failure = null;
+        searching = false;
+        readRefresh = null;
+    }
+
+    async function search(q: string) {
+        const { chaId, chatId } = chat();
+        const atRefresh = refresh();
+        const number = ++requestNumber;
+        readRefresh = atRefresh;
+        searched = q;
+        searching = true;
+        result = null;
+        failure = null;
+
+        const answer = await findStructuredMemory({ chaId, chatId }, { q });
+        if (number !== requestNumber) return;
+        const current = chat();
+        if (
+            current.chaId !== chaId ||
+            current.chatId !== chatId ||
+            refresh() !== atRefresh ||
+            searched !== q ||
+            draft() !== q
+        ) {
+            return;
+        }
+
+        searching = false;
+        if (answer.outcome === "ok") {
+            const { hits, more } = answer.value;
+            result = { hits, more };
+        } else {
+            failure = answer;
+        }
+    }
+
+    $effect(() => {
+        const ref = chat();
+        ref.chaId;
+        ref.chatId;
+        clear();
+        return () => {
+            requestNumber += 1;
+        };
+    });
+
+    $effect(() => {
+        const q = draft();
+        const atRefresh = refresh();
+        untrack(() => {
+            if (searched !== null && q !== searched) {
+                clear();
+            } else if (searched !== null && readRefresh !== atRefresh) {
+                void search(searched);
+            }
+        });
+    });
+
+    return {
+        get searched() {
+            return searched;
+        },
+        get result() {
+            return result;
+        },
+        get failure() {
+            return failure;
+        },
+        get searching() {
+            return searching;
+        },
+        get showing() {
+            return searched !== null && draft() === searched;
+        },
+        search,
+        clear,
+    };
 }
 
 /**

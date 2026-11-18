@@ -24,6 +24,7 @@
         memoryPageHistoryView,
         memoryPageTree,
         memoryTextDiff,
+        memoryTextSearch,
         readStructuredMemoryContents,
         readStructuredMemoryRecord,
         revertStructuredMemoryChange,
@@ -31,6 +32,7 @@
         type MemoryDiffPart,
         type MemoryPageHistoryRow,
         type MemoryPanelTabProps,
+        type StructuredMemoryFindResult,
         type StructuredMemoryResult,
     } from "src/ts/process/structuredMemory.svelte";
     import { findCharacter } from "src/ts/storage/characterStore.svelte";
@@ -57,7 +59,6 @@
         type StructuredMemoryContentsAnswer,
         type StructuredMemoryEdit,
         type StructuredMemoryEditAnswer,
-        type StructuredMemoryFindHit,
         type StructuredMemoryImportAnswer,
         type StructuredMemoryPageTool,
         type StructuredMemoryRecordAnswer,
@@ -82,8 +83,8 @@
      * grouping and resets its row limit when changed; the trash stays unfiltered. Search text submits
      * that input, including in chats with only events, and replaces the tree with bounded plain-text hits
      * until the trimmed input changes; its button shows only for typed text whose hits are not already
-     * showing. Active searches rerun on refresh. A page the last send used carries a dot in the tree,
-     * which one legend line above the tree names and counts among the listed pages.
+     * showing. `memoryTextSearch` reruns the submitted query on refresh. A page the last send used carries
+     * a dot in the tree, which one legend line above the tree names and counts among the listed pages.
      *
      * One page lookup per selection and refresh answers what the events and threads say of the page.
      * Read asks for it at once and shows, each only when it has rows: what the page knows or believes,
@@ -202,19 +203,12 @@
     let shownRows = $state(ROWS_AT_ONCE);
     let query = $state("");
     let composing = false;
-    type FindResult = { hits: StructuredMemoryFindHit[]; more: boolean };
-    let searched = $state<string | null>(null);
-    let searchResult = $state.raw<FindResult | null>(null);
-    let searchFailure = $state<string | null>(null);
-    let searching = $state(false);
-    let searchNumber = 0;
-    let searchRead: number | null = null;
     let namingOpen = $state(false);
     let namingAll = $state(false);
     let knowledgeAll = $state(false);
     /** Headings of the selected page whose "(was: ...)" lines Read is showing. */
     let wasOpen = $state<string[]>([]);
-    let namingResult = $state.raw<FindResult | null>(null);
+    let namingResult = $state.raw<StructuredMemoryFindResult | null>(null);
     let namingFailure = $state<string | null>(null);
     let namingNumber = 0;
     let namingRead: number | null = null;
@@ -249,7 +243,8 @@
     const trimmedQuery = $derived(query.trim());
     const normalizedQuery = $derived(trimmedQuery.toLowerCase());
     const queryFits = $derived(trimmedQuery.length > 0 && trimmedQuery.length <= MEMORY_FIND_QUERY_CHARS);
-    const showingSearch = $derived(only !== "unsupported" && searched !== null && trimmedQuery === searched);
+    const search = memoryTextSearch({ chat: () => chatRef, refresh: () => refresh, draft: () => trimmedQuery });
+    const showingSearch = $derived(only !== "unsupported" && search.showing);
     /** Newest first, as `findStructuredMemory` answers a page lookup. */
     const namingEvents = $derived((namingResult?.hits ?? []).filter((hit) => hit.kind === "event"));
     const shownNamingEvents = $derived(
@@ -373,47 +368,10 @@
 
     const sameChat = (ref: ChatRef) => ref.chaId === chatRef.chaId && ref.chatId === chatRef.chatId;
 
-    function clearSearch() {
-        searchNumber += 1;
-        searched = null;
-        searchResult = null;
-        searchFailure = null;
-        searching = false;
-        searchRead = null;
-    }
-
-    /** Only the latest search at this refresh and input may replace the tree. */
-    async function searchText(q: string) {
-        const ref = chatRef;
-        const atRefresh = refresh;
-        const number = ++searchNumber;
-        searchRead = atRefresh;
-        searched = q;
-        searching = true;
-        searchResult = null;
-        searchFailure = null;
-        const result = await findStructuredMemory(ref, { q });
-        if (
-            number !== searchNumber ||
-            !sameChat(ref) ||
-            atRefresh !== refresh ||
-            searched !== q ||
-            trimmedQuery !== q
-        ) {
-            return;
-        }
-        searching = false;
-        if (result.outcome === "ok") {
-            searchResult = result.value;
-        } else {
-            searchFailure = memoryReadFailureText(result);
-        }
-    }
-
     function submitSearch(event: SubmitEvent) {
         event.preventDefault();
-        if (queryFits && !searching && !composing) {
-            void searchText(trimmedQuery);
+        if (queryFits && !search.searching && !composing) {
+            void search.search(trimmedQuery);
         }
     }
 
@@ -633,7 +591,7 @@
         untrack(() => read());
     });
 
-    // Import reports and searches belong to the chat they were made in.
+    // Import reports and new note or section forms belong to the current chat.
     $effect(() => {
         chatRef.chaId;
         chatRef.chatId;
@@ -641,19 +599,6 @@
             importReport = null;
             newNoteOpen = false;
             sectionAddOpen = false;
-            clearSearch();
-        });
-    });
-
-    $effect(() => {
-        const q = trimmedQuery;
-        const atRefresh = refresh;
-        untrack(() => {
-            if (searched !== null && q !== searched) {
-                clearSearch();
-            } else if (searched !== null && searchRead !== atRefresh) {
-                void searchText(searched);
-            }
         });
     });
 
@@ -2142,7 +2087,7 @@
                     <button
                         type="submit"
                         class="flex items-center self-start gap-1 text-xs underline transition-colors decoration-dotted underline-offset-4 text-textcolor2 enabled:hover:text-textcolor disabled:opacity-50 disabled:cursor-not-allowed"
-                        disabled={!queryFits || searching}
+                        disabled={!queryFits || search.searching}
                         data-memory-search-text
                     >
                         {text.searchText}
@@ -2170,13 +2115,13 @@
 
 {#snippet searchHits()}
     <div class="flex flex-col min-w-0 gap-2" data-memory-find-hits>
-        {#if searchFailure !== null}
-            <p role="alert" class="text-draculared" data-memory-find-failure>{searchFailure}</p>
-        {:else if searchResult === null}
+        {#if search.failure !== null}
+            <p role="alert" class="text-draculared" data-memory-find-failure>{memoryReadFailureText(search.failure)}</p>
+        {:else if search.result === null}
             <p class="text-textcolor2">{panelText.loading}</p>
         {:else}
             <ul class="flex flex-col min-w-0 gap-1">
-                {#each searchResult.hits.filter((hit) => hit.kind !== "thread") as hit}
+                {#each search.result.hits.filter((hit) => hit.kind !== "thread") as hit}
                     <li class="min-w-0">
                         <button
                             type="button"
@@ -2198,7 +2143,7 @@
                     <li class="text-textcolor2">{text.searchNone}</li>
                 {/each}
             </ul>
-            {#if searchResult.more}
+            {#if search.result.more}
                 <p class="text-textcolor2" data-memory-find-more>{text.findMore(MEMORY_FIND_HITS_MAX)}</p>
             {/if}
         {/if}

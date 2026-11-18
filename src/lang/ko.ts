@@ -3223,6 +3223,8 @@ export const languageKorean = {
         },
         timeline: {
             view: "사건 보기",
+            search: "기억 본문 검색",
+            searchClear: "검색 지우기",
             edit: "편집",
             title: "사건 제목",
             summary: "사건 요약",

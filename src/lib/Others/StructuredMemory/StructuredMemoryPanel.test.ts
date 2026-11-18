@@ -43,6 +43,7 @@ import {
 import {
     ADOPTED_WRITER_RUN,
     MEMORY_FIND_HITS_MAX,
+    MEMORY_FIND_QUERY_CHARS,
     sealHypaV3Data,
     STRUCTURED_MEMORY_LIMITS,
     writerPaused,
@@ -745,7 +746,11 @@ const storyAnswer = (revision: string, events: readonly Partial<MemoryEvent>[]) 
         })),
         next: null,
     });
-function serveMemory() {
+function serveMemory(
+    eventIndex: StructuredMemoryContentsAnswer["events"] = [
+        { id: "event", title: "Opening", status: "active", bytes: 100 },
+    ],
+) {
     const state = {
         page: editablePage(),
         thread: editableThread(),
@@ -762,7 +767,7 @@ function serveMemory() {
                     { id: "p", title: "The gate", type: "location", bytes: 100 },
                     { id: "scene", title: "Current scene", type: "scene", bytes: 100 },
                 ],
-                events: [{ id: "event", title: "Opening", status: "active", bytes: 100 }],
+                events: eventIndex,
                 threads: [{ id: "t", title: "A promise", state: state.thread.state, bytes: 100 }],
                 runs: state.runs,
                 health: {
@@ -2219,7 +2224,9 @@ it("reads story once per refresh in Read, grouping unretracted summaries by reco
 
 /** Serve the same events through the coverage, story and record routes, each with its own fields. */
 function serveTimelineEvents(events: (Partial<MemoryEvent> & { id: string; sourceIndex?: number })[]) {
-    const { revision } = serveMemory();
+    const { revision } = serveMemory(
+        events.map(({ id, title = id, status = "active" }) => ({ id, title, status, bytes: 100 })),
+    );
     const fetch = io.authFetch.getMockImplementation()!;
     io.authFetch.mockImplementation(async (url, init, options) => {
         if (url.includes("/coverage"))
@@ -2254,6 +2261,153 @@ function spyOnRowScroll() {
     releases.push(() => scroll.mockRestore());
     return scroll;
 }
+
+function serveTextSearch(answer: (query: string) => Response) {
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.startsWith("/api/memory/structured/c/k/find?q="))
+            return answer(new URL(url, "http://memory.test").searchParams.get("q")!);
+        return fetch(url, init, options);
+    });
+}
+
+const timelineInput = "[data-memory-timeline-search] input";
+async function searchTimeline(value: string) {
+    typePageField(timelineInput, value);
+    click("[data-memory-timeline-search] [data-memory-search-text]");
+    await settle();
+}
+
+it("replaces Timeline groups with submitted text hits, restores them on clear, and opens an event in its group", async () => {
+    const revision = serveTimelineEvents([
+        { id: "watch", title: "Morning watch", summary: "The watch saw the signal." },
+    ]);
+    const hits = [
+        { kind: "event", id: "watch", title: "Morning watch", sourceIndex: 0, excerpt: "The beacon went dark." },
+        { kind: "page", id: "p", title: "The gate", heading: "Signals", excerpt: "A <b>beacon</b> shines." },
+        { kind: "thread", id: "t", title: "The missing beacon", state: "open" },
+    ];
+    serveTextSearch((q) => Response.json({ revision, hits: q === "beacon" ? hits : [], next: null }));
+    await open();
+    await chooseTab("timeline");
+
+    typePageField(timelineInput, "  beacon  ");
+    const input = target.querySelector<HTMLInputElement>(timelineInput)!;
+    await settle();
+    expect(reads("find?q=")).toHaveLength(0);
+    input.dispatchEvent(new Event("compositionstart", { bubbles: true }));
+    input.form!.requestSubmit();
+    await settle();
+    expect(reads("find?q=")).toHaveLength(0);
+    input.dispatchEvent(new Event("compositionend", { bubbles: true }));
+    // Enter in a native text field submits the form.
+    input.form!.requestSubmit();
+    await settle();
+    expect(query("[data-memory-group]")).toBeNull();
+    const list = query("[data-memory-find-hits]");
+    expect(list?.querySelectorAll("[data-memory-find-kind]")).toHaveLength(2);
+    expect(list?.textContent).not.toContain("The missing beacon");
+    const eventHit = query('[data-memory-find-kind="event"][data-memory-find-id="watch"]');
+    expect(eventHit?.textContent).toContain("Morning watch");
+    expect(eventHit?.textContent).toContain("The beacon went dark.");
+    const pageHit = query('[data-memory-find-kind="page"][data-memory-find-id="p"]');
+    for (const text of ["The gate", "Signals", "A <b>beacon</b> shines."]) expect(pageHit?.textContent).toContain(text);
+
+    click("[data-memory-search-clear]");
+    await settle();
+    expect(target.querySelector<HTMLInputElement>(timelineInput)?.value).toBe("");
+    expect(query("[data-memory-find-hits]")).toBeNull();
+    expect(query(`[data-memory-group] ${eventToggle("watch")}`)?.getAttribute("aria-expanded")).toBe("false");
+    // Hide the group so revealing a hit has to open both the group and its event.
+    click("[data-memory-group] > button");
+    expect(query(eventToggle("watch"))).toBeNull();
+    await searchTimeline("beacon");
+    click('[data-memory-find-id="watch"]');
+    await settle();
+    expect(target.querySelector<HTMLInputElement>(timelineInput)?.value).toBe("");
+    expect(query("[data-memory-find-hits]")).toBeNull();
+    expect(query(`[data-memory-group] ${eventToggle("watch")}`)?.getAttribute("aria-expanded")).toBe("true");
+});
+
+it("rereads coverage before reporting a missing Timeline hit and opens a retracted hit in Manage", async () => {
+    const revision = serveTimelineEvents([{ id: "retired", status: "retracted", summary: "An earlier account." }]);
+    const hits = ["missing", "retired"].map((id) => ({
+        kind: "event",
+        id,
+        title: id,
+        sourceIndex: 0,
+        excerpt: "gate",
+    }));
+    serveTextSearch(() => Response.json({ revision, hits, next: null }));
+    await open();
+    await chooseTab("timeline");
+    await searchTimeline("gate");
+
+    const reread = deferred<Response>();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url.includes("/coverage") ? reread.promise : fetch(url, init, options),
+    );
+    const before = reads().length;
+    click('[data-memory-find-id="missing"]');
+    await settle();
+    expect(reads()).toHaveLength(before + 1);
+    expect(query("[data-memory-event-gone]")).toBeNull();
+    reread.resolve(
+        Response.json({
+            revision,
+            runs: [],
+            next: null,
+            events: [{ id: "retired", title: "Earlier account", status: "retracted", messageIds: [] }],
+        }),
+    );
+    await settle();
+    expect(query("[data-memory-event-gone]")?.textContent?.trim()).toBe(language.structuredMemory.timeline.eventGone);
+    expect(reads()).toHaveLength(before + 1);
+
+    await searchTimeline("gate");
+    click('[data-memory-find-id="retired"]');
+    await settle();
+    expect(timelineViewButton("manage")?.getAttribute("aria-pressed")).toBe("true");
+    expect(query(eventToggle("retired"))?.getAttribute("aria-expanded")).toBe("true");
+    expect(query("[data-memory-event-gone]")).toBeNull();
+});
+
+it("searches Timeline with pages and no events, shows search notices, and opens the matched page", async () => {
+    const revision = serveTimelineEvents([]);
+    const { pages, panel } = language.structuredMemory;
+    serveTextSearch((q) => {
+        if (q === "offline") return Response.json({ error: "Find offline" }, { status: 503 });
+        if (q !== "gate") return Response.json({ revision, hits: [], next: null });
+        const hits = Array.from({ length: MEMORY_FIND_HITS_MAX }, (_, i) => ({
+            kind: "page",
+            id: "p",
+            title: "The gate",
+            heading: `Watch ${i + 1}`,
+            excerpt: "Keeping watch at the gate.",
+        }));
+        return Response.json({ revision, hits, next: MEMORY_FIND_HITS_MAX });
+    });
+    await open();
+    await chooseTab("timeline");
+    expect(query("[data-memory-group]")).toBeNull();
+    const input = target.querySelector<HTMLInputElement>(timelineInput);
+    expect(input, "Timeline search with no events").toBeInstanceOf(HTMLInputElement);
+    expect(input!.maxLength).toBe(MEMORY_FIND_QUERY_CHARS);
+
+    await searchTimeline("absent");
+    expect(query("[data-memory-find-hits]")?.textContent?.trim()).toBe(pages.searchNone);
+    await searchTimeline("offline");
+    expect(query("[data-memory-find-failure]")?.textContent?.trim()).toBe(panel.readFailed("Find offline"));
+
+    await searchTimeline("gate");
+    expect(query("[data-memory-find-more]")?.textContent?.trim()).toBe(pages.findMore(MEMORY_FIND_HITS_MAX));
+    click('[data-memory-find-kind="page"][data-memory-find-id="p"]');
+    await settle();
+    expect(query('[data-memory-panel="pages"]')).not.toBeNull();
+    expect(query('[data-memory-page="p"]')?.getAttribute("aria-current")).toBe("true");
+    expect(query("[data-memory-page-detail] h2")?.textContent).toBe("The gate");
+});
 
 it("splits a story day using the chat's preset and regroups Read without server requests when its size changes", async () => {
     const { createHypaV3Preset } = await import("../../../../shared/hypaV3Presets.ts");

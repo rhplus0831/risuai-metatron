@@ -43,8 +43,8 @@ Read each module's header or component contract, then read the named export's co
   `keepRecord`, `openAskedEntry`, `only`, `sectionReverts`, `keepAll`.
 - `src/lib/Others/StructuredMemory/UnsupportedTab.svelte`: the Evidence missing tab, `PagesTab` under
   `only="unsupported"`.
-- `src/lib/Others/StructuredMemory/TimelineTab.svelte`: event Read and Manage views, the check notice, and repairs;
-  `reconciled`, `readStory`, `reveal`, `sendRepair`, `rerecord`.
+- `src/lib/Others/StructuredMemory/TimelineTab.svelte`: event Read and Manage views, Read's text search, the check
+  notice, and repairs; `reconciled`, `readStory`, `reveal`, `sendRepair`, `rerecord`.
 - `src/lib/Others/StructuredMemory/ThreadsTab.svelte`: thread view and state editor; `read`, `setState`.
 - `src/lib/Others/StructuredMemory/LogTab.svelte`: run viewer; `readRound`, `exportLog`.
 - `src/lib/Others/StructuredMemory/MemoryEventFacts.svelte`: an event's state changes, knowledge, relationship shifts,
@@ -62,7 +62,7 @@ Read each module's header or component contract, then read the named export's co
   `joinMemoryCoverage`, `MemoryCoverageState`, `MemoryCoverageJoin`, `groupMemoryCoverage`, `memoryMessageExcerpt`.
 - `src/ts/process/structuredMemory.svelte.ts`: record views and navigation; `memoryRunView`, `memoryTimelineRows`,
   `memoryPageTree`, `memoryPageHistoryView`, `memoryEventView`, `memoryWriterNotice`, `MemoryPanelTabProps`,
-  `memoryTextDiff`, `requestMemoryPanelTarget`.
+  `memoryTextDiff`, `requestMemoryPanelTarget`, `memoryTextSearch`.
 - `src/ts/process/structuredMemory.svelte.ts`: report and settings views; `memoryStatusWord`, `memoryItemsUsed`,
   `usedMemoryCoverageGroups`, `memoryItemKey`, `memoryItemTitles`, `memoryBlockEntries`, `memoryTestResultView`,
   `readStructuredMemoryDefaultPrompts`.
@@ -170,9 +170,11 @@ Pages opens in Read; Manage holds editing, provenance and history. A jump to a h
 once its diff has rendered. The component contract covers section display, links, local title filtering, last-send
 badges and selection changes. Two reads cross the server boundary:
 
-- `findStructuredMemory` with a text query searches pages and events. This also works in chats with only events. A page
-  hit opens Pages, an event hit opens Timeline. Active queries rerun on refresh. See the
-  [read routes](records.md#the-read-routes) for the bounds.
+- `findStructuredMemory` with a text query searches pages and events. One helper, `memoryTextSearch`
+  (`structuredMemory.svelte.ts`), owns the request: each tab creates it at mount with its chat, `refresh`, and trimmed
+  draft, and it drops an answer after any of them moved and reruns an active query on refresh. Pages and Timeline's Read
+  view each keep their own form and submit guard. This also works in chats with only events. A page hit opens Pages; an
+  event hit opens or reveals it in Timeline. See the [read routes](records.md#the-read-routes) for the bounds.
 - `/find?page=...` joins a page to its knowledge, relationship changes, threads and events. Read loads it on selection;
   Manage loads it when the event disclosure opens. The server orders by current message positions before it caps the
   list. `PagesTab.svelte` owns display of recent and important events and rejection of stale answers.

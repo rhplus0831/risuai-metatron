@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { ChevronDownIcon, ChevronRightIcon } from "@lucide/svelte";
+    import { ChevronDownIcon, ChevronRightIcon, XIcon } from "@lucide/svelte";
     import { getAbortSignal, tick, untrack } from "svelte";
     import { SvelteMap } from "svelte/reactivity";
     import { language } from "src/lang";
@@ -11,6 +11,7 @@
         memoryPanelGreeting,
         memoryMessageHasher,
         memoryMessageIndexes,
+        memoryTextSearch,
         memoryTimelineRows,
         readStructuredMemoryContents,
         readStructuredMemoryCoverage,
@@ -33,6 +34,8 @@
     import {
         ADOPTED_WRITER_RUN,
         formatStoryDate,
+        MEMORY_FIND_HITS_MAX,
+        MEMORY_FIND_QUERY_CHARS,
         memoryAnchorState,
         memoryEventGroups,
         memoryRerecordTarget,
@@ -47,7 +50,7 @@
     import GreetingCitation from "./GreetingCitation.svelte";
     import MemoryLinkButton from "./MemoryLinkButton.svelte";
     import { pressMemoryRecord } from "./memoryRecordPress";
-    import { memoryReadFailureText, memoryReasonText, storyTimeText } from "./memoryText";
+    import { codeText, memoryReadFailureText, memoryReasonText, storyTimeText } from "./memoryText";
 
     /**
      * Timeline opens in Read and holds the view choice while mounted. Coverage supplies titles and
@@ -56,6 +59,10 @@
      * Missing story data leaves the titles readable. memoryEventGroups keeps events in chat order
      * within each date and splits long days at the chat preset's group size. Groups appear newest first,
      * 30 at a time. The newest opens by default, and presses follow event ids when groups change.
+     *
+     * Read can search memory text even with no events. Submitting replaces the groups with page and
+     * event hits until the trimmed draft changes or Read closes. A page hit opens Pages. An event hit clears
+     * the search and reveals its row. A pending reveal waits for the groups to be visible to scroll.
      *
      * Read shows summaries and important stars. An open event shows its story and links to pages and
      * sources. Manage lists every event newest first, unplaced rows last, with badges, facts, edits
@@ -99,6 +106,16 @@
     type CoverageOutcome = "ok" | "failed" | "ignored";
     let coverageRead = $state.raw<Promise<CoverageOutcome>>();
     let view = $state<"read" | "manage">("read");
+    let query = $state("");
+    let composing = false;
+    const trimmedQuery = $derived(query.trim());
+    const search = memoryTextSearch({ chat: () => chatRef, refresh: () => refresh, draft: () => trimmedQuery });
+    const canSearch = $derived(
+        trimmedQuery.length > 0 &&
+            trimmedQuery.length <= MEMORY_FIND_QUERY_CHARS &&
+            !search.searching &&
+            !search.showing,
+    );
     let stories = $state.raw<ReadonlyMap<string, StructuredMemoryStoryEvent>>(new Map());
     let storyFailure = $state<string | null>(null);
     /** The `refresh` the story was last read at, including a failed read. */
@@ -182,6 +199,23 @@
     );
 
     const sameChat = (ref: ChatRef) => ref.chaId === chatRef.chaId && ref.chatId === chatRef.chatId;
+
+    function submitSearch(event: SubmitEvent) {
+        event.preventDefault();
+        if (canSearch && !composing) void search.search(trimmedQuery);
+    }
+
+    function clearSearch() {
+        query = "";
+        search.clear();
+    }
+
+    $effect(() => {
+        if (view === "manage") {
+            clearSearch();
+            composing = false;
+        }
+    });
 
     type Group = (typeof groups)[number];
 
@@ -506,7 +540,7 @@
             shown = Math.max(shown, index + 1);
         } else {
             // Press the final group so interim date-less group members do not inherit a press.
-            if (readingStory) return;
+            if (readingStory || search.showing) return;
             const groupIndex = groups.findIndex((group) => group.events.some(({ id }) => id === target.id));
             if (groupIndex < 0) return;
             groupsShown = Math.max(groupsShown, groupIndex + 1);
@@ -791,84 +825,172 @@
         size="sm"
         label={text.view}
     />
+    {#if view === "read"}
+        <form
+            class="flex min-w-0 items-center gap-2"
+            data-memory-timeline-search
+            onsubmit={submitSearch}
+            oncompositionstart={() => (composing = true)}
+            oncompositionend={() => (composing = false)}
+        >
+            <input
+                type="text"
+                class="flex-1 min-w-0 px-2 py-1 text-sm transition-colors bg-transparent border rounded-md shadow-xs border-darkborderc text-textcolor focus:border-borderc focus:ring-borderc focus:ring-2 focus:outline-hidden"
+                bind:value={query}
+                maxlength={MEMORY_FIND_QUERY_CHARS}
+                aria-label={text.search}
+                placeholder={text.search}
+            />
+            <button
+                type="submit"
+                class="shrink-0 px-2 py-1 transition-colors border rounded-md border-darkborderc enabled:hover:bg-selected disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={!canSearch}
+                data-memory-search-text
+            >
+                {pagesText.searchText}
+            </button>
+            {#if query !== ""}
+                <button
+                    type="button"
+                    class="shrink-0 p-1 rounded-md text-textcolor2 hover:bg-selected"
+                    aria-label={text.searchClear}
+                    title={text.searchClear}
+                    onclick={clearSearch}
+                    data-memory-search-clear
+                >
+                    <XIcon size={16} aria-hidden="true" />
+                </button>
+            {/if}
+        </form>
+    {/if}
     {#if eventGone}
         <p role="status" class="text-textcolor2" data-memory-event-gone>{text.eventGone}</p>
     {/if}
-    {#if view === "read" && storyFailure !== null && failure === null}
-        <p role="alert" class="text-draculared" data-memory-panel-failure>{storyFailure}</p>
-    {/if}
-    {#if failure !== null}
-        <p role="alert" class="text-draculared" data-memory-panel-failure>{failure}</p>
-    {:else if !facts}
-        <p class="text-textcolor2">{panelText.loading}</p>
+    {#if view === "read" && search.showing}
+        <div class="flex flex-col min-w-0 gap-2" data-memory-find-hits>
+            {#if search.failure !== null}
+                <p role="alert" class="text-draculared" data-memory-find-failure>
+                    {memoryReadFailureText(search.failure)}
+                </p>
+            {:else if search.result === null}
+                <p class="text-textcolor2">{panelText.loading}</p>
+            {:else}
+                <ul class="flex flex-col min-w-0 gap-1">
+                    {#each search.result.hits.filter((hit) => hit.kind !== "thread") as hit}
+                        <li class="min-w-0">
+                            <button
+                                type="button"
+                                class="flex flex-col w-full min-w-0 gap-1 px-2 py-1 text-left transition-colors rounded-md break-words hover:bg-selected disabled:cursor-not-allowed"
+                                disabled={sending}
+                                onclick={() => {
+                                    if (hit.kind === "page") {
+                                        open({ tab: "pages", id: hit.id });
+                                    } else {
+                                        clearSearch();
+                                        reveal(hit.id, "focus");
+                                    }
+                                }}
+                                data-memory-find-kind={hit.kind}
+                                data-memory-find-id={hit.id}
+                            >
+                                <span class="font-semibold">{hit.title}</span>
+                                {#if hit.kind === "page" && hit.heading !== null}
+                                    <span class="text-textcolor2">{codeText(pagesText.headings, hit.heading)}</span>
+                                {/if}
+                                <span class="whitespace-pre-wrap">{hit.excerpt}</span>
+                            </button>
+                        </li>
+                    {:else}
+                        <li class="text-textcolor2">{pagesText.searchNone}</li>
+                    {/each}
+                </ul>
+                {#if search.result.more}
+                    <p class="text-textcolor2" data-memory-find-more>{pagesText.findMore(MEMORY_FIND_HITS_MAX)}</p>
+                {/if}
+            {/if}
+        </div>
     {:else}
-        {#if view === "read" && toCheck.length > 0}
-            <div class="flex flex-wrap items-center gap-2" data-memory-check-notice>
-                <span>{text.checkNotice(toCheck.length)}</span>
-                <MemoryLinkButton label={text.checkInManage} onclick={() => reveal(toCheck[0].event.id, "notice")} />
-            </div>
+        {#if view === "read" && storyFailure !== null && failure === null}
+            <p role="alert" class="text-draculared" data-memory-panel-failure>{storyFailure}</p>
         {/if}
-        {#if view === "read"}
-            {#if groups.length === 0}
+        {#if failure !== null}
+            <p role="alert" class="text-draculared" data-memory-panel-failure>{failure}</p>
+        {:else if !facts}
+            <p class="text-textcolor2">{panelText.loading}</p>
+        {:else}
+            {#if view === "read" && toCheck.length > 0}
+                <div class="flex flex-wrap items-center gap-2" data-memory-check-notice>
+                    <span>{text.checkNotice(toCheck.length)}</span>
+                    <MemoryLinkButton
+                        label={text.checkInManage}
+                        onclick={() => reveal(toCheck[0].event.id, "notice")}
+                    />
+                </div>
+            {/if}
+            {#if view === "read"}
+                {#if groups.length === 0}
+                    <p class="text-textcolor2">{text.empty}</p>
+                {:else}
+                    <ul class="flex flex-col min-w-0 gap-2">
+                        {#each groups.slice(0, groupsShown) as group, index (group.events[0].id)}
+                            {@const expanded = groupOpen(group, index === 0)}
+                            <li class="flex flex-col min-w-0 gap-1" data-memory-group>
+                                <button
+                                    type="button"
+                                    class="flex min-w-0 items-start gap-2 rounded-md p-2 text-left hover:bg-selected"
+                                    aria-expanded={expanded}
+                                    onclick={() => pressGroup(group, !expanded)}
+                                >
+                                    {#if expanded}
+                                        <ChevronDownIcon size={16} class="shrink-0 mt-0.5" />
+                                    {:else}
+                                        <ChevronRightIcon size={16} class="shrink-0 mt-0.5" />
+                                    {/if}
+                                    <span class="flex flex-wrap items-baseline gap-x-2">
+                                        {#if group.date}
+                                            <span class="font-semibold">
+                                                {formatStoryDate(group.date)}{group.partCount > 1
+                                                    ? ` (${group.part})`
+                                                    : ""}
+                                            </span>
+                                        {/if}
+                                        <span>{text.eventCount(group.events.length)}</span>
+                                        <span class="text-textcolor2">{turnRange(group)}</span>
+                                    </span>
+                                </button>
+                                {#if expanded}
+                                    <ul class="flex flex-col min-w-0 gap-1">
+                                        {#each group.events as row (row.id)}
+                                            {@render eventRow(row, row.story)}
+                                        {/each}
+                                    </ul>
+                                {/if}
+                            </li>
+                        {/each}
+                    </ul>
+                {/if}
+            {:else if manageRows.length === 0}
                 <p class="text-textcolor2">{text.empty}</p>
             {:else}
                 <ul class="flex flex-col min-w-0 gap-2">
-                    {#each groups.slice(0, groupsShown) as group, index (group.events[0].id)}
-                        {@const expanded = groupOpen(group, index === 0)}
-                        <li class="flex flex-col min-w-0 gap-1" data-memory-group>
-                            <button
-                                type="button"
-                                class="flex min-w-0 items-start gap-2 rounded-md p-2 text-left hover:bg-selected"
-                                aria-expanded={expanded}
-                                onclick={() => pressGroup(group, !expanded)}
-                            >
-                                {#if expanded}
-                                    <ChevronDownIcon size={16} class="shrink-0 mt-0.5" />
-                                {:else}
-                                    <ChevronRightIcon size={16} class="shrink-0 mt-0.5" />
-                                {/if}
-                                <span class="flex flex-wrap items-baseline gap-x-2">
-                                    {#if group.date}
-                                        <span class="font-semibold">
-                                            {formatStoryDate(group.date)}{group.partCount > 1 ? ` (${group.part})` : ""}
-                                        </span>
-                                    {/if}
-                                    <span>{text.eventCount(group.events.length)}</span>
-                                    <span class="text-textcolor2">{turnRange(group)}</span>
-                                </span>
-                            </button>
-                            {#if expanded}
-                                <ul class="flex flex-col min-w-0 gap-1">
-                                    {#each group.events as row (row.id)}
-                                        {@render eventRow(row, row.story)}
-                                    {/each}
-                                </ul>
-                            {/if}
-                        </li>
+                    {#each manageRows.slice(0, shown) as row (row.event.id)}
+                        {@render eventRow(row)}
                     {/each}
                 </ul>
             {/if}
-        {:else if manageRows.length === 0}
-            <p class="text-textcolor2">{text.empty}</p>
-        {:else}
-            <ul class="flex flex-col min-w-0 gap-2">
-                {#each manageRows.slice(0, shown) as row (row.event.id)}
-                    {@render eventRow(row)}
-                {/each}
-            </ul>
-        {/if}
-        {@const remaining = view === "read" ? groups.length - groupsShown : manageRows.length - shown}
-        {#if remaining > 0}
-            <button
-                type="button"
-                class="self-start px-2 py-1 my-1 transition-colors border rounded-md border-darkborderc text-textcolor2 hover:text-textcolor"
-                onclick={() => {
-                    if (view === "read") groupsShown += GROUPS_AT_ONCE;
-                    else shown += ROWS_AT_ONCE;
-                }}
-            >
-                {panelText.showMore(remaining)}
-            </button>
+            {@const remaining = view === "read" ? groups.length - groupsShown : manageRows.length - shown}
+            {#if remaining > 0}
+                <button
+                    type="button"
+                    class="self-start px-2 py-1 my-1 transition-colors border rounded-md border-darkborderc text-textcolor2 hover:text-textcolor"
+                    onclick={() => {
+                        if (view === "read") groupsShown += GROUPS_AT_ONCE;
+                        else shown += ROWS_AT_ONCE;
+                    }}
+                >
+                    {panelText.showMore(remaining)}
+                </button>
+            {/if}
         {/if}
     {/if}
 </div>

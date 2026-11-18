@@ -3340,6 +3340,8 @@ export const languageEnglish = {
         },
         timeline: {
             view: "Timeline view",
+            search: "Search memory text",
+            searchClear: "Clear search",
             edit: "Edit",
             title: "Event title",
             summary: "Event summary",
