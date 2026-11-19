@@ -63,9 +63,9 @@ Read each module's header or component contract, then read the named export's co
 - `src/ts/process/structuredMemory.svelte.ts`: record views and navigation; `memoryRunView`, `memoryTimelineRows`,
   `memoryPageTree`, `memoryPageHistoryView`, `memoryEventView`, `memoryWriterNotice`, `MemoryPanelTabProps`,
   `memoryTextDiff`, `requestMemoryPanelTarget`, `memoryTextSearch`.
-- `src/ts/process/structuredMemory.svelte.ts`: report and settings views; `memoryStatusWord`, `memoryItemsUsed`,
-  `usedMemoryCoverageGroups`, `memoryItemKey`, `memoryItemTitles`, `memoryBlockEntries`, `memoryTestResultView`,
-  `readStructuredMemoryDefaultPrompts`.
+- `src/ts/process/structuredMemory.svelte.ts`: report and settings views; `memoryStatusWord`, `standingMemoryReport`,
+  `memoryItemsUsed`, `usedMemoryCoverageGroups`, `memoryItemKey`, `memoryItemTitles`, `memoryBlockEntries`,
+  `memoryTestResultView`, `readStructuredMemoryDefaultPrompts`.
 - `src/lib/ChatScreens/MemoryReceiptLine.svelte`: per-message receipt view; `stored`, `view`, `openChange`, `revert`.
 - `src/lib/Setting/Pages/StructuredMemoryPrompts.svelte`: preset prompt editor; `tick`, `loadDefaults`, `test`.
 
@@ -110,7 +110,12 @@ events are enabled through `structuredMemoryEmbeddingLanes`, independent of the 
 counts the anchor line with the frame. Dated flow and event lines can show the distance (`storyDateDistance` in
 `shared/structuredMemory.ts`). With no valid date, the same stored records yield the same undated card.
 
-The meter reads tokens and `memoryStatusWord`; its popover and Preview share `MemoryManifest`.
+The meter reads tokens and `memoryStatusWord`; its popover and Preview share `MemoryManifest`. A report is its send's
+copy, so its `failed` writer outlives the failure: a record now, a task, or a rebuild's run writes runs and no report.
+The meter therefore passes a Structured Memory report through `standingMemoryReport` with the open chat's
+[health facts](#the-health-badge) and the newest reply's receipt. Once the facts say the newest finished run did not
+fail, the line and the popover's manifest stop saying failed: `recorded` when that receipt says so, else no writer word,
+since a fill gaps writes no receipt. With no facts read, the report stands.
 
 ### Receipts
 
@@ -186,6 +191,13 @@ date in chat order and cut at the chat preset's `eventsPerGroup`; Manage holds t
 an event fetches its record. Timeline and Log share `MemoryEventFacts` for changes and `storyTimeText` for date, text
 and ordinal. Timeline resolves page and thread ids from contents; Log displays ids.
 
+Manage is also where a retracted event is deleted, the one control such a row has
+([the remove route](records.md#the-remove-route)). `removeRetracted` asks first, with the words for an event whose cited
+messages or greeting are still in the held chat (`citesHeld`), because those read as unrecorded afterwards. Above the
+list a count of retracted events offers one sweep of the ones nothing in the chat stands behind (`orphanedRetracted`),
+sent `MEMORY_REMOVE_EVENTS_MAX` ids a request, each naming the revision the last answered. With no chat held nothing can
+be ruled out, so the sweep is not offered and every question warns.
+
 Read also joins the [chapters](records.md#the-read-routes) with the groups: it reads them beside the story once per
 `refresh`, and again after its own removal or chapter command, and only the newest read installs. `memoryChapterLayout`
 (`structuredMemory.svelte.ts`) places each chapter and groups the loose runs around it; the component contract owns the
@@ -205,8 +217,9 @@ second request.
 A flagged section there takes one of two answers. Keep sends `sectionKeep` with the tab's `preserve` checkbox, which is
 tab state and starts checked; Keep all sends a page's keeps in turn, each at the revision the last answer named. Revert
 shows when `sectionReverts` finds the heading's newest standing entry to be a revertable writer's change of a retracted
-event, and calls [the revert route](records.md#the-revert-route). The
-[lifecycle guide](lifecycle.md#retraction-and-edits) owns when a section is flagged.
+event, or of an event contents no longer list, which a person deleted after its retraction flagged the section, and
+calls [the revert route](records.md#the-revert-route). The [lifecycle guide](lifecycle.md#retraction-and-edits) owns
+when a section is flagged.
 
 ### Panel edits
 
@@ -273,10 +286,13 @@ passes the chat's stored preset id to `store.memory.readWriterSettings` ([rebuil
 ### The health badge
 
 `memoryHealthStates()` combines `POST /health` facts, the open chat's newest report and tab-held over-cap marks for open
-and pinned chats whose own algorithm is Structured Memory. Each key resolves its chat's preset; the open chat's gap is
-judged against that preset's `gapConfirmTokens`. `chatStatus.svelte.ts` owns state selection; `watchChatVisibility` owns
-the read triggers, which ask only for those chats. `MEMORY_HEALTH_STATES` gives the worst-state order, while
-`CHAT_STATUS_PRIORITY` keeps health below unseen replies. The health route's prefix and byte budget are described in
+and pinned chats whose own algorithm is Structured Memory. `memoryHealthFacts(ref)` answers the facts as last read;
+`lastRunFailed` among them (`writerFailing`, the rule a send's `writerState` uses) is no badge state and feeds
+[the meter](#the-read-path). Each key resolves its chat's preset; the open chat's gap is judged against that preset's
+`gapConfirmTokens`. `chatStatus.svelte.ts` owns state selection; `watchChatVisibility` owns the read triggers, which ask
+only for those chats; the end of a memory task the open chat was seen running is one of them, since a task changes what
+the runs say and no report follows it. `MEMORY_HEALTH_STATES` gives the worst-state order, while `CHAT_STATUS_PRIORITY`
+keeps health below unseen replies. The health route's prefix and byte budget are described in
 [records](records.md#the-read-routes) and its
 [measurement](../../reports/measurements/structured-memory-health-read-2026-11-03.md). Contents' health feeds the writer
 line; a send's `writerState` gets `pending` with reason `repair` from in-hand `records.events`.
@@ -357,8 +373,10 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
 - Fine-tuning: `prompts.test.ts` for the frame rules, `memoryTasks.test.ts` for both modes, invalid frames, replay, and
   the size check, `memoryJobs.test.ts` for the test run on a real stack, `structuredMemoryRoutes.test.ts` for the
   default prompts, and `StructuredMemoryPrompts.test.ts` for the controls.
-- The health badge: `structuredMemoryRoutes.test.ts` for the route and its budget, `chatStatus.test.ts` for the states,
-  the read triggers, and the mark, `memoryJobs.test.ts` for the failure code on a real stack.
+- The health badge: `structuredMemoryRoutes.test.ts` for the route and its budget, `memoryStore.test.ts` for
+  `lastRunFailed`, `chatStatus.test.ts` for the states, the read triggers, the held facts, and the mark,
+  `memoryJobs.test.ts` for the failure code on a real stack. `structuredMemory.test.ts` and
+  `ContextMeter.svelte.test.ts` cover the standing writer word.
 - The preview: `memoryJobs.test.ts` and `promptRunner.test.ts` drive both kinds on a real stack, and
   `StructuredMemoryPanel.test.ts` scripts `runServerJob` for the tab.
 - `util/memoryEval.mjs` runs the [evaluation harness](../../../server/src/tests/fixtures/memory/structured/README.md)

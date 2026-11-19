@@ -988,7 +988,14 @@ describe("isChatBusy", () => {
     });
 });
 
-const healthy = { paused: false, storedStale: 0, pendingRepairs: 0, unsupportedSections: 0, overBudgetSections: 0 };
+const healthy = {
+    paused: false,
+    lastRunFailed: false,
+    storedStale: 0,
+    pendingRepairs: 0,
+    unsupportedSections: 0,
+    overBudgetSections: 0,
+};
 async function enableMemory() {
     const { settings } = await import("../storage/settingsViews.svelte");
     const { characterList } = await import("../storage/characterStore.svelte");
@@ -1029,6 +1036,49 @@ it("shares one walk of the characters' chats across reactive memory health reade
     for (const reader of readers) {
         expect(reader.seen).toEqual([new Map(), new Map([[keyB, "requiredOverCap"]])]);
     }
+});
+
+it("reads the open chat's health again when a memory task it saw running ends, and answers the facts it holds", async () => {
+    await enableMemory();
+    view(a);
+    const { hypaV3ModalOpen } = await import("../screenVisibility");
+    hypaV3ModalOpen.set(false);
+    let lastRunFailed = true;
+    const requests: { characterId: string; chatId: string }[][] = [];
+    stubs.healthFetch.mockImplementation(async (_url, init) => {
+        requests.push(JSON.parse(String(init?.body)).chats);
+        return Response.json({ health: [{ ...healthy, lastRunFailed }] });
+    });
+    watch();
+    await settleHealth();
+    expect(requests).toEqual([[{ characterId: "c", chatId: "k" }]]);
+    expect(status.memoryHealthFacts(a)).toEqual({ ...healthy, lastRunFailed: true });
+    expect(status.memoryHealthFacts(b)).toBeNull();
+    const tasks = await import("./memoryTasks.svelte");
+    const frame = (state: "running" | "done") =>
+        tasks.noteMemoryTaskFrame({
+            type: "memoryTask",
+            epoch: EPOCH,
+            characterId: "c",
+            chatId: "k",
+            status: {
+                kind: "structuredMemory",
+                taskId: "fill-gaps",
+                state,
+                done: state === "done" ? 1 : 0,
+                total: 1,
+                ...(state === "done" ? { terminalRevision: null } : {}),
+            },
+        });
+    frame("running");
+    await settleHealth();
+    expect(requests).toHaveLength(1);
+    // The task's runs are what changed: the context meter's last report cannot say a later run made good a failure.
+    lastRunFailed = false;
+    frame("done");
+    await settleHealth();
+    expect(requests).toEqual([[{ characterId: "c", chatId: "k" }], [{ characterId: "c", chatId: "k" }]]);
+    expect(status.memoryHealthFacts(a)).toEqual({ ...healthy, lastRunFailed: false });
 });
 
 it("keeps newer health answers when a delayed boot read returns, applying request order per chat", async () => {

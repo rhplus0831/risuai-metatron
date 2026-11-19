@@ -1961,7 +1961,7 @@ export const languageEnglish = {
         },
         requestIdReused: "This request id was already used for a different action. Send again to start a new request.",
         memoryRebuilding:
-            "This chat's memory is being rebuilt. Resume or abandon the rebuild in the memory panel to use the chat again.",
+            "A rebuild, start over, or fill gaps holds this chat's memory. Resume or abandon it in the memory panel to use the chat again.",
         lost: "The connection to the server job was lost; reload the chat to see its changes",
         endedAway: "The response job ended while this page was away; the chat was reloaded",
         hooksSkipped: "Plugin processing skipped while this page was away: {hooks}",
@@ -1983,7 +1983,7 @@ export const languageEnglish = {
             memoryRecord: "A conflict discarded local changes; the recording did not start",
             memoryTest: "A conflict discarded local changes; the test run did not start",
             memoryChapters: "A conflict discarded local changes; the synopses did not start",
-            memoryRebuild: "A conflict discarded local changes; the rebuild did not start",
+            memoryRebuild: "A conflict discarded local changes; the memory work did not start",
         },
         saveFailed: "Local changes could not be saved: {0}",
         refusedDraft:
@@ -2899,8 +2899,8 @@ export const languageEnglish = {
             revisionConflict: "the memory was changed meanwhile",
             awaitingAdoption:
                 "nothing records until you adopt or decline this chat's HypaV3 summaries in the memory panel, and the summaries stay stored",
-            memoryRebuilding: "this chat's memory is being rebuilt",
-            rebuildGone: "the rebuild is gone",
+            memoryRebuilding: "a rebuild, start over, or fill gaps holds this chat's memory",
+            rebuildGone: "the rebuild, start over, or fill gaps is gone",
             nothingRecorded: "no turn was recorded, so the records stay as they were",
             queueFull: "too many chats are waiting for memory work",
         } as Record<string, string>,
@@ -3398,6 +3398,17 @@ export const languageEnglish = {
                 keep: "Keep as it is",
                 retractConfirm: "Retract this event? It stops being used, and nothing here can bring it back.",
                 waiting: "Waiting to be re-recorded",
+                remove: "Delete",
+                removeConfirm: "Delete this retracted event from the records? This cannot be undone.",
+                removeConfirmSources:
+                    "Delete this retracted event from the records? What it cites is still in the chat, so that counts as unrecorded again and the writer or Fill gaps can record it anew. This cannot be undone.",
+                retractedCount: (count: number) => (count === 1 ? "1 retracted event" : `${count} retracted events`),
+                removeOrphans: (count: number) => `Delete the ${count} whose messages are gone`,
+                removeOrphansConfirm: (count: number) =>
+                    `Delete ${count === 1 ? "the retracted event" : `the ${count} retracted events`} whose messages are no longer in the chat? This cannot be undone.`,
+                removed: (count: number) =>
+                    count === 1 ? "Deleted 1 retracted event." : `Deleted ${count} retracted events.`,
+                removeNothing: "Nothing was deleted: the events are no longer in the records.",
             },
         },
         threads: {
@@ -3468,25 +3479,46 @@ export const languageEnglish = {
             cost: (calls: number, tokens: number) => memoryCostText(calls, tokens),
             costUnknown: "The cost could not be read, so it is unknown.",
             nothing: "Nothing to do: this chat has no turn to record.",
-            started: "Rebuild started",
-            resumed: "Rebuild resumed",
+            confirmFreshEmpty:
+                "Discard every memory record of this chat? It has no turn to record, so no model is called and nothing is written in their place. Every page, event, and thread goes, including what you locked, pinned, corrected, or added, and the trash is emptied. This cannot be undone.",
+            cleared: "Every memory record of this chat was discarded.",
+            started: { rebuild: "Rebuild started", fresh: "Start over started", backfill: "Fill gaps started" },
+            resumed: { rebuild: "Rebuild resumed", fresh: "Start over resumed", backfill: "Fill gaps resumed" },
             progress: (done: number, total: number) => `Rebuilding ${done} of ${total}`,
             backfillProgress: (done: number, total: number) => `Filling gaps ${done} of ${total}`,
             freshProgress: (done: number, total: number) => `Starting over ${done} of ${total}`,
-            readOnly: "This chat holds a rebuild, so this panel is read-only until it ends or you abandon it.",
+            readOnly: {
+                rebuild: "This chat holds a rebuild, so this panel is read-only until it ends or you abandon it.",
+                fresh: "This chat is starting over, so this panel is read-only until that ends or you abandon it.",
+                backfill: "This chat is filling gaps, so this panel is read-only until that ends or you abandon it.",
+            },
             paused: "Paused. This chat cannot generate until you resume or abandon.",
             stopped: (reason: string) => `Stopped: ${reason}. This chat cannot generate until you resume or abandon.`,
             stopReasons: { staleInput: "the chat or the memory settings changed" } as Record<string, string>,
-            replaced:
-                "This chat was replaced after the rebuild began, so it cannot go on. Abandon it to use the chat again.",
+            replaced: {
+                rebuild:
+                    "This chat was replaced after the rebuild began, so it cannot go on. Abandon it to use the chat again.",
+                fresh: "This chat was replaced after starting over began, so that cannot go on. Abandon it to use the chat again.",
+                backfill:
+                    "This chat was replaced after filling gaps began, so that cannot go on. Abandon it to use the chat again.",
+            },
             pause: "Pause",
             resume: "Resume",
             abandon: "Abandon",
-            abandonConfirm:
-                "Abandon this rebuild? The model calls already paid for are lost, and the records stay as they were.",
-            abandoned: "The rebuild is abandoned. The records stay as they were.",
-            abandonNothing: "Nothing to abandon: this chat holds no rebuild.",
-            pauseFailed: (error: string) => `The rebuild could not be paused: ${error}`,
+            abandonConfirm: {
+                rebuild:
+                    "Abandon this rebuild? The model calls already paid for are lost, and the records stay as they were.",
+                fresh: "Abandon starting over? The model calls already paid for are lost, and the records stay as they were.",
+                backfill:
+                    "Abandon filling gaps? The model calls already paid for are lost, and the records stay as they were.",
+            },
+            abandoned: {
+                rebuild: "The rebuild is abandoned. The records stay as they were.",
+                fresh: "Starting over is abandoned. The records stay as they were.",
+                backfill: "Filling gaps is abandoned. The records stay as they were.",
+            },
+            abandonNothing: "Nothing to abandon: no rebuild, start over, or fill gaps is under way in this chat.",
+            pauseFailed: (error: string) => `The memory work could not be paused: ${error}`,
         },
         memoryFile: {
             exportedWithoutRecords:

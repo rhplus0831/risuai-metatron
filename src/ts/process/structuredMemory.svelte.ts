@@ -62,12 +62,14 @@ import {
     type StructuredMemoryChapterRemoveAnswer,
     type StructuredMemoryChaptersAnswer,
     type StructuredMemoryChaptersResult,
+    type StructuredMemoryClearAnswer,
     type StructuredMemoryContentsAnswer,
     type StructuredMemoryCostAnswer,
     type StructuredMemoryCostMode,
     type StructuredMemoryCoverageEvent,
     type StructuredMemoryCoverageRound,
     type StructuredMemoryCoverageRun,
+    type StructuredMemoryRemoveEventsAnswer,
     type StructuredMemoryDeclineAnswer,
     type StructuredMemoryDefaultPromptsAnswer,
     type StructuredMemoryEdit,
@@ -618,6 +620,7 @@ function isRebuild(value: unknown): value is StructuredMemoryRebuild {
 /** What contents without `health` say: nothing to show, which the health route decides anyway. */
 const NO_HEALTH: StructuredMemoryHealthFacts = {
     paused: false,
+    lastRunFailed: false,
     storedStale: 0,
     pendingRepairs: 0,
     unsupportedSections: 0,
@@ -628,6 +631,7 @@ function isHealthFacts(value: unknown): value is StructuredMemoryHealthFacts {
     return (
         isPlainObject(value) &&
         typeof value.paused === "boolean" &&
+        typeof value.lastRunFailed === "boolean" &&
         [value.storedStale, value.pendingRepairs, value.unsupportedSections, value.overBudgetSections].every(
             (count) => storedCount(count) !== undefined,
         )
@@ -1021,6 +1025,30 @@ export function removeStructuredMemoryChapters(
 }
 
 /**
+ * Removes the retracted events `ids` name for good, named against the memory read at `revision`; at most
+ * `MEMORY_REMOVE_EVENTS_MAX` a request. The answer's revision is what the next request names, and
+ * `removed` counts only the events that were still stored. The caller asks first and shows the notice for
+ * a refusal; an event that is not retracted refuses the whole request with a 400's text.
+ */
+export function removeStructuredMemoryEvents(
+    ref: ChatRef,
+    revision: string,
+    ids: readonly string[],
+): Promise<StructuredMemoryResult<StructuredMemoryRemoveEventsAnswer>> {
+    return readAnswer(
+        `${chatPath(ref)}/events/remove`,
+        ({ revision: next, removed }) =>
+            typeof next === "string" && isNonnegativeCount(removed) ? { revision: next, removed } : null,
+        editRefusalOf,
+        {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ revision, ids }),
+        },
+    );
+}
+
+/**
  * Sends one person's edit, made on the copy read at `revision`. The answer's revision is what the next
  * edit names, including sequential section keeps. The caller shows the notice for a refusal.
  */
@@ -1215,6 +1243,29 @@ export function readStructuredMemoryCost(
         query.set("through", through);
     }
     return readAnswer(`${chatPath(ref)}/cost?${query}`, parseCostAnswer);
+}
+
+/**
+ * Starts over a chat that has no turn left to record: removes every record it holds, the trash and the
+ * chapters included, with no model call, named against the memory read at `revision`. A chat with no
+ * record answers `cleared: false`; one a fresh rebuild would record is refused `changed`, since its start
+ * over is the `memoryRebuild` command. The caller asks first and shows the notice for a refusal.
+ */
+export function clearStructuredMemory(
+    ref: ChatRef,
+    revision: string,
+): Promise<StructuredMemoryResult<StructuredMemoryClearAnswer>> {
+    return readAnswer(
+        `${chatPath(ref)}/clear`,
+        ({ revision: next, cleared }) =>
+            typeof next === "string" && typeof cleared === "boolean" ? { revision: next, cleared } : null,
+        editRefusalOf,
+        {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ revision }),
+        },
+    );
 }
 
 /**
@@ -2461,6 +2512,31 @@ export type MemoryStatusWord = "gap" | "unknown" | ContextMemoryWriter["state"] 
  */
 export function memoryStatusWord({ coverage, writer }: Pick<ReportedMemory, "coverage" | "writer">): MemoryStatusWord {
     return coverage === "covered" ? (writer?.state ?? "memoryOn") : coverage;
+}
+
+/**
+ * A report's memory with its writer as it stands now. A report is its send's copy, so its `failed`
+ * outlives the failure: a record now, a task, or a rebuild's run writes runs and no report. Once `facts`
+ * read since say the newest finished run did not fail, the failure is over: `recorded` when `receipt`,
+ * the newest reply's (`newestMemoryReceipt`), says a run recorded it, else no writer word at all, since
+ * a fill gaps leaves no receipt and nothing here tells a recorded reply from a waiting one. Every other
+ * state stands, and so does a `failed` with no facts read (null) or facts that confirm it.
+ */
+export function standingMemoryReport<T extends Pick<ReportedMemory, "writer">>(
+    memory: T,
+    facts: Pick<StructuredMemoryHealthFacts, "lastRunFailed"> | null,
+    receipt: unknown,
+): T {
+    if (memory.writer?.state !== "failed" || facts === null || facts.lastRunFailed) {
+        return memory;
+    }
+    const standing = { ...memory };
+    if (isPlainObject(receipt) && receipt.state === "recorded") {
+        standing.writer = { state: "recorded" };
+    } else {
+        delete standing.writer;
+    }
+    return standing;
 }
 
 /**

@@ -13,6 +13,7 @@ import {
     STRUCTURED_MEMORY_ALGORITHM,
     type MemoryHealthState,
     type StructuredMemoryHealthEntry,
+    type StructuredMemoryHealthFacts,
 } from "../../../shared/structuredMemory.ts";
 import { characterList, findCharacter } from "src/ts/storage/characterStore.svelte";
 import {
@@ -28,6 +29,7 @@ import { settings } from "src/ts/storage/settingsViews.svelte";
 import { PlaygroundStore, selection } from "src/ts/storage/selection.svelte";
 import { followedJobs, readChatAgain } from "src/ts/process/serverCommands";
 import { isLocalSend, localSends } from "src/ts/process/localSends";
+import { memoryTaskStatus } from "src/ts/process/memoryTasks.svelte";
 import { readStructuredMemoryHealth } from "src/ts/process/structuredMemory.svelte";
 import { bookmarkListOpen, gridOpenStore, hypaV3ModalOpen, settingsOpen } from "src/ts/screenVisibility";
 import { messageSearchPanel } from "src/ts/messageSearch.svelte";
@@ -210,8 +212,10 @@ export function visibleChatKey(): string | null {
 // The memory health badge. Shared module-level deriveds select the chats (`healthChatKeys`) and compute
 // their states. Entries keep the newest applied request per chat status key; late older answers are ignored.
 // Reads cover the pinned chats and the open chat alone: after boot, for a chat newly pinned, for the
-// open chat as it opens and when the memory panel closes, and for every chat when the page comes back
-// after a minute. Never on a send or a task's end: the badge is a last observation. The open chat adds
+// open chat as it opens, when the memory panel closes, and when a memory task ends in it, and for every
+// chat when the page comes back after a minute. Never on a send: the badge is a last observation. The
+// task's end is read for the context meter, whose last report cannot say that a later run made good a
+// failed one (`memoryHealthFacts`). The open chat adds
 // what its newest report says, and this tab's mark of a send that failed because the required pages were
 // over the cap, which only a reload or the chat's next good send clears. An unavailable entry supplies
 // no facts; the report and over-cap mark still apply and outrank that unknown state.
@@ -326,6 +330,15 @@ const healthStates = $derived.by(() => {
     }
     return states;
 });
+
+/**
+ * The chat's health facts as last read (reactive): null before a read, for an unavailable entry, and
+ * for a chat the server does not know. Held only for the open chat and the pinned ones.
+ */
+export function memoryHealthFacts(ref: ChatRef): StructuredMemoryHealthFacts | null {
+    const entry = healthFacts.get(chatStatusKey(ref)) ?? null;
+    return entry === "unavailable" ? null : entry;
+}
 
 /**
  * Returns the shared derived health states (`memoryHealthState`) by status key, current even outside
@@ -491,6 +504,20 @@ export function watchChatVisibility(): () => void {
             const open = untrack(currentChatRef);
             if (open && open.chaId !== "§playground" && untrack(() => structuredMemorySelected(open))) {
                 const key = chatStatusKey(open);
+                queueMicrotask(() => void readHealth([key]));
+            }
+        });
+        // A memory task that ends in the open chat changed what its runs say. A chat switch is no end:
+        // the chat opened is read by the effect above.
+        let liveTaskKey: string | null = null;
+        $effect(() => {
+            const open = currentChatRef();
+            const key = open && open.chaId !== "§playground" ? chatStatusKey(open) : null;
+            const state = open && key !== null ? memoryTaskStatus(open)?.state : undefined;
+            const live = state === "queued" || state === "running";
+            const ended = !live && state !== undefined && key !== null && liveTaskKey === key;
+            liveTaskKey = live ? key : null;
+            if (ended && open && untrack(() => structuredMemorySelected(open))) {
                 queueMicrotask(() => void readHealth([key]));
             }
         });

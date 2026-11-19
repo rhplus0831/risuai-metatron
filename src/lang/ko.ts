@@ -1323,7 +1323,7 @@ export const languageKorean = {
         },
         requestIdReused: "이 요청 ID는 이미 다른 작업에 사용되었습니다. 다시 전송하면 새 요청으로 시작됩니다.",
         memoryRebuilding:
-            "이 채팅의 기억을 전체 재생성하고 있습니다. 채팅을 다시 사용하려면 기억 패널에서 전체 재생성을 재개하거나 중단해 주세요.",
+            "이 채팅에서 기억 작업(전체 재생성, 초기화, 빈 곳 채우기)이 진행 중입니다. 채팅을 다시 사용하려면 기억 패널에서 작업을 재개하거나 포기해 주세요.",
         lost: "서버 작업과의 연결이 끊어졌습니다. 반영된 변경 사항을 확인하려면 채팅을 다시 불러와 주세요.",
         endedAway: "자리를 비운 사이 응답 생성이 완료되어 채팅을 새로 불러왔습니다",
         hooksSkipped: "자리를 비운 사이 다음 플러그인 처리를 건너뛰었습니다: {hooks}",
@@ -1345,7 +1345,7 @@ export const languageKorean = {
             memoryRecord: "데이터 충돌로 로컬 변경 사항이 취소되어 기억 기록을 시작하지 않았습니다.",
             memoryTest: "데이터 충돌로 로컬 변경 사항이 취소되어 테스트 실행을 시작하지 않았습니다.",
             memoryChapters: "데이터 충돌로 로컬 변경 사항이 취소되어 줄거리 만들기를 시작하지 않았습니다.",
-            memoryRebuild: "데이터 충돌로 로컬 변경 사항이 취소되어 기억 전체 재생성을 시작하지 않았습니다.",
+            memoryRebuild: "데이터 충돌로 로컬 변경 사항이 취소되어 기억 작업을 시작하지 않았습니다.",
         },
         saveFailed: "로컬 변경 사항을 저장하지 못했습니다: {0}",
         refusedDraft:
@@ -2796,8 +2796,8 @@ export const languageKorean = {
             revisionConflict: "작업 도중 기억이 변경되었습니다",
             awaitingAdoption:
                 "기억 패널에서 이 채팅의 하이파 V3 요약본을 채택하거나 거절하기 전까지 기록을 보류합니다(기존 요약본은 유지됨)",
-            memoryRebuilding: "이 채팅의 기억을 전체 재생성하고 있습니다",
-            rebuildGone: "전체 재생성 작업이 취소되었거나 존재하지 않습니다",
+            memoryRebuilding: "이 채팅에서 기억 작업(전체 재생성, 초기화, 빈 곳 채우기)이 진행 중입니다",
+            rebuildGone: "기억 작업이 취소되었거나 존재하지 않습니다",
             nothingRecorded: "새로 기록된 턴이 없어 기존 기록을 그대로 유지합니다",
             queueFull: "메모리 작업을 대기 중인 채팅이 너무 많습니다",
         },
@@ -3280,6 +3280,16 @@ export const languageKorean = {
                 keep: "그대로 유지",
                 retractConfirm: "이 사건을 철회할까요? 기억에서 더 이상 사용되지 않으며 되돌릴 수 없습니다.",
                 waiting: "재기록 대기 중",
+                remove: "삭제",
+                removeConfirm: "철회된 이 사건을 기록에서 삭제할까요? 되돌릴 수 없습니다.",
+                removeConfirmSources:
+                    "철회된 이 사건을 기록에서 삭제할까요? 이 사건이 인용한 원문이 채팅에 남아 있어, 삭제하면 해당 원문이 미기록 상태로 돌아가 기록기나 '빈 곳 채우기'가 다시 기록할 수 있습니다. 되돌릴 수 없습니다.",
+                retractedCount: (count: number) => `철회된 사건 ${count}개`,
+                removeOrphans: (count: number) => `원문이 없는 ${count}개 삭제`,
+                removeOrphansConfirm: (count: number) =>
+                    `원문 메시지가 채팅에 남아 있지 않은 철회된 사건 ${count}개를 기록에서 삭제할까요? 되돌릴 수 없습니다.`,
+                removed: (count: number) => `철회된 사건 ${count}개를 삭제했습니다.`,
+                removeNothing: "삭제된 사건이 없습니다. 해당 사건이 이미 기록에 없습니다.",
             },
         },
         threads: {
@@ -3346,27 +3356,58 @@ export const languageKorean = {
             cost: (calls: number, tokens: number) => memoryCostText(calls, tokens),
             costUnknown: "예상 비용을 계산할 수 없습니다.",
             nothing: "처리할 대상이 없습니다. 이 채팅에는 새로 기록할 턴이 없습니다.",
-            started: "전체 재생성을 시작했습니다",
-            resumed: "전체 재생성을 재개했습니다",
+            confirmFreshEmpty:
+                "이 채팅의 기억 기록을 전부 버릴까요? 기록할 턴이 없어 모델을 호출하지 않으며 새로 작성되는 기록도 없습니다. 사용자가 직접 잠그거나 고정·수정·추가한 항목을 포함한 모든 문서·사건·미결 사항이 삭제되고 휴지통도 비워집니다. 이 작업은 되돌릴 수 없습니다.",
+            cleared: "이 채팅의 기억 기록을 모두 비웠습니다.",
+            started: {
+                rebuild: "전체 재생성을 시작했습니다",
+                fresh: "초기화를 시작했습니다",
+                backfill: "빈 곳 채우기를 시작했습니다",
+            },
+            resumed: {
+                rebuild: "전체 재생성을 재개했습니다",
+                fresh: "초기화를 재개했습니다",
+                backfill: "빈 곳 채우기를 재개했습니다",
+            },
             progress: (done: number, total: number) => `전체 재생성 진행 중 (${done}/${total})`,
             backfillProgress: (done: number, total: number) => `빈 곳 채우는 중 (${done}/${total})`,
             freshProgress: (done: number, total: number) => `초기화 진행 중 (${done}/${total})`,
-            readOnly:
-                "이 채팅에서 기억 전체 재생성이 진행 중이므로 완료되거나 중단할 때까지 패널이 읽기 전용으로 전환됩니다.",
+            readOnly: {
+                rebuild:
+                    "이 채팅에서 기억 전체 재생성이 진행 중이므로 완료되거나 포기할 때까지 패널이 읽기 전용으로 전환됩니다.",
+                fresh: "이 채팅에서 기억 초기화가 진행 중이므로 완료되거나 포기할 때까지 패널이 읽기 전용으로 전환됩니다.",
+                backfill:
+                    "이 채팅에서 빈 곳 채우기가 진행 중이므로 완료되거나 포기할 때까지 패널이 읽기 전용으로 전환됩니다.",
+            },
             paused: "일시 중지됨. 작업을 재개하거나 포기할 때까지 이 채팅에서 새 응답을 생성할 수 없습니다.",
             stopped: (reason: string) =>
                 `중단됨: ${reason}. 작업을 재개하거나 포기할 때까지 이 채팅에서 새 응답을 생성할 수 없습니다.`,
             stopReasons: { staleInput: "채팅 내용 또는 메모리 설정이 변경되었습니다" },
-            replaced:
-                "전체 재생성 시작 이후 채팅 데이터가 교체되어 작업을 이어갈 수 없습니다. 채팅을 다시 사용하려면 '포기'를 눌러 주세요.",
+            replaced: {
+                rebuild:
+                    "전체 재생성 시작 이후 채팅 데이터가 교체되어 작업을 이어갈 수 없습니다. 채팅을 다시 사용하려면 '포기'를 눌러 주세요.",
+                fresh: "초기화 시작 이후 채팅 데이터가 교체되어 작업을 이어갈 수 없습니다. 채팅을 다시 사용하려면 '포기'를 눌러 주세요.",
+                backfill:
+                    "빈 곳 채우기 시작 이후 채팅 데이터가 교체되어 작업을 이어갈 수 없습니다. 채팅을 다시 사용하려면 '포기'를 눌러 주세요.",
+            },
             pause: "일시 중지",
             resume: "재개",
             abandon: "포기",
-            abandonConfirm:
-                "진행 중인 전체 재생성을 포기할까요? 지금까지 소모된 모델 호출 결과는 폐기되며 기존 기억 기록이 그대로 유지됩니다.",
-            abandoned: "전체 재생성을 포기했습니다. 기존 기억 기록이 그대로 유지됩니다.",
-            abandonNothing: "포기할 전체 재생성 작업이 없습니다.",
-            pauseFailed: (error: string) => `전체 재생성을 일시 중지하지 못했습니다: ${error}`,
+            abandonConfirm: {
+                rebuild:
+                    "진행 중인 전체 재생성을 포기할까요? 지금까지 소모된 모델 호출 결과는 폐기되며 기존 기억 기록이 그대로 유지됩니다.",
+                fresh: "진행 중인 초기화를 포기할까요? 지금까지 소모된 모델 호출 결과는 폐기되며 기존 기억 기록이 그대로 유지됩니다.",
+                backfill:
+                    "진행 중인 빈 곳 채우기를 포기할까요? 지금까지 소모된 모델 호출 결과는 폐기되며 기존 기억 기록이 그대로 유지됩니다.",
+            },
+            abandoned: {
+                rebuild: "전체 재생성을 포기했습니다. 기존 기억 기록이 그대로 유지됩니다.",
+                fresh: "초기화를 포기했습니다. 기존 기억 기록이 그대로 유지됩니다.",
+                backfill: "빈 곳 채우기를 포기했습니다. 기존 기억 기록이 그대로 유지됩니다.",
+            },
+            abandonNothing:
+                "포기할 기억 작업이 없습니다. 이 채팅에는 진행 중인 전체 재생성, 초기화, 빈 곳 채우기가 없습니다.",
+            pauseFailed: (error: string) => `기억 작업을 일시 중지하지 못했습니다: ${error}`,
         },
         memoryFile: {
             exportedWithoutRecords: "채팅은 내보냈으나 기억 기록을 읽지 못해 파일에 기억 기록이 포함되지 않았습니다.",

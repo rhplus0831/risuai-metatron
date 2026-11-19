@@ -47,6 +47,7 @@ import {
     sealHypaV3Data,
     memoryChapterMark,
     STRUCTURED_MEMORY_LIMITS,
+    writerFailing,
     writerPaused,
     type MemoryChapter,
     type MemoryEvent,
@@ -779,6 +780,7 @@ function serveMemory(
                 runs: state.runs,
                 health: {
                     paused: writerPaused(state.runs as MemoryRun[]),
+                    lastRunFailed: writerFailing(state.runs as MemoryRun[]),
                     storedStale: 0,
                     pendingRepairs: 0,
                     unsupportedSections: 0,
@@ -3198,7 +3200,73 @@ it("sends the seen keep state, explains a refusal, and confirms before retractin
         edit: { kind: "event", eventId: "e", repair: "retract" },
     });
     expect(query('[data-memory-event="e"]')?.dataset.memoryEventStatus).toBe("retracted");
-    expect(query("[data-memory-event-repairs]")).toBeNull();
+    // A retracted event has one control left: taking it out of the records.
+    expect(target.querySelectorAll("[data-memory-repair]")).toHaveLength(1);
+    expect(query('[data-memory-repair="remove"]')).not.toBeNull();
+});
+
+it("deletes retracted events after asking, sweeps the ones whose messages are gone, and warns when the source remains", async () => {
+    const state = serveAnchoredEvent();
+    const repairs = language.structuredMemory.timeline.repairs;
+    let events = [
+        { ...state.event, status: "retracted" as const, messageIds: ["u0", "a0"], sourceIndex: 0 },
+        {
+            ...state.event,
+            id: "o",
+            title: "Left behind",
+            status: "retracted" as const,
+            sources: [{ messageId: "gone", index: 7, hash: "v3:gone" }],
+            messageIds: ["gone"],
+            sourceIndex: 7,
+        },
+    ];
+    const sent: { revision: string; ids: string[] }[] = [];
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.includes("/coverage")) {
+            return Response.json({ revision: state.revision, events, runs: [], next: null });
+        }
+        if (url.endsWith("/events/remove")) {
+            const body = JSON.parse(String(init?.body)) as { revision: string; ids: string[] };
+            sent.push(body);
+            const before = events.length;
+            events = events.filter(({ id }) => !body.ids.includes(id));
+            state.revision = `after-${sent.length}`;
+            return Response.json({ revision: state.revision, removed: before - events.length });
+        }
+        return fetch(url, init, options);
+    });
+    await open();
+    await chooseTab("timeline");
+    await chooseTimelineView("manage");
+    expect(query("[data-memory-retracted-events]")?.textContent).toContain(repairs.retractedCount(2));
+    expect(query("[data-memory-remove-orphans]")?.textContent?.trim()).toBe(repairs.removeOrphans(1));
+
+    vi.mocked(alertConfirm).mockResolvedValueOnce(false);
+    press("[data-memory-remove-orphans]");
+    await settle();
+    expect(alertConfirm).toHaveBeenLastCalledWith(repairs.removeOrphansConfirm(1));
+    expect(sent).toEqual([]);
+    vi.mocked(alertConfirm).mockResolvedValueOnce(true);
+    press("[data-memory-remove-orphans]");
+    await settle();
+    // Only the event nothing in the chat stands behind goes with the sweep.
+    expect(sent).toEqual([{ revision: "seen-revision", ids: ["o"] }]);
+    expect(alertToast).toHaveBeenLastCalledWith(repairs.removed(1));
+    expect(query('[data-memory-event="o"]')).toBeNull();
+    expect(query("[data-memory-remove-orphans]")).toBeNull();
+    expect(query("[data-memory-retracted-events]")?.textContent).toContain(repairs.retractedCount(1));
+
+    click('[data-memory-event="e"] > button');
+    await settle();
+    vi.mocked(alertConfirm).mockResolvedValueOnce(true);
+    press('[data-memory-repair="remove"]');
+    await settle();
+    // Its messages are still held, so the question says they can be recorded again.
+    expect(alertConfirm).toHaveBeenLastCalledWith(repairs.removeConfirmSources);
+    expect(sent[1]).toEqual({ revision: "after-1", ids: ["e"] });
+    expect(query('[data-memory-event="e"]')).toBeNull();
+    expect(query("[data-memory-retracted-events]")).toBeNull();
 });
 
 it("marks before pressing rerecord, retries a marked event, and disables it when the last eligible source is a user", async () => {
@@ -3283,7 +3351,14 @@ function serveAdoptionContents() {
         adoption: { adoptable: 1, declined: false, resettable: false },
         rebuild: null,
         recordedLanguage: null,
-        health: { paused: false, storedStale: 0, pendingRepairs: 0, unsupportedSections: 0, overBudgetSections: 0 },
+        health: {
+            paused: false,
+            lastRunFailed: false,
+            storedStale: 0,
+            pendingRepairs: 0,
+            unsupportedSections: 0,
+            overBudgetSections: 0,
+        },
         unsupportedPages: [],
     };
     const fetch = io.authFetch.getMockImplementation()!;
@@ -3548,7 +3623,14 @@ function serveRebuildContents() {
         adoption: { adoptable: 0, declined: false, resettable: false },
         rebuild: null,
         recordedLanguage: "English",
-        health: { paused: false, storedStale: 0, pendingRepairs: 0, unsupportedSections: 0, overBudgetSections: 0 },
+        health: {
+            paused: false,
+            lastRunFailed: false,
+            storedStale: 0,
+            pendingRepairs: 0,
+            unsupportedSections: 0,
+            overBudgetSections: 0,
+        },
         unsupportedPages: [],
     };
     const fetch = io.authFetch.getMockImplementation()!;
@@ -3635,6 +3717,44 @@ it("includes both model cost and folds in a mixed backfill confirmation", async 
     expect(io.runServerJob).not.toHaveBeenCalled();
 });
 
+it("starts over a chat with no turn to record by clearing its records, asking first and starting no job", async () => {
+    const state = serveRebuildContents();
+    state.events = [{ id: "e", title: "Left behind", status: "retracted", bytes: 10 }];
+    const cleared: unknown[] = [];
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url.includes("/cost?")) return Response.json({ calls: 0, messages: 0, estimatedTokens: 0 });
+        if (url.endsWith("/clear")) {
+            cleared.push(JSON.parse(String(init?.body)));
+            state.events = [];
+            state.revision = "r2";
+            return Response.json({ revision: "r2", cleared: true });
+        }
+        return fetch(url, init, options);
+    });
+    const confirm = vi.mocked(alertConfirm).mockReset().mockResolvedValue(false);
+    const text = language.structuredMemory.rebuild;
+    await open();
+    press('[data-memory-rebuild-action="fresh"]');
+    await settle();
+    expect(confirm).toHaveBeenCalledExactlyOnceWith(text.confirmFreshEmpty);
+    expect(cleared).toEqual([]);
+    confirm.mockResolvedValue(true);
+    press('[data-memory-rebuild-action="fresh"]');
+    await settle();
+    expect(cleared).toEqual([{ revision: "r1" }]);
+    expect(alertToast).toHaveBeenLastCalledWith(text.cleared);
+    // A rebuild of the same chat still has nothing to do, and so has a start over once no record is left.
+    for (const mode of ["rebuild", "fresh"] as const) {
+        vi.mocked(alertToast).mockClear();
+        press(`[data-memory-rebuild-action="${mode}"]`);
+        await settle();
+        expect(alertToast).toHaveBeenCalledExactlyOnceWith(text.nothing);
+    }
+    expect(cleared).toHaveLength(1);
+    expect(io.runServerJob).not.toHaveBeenCalled();
+});
+
 it("offers a language rebuild without starting it and confirms rebuild, start over, and fill gaps even for one call, hiding them while held", async () => {
     const state = serveRebuildContents();
     settings.hypaV3Presets.items[0].settings.structured!.language = "Korean";
@@ -3667,6 +3787,7 @@ it("offers a language rebuild without starting it and confirms rebuild, start ov
                 context: { mode: "manual" },
             },
         );
+        expect(alertToast).toHaveBeenLastCalledWith(text.started[mode]);
     }
     state.adoption.adoptable = 1;
     click("[data-memory-panel-refresh]");
@@ -3680,13 +3801,18 @@ it("shows run progress and pause or resumable controls and always permits abando
     io.runServerJob.mockResolvedValue(previewAnswer({}));
     vi.mocked(alertConfirm).mockReset().mockResolvedValue(true);
     await open();
-    expect(query("[data-memory-panel-read-only]")).not.toBeNull();
+    expect(query("[data-memory-panel-read-only]")?.textContent?.trim()).toBe(
+        language.structuredMemory.rebuild.readOnly.rebuild,
+    );
     expect(query("[data-memory-rebuild-progress]")?.textContent).toBe(language.structuredMemory.rebuild.progress(1, 5));
     state.rebuild = { ...state.rebuild, mode: "fresh" };
     click("[data-memory-panel-refresh]");
     await settle();
     expect(query("[data-memory-rebuild-progress]")?.textContent).toBe(
         language.structuredMemory.rebuild.freshProgress(1, 5),
+    );
+    expect(query("[data-memory-panel-read-only]")?.textContent?.trim()).toBe(
+        language.structuredMemory.rebuild.readOnly.fresh,
     );
     state.rebuild = { ...state.rebuild, mode: "rebuild" };
     press("[data-memory-rebuild-resume]");
@@ -3741,9 +3867,16 @@ it("shows run progress and pause or resumable controls and always permits abando
     expect(query("[data-memory-rebuild-progress]")?.textContent).toBe(
         language.structuredMemory.rebuild.backfillProgress(3, 5),
     );
+    // A fill gaps is named as one wherever the run is: the same words under a rebuild's name read as a
+    // rebuild being abandoned.
+    expect(query("[data-memory-panel-read-only]")?.textContent?.trim()).toBe(
+        language.structuredMemory.rebuild.readOnly.backfill,
+    );
+    expect(query("[data-memory-rebuild-stop]")?.textContent).toBe(language.structuredMemory.rebuild.replaced.backfill);
     press("[data-memory-rebuild-abandon]");
     await settle();
-    expect(alertConfirm).toHaveBeenLastCalledWith(language.structuredMemory.rebuild.abandonConfirm);
+    expect(alertConfirm).toHaveBeenLastCalledWith(language.structuredMemory.rebuild.abandonConfirm.backfill);
+    expect(alertToast).toHaveBeenLastCalledWith(language.structuredMemory.rebuild.abandoned.backfill);
     expect(query("[data-memory-rebuild]")).toBeNull();
     expect(query("[data-memory-panel-read-only]")).toBeNull();
 });
@@ -4627,7 +4760,14 @@ it("writes and clears the chat language through chat edits and locks both Settin
 it("shows pending repairs from health on the writer line below paused", async () => {
     const contents = serveAdoptionContents();
     contents.adoption.adoptable = 0;
-    const health = { paused: false, storedStale: 0, pendingRepairs: 1, unsupportedSections: 0, overBudgetSections: 0 };
+    const health = {
+        paused: false,
+        lastRunFailed: false,
+        storedStale: 0,
+        pendingRepairs: 1,
+        unsupportedSections: 0,
+        overBudgetSections: 0,
+    };
     contents.health = health;
     await open();
     expect(query("[data-memory-writer-line]")?.dataset.memoryWriterLine).toBe("repair");
@@ -4717,6 +4857,7 @@ function serveUnsupported() {
             recordedLanguage: null,
             health: {
                 paused: false,
+                lastRunFailed: false,
                 storedStale: 0,
                 pendingRepairs: 0,
                 unsupportedSections: state.pages
@@ -4819,10 +4960,10 @@ it("filters missing evidence, keeps with the tab preference, advances pages and 
     expect(preserveCheckbox()).toBeNull();
 });
 
-it("offers a section revert only for its newest standing revertable writer change from a retracted event", async () => {
+it("offers a section revert only for its newest standing revertable writer change from a retracted or removed event", async () => {
     const state = serveUnsupported();
     const p = state.pages[0];
-    const headings = ["Writer", "Person", "Active", "Reverted", "Compacted", "Orphan compact"];
+    const headings = ["Writer", "Person", "Active", "Reverted", "Compacted", "Orphan compact", "Removed"];
     p.sections = headings.map((heading) => ({ ...p.sections[0], heading }));
     const entry = (id: string, heading: string, eventId = "event"): MemoryPage["history"][number] => ({
         id,
@@ -4845,6 +4986,8 @@ it("offers a section revert only for its newest standing revertable writer chang
         entry("compact-patch", "Compacted"),
         { ...entry("compact", "Compacted"), kind: "compact" },
         { ...entry("orphan", "Orphan compact"), kind: "compact" },
+        // A person deleted this retracted event: the flagged section's change is as unsupported as before.
+        entry("removed", "Removed", "deleted-since"),
     ];
     const fetch = io.authFetch.getMockImplementation()!;
     io.authFetch.mockImplementation(async (url, init, options) => {
@@ -4864,8 +5007,8 @@ it("offers a section revert only for its newest standing revertable writer chang
         [...target.querySelectorAll<HTMLElement>("[data-memory-section-revert]")].map(
             (button) => button.closest<HTMLElement>("[data-memory-section]")!.dataset.memorySection,
         ),
-    ).toEqual(["Writer", "Compacted"]);
-    expect(target.querySelectorAll("[data-memory-section-keep]")).toHaveLength(6);
+    ).toEqual(["Writer", "Compacted", "Removed"]);
+    expect(target.querySelectorAll("[data-memory-section-keep]")).toHaveLength(7);
     press('[data-memory-section="Writer"] [data-memory-section-revert]');
     await settle();
     expect(reads("revert").map(([, init]) => JSON.parse(init!.body as string))).toEqual([

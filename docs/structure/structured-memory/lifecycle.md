@@ -12,7 +12,7 @@
 - `shared/structuredMemory.ts`: shared reconciliation rules; `reconcileMemoryEvents`, `memoryAnchorState`,
   `memoryRerecordTarget`, `storedMemorySources`. Other parts: [records](records.md#files).
 - `server/src/prompt/memory/structured/reconcile.ts`: server reconciliation and reactions; `reconcileEvents`,
-  `retireRerecorded`, `withRetractedEvidence`, `automaticRerecords`, `reconcileMessageChanges`.
+  `retireRerecorded`, `withRetractedEvidence`, `removeRetractedEvents`, `automaticRerecords`, `reconcileMessageChanges`.
 - `server/src/prompt/memory/structured/edits.ts`: event repairs and section flags; `applyEventRepair`,
   `flagUnsupportedSections`. Other edits: [records](records.md#files).
 - `server/src/prompt/memory/structured/inherit.ts`: copy and branch record builder, and the heading restore a confirmed
@@ -86,8 +86,17 @@ asks before carrying `retract` through the save; in another chat `removeMessages
 owns its save and lock checks. That delete also undoes what its newest recorded turn wrote: before the thread replay and
 the flagging, the reaction rewinds the headings its tail events changed with `rewindPageHeadings` and trashes the pages
 they created. The `reconcile.ts` header owns which events are the tail and which headings rewind; the panel's `retract`
-and a re-record's retire only flag. `/cut`, `/del`, `runMultisend`, rerolls, scripts, server triggers and recovered
-drafts can remove messages without that mark, leaving `missing` for panel repair.
+and a re-record's retire only flag.
+
+A retracted event stays stored as the mark that keeps the writer from recording its messages again, and each delete,
+re-record, and repair adds one, so Timeline's Manage view lets a person delete them
+([the remove route](records.md#the-remove-route)). `removeRetractedEvents` removes only events already retracted, whose
+thread and section effects the retraction settled. Their messages and greeting then read as unrecorded: the writer, a
+fill gaps, and a rebuild take what is still in the chat. Live pages lose the removed ids from their sections'
+`provenance` and keep text, history, and `unsupported`. Removed events that carried the chat's whole adoption lineage
+pass `adoptedSummaries` to the newest event left, as [a swap](rebuild.md#what-a-rebuild-keeps) does. `/cut`, `/del`,
+`runMultisend`, rerolls, scripts, server triggers and recovered drafts can remove messages without that mark, leaving
+`missing` for panel repair.
 
 ### A checkpoint
 
@@ -233,10 +242,10 @@ takes over.
 - Two fields of a stored event are requests, not facts: `keptState`, which a person's keep sets, and `rerecord`, which
   the tab's repair or a rewritten message sets. Both are part of the record, so a checkpoint keeps them with its exact
   row text, and a copy or a chat file's restore keeps `keptState` and leaves `rerecord` behind.
-- A retraction leaves the event stored with `status: "retracted"`, and sets `unsupported` on the sections it leaves
-  without support, after a confirmed delete has rewound what it can. The flag is derived from `provenance` over the
-  change set, not kept in its own table ([Retraction and edits](#retraction-and-edits)). A person clears it with
-  [a keep or a revert](read.md#the-evidence-missing-tab).
+- A retraction leaves the event stored with `status: "retracted"` until a person deletes it, and sets `unsupported` on
+  the sections it leaves without support, after a confirmed delete has rewound what it can. The flag is derived from
+  `provenance` over the change set, not kept in its own table ([Retraction and edits](#retraction-and-edits)). A person
+  clears it with [a keep or a revert](read.md#the-evidence-missing-tab).
 - A checkpoint holds a manifest of each kind's chunks beside its messages, and a chunk is the rows' `data` verbatim
   ([A checkpoint](#a-checkpoint)).
 
@@ -277,9 +286,10 @@ takes over.
 - `structured/reconcile.test.ts` and `shared/structuredMemory.test.ts` drive reconciliation with plain records, and
   `src/ts/process/structuredMemory.test.ts` pins the tab's hash to a literal from `messageSourceHash`.
   `structured/reconcile.test.ts` also checks legacy speaker edits on live and staged records in a real store.
-- Retraction runs on real stores: `structuredMemoryRoutes.test.ts` through the batch and edit routes,
-  `memoryStore.test.ts` the notice, `memoryTasks.test.ts` and `memoryJobs.test.ts` the re-records. `chatStore.test.ts`,
-  `command.test.ts`, and `RecoveryDrafts.test.ts` drive the question and the mark in the tab.
+- Retraction and the removal of retracted events run on real stores: `structuredMemoryRoutes.test.ts` through the batch,
+  edit, and remove routes, `memoryStore.test.ts` the notice, `memoryTasks.test.ts` and `memoryJobs.test.ts` the
+  re-records. `chatStore.test.ts`, `command.test.ts`, and `RecoveryDrafts.test.ts` drive the question and the mark in
+  the tab.
 - `chatCheckpoints.test.ts` and `chatCheckpointRoutes.test.ts` drive a checkpoint's memory through the checkpoint
   service; `restoreStage.test.ts` forges its manifests and chunks.
 - `structured/inherit.test.ts` drives the build with plain records and an injected `hashOf`,
@@ -302,6 +312,12 @@ takes over.
 ## Known Hazards
 
 ### Limitations
+
+- Deleting a retracted event leaves its id in threads' `openedBy` and `closedBy`, chapters, page history entries and
+  their `before.provenance`, trashed pages, and the receipts and runs that named it. Their readers treat a missing event
+  as gone: a chapter reads out of date, and a flagged section keeps its revert offer
+  ([Evidence missing](read.md#the-evidence-missing-tab)). When no event is left to take the adoption lineage while pages
+  or threads remain, the stored summaries stop being resettable. Decision: owner, 2026-11-20.
 
 - Regrouping during rebuild can lose corrected wording. The correction mark carries across overlapping evidence, while
   the wording requires one exact match on the message set and greeting presence.

@@ -624,7 +624,14 @@ it("lists only this chat's metadata and reads every record kind exactly as store
         adoption: { adoptable: 0, declined: false, resettable: false },
         rebuild: null,
         recordedLanguage: null,
-        health: { paused: false, storedStale: 0, pendingRepairs: 0, unsupportedSections: 0, overBudgetSections: 0 },
+        health: {
+            paused: false,
+            lastRunFailed: false,
+            storedStale: 0,
+            pendingRepairs: 0,
+            unsupportedSections: 0,
+            overBudgetSections: 0,
+        },
         unsupportedPages: [],
     });
     for (const [kind, record] of [
@@ -2744,6 +2751,154 @@ it("declines once, stops offering adoption, refuses later adoption and preserves
     expect(read.chats[0].data.hypaV3Data).toEqual(summaries);
 });
 
+it("removes only retracted events for good, clears their provenance, and passes the adoption lineage on", async () => {
+    const s = await server();
+    const retracted = (id: string): MemoryEvent => ({ ...event(id), status: "retracted" });
+    const cited = page("p");
+    cited.sections[0].provenance = ["gone", "kept"];
+    cited.sections[0].unsupported = true;
+    s.write({
+        pages: [cited, page("untouched")],
+        events: [event("kept"), retracted("gone"), { ...retracted("adopted"), writerRun: ADOPTED_WRITER_RUN }],
+        runs: [run("r1")],
+    });
+    s.store.memory.chapters.add(characterId, chatId, s.epoch, chapter(event("kept")));
+    const before = memorySnapshot(s, chatId);
+    const { revision } = before.contents;
+
+    // A standing event refuses the whole request, a stale revision too, and a malformed list never reaches the store.
+    await answer(await s.json(`${base}/events/remove`, { revision, ids: ["gone", "kept"] }), 400);
+    await answer(await s.json(`${base}/events/remove`, { revision: "stale", ids: ["gone"] }), 409);
+    for (const ids of [[], ["bad\u0000id"], "gone", Array.from({ length: 201 }, (_, index) => `e${index}`)]) {
+        await answer(await s.json(`${base}/events/remove`, { revision, ids }), 400);
+    }
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+
+    const removed = await answer(
+        await s.json(`${base}/events/remove`, { revision, ids: ["gone", "adopted", "never-stored"] }),
+    );
+    expect(removed).toEqual({ revision: revision.replace(/:\d+$/, (n) => `:${Number(n.slice(1)) + 1}`), removed: 2 });
+    const after = memorySnapshot(s, chatId);
+    expect(after.contents.events.map(({ id }) => id)).toEqual(["kept"]);
+    // The only adopted event left, so the event that stays keeps the stored summaries resettable.
+    expect(after.records.events).toEqual([{ ...event("kept"), adoptedSummaries: true }]);
+    // The section keeps its text and flag and no longer names an event that is gone; nothing else moves.
+    expect(after.records.pages).toEqual([
+        { ...cited, sections: [{ ...cited.sections[0], provenance: ["kept"] }] },
+        page("untouched"),
+    ]);
+    expect(after.contents.runs).toEqual(before.contents.runs);
+    expect(s.store.memory.chapters.list(characterId, chatId)).toMatchObject({ chapters: [chapter(event("kept"))] });
+
+    // A repeat finds none of them and writes nothing, still naming the revision.
+    expect(await answer(await s.json(`${base}/events/remove`, { revision: removed.revision, ids: ["gone"] }))).toEqual({
+        revision: removed.revision,
+        removed: 0,
+    });
+    expect(memorySnapshot(s, chatId)).toEqual(after);
+});
+
+it("declines adoptable summaries when removing the last retracted event would bring the adoption choice back", async () => {
+    const s = await server();
+    storeAdoptionChat(s, {
+        summaries: [{ text: "Keep this old memory.", chatMemos: ["m0", "m1"], isImportant: false }],
+    });
+    s.write({ events: [{ ...event("adopted"), status: "retracted", writerRun: ADOPTED_WRITER_RUN }] });
+    const { revision } = memorySnapshot(s, chatId).contents;
+    expect((await answer(await s.request(base))).adoption.adoptable).toBe(0);
+    const removed = await answer(await s.json(`${base}/events/remove`, { revision, ids: ["adopted"] }));
+    expect(removed.removed).toBe(1);
+    const listed = await answer(await s.request(base));
+    expect(listed.events).toEqual([]);
+    // Without the decline the emptied chat would wait for the choice again and hold every recording.
+    expect(listed.adoption).toEqual({ adoptable: 0, declined: true, resettable: false });
+});
+
+it("clears every record of a chat with no turn to record and refuses one a start over would record", async () => {
+    const s = await server();
+    const trashed = { ...page("trashed"), trashedAt: 1 };
+    const thread: MemoryThread = { id: "t", title: "A promise", state: "open", who: [], openedBy: "e" };
+    s.write({ pages: [page("p"), trashed], events: [event("e")], threads: [thread], runs: [run("r1")] });
+    s.store.memory.chapters.add(characterId, chatId, s.epoch, chapter(event("e")));
+    const before = memorySnapshot(s, chatId);
+    const { revision } = before.contents;
+    await answer(await s.json(`${base}/clear`, {}), 400);
+    await answer(await s.json(`${base}/clear`, { revision: "stale" }), 409);
+    expect(memorySnapshot(s, chatId)).toEqual(before);
+
+    const cleared = await answer(await s.json(`${base}/clear`, { revision }));
+    expect(cleared.cleared).toBe(true);
+    const after = memorySnapshot(s, chatId);
+    expect(after.contents).toMatchObject({ revision: cleared.revision, pages: [], trash: [], events: [], threads: [] });
+    // The runs are the Log and stay; the chapters listed events that are gone.
+    expect(after.contents.runs).toEqual(before.contents.runs);
+    expect(s.store.memory.chapters.list(characterId, chatId)).toMatchObject({ chapters: [] });
+    expect(await answer(await s.json(`${base}/clear`, { revision: cleared.revision }))).toEqual({
+        revision: cleared.revision,
+        cleared: false,
+    });
+
+    // With a reply to record, starting over is the rebuild command's: this route would only discard.
+    s.write({ events: [event("later")] });
+    s.store.applyChanges({
+        chats: [
+            {
+                characterId,
+                chatId,
+                baseRevision: s.store.chatRevision(characterId, chatId),
+                ops: [
+                    {
+                        op: "replace",
+                        chat: {
+                            ...chat,
+                            message: [
+                                { chatId: "m0", role: "user", data: "Question" },
+                                { chatId: "m1", role: "char", data: "Answer" },
+                            ],
+                        },
+                    },
+                ],
+            },
+        ],
+    });
+    const held = memorySnapshot(s, chatId);
+    expect(await answer(await s.json(`${base}/clear`, { revision: held.contents.revision }), 409)).toMatchObject({
+        reason: "changed",
+    });
+    expect(memorySnapshot(s, chatId)).toEqual(held);
+});
+
+it("declines adoptable summaries when clearing, so the emptied chat does not wait for the adoption choice", async () => {
+    const s = await server();
+    s.store.applyChanges({
+        chats: [
+            {
+                characterId,
+                chatId,
+                baseRevision: s.store.chatRevision(characterId, chatId),
+                ops: [
+                    {
+                        op: "meta",
+                        set: {
+                            hypaV3Data: {
+                                summaries: [{ text: "Keep this old memory.", chatMemos: [], isImportant: false }],
+                            },
+                        },
+                    },
+                ],
+            },
+        ],
+    });
+    s.write({ events: [{ ...event("adopted"), writerRun: ADOPTED_WRITER_RUN }] });
+    const { revision } = memorySnapshot(s, chatId).contents;
+    expect((await answer(await s.json(`${base}/clear`, { revision }))).cleared).toBe(true);
+    expect((await answer(await s.request(base))).adoption).toEqual({
+        adoptable: 0,
+        declined: true,
+        resettable: false,
+    });
+});
+
 it("carries a decline through copies and branches even without crossing records, once only", async () => {
     for (const mode of ["copy", "branch", "no source records", "no supported records"] as const) {
         const s = mode === "no source records" ? await server() : await inheritanceServer(mode !== "copy");
@@ -3053,6 +3208,8 @@ it("fences generation and memory mutations during a stopped run while allowing p
         ["adopt", {}],
         ["decline", {}],
         ["reset-summaries", {}],
+        ["events/remove", { revision: before.contents.revision, ids: ["live"] }],
+        ["clear", { revision: before.contents.revision }],
         ["restore", { pages: [], events: [], threads: [] }],
         ["inherit", { sourceChatId: "other" }],
     ] as const;
@@ -4181,7 +4338,14 @@ it("returns compact ordered live health at the chat limit without messages or re
             events: [{ ...event("staged-stale"), status: "stale", rerecord: true }],
         },
     );
-    const facts = { paused: true, storedStale: 1, pendingRepairs: 1, unsupportedSections: 1, overBudgetSections: 1 };
+    const facts = {
+        paused: true,
+        lastRunFailed: true,
+        storedStale: 1,
+        pendingRepairs: 1,
+        unsupportedSections: 1,
+        overBudgetSections: 1,
+    };
     const queries: string[] = [];
     let bodies = 0;
     const spies = (["get", "all"] as const).map((method) => {
@@ -4219,7 +4383,14 @@ it("returns compact ordered live health at the chat limit without messages or re
             health: [
                 facts,
                 null,
-                { paused: false, storedStale: 0, pendingRepairs: 0, unsupportedSections: 0, overBudgetSections: 0 },
+                {
+                    paused: false,
+                    lastRunFailed: false,
+                    storedStale: 0,
+                    pendingRepairs: 0,
+                    unsupportedSections: 0,
+                    overBudgetSections: 0,
+                },
             ],
         });
         await answer(await s.json("/api/memory/structured/health", { chats: [...refs, refs[0]] }), 400);
@@ -4237,7 +4408,14 @@ it("bounds health scans by stored bytes and answers a chat over the cap unavaila
     writeMemory(s.store, characterId, "other", { pages: [second] });
     stageRun(s);
     const refs = [chatId, "other"].map((chatId) => ({ characterId, chatId }));
-    const empty = { paused: false, storedStale: 0, pendingRepairs: 0, unsupportedSections: 0, overBudgetSections: 0 };
+    const empty = {
+        paused: false,
+        lastRunFailed: false,
+        storedStale: 0,
+        pendingRepairs: 0,
+        unsupportedSections: 0,
+        overBudgetSections: 0,
+    };
     expect(s.store.memory.readHealth(refs, 1)).toEqual(["unavailable", "unavailable"]);
     expect(s.store.memory.readHealth(refs, bytes(first) + bytes(second) - 1)).toEqual([empty]);
     expect(s.store.memory.readHealth(refs, bytes(first) + bytes(second))).toEqual([empty, empty]);
@@ -4257,7 +4435,14 @@ it("charges event and run bytes for health caps and stops a prefix before event 
     });
     writeMemory(s.store, characterId, "later", { pages: [later] });
     const ref = (chatId: string) => ({ characterId, chatId });
-    const empty = { paused: false, storedStale: 0, pendingRepairs: 0, unsupportedSections: 0, overBudgetSections: 0 };
+    const empty = {
+        paused: false,
+        lastRunFailed: false,
+        storedStale: 0,
+        pendingRepairs: 0,
+        unsupportedSections: 0,
+        overBudgetSections: 0,
+    };
     const eventCharge = bytes(first) + bytes(e);
     const runCharge = bytes(second) + bytes(r);
     for (const [id, charge] of [
@@ -4538,6 +4723,8 @@ it.each([
     ["adopt", {}],
     ["decline", {}],
     ["reset-summaries", {}],
+    ["events/remove", { ids: ["e"] }],
+    ["clear", {}],
     ["rebuild/abandon", {}],
 ])("refuses %s during restore maintenance while keeping reads available", async (route, body) => {
     const s = await server();

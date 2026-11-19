@@ -2203,11 +2203,17 @@ export function createResourceStore(options: {
              * the memory revision token; another epoch, or none, is a `ResourceEpochError`. Anything
              * that escapes rolls the whole write back. `pruneRunPrompts`, passed by a commit that settles
              * a run, strips the prompts of the chat's runs that no retry can use in the same transaction.
+             * `dropChapters`, passed by a write that empties the chat's records, deletes its chapters there too.
              */
             write(
                 characterId: string,
                 chatId: string,
-                options: { epoch: string | undefined; baseRevision: string; pruneRunPrompts?: boolean },
+                options: {
+                    epoch: string | undefined;
+                    baseRevision: string;
+                    pruneRunPrompts?: boolean;
+                    dropChapters?: boolean;
+                },
                 changes: MemoryChanges,
             ): string {
                 assertWritable();
@@ -2215,6 +2221,7 @@ export function createResourceStore(options: {
                 return transactionInScope(() => {
                     const { revision, wrote } = memoryTables.write(characterId, chatId, options.baseRevision, changes, {
                         pruneRunPrompts: options.pruneRunPrompts,
+                        dropChapters: options.dropChapters,
                     });
                     if (wrote) {
                         countWrite();

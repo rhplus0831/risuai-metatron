@@ -1,10 +1,10 @@
 import type { Chat, Message, character, groupChat } from "../../../../../shared/database.ts";
 import type { GenerationCommand, MemoryChatRef, StructuredMemoryTaskInput } from "../../../../../shared/jobs.ts";
 import {
-    ADOPTED_WRITER_RUN,
     greetingCited,
     memoryCostTokens,
     type MemoryEvent,
+    memoryEventAdoptedLineage,
     type MemoryPage,
     memoryScreenReason,
     memoryWriterReads,
@@ -457,10 +457,6 @@ function withMarkedSections(staged: MemoryPage, live: MemoryPage): MemoryPage {
     };
 }
 
-/** Whether `event` descends from an adoption: the adopted summary itself, or an event rebuilt over one. */
-const adoptedLineage = ({ writerRun, adoptedSummaries }: Pick<MemoryEvent, "writerRun" | "adoptedSummaries">) =>
-    writerRun === ADOPTED_WRITER_RUN || adoptedSummaries === true;
-
 /**
  * A staged event as it goes live, with no revision, which the store stamps. `pinned`, `suppressed` and
  * `userCorrected` are the union from standing overlapping live events, carried ones included, so a
@@ -499,7 +495,7 @@ function swappedEvent(
         ...(standing.some(({ suppressed }) => suppressed) ? { suppressed: true } : {}),
         ...(standing.some(({ userCorrected }) => userCorrected) ? { userCorrected: true } : {}),
         ...(corrected.length === 1 ? { title: corrected[0].title, summary: corrected[0].summary } : {}),
-        ...(overlapping.some(adoptedLineage) ? { adoptedSummaries: true } : {}),
+        ...(overlapping.some(memoryEventAdoptedLineage) ? { adoptedSummaries: true } : {}),
     };
 }
 
@@ -556,7 +552,7 @@ export function rebuildChanges(
         };
     }
     if (mode === "fresh") {
-        const lineage = live.events.some(adoptedLineage) ? { adoptedSummaries: true } : {};
+        const lineage = live.events.some(memoryEventAdoptedLineage) ? { adoptedSummaries: true } : {};
         return {
             events: staged.events.map(({ createdRevision, ...event }) => ({ ...event, ...lineage })),
             pages: staged.pages,
@@ -659,11 +655,77 @@ function windowsCost(
 }
 
 /**
+ * What a rebuild, a start over, or a fill gaps would cost, from the chat as stored and its live records;
+ * null for a missing chat. Synchronous and read-only, so a route can decide on it in the step that writes.
+ * It reads the transcript once, counting windows with a greeting or message the writer reads, and their
+ * stored UTF-8 bytes; the greeting is not counted as a message. No message hashing or writer window
+ * building. A backfill with `omitUserMessages` also counts possible folds by stored status;
+ * reconciliation at the swap can reject them.
+ */
+export function rebuildCost(
+    store: Pick<ResourceStore, "memory" | "readChatSource" | "get">,
+    { chaId, chatId }: MemoryChatRef,
+    { mode, turns }: { mode: StructuredMemoryRebuildMode; turns: 1 | 2 },
+    charactersKind: ResourceKind,
+): StructuredMemoryCostAnswer | null {
+    const chat = store.readChatSource(chaId, chatId).data as Chat | null;
+    if (!chat) {
+        return null;
+    }
+    // A route has no job scope, so what the preset screens or omits is read from the store.
+    const { screening, omitUserMessages } = store.memory.readWriterSettings(chat.memoryPresetId);
+    const greeting = writerGreeting(store.get(charactersKind, chaId)?.data as character | groupChat | undefined, chat);
+    const listed = store.memory.readContents(chaId, chatId)?.events ?? [];
+    const events = listed.flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "events", id)?.data ?? []);
+    const anchored = anchoredMessages(chat.message);
+    const confirmed = rebuildTurns(anchored, screening);
+    const plan = rebuildEntryPlan(
+        confirmed,
+        {
+            events,
+            mode,
+            turns,
+            omitUserMessages,
+            greeting,
+        },
+        anchored.length > 0,
+    );
+    let calls = 0;
+    let messages = 0;
+    let bytes = 0;
+    for (const { entries, greeting } of plan) {
+        let read = !!greeting;
+        if (greeting) bytes += Buffer.byteLength(greeting.text, "utf8");
+        for (const { message } of entries) {
+            if (!memoryWriterReads(message, { omitUserMessages })) {
+                continue;
+            }
+            read = true;
+            messages++;
+            bytes += Buffer.byteLength(message.data, "utf8");
+        }
+        if (read) {
+            calls++;
+        }
+    }
+    return {
+        calls,
+        messages,
+        estimatedTokens: memoryCostTokens(bytes, calls),
+        ...(mode === "backfill" && omitUserMessages
+            ? {
+                  folds: [...backfillCandidates(confirmed, events, []).values()].reduce(
+                      (count, { entries }) => count + entries.length,
+                      0,
+                  ),
+              }
+            : {}),
+    };
+}
+
+/**
  * What a press would cost, from the chat as stored and its live records; null for a missing chat. Reads only.
- * `turns` is what the tab would ask of a rebuild or a backfill. Those previews read the transcript once,
- * counting windows with a greeting or message the writer reads, and their stored UTF-8 bytes; the greeting
- * is not counted as a message. No message hashing or writer window building. A backfill with
- * `omitUserMessages` also counts possible folds by stored status; reconciliation at the swap can reject them.
+ * `turns` is what the tab would ask of a rebuild or a backfill, whose preview is `rebuildCost`.
  * Record now's windows are the writer's own, in windows of `turns` turns, because a route has no job scope
  * to read the cadence from, up to `maxWriterWindows`, marked events first. It plans with the current
  * greeting and the manual greeting-only ceiling; this estimate still counts message text and calls only.
@@ -674,6 +736,9 @@ export async function memoryWorkCost(
     { mode, turns, through }: { mode: StructuredMemoryCostMode; turns: 1 | 2; through?: string },
     charactersKind: ResourceKind,
 ): Promise<StructuredMemoryCostAnswer | null> {
+    if (mode !== "record") {
+        return rebuildCost(store, { chaId, chatId }, { mode, turns }, charactersKind);
+    }
     const chat = store.readChatSource(chaId, chatId).data as Chat | null;
     if (!chat) {
         return null;
@@ -681,54 +746,6 @@ export async function memoryWorkCost(
     // A route has no job scope, so what the preset screens or omits is read from the store.
     const { screening, omitUserMessages } = store.memory.readWriterSettings(chat.memoryPresetId);
     const greeting = writerGreeting(store.get(charactersKind, chaId)?.data as character | groupChat | undefined, chat);
-    if (mode !== "record") {
-        const listed = store.memory.readContents(chaId, chatId)?.events ?? [];
-        const events = listed.flatMap(({ id }) => store.memory.readRecord(chaId, chatId, "events", id)?.data ?? []);
-        const anchored = anchoredMessages(chat.message);
-        const confirmed = rebuildTurns(anchored, screening);
-        const plan = rebuildEntryPlan(
-            confirmed,
-            {
-                events,
-                mode,
-                turns,
-                omitUserMessages,
-                greeting,
-            },
-            anchored.length > 0,
-        );
-        let calls = 0;
-        let messages = 0;
-        let bytes = 0;
-        for (const { entries, greeting } of plan) {
-            let read = !!greeting;
-            if (greeting) bytes += Buffer.byteLength(greeting.text, "utf8");
-            for (const { message } of entries) {
-                if (!memoryWriterReads(message, { omitUserMessages })) {
-                    continue;
-                }
-                read = true;
-                messages++;
-                bytes += Buffer.byteLength(message.data, "utf8");
-            }
-            if (read) {
-                calls++;
-            }
-        }
-        return {
-            calls,
-            messages,
-            estimatedTokens: memoryCostTokens(bytes, calls),
-            ...(mode === "backfill" && omitUserMessages
-                ? {
-                      folds: [...backfillCandidates(confirmed, events, []).values()].reduce(
-                          (count, { entries }) => count + entries.length,
-                          0,
-                      ),
-                  }
-                : {}),
-        };
-    }
     const rerecord = readRerecordEvents(store, chaId, chatId);
     const confirmedBefore =
         through ?? writerCeiling(chat.message) ?? greetingRerecordCeiling(chat.message, rerecord, greeting);

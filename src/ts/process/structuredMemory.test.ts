@@ -46,6 +46,7 @@ import {
     memoryReceiptView,
     memoryTestResultView,
     memoryWriterNotice,
+    standingMemoryReport,
     newestAssistantMessageId,
     readStructuredMemoryContents,
     readStructuredMemoryRecord,
@@ -1494,6 +1495,32 @@ it("keeps citations above live screening and screening above runs and receipts w
     expect(join().rows[1]).toMatchObject({ state: "failed", runId: "failed" });
     expect(join().gap).toEqual([1]);
     expect(facts).toEqual(before);
+});
+
+it("lets a report's failed writer stand only while the chat's runs still end in a failure", () => {
+    const failed = { coverage: "covered" as const, writer: { state: "failed" as const } };
+    const over = { lastRunFailed: false };
+    // No facts read, or facts that confirm it: the report is all there is.
+    expect(standingMemoryReport(failed, null, undefined)).toBe(failed);
+    expect(standingMemoryReport(failed, { lastRunFailed: true }, { state: "recorded" })).toBe(failed);
+    // A later run made it good. A fill gaps leaves no receipt, so nothing says whether the newest reply waits.
+    for (const receipt of [undefined, null, "recorded", { state: "failed" }, { state: "notAutomatic" }]) {
+        const standing = standingMemoryReport(failed, over, receipt);
+        expect(standing).toEqual({ coverage: "covered" });
+        expect("writer" in standing).toBe(false);
+    }
+    expect(standingMemoryReport(failed, over, { state: "recorded", eventId: "e" })).toEqual({
+        coverage: "covered",
+        writer: { state: "recorded" },
+    });
+    expect(failed.writer).toEqual({ state: "failed" });
+    // Every other state is the send's own word, whatever the runs say now.
+    for (const state of ["recorded", "pending", "paused", "notAutomatic"] as const) {
+        const memory = { writer: { state, reason: "repair" } };
+        expect(standingMemoryReport(memory, over, { state: "recorded" })).toBe(memory);
+    }
+    const none: { coverage: "gap"; writer?: { state: "failed" } } = { coverage: "gap" };
+    expect(standingMemoryReport(none, over, undefined)).toBe(none);
 });
 
 it("prefers the current writer rule, clears old tab-bound warnings on null, and keeps receipt fallback when absent", () => {

@@ -1052,12 +1052,13 @@ export type StructuredMemoryRebuild = {
 
 /**
  * What the health routes read of a chat's live records, with no message read: whether automatic
- * recording is paused (`writerPaused`), the events stored `stale`, the events not retracted that wait for
- * a re-record, and on the pages out of the trash the sections flagged `unsupported` and the sections past
- * their budget (`memorySectionOverBudget`).
+ * recording is paused (`writerPaused`), whether the newest finished run failed (`writerFailing`), the
+ * events stored `stale`, the events not retracted that wait for a re-record, and on the pages out of the
+ * trash the sections flagged `unsupported` and the sections past their budget (`memorySectionOverBudget`).
  */
 export type StructuredMemoryHealthFacts = {
     paused: boolean;
+    lastRunFailed: boolean;
     storedStale: number;
     pendingRepairs: number;
     unsupportedSections: number;
@@ -1123,6 +1124,12 @@ export type StructuredMemoryContentsAnswer = StructuredMemoryContents & {
 
 /** The abandon route's answer: the chat's memory revision, which it left alone, and whether a run went. */
 export type StructuredMemoryAbandonAnswer = { revision: string; abandoned: boolean };
+
+/**
+ * The clear route's answer: the chat's memory revision, and whether this call removed its records. A chat
+ * with no page, event, thread, or trashed page answers false, which is what a repeat finds.
+ */
+export type StructuredMemoryClearAnswer = { revision: string; cleared: boolean };
 
 export type StructuredMemoryChaptersAnswer = { revision: string; chapters: MemoryChapter[] };
 export type StructuredMemoryChapterRemoveAnswer = { removed: number };
@@ -1462,6 +1469,26 @@ export type StructuredMemoryAdoptAnswer = { revision: string; adopted: number; s
  */
 export type StructuredMemoryDeclineAnswer = { revision: string; declined: boolean };
 
+/** The most retracted events one request of the remove route names. */
+export const MEMORY_REMOVE_EVENTS_MAX = 200;
+
+/**
+ * The remove route's answer: the revision the next edit names, and how many retracted events this call
+ * removed for good. An id that names no event counts for nothing, which is what a repeat finds.
+ */
+export type StructuredMemoryRemoveEventsAnswer = { revision: string; removed: number };
+
+/**
+ * Whether `event` descends from an adoption: the adopted summary itself, or an event rebuilt over one.
+ * While any event of a chat does, its stored HypaV3 summaries are the ones a reset empties.
+ */
+export function memoryEventAdoptedLineage({
+    writerRun,
+    adoptedSummaries,
+}: Pick<MemoryEvent, "writerRun" | "adoptedSummaries">): boolean {
+    return writerRun === ADOPTED_WRITER_RUN || adoptedSummaries === true;
+}
+
 /**
  * The reset route's answer: the chat's revision, not its memory revision, because a reset writes the chat,
  * and whether this call emptied its stored summaries.
@@ -1755,6 +1782,14 @@ function trailingFailures(runs: readonly Pick<MemoryRun, "result">[]): number {
 /** Whether automatic recording is paused: `consecutiveFailures` failed runs at the end of `runs`. */
 export function writerPaused(runs: readonly Pick<MemoryRun, "result">[]): boolean {
     return trailingFailures(runs) >= STRUCTURED_MEMORY_LIMITS.consecutiveFailures;
+}
+
+/**
+ * Whether the writer's newest finished run failed: the newest `recorded` or `failed` one decides, and a
+ * skipped or pending run says nothing about the writer. A send's report and the health routes share it.
+ */
+export function writerFailing(runs: readonly Pick<MemoryRun, "result">[]): boolean {
+    return runs.findLast(({ result }) => result === "recorded" || result === "failed")?.result === "failed";
 }
 
 /** Whether the writer reads a message's text; unread messages still belong to their window's sources. */
