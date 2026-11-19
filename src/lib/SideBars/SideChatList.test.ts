@@ -75,7 +75,8 @@ vi.mock("src/ts/globalApi.svelte", async () =>
 
 import { normalizeModelPreset, normalizeModelProfile } from "../../../shared/presets.ts";
 import { language } from "src/lang";
-import { alertConfirm, alertSelect } from "src/ts/alert";
+import { alertChatOptions, alertConfirm, alertSelect } from "src/ts/alert";
+import { changeChatTo } from "src/ts/globalApi.svelte";
 import { chatBinding } from "src/ts/storage/chatBinding.svelte";
 import { characterList } from "src/ts/storage/characterStore.svelte";
 import { applyRawCharacter } from "src/ts/storage/records.svelte";
@@ -179,14 +180,16 @@ function renderSide(chaId: string) {
     flushSync();
     const newChat = () =>
         [...target.querySelectorAll("button")].find((button) => button.textContent?.trim() === language.newChat)!;
-    /** The options button of the row showing `name`. */
-    const options = (name: string) => {
+    /** The buttons of the row showing `name`, in order: options, rename, export, delete. */
+    const rowButtons = (name: string) => {
         const row = [...target.querySelectorAll<HTMLButtonElement>("[data-risu-chat-idx]")].find((entry) =>
             entry.textContent?.includes(name),
         )!;
-        return row.querySelector<HTMLElement>('[role="button"]')!;
+        return [...row.querySelectorAll<HTMLElement>('[role="button"]')];
     };
-    return { target, newChat, options };
+    /** The options button of the row showing `name`. */
+    const options = (name: string) => rowButtons(name)[0];
+    return { target, newChat, options, rowButtons };
 }
 
 function renderModal() {
@@ -241,6 +244,48 @@ describe("chat pins in the sidebar", () => {
         expect(findChat({ chaId: "c", chatId: copy.id })).not.toHaveProperty("pinned");
         expect(findChat(source)).toHaveProperty("pinned", true);
         expect(chatEntry(source)).toHaveProperty("pinned", true);
+    });
+});
+
+describe("a chat row's own buttons", () => {
+    /** Renders `c` with its rows at the root or all in one folder: the two placements have their own markup. */
+    function renderRows(placement: string) {
+        if (placement === "folder") {
+            byChaId("c").chatFolders = [{ id: "f", name: "Folder", folded: false }];
+            for (const chatId of ["k", "j", "n"]) {
+                setChatMeta({ chaId: "c", chatId }, { folderId: "f" });
+            }
+        }
+        return renderSide("c");
+    }
+
+    beforeEach(() => {
+        vi.mocked(changeChatTo).mockClear();
+        vi.mocked(alertChatOptions).mockClear();
+    });
+
+    it.each(["root", "folder"])("the options button of a %s row does not open the row's chat", async (placement) => {
+        alerts.chatOption = NaN;
+        const side = renderRows(placement);
+        side.options("Chat J").click();
+        await vi.waitFor(() => expect(alertChatOptions).toHaveBeenCalledOnce());
+        expect(changeChatTo).not.toHaveBeenCalled();
+    });
+
+    it.each(["root", "folder"])("leaving the rename mode from a %s row does not open the row's chat", (placement) => {
+        const side = renderRows(placement);
+        const rename = () => side.rowButtons("Chat J")[1];
+        rename().click();
+        flushSync();
+        expect(side.target.querySelector("[data-risu-chat-idx] input")).not.toBeNull();
+        // The rows show inputs now, so the row is found by its place: `j` is the second chat.
+        side.target
+            .querySelectorAll("[data-risu-chat-idx]")[1]
+            .querySelectorAll<HTMLElement>('[role="button"]')[1]
+            .click();
+        flushSync();
+        expect(side.target.querySelector("[data-risu-chat-idx] input")).toBeNull();
+        expect(changeChatTo).not.toHaveBeenCalled();
     });
 });
 

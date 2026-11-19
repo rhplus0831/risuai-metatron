@@ -115,7 +115,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   chat status badges. The `memory` badge comes from memory tasks; `health` comes from
   [Structured Memory](structured-memory/read.md#the-health-badge).
 - `src/lib/SideBars/chatStatus.ts` owns badge priority and group states; `src/lib/SideBars/SideChatList.svelte` owns the
-  chat list, folders, filtering, and actions such as `completeOrder`.
+  chat list, folders, filtering, and actions such as `completeOrder`. A row's own buttons stop their click, so only the
+  row itself opens its chat; the options' copy selects the new chat without opening it.
 - `src/lib/SideBars/PinnedChatsRail.svelte` and `src/lib/SideBars/pinnedChats.ts` share the pinned-chat projection with
   home cards (`openPinnedChat`).
 - The sidebar's chat tab switches from `SideChatList` to `src/lib/SideBars/OpenChatPanel.svelte` when

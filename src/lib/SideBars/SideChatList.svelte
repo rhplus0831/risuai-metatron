@@ -432,7 +432,8 @@
                                         }
                                     }}
                                     class="text-textcolor2 hover:text-green-500 mr-1 cursor-pointer"
-                                    onclick={() => {
+                                    onclick={(e) => {
+                                        e.stopPropagation();
                                         editMode = !editMode;
                                     }}
                                 >
@@ -536,7 +537,10 @@
                                                     }
                                                 }}
                                                 class="text-textcolor2 hover:text-green-500 mr-1 cursor-pointer"
-                                                onclick={() => chatOptions(chat)}
+                                                onclick={(e) => {
+                                                    e.stopPropagation();
+                                                    chatOptions(chat);
+                                                }}
                                             >
                                                 <MenuIcon size={18} />
                                             </div>
@@ -549,7 +553,8 @@
                                                     }
                                                 }}
                                                 class="text-textcolor2 hover:text-green-500 mr-1 cursor-pointer"
-                                                onclick={() => {
+                                                onclick={(e) => {
+                                                    e.stopPropagation();
                                                     editMode = !editMode;
                                                 }}
                                             >
@@ -667,7 +672,10 @@
                                         }
                                     }}
                                     class="text-textcolor2 hover:text-green-500 mr-1 cursor-pointer"
-                                    onclick={() => chatOptions(chat)}
+                                    onclick={(e) => {
+                                        e.stopPropagation();
+                                        chatOptions(chat);
+                                    }}
                                 >
                                     <MenuIcon size={18} />
                                 </div>
@@ -680,7 +688,8 @@
                                         }
                                     }}
                                     class="text-textcolor2 hover:text-green-500 mr-1 cursor-pointer"
-                                    onclick={() => {
+                                    onclick={(e) => {
+                                        e.stopPropagation();
                                         editMode = !editMode;
                                     }}
                                 >
