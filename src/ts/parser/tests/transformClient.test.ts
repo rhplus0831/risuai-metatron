@@ -18,6 +18,8 @@ const state = vi.hoisted(() => ({
     current: null as { chaId: string; chatId: string } | null,
     chats: new Map<string, { message: { chatId: string }[]; bindedPersona?: string }>(),
     held: new Set<string>(),
+    /** The chats with a change the server has not acknowledged (`chatHasUnackedWork`). */
+    unacked: new Set<string>(),
     locked: new Set<string>(),
     preset: "preset-1" as string | undefined,
     modelPreset: "model-1" as string | undefined,
@@ -82,6 +84,7 @@ vi.mock("../../storage/chatStore.svelte", async () => {
                 : undefined,
         findChat: (ref: { chaId: string; chatId: string }) => state.chats.get(key(ref)),
         heldChatRevision: (ref: { chaId: string; chatId: string }) => (state.held.has(key(ref)) ? "rev-1" : null),
+        chatHasUnackedWork: (ref: { chaId: string; chatId: string }) => state.unacked.has(key(ref)),
         isMessageLocked: (ref: { chaId: string; chatId: string } | null, messageId: string | undefined) => {
             void lockSource.version;
             return ref !== null && messageId !== undefined && state.locked.has(`${key(ref)}/${messageId}`);
@@ -208,6 +211,7 @@ beforeEach(() => {
     state.boundPreset = undefined;
     state.boundModel = undefined;
     state.locked.clear();
+    state.unacked.clear();
     state.calls.length = 0;
     state.hookContexts.length = 0;
     state.toasts.length = 0;
@@ -878,6 +882,65 @@ describe("batching and splitting", () => {
         expect((await call).data).toBe("M");
         expect(state.toasts).toEqual(["Render failed: binding changed"]);
         expect(state.epochs).toEqual([]);
+    });
+
+    it("resends a render the server refused for the binding once the chat's own unsaved change is acknowledged", async () => {
+        // The tab bound the chat and rendered before its save went out: the server still holds the older ids.
+        const ref = newChat();
+        state.unacked.add(key(ref));
+        const event = vi.spyOn(diagnostics, "recordClientEvent");
+        const failed = vi.spyOn(recovery, "markDisplayTransformFailed");
+        // A greeting (no message id): nothing retries it later.
+        const captured = captureTransform(-1)!;
+        state.handler = (path, body) =>
+            state.unacked.has(key(ref))
+                ? { status: 409, body: { error: "chatBindingMismatch" } }
+                : defaultHandler(path, body);
+        const call = serverProcessScript(char(ref.chaId), "G", "editdisplay", -1, {}, captured, "message");
+        const view = settledFlag(call);
+        await flush();
+        expect(transformPosts()).toHaveLength(1);
+        expect(view.done).toBe(false);
+        await vi.advanceTimersByTimeAsync(400);
+        expect(transformPosts()).toHaveLength(1);
+        state.unacked.delete(key(ref));
+        await vi.advanceTimersByTimeAsync(100);
+        expect((await call).data).toBe("<G>");
+        expect(transformPosts()).toHaveLength(2);
+        expect(transformPosts()[1].body).toEqual(transformPosts()[0].body);
+        expect(state.toasts).toEqual([]);
+        expect(event).not.toHaveBeenCalledWith(expect.objectContaining({ notice: "transformFailed" }));
+        expect(failed).not.toHaveBeenCalled();
+    });
+
+    it("reports the binding refusal when the resent render is refused again, without a third request", async () => {
+        const ref = newChat();
+        state.unacked.add(key(ref));
+        const captured = captureTransform(0)!;
+        state.handler = () => ({ status: 409, body: { error: "chatBindingMismatch" } });
+        const call = serverProcessScript(char(ref.chaId), "M2", "editdisplay", 0, {}, captured, "message");
+        await flush();
+        state.unacked.delete(key(ref));
+        await vi.advanceTimersByTimeAsync(100);
+        expect((await call).data).toBe("M2");
+        expect(transformPosts()).toHaveLength(2);
+        expect(state.toasts).toEqual(["Render failed: binding changed"]);
+    });
+
+    it("stops waiting for the chat's save at the render's deadline and reports the binding refusal", async () => {
+        const ref = newChat();
+        state.unacked.add(key(ref));
+        const captured = captureTransform(0)!;
+        state.handler = () => ({ status: 409, body: { error: "chatBindingMismatch" } });
+        const call = serverProcessScript(char(ref.chaId), "M3", "editdisplay", 0, {}, captured, "message");
+        const view = settledFlag(call);
+        await flush();
+        await vi.advanceTimersByTimeAsync(27_000);
+        expect(view.done).toBe(false);
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect((await call).data).toBe("M3");
+        expect(transformPosts()).toHaveLength(1);
+        expect(state.toasts).toEqual(["Render failed: binding changed"]);
     });
 
     it("hands a 412 EpochMismatch to the epoch handler and answers raw", async () => {

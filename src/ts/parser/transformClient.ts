@@ -68,7 +68,10 @@ import {
  * transform is skipped: the text goes through
  * the browser steps raw, and the row renders again when the lock ends. Each target is answered as
  * soon as its result is known; a failed target or request leaves its text unprocessed, and a batch
- * shows one toast on its first failure; there is no browser fallback on the server path. A failure
+ * shows one toast on its first failure; there is no browser fallback on the server path. A first call
+ * refused for the chat's binding (409 `chatBindingMismatch`) while the chat has unacknowledged work waits
+ * for that work's acknowledgement within the chunk's deadline and is sent once more (`ownChangeSaved`): a
+ * binding picked in this tab renders before its save goes out. A failure
  * is `permanent` (`displayTransformRecovery` does not retry it) for a source over
  * `MAX_TRANSFORM_TEXT_BYTES` (never sent), a 400 or 413 answer to either call of a chunk whose first
  * request held that target alone, and a target the server marks so. Multi-target 400/413 refusals
@@ -520,6 +523,26 @@ function post(path: string, body: unknown, chunk: Chunk): Promise<TransformRespo
 const epochRefusals = new WeakSet<object>();
 /** Errors of a request the server refused as malformed or too large: the same request fails again. */
 const permanentRefusals = new WeakSet<object>();
+/** Errors of a request whose ids are not the chat's binding as the server holds it (409 `chatBindingMismatch`). */
+const bindingRefusals = new WeakSet<object>();
+/** How often a render refused for the binding looks whether its chat's unsaved change was acknowledged. */
+const BINDING_SAVE_POLL_MS = 50;
+
+/**
+ * After a binding refusal: whether the chat had unacknowledged work that is acknowledged now, so the same
+ * request may pass. A pick binds the chat in the tab at once and its rows render on the next frame, while the
+ * save waits for the write debounce: until it lands the server holds the older binding. False when the chat
+ * had no such work (the server's binding is the newer one), when the work is still unacknowledged near the
+ * chunk's deadline, and when the chunk was aborted.
+ */
+async function ownChangeSaved(chatRef: ChatRef, chunk: Chunk): Promise<boolean> {
+    if (!chatHasUnackedWork(chatRef)) return false;
+    while (chatHasUnackedWork(chatRef)) {
+        if (chunk.controller.signal.aborted || Date.now() + BINDING_SAVE_POLL_MS >= chunk.deadline) return false;
+        await new Promise<void>((resolve) => setTimeout(resolve, BINDING_SAVE_POLL_MS));
+    }
+    return !chunk.controller.signal.aborted;
+}
 
 async function postOnce(path: string, body: unknown, chunk: Chunk): Promise<TransformResponse> {
     const signal = chunk.controller.signal;
@@ -571,8 +594,11 @@ async function postOnce(path: string, body: unknown, chunk: Chunk): Promise<Tran
         throw error;
     }
     if (response.status === 409 && answer.error === "chatBindingMismatch") {
-        // The server holds a newer binding than this tab: the text stays unprocessed, with a readable reason.
-        throw new Error(language.chatBinding.mismatch);
+        // The sent ids are not the chat's binding as the server holds it: `sendChunk` resends once when the
+        // difference can be this tab's own unsaved change; otherwise the text stays unprocessed, with a readable reason.
+        const error = new Error(language.chatBinding.mismatch);
+        bindingRefusals.add(error);
+        throw error;
     }
     if (!response.ok) {
         const error = new Error(answer.error ?? `The render failed (${response.status})`);
@@ -777,18 +803,24 @@ async function sendChunk(batch: Batch, entries: Operation[], deadline = Infinity
         try {
             if (Date.now() >= chunk.deadline) throw new Error("The render took too long");
             const clientId = generationClientId();
-            const first = await post(
-                "/api/transform",
-                {
-                    clientId,
-                    mode: batch.mode,
-                    context: batch.captured.context,
-                    client: batch.client,
-                    targets,
-                    ...(batch.handlers ? { handlers: batch.handlers.id } : {}),
-                },
-                chunk,
-            );
+            const request = {
+                clientId,
+                mode: batch.mode,
+                context: batch.captured.context,
+                client: batch.client,
+                targets,
+                ...(batch.handlers ? { handlers: batch.handlers.id } : {}),
+            };
+            const first = await post("/api/transform", request, chunk).catch(async (error) => {
+                // Refused for the binding while the chat's own change is unsaved: once more after the save.
+                const resend =
+                    typeof error === "object" &&
+                    error !== null &&
+                    bindingRefusals.has(error) &&
+                    (await ownChangeSaved(batch.captured.chatRef, chunk));
+                if (!resend) throw error;
+                return post("/api/transform", request, chunk);
+            });
             controller.signal.throwIfAborted();
             answer(first.results);
             answer(first.same ?? []);

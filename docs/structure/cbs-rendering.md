@@ -157,6 +157,10 @@ inlay, whose tag stays as text. Images use `getFileSrc` ([assets](assets.md)). A
 - A refused request of several targets (a 400 or 413, or a transient scope-limit result) is split in two and both halves
   are sent at once within the original deadline, down to single targets, which then fail permanently; the original batch
   still shows one toast (`sendChunk`, `transformClient.ts`).
+- A first call refused with 409 `chatBindingMismatch` while its chat has unacknowledged work waits for the
+  acknowledgement within the chunk's deadline and is sent once more, with no toast or notice (`ownChangeSaved`,
+  `transformClient.ts`): a binding picked in the tab renders on the next frame, before its debounced save. A refusal
+  without such work, or of the second send, fails with the binding message.
 - When a round runs and how its backoff grows and resets are the `src/ts/parser/displayTransformRecovery.svelte.ts`
   header.
 - Each `Chat.svelte` row reports what it shows (`displaya`: the display text and the bilingual source side) through
