@@ -2996,6 +2996,10 @@ export const languageKorean = {
             languagePlaceholder: "비워 두면 프리셋 설정 언어를 따릅니다",
             highlightMode: "이 채팅의 변경 강조 방식",
             highlightDefault: "기본값 사용",
+            ownerInstructions: "이 캐릭터의 기억 지침",
+            ownerInstructionsHelp:
+                "이 캐릭터(또는 그룹)의 모든 채팅에서 기억 작성 규칙 뒤에 덧붙습니다. 무엇을 어디에 기록할지 적어 주세요. 예: \"HP와 MP를 항상 '몸 상태 및 수치'에 기록하세요.\" 이 서버에만 저장되며 캐릭터 카드에는 포함되지 않습니다.",
+            ownerInstructionsCount: (count: number, limit: number) => `${count} / ${limit}`,
             presetValues: "선별(제외) 문구 목록을 포함한 나머지 세부 설정은 선택한 메모리 프리셋 값을 따릅니다.",
             openMemorySettings: "메모리 설정 열기",
         },
@@ -3124,6 +3128,7 @@ export const languageKorean = {
             headings: {
                 identity: "정체성 및 개요",
                 currentState: "현재 상태",
+                condition: "몸 상태 및 수치",
                 relationships: "인물 관계",
                 knowledge: "알고 있는 정보",
                 goals: "목표 및 동기",

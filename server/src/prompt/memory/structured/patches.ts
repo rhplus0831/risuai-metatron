@@ -316,6 +316,9 @@ function upsertOver(section: MemorySection, patch: MemoryPatch, body: string, ke
     return { heading, body: joined, kind, ...(disputed ? { disputed } : {}) };
 }
 
+/** The character slots whose body is the present alone, replaced value after value as the story moves. */
+const PRESENT_ONLY_SLOTS: ReadonlySet<string> = new Set<CharacterSectionSlot>(["currentState", "condition"]);
+
 /** Each of `group`, one page's patches in order, as an edit of `page`, or as the code that refuses it. */
 function resolveGroup(
     page: MemoryPage,
@@ -358,8 +361,9 @@ function resolveGroup(
             return "sectionTooLong";
         }
         if (!section) sections++;
-        // A character's currentState holds the present alone (`PATCH_RULES`), so it keeps no replaced value.
-        const keepsWas = !(page.type === "character" && heading === ("currentState" satisfies CharacterSectionSlot));
+        // A character's currentState and condition hold present values alone (`PATCH_RULES`), so they keep
+        // no replaced value.
+        const keepsWas = !(page.type === "character" && PRESENT_ONLY_SLOTS.has(heading));
         return section ? upsertOver(section, patch, body, keepsWas) : { heading, body, kind: "create" };
     });
 }
@@ -397,8 +401,8 @@ function emptiesPage(page: MemoryPage, edits: readonly SectionEdit[]): boolean {
  * `<old>\n[disputed] <new>`, where `<old>` is a disputed body's standing value (`disputedStanding`),
  * sets `disputed` and warns. A replacing upsert appends `(was: ...)` for
  * nonblank `was`, cut before any `(was:` it carries, to a body stripped of such lines, so a section holds
- * one at most; a character's `currentState` gets none, because it is replaced whole on nearly every
- * event and the line would repeat the turn before. Neither conflict waits for approval.
+ * one at most; a character's `currentState` and `condition` get none, because they are replaced on
+ * nearly every event and the line would repeat the turn before. Neither conflict waits for approval.
  */
 export function applyPatches(arg: {
     changes: PageChanges;

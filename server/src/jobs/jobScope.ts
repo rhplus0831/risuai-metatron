@@ -18,7 +18,11 @@ import { LLMFormat, type LLMModel } from "../../../shared/llm.ts";
 import type { HypaV3Preset } from "../../../shared/memory.ts";
 import { RESOURCE_KIND, SINGLETON_RESOURCE_ID } from "../../../shared/resources.ts";
 import { COLLECTION_KIND, SECTION_KIND } from "../../../shared/sections.ts";
-import { STRUCTURED_MEMORY_ALGORITHM, structuredMemoryLanguageOverride } from "../../../shared/structuredMemory.ts";
+import {
+    STRUCTURED_MEMORY_ALGORITHM,
+    structuredMemoryInstructionsOverride,
+    structuredMemoryLanguageOverride,
+} from "../../../shared/structuredMemory.ts";
 import { type ChatWriteChange, messageOrderAfterChange } from "../data/chatStore.ts";
 import {
     characterShell,
@@ -483,11 +487,14 @@ function structuredMemoryFingerprint(scope: JobScope, preset: HypaV3Preset | und
               ...rest
           }) => rest)(structured)
         : null;
+    const ownerInstructions = structuredMemoryInstructionsOverride(owner);
     return {
         settings,
         ownerLanguage: structuredMemoryLanguageOverride(owner) ?? null,
         chatLanguage: structuredMemoryLanguageOverride(chat) ?? null,
         uiLanguage: scope.db.language ?? null,
+        // Present only while set, so an owner without instructions keeps the digest its queued tasks hold.
+        ...(ownerInstructions === undefined ? {} : { ownerInstructions }),
     };
 }
 

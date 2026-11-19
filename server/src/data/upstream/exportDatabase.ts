@@ -187,7 +187,12 @@ const ROOT_ONLY_PROFILE_FIELDS = new Set<string>([
 ]);
 
 /** Character fields upstream's `character` and `groupChat` lack. */
-const METATRON_CHARACTER_FIELDS = ["customNotificationMessage", "supaMemoryOnCount", "structuredMemoryLanguage"];
+const METATRON_CHARACTER_FIELDS = [
+    "customNotificationMessage",
+    "supaMemoryOnCount",
+    "structuredMemoryLanguage",
+    "structuredMemoryInstructions",
+];
 
 /**
  * Chat fields upstream's `Chat` lacks. In particular, `loreOverrides` must not become chat lore:

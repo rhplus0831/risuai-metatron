@@ -3108,6 +3108,10 @@ export const languageEnglish = {
             languagePlaceholder: "Leave it blank to use the preset's language",
             highlightMode: "Highlighting in this chat",
             highlightDefault: "Use the default",
+            ownerInstructions: "Memory instructions for this character",
+            ownerInstructionsHelp:
+                'Added after the writer\'s rules in every chat of this character or group. Say what to keep and where, for example: "Always record HP and MP under Condition and stats." Stored on this server only, never in the card.',
+            ownerInstructionsCount: (count: number, limit: number) => `${count} / ${limit}`,
             presetValues: "Every other value, the screening lists included, comes from the selected memory preset.",
             openMemorySettings: "Open memory settings",
         },
@@ -3240,6 +3244,7 @@ export const languageEnglish = {
             headings: {
                 identity: "Identity",
                 currentState: "Current state",
+                condition: "Condition and stats",
                 relationships: "Relationships",
                 knowledge: "Knowledge",
                 goals: "Goals",

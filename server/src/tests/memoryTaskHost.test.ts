@@ -519,6 +519,13 @@ describe("memorySettingsFingerprint Structured Memory settings", () => {
             },
         ],
         [
+            "owner instructions",
+            (scope) => {
+                scope.db.characters.find((owner) => owner.chaId === scope.characterId)!.structuredMemoryInstructions =
+                    "Always record HP and MP.";
+            },
+        ],
+        [
             "UI language",
             (scope) => {
                 scope.db.language = scope.db.language === "en" ? "ko" : "en";
@@ -587,6 +594,16 @@ describe("memorySettingsFingerprint Structured Memory settings", () => {
                     Object.assign(record, { structuredMemoryLanguage: value });
                     expect(memorySettingsFingerprint(scope), `${ownerId}/${target} language = ${value}`).toBe(baseline);
                 }
+            }
+            for (const value of [undefined, null, "", " \n", 1, false, [], {}]) {
+                const scope = freshScope(h, ownerId, "structuredMemory");
+                Object.assign(
+                    scope.db.characters.find((owner) => owner.chaId === scope.characterId)!,
+                    {
+                        structuredMemoryInstructions: value,
+                    },
+                );
+                expect(memorySettingsFingerprint(scope), `${ownerId} instructions = ${value}`).toBe(baseline);
             }
             for (const value of [undefined, null, "", "unknown", 1, false, [], {}]) {
                 const scope = freshScope(h, ownerId, "structuredMemory");

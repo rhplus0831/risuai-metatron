@@ -820,6 +820,12 @@ export interface character {
      * value goes first. Read through `structuredMemoryLanguageOverride`; present only while set.
      */
     structuredMemoryLanguage?: string;
+    /**
+     * What Structured Memory's writer is told for this owner's chats, after its own rules: which values to
+     * keep and where, such as a status window's numbers. Local to this server and never in a card. Read
+     * through `structuredMemoryInstructionsOverride`; present only while set.
+     */
+    structuredMemoryInstructions?: string;
     additionalAssets?: readonly (readonly [string, string, string])[];
     ttsReadOnlyQuoted?: boolean;
     replaceGlobalNote: string;
@@ -933,6 +939,8 @@ export interface groupChat {
     supaMemoryOnCount?: number;
     /** The group's `structuredMemoryLanguage` (see `character`). */
     structuredMemoryLanguage?: string;
+    /** The group's `structuredMemoryInstructions` (see `character`). */
+    structuredMemoryInstructions?: string;
     ttsMode?: string;
     suggestMessages?: string[];
     orderByOrder?: boolean;

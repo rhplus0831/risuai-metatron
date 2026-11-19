@@ -27,7 +27,7 @@ import {
 import { selection, setChatOpen, selectCharacter } from "src/ts/storage/selection.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { settings } from "src/ts/storage/settingsViews.svelte";
-import { hypaV3ModalOpen, loadedStore } from "src/ts/stores.svelte";
+import { closePopupEditorSession, hypaV3ModalOpen, loadedStore, popUpEditorStore } from "src/ts/stores.svelte";
 import { chatStatusKey } from "src/ts/process/chatStatus.svelte";
 import { beginLocalSend } from "src/ts/process/localSends";
 import { followedJobs } from "src/ts/process/serverCommands";
@@ -4755,6 +4755,41 @@ it("writes and clears the chat language through chat edits and locks both Settin
     flushSync();
     expect(findChat(ref)!.structuredMemoryLanguage).toBeUndefined();
     expect(findChat(ref)!.structuredMemoryHighlight).toBeUndefined();
+});
+
+it("writes and clears the owner's instructions on its character and shows them as text while read-only", async () => {
+    serveMemory();
+    await open();
+    await chooseTab("settings");
+    const owner = () => characterList().find(({ chaId }) => chaId === ref.chaId)!;
+    const field = () => target.querySelector<HTMLTextAreaElement>("[data-memory-owner-instructions] textarea");
+    const type = (value: string) => {
+        field()!.value = value;
+        field()!.dispatchEvent(new Event("change", { bubbles: true }));
+        flushSync();
+    };
+    const limit = STRUCTURED_MEMORY_LIMITS.ownerInstructionsChars;
+    const count = () => query("[data-memory-owner-instructions-count]")!;
+    type("Always record HP and MP.\n");
+    expect(owner().structuredMemoryInstructions).toBe("Always record HP and MP.\n");
+    expect(count().textContent).toContain(`25 / ${limit}`);
+    expect(count().className).not.toContain("text-draculared");
+    type("x".repeat(limit + 1));
+    expect(count().className).toContain("text-draculared");
+    type(" \n");
+    expect(owner()).not.toHaveProperty("structuredMemoryInstructions");
+    // The writer sends the text as written, so its popup must not preview it through CBS.
+    target.querySelector<HTMLButtonElement>("[data-memory-owner-instructions] button")!.click();
+    flushSync();
+    expect(popUpEditorStore).toMatchObject({ open: true, mode: "literal" });
+    closePopupEditorSession(popUpEditorStore.sessionId);
+    flushSync();
+    type("Kept while locked");
+    const release = beginLocalSend(ref)!;
+    releases.push(release);
+    await settle();
+    expect(field()).toBeNull();
+    expect(query("[data-memory-owner-instructions] p")!.textContent).toContain("Kept while locked");
 });
 
 it("shows pending repairs from health on the writer line below paused", async () => {

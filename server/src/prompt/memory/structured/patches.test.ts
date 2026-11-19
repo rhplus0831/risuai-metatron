@@ -695,31 +695,65 @@ it("refuses remaining edits that would empty the page after an oversized creatio
     ]);
 });
 
-it("writes no (was: ...) line on a character's currentState, which each event replaces whole", () => {
-    const character: MemoryPage = {
-        ...page("who"),
-        type: "character",
-        sections: [section("identity", "A visitor"), section("currentState", "Waiting\n(was: Arriving)")],
-    };
+it.each(["currentState", "condition"])(
+    "writes no (was: ...) line on a character's %s, which holds the present alone",
+    (slot) => {
+        const character: MemoryPage = {
+            ...page("who"),
+            type: "character",
+            sections: [section("identity", "A visitor"), section(slot, "Waiting\n(was: Arriving)")],
+        };
+        const changes: PageChanges = new Map();
+        const warnings = applyPatches({
+            pages: new Map([[character.id, character]]),
+            changes,
+            patches: ["identity", slot].map((heading) => ({
+                ...patch(heading, { body: `New ${heading}`, was: `Old ${heading}`, conflict: "change" }),
+                pageId: character.id,
+            })),
+            seen: shown([character]),
+            stamp: stamp(),
+        });
+        expect(warnings).toEqual([]);
+        const after = changes.get(character.id)!.page;
+        expect(after.sections.map(({ body }) => body)).toEqual(["New identity\n(was: Old identity)", `New ${slot}`]);
+        // The replaced body is in the history, so dropping the line loses nothing.
+        expect(after.history.map(({ heading, before }) => [heading, before?.body])).toEqual([
+            ["identity", "A visitor"],
+            [slot, "Waiting\n(was: Arriving)"],
+        ]);
+    },
+);
+
+it("adds condition to a character page written before the slot and refuses a heading that is no slot", () => {
+    const older: MemoryPage = { ...page("older"), type: "character", sections: [section("identity", "A visitor")] };
+    const other: MemoryPage = { ...page("other"), type: "character", sections: [section("identity", "A guard")] };
+    const pages = [older, other];
+    const targets = pages.map((entry) => ({
+        page: entry,
+        candidate: { targetId: entry.id, confidence: 1, reason: "New facts" },
+    }));
+    expect(showTargets(targets).rows[0].sections).toContainEqual({
+        heading: "condition",
+        empty: true,
+    });
     const changes: PageChanges = new Map();
     const warnings = applyPatches({
-        pages: new Map([[character.id, character]]),
+        pages: new Map(pages.map((entry) => [entry.id, entry])),
         changes,
-        patches: ["identity", "currentState"].map((heading) => ({
-            ...patch(heading, { body: `New ${heading}`, was: `Old ${heading}`, conflict: "change" }),
-            pageId: character.id,
-        })),
-        seen: shown([character]),
+        patches: [
+            { ...patch("condition", { body: "- HP: 65/100" }), pageId: older.id },
+            { ...patch("stats", { body: "- HP: 65/100" }), pageId: other.id },
+        ],
+        seen: shown(pages),
         stamp: stamp(),
     });
-    expect(warnings).toEqual([]);
-    const after = changes.get(character.id)!.page;
-    expect(after.sections.map(({ body }) => body)).toEqual(["New identity\n(was: Old identity)", "New currentState"]);
-    // The replaced body is in the history, so dropping the line loses nothing.
-    expect(after.history.map(({ heading, before }) => [heading, before?.body])).toEqual([
+    expect(warnings).toEqual([expect.objectContaining({ kind: "notASlot", pageId: other.id, heading: "stats" })]);
+    expect(changes.get(older.id)!.page.sections.map(({ heading, body }) => [heading, body])).toEqual([
         ["identity", "A visitor"],
-        ["currentState", "Waiting\n(was: Arriving)"],
+        ["condition", "- HP: 65/100"],
     ]);
+    expect(changes.has(other.id)).toBe(false);
 });
 
 it("keeps one (was: ...) line across replacements, refuses a body of was lines, and shows and keeps the disputed mark", () => {

@@ -153,11 +153,14 @@ export type StructuredMemoryHighlightKind = (typeof STRUCTURED_MEMORY_HIGHLIGHT_
 
 /**
  * The fixed slots of a character page, so retrieval and compaction can address them. On a character
- * page a section's `heading` holds the slot key; other page types use free headings.
+ * page a section's `heading` holds the slot key; other page types use free headings. `currentState` is
+ * what the character is doing now; `condition` is the state of their body and the values the story
+ * tracks for them (a status window's numbers), which outlast a scene.
  */
 export const CHARACTER_SECTION_SLOTS = [
     "identity",
     "currentState",
+    "condition",
     "relationships",
     "knowledge",
     "goals",
@@ -234,6 +237,8 @@ export const STRUCTURED_MEMORY_LIMITS = {
     /** Messages before a window that the writer's prompt shows as context, and the text kept of each. */
     contextMessages: 3,
     contextMessageChars: 1000,
+    /** What the writer's calls read of an owner's `structuredMemoryInstructions`. */
+    ownerInstructionsChars: 2000,
 } as const;
 
 /** A scene rewrite may keep a long stored field's length, up to the editor's limit. */
@@ -2315,6 +2320,19 @@ export function structuredMemoryWriterLanguage(
         structuredMemoryLanguageOverride(owner) ??
         (presetLanguage || appLanguage)
     );
+}
+
+/**
+ * An owner's own writer instructions (`structuredMemoryInstructions`): the stored text trimmed and cut to
+ * `ownerInstructionsChars`, else none for a blank or a value that is no string.
+ */
+export function structuredMemoryInstructionsOverride(
+    owner: { structuredMemoryInstructions?: unknown } | undefined,
+): string | undefined {
+    const value = owner?.structuredMemoryInstructions;
+    const text =
+        typeof value === "string" ? value.trim().slice(0, STRUCTURED_MEMORY_LIMITS.ownerInstructionsChars) : "";
+    return text === "" ? undefined : text;
 }
 
 /** A chat's highlight mode (`structuredMemoryHighlight`): a stored mode, else none. */

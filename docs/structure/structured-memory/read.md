@@ -49,7 +49,8 @@ Read each module's header or component contract, then read the named export's co
 - `src/lib/Others/StructuredMemory/LogTab.svelte`: run viewer; `readRound`, `exportLog`.
 - `src/lib/Others/StructuredMemory/MemoryEventFacts.svelte`: an event's state changes, knowledge, relationship shifts,
   and thread changes, shared by Log and Timeline; `Props`.
-- `src/lib/Others/StructuredMemory/SettingsTab.svelte`: chat override editor; `setLanguage`, `setHighlightMode`.
+- `src/lib/Others/StructuredMemory/SettingsTab.svelte`: chat override editor and the owner's writer instructions;
+  `setLanguage`, `setHighlightMode`, `setOwnerInstructions`.
 - `src/lib/Others/StructuredMemory/MemoryLinkButton.svelte`: record and message link; `Props`.
 - `src/lib/Others/StructuredMemory/MemoryManifest.svelte`: shared report view; `Props`, `writerReasonText`.
 - `src/lib/Others/StructuredMemory/memoryText.ts`: stored-code text; `codeText`, `memoryReasonText`,
@@ -226,8 +227,9 @@ when a section is flagged.
 Pages and Threads serialize revision-bound [edits](records.md#the-edit-route) per tab; their contracts own optimistic
 copies and refusal recovery. Timeline rereads after either repair outcome: held messages decide staleness. Keep sends
 held anchors; Re-record marks then presses `memoryRecord` through `memoryRerecordTarget`. Retract captures its chat
-before confirmation for `sendRepair`. `readOnly` disables controls; the server fence decides. Settings writes overrides
-with `setChatMeta` (`src/ts/storage/chatStore.svelte.ts`).
+before confirmation for `sendRepair`. `readOnly` disables controls; the server fence decides. Settings writes the chat's
+overrides with `setChatMeta` (`src/ts/storage/chatStore.svelte.ts`) and the owner's writer instructions on the character
+or group record with `updateCharacter` (`src/ts/storage/characterStore.svelte.ts`).
 
 In Manage, `sectionRelease` removes the user-corrected mark after confirmation; `sectionAdd` adds a heading and body to
 an eligible page. A [new note](pages.md#a-persons-note) uses the contents revision even when no page is open. An

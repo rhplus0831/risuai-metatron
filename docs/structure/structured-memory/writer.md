@@ -14,8 +14,8 @@
 - `shared/structuredMemory.ts`: writer settings and pure rules; `StructuredMemorySettings`,
   `normalizeStructuredMemorySettings`, `STRUCTURED_MEMORY_CADENCES`, `STRUCTURED_MEMORY_HIGHLIGHT_MODES`,
   `STRUCTURED_MEMORY_HIGHLIGHT_KINDS`, `structuredMemoryLanguageOverride`, `structuredMemoryHighlightOverride`,
-  `structuredMemoryWriterLanguage`, `MEMORY_SECTION_BUDGETS`, `memorySectionOverBudget`, `writerPaused`,
-  `memoryWriterReads`.
+  `structuredMemoryInstructionsOverride`, `structuredMemoryWriterLanguage`, `MEMORY_SECTION_BUDGETS`,
+  `memorySectionOverBudget`, `writerPaused`, `memoryWriterReads`.
 - `shared/memory.ts`: preset settings shape; `HypaV3Settings.structured`.
 - `shared/hypaV3Presets.ts`: preset defaults; `createHypaV3Preset`.
 - `server/src/jobs/jobScope.ts`: task settings digest; `memorySettingsFingerprint`.
@@ -179,6 +179,10 @@ page, scene and link changes by id for one store write.
 With `keyLineGuidance` on, the analysis call's `rules` slot gains the key-line selection rule, including custom frames
 through `{{slot::rules}}`; the default-prompts answer and patch and compaction calls never carry it.
 
+The owner's instructions end the `rules` slot of the analysis, patch, and compaction calls (`withOwnerInstructions` in
+`prompts.ts`), so a custom frame carries them only where it quotes `{{slot::rules}}`. They are a slot value, filled
+after ChatML and CBS parsing, and the default-prompts answer and the chapter call never carry them.
+
 The analysis answer may supply a story date explicitly stated in the messages to record. `RULES` asks for the last such
 date and `readStoryTime` admits the formats accepted by `parseStoryDate`. An invalid date is dropped. Analysis
 (`RULES`), patch (`PATCH_RULES`), and compaction (`compactRules`) rules tell the model to avoid wording relative to the
@@ -208,8 +212,11 @@ count a scene field as over budget only past 4,000.
 `showTargets` passes the event and writable pages, with each `reason` that fits, to `assemblePatchPrompt`; no writable
 targets means no call. `parsePatches` and `applyPatches` own operation, conflict and whole-page admission rules.
 `PATCH_RULES` in `prompts.ts` keeps situational roles out of `identity`, adds lasting facts the event establishes, and
-drops a sentence whose situation has ended; `RULES` has the analysis call report both as identity stateChanges. A page
-refusal is a warning: other pages and the event still commit.
+drops a sentence whose situation has ended; `RULES` has the analysis call report both as identity stateChanges. It keeps
+a character's body state and tracked values (a status window's numbers) in `condition`, apart from `currentState`, and
+`RULES` has the analysis call report them as condition stateChanges. Both slots hold the present alone, so a replacing
+patch leaves no `(was: ...)` line on them (`PRESENT_ONLY_SLOTS` in `patches.ts`). A page refusal is a warning: other
+pages and the event still commit.
 
 ### Compaction
 
@@ -250,6 +257,8 @@ avoiding wording relative to the reading day.
   the chat's stored id to `readWriterSettings`.
 - A chat's `structuredMemoryLanguage` wins over its owner's, and the owner's over the preset's `language`, where `""`
   follows `db.language`. A chat's `structuredMemoryHighlight` wins over the preset's `highlightMode`.
+- An owner's `structuredMemoryInstructions` (a character's or a group's) add to the preset's rules in every chat of that
+  owner; the writer reads at most `STRUCTURED_MEMORY_LIMITS.ownerInstructionsChars` of them.
 - `eventsPerGroup` (3 to 30, default `STRUCTURED_MEMORY_LIMITS.eventsPerGroup`) sets the Timeline's display group size
   and the target size for new chapters. Chapter eligibility reads the chat's currently bound memory preset.
 - `chapterAuto` (default false) turns on the writer task's chapter step. A change applies from the next task.
@@ -296,14 +305,17 @@ avoiding wording relative to the reading day.
 ## Invariants
 
 - Invalid writer settings take their defaults field by field; one bad field never resets the others.
-- Overrides are read only through `structuredMemoryLanguageOverride` and `structuredMemoryHighlightOverride`, which
-  treat a bad stored value as unset. No normalizer deletes one: the tab holds what it sent, so a server-only deletion
-  would make a later conflict merge against a record the server does not have.
+- The writer and the fingerprint read overrides only through `structuredMemoryLanguageOverride`,
+  `structuredMemoryHighlightOverride`, and `structuredMemoryInstructionsOverride`, which treat a bad stored value as
+  unset. The Settings tab's editor shows an owner's stored instructions whole, past the writer's cut. No normalizer
+  deletes one: the tab holds what it sent, so a server-only deletion would make a later conflict merge against a record
+  the server does not have.
 - `memorySettingsFingerprint` digests `structured` without its highlight fields, `eventsPerGroup`, and `chapterAuto`,
-  the language overrides (not the chat's highlight either: a highlight only marks a commit), and `db.language` only
-  while the chat's algorithm is Structured Memory, so a change to them never marks another algorithm's queued task
-  stale. The stored mode itself is not digested: a mode change that resolves to the same algorithm keeps a queued task.
-  Its preset is the scope's chat preset, so changing another preset leaves that task current.
+  the language overrides, the owner's instructions while set (not the chat's highlight either: a highlight only marks a
+  commit), and `db.language` only while the chat's algorithm is Structured Memory, so a change to them never marks
+  another algorithm's queued task stale. The stored mode itself is not digested: a mode change that resolves to the same
+  algorithm keeps a queued task. Its preset is the scope's chat preset, so changing another preset leaves that task
+  current.
 - A message is recorded when a readable stored event cites it, in any status, retracted and stale included: that stops
   the writer recording it again automatically, so nothing brings back what the user retracted. It is not coverage:
   dropping raw history asks whether an active event covers it, and never reads this set. The greeting is recorded the
@@ -418,6 +430,7 @@ avoiding wording relative to the reading day.
 - Every numeric default in `normalizeStructuredMemorySettings` is a starting value too; the required cap and the stored
   lane targets add up to the default `memoryBudgetTokens`. Only the cadence, highlight mode, and highlight kinds
   defaults are owner decisions.
-- A character's language override does not travel in a card: the card exporters use explicit field lists.
+- A character's language override and its writer instructions do not travel in a card: the card exporters use explicit
+  field lists.
 - `readMemoryRecords`, `readRecordedMessages` and `historicalWindow` read every stored event of the chat (per send, task
   or window), and `buildPrompt` every open thread: the store has no bulk read.

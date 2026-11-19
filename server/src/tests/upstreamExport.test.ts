@@ -979,6 +979,7 @@ describe("buildUpstreamDatabase: characters and chats", () => {
                     name: type,
                     type,
                     structuredMemoryLanguage: "ko",
+                    structuredMemoryInstructions: "Always record HP and MP.",
                 });
                 for (const id of ["one", "two"]) {
                     w.chat(type, id, {
@@ -997,6 +998,7 @@ describe("buildUpstreamDatabase: characters and chats", () => {
         for (const type of ["character", "group"]) {
             const owner = characterNamed(db, type);
             expect(owner).not.toHaveProperty("structuredMemoryLanguage");
+            expect(owner).not.toHaveProperty("structuredMemoryInstructions");
             const chats = chatsOf(db, type);
             expect(chats.map((chat) => chat.name)).toEqual(["one", "two"]);
             for (const chat of chats) {

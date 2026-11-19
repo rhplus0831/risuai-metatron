@@ -60,8 +60,9 @@ import { pageNamedInTexts, sectionVectorText } from "./pages.ts";
  *   messages by lore's matching, linked from either of those by one hop, and near the query by a
  *   section's similarity, which is a channel of its own and leads to no links. An `always` page finds
  *   others like any page but stays out of the lane, being required. Within a channel the newest section
- *   leads, then similarity. A character offers its whole `currentState` and the `relationships` lines
- *   naming another page in the send's cast or no visible page; a single-line body stays whole.
+ *   leads, then similarity. A character offers its whole `currentState` and `condition`, and the
+ *   `relationships` lines naming another page in the send's cast or no visible page; a single-line body
+ *   stays whole.
  * - Flow is the story's recent order, not retrieval: by place, never by storage order, since a backfill
  *   stores out of order. Eligible events offer full timeline lines, with key lines on the newest
  *   `flowKeyLineEvents` candidates and plain forms when those key lines do not fit. After lending, key
@@ -155,7 +156,11 @@ type PageMatch = (typeof PAGE_MATCHES)[number];
 const PAGE_MATCH_SCORES = { onStage: 1, named: 0.9, linked: 0.7 } as const;
 
 /** The slots of a character page the pages lane offers. */
-const RELATED_SLOTS: ReadonlySet<string> = new Set<CharacterSectionSlot>(["currentState", "relationships"]);
+const RELATED_SLOTS: ReadonlySet<string> = new Set<CharacterSectionSlot>([
+    "currentState",
+    "condition",
+    "relationships",
+]);
 
 /** Cue words of a past, causal, or chronological reading: English by word, the others as parts of words. */
 const PAST_CUES = [

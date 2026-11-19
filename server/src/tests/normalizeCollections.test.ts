@@ -7,7 +7,9 @@ import { createHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import { COLLECTION_KIND, SECTION_KIND } from "../../../shared/sections.ts";
 import {
     normalizeStructuredMemorySettings,
+    STRUCTURED_MEMORY_LIMITS,
     structuredMemoryHighlightOverride,
+    structuredMemoryInstructionsOverride,
     structuredMemoryLanguageOverride,
 } from "../../../shared/structuredMemory.ts";
 import { createTranslatorPreset } from "../../../shared/translatorPresets.ts";
@@ -857,6 +859,21 @@ describe("Structured Memory settings", () => {
         defaults.highlightKinds.length = 0;
         expect(otherDefaults).toStrictEqual(structuredDefaults);
         expect(normalizeStructuredMemorySettings(undefined)).toStrictEqual(structuredDefaults);
+    });
+
+    it("reads an owner's instructions trimmed and cut to the limit, and a blank or non-string as none", () => {
+        for (const value of [undefined, null, "", " \n\t", 0, false, [], {}]) {
+            expect(structuredMemoryInstructionsOverride({ structuredMemoryInstructions: value })).toBeUndefined();
+        }
+        expect(structuredMemoryInstructionsOverride(undefined)).toBeUndefined();
+        expect(structuredMemoryInstructionsOverride({})).toBeUndefined();
+        expect(structuredMemoryInstructionsOverride({ structuredMemoryInstructions: "\n HP와 MP를 기록 \n" })).toBe(
+            "HP와 MP를 기록",
+        );
+        const limit = STRUCTURED_MEMORY_LIMITS.ownerInstructionsChars;
+        expect(
+            structuredMemoryInstructionsOverride({ structuredMemoryInstructions: ` ${"x".repeat(limit + 5)}` }),
+        ).toBe("x".repeat(limit));
     });
 
     it("reads only non-empty language strings and known highlight overrides", () => {

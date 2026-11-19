@@ -19,6 +19,7 @@ import {
     STRUCTURED_MEMORY_LIMITS as LIMITS,
     structuredMemoryEmbeddingLanes,
     structuredMemoryHighlightOverride,
+    structuredMemoryInstructionsOverride,
     structuredMemoryWriterLanguage,
     writerPaused,
 } from "../../../../../shared/structuredMemory.ts";
@@ -298,6 +299,13 @@ export function writerLanguage({
     return structuredMemoryWriterLanguage(scopeChat(scope), owner, writerSettings(host).language, host.db.language);
 }
 
+/** The chat owner's own instructions for the analysis, patch, and compaction calls, when it has any. */
+function writerOwnerInstructions({ scope, input }: Pick<WriterArg, "scope" | "input">): string | undefined {
+    return structuredMemoryInstructionsOverride(
+        scope.db.characters.find((entry) => entry?.chaId === input.chatRef.chaId),
+    );
+}
+
 /**
  * The prompt for `arg.window`, from the records as `contents` lists them: the default frame with the
  * preset's `instructions`, or under `fineTuning` the preset's own analysis frame, which is checked
@@ -327,6 +335,7 @@ function buildPrompt(
     const slots = analysisSlots({
         language: writerLanguage(arg),
         keyLineGuidance: settings.keyLineGuidance,
+        ownerInstructions: writerOwnerInstructions(arg),
         omitUserMessages: settings.omitUserMessages,
         cast: castSlice(pages, [
             ...(window.greeting ? [{ data: window.greeting.text }] : []),
@@ -912,7 +921,12 @@ export function createStructuredWriter(
         let patchWarnings: Warning[] = [];
         if (shown.rows.length > 0) {
             const language = writerLanguage(arg);
-            const slots = patchSlots({ language, rows: shown.rows, event: first.admission.event });
+            const slots = patchSlots({
+                language,
+                ownerInstructions: writerOwnerInstructions(arg),
+                rows: shown.rows,
+                event: first.admission.event,
+            });
             const settings = writerSettings(host);
             let formated: OpenAIChat[];
             if (settings.fineTuning) {
@@ -994,7 +1008,7 @@ export function createStructuredWriter(
             compactionWarnings.push(...skipped);
             const language = writerLanguage(arg);
             for (const target of targets) {
-                const slots = compactSlots({ language, target });
+                const slots = compactSlots({ language, ownerInstructions: writerOwnerInstructions(arg), target });
                 const formated = assembleCompactPrompt(host, writerSettings(host).instructions, slots);
                 for (const message of formated) {
                     run = { ...run, inputTokens: run.inputTokens + (await tokenizer.tokenizeChat(message)) };

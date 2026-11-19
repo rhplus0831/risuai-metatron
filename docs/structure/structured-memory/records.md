@@ -354,7 +354,7 @@ of the group: no walk reads them.
   nothing was replaced, and `heading` is `null` for a change to the whole page.
 - The state after a history entry is the next entry's `before` or the live section; no `after` is stored.
 - On a character page, a section's `heading` holds a `CHARACTER_SECTION_SLOTS` key, not display text. Other page types
-  use free headings.
+  use free headings. A page written before a slot existed simply lacks its section until a patch adds it.
 - The writer's drafts carry scored axes; code computes `grade` on `MemoryEvent` and `MemoryKnowledge`. `MemoryPage` also
   has `grade`: a person's page edit sets `gradeByUser`, and clearing the grade removes both fields (`applyPageEdit`).
 - `MemoryPage.namedByUser` marks a title or alias list a person chose with a [page tool](pages.md#rename-and-aliases);

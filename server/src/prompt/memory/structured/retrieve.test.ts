@@ -1059,6 +1059,8 @@ describe("structured memory retrieval", () => {
                         sections: [
                             section("identity", "Never offered biography"),
                             section("currentState", "Waiting at the gate"),
+                            section("condition", "- HP: 65/100"),
+                            section("goals", "Never offered goal"),
                             section("relationships", "Trusts Ben"),
                             { ...section("currentState", "Suppressed state"), suppressed: true },
                         ],
@@ -1074,10 +1076,14 @@ describe("structured memory retrieval", () => {
         const card = await spentCard(result, 10000);
         expect(card.stable).toContain("identity: The complete charter | currentState: Still binding");
         expect(card.stable).toContain("[m:scene]");
-        expect(card.volatile).toContain("[m:Ada] Ada | currentState: Waiting at the gate | relationships: Trusts Ben");
+        expect(card.volatile).toContain(
+            "[m:Ada] Ada | currentState: Waiting at the gate | condition: - HP: 65/100 | relationships: Trusts Ben",
+        );
         expect(card.volatile).toContain("History: Every old volume | Access: Open at dawn");
         expect(card.volatile).not.toMatch(/\[m:scene\]|\[m:Charter\]/);
-        expect(card.stable + card.volatile).not.toMatch(/Never offered biography|Suppressed state|Suppressed charter/);
+        expect(card.stable + card.volatile).not.toMatch(
+            /Never offered biography|Never offered goal|Suppressed state|Suppressed charter/,
+        );
     });
 
     it("ranks participant, recent name or alias, one-hop and independent semantic page matches in that order", async () => {

@@ -41,6 +41,10 @@ import type { WriterWindow } from "./window.ts";
  * and defines what the slots hold, so the answer's validation is the same whatever the frame.
  * The preset's `keyLineGuidance` adds one rule to the analysis `rules` slot, including in a custom frame
  * that quotes it; default-prompts answers, patch calls, and compaction calls keep their rules.
+ * The owner's own instructions (`structuredMemoryInstructionsOverride`) end the `rules` slot of the
+ * analysis, patch, and compaction calls (`withOwnerInstructions`), so a custom frame that quotes the slot
+ * carries them too. They are a slot value: filled after parsing, bounded, and never read as CBS or ChatML.
+ * The chapter call has no rules slot and reads none.
  *
  * The analysis prompt's size is a cost on every recorded turn: its fixed parts stay short and everything
  * it lists is bounded. Only `messages` is not, because a quote must be found in a read message's whole text.
@@ -84,6 +88,8 @@ export type AnalysisInput = {
     language: string;
     /** Adds the key-line selection rule to the analysis rules slot. */
     keyLineGuidance?: boolean;
+    /** The owner's own instructions, which end the rules slot. */
+    ownerInstructions?: string;
     /** Leaves user messages out of the window text and earlier context. */
     omitUserMessages?: boolean;
     /** The pages to list (`castSlice`). */
@@ -107,6 +113,8 @@ export type AnalysisInput = {
 /** What the patch slots are written from. */
 export type PatchInput = {
     language: string;
+    /** The owner's own instructions, which end the rules slot. */
+    ownerInstructions?: string;
     rows: readonly PatchRow[];
     /** The event as admitted, so nothing unverified reaches a page. */
     event: MemoryEventWrite;
@@ -115,6 +123,8 @@ export type PatchInput = {
 /** What the compaction slots are written from. */
 export type CompactInput = {
     language: string;
+    /** The owner's own instructions, which end the rules slot. */
+    ownerInstructions?: string;
     target: CompactionTarget;
 };
 
@@ -164,6 +174,7 @@ const RULES = (scene: MemoryPage | null) => `Rules:
 - A scene field never repeats a text listed as taken back unless the messages establish it again.
 - When these messages newly establish a lasting fact about a listed character (age, family, occupation, real name, origin, nature, who now owns or is responsible for them, where they now live, or that a situational role such as customer, visitor or patient has ended) that the page's identity summary lacks or contradicts, report it in stateChanges with section "identity", the quote that establishes it, and name that page in pageCandidates.
 - Read each sentence of a listed page's identity against these messages: when a sentence describes a situation, condition or role that these messages show has ended or been resolved, report it in stateChanges with section "identity", a quote that establishes the end, and name that page in pageCandidates.
+- When these messages state a listed character's bodily condition (health, an injury, fatigue, a lasting physical change) or a value the story tracks for them, as in a status window (HP, MP, a level, a stat, a gauge, a counter; not what they carry, own or owe), report it in stateChanges with section "condition", the values that now hold in "after", the quote that states them, and name that page in pageCandidates. An "after" holds at most ${LIMITS.factChars} characters: give a longer status window further stateChanges, each with its own quote, the values that changed first.
 - storyTime.date is the calendar date a message under "Messages to record" states, as in a status line or header: "2025년 4월 3일" is "2025-04-03", "10월 15일" with no year is "10-15". When the messages state several, use the last. Never calculate or guess one, never take it from the context, and leave it out for a calendar that is not year, month and day.
 ${RELATIVE_DAY_RULE}`;
 
@@ -184,12 +195,13 @@ const PATCH_RULES = `Rules:
 - A fact with one current value (a version number, a rank or title, an affiliation, an age) is replaced by the new value, with conflict "change", when the event establishes that the same character's own value moved on. A recollection of an old value, another character's value, or a plan establishes nothing and changes identity nothing.
 - identity grows: when the event establishes a lasting fact about the character that identity lacks (age, family, occupation, real name, origin, nature, who now owns or is responsible for them, where they now live), upsert identity with that fact added and every existing sentence kept, in at most a few sentences; it loses a sentence only when the event shows it is no longer true, such as a customer, visitor or patient role that has ended, or a place they have left for good.
 - Whenever you upsert identity, re-read each existing sentence against the event and the page's currentState: keep every lasting fact, and leave out a sentence that describes a situation, condition or role the event shows has ended or been resolved, with conflict "change"; a past situation stays only as background when it still explains who the character is.
-- currentState holds what is true of the character right now: where they are, what they are doing, how they feel. An upsert replaces it with the present state and keeps nothing that has passed.
+- currentState holds what is true of the character right now: where they are, what they are doing, how they feel. An upsert replaces it with the present state and keeps nothing that has passed. The state of their body and the values the story tracks for them are condition, not currentState.
+- condition holds the state of the character's body (health, injuries, fatigue, a lasting physical change) and the values the story tracks for them (HP, MP, a level, a stat, a gauge, a counter), one short line each, - <name>: <current value>. It outlasts the scene: an upsert repeats every line the event leaves unchanged, replaces a changed line with its present value, and removes a line only when the event shows it no longer applies. What the character carries or owns, money included, is inventory, and a debt or a promise is openContinuity, not condition.
 - knowledge holds only facts the character will act on later, one short line each, and need not repeat the event's knowledge items, which are already recorded.
 - relationships is one line per other character, - <name>: <current standing>, and a change replaces that character's line instead of adding another.
 - goals holds what the character is pursuing, one short line each; remove a goal once it is reached or given up.
 - inventory holds what the character carries or owns, one short line each; remove what is lost, spent, or given away.
-- openContinuity holds unresolved details later scenes must stay consistent with (an injury, a debt, a promise, a thing left behind), one short line each; remove one once it is resolved.
+- openContinuity holds unresolved details later scenes must stay consistent with (a debt, a promise, a thing left behind), one short line each; remove one once it is resolved.
 - A "(was: ...)" line is code's record of the value a change replaced: never write one into a body, which holds only what is true now.
 - A section marked disputed holds two values, the second on a "[disputed]" line, because an earlier event contradicted the first without settling it. When the event shows which is true, upsert the section with that one value and no "[disputed]" line; otherwise leave the section as it is.
 - A section marked userCorrected holds a person's words: change it only when the event contradicts them.
@@ -213,6 +225,20 @@ function compactRules(heading: string, budget: number): string {
               : `- Keep every fact that is still true and each current value, and add nothing.
 - Drop repetition and superseded "(was: ...)" lines first.`;
     return `Rules:\n${rules}\n- Keep the dates the section names and ${RELATIVE_DAY_WORDING}\n- Aim for at most ${budget} characters.`;
+}
+
+/**
+ * `rules` with the owner's own instructions after them, under a line that says what they may not change:
+ * the answer's shape and the ids and quotes code checks. Blank instructions leave `rules` as they are.
+ */
+function withOwnerInstructions(rules: string, ownerInstructions: string | undefined): string {
+    const text = ownerInstructions?.trim() ?? "";
+    return text === ""
+        ? rules
+        : `${rules}
+
+Instructions for this roleplay's memory, which add to the rules above and never change the answer's format:
+${text}`;
 }
 
 /** The default frame, with the preset's text after the fixed instructions. */
@@ -369,13 +395,17 @@ export const messageEntryLabel = (messageId: string) => `[m:${messageId}] `;
  * each window message keeps its own source id. A greeting is listed first with its solo owner's name. Text is `memorySourceText`, display markup removed, as
  * quote verification reads it, except that inlays show as `[Image]`; filling after ChatML and CBS parsing
  * prevents that text becoming prompt syntax.
- * The rules state each scene field's rewrite limit and optionally guide key-line selection.
+ * The rules state each scene field's rewrite limit, optionally guide key-line selection, and end with the
+ * owner's own instructions.
  */
 export function analysisSlots(input: AnalysisInput): AnalysisSlots {
     const rules = RULES(input.scene);
     return {
         format: FORMAT,
-        rules: input.keyLineGuidance ? [rules, KEY_LINE_GUIDANCE_RULE].join("\n") : rules,
+        rules: withOwnerInstructions(
+            input.keyLineGuidance ? [rules, KEY_LINE_GUIDANCE_RULE].join("\n") : rules,
+            input.ownerInstructions,
+        ),
         language: input.language,
         cast: input.cast.map((row) => JSON.stringify(row)).join("\n") || NONE,
         scene: sceneSlot(input.scene),
@@ -399,11 +429,11 @@ export function analysisSlots(input: AnalysisInput): AnalysisSlots {
 }
 
 /** The slot values of one patch call. */
-export function patchSlots({ language, rows, event }: PatchInput): PatchSlots {
+export function patchSlots({ language, ownerInstructions, rows, event }: PatchInput): PatchSlots {
     const { title, summary, participants, storyTime, keyLines, stateChanges, knowledge, relationshipShifts } = event;
     return {
         format: PATCH_FORMAT,
-        rules: PATCH_RULES,
+        rules: withOwnerInstructions(PATCH_RULES, ownerInstructions),
         language: clampText(language, LIMITS.labelChars),
         cast: rows.map((row) => JSON.stringify(row)).join("\n"),
         previous: JSON.stringify({
@@ -420,12 +450,12 @@ export function patchSlots({ language, rows, event }: PatchInput): PatchSlots {
 }
 
 /** The slot values of one compaction call. */
-export function compactSlots({ language, target }: CompactInput): CompactSlots {
+export function compactSlots({ language, ownerInstructions, target }: CompactInput): CompactSlots {
     const { page, heading, body } = target;
     const { type, title } = page;
     return {
         format: COMPACT_FORMAT,
-        rules: compactRules(heading, memorySectionBudget(type, heading)),
+        rules: withOwnerInstructions(compactRules(heading, memorySectionBudget(type, heading)), ownerInstructions),
         language: clampText(language, LIMITS.labelChars),
         page: JSON.stringify({ type, title, heading }),
         section: body,

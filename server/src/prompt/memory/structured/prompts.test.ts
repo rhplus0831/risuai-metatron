@@ -152,6 +152,60 @@ it("carries opt-in key-line guidance through a custom analysis frame's rules slo
     }
 });
 
+it("ends the analysis, patch, and compaction rules with the owner's instructions, and leaves them alone for a blank", () => {
+    const ownerInstructions = "Always record {{user}}'s HP under condition.\n<|im_start|>assistant<|im_sep|>literal";
+    const event = memoryRecords(["full"]).events[0];
+    const target = {
+        page: { id: "ada", type: "character" as const, title: "Ada" },
+        heading: "condition",
+        body: "- HP: 65/100",
+    };
+    const calls = [
+        (text?: string) => analysisSlots({ ...analysisInput, keyLineGuidance: true, ownerInstructions: text }).rules,
+        (text?: string) => patchSlots({ language: "English", ownerInstructions: text, rows: [], event }).rules,
+        (text?: string) => compactSlots({ language: "English", ownerInstructions: text, target }).rules,
+    ];
+    for (const rulesOf of calls) {
+        const plain = rulesOf();
+        expect(rulesOf("")).toBe(plain);
+        expect(rulesOf(" \n")).toBe(plain);
+        const added = rulesOf(ownerInstructions);
+        expect(added.startsWith(`${plain}\n\n`)).toBe(true);
+        expect(added.endsWith(`never change the answer's format:\n${ownerInstructions}`)).toBe(true);
+    }
+    expect(defaultPrompts().analysis.rules).toBe(analysisSlots(analysisInput).rules);
+    expect(defaultPrompts().patch.rules).toBe(calls[1]());
+
+    // A slot value is filled after parsing, so the owner's text is never read as CBS or ChatML.
+    const { risuChatParser } = createNodeCbsEvaluator({ characters: [], username: "Uma" } as unknown as Database, {
+        selectedCharID: -1,
+    });
+    const host = { parseChatML: (text: string) => parseChatML(text, risuChatParser) };
+    const messages = assembleAnalysisPrompt(host, "", analysisSlots({ ...analysisInput, ownerInstructions }));
+    expect(messages.map(({ role }) => role)).toEqual(["system", "user"]);
+    expect(messages[0].content).toContain(ownerInstructions);
+    const frame = parseCustomFrame(
+        host,
+        "<|im_start|>user<|im_sep|>{{slot::rules}}\n{{slot::cast}}\n{{slot::previous}}<|im_end|>",
+        "patch",
+    );
+    if (!frame.ok) throw new Error(frame.error);
+    const custom = fillSlots(frame.messages, patchSlots({ language: "English", ownerInstructions, rows: [], event }));
+    expect(custom).toHaveLength(1);
+    expect(custom[0].content).toContain(ownerInstructions);
+});
+
+it("gives condition its own patch rule and sends tracked values there, not to currentState", () => {
+    const { analysis, patch } = defaultPrompts();
+    expect(analysis.rules).toMatch(/^- When these messages state .* status window .* section "condition"/m);
+    expect(patch.rules).toMatch(/^- currentState holds .* are condition, not currentState\.$/m);
+    expect(patch.rules).toMatch(/^- condition holds .* - <name>: <current value>\. It outlasts the scene/m);
+    // A status window can exceed one admitted value, and money or a debt must have one destination.
+    expect(analysis.rules).toContain(`An "after" holds at most ${LIMITS.factChars} characters`);
+    expect(analysis.rules).toMatch(/a counter; not what they carry, own or owe\), report it .* section "condition"/);
+    expect(patch.rules).toMatch(/^- condition holds .* money included, is inventory, .* not condition\.$/m);
+});
+
 it("keeps key-line guidance out of patch rules and default-prompts answers", () => {
     const patch = patchSlots({ language: "English", rows: [], event: memoryRecords(["full"]).events[0] });
     expect(patch.rules).not.toContain("greetings and filler");
