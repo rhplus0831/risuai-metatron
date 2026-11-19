@@ -6,7 +6,8 @@
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
 </script>
 
-<div class="flex items-center mt-2">
+<!-- `mt-4`: the spacing of the selects above it in Display's Colors & typography section. -->
+<div class="flex items-center mt-4">
     <Check
         check={settings.ui.customBackground !== ""}
         onChange={async (check) => {

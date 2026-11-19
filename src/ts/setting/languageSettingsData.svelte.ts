@@ -78,7 +78,7 @@ export const languageSettingsItems: SettingItem[] = [
     {
         id: "lang.restartWarn",
         type: "header",
-        fallbackLabel: "Close the settings to take effect",
+        labelKey: "closeSettingsToApply",
         options: { level: "span" },
         classes: "bg-red-500 text-sm",
         condition: () => langState.changed,

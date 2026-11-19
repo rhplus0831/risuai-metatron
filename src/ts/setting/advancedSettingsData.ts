@@ -114,7 +114,7 @@ export const advancedSettingsItems: SettingItem[] = [
     {
         id: "adv.allowExt",
         type: "check",
-        fallbackLabel: "Allow all in file select",
+        labelKey: "allowAllExtentionFiles",
         bindKey: "allowAllExtentionFiles",
         classes: "mt-4",
     },

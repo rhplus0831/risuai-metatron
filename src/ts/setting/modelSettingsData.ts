@@ -27,9 +27,11 @@ export const modelSettingsItems: SettingItem[] = [
     {
         id: "adv.visionQual",
         type: "select",
-        fallbackLabel: "Vision Quality",
+        labelKey: "visionQuality",
         bindKey: "gptVisionQuality",
         helpKey: "gptVisionQuality",
+        // Follows `adv.genTime`'s number field, which ends with its own 1rem bottom margin.
+        classes: "mt-0",
         options: {
             selectOptions: [
                 { value: "low", label: "Low" },
@@ -66,7 +68,8 @@ export const modelSettingsItems: SettingItem[] = [
         type: "check",
         labelKey: "removeIncompleteResponse",
         bindKey: "removeIncompleteResponse",
-        classes: "mt-4",
+        // Follows `adv.autoContinueMin`'s number field.
+        classes: "mt-0",
     },
     { id: "adv.newOai", type: "check", labelKey: "newOAIHandle", bindKey: "newOAIHandle", classes: "mt-4" },
     {

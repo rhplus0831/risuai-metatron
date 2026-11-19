@@ -268,7 +268,7 @@ export const translationSettingsItems: SettingItem[] = [
     {
         id: "adv.exp.googleTrans",
         type: "check",
-        fallbackLabel: "New Google Translate Experimental",
+        labelKey: "newGoogleTranslateExperimental",
         bindKey: "useExperimentalGoogleTranslator",
         condition: (ctx) => ctx.settings.ui.useExperimental,
         helpKey: "unrecommended",

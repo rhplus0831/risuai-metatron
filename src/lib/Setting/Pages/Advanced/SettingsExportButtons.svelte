@@ -34,7 +34,7 @@
         alertMd(mdTable);
     }}
 >
-    Show Statistics
+    {language.showStatistics}
 </Button>
 
 <Button
@@ -46,5 +46,5 @@
         alertNormal(language.settingsExported);
     }}
 >
-    Export Settings for Bug Report
+    {language.exportSettingsForBugReport}
 </Button>

@@ -1,6 +1,7 @@
 <script lang="ts">
     import { language } from "src/lang";
     import Button from "src/lib/UI/GUI/Button.svelte";
+    import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
     import StorageCleanupRow from "./StorageCleanupRow.svelte";
     import { cleanupAssetKind, type AssetKind } from "./storageCleanup";
     import { getStorageController } from "./storageContext";
@@ -93,13 +94,10 @@
             </div>
             <label class="flex min-w-0 max-w-full items-center gap-2 text-textcolor2">
                 {language.storagePage.cleanup.sortBy}
-                <select
-                    bind:value={sort}
-                    class="min-w-0 rounded-md border border-darkborderc bg-darkbg p-1 text-textcolor"
-                >
+                <SelectInput bind:value={sort} size="sm" className="min-w-0">
                     <option value="size">{language.storagePage.cleanup.sortSize}</option>
                     <option value="age">{language.storagePage.cleanup.sortAge}</option>
-                </select>
+                </SelectInput>
             </label>
         </div>
         <section
