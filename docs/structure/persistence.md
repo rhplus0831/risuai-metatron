@@ -233,6 +233,11 @@ character or the tab has an unsaved create. It preserves unknown entries and the
   loads keep their current values, and a branch drops the log and segment. Upstream export strips all three.
 - `isStreaming`/`activeStreamingDisplayOptimizationMode` remain in the type for old data, never stored; a chat's
   streaming message is its `streamingEntry`.
+- A settings-only copy (the chat row's options) is a new chat without its source's conversation. Every `ChatMeta` field
+  has an entry in `SETTINGS_COPY_CHAT_FIELDS` (`src/ts/storage/chatSettingsCopy.ts`): the note, chat lore and overrides,
+  modules, binding, memory, translation, and toggle choices are copied; messages, `scriptstate`, memory data, bookmarks,
+  tool calls, the OOC log, `pinned`, and `memoryTrimAck` are not. `GLGlobalVariables` keeps only its `toggle_` entries.
+  It is made with `createChat`, so no memory records are inherited.
 
 ### Chat binding
 

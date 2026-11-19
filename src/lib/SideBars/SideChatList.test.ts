@@ -728,6 +728,76 @@ describe("the sidebar's new chat button", () => {
     });
 });
 
+describe("copying only a chat's settings from the row's options", () => {
+    const lore = { key: "castle", comment: "Castle", content: "A castle.", mode: "normal", insertorder: 100 };
+
+    it("creates a selected chat at the top with the source's setup and no conversation, and asks for no memory", async () => {
+        vi.useFakeTimers();
+        const save = vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [], refused: [] });
+        const request = vi.spyOn(serverAuth, "authFetch").mockResolvedValue(Response.json({}));
+        try {
+            alerts.chatOption = 1;
+            const source = { chaId: "c", chatId: "j" };
+            setChatMeta(source, {
+                note: "Stay in character.",
+                localLore: [lore],
+                GLGlobalVariables: { toggle_mood: "1", score: "7" },
+                togglePresetId: "tp-1",
+                scriptstate: { $hp: 10 },
+                pinned: true,
+            } as any);
+            selectChat("c", "k");
+            const side = renderSide("c");
+            side.options("Chat J").click();
+            await vi.advanceTimersByTimeAsync(0);
+            flushSync();
+
+            expect(ids("c")).toHaveLength(4);
+            const copy = first("c");
+            expect(copy.name).toBe("Chat J (Settings)");
+            expect(selectedChatId("c")).toBe(copy.id);
+            expect(changeChatTo).not.toHaveBeenCalled();
+            const created = findChat({ chaId: "c", chatId: copy.id })!;
+            expect(created.message).toEqual([]);
+            expect(created).toMatchObject({
+                note: "Stay in character.",
+                localLore: [lore],
+                GLGlobalVariables: { toggle_mood: "1" },
+                togglePresetId: "tp-1",
+                modelPresetId: "m-gone",
+                promptPresetId: "p1",
+                bindedPersona: " u1 ",
+                bindingReview: true,
+            });
+            expect(created.GLGlobalVariables).not.toHaveProperty("score");
+            expect(created).not.toHaveProperty("scriptstate");
+            expect(created).not.toHaveProperty("pinned");
+            // The source keeps its conversation and its variables.
+            expect(findChat(source)!.message).toHaveLength(1);
+            expect(findChat(source)!.GLGlobalVariables).toEqual({ toggle_mood: "1", score: "7" });
+            await vi.advanceTimersByTimeAsync(60_000);
+            expect(request).not.toHaveBeenCalled();
+        } finally {
+            request.mockRestore();
+            save.mockRestore();
+            vi.useRealTimers();
+        }
+    });
+
+    it("a group's settings copy starts with the members' first messages", async () => {
+        alerts.chatOption = 1;
+        const side = renderSide("g");
+        side.options("Chat GK").click();
+        await vi.waitFor(() => expect(ids("g")).toHaveLength(2));
+        const copy = first("g");
+        expect(copy.name).toBe("Chat GK (Settings)");
+        expect(copy).toMatchObject({ modelPresetId: "m1", promptPresetId: "p1", bindedPersona: "u1" });
+        expect(findChat({ chaId: "g", chatId: copy.id })!.message).toEqual([
+            { saying: "c", role: "char", data: "Hello", chatId: expect.any(String) },
+        ]);
+    });
+});
+
 describe("the chat list modal's new chat button", () => {
     it("inherits the selected character's selected chat's existing ids, and empty gives nothing", () => {
         selectCharacter("c");

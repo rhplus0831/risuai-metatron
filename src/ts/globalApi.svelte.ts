@@ -1559,13 +1559,13 @@ export function openPinnedChat(ref: ChatRef, reseter?: () => void) {
     ReloadGUIPointer.set(Math.random());
 }
 
-/** A name for a copy or branch of a chat, unique among the chats of `chaId` (default: the selected character). */
+/** A name for a copy, branch, or settings-only copy of a chat, unique among the chats of `chaId` (default: the selected character). */
 export function createChatCopyName(
     originalName: string,
-    type: "Copy" | "Branch",
+    type: "Copy" | "Branch" | "Settings",
     chaId: string = selectedCharacter()?.chaId ?? "",
 ): string {
-    let name = originalName.replaceAll(/\(((Copy|Branch)( \d+)?)\)$/g, "").trim();
+    let name = originalName.replaceAll(/\(((Copy|Branch|Settings)( \d+)?)\)$/g, "").trim();
     let copyIndex = 1;
     let newName = `${name} (${type})`;
     const names = new Set(chatList(chaId).map((entry) => entry.name));
