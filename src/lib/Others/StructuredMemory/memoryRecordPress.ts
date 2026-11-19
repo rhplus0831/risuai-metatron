@@ -2,10 +2,12 @@ import { language } from "src/lang";
 import { alertConfirm, alertError, alertToast } from "src/ts/alert";
 import { runServerJob } from "src/ts/process/serverCommands";
 import {
+    clearStructuredMemory,
     memoryChaptersResultView,
     memoryTestResultView,
     type MemoryTestResultView,
     readStructuredMemoryChapterCost,
+    readStructuredMemoryContents,
     readStructuredMemoryCost,
 } from "src/ts/process/structuredMemory.svelte";
 import type { AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
@@ -170,9 +172,41 @@ async function runRebuildCommand(
 }
 
 /**
+ * Start over in a chat with no turn to record: the command cannot run there, because a run needs a window,
+ * so the records would stay behind messages that are gone. With any record held it asks, then clears them
+ * through `clearStructuredMemory` with no model call; with none it shows the nothing-to-record toast. A
+ * refusal shows its notice, `epoch` excepted, which raised its own.
+ */
+async function pressMemoryClear(chatRef: ChatRef) {
+    const text = language.structuredMemory.rebuild;
+    const contents = await readStructuredMemoryContents(chatRef);
+    if (contents.outcome !== "ok") {
+        if (contents.outcome === "failed" || contents.reason !== "epoch") {
+            alertError(memoryReadFailureText(contents));
+        }
+        return;
+    }
+    const { revision, pages, trash, events, threads } = contents.value;
+    if (pages.length + trash.length + events.length + threads.length === 0) {
+        alertToast(text.nothing);
+        return;
+    }
+    if (!(await alertConfirm(text.confirmFreshEmpty))) {
+        return;
+    }
+    const result = await clearStructuredMemory(chatRef, revision);
+    if (result.outcome === "ok") {
+        alertToast(result.value.cleared ? text.cleared : text.nothing);
+    } else if (result.outcome === "failed" || result.reason !== "epoch") {
+        alertError(memoryReadFailureText(result));
+    }
+}
+
+/**
  * A press of Rebuild, Start over, or Fill gaps: preview through `readStructuredMemoryCost` in
  * `src/ts/process/structuredMemory.svelte.ts`, then confirmation before the command. A preview with no
- * calls or folds only shows the nothing-to-record toast; folds alone ask without a model cost, and folds
+ * calls or folds only shows the nothing-to-record toast, except for Start over, which then clears the
+ * records the chat still holds (`pressMemoryClear`); folds alone ask without a model cost, and folds
  * alongside calls add their upper bound to the backfill cost. An unreadable preview asks with an unknown cost.
  * Windows hold one turn under the `everyTurn` cadence and two under any other.
  */
@@ -186,7 +220,11 @@ export async function pressMemoryRebuild(
     const cost = await readStructuredMemoryCost(chatRef, { mode, turns });
     const folds = cost.outcome === "ok" ? (cost.value.folds ?? 0) : 0;
     if (cost.outcome === "ok" && cost.value.calls === 0 && folds === 0) {
-        alertToast(text.nothing);
+        if (mode === "fresh") {
+            await pressMemoryClear(chatRef);
+        } else {
+            alertToast(text.nothing);
+        }
         return;
     }
     let costText = cost.outcome === "ok" ? text.cost(cost.value.calls, cost.value.estimatedTokens) : text.costUnknown;
@@ -202,12 +240,16 @@ export async function pressMemoryRebuild(
                 ? text.confirmBackfillFolds(folds)
                 : text.confirmBackfill(costText);
     if (await alertConfirm(question)) {
-        await runRebuildCommand(owner, chatRef, { type: "memoryRebuild", mode, turns }, text.started);
+        await runRebuildCommand(owner, chatRef, { type: "memoryRebuild", mode, turns }, text.started[mode]);
     }
 }
 
-/** A press of Resume on a stopped rebuild, which takes the settings as they stand now. */
-export function pressMemoryRebuildResume(owner: AnyClientCharacter, chatRef: ChatRef) {
+/** A press of Resume on a stopped run, which takes the settings as they stand now; `mode` is the run's, for the toast. */
+export function pressMemoryRebuildResume(
+    owner: AnyClientCharacter,
+    chatRef: ChatRef,
+    mode: StructuredMemoryRebuildMode,
+) {
     const command = { type: "memoryRebuild", resume: true } as const;
-    return runRebuildCommand(owner, chatRef, command, language.structuredMemory.rebuild.resumed);
+    return runRebuildCommand(owner, chatRef, command, language.structuredMemory.rebuild.resumed[mode]);
 }

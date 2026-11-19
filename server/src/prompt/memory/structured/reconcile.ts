@@ -2,6 +2,7 @@ import type { Message } from "../../../../../shared/database.ts";
 import type { MemoryChatRef } from "../../../../../shared/jobs.ts";
 import {
     type MemoryEvent,
+    memoryEventAdoptedLineage,
     type MemoryPage,
     type MemoryPageHistoryEntry,
     type MemoryThread,
@@ -14,7 +15,7 @@ import {
 } from "../../../../../shared/structuredMemory.ts";
 import { type MemoryChanges, type MemoryEventWrite, messageSourceHash } from "../../../data/memoryStore.ts";
 import type { MessagesChanged, ResourceStore } from "../../../data/resourceStore.ts";
-import { applyEventRepair, flagUnsupportedSections } from "./edits.ts";
+import { applyEventRepair, flagUnsupportedSections, MemoryEditRefusal } from "./edits.ts";
 import { rewindPageHeadings } from "./inherit.ts";
 import type { WriterCadence, WriterWindow } from "./window.ts";
 import type { WriterMemory } from "./writer.ts";
@@ -45,6 +46,8 @@ import type { WriterMemory } from "./writer.ts";
  *   staged records take the same reaction, so the swap loses neither.
  * - An automatic task re-records only what an edit explains (`automaticRerecords`). Any other mark stays
  *   for the panel, because a message that is gone or moved may be a mistake only a person can read.
+ * - A retracted event stays stored until a person removes it (`removeRetractedEvents`): it is what keeps
+ *   the writer from recording its messages again, so removing one whose messages remain hands them back.
  */
 
 /** `events` as the chat's stored `messages` leave them (`reconcileMemoryEvents`). */
@@ -258,6 +261,80 @@ export function withRetractedEvidence(
     changes: MemoryChanges,
 ): MemoryChanges {
     return withUnsupportedSections(store, chatRef, withReconciledThreads(store, chatRef, changes));
+}
+
+/**
+ * The change set that removes the retracted events `ids` name for good, with how many it removes, or null
+ * for a chat with no memory state. An id that names no event is skipped, which is what a repeat finds; one
+ * that names an event not retracted refuses the whole request (`MemoryEditRefusal`, `invalid`), because
+ * only a retraction has already taken an event out of every thread and flagged the sections it left.
+ *
+ * Removing takes away what a retracted event still did: its messages and greeting stop counting as
+ * recorded, so the writer, a fill gaps, and a rebuild take them again when they are still in the chat.
+ * Live pages lose the removed ids from their sections' `provenance`, keeping text, history, and the
+ * `unsupported` flag, so a later retraction is not held up by an id that names nothing. When the removed
+ * events carried the chat's whole adoption lineage, the newest event left takes `adoptedSummaries`, as a
+ * rebuild's swap passes it on, so the stored summaries stay resettable. Threads, chapters, history
+ * entries, and trashed pages keep the ids: their readers already treat a missing event as gone.
+ *
+ * Reads the listed pages, and event bodies only around a lineage that leaves. Call it in the write's
+ * synchronous step.
+ */
+export function removeRetractedEvents(
+    store: { memory: Pick<WriterMemory, "readContents" | "readRecord"> },
+    { chaId, chatId }: MemoryChatRef,
+    ids: readonly string[],
+): { changes: MemoryChanges; removed: number } | null {
+    const contents = store.memory.readContents(chaId, chatId);
+    if (!contents) {
+        return null;
+    }
+    const statuses = new Map(contents.events.map(({ id, status }) => [id, status]));
+    const removing = new Set<string>();
+    for (const id of ids) {
+        const status = statuses.get(id);
+        if (status === undefined) {
+            continue;
+        }
+        if (status !== "retracted") {
+            throw new MemoryEditRefusal("invalid", "Only a retracted event can be removed");
+        }
+        removing.add(id);
+    }
+    if (removing.size === 0) {
+        return { changes: {}, removed: 0 };
+    }
+    const pages = contents.pages.flatMap(({ id }) => {
+        const page = store.memory.readRecord(chaId, chatId, "pages", id)?.data;
+        return page?.sections.some(({ provenance }) => provenance.some((eventId) => removing.has(eventId)))
+            ? [
+                  {
+                      ...page,
+                      sections: page.sections.map((section) => ({
+                          ...section,
+                          provenance: section.provenance.filter((eventId) => !removing.has(eventId)),
+                      })),
+                  },
+              ]
+            : [];
+    });
+    const lineage = (id: string) => {
+        const event = store.memory.readRecord(chaId, chatId, "events", id)?.data;
+        return event !== undefined && memoryEventAdoptedLineage(event);
+    };
+    const left = contents.events.filter(({ id }) => !removing.has(id));
+    const heir =
+        left.length > 0 && [...removing].some(lineage) && !left.some(({ id }) => lineage(id))
+            ? store.memory.readRecord(chaId, chatId, "events", left.at(-1)!.id)?.data
+            : undefined;
+    return {
+        changes: {
+            remove: { events: [...removing] },
+            ...(pages.length > 0 ? { pages } : {}),
+            ...(heir ? { events: [{ ...heir, adoptedSummaries: true }] } : {}),
+        },
+        removed: removing.size,
+    };
 }
 
 /**

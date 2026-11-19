@@ -19,6 +19,7 @@ import {
     memoryEventHasReadableFields,
     memoryThreadEnded,
     normalizeStructuredMemorySettings,
+    writerFailing,
 } from "../../../../../shared/structuredMemory.ts";
 import type { MemoryContents } from "../../../data/memoryStore.ts";
 import type { ResourceStore } from "../../../data/resourceStore.ts";
@@ -435,7 +436,7 @@ export function writerState(
             ...(notice.reason !== undefined ? { reason: notice.reason } : {}),
         };
     }
-    if (runs.findLast(({ result }) => result === "recorded" || result === "failed")?.result === "failed") {
+    if (writerFailing(runs)) {
         return { state: "failed" };
     }
     if (events.some(({ status, rerecord }) => rerecord && status !== "retracted")) {

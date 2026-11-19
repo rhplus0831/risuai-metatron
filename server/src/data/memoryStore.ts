@@ -22,6 +22,7 @@ import {
     reconcileMemoryEvents,
     storedMemorySources,
     storedMemoryGreeting,
+    writerFailing,
     writerPaused,
 } from "../../../shared/structuredMemory.ts";
 import type {
@@ -969,13 +970,17 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
      * transaction and under the same revision, every run of the chat that `keptPromptRunIds` does not
      * keep loses `input` and `patchInput`, the runs just written included. The writer's change set
      * is never changed: the prune works on the rows, so a dry run's captured changes keep the fields.
+     *
+     * `dropChapters` is passed by a write that removes every record of the chat without a rebuild's
+     * run: a real write then deletes the chat's chapters in the same transaction, as a fresh rebuild's
+     * swap does, since no event is left for one to list.
      */
     function write(
         characterId: string,
         chatId: string,
         baseRevision: string,
         changes: MemoryChanges,
-        options: { pruneRunPrompts?: boolean } = {},
+        options: { pruneRunPrompts?: boolean; dropChapters?: boolean } = {},
     ): MemoryWriteResult {
         const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
         if (!chat) {
@@ -992,6 +997,9 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
         upsertRevision.run(chat.seq, revision);
         if (declines) {
             setDeclined.run(chat.seq);
+        }
+        if (options.dropChapters) {
+            deleteChapters.run(chat.seq);
         }
         return { revision: tokens.token(chat.seq, revision), wrote: true };
     }
@@ -1178,8 +1186,10 @@ export function createMemoryTables(db: DatabaseSync, tokens: TokenFunctions) {
                 scanned += bytes;
                 const count = (statement: StatementSync) => (statement.get(chat.seq) as { count: number }).count;
                 const sections = countSectionFlags.get(chat.seq) as { unsupported: number; overBudget: number };
+                const runs = selectRunResults.all(chat.seq) as Pick<MemoryRun, "result">[];
                 facts.push({
-                    paused: writerPaused(selectRunResults.all(chat.seq) as Pick<MemoryRun, "result">[]),
+                    paused: writerPaused(runs),
+                    lastRunFailed: writerFailing(runs),
                     storedStale: count(countStaleEvents),
                     pendingRepairs: count(countPendingRepairs),
                     unsupportedSections: sections.unsupported,

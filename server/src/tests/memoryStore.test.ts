@@ -1183,6 +1183,56 @@ it("keeps a version 3 hash when display markup is inserted, while stored version
     expect(placed.status).toBe("active");
 });
 
+it("answers whether the newest finished run failed, which a skipped run leaves as it was and a recorded one ends", () => {
+    const { store } = fileStore();
+    seed(store);
+    const [recorded] = records(["r"]).runs;
+    const lastRunFailed = () => {
+        const [facts] = store.memory.readHealth([{ characterId: "c", chatId: "k" }]);
+        return facts !== null && facts !== "unavailable" && facts.lastRunFailed;
+    };
+    expect(lastRunFailed()).toBe(false);
+    for (const [id, result, failing] of [
+        ["r1", "recorded", false],
+        ["r2", "failed", true],
+        ["r3", "skipped", true],
+        ["r4", "recorded", false],
+    ] as const) {
+        write(store, contents(store).revision, { runs: [{ ...recorded, id, result }] });
+        expect(lastRunFailed(), id).toBe(failing);
+    }
+});
+
+it("deletes a chat's chapters with the write that asks for it, and with no other write", () => {
+    const { store } = fileStore();
+    seed(store);
+    const { events } = records(["a", "b"]);
+    write(store, contents(store).revision, { events });
+    const chapters = store.memory.chapters;
+    chapters.add("c", "k", store.epoch(), chapter("saved", events[0]));
+    write(store, contents(store).revision, { remove: { events: ["b"] } });
+    expect(chapters.list("c", "k")).toMatchObject({ chapters: [{ id: "saved" }] });
+    // A stale write that asks rolls back whole, chapters included.
+    expect(() =>
+        store.memory.write(
+            "c",
+            "k",
+            { epoch: store.epoch(), baseRevision: "stale", dropChapters: true },
+            {
+                remove: { events: ["a"] },
+            },
+        ),
+    ).toThrow(ResourceConflictError);
+    expect(chapters.list("c", "k")).toMatchObject({ chapters: [{ id: "saved" }] });
+    store.memory.write(
+        "c",
+        "k",
+        { epoch: store.epoch(), baseRevision: contents(store).revision, dropChapters: true },
+        { remove: { events: ["a"] } },
+    );
+    expect(chapters.list("c", "k")).toMatchObject({ chapters: [] });
+});
+
 it("counts a 1520-character scene field within its health budget and flags one beyond 4000", () => {
     const { store } = fileStore();
     seed(store);
@@ -1199,7 +1249,14 @@ it("counts a 1520-character scene field within its health budget and flags one b
         };
         write(store, contents(store).revision, { pages: [page] });
         expect(store.memory.readHealth([{ characterId: "c", chatId: "k" }])).toEqual([
-            { paused: false, storedStale: 0, pendingRepairs: 0, unsupportedSections: 0, overBudgetSections },
+            {
+                paused: false,
+                lastRunFailed: false,
+                storedStale: 0,
+                pendingRepairs: 0,
+                unsupportedSections: 0,
+                overBudgetSections,
+            },
         ]);
     }
 });

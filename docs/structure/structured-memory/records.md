@@ -95,8 +95,9 @@ comparison ties rounds together.
 - The Log and its JSON export show `patchInput` only for runs whose prompts [the prune](writer.md#a-writer-run) retains:
   every pending run and the newest failed or skipped run, even with a newer recorded run.
 - `readStructuredMemoryHealth` calls `POST /health` for [the badge](read.md#the-health-badge), charging live pages,
-  events and runs, reading no messages. An answer can be a prefix the tab resumes; a chat over the round budget answers
-  `unavailable`, in contents too. The route header defines the caps.
+  events and runs, reading no messages. `StructuredMemoryHealthFacts.lastRunFailed` is `writerFailing` over the runs'
+  results, the rule a send's `writerState` reports `failed` by. An answer can be a prefix the tab resumes; a chat over
+  the round budget answers `unavailable`, in contents too. The route header defines the caps.
 
 ### The edit route
 
@@ -145,6 +146,27 @@ evidence through `flagUnsupportedSections`, then commits through `store.memory.w
 `revertedSection` defines which marks come back, and `laterEventCount` the notice's count. The new `revert` history
 entry is read by the writer's next input.
 
+### The remove route
+
+`POST .../events/remove` `{ revision, ids }` deletes retracted events for good, the tab's `removeStructuredMemoryEvents`
+from [Timeline's Manage view](read.md#pages-timeline-and-threads). It follows the edit route's admission order and
+fence, and `removeRetractedEvents` in `server/src/prompt/memory/structured/reconcile.ts` builds the change set:
+[what a removal takes away](lifecycle.md#retraction-and-edits) is the lifecycle guide's. An event that is not retracted
+refuses the whole request 400; an id naming no event counts for nothing, and `StructuredMemoryRemoveEventsAnswer` gives
+the number removed. A chat the removal leaves with no page, event, or thread while its stored summaries are adoptable is
+declined in the same write, as [the clear route](#the-clear-route) does.
+
+### The clear route
+
+`POST .../clear` `{ revision }` is a start over for a chat with no turn left to record, the tab's
+`clearStructuredMemory` ([rebuild](rebuild.md#what-a-rebuild-keeps) owns when the press takes it). After the epoch,
+fence and maintenance checks it asks `rebuildCost` for a fresh rebuild's calls in the same synchronous step: with any,
+it refuses 409 `changed`, since that chat's start over is the `memoryRebuild` command. Otherwise one write removes every
+page, event, thread, and trashed page, with `dropChapters` deleting the chapters in its transaction; the runs stay as
+the Log. With stored HypaV3 summaries still adoptable (`chatAdoptionHold` over the emptied contents) the write also sets
+`adoptionDeclined`, or the emptied chat would wait for the adoption choice again and hold every recording.
+`StructuredMemoryClearAnswer` says whether anything was removed; a chat with no record writes nothing.
+
 ### The restore route
 
 `POST STRUCTURED_MEMORY_PATH/:characterId/:chatId/restore` gives an imported chat the records its file held, after the
@@ -168,7 +190,8 @@ whole shape check of `parseRestoredRecords`, and only when the chat holds no row
 `store.memory.write(characterId, chatId, { epoch, baseRevision }, changes)` in `server/src/data/resourceStore.ts`
 commits one declarative change set in its own synchronous transaction. After its epoch check,
 `server/src/data/memoryStore.ts`'s synchronous `write` owns revision checks, validation, no-ops and write ordering; any
-failure rolls back. Inherit and restore share this boundary.
+failure rolls back. Inherit and restore share this boundary. `dropChapters`, which only
+[the clear route](#the-clear-route) passes, deletes the chat's chapters after a real write in the same transaction.
 
 The write publishes nothing: the chat's revision and the change feed stay as they were, and a real write counts toward
 snapshots like a checkpoint write.
@@ -279,6 +302,8 @@ of the group: no walk reads them.
   decline route a held chat's decline. [The restore route](#the-restore-route) and
   [the import route](pages.md#the-import-route) alone write records the tab sent: for a chat with no rows, after
   `parseRestoredRecords`.
+- [The remove](#the-remove-route) and [clear](#the-clear-route) routes take ids or nothing and write a removal the route
+  works out from the stored records.
 - A snapshot a live write could have left is never refused, and a crafted one is a `ResourceValidationError` (a 400),
   never a constraint failure. A record's chat has a `memory_state` row, but a state row needs no records, and an event's
   `createdRevision` is within that row's revision, without being unique or the latest.
@@ -362,6 +387,9 @@ of the group: no walk reads them.
 - `structured/edits.test.ts` drives the edit rules with plain records. `structuredMemoryRoutes.test.ts` drives the real
   fence on a real app, holding a task on a tokenizer read and a job on its runner, and the maintenance gate on every
   mutation, including after a delayed body read.
+- The remove and clear routes: `structuredMemoryRoutes.test.ts` for both on a real app, the fence and maintenance tables
+  included, `memoryStore.test.ts` for `dropChapters` and its rollback, and `StructuredMemoryPanel.test.ts` for
+  Timeline's delete, its sweep, and the start over that clears.
 - The adoption choice: `memoryStore.test.ts` for the decline and a real two-column table opened in place,
   `restoreStage.test.ts` for two-column snapshots, the column's values, and a checkpoint,
   `structuredMemoryRoutes.test.ts` for the routes and the feed, `memoryTasks.test.ts` and `memoryJobs.test.ts` for the

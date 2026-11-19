@@ -305,7 +305,7 @@
             return null;
         }
         if (!rebuild.resumable) {
-            return rebuildText.replaced;
+            return rebuildText.replaced[rebuild.mode];
         }
         if (rebuild.error !== undefined) {
             return rebuildText.stopped(rebuild.error);
@@ -449,13 +449,18 @@
         }
     }
 
+    /** The question and the toast name the run by its mode, as the progress line does. */
     function pressAbandon() {
+        const mode = rebuild?.mode;
+        if (mode === undefined) {
+            return;
+        }
         return pressChoice(
             abandonStructuredMemoryRebuild,
             ({ abandoned }) => {
-                alertToast(abandoned ? rebuildText.abandoned : rebuildText.abandonNothing);
+                alertToast(abandoned ? rebuildText.abandoned[mode] : rebuildText.abandonNothing);
             },
-            rebuildText.abandonConfirm,
+            rebuildText.abandonConfirm[mode],
         );
     }
 
@@ -542,7 +547,7 @@
                 <div class="flex flex-col gap-1 text-sm text-textcolor2">
                     {#if readOnly}
                         <span role="status" data-memory-panel-read-only>
-                            {rebuild ? rebuildText.readOnly : text.readOnly}
+                            {rebuild ? rebuildText.readOnly[rebuild.mode] : text.readOnly}
                         </span>
                     {/if}
                     {#if taskLine}
@@ -646,7 +651,8 @@
                                 size="sm"
                                 styled="outlined"
                                 disabled={pressing}
-                                onclick={() => pressRun(pressMemoryRebuildResume)}
+                                onclick={() =>
+                                    pressRun((owner, ref) => pressMemoryRebuildResume(owner, ref, rebuild.mode))}
                             >
                                 <span data-memory-rebuild-resume>{rebuildText.resume}</span>
                             </Button>

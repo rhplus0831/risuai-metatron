@@ -12,11 +12,14 @@
     import { doingAlert, terminalNotice } from "src/ts/alert";
     import { topBindingLayer } from "src/ts/gui/dialogLayers";
     import type { SettingHit } from "src/ts/setting/searchIndex";
+    import { memoryHealthFacts } from "src/ts/process/chatStatus.svelte";
     import { memoryTaskStatus } from "src/ts/process/memoryTasks.svelte";
     import {
         memoryItemTitles,
         memoryStatusWord,
+        newestMemoryReceipt,
         readStructuredMemoryContents,
+        standingMemoryReport,
     } from "src/ts/process/structuredMemory.svelte";
     import { openSetting } from "src/ts/setting/settingJump.svelte";
     import { INTERACTION_SETTINGS_MENU } from "src/ts/settingsMenu";
@@ -189,10 +192,22 @@
         return kind ? { on: chatMemoryEnabled(entry, findCharacter(chatRef.chaId), memorySettings), kind } : null;
     });
     const memoryNowName = $derived(memoryNow ? language.contextUsage.memoryKinds[memoryNow.kind] : "");
+    /**
+     * The report's memory, a Structured Memory one with its writer as the chat's runs leave it now
+     * (`standingMemoryReport`): a failure a later run made good is not repeated until the next send.
+     */
+    const reportMemory = $derived.by(() => {
+        const memory = report?.memory ?? null;
+        return memory?.kind === "structuredMemory"
+            ? standingMemoryReport(
+                  memory,
+                  memoryHealthFacts(chatRef),
+                  newestMemoryReceipt(findChat(chatRef)?.message ?? []),
+              )
+            : memory;
+    });
     /** The last reply's memory is the one that is on now: its coverage still describes the chat. */
-    const reportedNow = $derived(
-        memoryNow?.on === true && report?.memory?.kind === memoryNow.kind ? report.memory : null,
-    );
+    const reportedNow = $derived(memoryNow?.on === true && reportMemory?.kind === memoryNow.kind ? reportMemory : null);
     const leftOut = $derived(report ? Math.max(0, report.history.total - report.history.kept) : 0);
     // Memory is off and the last request left history out: nothing summarizes it. The server asks about
     // that trim once per send unless the chat answered "don't ask again" (`memoryTrimAck`, valid while it
@@ -1388,8 +1403,8 @@
                                           : language.contextUsage.coverageUnknown}</span
                                 >
                             {/if}
-                            {#if report.memory.kind === "structuredMemory"}
-                                <MemoryManifest memory={report.memory} titles={memoryTitles} />
+                            {#if reportMemory?.kind === "structuredMemory"}
+                                <MemoryManifest memory={reportMemory} titles={memoryTitles} />
                             {/if}
                         </div>
                     {/if}

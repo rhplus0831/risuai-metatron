@@ -294,10 +294,21 @@
         ),
     );
     const history = $derived(copy ? memoryPageHistoryView(copy.data) : []);
-    /** Newest standing entries only, matching revertChange's treatment of reverted and revert entries. */
+    /**
+     * Newest standing entries only, matching revertChange's treatment of reverted and revert entries. The
+     * entry's event is retracted, or, on a section still flagged, removed since: a person can delete a
+     * retracted event, and the change it made is as unsupported as before.
+     */
     const sectionReverts = $derived.by(() => {
         const entries = copy?.data.history ?? [];
-        const retracted = new Set(contents?.events.filter(({ status }) => status === "retracted").map(({ id }) => id));
+        const statuses = new Map(contents?.events.map(({ id, status }) => [id, status]));
+        const flagged = new Set(
+            copy?.data.sections.filter(({ unsupported }) => unsupported).map(({ heading }) => heading),
+        );
+        const withdrawn = (eventId: string, heading: string) => {
+            const status = statuses.get(eventId);
+            return status === "retracted" || (status === undefined && contents !== null && flagged.has(heading));
+        };
         const newest = new Set<string>();
         const rows = new Map<string, MemoryPageHistoryRow>();
         for (let index = entries.length - 1; index >= 0; index--) {
@@ -307,7 +318,7 @@
                 continue;
             }
             newest.add(heading);
-            if (eventId === undefined || !retracted.has(eventId) || kind === "edit") {
+            if (eventId === undefined || !withdrawn(eventId, heading) || kind === "edit") {
                 continue;
             }
             if (kind === "compact") {

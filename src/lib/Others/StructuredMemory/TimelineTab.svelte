@@ -3,7 +3,7 @@
     import { getAbortSignal, onDestroy, tick, untrack } from "svelte";
     import { SvelteMap } from "svelte/reactivity";
     import { language } from "src/lang";
-    import { alertConfirm, alertError } from "src/ts/alert";
+    import { alertConfirm, alertError, alertToast } from "src/ts/alert";
     import {
         editStructuredMemory,
         memoryChapterLayout,
@@ -22,6 +22,7 @@
         readStructuredMemoryStory,
         reconcileMemoryCoverage,
         removeStructuredMemoryChapters,
+        removeStructuredMemoryEvents,
         type MemoryPanelTabProps,
         type MemoryRunEventView,
         type MemoryTimelineRow,
@@ -41,6 +42,7 @@
         formatStoryDate,
         MEMORY_FIND_HITS_MAX,
         MEMORY_FIND_QUERY_CHARS,
+        MEMORY_REMOVE_EVENTS_MAX,
         memoryAnchorState,
         memoryRerecordTarget,
         normalizeStructuredMemorySettings,
@@ -202,6 +204,16 @@
         }),
     );
     const toCheck = $derived(manageRows.filter(({ event }) => event.status === "stale" || event.rerecord));
+    const retractedEvents = $derived(rows.flatMap(({ event }) => (event.status === "retracted" ? [event] : [])));
+    /**
+     * Whether something `event` cites is still in the chat, so removing it hands that back to the writer:
+     * a held message, or the greeting while the chat has one. With no chat held nothing can be ruled out.
+     */
+    const citesHeld = (event: StructuredMemoryCoverageEvent) =>
+        !heldChat ||
+        event.messageIds.some((id) => messageIndexes.has(id)) ||
+        (greetingAvailable && storedMemoryGreeting(event.greeting) !== null);
+    const orphanedRetracted = $derived(retractedEvents.filter((event) => !citesHeld(event)));
     const eventsPerGroup = $derived(
         normalizeStructuredMemorySettings(
             chatHypaV3Preset(settings.hypaV3Presets.items, settings.hypaV3Presets.selectedId, chatEntry(chatRef))
@@ -592,6 +604,68 @@
         });
     }
 
+    /**
+     * Removes retracted events for good, a request's worth at a time, each naming the revision the last
+     * answered. The facts are read again either way, and the open row closes when its event went.
+     */
+    async function sendRemove(ids: readonly string[], ref: ChatRef) {
+        let revision = facts?.revision;
+        let removed = 0;
+        let refused = false;
+        for (let start = 0; revision !== undefined && start < ids.length; start += MEMORY_REMOVE_EVENTS_MAX) {
+            const result = await removeStructuredMemoryEvents(
+                ref,
+                revision,
+                ids.slice(start, start + MEMORY_REMOVE_EVENTS_MAX),
+            );
+            if (result.outcome !== "ok") {
+                refused = true;
+                if (result.outcome === "failed" || result.reason !== "epoch") {
+                    alertError(memoryReadFailureText(result));
+                }
+                break;
+            }
+            removed += result.value.removed;
+            revision = result.value.revision;
+        }
+        if (!refused || removed > 0) {
+            alertToast(removed > 0 ? repairText.removed(removed) : repairText.removeNothing);
+        }
+        if (sameChat(ref)) {
+            if (openId !== null && ids.includes(openId)) {
+                toggle(openId);
+            }
+            await refreshAfterEdit();
+        }
+    }
+
+    /** Asks first, and says so when what the event cites is still there to be recorded again. */
+    function removeRetracted(event: StructuredMemoryCoverageEvent) {
+        const ref = chatRef;
+        const question = citesHeld(event) ? repairText.removeConfirmSources : repairText.removeConfirm;
+        return repairing(async () => {
+            if ((await alertConfirm(question)) && sameChat(ref) && !readOnly) {
+                await sendRemove([event.id], ref);
+            }
+        });
+    }
+
+    /** Only the retracted events nothing in the chat stands behind: removing them changes no recording. */
+    function removeOrphaned() {
+        const ref = chatRef;
+        const ids = orphanedRetracted.map(({ id }) => id);
+        return repairing(async () => {
+            if (
+                ids.length > 0 &&
+                (await alertConfirm(repairText.removeOrphansConfirm(ids.length))) &&
+                sameChat(ref) &&
+                !readOnly
+            ) {
+                await sendRemove(ids, ref);
+            }
+        });
+    }
+
     /** Names the state the person is looking at, so the server keeps only that. */
     function keep({ id, sources }: StructuredMemoryCoverageEvent) {
         return repairing(async () => {
@@ -844,6 +918,17 @@
                 </Button>
                 <Button size="sm" styled="outlined" disabled={off} onclick={() => keep(event)}>
                     <span data-memory-repair="keep">{repairText.keep}</span>
+                </Button>
+            </div>
+        {:else if event.status === "retracted"}
+            <div class="flex flex-wrap gap-2 pt-1" data-memory-event-repairs>
+                <Button
+                    size="sm"
+                    styled="outlined"
+                    disabled={readOnly || sending}
+                    onclick={() => removeRetracted(event)}
+                >
+                    <span data-memory-repair="remove">{repairText.remove}</span>
                 </Button>
             </div>
         {/if}
@@ -1196,6 +1281,21 @@
             {:else if manageRows.length === 0}
                 <p class="text-textcolor2">{text.empty}</p>
             {:else}
+                {#if retractedEvents.length > 0}
+                    <div
+                        class="flex flex-wrap items-center justify-between gap-2 text-textcolor2"
+                        data-memory-retracted-events
+                    >
+                        <span>{repairText.retractedCount(retractedEvents.length)}</span>
+                        {#if orphanedRetracted.length > 0}
+                            <Button size="sm" styled="outlined" disabled={controlsOff} onclick={removeOrphaned}>
+                                <span data-memory-remove-orphans>
+                                    {repairText.removeOrphans(orphanedRetracted.length)}
+                                </span>
+                            </Button>
+                        {/if}
+                    </div>
+                {/if}
                 <ul class="flex flex-col min-w-0 gap-2">
                     {#each manageRows.slice(0, shown) as row (row.event.id)}
                         {@render eventRow(row)}

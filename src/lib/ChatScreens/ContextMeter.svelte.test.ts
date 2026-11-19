@@ -19,9 +19,15 @@ import type { TabTokenScope } from "../../../shared/tokenizerChoice.ts";
 
 const mocks = vi.hoisted(() => ({
     authFetch: vi.fn<typeof import("src/ts/storage/serverAuth").authFetch>(),
+    healthFacts: vi.fn<typeof import("src/ts/process/chatStatus.svelte").memoryHealthFacts>(() => null),
 }));
 
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
+// The meter reads the facts the health reads hold; a test states them, since nothing here starts those reads.
+vi.mock("src/ts/process/chatStatus.svelte", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("src/ts/process/chatStatus.svelte")>()),
+    memoryHealthFacts: mocks.healthFacts,
+}));
 vi.mock("src/ts/storage/serverAuth", async () =>
     (await import("src/ts/storage/tests/serverAuthMock")).createServerAuthMock({ authFetch: mocks.authFetch }),
 );
@@ -216,6 +222,7 @@ beforeEach(() => {
     vi.useFakeTimers();
     resetMemoryTasks();
     vi.mocked(doingAlert).mockReturnValue(false);
+    mocks.healthFacts.mockReset().mockReturnValue(null);
     settingsOpen.set(false);
     SettingsMenuIndex.set(-1);
     hypaV3ModalOpen.set(false);
@@ -1622,6 +1629,54 @@ describe("the background summary task", () => {
                     : `3 turns · ${tokens} · ${language.structuredMemory.meter.status[state]} · ${failedMark} · 75%`,
             );
         }
+    });
+
+    it("stops repeating a report's failed writer once the chat's runs no longer end in a failure", async () => {
+        // The mocked facts are not reactive, so each step stores a report that differs where no line shows it.
+        let budget = 500;
+        const failed = () => ({
+            context: report({
+                memory: {
+                    kind: "structuredMemory",
+                    tokens: 137,
+                    budget: budget++,
+                    coverage: "covered",
+                    writer: { state: "failed" },
+                },
+            }),
+        });
+        const facts = {
+            paused: false,
+            lastRunFailed: true,
+            storedStale: 0,
+            pendingRepairs: 0,
+            unsupportedSections: 0,
+            overBudgetSections: 0,
+        };
+        const chip = (word: string) => `3 turns · ${language.contextUsage.tokens("137")} · ${word} · 75%`;
+        install([reply("m1", failed())], { memoryMode: "structuredMemory", memoryEnabled: true });
+        render();
+        // The report alone, and facts that confirm it, leave the word as the send wrote it.
+        expect(chipText()).toBe(chip(language.structuredMemory.meter.status.failed));
+        mocks.healthFacts.mockReturnValue(facts);
+        patchMessage(ref, "m1", { generationInfo: failed() });
+        flushSync();
+        expect(chipText()).toBe(chip(language.structuredMemory.meter.status.failed));
+        // A fill gaps made the failure good and wrote no receipt: the line stops saying failed and claims no more.
+        mocks.healthFacts.mockReturnValue({ ...facts, lastRunFailed: false });
+        patchMessage(ref, "m1", { generationInfo: failed() });
+        flushSync();
+        expect(chipText()).toBe(chip(language.contextUsage.memoryOn));
+        await openPanel();
+        expect(panel()!.querySelector("[data-memory-manifest]")).not.toBeNull();
+        expect(panel()!.querySelector("[data-memory-manifest-writer]")).toBeNull();
+        // A recording that reached the newest reply left its receipt there.
+        patchMessage(ref, "m1", { generationInfo: { ...failed(), memory: { state: "recorded", eventId: "e" } } });
+        flushSync();
+        expect(chipText()).toBe(chip(language.structuredMemory.meter.status.recorded));
+        expect(panel()!.querySelector<HTMLElement>("[data-memory-manifest-writer]")?.dataset.memoryManifestWriter).toBe(
+            "recorded",
+        );
     });
 
     it("shows on a legacy fallback too", async () => {

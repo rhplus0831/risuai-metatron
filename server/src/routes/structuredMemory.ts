@@ -5,7 +5,6 @@ import type { Context, Hono, MiddlewareHandler } from "hono";
 import type { Chat, Message, character, groupChat } from "../../../shared/database.ts";
 import { RESOURCE_KIND, RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
-    ADOPTED_WRITER_RUN,
     type MemoryGreetingSource,
     storedMemoryGreeting,
     hypaV3DataHoldsSummaries,
@@ -14,6 +13,8 @@ import {
     MEMORY_FIND_HITS_MAX,
     MEMORY_FIND_QUERY_CHARS,
     MEMORY_HEALTH_CHATS_MAX,
+    MEMORY_REMOVE_EVENTS_MAX,
+    memoryEventAdoptedLineage,
     MEMORY_HEALTH_ROUND_BYTES,
     MEMORY_KNOWLEDGE_STANCES,
     MEMORY_RECORD_KINDS,
@@ -37,7 +38,9 @@ import {
     type StructuredMemoryCoverageEvent,
     type StructuredMemoryCoverageRound,
     type StructuredMemoryCoverageRun,
+    type StructuredMemoryClearAnswer,
     type StructuredMemoryDeclineAnswer,
+    type StructuredMemoryRemoveEventsAnswer,
     type StructuredMemoryDefaultPromptsAnswer,
     type StructuredMemoryEdit,
     type StructuredMemoryEditAnswer,
@@ -98,8 +101,8 @@ import {
     revertChange,
 } from "../prompt/memory/structured/pages.ts";
 import { defaultPrompts } from "../prompt/memory/structured/prompts.ts";
-import { memoryWorkCost } from "../prompt/memory/structured/rebuild.ts";
-import { withRetractedEvidence } from "../prompt/memory/structured/reconcile.ts";
+import { memoryWorkCost, rebuildCost } from "../prompt/memory/structured/rebuild.ts";
+import { removeRetractedEvents, withRetractedEvidence } from "../prompt/memory/structured/reconcile.ts";
 import { parseRestoredRecords } from "../prompt/memory/structured/restore.ts";
 import { chatAdoptionHold } from "../prompt/memory/structured/writer.ts";
 import type { AppEnv } from "../types.ts";
@@ -124,6 +127,7 @@ const REFUSAL_TEXT = {
     chaptersTooLarge: "The chat's chapters are too large to read",
     chapterIds: `ids must contain 1 to ${MAX_CHAPTER_REMOVE_IDS} valid chapter ids`,
     trashed: "This page is in the trash",
+    eventIds: `ids must contain 1 to ${MEMORY_REMOVE_EVENTS_MAX} valid event ids`,
 } as const;
 
 /** The current bound writer rule, without message reads; an unresolvable binding leaves contents readable. */
@@ -590,6 +594,17 @@ type RoundRead = {
  *   409 `{ error, reason: "changed" }` when a `keep` names a state the chat has left, and
  *   409 `{ error, revision }` when `revision` is not the current token. The body is read after
  *   authentication and capped at 64 KiB.
+ * - `POST /api/memory/structured/:characterId/:chatId/events/remove` `{ revision, ids }`: removes the
+ *   retracted events `ids` name for good (1 to `MEMORY_REMOVE_EVENTS_MAX` resource ids), answered
+ *   `StructuredMemoryRemoveEventsAnswer` (`removeRetractedEvents` in
+ *   `server/src/prompt/memory/structured/reconcile.ts`). A retracted event is what keeps the writer from
+ *   recording its messages again, so their messages still in the chat read as unrecorded afterwards; the
+ *   panel asks first. An id that names no event counts for nothing and the request still names a revision,
+ *   so a stale one is refused. A chat this leaves with no page, event, or thread while its stored HypaV3
+ *   summaries are adoptable declines them in the same write, or the removal would bring the adoption
+ *   choice back and hold recording. 400 for a body of another shape or an event that is not retracted,
+ *   404 `chatGone`, 409 `{ error, reason: "fenced" }` while `fenced` holds, and 409 `{ error, revision }`
+ *   when `revision` is not the current token. The body is capped at 64 KiB.
  * - `POST /api/memory/structured/:characterId/:chatId/revert` `{ revision, pageId, historyId }`: a person's
  *   undoing of one writer's change of a section (`revertChange`, `structured/pages.ts`), answered
  *   `StructuredMemoryRevertAnswer`, with the events after the change's own that are not retracted. A change
@@ -684,6 +699,17 @@ type RoundRead = {
  *   text, with their slots in place and no preset text, and the texts of each call's `format` and `rules`
  *   slots, answered `StructuredMemoryDefaultPromptsAnswer` (`structured/prompts.ts`). It names no chat and
  *   reads no store.
+ * - `POST /api/memory/structured/:characterId/:chatId/clear` `{ revision }`: a start over for a chat that
+ *   has no turn left to record, answered `StructuredMemoryClearAnswer`. A fresh rebuild's command refuses
+ *   such a chat, because a run needs a window, so its records would outlive every message they came from.
+ *   This removes every page, event, thread, and trashed page in one write and deletes the chapters with
+ *   it, calls no model, and keeps the runs, which are the Log. A chat a fresh rebuild would call the model
+ *   for (`rebuildCost` in the same synchronous step) is refused 409 `{ error, reason: "changed" }`: its
+ *   start over is the command. With stored HypaV3 summaries still adoptable the write also declines them,
+ *   or emptying the records would bring the adoption choice back and hold recording. A chat with no
+ *   record answers `cleared: false` and writes nothing. 400 for a body of another shape, 404 `chatGone`,
+ *   409 `{ error, reason: "fenced" }` while `fenced` holds, and 409 `{ error, revision }` when `revision`
+ *   is not the current token.
  * - `POST /api/memory/structured/:characterId/:chatId/rebuild/abandon`, with no body: ends the chat's
  *   rebuild with nothing written live, whatever stopped it, a hold and the memory toggle included,
  *   answered `StructuredMemoryAbandonAnswer`: the chat's task is cancelled and the run and what it staged
@@ -843,10 +869,7 @@ export function registerStructuredMemoryRoutes(
         return (
             hypaV3DataHoldsSummaries(data) &&
             !isSealedHypaV3Data(data) &&
-            contents.events.some(({ id }) => {
-                const { writerRun, adoptedSummaries } = listedRecord(characterId, chatId, "events", id);
-                return writerRun === ADOPTED_WRITER_RUN || adoptedSummaries === true;
-            })
+            contents.events.some(({ id }) => memoryEventAdoptedLineage(listedRecord(characterId, chatId, "events", id)))
         );
     };
 
@@ -1341,6 +1364,67 @@ export function registerStructuredMemoryRoutes(
             return storeErrorResponse(c, error);
         }
     });
+
+    app.post(
+        `${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/events/remove`,
+        limiter,
+        authenticated,
+        limitBody,
+        async (c) => {
+            const { characterId, chatId } = c.req.param();
+            if (!isValidResourceId(characterId) || !isValidResourceId(chatId)) {
+                return c.json({ error: "characterId and chatId must be ids" }, 400);
+            }
+            const read = await readJsonBody(c);
+            if (!read.ok) {
+                return read.response;
+            }
+            const { revision, ids } = isPlainObject(read.body) ? read.body : {};
+            if (typeof revision !== "string") {
+                return c.json({ error: "revision must be a string" }, 400);
+            }
+            if (
+                !Array.isArray(ids) ||
+                ids.length === 0 ||
+                ids.length > MEMORY_REMOVE_EVENTS_MAX ||
+                !ids.every(isValidResourceId)
+            ) {
+                return c.json({ error: REFUSAL_TEXT.eventIds }, 400);
+            }
+            const epoch = c.req.header(RESOURCE_EPOCH_HEADER);
+            if (epoch !== store.epoch()) {
+                return c.json({ error: "EpochMismatch", epoch: store.epoch() }, 412);
+            }
+            if (fenced(characterId, chatId)) {
+                return c.json({ error: REFUSAL_TEXT.fenced, reason: "fenced" }, 409);
+            }
+            try {
+                maintenance.assertOpen();
+                const contents = store.memory.readContents(characterId, chatId);
+                const removal = contents && removeRetractedEvents(store, { chaId: characterId, chatId }, ids);
+                if (!contents || !removal) {
+                    return c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
+                }
+                const gone = new Set(removal.changes.remove?.events);
+                const left = { ...contents, events: contents.events.filter(({ id }) => !gone.has(id)) };
+                const held = gone.size > 0 && chatAdoptionHold(store, characterId, chatId, left) > 0;
+                return compressedJson(c, {
+                    revision: store.memory.write(
+                        characterId,
+                        chatId,
+                        { epoch, baseRevision: revision },
+                        { ...removal.changes, ...(held ? { adoptionDeclined: true as const } : {}) },
+                    ),
+                    removed: removal.removed,
+                } satisfies StructuredMemoryRemoveEventsAnswer);
+            } catch (error) {
+                if (error instanceof MemoryEditRefusal) {
+                    return c.json({ error: error.message }, 400);
+                }
+                return storeErrorResponse(c, error);
+            }
+        },
+    );
 
     app.post(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/revert`, limiter, authenticated, limitBody, async (c) => {
         const characterId = c.req.param("characterId");
@@ -1853,6 +1937,68 @@ export function registerStructuredMemoryRoutes(
                 return c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
             }
             return compressedJson(c, cost satisfies StructuredMemoryCostAnswer);
+        } catch (error) {
+            return storeErrorResponse(c, error);
+        }
+    });
+
+    app.post(`${STRUCTURED_MEMORY_PATH}/:characterId/:chatId/clear`, limiter, authenticated, limitBody, async (c) => {
+        const { characterId, chatId } = c.req.param();
+        if (!isValidResourceId(characterId) || !isValidResourceId(chatId)) {
+            return c.json({ error: "characterId and chatId must be ids" }, 400);
+        }
+        const read = await readJsonBody(c);
+        if (!read.ok) {
+            return read.response;
+        }
+        const revision = isPlainObject(read.body) ? read.body.revision : undefined;
+        if (typeof revision !== "string") {
+            return c.json({ error: "revision must be a string" }, 400);
+        }
+        const epoch = c.req.header(RESOURCE_EPOCH_HEADER);
+        if (epoch !== store.epoch()) {
+            return c.json({ error: "EpochMismatch", epoch: store.epoch() }, 412);
+        }
+        if (fenced(characterId, chatId)) {
+            return c.json({ error: REFUSAL_TEXT.fenced, reason: "fenced" }, 409);
+        }
+        try {
+            maintenance.assertOpen();
+            const contents = store.memory.readContents(characterId, chatId);
+            const cost =
+                contents &&
+                rebuildCost(
+                    store,
+                    { chaId: characterId, chatId },
+                    { mode: "fresh", turns: 1 },
+                    kinds.get(RESOURCE_KIND.characters)!,
+                );
+            if (!contents || !cost) {
+                return c.json({ error: REFUSAL_TEXT.chatGone, reason: "chatGone" }, 404);
+            }
+            if (cost.calls > 0) {
+                return c.json(
+                    { error: "This chat has turns to record, so starting over records them", reason: "changed" },
+                    409,
+                );
+            }
+            const remove = {
+                pages: [...contents.pages, ...contents.trash].map(({ id }) => id),
+                events: contents.events.map(({ id }) => id),
+                threads: contents.threads.map(({ id }) => id),
+            };
+            const cleared = remove.pages.length + remove.events.length + remove.threads.length > 0;
+            const emptied = { ...contents, pages: [], events: [], threads: [] };
+            const declines = cleared && chatAdoptionHold(store, characterId, chatId, emptied) > 0;
+            return compressedJson(c, {
+                revision: store.memory.write(
+                    characterId,
+                    chatId,
+                    { epoch, baseRevision: revision, dropChapters: true },
+                    cleared ? { remove, ...(declines ? { adoptionDeclined: true as const } : {}) } : {},
+                ),
+                cleared,
+            } satisfies StructuredMemoryClearAnswer);
         } catch (error) {
             return storeErrorResponse(c, error);
         }
