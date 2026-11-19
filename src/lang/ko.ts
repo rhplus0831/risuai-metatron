@@ -2394,6 +2394,8 @@ export const languageKorean = {
     helpBlock: "도움말",
     hideChatIcon: "채팅 프로필 아이콘 숨기기",
     createCopy: "복사본 만들기",
+    createSettingsCopy: "설정만 복사하기",
+    createSettingsCopyDesc: "메시지 없이 토글, 로어북, 채팅 설정만 가져온 새 채팅을 만듭니다.",
     chatOptions: "채팅 옵션",
     parameters: "파라미터",
     useLegacyGUI: "레거시 GUI 사용",

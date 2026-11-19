@@ -933,7 +933,8 @@
                         }}
                     >
                         <div class="flex flex-col justify-start items-start">
-                            <span>{language.chatBinding.chatSettings}</span>
+                            <span>{language.createSettingsCopy}</span>
+                            <span class="text-sm text-textcolor2">{language.createSettingsCopyDesc}</span>
                         </div>
                         <div class="ml-9 float-right flex-1 flex justify-end">
                             <ChevronRightIcon />
@@ -943,6 +944,19 @@
                         class="border-darkborderc border py-2 px-8 flex rounded-md hover:ring-2 items-center mt-2"
                         onclick={() => {
                             alertStore.answer("2");
+                        }}
+                    >
+                        <div class="flex flex-col justify-start items-start">
+                            <span>{language.chatBinding.chatSettings}</span>
+                        </div>
+                        <div class="ml-9 float-right flex-1 flex justify-end">
+                            <ChevronRightIcon />
+                        </div>
+                    </button>
+                    <button
+                        class="border-darkborderc border py-2 px-8 flex rounded-md hover:ring-2 items-center mt-2"
+                        onclick={() => {
+                            alertStore.answer("3");
                         }}
                     >
                         <div class="flex flex-col justify-start items-start">

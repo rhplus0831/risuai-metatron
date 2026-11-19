@@ -1,6 +1,6 @@
 <script lang="ts">
     import { initialChatMemory } from "src/ts/storage/chatMemory.svelte";
-    import { type AnyClientCharacter, characterList } from "src/ts/storage/characterStore.svelte";
+    import { type AnyClientCharacter, characterList, findCharacter } from "src/ts/storage/characterStore.svelte";
     import { onDestroy, untrack } from "svelte";
     import { v4 } from "uuid";
     import Sortable from "sortablejs/modular/sortable.core.esm.js";
@@ -47,6 +47,7 @@
         selectedChatId,
         setChatMeta,
     } from "src/ts/storage/chatStore.svelte";
+    import { chatSettingsCopy } from "src/ts/storage/chatSettingsCopy";
     import { chatFolderOf } from "./chatFolders";
     import { matchesAny, prepareQuery } from "src/ts/util/koreanSearch";
     import { openMessageSearch } from "src/ts/messageSearch.svelte";
@@ -121,10 +122,23 @@
         return chatBinding({ chaId: chara.chaId, chatId: chat.id })?.ok === false;
     }
 
+    /** The messages a new chat of `owner` starts with: each member's first message in a group, none otherwise. */
+    function openingMessages(owner: DeepReadonly<AnyClientCharacter>): Chat["message"] {
+        if (owner.type !== "group") {
+            return [];
+        }
+        return owner.characters.map((member) => ({
+            saying: member,
+            role: "char" as const,
+            data: findCharacterbyId(member).firstMessage,
+        }));
+    }
+
     /**
-     * A chat row's options: copy the chat, open its binding (chat settings), or its checkpoints. The chat (and its
-     * character) are captured before the dialogs, so a selection change or a reorder meanwhile cannot
-     * redirect them.
+     * A chat row's options: copy the chat, copy only its settings into a chat without the conversation
+     * (`chatSettingsCopy`), open its binding (chat settings), or its checkpoints. The chat (and its character) are
+     * captured before the dialogs, so a selection change or a reorder meanwhile cannot redirect them. A copy is
+     * selected in the list, never opened.
      */
     async function chatOptions(entry: ChatListEntry) {
         const ref = { chaId: chara.chaId, chatId: entry.id };
@@ -144,13 +158,30 @@
                 break;
             }
             case 1: {
+                const source = await chatCopySource(ref);
+                const owner = findCharacter(ref.chaId);
+                if (!source || !owner) {
+                    break;
+                }
+                // Plain `createChat`: the source's memory records describe a conversation this chat does not have.
+                createChat(
+                    ref.chaId,
+                    {
+                        ...chatSettingsCopy(source, createChatCopyName(source.name, "Settings", ref.chaId), v4()),
+                        message: openingMessages(owner),
+                    },
+                    { index: 0, select: true },
+                );
+                break;
+            }
+            case 2: {
                 // The binding is in the list entry, so a chat that is not loaded opens too.
                 if (chatEntry(ref)) {
                     chatBindingDialog.set(ref);
                 }
                 break;
             }
-            case 2: {
+            case 3: {
                 if (chatEntry(ref)) {
                     chatCheckpointsDialog.set(ref);
                 }
@@ -310,22 +341,13 @@
                 ...initialChatMemory(cha.chaId),
                 ...initialChatTranslation(cha.chaId),
                 ...initialChatToggles(cha.chaId),
-                message: [],
+                message: openingMessages(cha),
                 note: "",
                 name: `New Chat ${len + 1}`,
                 localLore: [],
                 fmIndex: -1,
                 id: v4(),
             };
-            if (cha.type === "group") {
-                // A group chat starts with each member's first message (they went into the oldest
-                // chat before, an indexing slip).
-                newChat.message = cha.characters.map((c) => ({
-                    saying: c,
-                    role: "char" as const,
-                    data: findCharacterbyId(c).firstMessage,
-                }));
-            }
             createChat(cha.chaId, newChat, { index: 0, select: true });
             changeChatTo(0);
             $ReloadGUIPointer += 1;
@@ -432,7 +454,8 @@
                                         }
                                     }}
                                     class="text-textcolor2 hover:text-green-500 mr-1 cursor-pointer"
-                                    onclick={() => {
+                                    onclick={(e) => {
+                                        e.stopPropagation();
                                         editMode = !editMode;
                                     }}
                                 >
@@ -536,7 +559,10 @@
                                                     }
                                                 }}
                                                 class="text-textcolor2 hover:text-green-500 mr-1 cursor-pointer"
-                                                onclick={() => chatOptions(chat)}
+                                                onclick={(e) => {
+                                                    e.stopPropagation();
+                                                    chatOptions(chat);
+                                                }}
                                             >
                                                 <MenuIcon size={18} />
                                             </div>
@@ -549,7 +575,8 @@
                                                     }
                                                 }}
                                                 class="text-textcolor2 hover:text-green-500 mr-1 cursor-pointer"
-                                                onclick={() => {
+                                                onclick={(e) => {
+                                                    e.stopPropagation();
                                                     editMode = !editMode;
                                                 }}
                                             >
@@ -667,7 +694,10 @@
                                         }
                                     }}
                                     class="text-textcolor2 hover:text-green-500 mr-1 cursor-pointer"
-                                    onclick={() => chatOptions(chat)}
+                                    onclick={(e) => {
+                                        e.stopPropagation();
+                                        chatOptions(chat);
+                                    }}
                                 >
                                     <MenuIcon size={18} />
                                 </div>
@@ -680,7 +710,8 @@
                                         }
                                     }}
                                     class="text-textcolor2 hover:text-green-500 mr-1 cursor-pointer"
-                                    onclick={() => {
+                                    onclick={(e) => {
+                                        e.stopPropagation();
                                         editMode = !editMode;
                                     }}
                                 >

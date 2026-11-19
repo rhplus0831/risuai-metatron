@@ -2501,6 +2501,8 @@ export const languageEnglish = {
     helpBlock: "Help",
     hideChatIcon: "Hide Icon UI",
     createCopy: "Create a Copy",
+    createSettingsCopy: "Copy Settings Only",
+    createSettingsCopyDesc: "A new chat without the messages, keeping the toggles, lorebook, and chat settings.",
     chatOptions: "Chat Options",
     parameters: "Parameters",
     useLegacyGUI: "Use Legacy GUI",

@@ -75,7 +75,8 @@ vi.mock("src/ts/globalApi.svelte", async () =>
 
 import { normalizeModelPreset, normalizeModelProfile } from "../../../shared/presets.ts";
 import { language } from "src/lang";
-import { alertConfirm, alertSelect } from "src/ts/alert";
+import { alertChatOptions, alertConfirm, alertSelect } from "src/ts/alert";
+import { changeChatTo } from "src/ts/globalApi.svelte";
 import { chatBinding } from "src/ts/storage/chatBinding.svelte";
 import { characterList } from "src/ts/storage/characterStore.svelte";
 import { applyRawCharacter } from "src/ts/storage/records.svelte";
@@ -179,14 +180,16 @@ function renderSide(chaId: string) {
     flushSync();
     const newChat = () =>
         [...target.querySelectorAll("button")].find((button) => button.textContent?.trim() === language.newChat)!;
-    /** The options button of the row showing `name`. */
-    const options = (name: string) => {
+    /** The buttons of the row showing `name`, in order: options, rename, export, delete. */
+    const rowButtons = (name: string) => {
         const row = [...target.querySelectorAll<HTMLButtonElement>("[data-risu-chat-idx]")].find((entry) =>
             entry.textContent?.includes(name),
         )!;
-        return row.querySelector<HTMLElement>('[role="button"]')!;
+        return [...row.querySelectorAll<HTMLElement>('[role="button"]')];
     };
-    return { target, newChat, options };
+    /** The options button of the row showing `name`. */
+    const options = (name: string) => rowButtons(name)[0];
+    return { target, newChat, options, rowButtons };
 }
 
 function renderModal() {
@@ -241,6 +244,48 @@ describe("chat pins in the sidebar", () => {
         expect(findChat({ chaId: "c", chatId: copy.id })).not.toHaveProperty("pinned");
         expect(findChat(source)).toHaveProperty("pinned", true);
         expect(chatEntry(source)).toHaveProperty("pinned", true);
+    });
+});
+
+describe("a chat row's own buttons", () => {
+    /** Renders `c` with its rows at the root or all in one folder: the two placements have their own markup. */
+    function renderRows(placement: string) {
+        if (placement === "folder") {
+            byChaId("c").chatFolders = [{ id: "f", name: "Folder", folded: false }];
+            for (const chatId of ["k", "j", "n"]) {
+                setChatMeta({ chaId: "c", chatId }, { folderId: "f" });
+            }
+        }
+        return renderSide("c");
+    }
+
+    beforeEach(() => {
+        vi.mocked(changeChatTo).mockClear();
+        vi.mocked(alertChatOptions).mockClear();
+    });
+
+    it.each(["root", "folder"])("the options button of a %s row does not open the row's chat", async (placement) => {
+        alerts.chatOption = NaN;
+        const side = renderRows(placement);
+        side.options("Chat J").click();
+        await vi.waitFor(() => expect(alertChatOptions).toHaveBeenCalledOnce());
+        expect(changeChatTo).not.toHaveBeenCalled();
+    });
+
+    it.each(["root", "folder"])("leaving the rename mode from a %s row does not open the row's chat", (placement) => {
+        const side = renderRows(placement);
+        const rename = () => side.rowButtons("Chat J")[1];
+        rename().click();
+        flushSync();
+        expect(side.target.querySelector("[data-risu-chat-idx] input")).not.toBeNull();
+        // The rows show inputs now, so the row is found by its place: `j` is the second chat.
+        side.target
+            .querySelectorAll("[data-risu-chat-idx]")[1]
+            .querySelectorAll<HTMLElement>('[role="button"]')[1]
+            .click();
+        flushSync();
+        expect(side.target.querySelector("[data-risu-chat-idx] input")).toBeNull();
+        expect(changeChatTo).not.toHaveBeenCalled();
     });
 });
 
@@ -680,6 +725,76 @@ describe("the sidebar's new chat button", () => {
             save.mockRestore();
             vi.useRealTimers();
         }
+    });
+});
+
+describe("copying only a chat's settings from the row's options", () => {
+    const lore = { key: "castle", comment: "Castle", content: "A castle.", mode: "normal", insertorder: 100 };
+
+    it("creates a selected chat at the top with the source's setup and no conversation, and asks for no memory", async () => {
+        vi.useFakeTimers();
+        const save = vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [], refused: [] });
+        const request = vi.spyOn(serverAuth, "authFetch").mockResolvedValue(Response.json({}));
+        try {
+            alerts.chatOption = 1;
+            const source = { chaId: "c", chatId: "j" };
+            setChatMeta(source, {
+                note: "Stay in character.",
+                localLore: [lore],
+                GLGlobalVariables: { toggle_mood: "1", score: "7" },
+                togglePresetId: "tp-1",
+                scriptstate: { $hp: 10 },
+                pinned: true,
+            } as any);
+            selectChat("c", "k");
+            const side = renderSide("c");
+            side.options("Chat J").click();
+            await vi.advanceTimersByTimeAsync(0);
+            flushSync();
+
+            expect(ids("c")).toHaveLength(4);
+            const copy = first("c");
+            expect(copy.name).toBe("Chat J (Settings)");
+            expect(selectedChatId("c")).toBe(copy.id);
+            expect(changeChatTo).not.toHaveBeenCalled();
+            const created = findChat({ chaId: "c", chatId: copy.id })!;
+            expect(created.message).toEqual([]);
+            expect(created).toMatchObject({
+                note: "Stay in character.",
+                localLore: [lore],
+                GLGlobalVariables: { toggle_mood: "1" },
+                togglePresetId: "tp-1",
+                modelPresetId: "m-gone",
+                promptPresetId: "p1",
+                bindedPersona: " u1 ",
+                bindingReview: true,
+            });
+            expect(created.GLGlobalVariables).not.toHaveProperty("score");
+            expect(created).not.toHaveProperty("scriptstate");
+            expect(created).not.toHaveProperty("pinned");
+            // The source keeps its conversation and its variables.
+            expect(findChat(source)!.message).toHaveLength(1);
+            expect(findChat(source)!.GLGlobalVariables).toEqual({ toggle_mood: "1", score: "7" });
+            await vi.advanceTimersByTimeAsync(60_000);
+            expect(request).not.toHaveBeenCalled();
+        } finally {
+            request.mockRestore();
+            save.mockRestore();
+            vi.useRealTimers();
+        }
+    });
+
+    it("a group's settings copy starts with the members' first messages", async () => {
+        alerts.chatOption = 1;
+        const side = renderSide("g");
+        side.options("Chat GK").click();
+        await vi.waitFor(() => expect(ids("g")).toHaveLength(2));
+        const copy = first("g");
+        expect(copy.name).toBe("Chat GK (Settings)");
+        expect(copy).toMatchObject({ modelPresetId: "m1", promptPresetId: "p1", bindedPersona: "u1" });
+        expect(findChat({ chaId: "g", chatId: copy.id })!.message).toEqual([
+            { saying: "c", role: "char", data: "Hello", chatId: expect.any(String) },
+        ]);
     });
 });
 
