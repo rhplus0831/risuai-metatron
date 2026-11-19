@@ -43,7 +43,7 @@ function render(value: Record<string, string>) {
 }
 
 function control<T extends Element>(key: string, selector: string): T {
-    const found = target.querySelector<T>(`fieldset[data-ooc-toggle="${key}"] ${selector}`);
+    const found = target.querySelector<T>(`[data-ooc-toggle="${key}"] ${selector}`);
     expect(found, `${key}: ${selector}`).not.toBeNull();
     return found!;
 }
@@ -54,27 +54,35 @@ function change(input: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElemen
     flushSync();
 }
 
+const choice = (key: string) => control<HTMLSelectElement>(key, "select");
+const optionLabels = (key: string) => [...choice(key).options].map((option) => option.textContent);
+
 it("reads and edits each toggle kind as bare-key strings without mutating the supplied map", () => {
     const value = Object.freeze({ ooc: "1", style: "2", name: "Mira", notes: "First line\nSecond line" });
     const { onchange } = render(value);
-    expect([...target.querySelectorAll("legend")].map((node) => node.textContent)).toEqual([
+    expect([...target.querySelectorAll("[data-ooc-toggle-name]")].map((node) => node.textContent)).toEqual([
         "OOC mode",
         "Answer style",
         "Speaker name",
         "Session notes",
     ]);
-    for (const key of Object.keys(value)) expect(control<HTMLSelectElement>(key, "select").value).toBe("forced");
-    expect(control<HTMLInputElement>("ooc", 'input[type="checkbox"]').checked).toBe(true);
-    const select = control<HTMLSelectElement>("style", "select:last-child");
-    expect(select.value).toBe("2");
-    expect(select.selectedOptions[0].textContent).toBe("Dialogue");
+    // One select per row holds both "as in the chat" and the forced value.
+    expect(target.querySelectorAll("select")).toHaveLength(4);
+    expect(target.querySelector('input[type="checkbox"]')).toBeNull();
+    expect(optionLabels("ooc")).toEqual(["As in the chat", "On", "Off"]);
+    expect(choice("ooc").selectedOptions[0].textContent).toBe("On");
+    expect(optionLabels("style")).toEqual(["As in the chat", "Brief", "Detailed", "Dialogue"]);
+    expect(choice("style").selectedOptions[0].textContent).toBe("Dialogue");
+    for (const key of ["name", "notes"]) {
+        expect(optionLabels(key)).toEqual(["As in the chat", "Forced value"]);
+        expect(choice(key).selectedOptions[0].textContent).toBe("Forced value");
+    }
     expect(control<HTMLInputElement>("name", 'input[type="text"]').value).toBe("Mira");
     expect(control<HTMLTextAreaElement>("notes", "textarea").value).toBe("First line\nSecond line");
     expect(onchange).not.toHaveBeenCalled();
 
-    control<HTMLInputElement>("ooc", 'input[type="checkbox"]').click();
-    flushSync();
-    change(select, "1");
+    change(choice("ooc"), choice("ooc").options[2].value);
+    change(choice("style"), choice("style").options[2].value);
     change(control<HTMLInputElement>("name", 'input[type="text"]'), "Guide");
     change(control<HTMLTextAreaElement>("notes", "textarea"), "New line\nMore context");
     const emitted = onchange.mock.calls.map(([next]) => next);
@@ -88,36 +96,62 @@ it("reads and edits each toggle kind as bare-key strings without mutating the su
     expect(value).toEqual({ ooc: "1", style: "2", name: "Mira", notes: "First line\nSecond line" });
 });
 
-it("starts inherited toggles at their forced defaults and removes keys when returning to the chat", () => {
+it("forces an inherited toggle to the chosen option and removes the key when returning to the chat", () => {
     const value = Object.freeze({ unrelated: "keep" });
     const { props, onchange } = render(value);
-    for (const [key, initial] of [
-        ["ooc", "1"],
-        ["style", "0"],
-        ["name", ""],
-        ["notes", ""],
-    ]) {
+    for (const [key, option, stored] of [
+        ["ooc", 1, "1"],
+        ["ooc", 2, "0"],
+        ["style", 1, "0"],
+        ["style", 3, "2"],
+        ["name", 1, ""],
+        ["notes", 1, ""],
+    ] as const) {
         props.value = value;
         flushSync();
-        const mode = control<HTMLSelectElement>(key, "select");
-        expect(mode.selectedOptions[0].textContent).toBe("As in the chat");
-        const row = mode.closest("fieldset")!;
+        expect(choice(key).selectedOptions[0].textContent).toBe("As in the chat");
+        const row = choice(key).closest("[data-ooc-toggle]")!;
         expect(row.querySelector("input, textarea")).toBeNull();
         expect(row.querySelectorAll("select")).toHaveLength(1);
-        change(mode, "forced");
+        change(choice(key), choice(key).options[option].value);
         const forced = onchange.mock.lastCall![0];
-        expect(forced).toEqual({ unrelated: "keep", [key]: initial });
+        expect(forced).toEqual({ unrelated: "keep", [key]: stored });
         expect(forced).not.toBe(value);
         props.value = forced;
         flushSync();
-        expect(control<HTMLSelectElement>(key, "select").value).toBe("forced");
-        change(control<HTMLSelectElement>(key, "select"), "chat");
+        expect(choice(key).selectedIndex).toBe(option);
+        change(choice(key), choice(key).options[0].value);
         expect(onchange.mock.lastCall![0]).toEqual({ unrelated: "keep" });
         expect(onchange.mock.lastCall![0]).not.toBe(forced);
-        expect(forced).toEqual({ unrelated: "keep", [key]: initial });
+        expect(forced).toEqual({ unrelated: "keep", [key]: stored });
     }
-    expect(onchange).toHaveBeenCalledTimes(8);
+    expect(onchange).toHaveBeenCalledTimes(12);
     expect(value).toEqual({ unrelated: "keep" });
+});
+
+it("keeps a forced value its toggle kind cannot show selected and distinct from the chat's value", () => {
+    // A text value left on a toggle that became a checkbox, option indices the select no longer has, and a stored
+    // value equal to the select's own "as in the chat" option value.
+    const value = Object.freeze({ ooc: "chat", style: "7" });
+    const { props, onchange } = render(value);
+    expect(choice("ooc").selectedOptions[0].textContent).toBe("Off");
+    expect(optionLabels("style")).toEqual(["As in the chat", "Brief", "Detailed", "Dialogue", "7"]);
+    expect(choice("style").selectedOptions[0].textContent).toBe("7");
+    props.value = { ...value, style: "chat" };
+    flushSync();
+    expect(choice("style").selectedOptions[0].textContent).toBe("chat");
+    expect(choice("style").selectedIndex).toBe(4);
+    props.value = { ...value, style: "length" };
+    flushSync();
+    expect(choice("style").selectedOptions[0].textContent).toBe("length");
+    expect(onchange).not.toHaveBeenCalled();
+
+    change(choice("style"), choice("style").options[1].value);
+    expect(onchange.mock.lastCall![0]).toEqual({ ooc: "chat", style: "0" });
+    props.value = onchange.mock.lastCall![0];
+    flushSync();
+    expect(optionLabels("style")).toEqual(["As in the chat", "Brief", "Detailed", "Dialogue"]);
+    expect(choice("style").selectedOptions[0].textContent).toBe("Brief");
 });
 
 it("lists removed definitions as stale and removes each key without changing the other values", () => {

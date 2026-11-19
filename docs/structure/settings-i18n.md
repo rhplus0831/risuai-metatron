@@ -168,10 +168,13 @@ delivery and [app shell](app-shell.md#home-screen) for the home entry point.
   `cbs={false}` (plain text areas, no CBS highlighting or autocomplete), and an `extra` snippet at the top of the opened
   row. With `cbs={false}`, the expanded editor opens in plain text and shows the literal token count, with no Preview.
 - `src/lib/Setting/OocToggleEditor.svelte`: a forced-toggle map editor over plain props (`definitionsText`, `value`,
-  `onchange` with a new map). Per value toggle it offers "as in the chat" (key absent) or a forced value in the toggle
-  kind's control; keys the definitions no longer hold are listed as stale and removable. `PromptSettings` shows it for
-  the preset's `oocToggles` under the toggle definitions, over the preset's own definitions text only; the OOC panel
-  uses it for a chat's own map ([ui theming](ui-theming.md#dialogs-popovers-and-portals)).
+  `onchange` with a new map). Each value toggle is one row, its name beside one select: "as in the chat" (key absent),
+  then the forced values (on and off for a checkbox, the options for a select; a stored index the options lack stays as
+  an extra option). A text toggle's select only switches forcing on, and its input follows below the row. Keys the
+  definitions no longer hold are listed as stale and removable.
+- `PromptSettings` shows `OocToggleEditor` for the preset's `oocToggles` under the toggle definitions, over the preset's
+  own definitions text only, inside an accordion that starts closed and shows the forced key count as its badge; the OOC
+  panel uses it for a chat's own map ([ui theming](ui-theming.md#dialogs-popovers-and-portals)).
 
 ### Languages
 

@@ -13,7 +13,7 @@ import {
     stopResourceSync,
 } from "src/ts/storage/resourceSync.svelte";
 import { selectCharacter, selectPreset } from "src/ts/storage/selection.svelte";
-import { activeMainProfile, activePreset } from "src/ts/storage/settingsViews.svelte";
+import { activeMainProfile, activePreset, editedPreset } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { KINDS } from "src/ts/storage/tests/mutationStoresHarness";
 import { StoreBackedServer } from "src/ts/storage/tests/storeBackedServer";
@@ -34,10 +34,10 @@ afterEach(async () => {
     vi.clearAllMocks();
 });
 
-function render() {
+function render(props: { subMenu?: number } = {}) {
     target = document.createElement("div");
     document.body.append(target);
-    component = mount(PromptSettings, { target });
+    component = mount(PromptSettings, { target, props });
     flushSync();
     return target;
 }
@@ -95,6 +95,43 @@ it("recounts both displayed totals after changing the main model with the prompt
         expect.arrayContaining(["Describe the scene.", "Continue the story."]),
     );
     expect(activePreset.promptTemplate).toEqual(template);
+});
+
+it("keeps the OOC toggle editor collapsed behind a count of the preset's forced keys", () => {
+    mocks.authFetch.mockImplementation(async () => Response.json({ counts: [] }));
+    installFlatDatabase({
+        customPromptTemplateToggle: "ooc=OOC mode\nstyle=Answer style=select=Brief,Detailed",
+        oocToggles: { ooc: "1", retired: "0" },
+        characters: [],
+    });
+    const section = render({ subMenu: 1 }).querySelector("[data-preset-ooc-toggles]")!;
+    const header = section.querySelector<HTMLButtonElement>("button[aria-expanded]")!;
+    const headerText = () => header.textContent!.replace(/\s+/g, " ").trim();
+    expect(header.getAttribute("aria-expanded")).toBe("false");
+    // A key the definitions no longer hold is still sent, so it counts.
+    expect(headerText()).toBe("OOC session toggles 2 forced");
+    expect(section.querySelector("[data-ooc-toggle-editor]")).toBeNull();
+
+    header.click();
+    flushSync();
+    expect(header.getAttribute("aria-expanded")).toBe("true");
+    expect(section.textContent).toContain("These values are forced on the toggles for an OOC session question.");
+    const choice = (key: string) => section.querySelector<HTMLSelectElement>(`[data-ooc-toggle="${key}"] select`)!;
+    const choose = (key: string, option: number) => {
+        choice(key).value = choice(key).options[option].value;
+        choice(key).dispatchEvent(new Event("change", { bubbles: true }));
+        flushSync();
+    };
+    choose("style", 2);
+    expect(editedPreset.oocToggles).toEqual({ ooc: "1", retired: "0", style: "1" });
+    expect(headerText()).toBe("OOC session toggles 3 forced");
+    choose("ooc", 0);
+    choose("style", 0);
+    section.querySelector<HTMLButtonElement>('button[aria-label="Remove stale OOC toggle: retired"]')!.click();
+    flushSync();
+    expect(editedPreset.oocToggles).toEqual({});
+    expect(headerText()).toBe("OOC session toggles");
+    expect(header.getAttribute("aria-expanded")).toBe("true");
 });
 
 it("reorders within a preset and discards a drag when its source preset is deleted", async () => {

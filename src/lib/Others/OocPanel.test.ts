@@ -382,14 +382,10 @@ it.each([
         expect(fixture.chat.oocToggles).toEqual(expected);
         expect(fixture.chat.oocToggles).not.toBe(presetMap());
         expect(own.checked).toBe(true);
-        const row = element('[data-ooc-toggle="ooc"]', popover);
-        if (source) {
-            element<HTMLInputElement>('input[type="checkbox"]', row).click();
-        } else {
-            const mode = element<HTMLSelectElement>("select", row);
-            mode.value = "forced";
-            mode.dispatchEvent(new Event("change", { bubbles: true }));
-        }
+        const choice = element<HTMLSelectElement>('[data-ooc-toggle="ooc"] select', popover);
+        expect(choice.selectedOptions[0].textContent).toBe(source ? "Off" : "As in the chat");
+        choice.value = choice.options[1].value;
+        choice.dispatchEvent(new Event("change", { bubbles: true }));
         flushSync();
         expect(mocks.setChatMeta).toHaveBeenLastCalledWith(ref, { oocToggles: { ...expected, ooc: "1" } });
         if (source) expect(presetMap()).toEqual(source);

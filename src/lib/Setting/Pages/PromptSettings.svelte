@@ -16,6 +16,7 @@
     import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
     import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
+    import Accordion from "src/lib/UI/Accordion.svelte";
     import OocToggleEditor from "../OocToggleEditor.svelte";
     import { oocToggleMap } from "src/ts/ooc/oocToggleSettings.svelte";
     import { onDestroy, onMount } from "svelte";
@@ -30,6 +31,8 @@
     let draggedPresetId = $state<string>();
     const dragMatchesPreset = $derived(draggedPresetId !== undefined && draggedPresetId === editedPreset.id);
     let openedItemIndices = $state(new Set<number>());
+    /** Shown beside the collapsed OOC toggle section's name; stale keys count, as they are still sent. */
+    const oocForcedCount = $derived(Object.keys(oocToggleMap(editedPreset.oocToggles)).length);
     /** The selected preset's template for reading: `[]` while it has none (writes go to the preset). */
     function templateItems(): PromptItem[] {
         return editedPreset.promptTemplate ?? [];
@@ -346,17 +349,22 @@
         >{language.customPromptTemplateToggle} <Help key="customPromptTemplateToggle" /></span
     >
     <TextAreaInput bind:value={editedPreset.customPromptTemplateToggle} popupEditorContext={editedPreset.id} />
-    <section class="mt-4 min-w-0" aria-labelledby="preset-ooc-toggles-title">
-        <h3 id="preset-ooc-toggles-title" class="text-textcolor">{language.oocToggles.title}</h3>
-        <p class="mb-3 mt-1 text-sm text-textcolor2">{language.oocToggles.help}</p>
-        {#key editedPreset.id}
-            <OocToggleEditor
-                definitionsText={editedPreset.customPromptTemplateToggle}
-                value={oocToggleMap(editedPreset.oocToggles)}
-                onchange={(next) => (editedPreset.oocToggles = { ...next })}
-            />
-        {/key}
-    </section>
+    <div class="mt-2 min-w-0" data-preset-ooc-toggles>
+        <Accordion
+            styled
+            name={language.oocToggles.title}
+            badge={oocForcedCount ? language.oocToggles.forcedCount(oocForcedCount) : ""}
+        >
+            <p class="mb-3 text-sm text-textcolor2">{language.oocToggles.help}</p>
+            {#key editedPreset.id}
+                <OocToggleEditor
+                    definitionsText={editedPreset.customPromptTemplateToggle}
+                    value={oocToggleMap(editedPreset.oocToggles)}
+                    onchange={(next) => (editedPreset.oocToggles = { ...next })}
+                />
+            {/key}
+        </Accordion>
+    </div>
     <span class="text-textcolor mt-4">{language.defaultVariables} <Help key="defaultVariables" /></span>
     <TextAreaInput bind:value={editedPreset.templateDefaultVariables} popupEditorContext={editedPreset.id} />
     <span class="text-textcolor mt-4">{language.predictedOutput}</span>

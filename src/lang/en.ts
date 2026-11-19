@@ -42,6 +42,9 @@ export const languageEnglish = {
         presetApplies: (count: number) =>
             `The preset's OOC toggles apply (${count} forced ${count === 1 ? "key" : "keys"}).`,
         asInChat: "As in the chat",
+        on: "On",
+        off: "Off",
+        forcedCount: (count: number) => `${count} forced`,
         forced: "Forced value",
         stale: "These forced keys are no longer defined:",
         remove: "Remove",
