@@ -103,6 +103,11 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - The occupied count and percentage are `input` plus the report's `toolSchemas` and `interceptions`, each also a row of
   its own (`contextUsage.toolSchemas`, `contextUsage.interceptions`) sorted among the sections. A rule edited since the
   last reply shows in the meter only after the next one (`estimateBasis` does not track the rules).
+- The bar, legend, and row dots color by group: fixed (neutral), memory, history. `SPLIT_GROUPS` names the fixed
+  sections that grow with the bot: the lorebook, and the character group (description, examples, persona). A group at or
+  above `SPLIT_FROM` percent of the prompt budget is drawn apart from the rest of the fixed group in its own color
+  (`--color-meter-lore`, `--color-meter-character` in `src/styles.css`, fixed for every theme); a smaller one stays
+  neutral. A fixed share over its warning colors the tick and the line under the bar, never a segment.
 - The line's memory word is the chat's memory now (`memoryNow`: `chatMemoryAlgorithm` and `chatMemoryEnabled`, as the
   next send resolves them), so a chat with memory set up has a line before its first reply; the last reply's coverage is
   the word only while that memory is still on (`reportedNow`). It warns on a gap, and on memory off with history left

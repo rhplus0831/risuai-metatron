@@ -38,6 +38,7 @@
         parseContextReport,
         turnCount,
         type ContextReport,
+        type ContextSectionKind,
     } from "../../../shared/contextReport.ts";
     import { maxContextOverrideOf } from "../../../shared/sections.ts";
     import { supaMemoryOnCount } from "../../../shared/characters.ts";
@@ -88,6 +89,18 @@
     const PANEL_WIDTH = 352;
     const EDGE = 8;
     const memoryColor = "bg-secondary-500";
+    /**
+     * The fixed sections whose size follows the bot rather than the preset, grouped by where the user would cut
+     * them down. A group at or above `SPLIT_FROM` percent of the prompt budget leaves the fixed group's neutral
+     * color for its own in the bar, the legend, and its rows' dots; a smaller one stays neutral, so a bot with
+     * little lore or description reads as one fixed block. The two colors are told apart from each other, the
+     * neutral, the memory, and the history colors under simulated color blindness too.
+     */
+    const SPLIT_GROUPS = [
+        { kind: "lore", color: "bg-meter-lore", sections: ["lorebook"] },
+        { kind: "character", color: "bg-meter-character", sections: ["description", "examples", "persona"] },
+    ] as const satisfies readonly { kind: string; color: string; sections: readonly ContextSectionKind[] }[];
+    const SPLIT_FROM = 5;
 
     const visible = $derived(settings.ui.contextMeter && !group);
 
@@ -638,12 +651,26 @@
               : null,
     );
 
+    // The split groups large enough to show apart from the rest of the fixed group, in `SPLIT_GROUPS` order.
+    const splits = $derived(
+        SPLIT_GROUPS.map((split) => {
+            const sections: readonly ContextSectionKind[] = split.sections;
+            const tokens = (report?.sections ?? []).reduce(
+                (sum, section) => sum + (sections.includes(section.kind) ? section.tokens : 0),
+                0,
+            );
+            return { kind: split.kind, color: split.color, sections, tokens };
+        }).filter((split) => promptBudget > 0 && split.tokens * 100 >= promptBudget * SPLIT_FROM),
+    );
     // Sections with tokens, largest first; ties keep the report's order. The tool schemas and the
     // inserted Request Interception messages are rows of their own among them. Dots identify their group.
     const rows = $derived.by(() => {
         if (!report) {
             return [];
         }
+        const splitColor = (kind: ContextSectionKind | "toolSchemas" | "interceptions") =>
+            splits.find((split) => kind !== "toolSchemas" && kind !== "interceptions" && split.sections.includes(kind))
+                ?.color;
         return [
             ...report.sections,
             { kind: "toolSchemas" as const, tokens: report.toolSchemas ?? 0 },
@@ -659,7 +686,7 @@
                         ? memoryColor
                         : section.kind === "history"
                           ? "bg-primary-500"
-                          : "bg-neutral-400",
+                          : (splitColor(section.kind) ?? "bg-neutral-400"),
             }));
     });
     // The reserve belongs to the prompt budget; growth thresholds use the summarizer's history count.
@@ -677,16 +704,20 @@
         };
     });
     const historyTokens = $derived(rows.find((row) => row.kind === "history")?.tokens ?? 0);
+    // The fixed group, less the groups split out of it, then those groups, the memory, and the history. A
+    // fixed share over its warning shows on the tick and the line under the bar: the segments keep their colors.
     const barRows = $derived(
         [
             {
-                kind: "fixed" as const,
-                tokens: rows.reduce(
-                    (sum, row) => sum + (row.kind !== "memory" && row.kind !== "history" ? row.tokens : 0),
-                    0,
-                ),
-                color: fixedOver ? "bg-danger-500" : "bg-neutral-400",
+                kind: splits.length > 0 ? ("fixedRest" as const) : ("fixed" as const),
+                tokens:
+                    rows.reduce(
+                        (sum, row) => sum + (row.kind !== "memory" && row.kind !== "history" ? row.tokens : 0),
+                        0,
+                    ) - splits.reduce((sum, split) => sum + split.tokens, 0),
+                color: "bg-neutral-400",
             },
+            ...splits.map((split) => ({ kind: split.kind, tokens: split.tokens, color: split.color })),
             {
                 kind: "memory" as const,
                 tokens: rows.find((row) => row.kind === "memory")?.tokens ?? 0,
@@ -1161,8 +1192,13 @@
                 {#if barScale > 0}
                     <div class="relative shrink-0" data-context-meter-bar>
                         <div class="flex h-3 w-full overflow-hidden rounded-sm bg-darkbutton" aria-hidden="true">
-                            {#each barRows as row (row.kind)}
-                                <div class="shrink-0 {row.color}" style:width="{widthOf(row.tokens, barScale)}%"></div>
+                            {#each barRows as row, index (row.kind)}
+                                <div
+                                    class="shrink-0 {row.color}"
+                                    class:border-l={index > 0}
+                                    class:border-darkbg={index > 0}
+                                    style:width="{widthOf(row.tokens, barScale)}%"
+                                ></div>
                             {/each}
                             {#if hypa}
                                 <div class="min-w-0 grow"></div>
@@ -1174,7 +1210,9 @@
                             {/if}
                         </div>
                         <div
-                            class="absolute -top-0.5 -bottom-0.5 w-0.5 -translate-x-1/2 bg-textcolor"
+                            class="absolute -top-0.5 -bottom-0.5 w-0.5 -translate-x-1/2"
+                            class:bg-textcolor={!fixedOver}
+                            class:bg-danger-500={fixedOver}
                             data-context-meter-fixed-warn
                             style:left="{widthOf((promptBudget * warn) / 100, barScale)}%"
                             aria-hidden="true"

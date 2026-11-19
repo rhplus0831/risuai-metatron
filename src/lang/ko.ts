@@ -1552,6 +1552,9 @@ export const languageKorean = {
         approximate: "≈ 근사치 내역입니다: 프롬프트가 후처리로 재작성되었거나 일부 항목을 추적할 수 없었습니다.",
         groups: {
             fixed: "고정 영역",
+            fixedRest: "그 외 고정 영역",
+            lore: "로어북",
+            character: "캐릭터·페르소나",
             memory: "메모리",
             history: "대화 기록",
         },

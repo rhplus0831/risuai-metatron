@@ -703,9 +703,9 @@ describe("the popover", () => {
         const s = language.contextUsage;
         const sections: ContextReport["sections"] = [
             { kind: "history", tokens: 400 },
-            { kind: "main", tokens: 240 },
+            { kind: "main", tokens: 270 },
             { kind: "memory", tokens: 100 },
-            { kind: "description", tokens: 60 },
+            { kind: "description", tokens: 30 },
         ];
         install([reply("m1", { context: report({ sections, input: 820 }) })]);
         render();
@@ -720,7 +720,9 @@ describe("the popover", () => {
             expect(bar.nextElementSibling!.children[index].firstElementChild!.classList.contains(color)).toBe(true);
         }
         expect(legend()).toEqual([`${s.groups.fixed} 300`, `${s.groups.memory} 100`, `${s.groups.history} 400`]);
-        expect(bar.querySelector<HTMLElement>("[data-context-meter-fixed-warn]")!.style.left).toBe("60%");
+        const tick = bar.querySelector<HTMLElement>("[data-context-meter-fixed-warn]")!;
+        expect(tick.style.left).toBe("60%");
+        expect(tick.classList.contains("bg-danger-500")).toBe(false);
         expect(opened.querySelector("[data-context-meter-reserve]")).toBeNull();
         const fixed = opened.querySelector("[data-context-meter-fixed]")!;
         expect(fixed.textContent?.trim()).toBe(s.fixedShare(38));
@@ -738,13 +740,16 @@ describe("the popover", () => {
 
         settings.ui.contextMeterFixedWarn = 37;
         flushSync();
-        expect(segments()[0].classList.contains("bg-danger-500")).toBe(true);
-        expect(bar.nextElementSibling!.firstElementChild!.firstElementChild!.classList.contains("bg-danger-500")).toBe(
+        // The warning is on the tick and the line: the segment and its legend entry keep the group's color.
+        expect(segments()[0].classList.contains("bg-neutral-400")).toBe(true);
+        expect(bar.nextElementSibling!.firstElementChild!.firstElementChild!.classList.contains("bg-neutral-400")).toBe(
             true,
         );
+        expect(tick.classList.contains("bg-danger-500")).toBe(true);
+        expect(tick.classList.contains("bg-textcolor")).toBe(false);
         expect(fixed.classList.contains("text-danger-500")).toBe(true);
         expect(fixed.textContent?.replace(/\s+/g, " ").trim()).toBe(`${s.fixedShare(38)} ${s.fixedShareOver(37)}`);
-        expect(bar.querySelector<HTMLElement>("[data-context-meter-fixed-warn]")!.style.left).toBe("37%");
+        expect(tick.style.left).toBe("37%");
         for (const kind of ["main", "description"]) {
             const dot = opened.querySelector(
                 `[data-context-meter-sections] [data-section="${kind}"]`,
@@ -767,6 +772,116 @@ describe("the popover", () => {
         flushSync();
         expect(segments().map((segment) => segment.style.width)).toEqual(["37.5%"]);
         expect(legend()).toEqual([`${s.groups.fixed} 300`]);
+    });
+
+    it("shows the lorebook and the character group in their own colors from 5% of the prompt budget", async () => {
+        const s = language.contextUsage;
+        // The prompt budget is 800, so a group is split out of the fixed one from 40 tokens.
+        const sections = (lorebook: number, persona: number): ContextReport["sections"] => [
+            { kind: "history", tokens: 400 },
+            { kind: "main", tokens: 200 },
+            { kind: "memory", tokens: 100 },
+            { kind: "lorebook", tokens: lorebook },
+            { kind: "description", tokens: 20 },
+            { kind: "examples", tokens: 10 },
+            { kind: "persona", tokens: persona },
+        ];
+        const show = (lorebook: number, persona: number, overrides: Partial<ContextReport> = {}) => {
+            patchMessage(ref, "m1", {
+                generationInfo: {
+                    context: report({ sections: sections(lorebook, persona), input: 800, adjustment: 0, ...overrides }),
+                },
+            });
+            flushSync();
+        };
+        install([reply("m1", { context: report({ sections: sections(40, 9), input: 800, adjustment: 0 }) })]);
+        render();
+        const opened = await openPanel();
+        const bar = opened.querySelector("[data-context-meter-bar]")!;
+        const segments = () => [...bar.querySelector<HTMLElement>(".h-3")!.children] as HTMLElement[];
+        const colorOf = (element: Element) => [...element.classList].find((name) => /^bg-/.test(name));
+        const legend = () =>
+            [...bar.nextElementSibling!.children].map(
+                (entry) => `${colorOf(entry.firstElementChild!)} ${entry.textContent?.replace(/\s+/g, " ").trim()}`,
+            );
+        const dots = () =>
+            Object.fromEntries(
+                [...opened.querySelectorAll<HTMLElement>("[data-context-meter-sections] li")].map((row) => [
+                    row.dataset.section,
+                    colorOf(row.firstElementChild!),
+                ]),
+            );
+
+        // The lorebook is at 5% exactly; description, examples, and persona together are one token short of it.
+        expect(segments().map((segment) => [colorOf(segment), parseFloat(segment.style.width)])).toEqual([
+            ["bg-neutral-400", (239 / 800) * 100],
+            ["bg-meter-lore", 5],
+            ["bg-secondary-500", 12.5],
+            ["bg-primary-500", 50],
+        ]);
+        expect(legend()).toEqual([
+            `bg-neutral-400 ${s.groups.fixedRest} 239`,
+            `bg-meter-lore ${s.groups.lore} 40`,
+            `bg-secondary-500 ${s.groups.memory} 100`,
+            `bg-primary-500 ${s.groups.history} 400`,
+        ]);
+        expect(dots()).toEqual({
+            history: "bg-primary-500",
+            main: "bg-neutral-400",
+            memory: "bg-secondary-500",
+            lorebook: "bg-meter-lore",
+            description: "bg-neutral-400",
+            examples: "bg-neutral-400",
+            persona: "bg-neutral-400",
+        });
+        // The fixed share still counts the split groups: (200 + 40 + 39) / 800.
+        expect(opened.querySelector("[data-context-meter-fixed]")!.textContent?.trim()).toBe(s.fixedShare(35));
+
+        // One more persona token brings the character group to 5%; one lorebook token fewer drops that group.
+        show(39, 10);
+        expect(legend()).toEqual([
+            `bg-neutral-400 ${s.groups.fixedRest} 239`,
+            `bg-meter-character ${s.groups.character} 40`,
+            `bg-secondary-500 ${s.groups.memory} 100`,
+            `bg-primary-500 ${s.groups.history} 400`,
+        ]);
+        expect(dots()).toMatchObject({
+            lorebook: "bg-neutral-400",
+            description: "bg-meter-character",
+            examples: "bg-meter-character",
+            persona: "bg-meter-character",
+        });
+
+        // Both groups, in a fixed order whichever is larger, and over the warning without turning red.
+        settings.ui.contextMeterFixedWarn = 10;
+        show(40, 60);
+        expect(legend()).toEqual([
+            `bg-neutral-400 ${s.groups.fixedRest} 200`,
+            `bg-meter-lore ${s.groups.lore} 40`,
+            `bg-meter-character ${s.groups.character} 90`,
+            `bg-secondary-500 ${s.groups.memory} 100`,
+            `bg-primary-500 ${s.groups.history} 400`,
+        ]);
+        expect(segments().map(colorOf)).toEqual([
+            "bg-neutral-400",
+            "bg-meter-lore",
+            "bg-meter-character",
+            "bg-secondary-500",
+            "bg-primary-500",
+        ]);
+
+        // Neither group reaches 5%: one fixed block under its own name.
+        show(39, 9);
+        expect(legend()).toEqual([
+            `bg-neutral-400 ${s.groups.fixed} 278`,
+            `bg-secondary-500 ${s.groups.memory} 100`,
+            `bg-primary-500 ${s.groups.history} 400`,
+        ]);
+        expect(Object.values(dots()).filter((color) => color?.startsWith("bg-meter-"))).toEqual([]);
+
+        // With no prompt budget there is nothing to take a share of.
+        show(400, 60, { maxResponse: 1000 });
+        expect(legend()[0]).toBe(`bg-neutral-400 ${s.groups.fixed} 690`);
     });
 
     it("ends the composition with unused HypaV3 reserve and scales its warning tick to fit it", async () => {

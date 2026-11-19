@@ -2191,6 +2191,9 @@ export const languageEnglish = {
         approximate: "≈ The breakdown is approximate: the prompt was rewritten or an entry could not be traced.",
         groups: {
             fixed: "Fixed",
+            fixedRest: "Other fixed",
+            lore: "Lorebook",
+            character: "Character and persona",
             memory: "Memory",
             history: "Chat history",
         },
