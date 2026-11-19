@@ -356,6 +356,11 @@ delivery and [app shell](app-shell.md#home-screen) for the home entry point.
 
 - Conditions read `ctx.preset` for prompt fields, `ctx.modelPreset` for slot configuration, and `ctx.modelProfile` for
   connection and capacity fields; model capability gates read `ctx.modelInfo`.
+- The wrappers' default margins do not compose, so a page that mixes them sets `classes` per item. Checks and colors
+  default to `mt-2`, a select's label to `mt-4`, all with no bottom margin; the number, slider, text, and segmented
+  wrappers give the label no top margin and end with a 1rem bottom margin. Between checks such a control takes
+  `classes: "mt-4"` and the check after it `"mt-0"` (the Interaction and Advanced data files state their page's
+  spacing). A moved item takes its new page's spacing.
 - The preset list (`botpreset.svelte`) reads every row through its record wrapper, which keeps a 50-preset reorder just
   outside its target; keyed rows made it slower, and a plain-row projection is untried
   ([preset reorder audit](../reports/measurements/preset-reorder-2026-10-05.md)).

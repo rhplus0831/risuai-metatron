@@ -2,6 +2,9 @@ import type { SettingItem, SettingSection } from "./types";
 import { itemsById } from "./sections";
 import { recoveryDrafts } from "../storage/recoveryDrafts.svelte";
 
+// Spacing on this page: every check and every labelled control's label takes `mt-4`, items moved
+// here from other pages included. A check right after a number field or a segmented control takes
+// `mt-0` instead, since that control ends with its own 1rem bottom margin.
 export const advancedSettingsItems: SettingItem[] = [
     { type: "header", id: "adv.header", labelKey: "advancedSettings", options: { level: "h2" }, classes: "!mb-0" },
     { type: "header", id: "adv.warn", labelKey: "advancedSettingsWarn", options: { level: "warning" } },
@@ -56,7 +59,8 @@ export const advancedSettingsItems: SettingItem[] = [
         labelKey: "imageCompression",
         bindKey: "imageCompression",
         helpKey: "imageCompression",
-        classes: "mt-4",
+        // Follows `adv.assetAlloc`'s number field.
+        classes: "mt-0",
     },
     {
         id: "adv.useExp",
@@ -66,13 +70,14 @@ export const advancedSettingsItems: SettingItem[] = [
         helpKey: "useExperimental",
         classes: "mt-4",
     },
-    // From Display
+    // From Display, with Advanced's spacing.
     {
         id: "display.hideApiKey",
         type: "check",
         labelKey: "hideApiKeys",
         bindKey: "hideApiKey",
         keywords: ["api", "key", "hide"],
+        classes: "mt-4",
     },
     {
         id: "adv.legacyMedia",
@@ -139,7 +144,8 @@ export const advancedSettingsItems: SettingItem[] = [
         bindKey: "googleClaudeTokenizing",
         condition: (ctx) => ctx.settings.ui.useExperimental,
         showExperimental: true,
-        classes: "mt-4",
+        // Follows `adv.streamingDisplayOpt`'s segmented control.
+        classes: "mt-0",
     },
     {
         id: "adv.exp.cachePoint",
@@ -255,13 +261,14 @@ export const advancedSettingsItems: SettingItem[] = [
         helpUnrecommended: true,
         classes: "mt-4",
     },
-    // From Display
+    // From Display, with Advanced's spacing.
     {
         id: "display.useLegacyGUI",
         type: "check",
         labelKey: "useLegacyGUI",
         bindKey: "useLegacyGUI",
         keywords: ["legacy", "gui"],
+        classes: "mt-4",
     },
 
     { type: "custom", id: "adv.export", componentId: "SettingsExportButtons" },

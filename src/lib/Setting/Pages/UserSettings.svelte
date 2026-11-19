@@ -60,9 +60,15 @@
     {language.loadBackupLocal}
 </Button>
 
+<Button onclick={exportAsDataset} className="mt-2">
+    {language.exportAsDataset}
+</Button>
+
+<!-- A link to another page, below the actions and styled as the other cross-page links
+     (`AccessibilitySettings.svelte`), not as one of the buttons. -->
 <button
     type="button"
-    class="mt-2 rounded-sm text-textcolor underline underline-offset-4 hover:text-textcolor2 focus-visible:ring-2 focus-visible:ring-selected"
+    class="mt-6 self-start rounded-sm text-left text-sm text-textcolor2 underline hover:text-textcolor focus-visible:ring-2 focus-visible:ring-selected"
     onclick={() =>
         openSetting({
             kind: "section",
@@ -76,10 +82,6 @@
 >
     {language.storagePage.snapshots.backupsLink}
 </button>
-
-<Button onclick={exportAsDataset} className="mt-2">
-    {language.exportAsDataset}
-</Button>
 <!--
 
     My song for dear, my old friend.
