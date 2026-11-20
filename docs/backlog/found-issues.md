@@ -145,7 +145,7 @@ validators reject unknown event statuses.
 - [Remote commands](#remote-commands): 1
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 2
-- [Settings](#settings): 4
+- [Settings](#settings): 3
 - [Tests](#tests): 2
 - [Translation](#translation): 1
 
@@ -651,16 +651,6 @@ Post-verification of 2026-11-18 (RI-1), reproduced by two readers. A live update
 **Why it matters:** the text typed in the popup since it was opened is lost. Saved text and inline edits are not.
 
 **Suggested handling:** kept as recorded by the owner's rule for the fix round (it needs the user's own second device, and the fix changes the shared popup guard). If it is taken up: key the interception page's popup by rule id and write back while the rule's stored text is still what the popup started from.
-
-### A browser's default device name is its whole user agent string
-
-Seen on 2026-11-19 in a fresh browser profile, not checked on a device. `clientName` in `src/ts/network/handoff.ts:59` defaults to `navigator.userAgent` cut to `MAX_FEED_CLIENT_NAME`, so the Device link page's name field (`DeviceNameInput.svelte`) opens with `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like`, cut off by the field, and the host list and the "taken by" toast show the same text for a device nobody named.
-
-**Why it matters:** two browsers of one kind get the same default name, and the page says hosts are remembered by name; the text itself reads as noise.
-
-**Suggested handling:** a short default from `src/ts/platform.ts` (browser and OS). Decide first what happens to a browser that never changed the name: whether its default is stored, and whether a host remembered under the old text must still match.
-
-**Decision:** owner, 2026-11-20: the default becomes a short "browser · OS" label, and a stored name that starts with `Mozilla/5.0 ` is replaced by it once. The default is already stored (`preference` in `src/ts/network/handoff.ts` writes its value when it is created), so changing the fallback alone would reach new profiles only. A sending device that remembered a host under the old text does not have to match it: its "Not connected" row stays and the host is chosen again once.
 
 ### On Prompt preset's Parameters tab the last check row touches the handwritten label after it
 

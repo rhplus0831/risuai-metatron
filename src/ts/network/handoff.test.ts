@@ -1,6 +1,6 @@
 import { get } from "svelte/store";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { HandoffOffer } from "../../../shared/events.ts";
+import { MAX_FEED_CLIENT_NAME, type HandoffOffer } from "../../../shared/events.ts";
 
 type Jobs = typeof import("./generationJobs");
 const stubs = vi.hoisted(() => ({
@@ -42,6 +42,13 @@ const offer = (jobId: string, extra: Partial<HandoffOffer> = {}): HandoffOffer =
     reason: "preferred",
     ...extra,
 });
+const windowsChromeAgent =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+function reloadHandoff(userAgent: string) {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(userAgent);
+    vi.resetModules();
+    return import("./handoff");
+}
 // Module loading is part of offer evaluation. Drain it before inspecting an intentionally blocked gate.
 async function settleOffers() {
     await vi.dynamicImportSettled();
@@ -68,6 +75,7 @@ beforeEach(async () => {
 afterEach(() => {
     localStorage.clear();
     vi.useRealTimers();
+    vi.restoreAllMocks();
 });
 
 it("targets the newest other host per name and counts only connected hosts", () => {
@@ -119,6 +127,54 @@ it("defaults worker preferences off and retains the toggles and device name acro
     expect(get(reloaded.acceptHandoffs)).toBe(true);
     expect(get(reloaded.preferHandoff)).toBe(true);
     expect(get(reloaded.clientName)).toBe("Kitchen tablet");
+});
+
+it.each([
+    ["Edge · Windows", `${windowsChromeAgent} Edg/131.0.0.0`],
+    [
+        "Samsung Internet · Android",
+        "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/27.0 Chrome/125.0.0.0 Mobile Safari/537.36",
+    ],
+    ["Opera · Windows", `${windowsChromeAgent} OPR/115.0.0.0`],
+    ["Firefox · Linux", "Mozilla/5.0 (X11; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0"],
+    ["Chrome · Windows", windowsChromeAgent],
+    [
+        "Safari · iOS",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1",
+    ],
+    ["Browser · Linux", "Mozilla/5.0 (X11; Linux x86_64) ExampleBrowser/1.0"],
+])("defaults to %s and uses it for registration", async (label, userAgent) => {
+    localStorage.removeItem("risu-handoff-name");
+    const reloaded = await reloadHandoff(userAgent);
+
+    expect(get(reloaded.clientName)).toBe(label);
+    expect(localStorage.getItem("risu-handoff-name")).toBe(JSON.stringify(label));
+    expect(reloaded.registration("self", true)).toMatchObject({ name: label });
+});
+
+it("replaces a saved user-agent device name once and keeps the remembered remote host", async () => {
+    const legacyName = windowsChromeAgent.slice(0, MAX_FEED_CLIENT_NAME);
+    localStorage.setItem("risu-handoff-name", JSON.stringify(legacyName));
+    localStorage.setItem("risu-remote-send-host", JSON.stringify(legacyName));
+    const migrated = await reloadHandoff(windowsChromeAgent);
+    const { remoteSendHost } = await import("./remoteSend");
+
+    expect(get(migrated.clientName)).toBe("Chrome · Windows");
+    expect(localStorage.getItem("risu-handoff-name")).toBe(JSON.stringify("Chrome · Windows"));
+    expect(get(remoteSendHost)).toBe(legacyName);
+    expect(localStorage.getItem("risu-remote-send-host")).toBe(JSON.stringify(legacyName));
+
+    const reloaded = await reloadHandoff(`${windowsChromeAgent} Edg/131.0.0.0`);
+    expect(get(reloaded.clientName)).toBe("Chrome · Windows");
+    expect(localStorage.getItem("risu-handoff-name")).toBe(JSON.stringify("Chrome · Windows"));
+});
+
+it.each(["", "Mozilla/5.0"])("keeps the saved device name %j", async (name) => {
+    localStorage.setItem("risu-handoff-name", JSON.stringify(name));
+    const reloaded = await reloadHandoff(windowsChromeAgent);
+
+    expect(get(reloaded.clientName)).toBe(name);
+    expect(localStorage.getItem("risu-handoff-name")).toBe(JSON.stringify(name));
 });
 
 it("takes only eligible offers after plugins start, including own absent jobs and self-targeted take backs", async () => {

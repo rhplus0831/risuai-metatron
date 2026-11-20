@@ -7,6 +7,7 @@ import {
     type HandoffOffer,
 } from "../../../shared/events.ts";
 import { language } from "src/lang";
+import { getBrowserName, getBrowserOSName } from "../platform";
 import { getResourceEpoch, ResourceRequestError } from "../storage/resourceClient";
 
 /**
@@ -23,7 +24,11 @@ import { getResourceEpoch, ResourceRequestError } from "../storage/resourceClien
  * Manual requests use the same acceptance policy, with one best-effort reminder per job after 10 s
  * if that epoch's requested offer is still open for the same target. This does not track completion.
  */
-export function preference<T extends boolean | string>(key: string, fallback: T): Writable<T> {
+export function preference<T extends boolean | string>(
+    key: string,
+    fallback: T,
+    resetOnLoad?: (stored: T) => boolean,
+): Writable<T> {
     const read = (): T => {
         try {
             const value: unknown = JSON.parse(localStorage.getItem(key) ?? "null");
@@ -32,7 +37,8 @@ export function preference<T extends boolean | string>(key: string, fallback: T)
             return fallback;
         }
     };
-    const store = writable(read());
+    const stored = read();
+    const store = writable(resetOnLoad?.(stored) ? fallback : stored);
     let fromStorage = false;
     store.subscribe((value) => {
         if (fromStorage) return;
@@ -58,7 +64,8 @@ export const acceptHandoffs = preference<boolean>("risu-handoff-accept", false);
 export const preferHandoff = preference<boolean>("risu-handoff-prefer", false);
 export const clientName = preference<string>(
     "risu-handoff-name",
-    (globalThis.navigator?.userAgent ?? "").slice(0, MAX_FEED_CLIENT_NAME),
+    `${getBrowserName()} · ${getBrowserOSName()}`.slice(0, MAX_FEED_CLIENT_NAME),
+    (stored) => stored.startsWith("Mozilla/5.0 "),
 );
 
 const clients = writable<readonly FeedClient[]>([]);

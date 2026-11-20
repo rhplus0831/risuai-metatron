@@ -82,7 +82,7 @@ export function isIOS(): boolean {
     return isAppleMobile || isIpadOS;
 }
 
-function getBrowserOSName(): string {
+export function getBrowserOSName(): string {
     const uaPlatform = browserNavigator.userAgentData?.platform;
     if (uaPlatform) {
         return formatOSName(uaPlatform);
@@ -99,6 +99,17 @@ function getBrowserOSName(): string {
     if (/Linux/i.test(platform) || /Linux/i.test(ua)) return "Linux";
 
     return platform || "Unknown";
+}
+
+export function getBrowserName(): string {
+    const ua = browserNavigator.userAgent;
+    if (/\b(?:Edg|EdgA|EdgiOS|Edge)\//.test(ua)) return "Edge";
+    if (/\bSamsungBrowser\//.test(ua)) return "Samsung Internet";
+    if (/\b(?:OPR|OPRGX|OPiOS|OPT|Opera)\//.test(ua)) return "Opera";
+    if (/\b(?:Firefox|FxiOS)\//.test(ua)) return "Firefox";
+    if (/\b(?:Chrome|CriOS)\//.test(ua)) return "Chrome";
+    if (/\bSafari\//.test(ua)) return "Safari";
+    return "Browser";
 }
 
 function getUserAgentOSVersion(osName: string): string | null {
