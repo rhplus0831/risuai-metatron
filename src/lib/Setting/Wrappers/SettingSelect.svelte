@@ -45,7 +45,7 @@
     });
 </script>
 
-<span class="text-textcolor {item.classes ?? 'mt-4'}">
+<span class="text-textcolor {item.classes ?? ''}">
     {getLabel(item)}
     {#if item.helpKey}<Help key={item.helpKey as any} />{/if}
 </span>

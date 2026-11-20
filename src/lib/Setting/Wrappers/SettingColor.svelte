@@ -11,7 +11,7 @@
     let { item, ctx }: Props = $props();
 </script>
 
-<div class="flex items-center {item.classes ?? 'mt-2'}">
+<div class="flex items-center {item.classes ?? ''}">
     <ColorInput
         bind:value={() => getSettingValue(item, ctx), (v) => updateSettingValue(item, v, ctx)}
         nullable={item.options?.nullable ?? false}

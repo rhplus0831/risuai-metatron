@@ -78,6 +78,11 @@ Each module's rules are in its header or on its exports, and each component's in
 
 - `src/lib/Setting/SettingRenderer.svelte` (items to wrappers, the `data-setting-id` anchor) and
   `src/lib/Setting/SettingsSections.svelte` (`SettingSection[]`, the `data-settings-section` anchor).
+- Item spacing lives in `SettingRenderer.svelte`'s style rule. Each anchor carries `data-spacing-kind` (`row`: check,
+  color; `field`: a labelled control; `block`: header, button, accordion, custom), and the rule sets the margins of a
+  row's or field's own elements: rows 0.5rem apart, a field 1rem on each side without the two adding up, and a run's
+  first row or field 0.5rem below what precedes it. The row and field wrappers set no outer margin; blocks keep their
+  own (`SettingButton`'s and `SettingHeader`'s defaults and `classes`). `e2e/settingsSpacing.spec.ts` measures it.
 - `src/lib/Setting/Wrappers/Setting*.svelte`: each binds with a function binding,
   `bind:value={() => getSettingValue(...), (v) => updateSettingValue(...)}`, with no local copy, so an edit lands in the
   binding's record as selected at that moment. Only `SettingSelect` and `SettingSegmented` also write from an effect,
@@ -296,7 +301,8 @@ delivery and [app shell](app-shell.md#home-screen) for the home entry point.
   item search when applicable. Check the route, page search and `e2e/settingsPages.spec.ts`.
 - Add a declarative setting:
   1. `Database`, its place in `shared/sections.ts`, and its default in the server normalizer.
-  2. A `SettingItem` in the page's data file (`src/ts/setting/*Data.ts` or `*Data.svelte.ts`).
+  2. A `SettingItem` in the page's data file (`src/ts/setting/*Data.ts` or `*Data.svelte.ts`). It takes no margin: the
+     renderer spaces it by its kind ([Renderers](#renderers-and-credential-links)).
   3. The English key in `src/lang/en.ts`, plus optional locale keys.
   4. Verify `pnpm check`, loading an old DB, language switching, and settings search.
 - Add a setting to a sectioned page: add the `SettingItem` to the page's leaf array as above, then its id to the
@@ -329,6 +335,7 @@ delivery and [app shell](app-shell.md#home-screen) for the home entry point.
   comparison, alert, and global-hotkey isolation contract.
 - `slow`: none in this area.
 - `e2e`: `e2e/settingsPages.spec.ts` (page mounting, subsequent no-write traversal, and control writes),
+  `e2e/settingsSpacing.spec.ts` (the item spacing measured on every page that mounts the renderer),
   `e2e/presetSelection.spec.ts` (an edit in the real settings UI followed by a hotkey switch; the selection per client
   and per tab), `e2e/chatBinding.spec.ts` (the binding panel's Model Presets and Prompt Presets pickers bind the chat,
   show its name, close, and leave the tab's selection alone; a settings pick with a bound chat open selects for the tab,
@@ -363,11 +370,12 @@ delivery and [app shell](app-shell.md#home-screen) for the home entry point.
 
 - Conditions read `ctx.preset` for prompt fields, `ctx.modelPreset` for slot configuration, and `ctx.modelProfile` for
   connection and capacity fields; model capability gates read `ctx.modelInfo`.
-- The wrappers' default margins do not compose, so a page that mixes them sets `classes` per item. Checks and colors
-  default to `mt-2`, a select's label to `mt-4`, all with no bottom margin; the number, slider, text, and segmented
-  wrappers give the label no top margin and end with a 1rem bottom margin. Between checks such a control takes
-  `classes: "mt-4"` and the check after it `"mt-0"` (the Interaction and Advanced data files state their page's
-  spacing). A moved item takes its new page's spacing.
+- A margin utility in a row's or field's `classes` has no effect: the spacing rule
+  ([Renderers](#renderers-and-credential-links)) is unlayered and wins over it; only a `!` utility overrides the rule. A
+  handwritten neighbour keeps its own margin, which adds to the item's 0.5rem.
+- The rule does not reach inside a custom component: one that sits beside a row or a field sets its own margins so its
+  edges read as that neighbour's kind would (Display's `ColorSchemeSelect`, `CustomColorSchemeEditor`,
+  `CustomTextThemeEditor`, and `CustomBackgroundToggle` say which side they supply).
 - The preset list (`botpreset.svelte`) reads every row through its record wrapper, which keeps a 50-preset reorder just
   outside its target; keyed rows made it slower, and a plain-row projection is untried
   ([preset reorder audit](../reports/measurements/client/preset-reorder-2026-10-05.md)).

@@ -68,6 +68,7 @@
     {#if item.helpKey}<Help key={item.helpKey as any} unrecommended={item.helpUnrecommended ?? false} />{/if}
 </span>
 <SegmentedControl
+    margin={false}
     bind:value={() => getSettingValue(item, ctx), (value) => updateSettingValue(item, value, ctx)}
     options={processedOptions}
 />

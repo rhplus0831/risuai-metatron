@@ -17,7 +17,7 @@
     {#if item.helpKey}<Help key={item.helpKey as any} />{/if}
 </span>
 <TextInput
-    marginBottom={true}
+    marginBottom={false}
     size="sm"
     bind:value={() => getSettingValue(item, ctx), (v) => updateSettingValue(item, v, ctx)}
     placeholder={item.options?.placeholder}

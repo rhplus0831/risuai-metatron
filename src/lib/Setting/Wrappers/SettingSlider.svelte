@@ -23,7 +23,7 @@
     {#if item.helpKey}<Help key={item.helpKey as any} />{/if}
 </span>
 <SliderInput
-    marginBottom={true}
+    marginBottom={false}
     min={item.options?.min}
     max={item.options?.max}
     step={item.options?.step}

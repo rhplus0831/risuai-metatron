@@ -2,9 +2,6 @@ import type { SettingItem, SettingSection } from "./types";
 import { itemsById } from "./sections";
 import { recoveryDrafts } from "../storage/recoveryDrafts.svelte";
 
-// Spacing on this page: every check and every labelled control's label takes `mt-4`, items moved
-// here from other pages included. A check right after a number field or a segmented control takes
-// `mt-0` instead, since that control ends with its own 1rem bottom margin.
 export const advancedSettingsItems: SettingItem[] = [
     { type: "header", id: "adv.header", labelKey: "advancedSettings", options: { level: "h2" }, classes: "!mb-0" },
     { type: "header", id: "adv.warn", labelKey: "advancedSettingsWarn", options: { level: "warning" } },
@@ -32,7 +29,6 @@ export const advancedSettingsItems: SettingItem[] = [
         labelKey: "chatLoadInitialPages",
         bindKey: "chatLoadInitialPages",
         helpKey: "chatLoadInitialPages",
-        classes: "mt-4",
         options: { min: 1 },
     },
     {
@@ -51,7 +47,6 @@ export const advancedSettingsItems: SettingItem[] = [
         labelKey: "showUnrecommended",
         bindKey: "showUnrecommended",
         helpKey: "showUnrecommended",
-        classes: "mt-4",
     },
     {
         id: "adv.imgComp",
@@ -59,8 +54,6 @@ export const advancedSettingsItems: SettingItem[] = [
         labelKey: "imageCompression",
         bindKey: "imageCompression",
         helpKey: "imageCompression",
-        // Follows `adv.assetAlloc`'s number field.
-        classes: "mt-0",
     },
     {
         id: "adv.useExp",
@@ -68,16 +61,14 @@ export const advancedSettingsItems: SettingItem[] = [
         labelKey: "useExperimental",
         bindKey: "useExperimental",
         helpKey: "useExperimental",
-        classes: "mt-4",
     },
-    // From Display, with Advanced's spacing.
+    // From Display.
     {
         id: "display.hideApiKey",
         type: "check",
         labelKey: "hideApiKeys",
         bindKey: "hideApiKey",
         keywords: ["api", "key", "hide"],
-        classes: "mt-4",
     },
     {
         id: "adv.legacyMedia",
@@ -85,7 +76,6 @@ export const advancedSettingsItems: SettingItem[] = [
         labelKey: "legacyMediaFindings",
         bindKey: "legacyMediaFindings",
         helpKey: "legacyMediaFindings",
-        classes: "mt-4",
     },
     {
         id: "adv.streamingDisplayOpt",
@@ -95,7 +85,6 @@ export const advancedSettingsItems: SettingItem[] = [
         helpKey: "streamingDisplayOptimizationMode",
         condition: (ctx) => ctx.settings.ui.useExperimental,
         showExperimental: true,
-        classes: "mt-4",
         options: {
             segmentOptions: [
                 { value: "off", labelKey: "streamingDisplayOptimizationOff" },
@@ -109,14 +98,12 @@ export const advancedSettingsItems: SettingItem[] = [
         type: "check",
         labelKey: "newImageHandlingBeta",
         bindKey: "newImageHandlingBeta",
-        classes: "mt-4",
     },
     {
         id: "adv.allowExt",
         type: "check",
         labelKey: "allowAllExtentionFiles",
         bindKey: "allowAllExtentionFiles",
-        classes: "mt-4",
     },
     {
         id: "adv.requestHistoryContent",
@@ -124,7 +111,6 @@ export const advancedSettingsItems: SettingItem[] = [
         labelKey: "requestHistoryContent",
         bindKey: "requestHistoryContent",
         helpKey: "requestHistoryContent",
-        classes: "mt-4",
     },
     {
         id: "adv.requestHistoryLimit",
@@ -133,7 +119,6 @@ export const advancedSettingsItems: SettingItem[] = [
         bindKey: "requestHistoryLimit",
         helpKey: "requestHistoryLimit",
         options: { min: 10, max: 10000 },
-        classes: "mt-4",
     },
 
     // Experimental Section (visible when useExperimental is true)
@@ -144,8 +129,6 @@ export const advancedSettingsItems: SettingItem[] = [
         bindKey: "googleClaudeTokenizing",
         condition: (ctx) => ctx.settings.ui.useExperimental,
         showExperimental: true,
-        // Follows `adv.streamingDisplayOpt`'s segmented control.
-        classes: "mt-0",
     },
     {
         id: "adv.exp.cachePoint",
@@ -155,10 +138,9 @@ export const advancedSettingsItems: SettingItem[] = [
         condition: (ctx) => ctx.settings.ui.useExperimental,
         helpKey: "automaticCachePoint",
         showExperimental: true,
-        classes: "mt-4",
     },
     // More Toggles
-    { id: "adv.devTools", type: "check", labelKey: "enableDevTools", bindKey: "enableDevTools", classes: "mt-4" },
+    { id: "adv.devTools", type: "check", labelKey: "enableDevTools", bindKey: "enableDevTools" },
 
     // Node Specific
     {
@@ -167,7 +149,6 @@ export const advancedSettingsItems: SettingItem[] = [
         labelKey: "promptInfoInsideChat",
         bindKey: "promptInfoInsideChat",
         helpKey: "promptInfoInsideChatDesc",
-        classes: "mt-4",
     },
     {
         id: "adv.promptTextInfo",
@@ -175,7 +156,6 @@ export const advancedSettingsItems: SettingItem[] = [
         labelKey: "promptTextInfoInsideChat",
         bindKey: "promptTextInfoInsideChat",
         condition: (ctx) => ctx.settings.ui.promptInfoInsideChat,
-        classes: "mt-4",
     },
 
     // Dynamic Assets & Others
@@ -185,17 +165,15 @@ export const advancedSettingsItems: SettingItem[] = [
         labelKey: "dynamicAssets",
         bindKey: "dynamicAssets",
         helpKey: "dynamicAssets",
-        classes: "mt-4",
     },
-    { id: "adv.cssErr", type: "check", labelKey: "returnCSSError", bindKey: "returnCSSError", classes: "mt-4" },
-    // From Accessibility, with Advanced's spacing.
+    { id: "adv.cssErr", type: "check", labelKey: "returnCSSError", bindKey: "returnCSSError" },
+    // From Accessibility.
     {
         id: "acc.requestInfoInsideChat",
         type: "check",
         labelKey: "requestInfoInsideChat",
         bindKey: "requestInfoInsideChat",
         keywords: ["request", "info", "chat"],
-        classes: "mt-4",
     },
     {
         id: "acc.inlayErrorResponse",
@@ -203,28 +181,24 @@ export const advancedSettingsItems: SettingItem[] = [
         labelKey: "inlayErrorResponse",
         bindKey: "inlayErrorResponse",
         keywords: ["inlay", "error", "response"],
-        classes: "mt-4",
     },
     {
         id: "adv.toolUsage",
         type: "check",
         labelKey: "rememberToolUsage",
         bindKey: "rememberToolUsage",
-        classes: "mt-4",
     },
     {
         id: "adv.simpleTool",
         type: "check",
         labelKey: "simplifiedToolUse",
         bindKey: "simplifiedToolUse",
-        classes: "mt-4",
     },
     {
         id: "adv.tokCache",
         type: "check",
         labelKey: "useTokenizerCaching",
         bindKey: "useTokenizerCaching",
-        classes: "mt-4",
     },
 
     // More Experimental (Condition: useExperimental)
@@ -236,7 +210,6 @@ export const advancedSettingsItems: SettingItem[] = [
         condition: (ctx) => ctx.settings.ui.useExperimental,
         helpKey: "unrecommended",
         helpUnrecommended: true,
-        classes: "mt-4",
     },
 
     // Dynamic Assets Edit (Condition: dynamicAssets)
@@ -247,7 +220,6 @@ export const advancedSettingsItems: SettingItem[] = [
         bindKey: "dynamicAssetsEditDisplay",
         condition: (ctx) => ctx.settings.memoryTranslateMedia.dynamicAssets,
         helpKey: "dynamicAssetsEditDisplay",
-        classes: "mt-4",
     },
 
     // Unrecommended Extra (Condition: showUnrecommended)
@@ -259,16 +231,14 @@ export const advancedSettingsItems: SettingItem[] = [
         condition: (ctx) => ctx.settings.ui.showUnrecommended,
         helpKey: "forcePlainFetch",
         helpUnrecommended: true,
-        classes: "mt-4",
     },
-    // From Display, with Advanced's spacing.
+    // From Display.
     {
         id: "display.useLegacyGUI",
         type: "check",
         labelKey: "useLegacyGUI",
         bindKey: "useLegacyGUI",
         keywords: ["legacy", "gui"],
-        classes: "mt-4",
     },
 
     { type: "custom", id: "adv.export", componentId: "SettingsExportButtons" },

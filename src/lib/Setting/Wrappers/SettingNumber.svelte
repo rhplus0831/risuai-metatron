@@ -25,7 +25,7 @@
     {#if item.helpKey}<Help key={item.helpKey as any} />{/if}
 </span>
 <NumberInput
-    marginBottom={true}
+    marginBottom={false}
     size="sm"
     min={item.options?.min}
     max={item.options?.max}
