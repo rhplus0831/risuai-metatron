@@ -6,7 +6,7 @@ Audited the same day by GPT-6.2-Astra against `7a0591924`:
 [report](../reports/audits/plan-runner/response-checks-2026-11-20.md), 21 findings (3 P1, 11 P2, 7 P3), all fixed in
 this text. Three corrections changed what the owner accepted, and the owner approved them on 2026-11-20 before the run:
 D1 stores six number fields in place of one object (two devices' edits then merge), D9 says the Structured Memory
-writer is checked as a Memory request, and D7's retry is specified step by step. Landed: 1 (`864296d0f`), 2 (`f891ed608`).
+writer is checked as a Memory request, and D7's retry is specified step by step. Landed: 1 (`864296d0f`), 2 (`f891ed608`), 3 (`2db458ed3`).
 
 Sources: the owner's request and answers of 2026-11-20; `shared/llm/interception.ts`, `server/src/llm/outer.ts`,
 `src/ts/process/request/request.ts`, `server/src/prompt/runner.ts` (`runSpeaker`, `readReply`),
