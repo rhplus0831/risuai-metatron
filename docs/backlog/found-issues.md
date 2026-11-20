@@ -130,7 +130,8 @@ The HypaV2 entry below points to that record. The audit also retired the plugin 
 JSON, Markdown, snapshot and checkpoint validators reject unknown event statuses.
 
 - [Backup and sync](#backup-and-sync): 5
-- [Chat screen](#chat-screen): 4
+- [Build and CI](#build-and-ci): 1
+- [Chat screen](#chat-screen): 6
 - [Docs](#docs): 2
 - [Headless host](#headless-host): 2
 - [LLM requests](#llm-requests): 2
@@ -210,6 +211,23 @@ with the comment "Match isValidResourceId in server/src/data/resourceStore.ts".
 
 **Suggested handling:** import `isValidResourceId` from `shared/resources.ts` in `bootCache.ts` and drop the copy.
 
+## Build and CI
+
+### The CI workflow does not run for `dev`
+
+Read on 2026-11-20 at `bcc698905`, in the file only. `.github/workflows/ci.yml` runs for pushes to `metatron` and
+`main` and for pull requests that target them, and
+[the build guide](../structure/build-test-platforms.md#ci) says the same. The branch work lands on is `dev`, and
+`metatron` was renamed `main`, so a push to `dev` starts no run and the `metatron` trigger names a branch that no
+longer exists. The workflow's three actions are pinned by tag (`actions/checkout@v5`, `actions/setup-node@v5`,
+`actions/cache@v4`), not by commit hash. Not checked: whether the forge that hosts `dev` runs this workflow at all,
+and whether leaving `dev` out is intended.
+
+**Why it matters:** the branch every merge lands on has no automatic check.
+
+**Suggested handling:** ask the owner whether `dev` joins the triggers and `metatron` leaves them; change the guide's
+sentence in the same commit.
+
 ## Chat screen
 
 ### Back and forward between multi-reply bundles swaps the messages only
@@ -250,6 +268,37 @@ Post-verification of 2026-11-18 (IH-3), reproduced by two readers; older than th
 **Why it matters:** the composer stays empty after the refusal. The text is in the hand-off row and returns on a chat switch, another remount, or a reload.
 
 **Suggested handling:** kept as recorded by the owner's rule for the fix round. If it is taken up: have `settleSend` notify the mounted composer of that chat to run its guarded restore.
+
+### Opening a message's inline editor moves the transcript before any save
+
+Seen on 2026-11-18 in headless Chrome by both reviewers of the chat scroll fixes (`ec7b2a8eb`), and listed under
+[Left open](../reports/surveys/fork-chat-scroll.md#left-open) in that report; their runs are kept with the review
+material outside the repository. With the reader scrolled 300 px up inside the newest message, the click that opens
+that message's editor moved `scrollTop` to about 0, before any save. The cause was not looked for. It may be the row's
+body being replaced by the editor: a collapse the browser's scroll anchoring answers, like cause M1 of the report. The
+fix for M1 keeps a row's height only when its `Chat` is mounted again (`keepRowHeight` in
+`src/lib/ChatScreens/Chats.svelte`), and opening the editor does not remount it. `Chats.svelte` has not changed since
+that commit; the case was not run again when this entry was filed on 2026-11-20.
+
+**Why it matters:** a reader who starts to edit the passage they were reading loses their place.
+
+**Suggested handling:** reproduce it first, with `docs/reports/surveys/fork-chat-scroll/probeChatScroll.mjs` as a
+base, and find which element changes height when the editor opens.
+
+### The context meter's memory and history segments are nearly the same color under deuteranopia
+
+Computed on 2026-11-20 while the lorebook and character group colors were picked, not looked at on a device. In
+`src/lib/ChatScreens/ContextMeter.svelte` the memory segment is `bg-secondary-500` (`memoryColor`, `#8b5cf6`) and the
+history segment `bg-primary-500` (`#3b82f6`), and the two sit next to each other in the bar. A palette validator gave
+the pair an OKLab ΔE of 1.3 under simulated deuteranopia, against a target of 8, and 12.0 under normal vision, against
+a floor of 15. The two group colors (`--color-meter-lore`, `--color-meter-character` in `src/styles.css`) were checked
+against both and pass; these two were left because only the group colors had been asked for.
+
+**Why it matters:** the legend's labels and numbers still tell memory from history, but the bar's segments alone do
+not for a reader with red-green color blindness.
+
+**Suggested handling:** the owner decides whether to change one of them. Both are theme colors used across the app,
+so the meter would take a color of its own, as the two groups did, and not change the theme's.
 
 ## Docs
 
