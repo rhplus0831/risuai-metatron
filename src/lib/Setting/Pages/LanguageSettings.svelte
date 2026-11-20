@@ -5,4 +5,4 @@
     /** UI language only; translator controls live in `src/lib/Setting/Pages/TranslationSettings.svelte`. */
 </script>
 
-<SettingRenderer items={languageSettingsItems} itemSpacing />
+<SettingRenderer items={languageSettingsItems} />

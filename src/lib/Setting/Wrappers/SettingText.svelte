@@ -7,11 +7,9 @@
     interface Props {
         item: SettingItem;
         ctx: SettingContext;
-        /** True when `SettingRenderer`'s spacing rule sets the control's bottom margin; its own is then left out. */
-        itemSpacing?: boolean;
     }
 
-    let { item, ctx, itemSpacing = false }: Props = $props();
+    let { item, ctx }: Props = $props();
 </script>
 
 <span class="text-textcolor {item.classes ?? ''}">
@@ -19,7 +17,7 @@
     {#if item.helpKey}<Help key={item.helpKey as any} />{/if}
 </span>
 <TextInput
-    marginBottom={!itemSpacing}
+    marginBottom={false}
     size="sm"
     bind:value={() => getSettingValue(item, ctx), (v) => updateSettingValue(item, v, ctx)}
     placeholder={item.options?.placeholder}

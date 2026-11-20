@@ -4,5 +4,5 @@
     import SettingsSections from "../SettingsSections.svelte";
 </script>
 
-<SettingRenderer items={advancedSettingsHeader} itemSpacing />
-<SettingsSections sections={advancedSettingsSections} itemSpacing />
+<SettingRenderer items={advancedSettingsHeader} />
+<SettingsSections sections={advancedSettingsSections} />

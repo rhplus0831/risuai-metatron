@@ -7,20 +7,13 @@
     interface Props {
         item: SettingItem;
         ctx: SettingContext;
-        /** The renderer's item spacing, carried on to the children's renderer. */
-        itemSpacing?: boolean;
     }
 
-    let { item, ctx, itemSpacing = false }: Props = $props();
+    let { item, ctx }: Props = $props();
 </script>
 
 <Accordion name={getLabel(item)} styled={item.options?.styled ?? false}>
     {#if item.options?.children}
-        <SettingRenderer
-            items={item.options.children}
-            modelInfo={ctx.modelInfo}
-            subModelInfo={ctx.subModelInfo}
-            {itemSpacing}
-        />
+        <SettingRenderer items={item.options.children} modelInfo={ctx.modelInfo} subModelInfo={ctx.subModelInfo} />
     {/if}
 </Accordion>

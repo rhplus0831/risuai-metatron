@@ -15,8 +15,8 @@
      */
 </script>
 
-<SettingRenderer items={accessibilitySettingsHeader} itemSpacing />
-<SettingsSections sections={accessibilitySettingsSections} itemSpacing />
+<SettingRenderer items={accessibilitySettingsHeader} />
+<SettingsSections sections={accessibilitySettingsSections} />
 
 <!-- Text, icon and input sizes live on Display's Layout & sizing tab (menu 3). -->
 <button

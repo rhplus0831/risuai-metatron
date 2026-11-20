@@ -112,7 +112,7 @@
     <span class="text-draculared text-xs mb-2">{language.modelProfiles.unresolvedModelNotice}</span>
 {/if}
 <CredentialSelect {profileId} />
-<SettingRenderer items={modelParameterItems} {modelInfo} subModelInfo={modelInfo} modelProfile={profile} itemSpacing />
+<SettingRenderer items={modelParameterItems} {modelInfo} subModelInfo={modelInfo} modelProfile={profile} />
 <Check bind:check={profile.outputImageModal} name={language.outputImageModal} className="mt-2" />
 
 {#if profile.modelId === "reverse_proxy"}

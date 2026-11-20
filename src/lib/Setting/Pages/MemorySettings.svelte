@@ -785,7 +785,7 @@
             name={language.enable + " " + language.HypaMemory}
         />
     </div>
-    <SettingRenderer items={memorySupaMemoryItems} itemSpacing />
+    <SettingRenderer items={memorySupaMemoryItems} />
 {/if}
 <h3 class="mb-2 mt-6 text-xl font-bold">{language.chatMemory.sharedPreset}</h3>
 <span class="mb-4 text-sm text-textcolor2">{language.chatMemory.sharedPresetHelp}</span>
@@ -1301,4 +1301,4 @@
     />
 {/if}
 
-<SettingsSections sections={memorySettingsSections} itemSpacing />
+<SettingsSections sections={memorySettingsSections} />

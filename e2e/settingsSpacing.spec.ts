@@ -1,7 +1,7 @@
 import { expect, settle, test } from "./fixtures";
 import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 
-// The pages that pass `itemSpacing` are spaced by `SettingRenderer`'s rule over each anchor's
+// Every page that mounts the renderer is spaced by `SettingRenderer`'s rule over each anchor's
 // `data-spacing-kind`: rows 0.5rem apart, a field 1rem from a row or field neighbour, a run's first row
 // or field 0.5rem below its heading, description, or container edge, and 0.5rem of its own margin after
 // a block or a handwritten element; a field before a block, a handwritten element, or the end keeps 1rem

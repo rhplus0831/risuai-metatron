@@ -694,8 +694,55 @@ describe("SettingSegmented", () => {
     });
 });
 
+it("omits wrapper-owned row and field margins while preserving item classes", () => {
+    const wrappers = [
+        [SettingCheck, item({ type: "check", bindKey: "useInstructPrompt" }), "mt-2"],
+        [SettingColor, item({ type: "color", bindKey: "customPromptTemplateToggle" }), "mt-2"],
+        [SettingSelect, item({ type: "select", bindKey: "instructChatTemplate" }), "mt-4"],
+        [SettingNumber, item({ type: "number", bindKey: "maxResponse" }), "mb-4"],
+        [SettingSlider, item({ type: "slider", bindKey: "temperature", options: { min: 0, max: 200 } }), "mb-4"],
+        [SettingText, item({ type: "text", bindKey: "forceReplaceUrl" }), "mb-4"],
+        [SettingSegmented, item({ type: "segmented", bindKey: "instructChatTemplate" }), "segmented-margin"],
+    ] as const;
+    const classes = "!mt-1 pl-3";
+
+    for (const [wrapper, setting, defaultMargin] of wrappers) {
+        const { target } = render(wrapper, { item: setting, ctx: ctx() });
+        const wrapperClasses = [...target.children].flatMap((child) => [...child.classList]);
+        expect.soft(wrapperClasses, setting.type).not.toContain(defaultMargin);
+
+        const customized = render(wrapper, { item: { ...setting, classes }, ctx: ctx() });
+        expect
+            .soft([...customized.target.firstElementChild!.classList], setting.type)
+            .toEqual(expect.arrayContaining(classes.split(" ")));
+    }
+});
+
 describe("SettingRenderer", () => {
     const byId = (items: SettingItem[], id: string) => items.find((entry) => entry.id === id)!;
+
+    it("labels every item anchor with its spacing kind, inside an accordion too", () => {
+        const { query } = render(SettingRenderer, {
+            items: [
+                item({ type: "check", bindKey: "useInstructPrompt", id: "check" }),
+                {
+                    id: "accordion",
+                    type: "accordion",
+                    fallbackLabel: "More settings",
+                    options: { children: [item({ type: "number", bindKey: "maxResponse", id: "number" })] },
+                },
+            ],
+        });
+
+        query<HTMLButtonElement>('[data-setting-id="accordion"] button[aria-expanded="false"]').click();
+        flushSync();
+
+        expect({
+            check: query('[data-setting-id="check"]').getAttribute("data-spacing-kind"),
+            accordion: query('[data-setting-id="accordion"]').getAttribute("data-spacing-kind"),
+            number: query('[data-setting-id="accordion"] [data-setting-id="number"]').getAttribute("data-spacing-kind"),
+        }).toEqual({ check: "row", accordion: "block", number: "field" });
+    });
 
     it("shows a stored budget as Adaptive on adaptive-only models and as Budget on budget-capable models without rewriting the preset", () => {
         preset("a").thinkingType = "budget";

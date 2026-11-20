@@ -17,11 +17,9 @@
 
     interface Props {
         sections: SettingSection[];
-        /** Passed to each section's `SettingRenderer`, which spaces the items by their kinds. */
-        itemSpacing?: boolean;
     }
 
-    let { sections, itemSpacing = false }: Props = $props();
+    let { sections }: Props = $props();
     const uid = $props.id();
 
     // The same context `SettingRenderer` builds, so a section whose items all hide renders nothing.
@@ -50,7 +48,7 @@
                     {#if description}
                         <p class="mt-1 text-sm text-textcolor2">{description}</p>
                     {/if}
-                    <SettingRenderer items={section.items} {modelInfo} {subModelInfo} {itemSpacing} />
+                    <SettingRenderer items={section.items} {modelInfo} {subModelInfo} />
                 </Accordion>
             </div>
         {:else}
@@ -66,7 +64,7 @@
                 {#if description}
                     <p class="mt-1 text-sm text-textcolor2">{description}</p>
                 {/if}
-                <SettingRenderer items={section.items} {modelInfo} {subModelInfo} {itemSpacing} />
+                <SettingRenderer items={section.items} {modelInfo} {subModelInfo} />
             </section>
         {/if}
     {/if}

@@ -21,19 +21,15 @@
         modelInfo?: LLMModel;
         /** Optional subModelInfo, derived automatically if not provided */
         subModelInfo?: LLMModel;
-        /**
-         * Spaces the items by the rule in this file's style block: each anchor names its item's kind, and
-         * the row and field wrappers leave their own outer margins out. Without it the anchors carry no
-         * kind and every wrapper keeps its default margins.
-         */
-        itemSpacing?: boolean;
     }
 
-    let { items, modelInfo, subModelInfo, modelProfile, itemSpacing = false }: Props = $props();
+    let { items, modelInfo, subModelInfo, modelProfile }: Props = $props();
 
     /**
-     * What an item is to the spacing rule: a row is one line with its label beside the control, a field
-     * is a label above its control, and a block keeps the margins of its own wrapper or component.
+     * What an item is to the spacing rule in this file's style block, which every anchor names through
+     * `data-spacing-kind`: a row is one line with its label beside the control, a field is a label above
+     * its control, and a block keeps the margins of its own wrapper or component. The row and field
+     * wrappers set no outer margin of their own; the rule sets it.
      */
     const spacingKinds: Record<SettingType, "row" | "field" | "block"> = {
         check: "row",
@@ -64,13 +60,9 @@
     {#if checkCondition(item, ctx)}
         {@const Component = settingRegistry[item.type]}
         <!-- The search jump's anchor (`settingJump.svelte.ts`): no box of its own, so no layout change. -->
-        <div
-            class="contents"
-            data-setting-id={item.id}
-            data-spacing-kind={itemSpacing ? spacingKinds[item.type] : undefined}
-        >
+        <div class="contents" data-setting-id={item.id} data-spacing-kind={spacingKinds[item.type]}>
             {#if Component}
-                <Component {item} {ctx} {itemSpacing} />
+                <Component {item} {ctx} />
             {:else}
                 <div class="text-draculared text-xs mt-2">Unknown setting type: {item.type}</div>
             {/if}
