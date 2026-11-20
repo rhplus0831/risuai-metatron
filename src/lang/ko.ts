@@ -4137,4 +4137,7 @@ export const languageKorean = {
     convertToModule: "모듈로 변환",
     applyAdditionalParamsToAll: "모든 모델 슬롯에 추가 파라미터 공통 적용",
     noMatchingLorebooks: "검색 조건과 일치하는 로어북 항목이 없습니다.",
+    comfyWorkflow: "워크플로 (API)",
+    comfyWorkflowUpload: "워크플로 파일 가져오기",
+    comfyWorkflowInvalidJson: "올바르지 않은 워크플로 파일입니다. 유효한 JSON이어야 합니다.",
 } satisfies DeepPartial<typeof import("./en").languageEnglish>;

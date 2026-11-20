@@ -9,6 +9,7 @@
     import { saveAsset, globalFetch } from "src/ts/globalApi.svelte";
     import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
     import TextInput from "src/lib/UI/GUI/TextInput.svelte";
+    import TextAreaInput from "src/lib/UI/GUI/TextAreaInput.svelte";
     import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
     import SliderInput from "src/lib/UI/GUI/SliderInput.svelte";
@@ -20,6 +21,7 @@
     import { SINGLETON_RESOURCE_ID } from "../../../../shared/resources.ts";
     import CredentialStatusLink from "../CredentialStatusLink.svelte";
     import { scrollToCredential, takeCredentialRequest } from "src/ts/setting/credentialLinks";
+    import { HardDriveUploadIcon } from "@lucide/svelte";
 
     /**
      * Image-provider controls and the owning `NAIApiKey` input. WaveSpeed LoRA rows are an editing copy,
@@ -34,6 +36,22 @@
     onMount(() => {
         if (revealNovelAIKey) void scrollToCredential("NAIApiKey");
     });
+
+    // Loads a ComfyUI API workflow file into the workflow field as written, after checking that it parses as JSON.
+    async function importComfyWorkflow() {
+        const file = await selectSingleFile(["json"]);
+        if (!file) {
+            return;
+        }
+        const text = new TextDecoder().decode(file.data);
+        try {
+            JSON.parse(text);
+        } catch {
+            alertError(language.comfyWorkflowInvalidJson);
+            return;
+        }
+        settings.memoryTranslateMedia.comfyConfig.workflow = text;
+    }
 
     function setVibeInfoExtracted(value: unknown) {
         const infoExtracted = Number(value);
@@ -341,6 +359,7 @@
     <span class="text-textcolor">Model</span>
     <SelectInput className="mb-4" bind:value={settings.memoryTranslateMedia.NAIImgModel}>
         <OptionInput value="nai-diffusion-5-full">nai-diffusion-5-full</OptionInput>
+        <OptionInput value="nai-diffusion-5-full-medium">nai-diffusion-5-full-medium</OptionInput>
         <OptionInput value="nai-diffusion-5-curated">nai-diffusion-5-curated</OptionInput>
         <OptionInput value="nai-diffusion-4-5-full">nai-diffusion-4-5-full</OptionInput>
         <OptionInput value="nai-diffusion-4-5-curated">nai-diffusion-4-5-curated</OptionInput>
@@ -348,7 +367,6 @@
         <OptionInput value="nai-diffusion-4-curated-preview">nai-diffusion-4-curated-preview</OptionInput>
         <OptionInput value="nai-diffusion-3">nai-diffusion-3</OptionInput>
         <OptionInput value="nai-diffusion-furry-3">nai-diffusion-furry-3</OptionInput>
-        <OptionInput value="nai-diffusion-2">nai-diffusion-2</OptionInput>
     </SelectInput>
 
     <span class="text-textcolor">Width</span>
@@ -804,8 +822,24 @@
         bind:value={settings.memoryTranslateMedia.comfyUiUrl}
     />
 
-    <span class="text-textcolor">Workflow <Help key="comfyWorkflow" /></span>
-    <TextInput size="sm" marginBottom bind:value={settings.memoryTranslateMedia.comfyConfig.workflow} />
+    <span class="text-textcolor">{language.comfyWorkflow} <Help key="comfyWorkflow" /></span>
+    <TextAreaInput
+        size="sm"
+        fullwidth
+        height="32"
+        ariaLabel={language.comfyWorkflow}
+        bind:value={settings.memoryTranslateMedia.comfyConfig.workflow}
+    />
+    <div class="mt-2 mb-4 flex items-center">
+        <button
+            class="text-textcolor2 hover:text-green-500 cursor-pointer"
+            aria-label={language.comfyWorkflowUpload}
+            title={language.comfyWorkflowUpload}
+            onclick={importComfyWorkflow}
+        >
+            <HardDriveUploadIcon size={24} />
+        </button>
+    </div>
 
     <span class="text-textcolor">Timeout (sec)</span>
     <NumberInput

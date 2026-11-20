@@ -4249,6 +4249,9 @@ export const languageEnglish = {
     convertToModule: "Convert to Module",
     applyAdditionalParamsToAll: "Apply Additional Parameters to All Models",
     noMatchingLorebooks: "No lorebook entries match the search.",
+    comfyWorkflow: "Workflow (API)",
+    comfyWorkflowUpload: "Import workflow file",
+    comfyWorkflowInvalidJson: "Invalid workflow file. It must be a valid JSON.",
 } satisfies I18nTranslation;
 
 type I18nTranslationFunction = (...args: any[]) => string;

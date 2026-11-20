@@ -22,10 +22,11 @@ vi.mock("src/ts/storage/resourceSync.svelte", async () => {
 });
 vi.mock("src/ts/alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 
-import { language } from "src/lang";
+import { changeLanguage, language } from "src/lang";
+import { alertError } from "src/ts/alert";
 import * as globalApi from "src/ts/globalApi.svelte";
 import * as util from "src/ts/util";
-import { applyRaw, setRecordWriteListener } from "src/ts/storage/records.svelte";
+import { applyRaw, recordData, setRecordWriteListener } from "src/ts/storage/records.svelte";
 import { saving } from "src/ts/storage/resourceSync.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
@@ -55,11 +56,16 @@ function receive(loras: Lora[], revision: string) {
     flushSync();
 }
 
-async function render() {
+function mountPage() {
     const target = document.createElement("div");
     document.body.append(target);
     mounted.push(mount(ImageGenerationSettings, { target }));
     flushSync();
+    return target;
+}
+
+async function render() {
+    const target = mountPage();
     const button = (name: string) =>
         [...target.querySelectorAll("button")].find((candidate) => candidate.textContent?.trim() === name)!;
     button("Refresh Models").click();
@@ -139,6 +145,111 @@ afterEach(async () => {
     document.body.replaceChildren();
     vi.restoreAllMocks();
     vi.useRealTimers();
+});
+
+describe("NovelAI image models", () => {
+    const legacyModel = "nai-diffusion-2";
+
+    beforeEach(() => {
+        installFlatDatabase({
+            characters: [],
+            sdProvider: "novelai",
+            NAIImgModel: legacyModel,
+            NAIImgConfig: { sampler: "k_euler_ancestral", noise_schedule: "karras", reference_mode: "" },
+        });
+    });
+
+    it("offers the V5 Full Medium model and omits the V2 model", () => {
+        const target = mountPage();
+        const modelSelect = [...target.querySelectorAll("select")].find((select) =>
+            [...select.options].some((option) => option.value.startsWith("nai-diffusion-")),
+        );
+        expect(modelSelect, "NovelAI model select").toBeDefined();
+        const options = [...modelSelect!.options].map((option) => option.value);
+        expect.soft(options).toContain("nai-diffusion-5-full-medium");
+        expect(options).not.toContain(legacyModel);
+    });
+
+    it("keeps a stored V2 model when the page opens", async () => {
+        const recordWrites = vi.fn();
+        setRecordWriteListener(recordWrites);
+
+        mountPage();
+        await tick();
+
+        expect(settings.memoryTranslateMedia.NAIImgModel).toBe(legacyModel);
+        expect(recordData("memoryTranslateMedia")).toHaveProperty("NAIImgModel", legacyModel);
+        expect(recordWrites).not.toHaveBeenCalledWith("memoryTranslateMedia");
+    });
+});
+
+describe("ComfyUI workflow upload", () => {
+    const originalWorkflow = '{\n  "1": { "class_type": "SaveImage" }\n}';
+
+    beforeEach(() => {
+        changeLanguage("ko");
+        vi.mocked(alertError).mockClear();
+        installFlatDatabase({
+            characters: [],
+            sdProvider: "comfyui",
+            comfyConfig: { workflow: originalWorkflow, timeout: 30 },
+        });
+    });
+
+    afterEach(() => changeLanguage("en"));
+
+    async function uploadWorkflow(text: string | null) {
+        const target = mountPage();
+        const workflow = target.querySelector<HTMLTextAreaElement>(`textarea[aria-label="${language.comfyWorkflow}"]`);
+        const upload = [...target.querySelectorAll("button")].find((button) => {
+            const name = button.getAttribute("aria-label") || button.textContent?.trim() || button.title;
+            return name === language.comfyWorkflowUpload;
+        });
+        expect(workflow?.value, "textarea with the translated workflow label").toBe(originalWorkflow);
+        expect(upload, "button with the workflow upload name").toBeDefined();
+        expect(workflow!.compareDocumentPosition(upload!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+        const picker = vi
+            .spyOn(util, "selectSingleFile")
+            .mockResolvedValueOnce(
+                text === null ? null : { name: "workflow.json", data: new TextEncoder().encode(text) },
+            );
+        upload!.click();
+        await tick();
+        flushSync();
+
+        expect(picker).toHaveBeenCalledExactlyOnceWith(["json"]);
+        return workflow!;
+    }
+
+    it("imports valid UTF-8 JSON into the workflow textarea and stores the original text", async () => {
+        const fileText = '{\n    "3": { "class_type" : "CLIPTextEncode", "inputs": { "text": "밤하늘" } }\n}\n';
+
+        const workflow = await uploadWorkflow(fileText);
+
+        expect(workflow.value).toBe(fileText);
+        expect(settings.memoryTranslateMedia.comfyConfig.workflow).toBe(fileText);
+        expect(recordData("memoryTranslateMedia")).toHaveProperty("comfyConfig.workflow", fileText);
+        expect(alertError).not.toHaveBeenCalled();
+    });
+
+    it("alerts on invalid JSON and keeps the previous workflow", async () => {
+        const workflow = await uploadWorkflow('{ "1": }');
+
+        expect(alertError).toHaveBeenCalledExactlyOnceWith(language.comfyWorkflowInvalidJson);
+        expect(workflow.value).toBe(originalWorkflow);
+        expect(settings.memoryTranslateMedia.comfyConfig.workflow).toBe(originalWorkflow);
+        expect(recordData("memoryTranslateMedia")).toHaveProperty("comfyConfig.workflow", originalWorkflow);
+    });
+
+    it("keeps the workflow and raises no alert when the picker is cancelled", async () => {
+        const workflow = await uploadWorkflow(null);
+
+        expect(alertError).not.toHaveBeenCalled();
+        expect(workflow.value).toBe(originalWorkflow);
+        expect(settings.memoryTranslateMedia.comfyConfig.workflow).toBe(originalWorkflow);
+        expect(recordData("memoryTranslateMedia")).toHaveProperty("comfyConfig.workflow", originalWorkflow);
+    });
 });
 
 it.each(["upload", "model change"] as const)(
