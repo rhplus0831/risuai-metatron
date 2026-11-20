@@ -216,6 +216,11 @@ Work that finished plans named and left: features put off, a plan's Later list, 
 - Not planned (the plan's Not In This Plan list): a memory hook on character card writes or `fmIndex` changes, and any automatic reaction to a changed greeting (D5); a greeting citation in a page section (D7); recording an existing chat's greeting automatically as a window of its own (D2); the greeting in HypaV3, SupaMemory, or Hanurai beyond the projection's `null` memo; showing the greeting in Coverage with the processed text a send uses. Plan: `git show 036f3ffb6:docs/plan/structured-memory-greeting-source.md`.
 - Left by the run: until a re-record or a rebuild, a changed greeting keeps the old greeting's facts in memory and leaves the new one out of the prompt (D5, shown as "changed").
 
+## Upstream Intake 3
+
+- Deferred (D1): upstream `66ab5e5f5`, which skips the call into a Lua engine whose script registered no edit listener. Metatron loads the script in a one-use engine for every hook, so one load's registrations cannot show that another load may be skipped. A later design has to decide from something other than one load's registrations, keep a script's own `callListenMain` dispatcher working, keep `editRequest`'s result identical between a run and a skip (`attributionExact` in `server/src/prompt/assemble.ts`), and account for what a top level can do by itself. Revisit on a report of slow chat rendering with Lua modules. The drafting session's rough timings are in the plan's D1. Plan: `git show 4d185ae5f:docs/plan/upstream-intake-3.md`.
+- Not planned: the request options the NovelAI `nai-diffusion-5-full-medium` model lacks. The owner's test of 2026-11-21 found a request accepted with some options left out; which options was not recorded and has to be read from a request before the work starts. `src/ts/process/stableDiff.ts` sends the stored model name as it is and has no version 5 branch.
+
 ## Dependency Upgrades
 
 Not a plan: the upgrade rounds of 2026-10-30 left these behind on purpose. Versions were read from `package.json` on 2026-11-11.

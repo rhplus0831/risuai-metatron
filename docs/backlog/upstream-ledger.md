@@ -5,8 +5,8 @@ deferred, and how to perform the next intake. It preserves the Inventory from th
 Integration plan (archived; `git show 2e359afde:docs/plan/upstream-integration.md`) and,
 for `f50b5942..4d87a70ff`, from the Upstream Intake 2 plan (archived;
 `git show 4d1542d92:docs/plan/upstream-intake-2.md`) and, for `4d87a70ff..b5bbc5647`, from
-the Upstream Intake 3 plan (`docs/plan/upstream-intake-3.md`), checked against the code and
-port history below.
+the Upstream Intake 3 plan (archived; `git show 4d185ae5f:docs/plan/upstream-intake-3.md`),
+checked against the code and port history below.
 Paths refer to Metatron unless explicitly marked upstream; identifiers are lookup anchors.
 
 ## Baseline
