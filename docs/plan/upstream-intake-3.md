@@ -3,8 +3,8 @@
 Status: drafted 2026-11-21 at `6e70b1e51` and committed at `bfdec4e5e`, then audited against the code at that commit
 ([report](../reports/audits/plan-runner/upstream-intake-3-2026-11-21.md)) and corrected in the same commit as the
 report; nothing landed. The audit's two P1 findings removed the edit hook skip (the former slice 5): `66ab5e5f5` is now
-`deferred` (D1), which the owner has not confirmed yet (Open Questions). The owner accepted the defaults of D2 and D3
-on 2026-11-21; D4 is this plan's own and open to the owner's change. This is the third upstream intake, run by the
+`deferred` (D1), which the owner confirmed on 2026-11-21 after reading the audit. The owner accepted the defaults of D2
+and D3 the same day; D4 is this plan's own and open to the owner's change. This is the third upstream intake, run by the
 [ledger](../backlog/upstream-ledger.md)'s procedure over `4d87a70ff..b5bbc5647`: 10 non-merge commits and 17 merges,
 with no upstream release in the range.
 
@@ -220,8 +220,8 @@ Totals: 5 gap (slices 1–4; `9067f47a6` is the one whose defect is already cove
 
 ## Decisions
 
-The owner accepted the defaults of D1 to D3 on 2026-11-21. D1's outcome below comes from the audit and awaits the
-owner's confirmation; D4 is this plan's own.
+The owner accepted the defaults of D1 to D3 on 2026-11-21. D1's outcome below comes from the audit, and the owner
+confirmed it the same day; D4 is this plan's own.
 
 - D1. `66ab5e5f5`, the edit hook skip. Options: (a) measure, then port only if it pays; (b) port without measuring;
   (c) defer. The owner chose (a). The draft planned to remember, per script code, that a load registered no listener
@@ -272,6 +272,5 @@ owner's confirmation; D4 is this plan's own.
 
 ## Open Questions
 
-- D1: the owner chose "measure, then port only if it pays" before the audit. The audit found the planned port unsound
-  whatever the measurement says, and this plan now defers the commit. The owner has not confirmed that. A run of this
-  plan does not depend on the answer: no slice touches the edit hooks.
+None open. D1 was open after the audit: the owner had chosen "measure, then port only if it pays", and the audit found
+the planned port unsound whatever the measurement says. The owner confirmed the deferral on 2026-11-21.

@@ -20,8 +20,11 @@ run; the auditor read source and Git objects only.
 
 The two P1 findings are fixed by removing the work they concern, which changes the plan's scope: the edit hook skip
 (the draft's slice 5, upstream `66ab5e5f5`) is no longer ported and its Inventory row is `deferred`. The owner had
-chosen "measure, then port only if it pays" for it and has not yet confirmed the deferral; the plan says so in its
-Status line and Open Questions. No remaining slice touches the edit hooks.
+chosen "measure, then port only if it pays" for it and had not confirmed the deferral when this report was written.
+No remaining slice touches the edit hooks.
+
+Added later on 2026-11-21: the owner confirmed the deferral, and the plan's Status line, Decisions and Open Questions
+were updated in the commit that adds this note. No slice text changed after the audit's last confirmation turn.
 
 Found consistent: the range (`4d87a70ff` is an ancestor of `b5bbc5647`; 27 commits, 10 non-merge, 17 merges, 9
 first-parent entries; 16 merges match the automatic merge and `72baef272` only reconciles a test file and an import
