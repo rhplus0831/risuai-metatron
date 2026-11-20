@@ -1,10 +1,10 @@
 # Settings Item Spacing Plan
 
 Status: drafted 2026-11-19 at `86035adb4` from the owner's request (three uneven settings layouts were fixed item by
-item that day, and the owner asked for a plan for what was too wide to fix in passing). D1 to D4 are proposals and
-are not accepted yet. Audited 2026-11-20 at `e5cda6e05`
+item that day, and the owner asked for a plan for what was too wide to fix in passing). Audited 2026-11-20 at `e5cda6e05`
 ([report](../reports/audits/plan-runner/settings-item-spacing-2026-11-20.md)): D1 to D4, V6, and the slices were made
-precise from its findings. Landed: none.
+precise from its findings. The owner accepted D1 to D4 as written here on 2026-11-20, the compact rhythm of D1 over the
+1rem alternative. Landed: none.
 
 Sources: the owner's report of 2026-11-19 (the Interaction and Advanced pages' margins); the wrappers under
 `src/lib/Setting/Wrappers/`, `SettingRenderer.svelte` and `SettingsSections.svelte` under `src/lib/Setting/`, and the
@@ -67,7 +67,7 @@ distance between sections, the look of any control, and the chat screen or sideb
 
 ## Decisions
 
-Proposals; the owner accepts, changes, or rejects each before a slice starts.
+Accepted by the owner on 2026-11-20.
 
 - **D1. The rhythm.** Distances are measured between two items' boxes; a labelled control's box runs from its label's
   top to its control's bottom.
