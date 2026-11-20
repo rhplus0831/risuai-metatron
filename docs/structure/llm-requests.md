@@ -6,7 +6,8 @@
   [catalogue and model resolution](#catalogue-and-model-resolution), [model preset slots](#model-preset-slots), and
   [credentials](#credentials). The model selectors and API Keys tab are in [settings pages](#settings-pages).
 - Change a provider request, wire format, streaming, retries, tool-call loop, or model parameter. For mode-specific
-  prompt insertion follow [request interception](#request-interception). For tab plugin callbacks see
+  prompt insertion follow [request interception](#request-interception), for the banned-script and minimum-length checks
+  of an answer [response checks](#response-checks). For tab plugin callbacks see
   [hook entry points](plugin-sandbox.md#hook-entry-points).
 - For token counts and playgrounds start at
   [tokenizer selection and server counting](#tokenizer-selection-and-server-counting). The tab's WebLLM adapter uses
@@ -198,6 +199,23 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
   of inserted messages through `describe`. [Request history](diagnostics.md) list and detail JSON carry
   `interceptions: null` when there is no count. Tab-local Plugin/WebLLM calls have no server row.
 
+### Response checks
+
+- `shared/llm/responseChecks.ts` `responseRejection` checks a completed answer that the provider returned as a success:
+  first the banned scripts (`providers.banCharacterset`, on the whole text), then the minimum length of the request's
+  kind. Each kind has its own top-level field (`MIN_RESPONSE_LENGTH_FIELDS`: `minResponseLengthModel` to
+  `minResponseLengthTranslate`, 0 for off), so two devices that set different kinds merge.
+- `normalizeMinResponseLength` is the one value rule (not a finite number or below 1 is 0, the fraction is cut, at most
+  100,000), applied by `normalizeProviders` and again when the check reads a value.
+- `measureResponseLength` counts Unicode code points of a trimmed copy without `<Thoughts>` blocks (paired as the tab
+  renderer pairs them, so text between two blocks stays), `<tool_call>` records, and inlay markers in their literal or
+  `risuEscape` spelling. An answer that is only an image measures 0.
+- The buffered path: both outer loops (`requestChatDataOuter`, the tab's `requestChatData`) call it on a `success` after
+  escaping and the after-request replacers. A rejection becomes an ordinary failure with the rejection as its text, so
+  it uses one retry of `requestRetrys` and is the request's failure once they run out. A `previewBody` request skips
+  both checks (its success is a request body or a diagnostic); a continue request skips the minimum, since its answer is
+  only the added text. A stream returned as it is and a `multiline` answer are not checked.
+
 ### Provider responses and tools
 
 - Server parsers produce cumulative `StreamResponseChunk` snapshots; `POST /api/llm/request` sends them as
@@ -354,6 +372,9 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
 - Interception coverage crosses `shared/llm/tests/interception.test.ts` (rule order and normalization),
   `requestPresetScope.test.ts` (plugin provider), `llmRequests.test.ts` (server payload, retries and history), and
   `server/src/tests/promptRunner.test.ts` (preview and send token budget).
+- Response-check coverage crosses `shared/llm/tests/responseChecks.test.ts` (the measure, the value rule, the messages),
+  `llmCharsetRetries.test.ts` (the server loop's retries and skips), and
+  `src/ts/process/request/tests/responseRetries.test.ts` (the tab loop).
 - `slow`:
   `pnpm --silent test:agent --tags-filter=slow server/src/tests/{llmCharsetRetries,tokenParity,tokenPlainNode}.test.ts`
   ([test-harness](test-harness.md) `Slow-test table`).

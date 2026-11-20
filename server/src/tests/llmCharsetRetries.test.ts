@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { MinResponseLengthField } from "../../../shared/llm/responseChecks.ts";
 import type { requestDataResponse } from "../llm/request.ts";
 import { requestChatDataOuter, type OuterRequestDeps } from "../llm/outer.ts";
 
@@ -28,6 +29,8 @@ describe("requestChatDataOuter", () => {
     async function run(
         answers: requestDataResponse[],
         options: {
+            mode?: Parameters<typeof requestChatDataOuter>[1];
+            minimums?: Partial<Record<MinResponseLengthField, number>>;
             requestRetrys?: number;
             signal?: AbortSignal;
             onAttempt?: (index: number, arg: Parameters<OuterRequestDeps["attempt"]>[0]) => void;
@@ -39,11 +42,19 @@ describe("requestChatDataOuter", () => {
         } = {},
     ) {
         let attempts = 0;
-        const result = await requestChatDataOuter({ formated: [], bias: {}, ...options.input }, "model", {
+        const mode = options.mode ?? "model";
+        const result = await requestChatDataOuter({ formated: [], bias: {}, ...options.input }, mode, {
             db: {
                 requestRetrys: options.requestRetrys ?? 2,
                 antiServerOverloads: false,
                 banCharacterset: options.banCharacterset ?? ["Latn"],
+                minResponseLengthModel: 0,
+                minResponseLengthSubmodel: 0,
+                minResponseLengthMemory: 0,
+                minResponseLengthEmotion: 0,
+                minResponseLengthOtherAx: 0,
+                minResponseLengthTranslate: 0,
+                ...options.minimums,
             },
             signal: options.signal ?? new AbortController().signal,
             afterRequest: options.afterRequest,
@@ -152,6 +163,73 @@ describe("requestChatDataOuter", () => {
             result: { type: "success", result: "\uE9B8\uE9B8user\uE9B9\uE9B9 replaced" },
             attempts: 1,
         });
+    });
+
+    it("retries a short answer after escaping and replacement and returns the second answer intact", async () => {
+        const answers: requestDataResponse[] = [
+            { type: "success", result: "{{inlay::image}} (omit)" },
+            { type: "success", result: " done " },
+        ];
+        expect(
+            await run(answers, {
+                mode: "memory",
+                minimums: { minResponseLengthMemory: 4 },
+                banCharacterset: [],
+                requestRetrys: 1,
+                input: { escape: true },
+                afterRequest: async (text) => text.replace("\uE9BAomit\uE9BB", ""),
+            }),
+        ).toEqual({ result: { type: "success", result: " done " }, attempts: 2 });
+    });
+
+    it("returns the last length rejection when short answers spend the retry budget", async () => {
+        expect(
+            await run(
+                [
+                    { type: "success", result: "" },
+                    { type: "success", result: "No." },
+                ],
+                {
+                    minimums: { minResponseLengthModel: 6 },
+                    requestRetrys: 1,
+                    banCharacterset: [],
+                },
+            ),
+        ).toEqual({
+            result: { type: "fail", result: "The model's answer was shorter than the minimum (3 < 6)" },
+            attempts: 2,
+        });
+    });
+
+    it("accepts an empty answer for a kind whose minimum is off", async () => {
+        expect(
+            await run([{ type: "success", result: "" }], {
+                mode: "submodel",
+                minimums: { minResponseLengthModel: 4 },
+                requestRetrys: 0,
+            }),
+        ).toEqual({ result: { type: "success", result: "" }, attempts: 1 });
+    });
+
+    it("accepts a continuation shorter than its kind's minimum", async () => {
+        expect(
+            await run([{ type: "success", result: "!" }], {
+                input: { continue: true },
+                minimums: { minResponseLengthModel: 4 },
+                requestRetrys: 0,
+            }),
+        ).toEqual({ result: { type: "success", result: "!" }, attempts: 1 });
+    });
+
+    it("returns a preview body even when its text is short and contains a banned script", async () => {
+        expect(
+            await run([{ type: "success", result: '{"body":"hi"}' }], {
+                input: { previewBody: true },
+                minimums: { minResponseLengthModel: 40 },
+                banCharacterset: ["Latn"],
+                requestRetrys: 0,
+            }),
+        ).toEqual({ result: { type: "success", result: '{"body":"hi"}' }, attempts: 1 });
     });
 
     it("a rejected answer with no retries left fails at once (requestRetrys 0)", async () => {

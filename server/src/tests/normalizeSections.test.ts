@@ -217,6 +217,34 @@ function mutationTolerant(section: SectionKind, kept: Record<string, unknown>): 
 }
 
 describe("providers", () => {
+    it("defaults every response minimum to zero and repairs invalid, fractional, and oversized values", () => {
+        const off = {
+            minResponseLengthModel: 0,
+            minResponseLengthSubmodel: 0,
+            minResponseLengthMemory: 0,
+            minResponseLengthEmotion: 0,
+            minResponseLengthOtherAx: 0,
+            minResponseLengthTranslate: 0,
+        };
+        expect(normalizeProviders(undefined)).toMatchObject(off);
+        expect(
+            normalizeProviders({
+                minResponseLengthModel: -4,
+                minResponseLengthSubmodel: 2.5,
+                minResponseLengthMemory: "7",
+                minResponseLengthEmotion: 100_001,
+                minResponseLengthOtherAx: 11,
+                minResponseLengthTranslate: 12,
+            }),
+        ).toMatchObject({
+            ...off,
+            minResponseLengthSubmodel: 2,
+            minResponseLengthEmotion: 100_000,
+            minResponseLengthOtherAx: 11,
+            minResponseLengthTranslate: 12,
+        });
+    });
+
     it("defaults, drops, repairs, and caps request interceptions idempotently", () => {
         const valid = {
             id: "kept",

@@ -1,4 +1,5 @@
 import { normalizeRequestInterceptions } from "../../../../shared/llm/interception.ts";
+import { MIN_RESPONSE_LENGTH_FIELDS, normalizeMinResponseLength } from "../../../../shared/llm/responseChecks.ts";
 import type { SectionResource } from "../../../../shared/resources.ts";
 import { REQUEST_HISTORY_DEFAULT_LIMIT } from "../requestHistory.ts";
 import { normalizeSection, type SectionSpec } from "./shared.ts";
@@ -53,10 +54,20 @@ const spec: SectionSpec<"providers"> = {
     requestHistoryContent: ["boolean", true],
     requestHistoryLimit: ["number", REQUEST_HISTORY_DEFAULT_LIMIT],
     requestInterceptions: ["array", []],
+    minResponseLengthModel: ["number", 0],
+    minResponseLengthSubmodel: ["number", 0],
+    minResponseLengthMemory: ["number", 0],
+    minResponseLengthEmotion: ["number", 0],
+    minResponseLengthOtherAx: ["number", 0],
+    minResponseLengthTranslate: ["number", 0],
 };
 
 export function normalizeProviders(input: unknown): SectionResource<"providers"> {
     const record = normalizeSection("providers", spec, input);
     record.requestInterceptions = normalizeRequestInterceptions(record.requestInterceptions);
+    // A stored minimum is the whole number the response check enforces.
+    for (const field of Object.values(MIN_RESPONSE_LENGTH_FIELDS)) {
+        record[field] = normalizeMinResponseLength(record[field]);
+    }
     return record as SectionResource<"providers">;
 }

@@ -11,6 +11,7 @@ import {
 } from "../../storage/settingsViews.svelte";
 import { plainClone, presetFieldValue } from "../../../../shared/presets.ts";
 import { applyRequestInterceptions } from "../../../../shared/llm/interception.ts";
+import { responseRejection } from "../../../../shared/llm/responseChecks.ts";
 import { applyReverseProxyOverride } from "../../../../shared/llm/reverseProxy.ts";
 import { credentialFor } from "../../model/credentials";
 import { language } from "../../../lang";
@@ -166,13 +167,18 @@ export interface StreamResponseChunk {
  * discovery and the plugin hooks, until the request and its after-request hooks end (a streamed
  * reply keeps the transport's own pin until its stream ends). A chat that is gone fails the request.
  *
- * The retries (`requestRetrys`: an ordinary failure or a banned-script answer uses one retry, an overload failure
- * half a retry with `antiServerOverloads`), the plugins' before/after request replacers, and escaping run here in the
- * tab, around each `requestChatDataMain` attempt. The character's `request`
+ * The retries (`requestRetrys`: an ordinary failure or a rejected answer uses one retry, an overload failure
+ * half a retry with `antiServerOverloads`), the plugins' before/after request replacers, escaping, and the response
+ * checks run here in the tab, around each `requestChatDataMain` attempt. The character's `request`
  * trigger runs only for a server job's requests (`server/src/llm/outer.ts`); the tab's own requests go out without it.
+ * The response checks (`responseRejection` of `shared/llm/responseChecks.ts`: a banned script of `banCharacterset`,
+ * then the minimum length of the request's kind, which a continue request skips) read a buffered success after
+ * escaping and the after-replacers. A rejected answer becomes an ordinary failure with the rejection as its text, so
+ * it uses one retry of `requestRetrys` and is returned once they run out. A `previewBody` request skips the checks:
+ * its success is a redacted request body or a diagnostic, not an answer. A `multiline` answer is not checked.
  * `escape` clears `useStreaming` and `forceStreaming`. A plugin provider can return a stream regardless: with `escape`
- * that stream is read to its last snapshot and continues as a buffered success (escaping, after-replacers, charset
- * checks) or, for a stream error, as an ordinary failure. Without `escape` a stream returns as it is.
+ * that stream is read to its last snapshot and continues as a buffered success (escaping, after-replacers, response
+ * checks) or, for a stream error, as an ordinary failure. Without `escape` a stream returns as it is, unchecked.
  */
 export async function requestChatData(
     arg: requestDataArgument,
@@ -484,23 +490,11 @@ async function requestPinnedChatData(
             }
         }
 
-        if (da.type === "success" && settings.providers.banCharacterset?.length > 0) {
-            let failed = false;
-            for (const set of settings.providers.banCharacterset) {
-                const checkRegex = new RegExp(`\\p{Script=${set}}`, "gu");
-
-                if (checkRegex.test(da.result)) {
-                    trys += 1;
-                    if (trys > settings.providers.requestRetrys) {
-                        return { type: "fail", result: `The model answered in a banned script (${set})` };
-                    }
-                    failed = true;
-                    break;
-                }
-            }
-
-            if (failed) {
-                continue;
+        if (da.type === "success" && !arg.previewBody) {
+            const rejection = responseRejection(da.result, settings.providers, { mode: model, continue: arg.continue });
+            if (rejection !== null) {
+                // A rejected answer is retried and given up on as a failed attempt is, below.
+                da = { type: "fail", result: rejection };
             }
         }
 

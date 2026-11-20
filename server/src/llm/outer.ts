@@ -1,5 +1,6 @@
 import { risuEscape, risuUnescape } from "../../../shared/cbs/evaluator.ts";
 import type { ModelModeExtended, RequestArgs, StreamResponseChunk } from "../../../shared/llm/request.ts";
+import { responseRejection, type MinResponseLengthField } from "../../../shared/llm/responseChecks.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import type { requestDataResponse } from "./request.ts";
 import type { RequestDb } from "./settings.ts";
@@ -7,11 +8,12 @@ import type { RequestDb } from "./settings.ts";
 /**
  * Wraps server request attempts with the client's retry and hook ordering, used by job, Lua, memory, and translation
  * callers around `server/src/llm/requests.ts`. It clones/unescapes the prompt once, then runs before-replacers, the
- * request trigger, the attempt, success escaping, after-replacers, charset checks, and failure retries in that order.
+ * request trigger, the attempt, success escaping, after-replacers, response checks, and failure retries in that order.
  * Prompt changes survive retries. Ordinary trigger errors log and continue; fatal trigger errors and other hook or
  * attempt throws propagate. Abort returns an `Aborted` failure when observed between attempts/after an attempt.
- * Only successes get escaping, after-replacers, and charset checks; without `escape` a stream returns to the caller
- * immediately.
+ * Only successes get escaping, after-replacers, and response checks (banned script and minimum length, through
+ * `shared/llm/responseChecks.ts`); a `previewBody` request skips the checks, since its success is a request body or
+ * a diagnostic, not an answer. Without `escape` a stream returns to the caller immediately.
  */
 
 const yieldTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -72,7 +74,7 @@ async function bufferStreamedAnswer(
 
 /** What the outer loop calls; every hook it lacks is skipped. */
 export type OuterRequestDeps = {
-    db: Pick<RequestDb, "requestRetrys" | "antiServerOverloads" | "banCharacterset">;
+    db: Pick<RequestDb, "requestRetrys" | "antiServerOverloads" | "banCharacterset" | MinResponseLengthField>;
     signal: AbortSignal;
     /** One attempt (`requestChatDataMain`) with the mode's own model. */
     attempt: (arg: RequestArgs) => Promise<requestDataResponse>;
@@ -111,12 +113,16 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
  * `requestChatData` of `src/ts/process/request/request.ts` (the client's outer loop around
  * `requestChatDataMain`) for a server job: the retries (`requestRetrys`, `antiServerOverloads` after
  * a server error), `escape`, the plugin replacers before and after each attempt, the `request`
- * trigger, and `banCharacterset`, in the client's order. Tools are the caller's (`arg.tools`).
- * Charset rejections count against `requestRetrys`. The loop yields a turn of the event loop
- * before every attempt.
+ * trigger, and the response checks, in the client's order. Tools are the caller's (`arg.tools`).
+ * The loop yields a turn of the event loop before every attempt.
+ * The response checks (`responseRejection` of `shared/llm/responseChecks.ts`: a banned script of `banCharacterset`,
+ * then the minimum length of the request's kind, which a continue request skips) read a buffered success after
+ * escaping and the after-replacers. A rejected answer becomes an ordinary failure with the rejection as its text, so
+ * it uses one retry of `requestRetrys` and is returned once they run out. A `previewBody` request skips the checks:
+ * its success is a redacted request body or a diagnostic, not an answer. A `multiline` answer is not checked.
  * `escape` clears `useStreaming` and `forceStreaming`. An attempt that streams anyway (a plugin provider) is read to
- * its last snapshot and continues as a buffered success (escaping, after-replacers, charset checks) or, for a stream
- * error, as an ordinary failure. Without `escape` a stream returns as it is.
+ * its last snapshot and continues as a buffered success (escaping, after-replacers, response checks) or, for a stream
+ * error, as an ordinary failure. Without `escape` a stream returns as it is, unchecked.
  */
 export async function requestChatDataOuter(
     input: RequestArgs & { escape?: boolean },
@@ -190,21 +196,11 @@ export async function requestChatDataOuter(
             da.result = await deps.afterRequest(da.result, model);
         }
 
-        if (da.type === "success" && db.banCharacterset?.length > 0) {
-            let failed = false;
-            for (const set of db.banCharacterset) {
-                const checkRegex = new RegExp(`\\p{Script=${set}}`, "gu");
-                if (checkRegex.test(da.result)) {
-                    trys += 1;
-                    if (trys > db.requestRetrys) {
-                        return { type: "fail", result: `The model answered in a banned script (${set})` };
-                    }
-                    failed = true;
-                    break;
-                }
-            }
-            if (failed) {
-                continue;
+        if (da.type === "success" && !arg.previewBody) {
+            const rejection = responseRejection(da.result, db, { mode: model, continue: arg.continue });
+            if (rejection !== null) {
+                // A rejected answer is retried and given up on as a failed attempt is, below.
+                da = { type: "fail", result: rejection };
             }
         }
 

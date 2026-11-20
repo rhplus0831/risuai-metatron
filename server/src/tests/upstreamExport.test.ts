@@ -613,6 +613,22 @@ describe("buildUpstreamDatabase: presets and the root", () => {
 });
 
 describe("buildUpstreamDatabase: settings", () => {
+    it("omits all six configured response minimums from an upstream export", async () => {
+        const minimums = {
+            minResponseLengthModel: 1,
+            minResponseLengthSubmodel: 2,
+            minResponseLengthMemory: 3,
+            minResponseLengthEmotion: 4,
+            minResponseLengthOtherAx: 5,
+            minResponseLengthTranslate: 6,
+        };
+        const snapshot = await snapshotOf((w) => w.put(SECTION_KIND.providers, "main", minimums));
+        const { db } = exportOf(snapshot);
+        for (const field of Object.keys(minimums)) {
+            expect(db).not.toHaveProperty(field);
+        }
+    });
+
     it("omits non-empty request interceptions and reports them as excluded metatron settings", async () => {
         const snapshot = await snapshotOf((w) => {
             w.put(SECTION_KIND.providers, "main", {

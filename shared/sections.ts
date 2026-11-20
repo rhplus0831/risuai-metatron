@@ -92,6 +92,12 @@ export const SECTION_FIELDS = {
         "requestHistoryContent",
         "requestHistoryLimit",
         "requestInterceptions",
+        "minResponseLengthModel",
+        "minResponseLengthSubmodel",
+        "minResponseLengthMemory",
+        "minResponseLengthEmotion",
+        "minResponseLengthOtherAx",
+        "minResponseLengthTranslate",
     ],
     /** Write-only LLM provider defaults; named-key values live in the `credentials` entry map. */
     llmSecrets: [

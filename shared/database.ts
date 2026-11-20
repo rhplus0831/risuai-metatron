@@ -374,6 +374,17 @@ export interface Database {
     ollamaThinkingMode: "auto" | "off" | "on" | "low" | "medium" | "high";
     autoContinueChat: boolean;
     autoContinueMinTokens: number;
+    /**
+     * The minimum length of a completed answer per request kind, in Unicode code points of its visible text (0: no
+     * minimum). A shorter answer is a failed request (`shared/llm/responseChecks.ts`, which names each kind's field
+     * and normalizes a value). Six fields rather than one object, so two devices that set different kinds merge.
+     */
+    minResponseLengthModel: number;
+    minResponseLengthSubmodel: number;
+    minResponseLengthMemory: number;
+    minResponseLengthEmotion: number;
+    minResponseLengthOtherAx: number;
+    minResponseLengthTranslate: number;
     removeIncompleteResponse: boolean;
     customTokenizer: string;
     instructChatTemplate: string;
