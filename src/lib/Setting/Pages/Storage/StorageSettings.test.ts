@@ -298,6 +298,15 @@ afterEach(() => {
 });
 
 describe("StorageSettings", () => {
+    it("shows which drafts backups omit in the snapshots section even without saved snapshots", async () => {
+        deps.listBackups.mockResolvedValue([]);
+        await open();
+
+        expect(target.querySelector('[data-settings-section="storage.snapshots"]')?.textContent).toContain(
+            "Unsent drafts and recovery drafts are kept in this browser only. Snapshots, file backups and compatible exports do not include them.",
+        );
+    });
+
     it("shows the no-label text in an unlabeled snapshot row", async () => {
         deps.listBackups.mockResolvedValue([{ ...snapshot("unlabeled", ""), label: null }]);
         await open();

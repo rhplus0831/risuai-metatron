@@ -3894,6 +3894,8 @@ export const languageKorean = {
         heldBytes: "이 스냅샷에서만 참조 중인 에셋",
         heldBytesNote:
             "스냅샷 전용 에셋 용량은 마지막 스캔 기준입니다. 스냅샷을 삭제한 뒤 다시 스캔하면 수치가 갱신됩니다.",
+        draftsBackupNote:
+            "보내지 않은 초안과 복구 초안은 이 브라우저에만 저장됩니다. 스냅샷, 파일 백업, 호환 내보내기에는 포함되지 않습니다.",
         pinnedState: "고정 상태",
         pinned: "고정됨",
         unpinned: "고정 안 됨",

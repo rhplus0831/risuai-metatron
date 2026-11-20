@@ -132,7 +132,7 @@ validators reject unknown event statuses.
 
 ## Contents
 
-- [Backup and sync](#backup-and-sync): 6
+- [Backup and sync](#backup-and-sync): 5
 - [Build and CI](#build-and-ci): 1
 - [Chat screen](#chat-screen): 6
 - [Docs](#docs): 2
@@ -191,19 +191,6 @@ its files from its own, deliberately limited inventory (`selectPartialBackupAsse
 
 **Suggested handling:** reproduce first; then feed the same walker into the partial selection, or say in the partial
 backup's notes that plugin-referenced files need the full backup.
-
-### No backup screen says that drafts live in the browser
-
-Fix round of 2026-11-17, read and not run (it was the last remark of the fixed "Take snapshot" entry). Composer drafts
-and recovery drafts are in this browser's journal and in no snapshot, file backup, or compatible export; neither the
-Storage page nor the backup dialogs say so.
-
-**Why it matters:** a user who takes a snapshot before a risky action may expect an unsent draft to be in it.
-
-**Suggested handling:** one line on the Storage page, or accept it as a Limitation of
-[draft recovery](../structure/draft-recovery.md).
-
-**Decision:** owner, 2026-11-20: add the line to the Storage page.
 
 ### The boot cache keeps its own copy of the resource id rule
 

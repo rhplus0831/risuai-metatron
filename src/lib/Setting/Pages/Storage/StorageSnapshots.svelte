@@ -40,6 +40,7 @@
             >{language.storage.takeSnapshot}</Button
         >
     </div>
+    <p class="text-textcolor2">{language.storage.draftsBackupNote}</p>
     <p class="text-textcolor2">{language.storage.heldBytesNote}</p>
     <ul class="min-w-0 rounded-md border border-darkborderc bg-darkbg">
         {#each controller.snapshots as snapshot (snapshot.id)}

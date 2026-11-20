@@ -3928,6 +3928,8 @@ export const languageEnglish = {
         createdAt: "Created",
         heldBytes: "Assets held exclusively",
         heldBytesNote: "Held asset sizes come from the last scan. Scan again to update them after snapshot changes.",
+        draftsBackupNote:
+            "Unsent drafts and recovery drafts are kept in this browser only. Snapshots, file backups and compatible exports do not include them.",
         pinnedState: "Pin state",
         pinned: "Pinned",
         unpinned: "Unpinned",
