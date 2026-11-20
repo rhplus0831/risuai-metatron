@@ -584,7 +584,7 @@ async function runSend(
         job.emit({ type: "preset", presetId: chain.presetId });
     }
 
-    const caculatedChatTokens = scope.db.aiModel.startsWith("gpt") ? 5 : 3;
+    const caculatedChatTokens = chatMessageOverhead(scope);
     // The owner as the input stage and the preset pick left the projection.
     const sendOwner = scope.db.characters.find((entry) => entry?.chaId === characterId);
     if (!sendOwner) {
@@ -968,11 +968,15 @@ export function createJobMemoryHost(arg: {
     };
 }
 
+function chatMessageOverhead(scope: JobScope): number {
+    return scope.db.aiModel.startsWith("gpt") ? 5 : 3;
+}
+
 /** The token count of a job's prompt on `scope`, as `memoryTokenPolicy` describes it. */
 export function jobChatTokenCounter(
-    deps: GenerationRunnerDeps,
+    deps: Pick<GenerationRunnerDeps, "tokens">,
     scope: JobScope,
-    chatAdditionalTokens: number,
+    chatAdditionalTokens = chatMessageOverhead(scope),
 ): ChatTokenCounter {
     const { db } = scope;
     const requestDb = scope.request.db;

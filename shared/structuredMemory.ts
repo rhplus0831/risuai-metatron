@@ -1234,6 +1234,8 @@ export function memoryCostTokens(windowBytes: number, calls: number): number {
 export type StructuredMemoryRecordAnswer<K extends StructuredMemoryRecordKind = StructuredMemoryRecordKind> = {
     revision: string;
     data: StructuredMemoryRecordOf[K];
+    /** Saved scene and combined required-page charges against the bound memory preset's required cap. */
+    sceneBudget?: { tokens: number; requiredTokens: number; limit: number };
 };
 
 /**

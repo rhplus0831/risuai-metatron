@@ -35,6 +35,9 @@
         type StructuredMemoryFindResult,
         type StructuredMemoryResult,
     } from "src/ts/process/structuredMemory.svelte";
+    import { getModelInfoForMode } from "src/ts/model/modellist";
+    import { pluginHooks } from "src/ts/plugins/pluginHooks";
+    import { chatDisplayIds } from "src/ts/storage/chatBinding.svelte";
     import { findCharacter } from "src/ts/storage/characterStore.svelte";
     import { findChat, setChatMeta, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { selectSingleFileHandle } from "src/ts/util";
@@ -166,6 +169,7 @@
     let view = $state<string | number>("read");
     /** The tab's copy of the selected page, with the revision the next edit names. */
     let copy = $state.raw<StructuredMemoryRecordAnswer<"pages"> | null>(null);
+    let sceneBudget = $state.raw<StructuredMemoryRecordAnswer["sceneBudget"] | null>();
     let recordFailure = $state<string | null>(null);
     let recordNumber = 0;
     /** One edit at a time: while one is out the controls are off and no read replaces the copy. */
@@ -588,6 +592,31 @@
         recordFailure = null;
         openAskedEntry();
     }
+
+    $effect(() => {
+        const page = copy;
+        const ref = chatRef;
+        sceneBudget = undefined;
+        if (effectiveView !== "manage" || sending || page?.data.type !== "scene") return;
+        let current = true;
+        const model = getModelInfoForMode("model", chatDisplayIds(ref));
+        const pluginModel =
+            model.id.startsWith("pluginmodel:::") && pluginHooks.providers.has(model.id.slice("pluginmodel:::".length))
+                ? model
+                : undefined;
+        void readStructuredMemoryRecord(ref, "pages", page.data.id, { sceneBudget: true, pluginModel }).then(
+            (result) => {
+                if (!current) return;
+                sceneBudget =
+                    result.outcome === "ok" && result.value.revision === page.revision
+                        ? (result.value.sceneBudget ?? null)
+                        : null;
+            },
+        );
+        return () => {
+            current = false;
+        };
+    });
 
     /** Reads what the tab shows. While an edit is out the copy waits for its answer, which is newer. */
     function read(noticed = false) {
@@ -1990,6 +2019,19 @@
             {@render pageMentions()}
         </div>
     {:else}
+        {#if page.type === "scene" && sceneBudget}
+            <div class="text-sm text-textcolor2" data-memory-scene-budget>
+                <p>{text.sceneTokens(sceneBudget.tokens, sceneBudget.limit)}</p>
+                {#if sceneBudget.requiredTokens !== sceneBudget.tokens}
+                    <p>{text.requiredTokens(sceneBudget.requiredTokens, sceneBudget.limit)}</p>
+                {/if}
+                {#if sceneBudget.requiredTokens > sceneBudget.limit}
+                    <p class="text-draculared">{text.sceneOverCap}</p>
+                {/if}
+            </div>
+        {:else if page.type === "scene" && sceneBudget === null}
+            <p class="text-sm text-textcolor2">{text.sceneCountUnavailable}</p>
+        {/if}
         {#if coverageFailure && page.sections.some((section) => section.provenance.length > 0)}
             <p role="alert" class="text-draculared">{coverageFailure}</p>
         {/if}

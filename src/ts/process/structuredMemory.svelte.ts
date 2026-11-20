@@ -104,6 +104,7 @@ import {
     type StructuredMemoryTestResult,
     type StructuredMemoryThreadsRound,
 } from "../../../shared/structuredMemory.ts";
+import type { LLMModel } from "../../../shared/llm.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import type { ChatRef } from "../storage/chatStore.svelte";
 import { readWithDeadline } from "../storage/readDeadline";
@@ -991,11 +992,17 @@ export function readStructuredMemoryRecord<K extends StructuredMemoryRecordKind>
     ref: ChatRef,
     kind: K,
     id: string,
+    options?: { sceneBudget: true; pluginModel?: LLMModel },
 ): Promise<StructuredMemoryResult<StructuredMemoryRecordAnswer<K>>> {
-    return readAnswer(`${chatPath(ref)}/records/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, (body) =>
-        typeof body.revision === "string" && isPlainObject(body.data)
-            ? (body as StructuredMemoryRecordAnswer<K>)
-            : null,
+    const query = new URLSearchParams();
+    if (options?.sceneBudget) query.set("sceneBudget", "1");
+    if (options?.pluginModel) query.set("pluginModel", JSON.stringify(options.pluginModel));
+    return readAnswer(
+        `${chatPath(ref)}/records/${encodeURIComponent(kind)}/${encodeURIComponent(id)}${query.size ? "?" + query : ""}`,
+        (body) =>
+            typeof body.revision === "string" && isPlainObject(body.data)
+                ? (body as StructuredMemoryRecordAnswer<K>)
+                : null,
     );
 }
 

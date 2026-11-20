@@ -138,7 +138,7 @@ validators reject unknown event statuses.
 - [Docs](#docs): 2
 - [Headless host](#headless-host): 2
 - [LLM requests](#llm-requests): 3
-- [Memory](#memory): 6
+- [Memory](#memory): 5
 - [Modules and personas](#modules-and-personas): 4
 - [Network jobs](#network-jobs): 2
 - [Plugins](#plugins): 1
@@ -365,20 +365,6 @@ server's client already enforces those bounds.
 **Suggested handling:** give the tab's discovery the server client's bounds.
 
 ## Memory
-
-### A long scene may make the send refuse its required memory block
-
-Fix round of 2026-11-17, read and not run. A scene field may now stay as long as the user wrote it, up to 4,000
-characters, and the send prompt shows every scene field whole in its required lane (`retrieve.ts` and `card.ts` under
-`server/src/prompt/memory/structured/`). `card.ts` refuses a required block that is past its token target or the
-memory maximum (`requiredOverLimit`) instead of cutting it. Three fields of 4,000 characters were possible before
-the round too (the editor allowed them); what the round changed is that the writer no longer shortens them to 800.
-
-**Why it matters:** not known until it is run: what the send does on that refusal, and at what scene size it happens
-with the default budgets.
-
-**Suggested handling:** run a send with three 4,000-character scene fields; then the owner decides whether the
-editor's badge should also warn about it, or the block should be cut.
 
 ### The memory writer's field limit lets three scene fields pass the required-page limit
 

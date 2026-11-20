@@ -2826,8 +2826,24 @@ export const languageKorean = {
     },
     structuredMemory: {
         name: "구조화 기억",
-        requiredOverCap: (tokens: number, limit: number, pages: string) =>
-            `오류: 필수 기억 문서가 ${tokens} 토큰을 차지해 한도(${limit} 토큰)를 초과했습니다: ${pages}. 문서 내용을 줄이거나 전송 시점을 '관련 있을 때'로 변경해 주세요.`,
+        requiredOverCap: (
+            tokens: number,
+            limit: number,
+            pages: string,
+            sceneLimit?: "required" | "whole",
+            otherPages = false,
+        ) => {
+            let advice = "문서 내용을 줄이거나 전송 시점을 '관련 있을 때'로 변경해 주세요.";
+            if (sceneLimit) {
+                advice =
+                    sceneLimit === "required"
+                        ? "장면 내용을 줄이거나 메모리 설정에서 필수 문서의 토큰 한도를 높여 주세요."
+                        : "전체 메모리 토큰 한도에 맞게 장면 내용을 줄여 주세요.";
+                if (otherPages)
+                    advice += " 다른 필수 문서의 내용을 줄이거나 전송 시점을 '관련 있을 때'로 변경해도 됩니다.";
+            }
+            return `오류: 필수 기억 문서가 ${tokens} 토큰을 차지해 한도(${limit} 토큰)를 초과했습니다: ${pages}. ${advice}`;
+        },
         removeRetracts: (events: number) =>
             `사건 ${events}개가 이 항목을 인용하고 있습니다. 삭제하면 해당 사건도 함께 철회되며 되돌릴 수 없습니다. 삭제하는 메시지가 가장 최근에 기록된 턴이면 그 턴이 기억 문서에 쓴 변경도 함께 되돌립니다. 그래도 삭제할까요?`,
         projectionWriteRefused:
@@ -3177,6 +3193,13 @@ export const languageKorean = {
             save: "저장",
             cancel: "취소",
             sectionText: "섹션 내용",
+            sceneTokens: (count: number, limit: number) =>
+                `저장된 장면: 필수 문서 한도 ${limit.toLocaleString()}토큰 중 ${count.toLocaleString()}토큰 사용`,
+            requiredTokens: (count: number, limit: number) =>
+                `전체 필수 문서: ${count.toLocaleString()} / ${limit.toLocaleString()}토큰`,
+            sceneOverCap:
+                "필수 문서의 토큰 한도를 초과했습니다. 장면 내용을 줄이거나 메모리 설정에서 한도를 높여 주세요.",
+            sceneCountUnavailable: "저장된 장면의 토큰 수를 확인할 수 없습니다.",
             sceneLongField: "800자 초과: 프롬프트가 길어집니다. 기록 모델은 이 길이까지 다시 쓸 수 있습니다.",
             characters: (count: number, limit: number) => `${count} / ${limit}`,
             provenance: "관련 사건",

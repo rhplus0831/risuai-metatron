@@ -25,6 +25,7 @@ import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { messageSourceHash } from "../data/memoryStore.ts";
 import type { Message } from "../../../shared/database.ts";
 import { readRecordSet, rebuildSeed } from "../prompt/memory/structured/rebuild.ts";
+import { newScenePage } from "../prompt/memory/structured/pages.ts";
 import { confirmedWindows, writerCadence, writerCeiling } from "../prompt/memory/structured/window.ts";
 import { memoryRecords, writeMemory } from "./memoryFixtures.ts";
 import * as localModels from "../prompt/transformers.ts";
@@ -3743,6 +3744,119 @@ describe("structured memory job hand-offs", () => {
             } finally {
                 store.close();
                 await patchHypaV3(priorSettings);
+            }
+        });
+
+        it.each([
+            { body: "돌다리", overCap: false, behavior: "sends the saved scene at the required-page limit" },
+            {
+                body: "돌다리 A",
+                overCap: true,
+                behavior: "refuses the saved scene one token above the required-page limit",
+            },
+            {
+                body: "돌다리 A",
+                overCap: true,
+                plugin: true,
+                behavior: "matches the saved scene charge to the bound plugin model's refusal",
+            },
+        ])("$behavior", async ({ body, overCap, plugin }) => {
+            const limit = plugin ? 15 : 14;
+            const presetRecord = (await single("hypaV3Presets")).data;
+            const priorSettings = presetRecord.items.find(
+                ({ id }: { id: string }) => id === presetRecord.selectedId,
+            ).settings;
+            onTestFinished(() => patchHypaV3(priorSettings));
+            await patchHypaV3({
+                budgetMode: "tokens",
+                memoryBudgetTokens: 200,
+                structured: {
+                    cadence: "manual",
+                    requiredCap: limit,
+                    laneSplit: "manual",
+                    laneTargets: { flow: 0, pages: 0, events: 0, evidence: 0, threads: 0 },
+                },
+            });
+            const pluginModel: LLMModel | undefined = plugin
+                ? {
+                      id: "pluginmodel:::scene-counter",
+                      name: "scene-counter",
+                      shortName: "scene-counter",
+                      fullName: "scene-counter",
+                      internalID: "scene-counter",
+                      flags: [],
+                      parameters: [],
+                      provider: LLMProvider.AsIs,
+                      format: LLMFormat.Plugin,
+                      tokenizer: LLMTokenizer.tiktokenCl100kBase,
+                  }
+                : undefined;
+            if (pluginModel) {
+                onTestFinished(() => patchPreset("modelProfiles", { modelId: "reverse_proxy" }));
+                await patchPreset("modelProfiles", { modelId: pluginModel.id });
+            }
+            const chaId = await seedCharacter({ messages: [], extra: { firstMessage: "" } });
+            await setChatMeta(chaId, { memoryEnabled: true, memoryMode: "structuredMemory" });
+            const store = openStore();
+            try {
+                const scene = newScenePage("scene");
+                scene.sections = [{ heading: "place", body, provenance: [], sources: [], locked: false, updatedAt: 1 }];
+                writeMemory(store, chaId, "k", { pages: [scene] });
+                const route = `/api/memory/structured/${chaId}/k/records/pages/scene?sceneBudget=1`;
+                if (pluginModel) {
+                    const unregistered = await api(route);
+                    expect(unregistered.status).toBe(200);
+                    expect(unregistered.body).not.toHaveProperty("sceneBudget");
+                }
+                const read = await api(
+                    pluginModel ? `${route}&pluginModel=${encodeURIComponent(JSON.stringify(pluginModel))}` : route,
+                );
+                const input = "Continue the scene.";
+                const { terminal } = await job(
+                    "send",
+                    chaId,
+                    { mode: "normal", input, userMessageId: "question" },
+                    pluginModel
+                        ? {
+                              hooks: {
+                                  ...NO_GENERATION_HOOKS,
+                                  providers: [{ name: pluginModel.name, model: pluginModel }],
+                              },
+                          }
+                        : {},
+                );
+                const history = (await readChat(chaId)).data.message as Message[];
+                const tokens = limit + Number(overCap);
+
+                if (overCap) {
+                    expect(terminal).toMatchObject({
+                        type: "error",
+                        stage: "assembly",
+                        code: "memoryRequiredOverCap",
+                        message: `Error: The required memory pages need ${tokens} tokens, over the limit of ${limit}: Scene (${tokens}). Shorten the scene, or raise the required-page limit in Memory settings.`,
+                    });
+                    expect(upstream).toEqual([]);
+                    expect(server.context.requestHistory.list({ chaId, chatId: "k" }).items).toEqual([]);
+                    expect(history.map(({ role, data }) => [role, data])).toEqual([["user", input]]);
+                } else {
+                    expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                    expect(mains()).toHaveLength(1);
+                    expect(mains()[0].body.messages).toContainEqual(
+                        expect.objectContaining({ content: expect.stringContaining(`Scene | place: ${body}`) }),
+                    );
+                    expect(history.at(-1)).toMatchObject({ role: "char", data: "Main reply." });
+                    expect(parseContextReport(history.at(-1)?.generationInfo?.context)?.memory?.items).toContainEqual(
+                        expect.objectContaining({ id: scene.id, lane: "required", tokens }),
+                    );
+                }
+                expect(read.status).toBe(200);
+                expect(read.body).toMatchObject({
+                    data: scene,
+                    sceneBudget: { tokens, requiredTokens: tokens, limit },
+                });
+                expect(store.memory.readRecord(chaId, "k", "pages", scene.id)?.data).toEqual(scene);
+            } finally {
+                store.close();
             }
         });
 

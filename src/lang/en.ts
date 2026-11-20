@@ -2929,8 +2929,23 @@ export const languageEnglish = {
     },
     structuredMemory: {
         name: "Structured memory",
-        requiredOverCap: (tokens: number, limit: number, pages: string) =>
-            `Error: The required memory pages need ${tokens} tokens, over the limit of ${limit}: ${pages}. Shorten a page, or set it to auto.`,
+        requiredOverCap: (
+            tokens: number,
+            limit: number,
+            pages: string,
+            sceneLimit?: "required" | "whole",
+            otherPages = false,
+        ) => {
+            let advice = "Shorten a page, or set it to auto.";
+            if (sceneLimit) {
+                advice =
+                    sceneLimit === "required"
+                        ? "Shorten the scene, or raise the required-page limit in Memory settings."
+                        : "Shorten the scene to fit the total memory budget.";
+                if (otherPages) advice += " You can also shorten another required page or set it to auto.";
+            }
+            return `Error: The required memory pages need ${tokens} tokens, over the limit of ${limit}: ${pages}. ${advice}`;
+        },
         removeRetracts: (events: number) =>
             events === 1
                 ? "1 memory event cites this. Removing it also retracts that event, and nothing can bring it back. If these messages are the newest recorded turn, its memory page changes are undone too. Remove anyway?"
@@ -3293,6 +3308,13 @@ export const languageEnglish = {
             save: "Save",
             cancel: "Cancel",
             sectionText: "Section text",
+            sceneTokens: (count: number, limit: number) =>
+                `Saved scene: ${count.toLocaleString()} / ${limit.toLocaleString()} required-page tokens`,
+            requiredTokens: (count: number, limit: number) =>
+                `All required pages: ${count.toLocaleString()} / ${limit.toLocaleString()} tokens`,
+            sceneOverCap:
+                "Required pages exceed their token limit. Shorten the scene or raise the limit in Memory settings.",
+            sceneCountUnavailable: "Saved scene token count unavailable.",
             sceneLongField:
                 "Over 800 characters: prompts get longer. The memory writer may rewrite this field up to this length.",
             characters: (count: number, limit: number) => `${count} / ${limit}`,

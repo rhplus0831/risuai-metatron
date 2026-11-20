@@ -68,8 +68,19 @@ import { chatAdoptionHold, writerPaused } from "./writer.ts";
  */
 
 /** The English text of `language.structuredMemory.requiredOverCap`, which the server cannot import. */
-function requiredOverCap(tokens: number, limit: number, pages: string): string {
-    return `Error: The required memory pages need ${tokens} tokens, over the limit of ${limit}: ${pages}. Shorten a page, or set it to auto.`;
+function requiredOverCap(card: RequiredOverLimit, pages: readonly MemoryPage[], requiredCap: number): string {
+    const byId = new Map(pages.map((page) => [page.id, page]));
+    const listed = card.pages.map(({ id, tokens }) => `${byId.get(id)?.title ?? id} (${tokens})`);
+    const scene = card.pages.some(({ id }) => byId.get(id)?.type === "scene");
+    let advice = "Shorten a page, or set it to auto.";
+    if (scene) {
+        advice =
+            card.pages.reduce((sum, page) => sum + page.tokens, 0) > requiredCap
+                ? "Shorten the scene, or raise the required-page limit in Memory settings."
+                : "Shorten the scene to fit the total memory budget.";
+        if (card.pages.length > 1) advice += " You can also shorten another required page or set it to auto.";
+    }
+    return `Error: The required memory pages need ${card.tokens} tokens, over the limit of ${card.limit}: ${listed.join(", ")}. ${advice}`;
 }
 
 /** What a send reads of a chat's records. */
@@ -286,15 +297,11 @@ export async function selectMemory(
         targets,
     };
     const prepared = await prepareRetrieval(retrievalInput);
-    const requiredAlert = (card: RequiredOverLimit): MemorySelection => {
-        const titles = new Map(records.pages.map(({ id, title }) => [id, title]));
-        const pages = card.pages.map(({ id, tokens }) => `${titles.get(id) ?? id} (${tokens})`);
-        return {
-            type: "alert",
-            error: requiredOverCap(card.tokens, card.limit, pages.join(", ")),
-            code: "memoryRequiredOverCap",
-        };
-    };
+    const requiredAlert = (card: RequiredOverLimit): MemorySelection => ({
+        type: "alert",
+        error: requiredOverCap(card, records.pages, structured.requiredCap),
+        code: "memoryRequiredOverCap",
+    });
     const preflight = await preflightMemoryCard(tokenizer, {
         maximum,
         lanes: prepared.lanes,

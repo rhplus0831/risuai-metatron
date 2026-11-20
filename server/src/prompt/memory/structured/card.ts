@@ -211,6 +211,10 @@ function linesOf(items: readonly Pick<LaneItem, "lane" | "line" | "order">[]): M
     return lines;
 }
 
+/** The required cap charges each tagged page line as its own system message. */
+export const cardTextTokens = (tokenizer: MemoryTokenizer, content: string) =>
+    tokenizer.tokenizeChat({ role: "system", content });
+
 /** The real frame, including the header, required lines and each nonempty part's own system message. */
 async function frameTokens(
     tokenizer: MemoryTokenizer,
@@ -221,7 +225,7 @@ async function frameTokens(
     const lines = linesOf(reserved);
     for (const lane of headings) lines.set(lane, []);
     const { stable, volatile } = renderParts(lines, frame);
-    const count = (content: string) => tokenizer.tokenizeChat({ role: "system", content });
+    const count = (content: string) => cardTextTokens(tokenizer, content);
     return (await count(stable)) + (volatile === "" ? 0 : await count(volatile));
 }
 
@@ -282,7 +286,7 @@ export async function buildMemoryCard(
         storyDate,
     }: { maximum: number; lanes: readonly Lane<LaneCandidate>[]; storyDate?: MemoryStoryDate },
 ): Promise<MemoryCard | RequiredOverLimit> {
-    const count = (content: string) => tokenizer.tokenizeChat({ role: "system", content });
+    const count = (content: string) => cardTextTokens(tokenizer, content);
     const partTokens = async ({ stable, volatile }: CardParts) =>
         (await count(stable)) + (volatile === "" ? 0 : await count(volatile));
 

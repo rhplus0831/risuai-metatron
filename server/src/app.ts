@@ -988,6 +988,7 @@ export function createServerContext(options: {
     const chatHeld = (characterId: string, chatId: string) =>
         generationJobs.chatBusy(characterId, chatId) || generationLock.chatHolders(characterId, chatId).size > 0;
     registerStructuredMemoryRoutes(app, {
+        tokens: tokenCounter,
         store: resources,
         maintenance: snapshots.gate,
         kinds: resourceKinds,

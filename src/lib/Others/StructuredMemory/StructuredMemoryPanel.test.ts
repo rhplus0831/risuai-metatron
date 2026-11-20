@@ -1547,6 +1547,68 @@ function typeSection(value: string) {
 }
 const sentEdits = () => reads("edits").map(([, init]) => JSON.parse(init!.body as string));
 
+it("shows the saved scene charge and warns only above the required-page limit", async () => {
+    const state = serveMemory();
+    const scene = {
+        ...state.page,
+        id: "scene",
+        type: "scene",
+        contextMode: "always",
+        sections: [{ ...state.page.sections[0], heading: "place", body: "돌다리" }],
+    };
+    const fetch = io.authFetch.getMockImplementation()!;
+    const route = "/api/memory/structured/c/k/records/pages/scene";
+    const limit = 14;
+    const charges = new Map([
+        ["돌다리", limit],
+        ["돌다리 A", limit + 1],
+    ]);
+    let savedRevision = 1;
+    let data = scene;
+    io.authFetch.mockImplementation(async (url, init, options) => {
+        if (url === route) return Response.json({ revision: state.revision, data });
+        if (url === `${route}?sceneBudget=1`) {
+            const tokens = charges.get(data.sections[0].body);
+            return Response.json({
+                revision: state.revision,
+                data,
+                ...(tokens === undefined ? {} : { sceneBudget: { tokens, requiredTokens: tokens, limit } }),
+            });
+        }
+        if (url.endsWith("/edits")) {
+            const { edit } = JSON.parse(init!.body as string);
+            data = { ...scene, sections: [{ ...scene.sections[0], body: edit.body }] };
+            state.revision = revision(++savedRevision);
+            return Response.json({ revision: state.revision, kind: "pages", data });
+        }
+        return fetch(url, init, options);
+    });
+    await open();
+    click('[data-memory-page="scene"]');
+    await settle();
+    await choosePageView("manage");
+
+    const budget = () => query("[data-memory-scene-budget]")?.textContent ?? "";
+    const warning = "Required pages exceed their token limit. Shorten the scene or raise the limit in Memory settings.";
+    expect(budget()).toContain("Saved scene: 14 / 14 required-page tokens");
+    expect(budget()).not.toContain(warning);
+
+    const save = async (body: string) => {
+        press("[data-memory-section-edit]");
+        typeSection(body);
+        press("[data-memory-section-save]");
+        await settle();
+        expect(query("[data-memory-section-body]")?.textContent).toBe(body);
+    };
+    await save("돌다리 A");
+    expect(budget()).toContain("Saved scene: 15 / 14 required-page tokens");
+    expect(budget()).toContain(warning);
+
+    await save("돌다리 B");
+    expect(query("[data-memory-scene-budget]")).toBeNull();
+    expect(target.textContent).toContain("Saved scene token count unavailable.");
+});
+
 it("shows the long scene field badge only above 800 characters while editing", async () => {
     const state = serveMemory();
     state.page.sections[0] = { ...state.page.sections[0], heading: "state", body: "S".repeat(800), locked: false };

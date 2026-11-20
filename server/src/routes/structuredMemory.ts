@@ -3,10 +3,15 @@ import { writerGreeting } from "../prompt/memory/structured/window.ts";
 import { resolveChatBinding } from "../../../shared/chatBinding.ts";
 import type { Context, Hono, MiddlewareHandler } from "hono";
 import type { Chat, Message, character, groupChat } from "../../../shared/database.ts";
+import { isModelDescriptor } from "../../../shared/llm/validate.ts";
+import { eligibleHistory } from "../../../shared/eligibleHistory.ts";
+import { selectedHypaV3Preset } from "../../../shared/hypaV3Presets.ts";
 import { RESOURCE_KIND, RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     type MemoryGreetingSource,
     storedMemoryGreeting,
+    normalizeStructuredMemorySettings,
+    memoryEventHasReadableFields,
     hypaV3DataHoldsSummaries,
     isSealedHypaV3Data,
     MEMORY_FIND_EXCERPT_CHARS,
@@ -75,8 +80,12 @@ import type { MaintenanceGate } from "../data/snapshots.ts";
 import { readJsonBody } from "../http/body.ts";
 import { compressedJson } from "../http/compressedJson.ts";
 import { readChatBindingLookup } from "../jobs/chatBinding.ts";
-import { loadJobScope } from "../jobs/jobScope.ts";
-import { jobMemoryBlockingReason } from "../prompt/runner.ts";
+import { admitProviderModels, loadJobScope, scopeChat } from "../jobs/jobScope.ts";
+import { jobChatTokenCounter, jobMemoryBlockingReason } from "../prompt/runner.ts";
+import type { TokenCounter } from "../prompt/tokens.ts";
+import { cardTextTokens } from "../prompt/memory/structured/card.ts";
+import { readBudget, type ReadEntry } from "../prompt/memory/structured/lanes.ts";
+import { prepareRetrieval } from "../prompt/memory/structured/retrieve.ts";
 import { adoptedEvents } from "../prompt/memory/structured/adopt.ts";
 import { chapterUnits } from "../prompt/memory/structured/chapters.ts";
 import {
@@ -102,7 +111,11 @@ import {
 } from "../prompt/memory/structured/pages.ts";
 import { defaultPrompts } from "../prompt/memory/structured/prompts.ts";
 import { memoryWorkCost, rebuildCost } from "../prompt/memory/structured/rebuild.ts";
-import { removeRetractedEvents, withRetractedEvidence } from "../prompt/memory/structured/reconcile.ts";
+import {
+    reconcileEvents,
+    removeRetractedEvents,
+    withRetractedEvidence,
+} from "../prompt/memory/structured/reconcile.ts";
 import { parseRestoredRecords } from "../prompt/memory/structured/restore.ts";
 import { chatAdoptionHold } from "../prompt/memory/structured/writer.ts";
 import type { AppEnv } from "../types.ts";
@@ -130,6 +143,36 @@ const REFUSAL_TEXT = {
     eventIds: `ids must contain 1 to ${MEMORY_REMOVE_EVENTS_MAX} valid event ids`,
 } as const;
 
+/** Use the same bound prompt, model and memory presets as a send. */
+function boundMemoryScope(
+    store: ResourceStore,
+    kinds: ResourceKindRegistry,
+    characterId: string,
+    chatId: string,
+    metadataOnly: boolean,
+) {
+    const chat = store.chatMeta(characterId, chatId);
+    if (!chat) return undefined;
+    const binding = resolveChatBinding(chat.data, readChatBindingLookup(store, kinds));
+    if (!binding.ok) return undefined;
+    const { promptPresetId: presetId, modelPresetId, personaId } = binding.ids;
+    return loadJobScope(
+        store,
+        kinds,
+        {
+            characterId,
+            chatId,
+            presetId,
+            modelPresetId,
+            personaId,
+            chatRevision: chat.revision,
+            mode: "manual",
+            input: "",
+        },
+        { metadataOnly, chatMetadata: chat },
+    );
+}
+
 /** The current bound writer rule, without message reads; an unresolvable binding leaves contents readable. */
 function writerBlockingReason(
     store: ResourceStore,
@@ -138,31 +181,79 @@ function writerBlockingReason(
     chatId: string,
 ): StructuredMemoryContentsAnswer["writerBlockingReason"] {
     try {
-        const chat = store.chatMeta(characterId, chatId);
-        if (!chat) return undefined;
-        const binding = resolveChatBinding(chat.data, readChatBindingLookup(store, kinds));
-        if (!binding.ok) return undefined;
-        const { promptPresetId: presetId, modelPresetId, personaId } = binding.ids;
-        const scope = loadJobScope(
-            store,
-            kinds,
-            {
-                characterId,
-                chatId,
-                presetId,
-                modelPresetId,
-                personaId,
-                chatRevision: chat.revision,
-                mode: "manual",
-                input: "",
-            },
-            { metadataOnly: true, chatMetadata: chat },
-        );
-        return jobMemoryBlockingReason(scope);
+        const scope = boundMemoryScope(store, kinds, characterId, chatId, true);
+        return scope && jobMemoryBlockingReason(scope);
     } catch {
         // This optional settings observation must not prevent reading the chat's memory records.
         return undefined;
     }
+}
+
+/** Count only the required lines of the saved chat, before optional retrieval or embeddings. */
+async function savedSceneBudget(
+    store: ResourceStore,
+    kinds: ResourceKindRegistry,
+    tokens: TokenCounter,
+    characterId: string,
+    chatId: string,
+    scene: MemoryPage,
+    pluginModel: string | undefined,
+): Promise<StructuredMemoryRecordAnswer["sceneBudget"]> {
+    const scope = boundMemoryScope(store, kinds, characterId, chatId, false);
+    const chat = scope && scopeChat(scope);
+    const preset = scope && selectedHypaV3Preset(scope.db);
+    if (!scope || !chat || !preset) return undefined;
+    if (scope.db.aiModel.startsWith("pluginmodel:::")) {
+        // A send gets registered provider descriptors from the tab that owns the job.
+        if (!pluginModel) return undefined;
+        let model: unknown;
+        try {
+            model = JSON.parse(pluginModel);
+        } catch {
+            return undefined;
+        }
+        if (!isModelDescriptor(model) || model.id !== scope.db.aiModel) return undefined;
+        admitProviderModels(scope, [{ name: model.id.slice("pluginmodel:::".length), model }]);
+    }
+    const listed = store.memory.readKinds(characterId, chatId, ["pages", "events"]);
+    if (!listed?.pages.some(({ id }) => id === scene.id)) return undefined;
+    const pages: MemoryPage[] = [];
+    for (const { id } of listed.pages) {
+        const page = id === scene.id ? scene : store.memory.readRecord(characterId, chatId, "pages", id)?.data;
+        if (!page) return undefined;
+        pages.push(page);
+    }
+    const events: MemoryEvent[] = [];
+    for (const { id } of listed.events) {
+        const event = store.memory.readRecord(characterId, chatId, "events", id)?.data;
+        if (!event) return undefined;
+        if (memoryEventHasReadableFields(event)) events.push(event);
+    }
+    const entries: ReadEntry[] = eligibleHistory(chat.message).messages.map(
+        ({ chatId: messageId, role, data: text }) => ({ messageId, role, text }),
+    );
+    const owner = scope.db.characters.find(({ chaId }) => chaId === characterId);
+    const greeting = writerGreeting(owner, chat);
+    if (greeting)
+        entries.unshift({ messageId: undefined, role: "char", text: greeting.text, greeting: greeting.source });
+    const settings = normalizeStructuredMemorySettings(preset.settings.structured);
+    const { required } = await prepareRetrieval({
+        pages,
+        events: reconcileEvents(events, chat.message),
+        entries,
+        stage: scene.participants ?? [],
+        threads: [],
+        settings,
+        targets: readBudget(preset.settings, scope.db.maxContext, scope.db.maxResponse).targets,
+        window: { start: 0, dropped: new Set() },
+    });
+    const counter = jobChatTokenCounter({ tokens }, scope);
+    const charges = await Promise.all(required.items.map(({ line }) => cardTextTokens(counter, line)));
+    return {
+        tokens: charges[required.items.findIndex(({ id }) => id === scene.id)] ?? 0,
+        requiredTokens: charges.reduce((sum, charge) => sum + charge, 0),
+        limit: settings.requiredCap,
+    };
 }
 
 /** The files an import request holds, or null for a body of another shape. */
@@ -730,6 +821,7 @@ type RoundRead = {
 export function registerStructuredMemoryRoutes(
     app: Hono<AppEnv>,
     arg: {
+        tokens: TokenCounter;
         store: ResourceStore;
         maintenance: MaintenanceGate;
         kinds: ResourceKindRegistry;
@@ -835,6 +927,25 @@ export function registerStructuredMemoryRoutes(
             if (!record) {
                 const reason = store.chatRevision(characterId, chatId) === null ? "chatGone" : "recordGone";
                 return c.json({ error: REFUSAL_TEXT[reason], reason }, 404);
+            }
+            if (
+                kind === "pages" &&
+                "type" in record.data &&
+                record.data.type === "scene" &&
+                c.req.query("sceneBudget") === "1"
+            ) {
+                // The saved page stays readable even when its token charge cannot be computed.
+                const sceneBudget = await savedSceneBudget(
+                    store,
+                    kinds,
+                    arg.tokens,
+                    characterId,
+                    chatId,
+                    record.data,
+                    c.req.query("pluginModel"),
+                ).catch(() => undefined);
+                if (sceneBudget)
+                    return compressedJson(c, { ...record, sceneBudget } satisfies StructuredMemoryRecordAnswer);
             }
             return compressedJson(c, record satisfies StructuredMemoryRecordAnswer);
         } catch (error) {

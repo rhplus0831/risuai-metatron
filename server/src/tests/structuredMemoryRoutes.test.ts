@@ -1774,6 +1774,49 @@ function bindChat(s: Awaited<ReturnType<typeof server>>, id = chatId) {
     };
 }
 
+it("returns the saved scene without a token budget when another listed page disappears", async () => {
+    const s = await server();
+    bindChat(s);
+    const profiles = createKindRegistry(DEFAULT_RESOURCE_KINDS).get("modelProfiles")!;
+    const current = s.store.get(profiles, "main")!;
+    s.store.put(
+        profiles,
+        "main",
+        (current.data as object[]).map((profile) => ({ ...profile, modelId: "reverse_proxy", customTokenizer: "tik" })),
+        current.revision,
+    );
+    const scene = {
+        ...page("scene", "돌다리"),
+        type: "scene" as const,
+        title: "Scene",
+        contextMode: "always" as const,
+    };
+    s.write({ pages: [scene, page("charter")] });
+    const route = `${base}/records/pages/scene`;
+    const saved = await answer(await s.request(route));
+    expect(saved).toEqual({ revision: expect.any(String), data: scene });
+    expect(await answer(await s.request(`${route}?sceneBudget=1`))).toMatchObject({
+        sceneBudget: { tokens: expect.any(Number), requiredTokens: expect.any(Number), limit: 1500 },
+    });
+
+    const get = StatementSync.prototype.get;
+    const missing = vi.spyOn(StatementSync.prototype, "get").mockImplementation(function (
+        this: StatementSync,
+        ...args
+    ) {
+        if (this.sourceSQL === "SELECT data FROM memory_pages WHERE chatSeq = ? AND id = ?" && args[1] === "charter")
+            return undefined;
+        return get.apply(this, args);
+    });
+    try {
+        const response = await s.request(`${route}?sceneBudget=1`);
+        expect(response.status).toBe(200);
+        expect(await response.json()).toEqual(saved);
+    } finally {
+        missing.mockRestore();
+    }
+});
+
 it("refuses edits and inheritance while the real memory task is queued or running and accepts them after cancellation", async () => {
     // Hold tokenizer file I/O, not a task implementation; fake deadlines cannot race the test.
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
