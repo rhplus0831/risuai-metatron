@@ -30,6 +30,9 @@
      * out of the layout until rendered and the reader is not scrolling; appended or newer rows never wait. A new
      * path that adds rows above the shown ones goes through this hold too (`holdRow`).
      *
+     * A row whose `Chat` is mounted again (a text change, a stream's end, a reload) keeps its height until the
+     * new instance has rendered, and its top is put back after (`keepRowHeight`, `settleRowHeight`).
+     *
      * Scrolling follows a scroll anchor (`ScrollAnchor`) that input releases to the reader. `suspendTrim` (a
      * screenshot or a message jump) and an unbounded window (`loadPages === Infinity`, a screenshot) skip the
      * opening's staging and reveal, show held rows at once, release the anchor, and never trim; only the unbounded
@@ -111,6 +114,8 @@
         held: boolean;
         /** The instance whose render a held row last finished. */
         renderedInstance?: Row["instance"];
+        /** The height and scroll offset from before a remount whose render is still awaited. */
+        kept?: { height: number; scrollTop: number; inputs: number };
         dispose: () => void;
     };
     const rows = new Map<string, Row>();
@@ -305,8 +310,9 @@
     function applyAnchor() {
         const scroller = chatBody?.parentElement;
         if (!anchor || !scroller) return;
-        // A removed row (a reroll's or a deletion's) hands following over to the bottom.
-        if (anchor.mode === "start" && !anchor.element.isConnected) anchor = { mode: "end" };
+        // A removed row (a deletion's, a reroll's, a write that gave the message a new id) hands
+        // following over to the row that is newest now.
+        if (anchor.mode === "start" && !anchor.element.isConnected) anchor = latestAnchor() ?? { mode: "end" };
         let target = 0;
         if (anchor.mode === "start") {
             const rect = anchor.element.getBoundingClientRect();
@@ -319,6 +325,7 @@
             target = Math.min(0, scroller.scrollTop + rect.top - scroller.getBoundingClientRect().top);
         }
         if (Math.abs(scroller.scrollTop - target) >= 1) scroller.scrollTop = target;
+        knownOffset = target;
     }
 
     function setAnchor(next: ScrollAnchor | null) {
@@ -341,7 +348,17 @@
         const scroller = body?.parentElement;
         if (!scroller) return;
         const release = () => {
+            readerInputs++;
+            // While an opening still hides its newest row (unrendered, or waiting for its images in
+            // view) there is nothing to take over, and released before the row has rendered the view
+            // would stay at the bottom of whatever it renders. The reveal ends at its deadline at the
+            // latest, so the anchor is never kept for long.
+            if (revealBatch?.next === 0) return;
             anchor = null;
+        };
+        // A sideways wheel does not scroll the transcript.
+        const wheel = (event: WheelEvent) => {
+            if (event.deltaY !== 0) release();
         };
         // Only a press on the scroller itself (its scrollbar); a click in a row or the composer does not scroll.
         const pointer = (event: PointerEvent) => {
@@ -353,7 +370,7 @@
                 release();
             }
         };
-        scroller.addEventListener("wheel", release, { passive: true });
+        scroller.addEventListener("wheel", wheel, { passive: true });
         scroller.addEventListener("touchmove", release, { passive: true });
         scroller.addEventListener("pointerdown", pointer, { passive: true });
         scroller.addEventListener("keydown", key);
@@ -364,7 +381,7 @@
         resize?.observe(body);
         return () => {
             resize?.disconnect();
-            scroller.removeEventListener("wheel", release);
+            scroller.removeEventListener("wheel", wheel);
             scroller.removeEventListener("touchmove", release);
             scroller.removeEventListener("pointerdown", pointer);
             scroller.removeEventListener("keydown", key);
@@ -517,6 +534,7 @@
         revealing = true;
         for (const entry of batch.rows) entry.row.element.classList.add("chat-row-pending");
         if (chatBody.parentElement) chatBody.parentElement.scrollTop = 0;
+        knownOffset = 0;
         revealTimer = setTimeout(finishReveal, 1200);
         for (const entry of batch.rows) void settleRevealRow(entry);
     }
@@ -642,6 +660,85 @@
         };
     });
 
+    // Every row's height as of the last layout. A remount cannot measure it: by then the old `Chat` may
+    // already have dropped its body (a reload pointer replaces `ChatBody` first), and a layout forced in
+    // that state would itself set off the browser's scroll anchoring.
+    const rowHeights = new WeakMap<Element, number>();
+    const rowSizes =
+        typeof ResizeObserver === "undefined"
+            ? undefined
+            : new ResizeObserver((entries) => {
+                  for (const entry of entries) {
+                      rowHeights.set(entry.target, entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height);
+                  }
+              });
+    // The scroll offset as of the last scroll event, for the same reason: reading it forces a layout.
+    // A scroller that never scrolled is at 0, the bottom.
+    let knownOffset = 0;
+    // Rows whose kept height still waits for a render, and the reader's scroll inputs so far.
+    const keptRows = new Set<Row>();
+    let readerInputs = 0;
+    $effect(() => {
+        const scroller = chatBody?.parentElement;
+        if (!scroller) return;
+        const moved = () => {
+            knownOffset = scroller.scrollTop;
+        };
+        scroller.addEventListener("scroll", moved, { passive: true });
+        return () => scroller.removeEventListener("scroll", moved);
+    });
+
+    /**
+     * Keeps a row's height while its `Chat` is mounted again (a text change, a stream's end, a reload),
+     * until an instance has rendered. Without it the row is only its shell for a frame or more, the
+     * browser's scroll anchoring moves a reader near the bottom there, and nothing brings them back. A
+     * remount during the wait keeps the first height and offset; a row never laid out keeps nothing.
+     */
+    function keepRowHeight(row: Row) {
+        if (row.kept) return true;
+        const height = rowHeights.get(row.element);
+        if (!height) return false;
+        row.kept = { height, scrollTop: knownOffset, inputs: readerInputs };
+        keptRows.add(row);
+        row.element.style.minHeight = `${height}px`;
+        return true;
+    }
+
+    /**
+     * Lets the row take its new height once this instance has rendered, and puts its top back where it
+     * was when the new text is longer or shorter: in this reversed scroller a row's bottom stays and its
+     * top moves by the difference. The browser's anchoring does not do that: the remount removed its
+     * anchor node, and a `min-height` change on the row suppresses it for that layout. Nothing is
+     * corrected while the app's anchor holds the view, for a row above the view (its growth moves nothing
+     * the reader sees), after scroll input, or when the offset changed meanwhile (the browser's anchoring
+     * did answer, or something else scrolled).
+     */
+    async function settleRowHeight(row: Row, instance: Row["instance"]) {
+        try {
+            await tick();
+            await instance.whenRendered?.();
+        } catch {
+            // A failed render must not keep the old height.
+        }
+        // A later remount waits for its own instance.
+        const kept = row.kept;
+        if (row.instance !== instance || !kept) return;
+        row.kept = undefined;
+        keptRows.delete(row);
+        row.element.style.minHeight = "";
+        const scroller = chatBody?.parentElement;
+        if (anchor || kept.inputs !== readerInputs || !scroller || !row.element.isConnected) return;
+        // Measured before the offset is read: this layout is where the browser's anchoring answers.
+        const rect = row.element.getBoundingClientRect();
+        const offset = scroller.scrollTop;
+        if (offset !== kept.scrollTop) return;
+        if (rect.bottom <= scroller.getBoundingClientRect().top || Math.abs(rect.height - kept.height) < 1) return;
+        scroller.scrollTop = offset + kept.height - rect.height;
+        knownOffset = scroller.scrollTop;
+        // The rows of the same flush that still wait were kept at the offset this one replaced.
+        for (const other of keptRows) if (other.kept.scrollTop === offset) other.kept.scrollTop = knownOffset;
+    }
+
     function createRow(input: RowInput, initiallyArmed: boolean, held: boolean, ref: ChatRef | null): Row {
         const element = document.createElement("div");
         element.classList.add("chat-message-container");
@@ -666,6 +763,7 @@
             dispose: () => {},
         };
         rowElements.set(element, row);
+        rowSizes?.observe(element);
         if (held) holdRow(row);
         row.dispose = $effect.root(() => {
             let mountKey: MountKey | undefined;
@@ -725,6 +823,7 @@
                         }
                         if (Object.keys(update).length) row.instance.updateRow?.(update);
                     } else {
+                        const kept = !!row.instance && keepRowHeight(row);
                         if (row.instance) unmount(row.instance);
                         element.classList.remove("far");
                         row.instance = mount(Chat, {
@@ -742,6 +841,7 @@
                                 disabled: message.disabled ?? false,
                             },
                         });
+                        if (kept) void settleRowHeight(row, row.instance);
                         if (mountBatch?.pending.has(row)) void settleFirstStageRow(mountBatch, row);
                         if (row.held) void settleHeldRow(row, row.instance);
                         // A replacement instance must settle again while its row is still hidden.
@@ -779,6 +879,8 @@
 
     function removeRow(row: Row, defer = false) {
         row.dispose();
+        keptRows.delete(row);
+        rowSizes?.unobserve(row.element);
         observer?.unobserve(row.element);
         rowElements.delete(row.element);
         row.element.remove();
@@ -956,6 +1058,7 @@
         retired.clear();
         for (const row of rows.values()) removeRow(row);
         rows.clear();
+        rowSizes?.disconnect();
     });
 
     function checkIfAtBottom() {

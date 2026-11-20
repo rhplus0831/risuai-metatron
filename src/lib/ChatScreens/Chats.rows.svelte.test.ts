@@ -174,6 +174,13 @@ const clearUpdates = () =>
         row.updates.length = 0;
     });
 const rect = (top: number, bottom: number) => new DOMRect(0, top, 300, bottom - top);
+const fakeFrames = () =>
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"] });
+/** Ends an opening's reveal at its 1200 ms deadline (under `fakeFrames`): input releases the anchor only after it. */
+const endReveal = () => {
+    vi.advanceTimersByTime(1200);
+    flushSync();
+};
 
 function render(
     input = messages(6),
@@ -591,7 +598,9 @@ describe("distant row containment", () => {
 describe("new reply notification", () => {
     it("reads the bottom before a same-chat character append and marks an unread reply", () => {
         settings.ui.autoScrollToNewMessage = true;
+        fakeFrames();
         const { props, scroller, append, ids } = render();
+        endReveal();
         // The reader scrolls away from the newest message the opening showed.
         scroller.dispatchEvent(new Event("wheel"));
         const oldIds = ids();
@@ -1398,23 +1407,28 @@ describe("opening staged mounting", () => {
 
 describe("latest message scroll anchor", () => {
     const chat = { chaId: "c", chatId: "chat" };
-    let callbacks: (() => void)[] = [];
+    let callbacks: ((entries?: ResizeObserverEntry[]) => void)[] = [];
+    // The laid-out rows' sizes, as a ResizeObserver reports them.
+    let sizes: () => ResizeObserverEntry[] = () => [];
     const resize = () => {
-        for (const callback of callbacks) callback();
+        const entries = sizes();
+        for (const callback of callbacks) callback(entries);
         flushSync();
     };
 
     beforeEach(() => {
+        fakeFrames();
         callbacks = [];
         vi.stubGlobal(
             "ResizeObserver",
             class {
-                callback: () => void;
+                callback: (entries?: ResizeObserverEntry[]) => void;
                 constructor(callback: ResizeObserverCallback) {
-                    this.callback = () => callback([], this as never);
+                    this.callback = (entries = []) => callback(entries, this as never);
                     callbacks.push(this.callback);
                 }
                 observe() {}
+                unobserve() {}
                 disconnect() {
                     callbacks = callbacks.filter((item) => item !== this.callback);
                 }
@@ -1441,12 +1455,17 @@ describe("latest message scroll anchor", () => {
             }
         };
         measure();
+        sizes = () =>
+            [...ui.scroller.querySelectorAll<HTMLElement>(".chat-message-container")].flatMap((row) => {
+                const box = natural.get(row.dataset.messageId ?? "");
+                return box ? [{ target: row, borderBoxSize: [{ blockSize: box.height }] } as never] : [];
+            });
         const push = (message: Message) => {
             ui.props.messages.push(message);
             flushSync();
             measure();
         };
-        return { ...ui, natural, push };
+        return { ...ui, natural, push, measure };
     }
 
     it("opens at the newest message's start, keeps it there as it renders, and lets the reader take over", () => {
@@ -1458,10 +1477,54 @@ describe("latest message scroll anchor", () => {
         ui.natural.set("m5", { top: -400, height: 900 });
         resize();
         expect(ui.scroller.scrollTop).toBe(-500);
+        endReveal();
         ui.scroller.dispatchEvent(new Event("wheel"));
         ui.natural.set("m5", { top: -600, height: 1100 });
         resize();
         expect(ui.scroller.scrollTop).toBe(-500);
+    });
+
+    it("keeps the opening's anchor through input while its newest row is still hidden", async () => {
+        const ui = anchored();
+        // The rows are shells and the view is at the bottom: released now, it would stay there.
+        ui.scroller.dispatchEvent(new Event("wheel"));
+        ui.scroller.dispatchEvent(new Event("touchmove"));
+        ui.scroller.dispatchEvent(new KeyboardEvent("keydown", { key: "PageUp" }));
+        // The newest row is revealed once it has rendered, here still shorter than the view; the
+        // older rows stay hidden.
+        ui.natural.set("m5", { top: 300, height: 200 });
+        latest("m5").settle();
+        await vi.advanceTimersByTimeAsync(16);
+        flushSync();
+        const hidden = [...ui.scroller.querySelectorAll<HTMLElement>(".chat-row-pending")];
+        expect(hidden.map((row) => row.dataset.messageId)).toEqual(["m4", "m3", "m2", "m1", "m0"]);
+        ui.natural.set("m5", { top: -200, height: 700 });
+        resize();
+        expect(ui.scroller.scrollTop).toBe(-300);
+        ui.scroller.dispatchEvent(new Event("wheel"));
+        ui.natural.set("m5", { top: -400, height: 900 });
+        resize();
+        expect(ui.scroller.scrollTop).toBe(-300);
+    });
+
+    it("moves to the start of the row that is newest now when the anchored row is removed or replaced", () => {
+        const ui = anchored();
+        ui.natural.set("m5", { top: -200, height: 700 });
+        resize();
+        expect(ui.scroller.scrollTop).toBe(-300);
+        // A write that hands the newest message back under a new id replaces its row.
+        ui.props.messages.splice(5, 1, { chatId: "m5b", data: "text 5", role: "user" });
+        flushSync();
+        ui.measure();
+        ui.natural.set("m5b", { top: -350, height: 850 });
+        resize();
+        expect(ui.scroller.scrollTop).toBe(-450);
+        // A deletion leaves the message before it as the newest.
+        ui.natural.set("m4", { top: -100, height: 600 });
+        ui.props.messages.pop();
+        flushSync();
+        resize();
+        expect(ui.scroller.scrollTop).toBe(-200);
     });
 
     it("keeps the bottom for a newest message shorter than the view", () => {
@@ -1471,15 +1534,18 @@ describe("latest message scroll anchor", () => {
         expect(ui.scrollWrite.mock.calls).toEqual([[0]]);
     });
 
-    it("does not release the anchor for a click in a row or keys typed in an input", () => {
+    it("does not release the anchor for a click in a row, keys typed in an input, or a sideways wheel", () => {
         const ui = anchored();
         ui.natural.set("m5", { top: -200, height: 700 });
         resize();
+        endReveal();
         const row = ui.scroller.querySelector(".chat-message-container")!;
         row.dispatchEvent(new Event("pointerdown", { bubbles: true }));
         const input = document.createElement("textarea");
         ui.scroller.append(input);
         input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }));
+        // A sideways wheel.
+        ui.scroller.dispatchEvent(Object.assign(new Event("wheel"), { deltaX: 200, deltaY: 0 }));
         ui.natural.set("m5", { top: -400, height: 900 });
         resize();
         expect(ui.scroller.scrollTop).toBe(-500);
@@ -1492,6 +1558,7 @@ describe("latest message scroll anchor", () => {
     it("shows a reply that arrives whole from its start, locked or not", () => {
         settings.ui.autoScrollToNewMessage = true;
         const ui = anchored();
+        endReveal();
         ui.scroller.dispatchEvent(new Event("wheel"));
         ui.push({ chatId: "m6", data: "a whole reply", role: "char" });
         ui.natural.set("m6", { top: -100, height: 600 });
@@ -1514,6 +1581,7 @@ describe("latest message scroll anchor", () => {
     it("leaves a whole reply where the reader scrolled when its lock ends", () => {
         settings.ui.autoScrollToNewMessage = true;
         const ui = anchored();
+        endReveal();
         setLockedMessages(chat, ["m6"]);
         ui.push({ chatId: "m6", data: "a whole reply", role: "char" });
         ui.natural.set("m6", { top: -300, height: 800 });
@@ -1589,6 +1657,7 @@ describe("latest message scroll anchor", () => {
     it("leaves a reader who scrolled up during the stream where they are", () => {
         settings.ui.autoScrollToNewMessage = true;
         const ui = anchored();
+        endReveal();
         setLockedMessages(chat, ["m6"], ["m6"]);
         ui.push({ chatId: "m6", data: "", role: "char" });
         ui.scroller.dispatchEvent(new Event("wheel"));
@@ -1597,5 +1666,104 @@ describe("latest message scroll anchor", () => {
         setLockedMessages(chat, []);
         flushSync();
         expect(ui.scroller.scrollTop).toBe(-120);
+    });
+
+    describe("a row mounted again", () => {
+        // The reader took over at -500: m5 (700 px) starts 200 px below the view's top.
+        function reading() {
+            const ui = anchored();
+            ui.natural.set("m5", { top: -200, height: 700 });
+            ui.natural.set("m3", { top: -900, height: 300 });
+            resize();
+            endReveal();
+            ui.scroller.dispatchEvent(new Event("wheel"));
+            ui.scroller.scrollTop = -500;
+            ui.scroller.dispatchEvent(new Event("scroll"));
+            return ui;
+        }
+        const edit = (ui: ReturnType<typeof reading>, index: number, data: string) => {
+            const before = latest(`m${index}`);
+            ui.props.messages[index].data = data;
+            flushSync();
+            expect(latest(`m${index}`)).not.toBe(before);
+            return latest(`m${index}`);
+        };
+        const rendered = async (row: Row) => {
+            row.settle();
+            await vi.advanceTimersByTimeAsync(0);
+        };
+
+        it("keeps its height until the new instance has rendered, then puts its top back", async () => {
+            const ui = reading();
+            const row = edit(ui, 5, "a longer text");
+            expect(row.element.style.minHeight).toBe("700px");
+            // The new text is 200 px taller: in the reversed scroller the row's top moved up by as much.
+            ui.natural.set("m5", { top: -400, height: 900 });
+            resize();
+            // A second remount before the first rendered keeps the first height, and the first
+            // instance's render releases nothing.
+            const again = edit(ui, 5, "an even longer text");
+            await rendered(row);
+            expect(row.element.style.minHeight).toBe("700px");
+            await rendered(again);
+            expect(row.element.style.minHeight).toBe("");
+            expect(ui.scroller.scrollTop).toBe(-700);
+        });
+
+        it("leaves the offset alone when it changed, after scroll input, for a row above the view, and under the anchor", async () => {
+            const ui = reading();
+            const scrolled = edit(ui, 5, "a longer text");
+            ui.natural.set("m5", { top: -400, height: 900 });
+            ui.scroller.scrollTop = -450;
+            await rendered(scrolled);
+            expect(ui.scroller.scrollTop).toBe(-450);
+            ui.scroller.dispatchEvent(new Event("scroll"));
+            resize();
+
+            // Scroll input since the remount, though the offset is where it was.
+            const afterInput = edit(ui, 5, "a text longer still");
+            ui.natural.set("m5", { top: -600, height: 1100 });
+            ui.scroller.dispatchEvent(new Event("wheel"));
+            await rendered(afterInput);
+            expect(ui.scroller.scrollTop).toBe(-450);
+            resize();
+
+            // m3 ends 100 px above the view's top: its growth moves nothing the reader sees.
+            const above = edit(ui, 3, "a longer text");
+            ui.natural.set("m3", { top: -1100, height: 500 });
+            await rendered(above);
+            expect(ui.scroller.scrollTop).toBe(-450);
+
+            // The app's anchor realigns by itself at the next resize.
+            ui.props.messages.push({ chatId: "m6", data: "a whole reply", role: "char" });
+            flushSync();
+            ui.measure();
+            ui.natural.set("m6", { top: -100, height: 600 });
+            resize();
+            settings.ui.autoScrollToNewMessage = true;
+            (ui.instance as unknown as { scrollToLatestMessage: () => void }).scrollToLatestMessage();
+            expect(ui.scroller.scrollTop).toBe(-200);
+            const anchored = edit(ui, 6, "a longer reply");
+            ui.natural.set("m6", { top: -300, height: 800 });
+            await rendered(anchored);
+            expect(anchored.element.style.minHeight).toBe("");
+            expect(ui.scroller.scrollTop).toBe(-200);
+        });
+
+        it("corrects every row of one flush, and keeps nothing for a row never laid out", async () => {
+            const ui = reading();
+            // m4 lies above m5 and inside the view; m1 was never given a size.
+            ui.natural.set("m4", { top: -500, height: 300 });
+            resize();
+            const first = edit(ui, 5, "a longer text");
+            const second = edit(ui, 4, "a longer text");
+            expect(edit(ui, 1, "another text").element.style.minHeight).toBe("");
+            ui.natural.set("m5", { top: -400, height: 900 });
+            ui.natural.set("m4", { top: -800, height: 400 });
+            await rendered(first);
+            expect(ui.scroller.scrollTop).toBe(-700);
+            await rendered(second);
+            expect(ui.scroller.scrollTop).toBe(-800);
+        });
     });
 });
