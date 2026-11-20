@@ -7,12 +7,14 @@
     interface Props {
         item: SettingItem;
         ctx: SettingContext;
+        /** True when `SettingRenderer`'s spacing rule sets this item's top margin; the default one is then left out. */
+        itemSpacing?: boolean;
     }
 
-    let { item, ctx }: Props = $props();
+    let { item, ctx, itemSpacing = false }: Props = $props();
 </script>
 
-<div class="flex items-center {item.classes ?? 'mt-2'}">
+<div class="flex items-center {item.classes ?? (itemSpacing ? '' : 'mt-2')}">
     <Check bind:check={() => getSettingValue(item, ctx), (v) => updateSettingValue(item, v, ctx)} name={getLabel(item)}>
         {#if item.showExperimental}<Help key="experimental" />{/if}
         {#if item.helpKey}<Help key={item.helpKey as any} unrecommended={item.helpUnrecommended ?? false} />{/if}

@@ -12,9 +12,6 @@ import { itemsById } from "./sections";
 import { DEFAULT_NEW_CHAT_BINDING } from "../../../shared/chatBinding.ts";
 import { CONTEXT_METER_FIXED_WARN } from "../../../shared/database.ts";
 
-// Spacing on this page: a check takes the wrapper's `mt-2`. A labelled control (segmented, slider)
-// has no top margin of its own and ends with a 1rem bottom margin, so between checks its label takes
-// `mt-4` and the check right after it `mt-0`: 1rem on both sides instead of none above and 1.5rem below.
 export const interactionSettingsItems: SettingItem[] = [
     {
         id: "interaction.header",
@@ -148,7 +145,6 @@ export const interactionSettingsItems: SettingItem[] = [
         type: "segmented",
         labelKey: "newChatBinding",
         bindKey: "newChatBinding",
-        classes: "mt-4",
         // Shown as the creation reads it (`initialChatBinding`): anything but `empty` is `inherit`, so
         // an unexpected value is not reset to the last option when the page opens.
         getValue: (ctx) => (ctx.settings.ui.newChatBinding === "empty" ? "empty" : DEFAULT_NEW_CHAT_BINDING),
@@ -160,15 +156,13 @@ export const interactionSettingsItems: SettingItem[] = [
         },
         keywords: ["new", "chat", "preset", "persona", "binding", "inherit"],
     },
-    // From Advanced; their `mt-4` (Advanced's spacing) went with the move.
+    // From Advanced.
     {
         id: "adv.scrollToActive",
         type: "check",
         labelKey: "enableScrollToActiveChar",
         bindKey: "enableScrollToActiveChar",
         helpKey: "enableScrollToActiveChar",
-        // Follows `acc.newChatBinding`'s segmented control.
-        classes: "mt-0",
     },
     { id: "adv.bookmark", type: "check", labelKey: "bookmark", bindKey: "enableBookmark" },
     {
@@ -184,7 +178,6 @@ export const interactionSettingsItems: SettingItem[] = [
         labelKey: "contextMeterTurnUnit",
         helpKey: "contextMeterTurnUnit",
         bindKey: "contextMeterTurnUnit",
-        classes: "mt-4",
         condition: (ctx) => ctx.settings.ui.contextMeter,
         // Shown as the meter reads it: anything but `message` counts turns.
         getValue: (ctx) => (ctx.settings.ui.contextMeterTurnUnit === "message" ? "message" : "user"),
@@ -217,8 +210,6 @@ export const interactionSettingsItems: SettingItem[] = [
         helpKey: "contextMeterLookahead",
         bindKey: "contextMeterLookahead",
         condition: (ctx) => ctx.settings.ui.contextMeter,
-        // Follows `interaction.contextMeterFixedWarn`'s slider.
-        classes: "mt-0",
         keywords: ["context", "memory", "hypa", "summary", "background", "lookahead"],
     },
 ];

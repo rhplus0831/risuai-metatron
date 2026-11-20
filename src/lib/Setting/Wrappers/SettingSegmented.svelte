@@ -16,9 +16,11 @@
     interface Props {
         item: SettingItem;
         ctx: SettingContext;
+        /** True when `SettingRenderer`'s spacing rule sets the control's bottom margin; its own is then left out. */
+        itemSpacing?: boolean;
     }
 
-    let { item, ctx }: Props = $props();
+    let { item, ctx, itemSpacing = false }: Props = $props();
 
     // Transform options: filter by condition + resolve labelKey translations
     let processedOptions = $derived(
@@ -68,6 +70,7 @@
     {#if item.helpKey}<Help key={item.helpKey as any} unrecommended={item.helpUnrecommended ?? false} />{/if}
 </span>
 <SegmentedControl
+    margin={!itemSpacing}
     bind:value={() => getSettingValue(item, ctx), (value) => updateSettingValue(item, value, ctx)}
     options={processedOptions}
 />

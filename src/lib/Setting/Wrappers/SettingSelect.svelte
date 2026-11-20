@@ -17,9 +17,11 @@
     interface Props {
         item: SettingItem;
         ctx: SettingContext;
+        /** True when `SettingRenderer`'s spacing rule sets this item's top margin; the default one is then left out. */
+        itemSpacing?: boolean;
     }
 
-    let { item, ctx }: Props = $props();
+    let { item, ctx, itemSpacing = false }: Props = $props();
 
     // Process options to support labelKey translation and conditional rendering
     let processedOptions = $derived(
@@ -45,7 +47,7 @@
     });
 </script>
 
-<span class="text-textcolor {item.classes ?? 'mt-4'}">
+<span class="text-textcolor {item.classes ?? (itemSpacing ? '' : 'mt-4')}">
     {getLabel(item)}
     {#if item.helpKey}<Help key={item.helpKey as any} />{/if}
 </span>

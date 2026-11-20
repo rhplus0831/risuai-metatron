@@ -7,9 +7,11 @@
     interface Props {
         item: SettingItem;
         ctx: SettingContext;
+        /** True when `SettingRenderer`'s spacing rule sets the control's bottom margin; its own is then left out. */
+        itemSpacing?: boolean;
     }
 
-    let { item, ctx }: Props = $props();
+    let { item, ctx, itemSpacing = false }: Props = $props();
 
     let customText = $derived(
         typeof item.options?.customText === "function"
@@ -23,7 +25,7 @@
     {#if item.helpKey}<Help key={item.helpKey as any} />{/if}
 </span>
 <SliderInput
-    marginBottom={true}
+    marginBottom={!itemSpacing}
     min={item.options?.min}
     max={item.options?.max}
     step={item.options?.step}

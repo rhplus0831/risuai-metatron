@@ -7,9 +7,11 @@
     interface Props {
         item: SettingItem;
         ctx: SettingContext;
+        /** True when `SettingRenderer`'s spacing rule sets the control's bottom margin; its own is then left out. */
+        itemSpacing?: boolean;
     }
 
-    let { item, ctx }: Props = $props();
+    let { item, ctx, itemSpacing = false }: Props = $props();
 
     function commit(value: number) {
         if (!item.options?.clampOnCommit || !Number.isFinite(value)) return;
@@ -25,7 +27,7 @@
     {#if item.helpKey}<Help key={item.helpKey as any} />{/if}
 </span>
 <NumberInput
-    marginBottom={true}
+    marginBottom={!itemSpacing}
     size="sm"
     min={item.options?.min}
     max={item.options?.max}

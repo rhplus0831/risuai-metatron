@@ -30,7 +30,6 @@ export const languageSettingsItems: SettingItem[] = [
         type: "select",
         labelKey: "UiLanguage",
         bindKey: "language",
-        classes: "mt-4",
         options: {
             selectOptions: [
                 { value: "de", label: "Deutsch" },

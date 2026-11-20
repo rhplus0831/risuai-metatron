@@ -13,7 +13,8 @@ import SettingButton from "src/lib/Setting/Wrappers/SettingButton.svelte";
 import SettingAccordion from "src/lib/Setting/Wrappers/SettingAccordion.svelte";
 import SettingCustom from "src/lib/Setting/Wrappers/SettingCustom.svelte";
 
-type WrapperComponent = Component<{ item: SettingItem; ctx: SettingContext }>;
+/** `itemSpacing` is `SettingRenderer`'s opt-in; only the wrappers whose margins it changes declare it. */
+type WrapperComponent = Component<{ item: SettingItem; ctx: SettingContext; itemSpacing?: boolean }>;
 
 /** Every `SettingType` maps to its Svelte wrapper, rendered by `src/lib/Setting/SettingRenderer.svelte`. */
 export const settingRegistry: Record<SettingType, WrapperComponent> = {
