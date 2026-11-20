@@ -710,6 +710,7 @@ export async function readChatGeneration(ref: ChatRef): Promise<GenerationCurren
             undefined,
             language.serverJob.stopOther.lookupTimedOut,
         );
+        if (body === null) return null;
         if (
             !object(body) ||
             typeof body.jobId !== "string" ||
@@ -730,6 +731,7 @@ export async function readChatGeneration(ref: ChatRef): Promise<GenerationCurren
         }
         return body as GenerationCurrent;
     } catch (error) {
+        // A server from before idle answered 200 null still answers 404.
         if (error instanceof ResourceRequestError && error.status === 404) return null;
         throw error;
     }

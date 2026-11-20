@@ -194,8 +194,9 @@ refusal the memory step recovered from or outlived replaces no later error.
 
 ### Chat-slot lookup and stop
 
-`current` reads the chat slot (`chatSlots`) without attaching; `stop` aborts only the confirmed job id. The first stop's
-client (a participant's `DELETE` too) is attributed; `stop`'s comment holds the rules and `jobChanged` retry.
+`current` reads the chat slot (`chatSlots`) without attaching, 200 `null` when idle (`readChatGeneration` also reads an
+older server's 404 as idle); `stop` aborts only the confirmed job id. The first stop's client (a participant's `DELETE`
+too) is attributed; `stop`'s comment holds the rules and `jobChanged` retry.
 
 ### Generation channels
 

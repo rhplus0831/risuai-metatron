@@ -682,7 +682,7 @@ describe("stopChatJob", () => {
                 expect(stubs.alertError).toHaveBeenCalledExactlyOnceWith(
                     phase === "lookup" ? "Current job lookup timed out" : "Stop request timed out",
                 );
-                post.mockResolvedValueOnce(Response.json({ error: "idle" }, { status: 404 }));
+                post.mockResolvedValueOnce(Response.json(null));
                 await commands.stopChatJob(ref);
                 expect(post).toHaveBeenCalledTimes(calls + 1);
                 expect(post.mock.calls.at(-1)![0]).toContain("/api/generations/current?");

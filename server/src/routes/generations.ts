@@ -412,7 +412,7 @@ export function registerGenerationRoutes(
 
     /**
      * GET ?characterId=&chatId=&clientId=: read-only chat-slot lookup
-     * { jobId, kind, owned, stage?, sequence? }; 404 idle, 400 invalid ids. Optional clientId only
+     * { jobId, kind, owned, stage?, sequence? }; 200 null idle, 400 invalid ids. Optional clientId only
      * determines owned: it never attaches or grants channel access. Register before /:id, which
      * would otherwise capture "current" as a job id.
      */
@@ -430,7 +430,8 @@ export function registerGenerationRoutes(
             return c.json({ error: "characterId, chatId and optional clientId must be valid ids" }, 400);
         }
         const current = jobs.current(characterId, chatId, clientId);
-        return current ? c.json(current) : c.json({ error: "idle" }, 404);
+        // Idle is an ordinary answer, not a failure: a 4xx would land in client diagnostics as an error.
+        return c.json(current ?? null);
     });
 
     /**

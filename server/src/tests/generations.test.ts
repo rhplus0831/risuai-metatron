@@ -550,8 +550,8 @@ describe("generation jobs over HTTP and WebSocket", () => {
             expect(await idle.json()).toEqual({ error: "idle" });
             expect(nextJob.signal.aborted).toBe(false);
             const empty = await lookup();
-            expect(empty.status).toBe(404);
-            expect(await empty.json()).toEqual({ error: "idle" });
+            expect(empty.status).toBe(200);
+            expect(await empty.json()).toBeNull();
         });
 
         it("requires a JWT for lookup and stop and refuses a stale stop epoch without aborting", async () => {
