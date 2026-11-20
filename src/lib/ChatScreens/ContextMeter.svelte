@@ -88,7 +88,7 @@
 
     const PANEL_WIDTH = 352;
     const EDGE = 8;
-    const memoryColor = "bg-secondary-500";
+    const memoryColor = "bg-meter-memory";
     /**
      * The fixed sections whose size follows the bot rather than the preset, grouped by where the user would cut
      * them down. A group at or above `SPLIT_FROM` percent of the prompt budget leaves the fixed group's neutral

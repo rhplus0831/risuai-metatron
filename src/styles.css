@@ -79,9 +79,10 @@
     --color-warning-800: var(--risu-theme-warning-800);
     --color-warning-900: var(--risu-theme-warning-900);
 
-    /* The context meter's lorebook and character groups; fixed for every theme, like the shade ramps. */
+    /* The context meter's lorebook, character, and memory colors are fixed for every theme. */
     --color-meter-lore: var(--risu-theme-meter-lore);
     --color-meter-character: var(--risu-theme-meter-character);
+    --color-meter-memory: var(--risu-theme-meter-memory);
 
     --min-width-2: 0.5rem;
     --min-width-5: 1.25rem;
@@ -266,6 +267,7 @@ body {
 
     --risu-theme-meter-lore: #b98206;
     --risu-theme-meter-character: #0d9488;
+    --risu-theme-meter-memory: #e11ed2;
 }
 
 .x-risu-language-json {

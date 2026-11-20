@@ -715,7 +715,7 @@ describe("the popover", () => {
         const legend = () =>
             [...bar.nextElementSibling!.children].map((entry) => entry.textContent?.replace(/\s+/g, " ").trim());
         expect(segments().map((segment) => segment.style.width)).toEqual(["37.5%", "12.5%", "50%"]);
-        for (const [index, color] of ["bg-neutral-400", "bg-secondary-500", "bg-primary-500"].entries()) {
+        for (const [index, color] of ["bg-neutral-400", "bg-meter-memory", "bg-primary-500"].entries()) {
             expect(segments()[index].classList.contains(color)).toBe(true);
             expect(bar.nextElementSibling!.children[index].firstElementChild!.classList.contains(color)).toBe(true);
         }
@@ -731,7 +731,7 @@ describe("the popover", () => {
         for (const row of opened.querySelectorAll<HTMLElement>("[data-context-meter-sections] li")) {
             const color =
                 row.dataset.section === "memory"
-                    ? "bg-secondary-500"
+                    ? "bg-meter-memory"
                     : row.dataset.section === "history"
                       ? "bg-primary-500"
                       : "bg-neutral-400";
@@ -816,19 +816,19 @@ describe("the popover", () => {
         expect(segments().map((segment) => [colorOf(segment), parseFloat(segment.style.width)])).toEqual([
             ["bg-neutral-400", (239 / 800) * 100],
             ["bg-meter-lore", 5],
-            ["bg-secondary-500", 12.5],
+            ["bg-meter-memory", 12.5],
             ["bg-primary-500", 50],
         ]);
         expect(legend()).toEqual([
             `bg-neutral-400 ${s.groups.fixedRest} 239`,
             `bg-meter-lore ${s.groups.lore} 40`,
-            `bg-secondary-500 ${s.groups.memory} 100`,
+            `bg-meter-memory ${s.groups.memory} 100`,
             `bg-primary-500 ${s.groups.history} 400`,
         ]);
         expect(dots()).toEqual({
             history: "bg-primary-500",
             main: "bg-neutral-400",
-            memory: "bg-secondary-500",
+            memory: "bg-meter-memory",
             lorebook: "bg-meter-lore",
             description: "bg-neutral-400",
             examples: "bg-neutral-400",
@@ -842,7 +842,7 @@ describe("the popover", () => {
         expect(legend()).toEqual([
             `bg-neutral-400 ${s.groups.fixedRest} 239`,
             `bg-meter-character ${s.groups.character} 40`,
-            `bg-secondary-500 ${s.groups.memory} 100`,
+            `bg-meter-memory ${s.groups.memory} 100`,
             `bg-primary-500 ${s.groups.history} 400`,
         ]);
         expect(dots()).toMatchObject({
@@ -859,14 +859,14 @@ describe("the popover", () => {
             `bg-neutral-400 ${s.groups.fixedRest} 200`,
             `bg-meter-lore ${s.groups.lore} 40`,
             `bg-meter-character ${s.groups.character} 90`,
-            `bg-secondary-500 ${s.groups.memory} 100`,
+            `bg-meter-memory ${s.groups.memory} 100`,
             `bg-primary-500 ${s.groups.history} 400`,
         ]);
         expect(segments().map(colorOf)).toEqual([
             "bg-neutral-400",
             "bg-meter-lore",
             "bg-meter-character",
-            "bg-secondary-500",
+            "bg-meter-memory",
             "bg-primary-500",
         ]);
 
@@ -874,10 +874,10 @@ describe("the popover", () => {
         show(39, 9);
         expect(legend()).toEqual([
             `bg-neutral-400 ${s.groups.fixed} 278`,
-            `bg-secondary-500 ${s.groups.memory} 100`,
+            `bg-meter-memory ${s.groups.memory} 100`,
             `bg-primary-500 ${s.groups.history} 400`,
         ]);
-        expect(Object.values(dots()).filter((color) => color?.startsWith("bg-meter-"))).toEqual([]);
+        expect(Object.values(dots()).filter((color) => color?.startsWith("bg-meter-"))).toEqual(["bg-meter-memory"]);
 
         // With no prompt budget there is nothing to take a share of.
         show(400, 60, { maxResponse: 1000 });

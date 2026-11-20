@@ -134,7 +134,7 @@ validators reject unknown event statuses.
 
 - [Backup and sync](#backup-and-sync): 5
 - [Build and CI](#build-and-ci): 1
-- [Chat screen](#chat-screen): 6
+- [Chat screen](#chat-screen): 5
 - [Docs](#docs): 2
 - [Headless host](#headless-host): 2
 - [LLM requests](#llm-requests): 3
@@ -292,24 +292,6 @@ that commit; the case was not run again when this entry was filed on 2026-11-20.
 
 **Suggested handling:** reproduce it first, with `docs/reports/surveys/fork-chat-scroll/probeChatScroll.mjs` as a
 base, and find which element changes height when the editor opens.
-
-### The context meter's memory and history segments are nearly the same color under deuteranopia
-
-Computed on 2026-11-20 while the lorebook and character group colors were picked, not looked at on a device. In
-`src/lib/ChatScreens/ContextMeter.svelte` the memory segment is `bg-secondary-500` (`memoryColor`, `#8b5cf6`) and the
-history segment `bg-primary-500` (`#3b82f6`), and the two sit next to each other in the bar. A palette validator gave
-the pair an OKLab ΔE of 1.3 under simulated deuteranopia, against a target of 8, and 12.0 under normal vision, against
-a floor of 15. The two group colors (`--color-meter-lore`, `--color-meter-character` in `src/styles.css`) were checked
-against both and pass; these two were left because only the group colors had been asked for.
-
-**Why it matters:** the legend's labels and numbers still tell memory from history, but the bar's segments alone do
-not for a reader with red-green color blindness.
-
-**Suggested handling:** the owner decides whether to change one of them. Both are theme colors used across the app,
-so the meter would take a color of its own, as the two groups did, and not change the theme's.
-
-**Decision:** owner, 2026-11-20: change it. The meter takes a color of its own for one of the two segments; the
-theme's colors stay as they are.
 
 ## Docs
 
