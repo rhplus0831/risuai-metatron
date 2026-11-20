@@ -1275,13 +1275,13 @@ describe("the host-function contract through the real worker", () => {
             const R = JSON.parse(notice(events, "alertNormal")!);
 
             // Reads: the client's projections, negative indexes, the missing-index values.
-            expect(JSON.parse(R.chat0)).toEqual({ id: "m1", role: "char", data: "greeting", time: 0 });
+            expect(JSON.parse(R.chat0)).toEqual({ id: "m1", chatId: "m1", role: "char", data: "greeting", time: 0 });
             expect(R.chatNeg).toBe("hi there");
             expect(R.roleNeg).toBe("user");
             expect(R.chatMissing).toBe("null");
             expect(R.dataMissing).toBe("");
             expect(R.len).toBe(2);
-            expect(JSON.parse(R.recent)).toEqual([{ id: "m2", role: "user", data: "hi there", time: 0 }]);
+            expect(JSON.parse(R.recent)).toEqual([{ id: "m2", chatId: "m2", role: "user", data: "hi there", time: 0 }]);
             // Variables: the literal "null", the character's default, changed only once; Lua `cbs`
             // does not persist `{{setvar}}` (no `runVar`).
             expect(R.var0).toBe("null");
@@ -1678,6 +1678,28 @@ describe("Lua full-chat updates", () => {
             working,
         );
         expect(result).toEqual([{ ...messages[0], data: "Edited question." }, messages[1]]);
+    });
+
+    it.each([
+        { path: "live chat", working: false },
+        { path: "trigger working copy", working: true },
+    ])("preserves edited reply metadata when the item supplies only chatId on the $path", async ({ working }) => {
+        const result = await update(
+            `setFullChat(id, {{chatId = "reply", role = "char", data = "Edited reply."}})`,
+            working,
+        );
+        expect(result).toEqual([{ ...messages[1], data: "Edited reply." }]);
+    });
+
+    it("prefers id over chatId and falls back to chatId after the id match is used", async () => {
+        const result = await update(`setFullChat(id, {
+            {id = "reply", chatId = "question", role = "char", data = "Edited reply."},
+            {id = "reply", chatId = "question", role = "user", data = "Edited question."}
+        })`);
+        expect(result).toEqual([
+            { ...messages[1], data: "Edited reply." },
+            { ...messages[0], data: "Edited question." },
+        ]);
     });
 
     it("keeps messages at unchanged positions when items have no id", async () => {

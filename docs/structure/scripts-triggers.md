@@ -116,10 +116,12 @@ A command job of a Lua button or manual trigger on the selected chat shows Stop 
 - The server trigger runtime checks job cancellation during execution and enforces a 100,000-effect limit across nested
   triggers in the job. It yields after 50 ms of effect work so pending I/O and abort callbacks can run; a privileged
   recursive trigger is ended by the shared limit, not the JavaScript stack.
-- Lua's chat getters give each message its `id`. `setFullChat` (`fullChatMessages`, `server/src/lua/bindings.ts`) keeps
-  the message an item's `id` names and lays role and text over it, as `setChat` does; an item without a usable `id`
-  keeps the stored message at its position when role and text are equal and is a new message otherwise; a message the
-  list leaves out is removed. The live chat and a trigger's working copy follow the same rule.
+- Lua's chat getters give each message its id twice, as `id` and as `chatId` (upstream's name). `setFullChat`
+  (`fullChatMessages`, `server/src/lua/bindings.ts`) gives each item an unused stored message by its `id`, then by its
+  `chatId`, then the one at its position when role and text are equal, and lays role and text over it, as `setChat`
+  does; a usable `id` wins over a disagreeing `chatId`, a stored message serves one item only, an unmatched item is a
+  new message with a fresh id, and a message the list leaves out is removed. The live chat and a trigger's working copy
+  follow the same rule.
 - A trigger effect or Lua function that changes a character writes one field of the run's character; never the selected
   index or the whole working copy. A lore effect writes one `globalLore` entry (`GlobalLoreChange`, applied to the
   current record inside each revision-checked write: by `id`, or by index with an unchanged-value check for legacy

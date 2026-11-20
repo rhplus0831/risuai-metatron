@@ -730,16 +730,32 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         return deps.tokens.count(text, tokenScope);
     };
     const messages = () => engineChat().message;
+    // The message id is given under both `id` and `chatId`.
     const project = (message: Message | undefined) =>
-        message ? { id: message.chatId, role: message.role, data: message.data, time: message.time ?? 0 } : null;
-    const fullChatMessages = (stored: Message[], values: { id?: unknown; role: unknown; data: unknown }[]) => {
+        message
+            ? {
+                  id: message.chatId,
+                  chatId: message.chatId,
+                  role: message.role,
+                  data: message.data,
+                  time: message.time ?? 0,
+              }
+            : null;
+    type FullChatItem = { id?: unknown; chatId?: unknown; role: unknown; data: unknown };
+    const fullChatMessages = (stored: Message[], values: FullChatItem[]) => {
         const byId = new Map(stored.filter((message) => message.chatId).map((message) => [message.chatId!, message]));
         const used = new Set<Message>();
+        // A stored message the key names that no earlier item took.
+        const unused = (key: unknown) => {
+            const message = typeof key === "string" ? byId.get(key) : undefined;
+            return message && !used.has(message) ? message : undefined;
+        };
         return values.map((value, index): Message => {
             const role = value.role as Message["role"];
             const data = luaText(value.data);
-            let message = typeof value.id === "string" ? byId.get(value.id) : undefined;
-            if (!message || used.has(message)) {
+            // `id` first, then `chatId`, then the position.
+            let message = unused(value.id) ?? unused(value.chatId);
+            if (!message) {
                 const positional = stored[index];
                 message =
                     positional && !used.has(positional) && positional.role === role && positional.data === data
@@ -1562,7 +1578,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             if (!isSafe(ctx)) {
                 return undefined;
             }
-            const realValue = JSON.parse(value as string) as { id?: unknown; role: unknown; data: unknown }[];
+            const realValue = JSON.parse(value as string) as FullChatItem[];
             if (working) {
                 working.chat.message = fullChatMessages(working.chat.message, realValue);
                 return undefined;
