@@ -15,7 +15,7 @@ vi.mock("src/ts/process/modules", async (original) => ({
     moduleUpdate: vi.fn(),
 }));
 
-import { language } from "src/lang";
+import { changeLanguage, language } from "src/lang";
 import PopupEditor from "src/lib/Others/PopupEditor.svelte";
 import PromptDataItem from "src/lib/UI/PromptDataItem.svelte";
 import { writePopupEditorMonaco } from "src/ts/gui/popupEditorMode";
@@ -205,7 +205,7 @@ describe("RequestInterceptionSettings", () => {
         const existing = Array.from({ length: 31 }, (_, index) => ({ ...first(), id: `rule-${index}` }));
         settings.providers.requestInterceptions = existing;
         render();
-        expect(target.querySelector("h2")?.textContent).toBe("Request Interception");
+        expect(target.querySelector("h2")?.textContent).toBe("Request Rules");
         expect(addButton().disabled).toBe(false);
 
         addButton().click();
@@ -308,5 +308,95 @@ describe("RequestInterceptionSettings", () => {
         rowAction("second", "x");
         assertStored([first()]);
         expect(ids()).toEqual(["first"]);
+    });
+});
+
+describe("Response checks", () => {
+    const initialMinimums = {
+        minResponseLengthModel: 10,
+        minResponseLengthSubmodel: 20,
+        minResponseLengthMemory: 30,
+        minResponseLengthEmotion: 40,
+        minResponseLengthOtherAx: 50,
+        minResponseLengthTranslate: 60,
+    };
+    const providersRecord = () => recordData<typeof settings.providers>("providers")!;
+    let initialRules: RequestInterception[];
+
+    beforeEach(() => {
+        Object.assign(settings.providers, initialMinimums);
+        initialRules = providersRecord().requestInterceptions;
+    });
+
+    afterEach(() => changeLanguage("en"));
+
+    function labeledNumberInputs(scope: ParentNode) {
+        return [...scope.querySelectorAll<HTMLInputElement>('input[type="number"]')].map((input) => ({
+            name: input.labels?.[0]?.textContent?.trim(),
+            input,
+        }));
+    }
+
+    function minimumInput(name: string) {
+        const field = labeledNumberInputs(target).find((field) => field.name === name);
+        expect(field, `number input labeled ${name}`).toBeDefined();
+        return field!.input;
+    }
+
+    function assertMinimums(expected: typeof initialMinimums) {
+        expect(providersRecord()).toMatchObject(expected);
+        expect(settings.providers).toMatchObject(expected);
+        assertStored([first(), second()]);
+        expect(providersRecord().requestInterceptions).toBe(initialRules);
+    }
+
+    it("shows both sections and edits only the minimum for each request kind in order", () => {
+        render();
+        const headings = [...target.querySelectorAll("h3")];
+        expect(headings.map((heading) => heading.textContent?.trim())).toEqual(["Prompt insertion", "Response checks"]);
+        expect(headings[0].closest("section")?.contains(row("first"))).toBe(true);
+
+        const kinds = [
+            [language.model, "minResponseLengthModel"],
+            [language.submodel, "minResponseLengthSubmodel"],
+            [language.modelProfiles.auxModes.memory, "minResponseLengthMemory"],
+            [language.modelProfiles.auxModes.emotion, "minResponseLengthEmotion"],
+            [language.modelProfiles.auxModes.otherAx, "minResponseLengthOtherAx"],
+            [language.modelProfiles.auxModes.translate, "minResponseLengthTranslate"],
+        ] as const;
+        expect(labeledNumberInputs(headings[1].closest("section")!).map(({ name }) => name)).toEqual(
+            kinds.map(([name]) => name),
+        );
+
+        const expected = { ...initialMinimums };
+        for (const [name, field] of kinds) {
+            expected[field] += 100;
+            edit(minimumInput(name), String(expected[field]));
+            assertMinimums(expected);
+        }
+    });
+
+    it("turns checks off for zero, blank or negative input and truncates and caps positive minimums", () => {
+        render();
+        const input = minimumInput(language.model);
+        for (const [typed, stored] of [
+            ["0", 0],
+            ["2.5", 2],
+            ["", 0],
+            ["100001", 100_000],
+            ["-1", 0],
+        ] as const) {
+            edit(input, typed);
+            assertMinimums({ ...initialMinimums, minResponseLengthModel: stored });
+        }
+    });
+
+    it("shows the Korean page title and edits a minimum by its Korean request kind label", () => {
+        changeLanguage("ko");
+        render();
+        expect(target.querySelector("h2")?.textContent).toBe("요청 규칙");
+
+        edit(minimumInput("기타 보조 요청"), "27.5");
+        assertMinimums({ ...initialMinimums, minResponseLengthOtherAx: 27 });
     });
 });

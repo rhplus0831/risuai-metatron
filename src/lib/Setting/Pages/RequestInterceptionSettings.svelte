@@ -2,6 +2,7 @@
     import { language } from "src/lang";
     import Button from "src/lib/UI/GUI/Button.svelte";
     import Check from "src/lib/UI/GUI/CheckInput.svelte";
+    import NumberInput from "src/lib/UI/GUI/NumberInput.svelte";
     import OptionInput from "src/lib/UI/GUI/OptionInput.svelte";
     import SelectInput from "src/lib/UI/GUI/SelectInput.svelte";
     import PromptDataItem from "src/lib/UI/PromptDataItem.svelte";
@@ -10,13 +11,26 @@
     import { newId } from "../../../../shared/ids.ts";
     import { MAX_REQUEST_INTERCEPTIONS, type RequestInterception } from "../../../../shared/llm/interception.ts";
     import { MODEL_MODES, type ModelModeExtended } from "../../../../shared/llm/request.ts";
+    import {
+        MAX_MIN_RESPONSE_LENGTH,
+        MIN_RESPONSE_LENGTH_FIELDS,
+        normalizeMinResponseLength,
+    } from "../../../../shared/llm/responseChecks.ts";
 
     /**
-     * The global request interception list (`settings.providers.requestInterceptions`). Every edit of a rule's own
-     * fields and of the list assigns a new array; the prompt row edits the rule's prompt in place through the record
-     * wrapper, as the template editor does. Controls resolve their rule by id on every read (`liveRule`): a rule edit
-     * replaces the element, and a wrapper of the old element throws once it is gone. List order is insertion order,
-     * so reordering, removal, and the opened rows follow `PromptSettings.svelte`'s index handling.
+     * The Request Rules page, in two sections.
+     *
+     * Prompt insertion: the global request interception list (`settings.providers.requestInterceptions`). Every edit
+     * of a rule's own fields and of the list assigns a new array; the prompt row edits the rule's prompt in place
+     * through the record wrapper, as the template editor does. Controls resolve their rule by id on every read
+     * (`liveRule`): a rule edit replaces the element, and a wrapper of the old element throws once it is gone. List
+     * order is insertion order, so reordering, removal, and the opened rows follow `PromptSettings.svelte`'s index
+     * handling.
+     *
+     * Response checks: the minimum answer length of each request kind (`MIN_RESPONSE_LENGTH_FIELDS` of
+     * `shared/llm/responseChecks.ts`, on `settings.providers`). A field shows the enforced value and stores what
+     * `normalizeMinResponseLength` makes of the entry (a cleared box, a negative or a fraction included), assigning
+     * only its own field.
      */
 
     const PLAIN_ONLY: readonly PromptType[] = ["plain"];
@@ -64,6 +78,19 @@
         if (mode === "model") return language.model;
         if (mode === "submodel") return language.submodel;
         return language.modelProfiles.auxModes[mode];
+    }
+
+    /** The minimum of `mode` as it is enforced (0: off). */
+    function minimumLength(mode: ModelModeExtended): number {
+        return normalizeMinResponseLength(settings.providers[MIN_RESPONSE_LENGTH_FIELDS[mode]]);
+    }
+
+    /** Stores an entry of the `mode` field (`null` for a cleared box) as the minimum it enforces. */
+    function setMinimumLength(mode: ModelModeExtended, next: unknown) {
+        const field = MIN_RESPONSE_LENGTH_FIELDS[mode];
+        const value = normalizeMinResponseLength(next);
+        if (settings.providers[field] === value) return;
+        settings.providers[field] = value;
     }
 
     function add() {
@@ -175,76 +202,114 @@
 </script>
 
 <h2 class="text-lg mb-2">{language.requestInterception.title}</h2>
-<div class="flex flex-col gap-2 text-sm text-textcolor2 mb-4 break-words">
-    <p>{language.requestInterception.description}</p>
-</div>
 
-<div class="contain w-full max-w-full flex flex-col rounded-md min-w-0">
-    {#if rules.length === 0}
-        <p class="text-sm text-textcolor2">{language.requestInterception.empty}</p>
-    {/if}
-    {#each displayRules() as entry (entry.id)}
-        {@const ruleId = entry.id}
-        <div class="min-w-0" data-request-interception={ruleId}>
-            <PromptDataItem
-                bind:promptItem={() => liveRule(ruleId)!.prompt, (value) => setPrompt(ruleId, value)}
-                popupEditorContext={ruleId}
-                allowedTypes={PLAIN_ONLY}
-                showType2={false}
-                cbs={false}
-                isDragging={draggedIndex === entry.originalIndex}
-                isOpened={openedItemIndices.has(entry.originalIndex)}
-                bind:draggedIndex
-                bind:dragOverIndex
-                bind:openedItemIndices
-                currentIndex={entry.originalIndex}
-                displayIndex={entry.displayIndex}
-                onDrop={handleDrop}
-                onRemove={() => remove(entry.originalIndex, ruleId)}
-                moveDown={() => move(entry.originalIndex, ruleId, 1)}
-                moveUp={() => move(entry.originalIndex, ruleId, -1)}
-            >
-                {#snippet extra()}
-                    <Check
-                        name={language.requestInterception.enabled}
-                        bind:check={() => liveRule(ruleId)?.enabled ?? false, (value) => setEnabled(ruleId, value)}
-                    />
-                    <span class="mt-2">{language.requestInterception.modes}</span>
-                    <div class="flex flex-wrap gap-x-4">
-                        {#each MODEL_MODES as mode (mode)}
-                            <Check
-                                name={modeLabel(mode)}
-                                bind:check={
-                                    () => liveRule(ruleId)?.modes.includes(mode) ?? false,
-                                    (value) => setMode(ruleId, mode, value)
-                                }
-                            />
-                        {/each}
-                    </div>
-                    <span class="mt-2">{language.requestInterception.position}</span>
-                    <SelectInput
-                        bind:value={() => liveRule(ruleId)?.position ?? "start", (value) => setPosition(ruleId, value)}
-                    >
-                        <OptionInput value="start">{language.requestInterception.start}</OptionInput>
-                        <OptionInput value="end">{language.requestInterception.end}</OptionInput>
-                    </SelectInput>
-                {/snippet}
-            </PromptDataItem>
-        </div>
-    {/each}
-</div>
+<section class="flex flex-col min-w-0">
+    <h3 class="text-base text-textcolor mb-2">{language.requestInterception.promptInsertion}</h3>
+    <div class="flex flex-col gap-2 text-sm text-textcolor2 mb-4 break-words">
+        <p>{language.requestInterception.description}</p>
+    </div>
 
-<div class="mt-4">
-    <Button size="sm" disabled={rules.length >= MAX_REQUEST_INTERCEPTIONS} onclick={add}>
-        {language.requestInterception.add}
-    </Button>
-</div>
-
-<div class="mt-6 flex flex-col gap-2 text-sm text-textcolor2 break-words">
-    <h3 class="text-textcolor">{language.requestInterception.notesTitle}</h3>
-    <ul class="list-disc pl-5 flex flex-col gap-1">
-        {#each language.requestInterception.notes as note, i (i)}
-            <li>{note}</li>
+    <div class="contain w-full max-w-full flex flex-col rounded-md min-w-0">
+        {#if rules.length === 0}
+            <p class="text-sm text-textcolor2">{language.requestInterception.empty}</p>
+        {/if}
+        {#each displayRules() as entry (entry.id)}
+            {@const ruleId = entry.id}
+            <div class="min-w-0" data-request-interception={ruleId}>
+                <PromptDataItem
+                    bind:promptItem={() => liveRule(ruleId)!.prompt, (value) => setPrompt(ruleId, value)}
+                    popupEditorContext={ruleId}
+                    allowedTypes={PLAIN_ONLY}
+                    showType2={false}
+                    cbs={false}
+                    isDragging={draggedIndex === entry.originalIndex}
+                    isOpened={openedItemIndices.has(entry.originalIndex)}
+                    bind:draggedIndex
+                    bind:dragOverIndex
+                    bind:openedItemIndices
+                    currentIndex={entry.originalIndex}
+                    displayIndex={entry.displayIndex}
+                    onDrop={handleDrop}
+                    onRemove={() => remove(entry.originalIndex, ruleId)}
+                    moveDown={() => move(entry.originalIndex, ruleId, 1)}
+                    moveUp={() => move(entry.originalIndex, ruleId, -1)}
+                >
+                    {#snippet extra()}
+                        <Check
+                            name={language.requestInterception.enabled}
+                            bind:check={() => liveRule(ruleId)?.enabled ?? false, (value) => setEnabled(ruleId, value)}
+                        />
+                        <span class="mt-2">{language.requestInterception.modes}</span>
+                        <div class="flex flex-wrap gap-x-4">
+                            {#each MODEL_MODES as mode (mode)}
+                                <Check
+                                    name={modeLabel(mode)}
+                                    bind:check={
+                                        () => liveRule(ruleId)?.modes.includes(mode) ?? false,
+                                        (value) => setMode(ruleId, mode, value)
+                                    }
+                                />
+                            {/each}
+                        </div>
+                        <span class="mt-2">{language.requestInterception.position}</span>
+                        <SelectInput
+                            bind:value={
+                                () => liveRule(ruleId)?.position ?? "start", (value) => setPosition(ruleId, value)
+                            }
+                        >
+                            <OptionInput value="start">{language.requestInterception.start}</OptionInput>
+                            <OptionInput value="end">{language.requestInterception.end}</OptionInput>
+                        </SelectInput>
+                    {/snippet}
+                </PromptDataItem>
+            </div>
         {/each}
-    </ul>
-</div>
+    </div>
+
+    <div class="mt-4">
+        <Button size="sm" disabled={rules.length >= MAX_REQUEST_INTERCEPTIONS} onclick={add}>
+            {language.requestInterception.add}
+        </Button>
+    </div>
+
+    <div class="mt-6 flex flex-col gap-2 text-sm text-textcolor2 break-words">
+        <h4 class="text-textcolor">{language.requestInterception.notesTitle}</h4>
+        <ul class="list-disc pl-5 flex flex-col gap-1">
+            {#each language.requestInterception.notes as note, i (i)}
+                <li>{note}</li>
+            {/each}
+        </ul>
+    </div>
+</section>
+
+<section class="mt-10 flex flex-col min-w-0" data-response-checks>
+    <h3 class="text-base text-textcolor mb-2">{language.requestInterception.responseChecks}</h3>
+    <div class="flex flex-col gap-2 text-sm text-textcolor2 mb-4 break-words">
+        <p>{language.requestInterception.responseChecksDescription}</p>
+    </div>
+
+    <span class="text-textcolor mb-2">{language.requestInterception.minimumLength}</span>
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-3 min-w-0">
+        {#each MODEL_MODES as mode (mode)}
+            <label class="flex flex-col gap-1 min-w-0 text-sm text-textcolor" data-min-response-length={mode}>
+                <span class="break-words">{modeLabel(mode)}</span>
+                <NumberInput
+                    size="sm"
+                    fullwidth
+                    min={0}
+                    max={MAX_MIN_RESPONSE_LENGTH}
+                    bind:value={() => minimumLength(mode), (next) => setMinimumLength(mode, next)}
+                />
+            </label>
+        {/each}
+    </div>
+
+    <div class="mt-6 flex flex-col gap-2 text-sm text-textcolor2 break-words">
+        <h4 class="text-textcolor">{language.requestInterception.notesTitle}</h4>
+        <ul class="list-disc pl-5 flex flex-col gap-1">
+            {#each language.requestInterception.responseCheckNotes as note, i (i)}
+                <li>{note}</li>
+            {/each}
+        </ul>
+    </div>
+</section>

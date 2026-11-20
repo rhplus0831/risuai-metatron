@@ -137,7 +137,7 @@ describe("slug tables", () => {
         expect(formatRoute({ kind: "settings", page: settingsPageOf(24) })).toBe("/settings/input-hooks");
     });
 
-    it("maps Request Interception to menu 26 and formats its URL", () => {
+    it("maps Request Rules to menu 26 and formats its URL", () => {
         expect(REQUEST_INTERCEPTION_SETTINGS_MENU).toBe(26);
         expect(SETTINGS_PAGES["request-interception"]).toBe(26);
         expect(parseRoute("/settings/request-interception")).toEqual({

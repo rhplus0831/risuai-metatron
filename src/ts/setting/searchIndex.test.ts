@@ -160,12 +160,12 @@ describe("searchSettings", () => {
         );
     });
 
-    it("finds Request Interception by its page title at menu 26", () => {
+    it("finds Request Rules by its page title at menu 26", () => {
         changeLanguage("en");
-        expect(searchSettings("Request Interception", ctx())).toContainEqual(
+        expect(searchSettings("Request Rules", ctx())).toContainEqual(
             expect.objectContaining({
                 kind: "page",
-                label: "Request Interception",
+                label: "Request Rules",
                 target: { menu: 26 },
                 available: true,
             }),

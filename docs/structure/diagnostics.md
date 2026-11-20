@@ -107,7 +107,7 @@ The tab's `fetchLog` belongs to [network-jobs](network-jobs.md); capture/credent
   `server/src/app.ts` wires `RISU_REQUEST_HISTORY_MAX_BYTES` and the provider settings.
 - `createRequestHistory` adds columns under schema version `"1"` so older servers can still open the file. The
   `interceptions` count from `requestChatDataMain` is summary metadata. It survives disabled content capture and goes
-  into support shares and the viewer's expanded row when positive.
+  into support shares and the viewer's expanded row ("Inserted prompts") when positive.
 - The diagnostics root defaults to `save/diagnostics/`; `RISU_DIAGNOSTICS_DIR` is resolved against `rootDir`, so an
   absolute path or `..` can place it elsewhere. `RISU_DIAGNOSTICS_MAX_BYTES` caps `events/` at 64 MiB by default; ring
   size, state schedule, and the `state.json`, `reports/`, and `shared/` file rules are in

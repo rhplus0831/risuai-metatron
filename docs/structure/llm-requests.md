@@ -188,10 +188,10 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
 
 ### Request interception
 
-- The [settings page](settings-i18n.md#pages) edits global `providers.requestInterceptions`. The runtime dispatching a
-  format calls `applyRequestInterceptions` exactly once on a cloned prompt, after any outer before-request replacers and
-  job request trigger, before `reformater`. It applies only enabled rules listing this mode with nonblank text. Rule
-  text is literal. The label stays out of the provider message.
+- The Request Rules [page](settings-i18n.md#pages) (Prompt insertion) edits `providers.requestInterceptions`. The
+  runtime dispatching a format calls `applyRequestInterceptions` exactly once on a cloned prompt, after any outer
+  before-request replacers and job request trigger, before `reformater`. It applies only enabled rules listing this mode
+  with nonblank text. Rule text is literal. The label stays out of the provider message.
 - Start and end groups each keep list order. End entries precede a trailing assistant prefill. The next request attempt
   starts with a fresh clone. For later provider-body rewrites see [plugin hooks](plugin-sandbox.md#hook-entry-points).
 - Chat-reply assembly uses `interceptionMessages` to estimate tokens for its final recheck, including preview. This
@@ -204,7 +204,8 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
 - `shared/llm/responseChecks.ts` `responseRejection` checks a completed answer that the provider returned as a success:
   first the banned scripts (`providers.banCharacterset`, on the whole text), then the minimum length of the request's
   kind. Each kind has its own top-level field (`MIN_RESPONSE_LENGTH_FIELDS`: `minResponseLengthModel` to
-  `minResponseLengthTranslate`, 0 for off), so two devices that set different kinds merge.
+  `minResponseLengthTranslate`, 0 for off), so two devices that set different kinds merge. The Request Rules page sets
+  them.
 - `normalizeMinResponseLength` is the one value rule (not a finite number or below 1 is 0, the fraction is cut, at most
   100,000), applied by `normalizeProviders` and again when the check reads a value.
 - `measureResponseLength` counts Unicode code points of a trimmed copy without `<Thoughts>` blocks (paired as the tab

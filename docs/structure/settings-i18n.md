@@ -139,12 +139,16 @@ delivery and [app shell](app-shell.md#home-screen) for the home entry point.
   hook by id, including for popup text edits. Only Draft hooks carry the optional `translation` flag. The chat's hook
   choice and composers consume these definitions ([UI](ui-theming.md#sidebar),
   [input hooks](chat-pipeline.md#input-hooks)).
-- `src/lib/Setting/Pages/RequestInterceptionSettings.svelte` edits `settings.providers.requestInterceptions`. Rule
-  controls use `liveRule` to resolve the current id on each read or write, and replace the list when a rule field
-  changes. `PromptDataItem` edits the wrapped prompt in place. Display order determines insertion order. The shared rule
-  limit, accepted modes, and request behavior belong to [LLM requests](llm-requests.md#flows).
-- Input hooks and request interception are handwritten pages. Their titles are searchable through `searchIndex.ts` and
-  their rows have no individual `SettingItem` anchors.
+- `src/lib/Setting/Pages/RequestInterceptionSettings.svelte` is the Request Rules page (route `request-interception`)
+  with two sections. Prompt insertion edits `settings.providers.requestInterceptions`. Rule controls use `liveRule` to
+  resolve the current id on each read or write, and replace the list when a rule field changes. `PromptDataItem` edits
+  the wrapped prompt in place. Display order determines insertion order. The shared rule limit, accepted modes, and
+  request behavior belong to [LLM requests](llm-requests.md#flows).
+- The Request Rules page's Response checks section has one number field per request kind (`MIN_RESPONSE_LENGTH_FIELDS`),
+  labelled as the rule rows label kinds; each writes only its own field through `normalizeMinResponseLength`, so a blank
+  box is 0 (off) and the page stores the number a request enforces ([response checks](llm-requests.md#response-checks)).
+- Input hooks and Request Rules are handwritten pages. Their titles are searchable through `searchIndex.ts` and their
+  rows have no individual `SettingItem` anchors.
 - Other handwritten pages: `PromptSettings`, `OobaSettings`, `OpenrouterSettings`, `UserSettings`, `ThanksPage`,
   `UpstreamImportReport`, `Advanced/BanCharacterSetSettings`, `Display/*`, and `Device/*`.
 
@@ -163,8 +167,8 @@ delivery and [app shell](app-shell.md#home-screen) for the home entry point.
 - `src/lib/UI/PromptDataItem.svelte` (one `PromptItem`) and `src/lib/Others/PromptDiffModal.svelte` (saved presets'
   templates, preferences in `db.promptDiffPrefs`).
 - `PromptDataItem` reads no preset: `PromptSettings` passes the preset's `promptSettings` (the `cot` type option, the
-  `chatAsOriginalOnSystem` checkbox). Its defaults are the template editor's; the request interception page narrows them
-  with `allowedTypes` (the type select is hidden when it offers one type), `showType2={false}` (no special type select),
+  `chatAsOriginalOnSystem` checkbox). Its defaults are the template editor's; the Request Rules page narrows them with
+  `allowedTypes` (the type select is hidden when it offers one type), `showType2={false}` (no special type select),
   `cbs={false}` (plain text areas, no CBS highlighting or autocomplete), and an `extra` snippet at the top of the opened
   row. With `cbs={false}`, the expanded editor opens in plain text and shows the literal token count, with no Preview.
 - `src/lib/Setting/OocToggleEditor.svelte`: a forced-toggle map editor over plain props (`definitionsText`, `value`,
@@ -319,8 +323,8 @@ delivery and [app shell](app-shell.md#home-screen) for the home entry point.
 - Focused:
   `pnpm --silent test:agent src/ts/setting src/lib/Setting src/ts/storage/tests/settingsViews.test.ts src/ts/storage/tests/settingWrappers.test.ts src/lib/UI/GUI/guiRendering.test.ts src/lang`.
 - Shared prompt row and popup identity:
-  `pnpm --silent test:agent src/lib/UI/PromptDataItem.test.ts src/lib/UI/popupRowContext.svelte.test.ts`. The
-  interception page also exercises the row over real settings records in `RequestInterceptionSettings.test.ts`.
+  `pnpm --silent test:agent src/lib/UI/PromptDataItem.test.ts src/lib/UI/popupRowContext.svelte.test.ts`. The Request
+  Rules page also exercises the row over real settings records in `RequestInterceptionSettings.test.ts`.
 - Prompt diff: `pnpm --silent test:agent src/lib/Others/PromptDiffModal.escape.test.ts`; its header describes the
   comparison, alert, and global-hotkey isolation contract.
 - `slow`: none in this area.

@@ -101,8 +101,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   owns outcomes and forecasts. The popover's `loreBudgetWarnOff` toggle also turns the chat's lore budget send stop off
   and on ([chat pipeline](chat-pipeline.md#send)).
 - The occupied count and percentage are `input` plus the report's `toolSchemas` and `interceptions`, each also a row of
-  its own (`contextUsage.toolSchemas`, `contextUsage.interceptions`) sorted among the sections. A rule edited since the
-  last reply shows in the meter only after the next one (`estimateBasis` does not track the rules).
+  its own (`contextUsage.toolSchemas`, and `contextUsage.interceptions`, "Inserted prompts (estimated)") sorted among
+  the sections. A rule edited since the last reply shows in the meter only after the next one (`estimateBasis` does not
+  track the rules).
 - The bar, legend, and row dots color by group: fixed (neutral), memory, history. `SPLIT_GROUPS` names the fixed
   sections that grow with the bot: the lorebook, and the character group (description, examples, persona). A group at or
   above `SPLIT_FROM` percent of the prompt budget is drawn apart from the rest of the fixed group in its own color

@@ -161,26 +161,26 @@ async function open() {
 }
 
 describe("ServerRequestHistory: interception counts", () => {
-    it("shows Intercepted with the prompt count in expanded details, using singular for one", async () => {
+    it("shows Inserted prompts with the prompt count in expanded details, using singular for one", async () => {
         deps.readRequestHistory.mockImplementation(async (id) =>
             record(summary(id, null, { interceptions: id === REQ(1) ? 2 : 1 })),
         );
         const view = await open();
-        expect(view.text()).not.toContain("Intercepted");
+        expect(view.text()).not.toContain("Inserted prompts");
         for (const [id, text] of [
             [REQ(1), "2 prompts"],
             [REQ(2), "1 prompt"],
         ] as const) {
             await view.expand(id);
             const labels = [...view.rowBox(id).querySelectorAll("span")].filter(
-                (span) => span.textContent?.trim() === "Intercepted",
+                (span) => span.textContent?.trim() === "Inserted prompts",
             );
             expect(labels).toHaveLength(1);
             expect(labels[0].nextElementSibling?.textContent?.trim()).toBe(text);
         }
     });
 
-    it("omits the Intercepted row from expanded details when the count is null or zero", async () => {
+    it("omits the Inserted prompts row from expanded details when the count is null or zero", async () => {
         deps.readRequestHistory.mockImplementation(async (id) =>
             record(summary(id, null, { interceptions: id === REQ(1) ? null : 0 })),
         );
@@ -190,7 +190,7 @@ describe("ServerRequestHistory: interception counts", () => {
             const box = view.rowBox(id);
             // Confirm that the details loaded before asserting the row's absence.
             expect(box.textContent).toContain(id);
-            expect(box.textContent).not.toContain("Intercepted");
+            expect(box.textContent).not.toContain("Inserted prompts");
             expect(box.textContent).not.toContain("0 prompts");
         }
     });

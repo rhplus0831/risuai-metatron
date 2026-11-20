@@ -128,10 +128,11 @@ refusal the memory step recovered from or outlived replaces no later error.
 - `assemblePrompt` runs per speaker; its `AssemblyHost` supplies the job's services. Assembly's prompt and lore behavior
   is owned by [chat pipeline](chat-pipeline.md); memory algorithms are owned by [memory](memory.md).
 - The send reserves space at the final token recheck for MCP tool schemas and the messages that the reply's request
-  layer will insert. `AssemblyHost.toolSchemaTokens` lists tools once for this reply. A plain `preview` skips that
-  listing but still counts the interception messages in `AssemblyHost.insertedMessages`. The context report keeps
-  `toolSchemas` and `interceptions` separate from assembled input. The mode filter, message order and insertion point
-  belong to [LLM requests](llm-requests.md#request-interception).
+  layer will insert (the Request Rules page's prompt insertion). `AssemblyHost.toolSchemaTokens` lists tools once for
+  this reply. A plain `preview` skips that listing but still counts the interception messages in
+  `AssemblyHost.insertedMessages`. The context report keeps `toolSchemas` and `interceptions` separate from assembled
+  input. The mode filter, message order and insertion point belong to
+  [LLM requests](llm-requests.md#request-interception).
 - With `context.stopOverLoreBudget`, the first assembly of a send, continue, group or reroll can end the admitted job
   with `loreOverBudget` before history, memory and the reply request. Earlier writes, including the input, stand. The
   tab owns the [lore stop and retry](chat-pipeline.md#lore). The flag and `inputOriginal` are outside
