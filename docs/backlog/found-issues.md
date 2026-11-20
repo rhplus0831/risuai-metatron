@@ -141,7 +141,7 @@ JSON, Markdown, snapshot and checkpoint validators reject unknown event statuses
 - [Remote commands](#remote-commands): 1
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 2
-- [Settings](#settings): 3
+- [Settings](#settings): 4
 - [Tests](#tests): 1
 - [Translation](#translation): 1
 
@@ -597,6 +597,23 @@ Seen on 2026-11-19 in a fresh browser profile, not checked on a device. `clientN
 **Why it matters:** two browsers of one kind get the same default name, and the page says hosts are remembered by name; the text itself reads as noise.
 
 **Suggested handling:** a short default from `src/ts/platform.ts` (browser and OS). Decide first what happens to a browser that never changed the name: whether its default is stored, and whether a host remembered under the old text must still match.
+
+### On Prompt preset's Parameters tab the last check row touches the handwritten label after it
+
+Seen on 2026-11-20 in the captures of slice 2 of the Settings Item Spacing plan (not kept), and read against the code
+after the plan landed. With `maxContextOverride` off, the last declarative item of `allBasicParameterItems` is the
+`params.maxContextOverride` check row, which has no bottom margin. With the main model `mancer`, `textgen_webui`,
+`local_*`, or `hf:::` the handwritten "Repetition Penalty" label follows it
+(`src/lib/Setting/Pages/PromptPresetSettings.svelte:146`), and with a NovelList-format model the "Top P" label (`:337`);
+neither has a top margin, so the row and the label touch. The gap was 0 before the plan too: the spacing rule in
+`SettingRenderer.svelte` sets nothing on a handwritten element.
+
+**Why it matters:** a check that touches the next label reads as one control; everywhere else on the page a field
+stands 1rem from a row.
+
+**Suggested handling:** an unconditional `mt-*` on the label would widen the other case (override on: the size field
+before it already ends with 1rem). Either make the label's margin depend on what precedes it, or move the handwritten
+parameters into the declarative data so the rule spaces them.
 
 ## Tests
 
