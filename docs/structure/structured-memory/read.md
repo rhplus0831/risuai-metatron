@@ -109,7 +109,9 @@ events are enabled through `structuredMemoryEmbeddingLanes`, independent of the 
 
 `prepareRetrieval` anchors the story date to the newest **placed, dated** event, even in the raw window. `card.ts`
 counts the anchor line with the frame. Dated flow and event lines can show the distance (`storyDateDistance` in
-`shared/structuredMemory.ts`). With no valid date, the same stored records yield the same undated card.
+`shared/structuredMemory.ts`). With separate placement (`volatileBeforeLastUser`), the volatile part repeats the anchor
+before its first heading when it holds an event with a generated relative date, and the frame budget counts that copy.
+With no valid date, the same stored records yield the same undated card.
 
 The meter reads tokens and `memoryStatusWord`; its popover and Preview share `MemoryManifest`. A report is its send's
 copy, so its `failed` writer outlives the failure: a record now, a task, or a rebuild's run writes runs and no report.
@@ -173,8 +175,11 @@ rounds; `memory_events.seq` is storage order. `memoryTimelineRows` owns message 
 then closes the panel.
 
 Pages opens in Read; Manage holds editing, provenance and history. A jump to a history entry opens Manage and scrolls
-once its diff has rendered. The component contract covers section display, links, local title filtering, last-send
-badges and selection changes. Two reads cross the server boundary:
+once its diff has rendered. For a saved scene, Manage shows the tokens its required block is charged against the
+preset's `requiredCap` (the record read with `sceneBudget=1`: `savedSceneBudget` in
+`server/src/routes/structuredMemory.ts` counts as the card does); a count that cannot be computed is left out of the
+answer, never an error. The component contract covers section display, links, local title filtering, last-send badges
+and selection changes. Two reads cross the server boundary:
 
 - `findStructuredMemory` with a text query searches pages and events. One helper, `memoryTextSearch`
   (`structuredMemory.svelte.ts`), owns the request: each tab creates it at mount with its chat, `refresh`, and trimmed

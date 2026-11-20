@@ -106,11 +106,13 @@ Each module's rules are in its header or on its exports, and each component's in
 ### Pages
 
 Pages live in `src/lib/Setting/Pages/`. In `DeviceLinkSettings`, `Device/DeviceNameInput.svelte` edits this browser's
-`clientName`, shared by host commands and handoff. The remote host section pairs
-`src/lib/Setting/Pages/Device/RemoteHostControls.svelte` (sending browser, host selection by name, reload and fallback)
-with `Device/HostModeButton.svelte` (enter the host lock screen). `Device/HandoffToggles.svelte` edits handoff
-preferences. These controls use browser-local stores. Follow [network jobs](network-jobs.md#remote-send) for command
-delivery and [app shell](app-shell.md#home-screen) for the home entry point.
+`clientName`, shared by host commands and handoff. Its default is `<browser> · <OS>` (`getBrowserName`,
+`getBrowserOSName` in `src/ts/platform.ts`); a stored name that starts with `Mozilla/5.0 `, the earlier default, is
+replaced once on load. The remote host section pairs `src/lib/Setting/Pages/Device/RemoteHostControls.svelte` (sending
+browser, host selection by name, reload and fallback) with `Device/HostModeButton.svelte` (enter the host lock screen).
+`Device/HandoffToggles.svelte` edits handoff preferences. These controls use browser-local stores. Follow
+[network jobs](network-jobs.md#remote-send) for command delivery and [app shell](app-shell.md#home-screen) for the home
+entry point.
 
 - Declarative: `AccessibilitySettings`, `InteractionSettings`, `AdvancedSettings`, `StorageSettings`, and
   `DeviceLinkSettings` (the header array, then `SettingsSections`), `DisplaySettings` (sectioned per tab),

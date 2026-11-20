@@ -184,8 +184,9 @@ and keeps what spans files.
   ([plugin storage](plugin-sandbox.md#state)).
 - The compatible export includes assets referenced by retained plugin custom values (`collectUpstreamAssetReferences`).
   Native full archives take all stored assets; native partial archives select only the categories in
-  `selectPartialBackupAssets`. Drafts held in a browser have no server backup source
-  ([draft recovery](draft-recovery.md)).
+  `selectPartialBackupAssets`. A file only a plugin's data names is not among them (Decision: owner, 2026-11-20; both
+  partial dialogs list plugin files as excluded). Drafts held in a browser have no server backup source
+  ([draft recovery](draft-recovery.md)); the Storage page's snapshot section says so (`storage.draftsBackupNote`).
 - `upstreamChat` counts omitted translations and reroll candidates as `message-translations` and `message-candidates`.
 
 ## State

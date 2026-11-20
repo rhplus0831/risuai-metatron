@@ -116,6 +116,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   above `SPLIT_FROM` percent of the prompt budget is drawn apart from the rest of the fixed group in its own color
   (`--color-meter-lore`, `--color-meter-character` in `src/styles.css`, fixed for every theme); a smaller one stays
   neutral. A fixed share over its warning colors the tick and the line under the bar, never a segment.
+- The memory segment uses `--color-meter-memory`, defined the same way as the two group colors, so it stays apart from
+  history under simulated color blindness.
 - The line's memory word is the chat's memory now (`memoryNow`: `chatMemoryAlgorithm` and `chatMemoryEnabled`, as the
   next send resolves them), so a chat with memory set up has a line before its first reply; the last reply's coverage is
   the word only while that memory is still on (`reportedNow`). It warns on a gap, and on memory off with history left

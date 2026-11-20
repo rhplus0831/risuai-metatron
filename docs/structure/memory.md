@@ -176,8 +176,10 @@ and legacy progress notices and clears them when [the job channel](network-jobs.
 The history entries a select-only, initial, or `writeSkipped` selection kept (its protected tail) are never removable in
 the final re-check. A merged system message containing one is protected too. An `editRequest` result is removable only
 when it matches a removable entry. The re-check reserves the reply and chat-reply interception messages. Sends and
-`previewPrompt` also reserve offered tool schemas; a messages-only `preview` skips tool listing. A protected tail that
-still exceeds the remaining budget fails the job. See [request accounting](llm-requests.md#limitations).
+`previewPrompt` also reserve offered tool schemas; a messages-only `preview` skips tool listing. With or without a
+memory method and a prompt template, the re-check never clears the newest user turn or the last history entry
+(`keptHistory` in `assemble.ts`), by identity or source provenance. A protected tail or kept history that still exceeds
+the remaining budget fails the job. See [request accounting](llm-requests.md#limitations).
 
 ### The no-memory trim question
 
