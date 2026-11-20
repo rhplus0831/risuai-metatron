@@ -1754,6 +1754,32 @@ describe("the reply tail's callbacks", () => {
         expect(tx.answers).toEqual([]);
     });
 
+    it("names generated inlays only when the callback supplies a valid name", async () => {
+        // 200 UTF-16 code units (each emoji is two), the longest name the tab keeps.
+        const name = "🌳".repeat(100);
+        deps.generateAIImage.mockResolvedValue("data:image/png;base64,bGF0ZQ==");
+        deps.writeInlayImage.mockResolvedValue("inlay");
+
+        for (const [id, nameFields] of Object.entries({
+            valid: { name },
+            missing: {},
+            empty: { name: "" },
+            nonString: { name: { text: "My picture" } },
+            overlong: { name: name + "!" },
+        })) {
+            send(callback(id, "generateImage", { characterId: "c", prompt: "a tree", negative: "fog", ...nameFields }));
+            await pump();
+        }
+
+        expect(deps.writeInlayImage.mock.calls.map(([, options]) => options?.name)).toStrictEqual([
+            name,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+        ]);
+    });
+
     it("recentEmotions lists the last five emotions shown for the chat's character, or for each member of its group", async () => {
         const shown = (names: string[]) => names.map((name, i) => [name, `${name}.png`, i] as [string, string, number]);
         stores.CharEmotion.set({ c: shown(["a", "b", "c", "d", "e", "f"]), d: shown(["x"]), other: shown(["z"]) });

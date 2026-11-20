@@ -1149,11 +1149,15 @@ it.each(["getCharacterImageMain", "getPersonaImageMain", "generateImageMain"] as
 );
 
 describe("the host-function contract through the real worker", () => {
-    it("includes the requested image orientation in the callback and omits it when options are absent", async () => {
+    it("forwards image orientation and a valid name, omitting empty, non-string, and missing names", async () => {
+        // 200 UTF-16 code units (each emoji is two), the longest name forwarded.
+        const name = "🌳".repeat(100);
         const chaId = await seedCharacter({
             codes: [
                 button(`
-                    generateImage(id, "p", "n", { orientation = "portrait" }):await()
+                    generateImage(id, "p", "n", { orientation = "portrait", name = "${name}" }):await()
+                    generateImage(id, "p", "n", { name = "" }):await()
+                    generateImage(id, "p", "n", { name = { "My picture" } }):await()
                     generateImage(id, "p", "n"):await()
                 `),
             ],
@@ -1163,22 +1167,26 @@ describe("the host-function contract through the real worker", () => {
         });
         expect(terminal?.type).toBe("done");
         const callbacks = events.filter((event) => event.type === "callback");
-        expect(callbacks.map(({ name, payload }) => ({ name, payload }))).toEqual([
+        expect(callbacks.map(({ name, payload }) => ({ name, payload }))).toStrictEqual([
             {
                 name: "generateImage",
-                payload: { prompt: "p", negative: "n", characterId: chaId, orientation: "portrait" },
+                payload: { prompt: "p", negative: "n", characterId: chaId, orientation: "portrait", name },
             },
+            { name: "generateImage", payload: { prompt: "p", negative: "n", characterId: chaId } },
+            { name: "generateImage", payload: { prompt: "p", negative: "n", characterId: chaId } },
             { name: "generateImage", payload: { prompt: "p", negative: "n", characterId: chaId } },
         ]);
     });
 
-    it("returns orientation errors for an invalid string and a number without asking the tab to generate", async () => {
+    it("rejects overlong image names and reports invalid orientations first without asking the tab", async () => {
         const chaId = await seedCharacter({
             codes: [
                 button(`
-                    local invalidString = generateImage(id, "p", "n", { orientation = "square" }):await()
+                    local longName = string.rep("🌳", 100) .. "!"
+                    local invalidName = generateImage(id, "p", "n", { orientation = "portrait", name = longName }):await()
+                    local invalidString = generateImage(id, "p", "n", { orientation = "square", name = longName }):await()
                     local invalidNumber = generateImage(id, "p", "n", { orientation = 17 }):await()
-                    alertNormal(id, json.encode({invalidString, invalidNumber}))
+                    alertNormal(id, json.encode({invalidName, invalidString, invalidNumber}))
                 `),
             ],
         });
@@ -1187,6 +1195,7 @@ describe("the host-function contract through the real worker", () => {
         });
         expect(terminal?.type).toBe("done");
         expect(JSON.parse(notice(events, "alertNormal")!)).toEqual([
+            "Error: Image name must be at most 200 characters",
             "Error: Image orientation must be landscape or portrait, received square",
             "Error: Image orientation must be landscape or portrait, received 17",
         ]);

@@ -13,6 +13,7 @@ import type {
     QuestionResult,
     SkippedHook,
 } from "../../../shared/jobs.ts";
+import { MAX_LUA_INLAY_NAME_LENGTH } from "../../../shared/jobs.ts";
 import type {
     InlaySignature,
     ModelModeExtended,
@@ -234,7 +235,7 @@ export type LuaBindingServices = {
         negative: string,
         characterId: string,
         ctx: HostContext,
-        options?: { timeoutMs?: number; skipDisconnected?: boolean; orientation?: ImageOrientation },
+        options?: { timeoutMs?: number; skipDisconnected?: boolean; orientation?: ImageOrientation; name?: string },
     ): Promise<string | null>;
     /** Scripts pass their grant (false counts locally); non-script jobs keep the configured counter. */
     tokenize(text: string, lowLevelAccess?: boolean): Promise<number>;
@@ -964,12 +965,15 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         negative: string,
         characterId: string,
         ctx: HostContext,
-        options: { timeoutMs?: number; skipDisconnected?: boolean; orientation?: ImageOrientation } = {},
+        options: { timeoutMs?: number; skipDisconnected?: boolean; orientation?: ImageOrientation; name?: string } = {},
     ): Promise<string | null> => {
-        const { orientation, ...callbackOptions } = options;
+        const { orientation, name, ...callbackOptions } = options;
         const payload: CallbackPayloads["generateImage"] = { prompt, negative, characterId };
         if (orientation !== undefined) {
             payload.orientation = orientation;
+        }
+        if (name !== undefined) {
+            payload.name = name;
         }
         const answer = await callback("generateImage", payload, ctx, callbackOptions);
         return answer === null ? null : await answeredInlayId(answer, null, ctx);
@@ -1808,9 +1812,17 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             if (!isLow(ctx)) {
                 return undefined;
             }
-            const { orientation } = parseLuaOptions(optionsStr) as { orientation?: unknown };
+            const { orientation, name: rawName } = parseLuaOptions(optionsStr) as {
+                orientation?: unknown;
+                name?: unknown;
+            };
             if (orientation !== undefined && orientation !== "landscape" && orientation !== "portrait") {
                 return "Error: Image orientation must be landscape or portrait, received " + String(orientation);
+            }
+            // A non-empty string labels the inlay; an empty or non-string name means none.
+            const name = typeof rawName === "string" && rawName !== "" ? rawName : undefined;
+            if (name !== undefined && name.length > MAX_LUA_INLAY_NAME_LENGTH) {
+                return `Error: Image name must be at most ${MAX_LUA_INLAY_NAME_LENGTH} characters`;
             }
             const target = runCharacter();
             if (!target || target.type === "group" || !deps.runCharacterId) {
@@ -1819,6 +1831,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             }
             const id = await generateImageInlay(String(value ?? ""), String(negValue ?? ""), deps.runCharacterId, ctx, {
                 orientation,
+                ...(name !== undefined ? { name } : {}),
             });
             return id === null ? "Error: Image generation failed" : `{{inlay::${id}}}`;
         },

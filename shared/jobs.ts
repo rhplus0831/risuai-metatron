@@ -752,6 +752,13 @@ export type CallbackName =
 /** The optional orientation requested by an image-generation callback. */
 export type ImageOrientation = "landscape" | "portrait";
 
+/**
+ * The longest inlay name Lua `generateImage` forwards (`CallbackPayloads.generateImage.name`), in
+ * characters (JS `string.length`). The server answers a longer name with an error string; the tab
+ * ignores one.
+ */
+export const MAX_LUA_INLAY_NAME_LENGTH = 200;
+
 /** A callback's payload by name. */
 export type CallbackPayloads = {
     replacerbeforeRequest: { messages: OpenAIChat[]; model: string };
@@ -792,8 +799,17 @@ export type CallbackPayloads = {
      * tab has no such character or chat.
      */
     selectedChat: { characterId: string };
-    /** Lua `generateImage`: the client generates for `characterId`, writes the inlay, and answers `{ id }`. */
-    generateImage: { prompt: string; negative: string; characterId: string; orientation?: ImageOrientation };
+    /**
+     * Lua `generateImage`: the client generates for `characterId`, writes the inlay (labelled `name`
+     * when given, otherwise its id), and answers `{ id }`.
+     */
+    generateImage: {
+        prompt: string;
+        negative: string;
+        characterId: string;
+        orientation?: ImageOrientation;
+        name?: string;
+    };
     /**
      * An image inlay drawn by the client's canvas (`writeInlayImage`: PNG, at most 1024² pixels),
      * written under `id`, answered `{ id }`: a stored image `asset` (Lua `getCharacterImage`/

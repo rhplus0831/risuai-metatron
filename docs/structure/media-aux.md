@@ -92,7 +92,10 @@ here, under `src/lib/Playground/`:
   `generateAIImage(..., "inlay")` under the job's signal, then `writeInlayImage`, and returns the inlay id.
 - The server turns that id into `{{inlay::id}}`: the inlay screen puts it in the reply text, `v2ImgGen` in its output
   variable, and Lua returns it to the script. The Lua binding answers an `orientation` other than `landscape` or
-  `portrait` with an error string without asking the tab, and the tab forwards only those two.
+  `portrait` with an error string without asking the tab, and the tab forwards only those two. A Lua `name` that is a
+  non-empty string becomes the inlay's name (otherwise its id); an empty or non-string name means none. A name longer
+  than `MAX_LUA_INLAY_NAME_LENGTH` (200 characters, `shared/jobs.ts`) is an error string without asking the tab, and the
+  tab drops such a name.
 
 ## State
 

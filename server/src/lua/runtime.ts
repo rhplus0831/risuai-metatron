@@ -271,7 +271,12 @@ end
 function generateImage(id, value, negValue, options)
     local optionsStr = nil
     if type(options) == "table" then
-        optionsStr = json.encode({ orientation = options.orientation })
+        -- Only a string name is forwarded; any other value means no name.
+        local name = nil
+        if type(options.name) == "string" then
+            name = options.name
+        end
+        optionsStr = json.encode({ orientation = options.orientation, name = name })
     end
     return generateImageMain(id, value, negValue, optionsStr)
 end

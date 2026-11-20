@@ -22,6 +22,7 @@ import type {
     StreamingMessage,
 } from "../../../shared/jobs.ts";
 import {
+    MAX_LUA_INLAY_NAME_LENGTH,
     MAX_PROVIDER_TEXT_CHARS,
     MEMORY_GAP_CHOICES,
     MEMORY_TRIM_CHOICES,
@@ -964,7 +965,18 @@ async function runHook(event: GenerationCallbackEvent, entry: Outstanding): Prom
             }
             const image = new Image();
             image.src = generated;
-            return { id: await writeInlayImage(image, { check: stillWanted }) };
+            // The script's label for the inlay; anything else leaves it named by its id.
+            const rawName = payload.name;
+            const name =
+                typeof rawName === "string" && rawName !== "" && rawName.length <= MAX_LUA_INLAY_NAME_LENGTH
+                    ? rawName
+                    : undefined;
+            return {
+                id: await writeInlayImage(
+                    image,
+                    name === undefined ? { check: stillWanted } : { name, check: stillWanted },
+                ),
+            };
         }
         case "inlayImage": {
             // An image the server cannot draw (no canvas there): a stored asset (Lua
