@@ -200,6 +200,8 @@ Storage page nor the backup dialogs say so.
 **Suggested handling:** one line on the Storage page, or accept it as a Limitation of
 [draft recovery](../structure/draft-recovery.md).
 
+**Decision:** owner, 2026-11-20: add the line to the Storage page.
+
 ### The boot cache keeps its own copy of the resource id rule
 
 Timeline Chapter Synopses run, 2026-11-19, from slice 1; read, not run. `isValidResourceId` moved from
@@ -213,20 +215,21 @@ with the comment "Match isValidResourceId in server/src/data/resourceStore.ts".
 
 ## Build and CI
 
-### The CI workflow does not run for `dev`
+### The CI workflow still names `metatron` and pins its actions by tag
 
 Read on 2026-11-20 at `bcc698905`, in the file only. `.github/workflows/ci.yml` runs for pushes to `metatron` and
-`main` and for pull requests that target them, and
-[the build guide](../structure/build-test-platforms.md#ci) says the same. The branch work lands on is `dev`, and
-`metatron` was renamed `main`, so a push to `dev` starts no run and the `metatron` trigger names a branch that no
+`main` and for pull requests that target them. `metatron` was renamed `main`, so that trigger names a branch that no
 longer exists. The workflow's three actions are pinned by tag (`actions/checkout@v5`, `actions/setup-node@v5`,
-`actions/cache@v4`), not by commit hash. Not checked: whether the forge that hosts `dev` runs this workflow at all,
-and whether leaving `dev` out is intended.
+`actions/cache@v4`), not by commit hash. Not checked: whether the forge runs this workflow at all.
 
-**Why it matters:** the branch every merge lands on has no automatic check.
+**Why it matters:** low. A stale trigger does nothing; a tag can be moved to other code by the action's publisher.
 
-**Suggested handling:** ask the owner whether `dev` joins the triggers and `metatron` leaves them; change the guide's
-sentence in the same commit.
+**Suggested handling:** drop `metatron` from the triggers and from
+[the build guide's sentence](../structure/build-test-platforms.md#ci); pin the actions by hash if the workflow is in
+use.
+
+**Decision:** owner, 2026-11-20: `dev` stays out of the triggers on purpose, and the guide's CI section now says so.
+That part of the entry is closed; do not file it again.
 
 ## Chat screen
 
@@ -299,6 +302,9 @@ not for a reader with red-green color blindness.
 
 **Suggested handling:** the owner decides whether to change one of them. Both are theme colors used across the app,
 so the meter would take a color of its own, as the two groups did, and not change the theme's.
+
+**Decision:** owner, 2026-11-20: change it. The meter takes a color of its own for one of the two segments; the
+theme's colors stay as they are.
 
 ## Docs
 
@@ -534,6 +540,9 @@ confirmation, and chat creation; plugins are a second writer nobody documents.
 **Suggested handling:** an owner decision: exclude the binding keys from plugin chat writes, or document plugins as a
 binding writer in [persistence](../structure/persistence.md) Chat binding.
 
+**Decision:** owner, 2026-11-20: exclude the binding keys (`promptPresetId`, `modelPresetId`, `bindedPersona`,
+`bindingReview`) from plugin chat writes.
+
 ## Remote commands
 
 ### The relay's identity differs from the generation's for fields a send does not use
@@ -646,6 +655,8 @@ Seen on 2026-11-19 in a fresh browser profile, not checked on a device. `clientN
 **Why it matters:** two browsers of one kind get the same default name, and the page says hosts are remembered by name; the text itself reads as noise.
 
 **Suggested handling:** a short default from `src/ts/platform.ts` (browser and OS). Decide first what happens to a browser that never changed the name: whether its default is stored, and whether a host remembered under the old text must still match.
+
+**Decision:** owner, 2026-11-20: the default becomes a short "browser · OS" label, and a stored name that starts with `Mozilla/5.0 ` is replaced by it once. The default is already stored (`preference` in `src/ts/network/handoff.ts` writes its value when it is created), so changing the fallback alone would reach new profiles only. A sending device that remembered a host under the old text does not have to match it: its "Not connected" row stays and the host is chosen again once.
 
 ### On Prompt preset's Parameters tab the last check row touches the handwritten label after it
 

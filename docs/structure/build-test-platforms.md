@@ -225,6 +225,9 @@ in [self-host-server](self-host-server.md).
   `pnpm test:slow` and `pnpm test:e2e` are not in CI.
 - The job uses no secrets and no `save/` data. A person can run the same script locally; agents keep using
   `pnpm --silent test:agent` (V1).
+- `dev`, the branch work lands on, is left out of the triggers on purpose (owner, 2026-11-20): it mainly carries data
+  between the owner's test server and the agents' sandbox server, and every agent session already runs the equivalent
+  checks before it finishes.
 
 ### Direct assets
 
