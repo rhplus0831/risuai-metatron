@@ -288,9 +288,14 @@ local function __safeKey(id)
     return access == "safe" or access == "lowLevel"
 end
 
-function alertInput(id, value)
+function alertInput(id, value, defaultValue)
     if not __safeKey(id) then
         return nil
+    end
+    -- Only a string pre-fills the dialog. Other values are left out here: a table or function
+    -- would fail the host call's primitive-argument check.
+    if type(defaultValue) == "string" then
+        return alertInputMain(id, value, defaultValue)
     end
     return alertInputMain(id, value)
 end

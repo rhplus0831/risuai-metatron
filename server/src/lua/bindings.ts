@@ -1751,11 +1751,15 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
     };
 
     const async: NonNullable<LuaHost["async"]> = {
-        alertInputMain: async ([, value], ctx) => {
+        alertInputMain: async ([, value, defaultValue], ctx) => {
             if (!isSafe(ctx)) {
                 return undefined;
             }
-            const answer = await ask({ kind: "alertInput", payload: { message: String(value) } }, ctx);
+            const payload: { message: string; defaultValue?: string } = { message: String(value) };
+            if (typeof defaultValue === "string") {
+                payload.defaultValue = defaultValue;
+            }
+            const answer = await ask({ kind: "alertInput", payload }, ctx);
             return typeof answer === "string"
                 ? answer
                 : answer === null || answer === undefined

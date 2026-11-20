@@ -1362,6 +1362,27 @@ describe("the host-function contract through the real worker", () => {
         SLOW,
     );
 
+    it("prefills alertInput questions only when Lua supplies a string default", async () => {
+        const code = button(`
+            alertInput(id, "Name?", "Ada"):await()
+            alertInput(id, "City?"):await()
+            local answer = alertInput(id, "Country?", {"France"}):await()
+            alertNormal(id, answer)
+        `);
+        const chaId = await seedCharacter({ codes: [code] });
+        const { events, terminal } = await runButton(chaId, { answer: () => "Canada" });
+
+        expect(terminal?.type).toBe("done");
+        expect(
+            events.filter((event) => event.type === "question").map(({ kind, payload }) => ({ kind, payload })),
+        ).toStrictEqual([
+            { kind: "alertInput", payload: { message: "Name?", defaultValue: "Ada" } },
+            { kind: "alertInput", payload: { message: "City?" } },
+            { kind: "alertInput", payload: { message: "Country?" } },
+        ]);
+        expect(notice(events, "alertNormal")).toBe("Canada");
+    });
+
     it(
         "routes axLLM modes to their slots, defaults absent and null modes to otherAx, and keeps LLM on main",
         async () => {
