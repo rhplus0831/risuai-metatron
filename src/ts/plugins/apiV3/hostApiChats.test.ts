@@ -81,6 +81,7 @@ import { initializeRecords, takeRecordFields } from "src/ts/storage/records.svel
 import { selectCharacter, selectModelPreset, selectPreset } from "src/ts/storage/selection.svelte";
 import { reconcileSelection, settings } from "src/ts/storage/settingsViews.svelte";
 import * as chatStore from "src/ts/storage/chatStore.svelte";
+import { editChatSync } from "src/ts/storage/chatEdits";
 import { characterList, removeCharacter } from "src/ts/storage/characterStore.svelte";
 import { executePluginV3, resetPluginPermissions } from "./v3.svelte";
 import { alertConfirm } from "src/ts/alert";
@@ -1010,5 +1011,107 @@ describe("whole-character plugin writes of chat memory", () => {
             memoryPresetId: "memory-preset",
             memoryProfileId: "memory-connection",
         });
+    });
+});
+
+describe("plugin writes of chat bindings", () => {
+    const binding = {
+        promptPresetId: "preset",
+        modelPresetId: "model",
+        bindedPersona: "persona",
+        bindingReview: true,
+    };
+    const pluginBinding = {
+        promptPresetId: "plugin-prompt",
+        modelPresetId: "plugin-model",
+        bindedPersona: "plugin-persona",
+        bindingReview: false,
+    };
+
+    beforeEach(() => {
+        vi.spyOn(permissionStore, "recordPermissionGrants").mockResolvedValue(undefined);
+    });
+
+    it("setChatToIndex applies edits from a stale copy while keeping newer binding values", async () => {
+        chatStore.setChatMeta(refK, { ...binding, bindingReview: false });
+        const api = await makeApi();
+        const copy: Chat = await api.getChatFromIndex(0, 0);
+        const newerBinding = {
+            promptPresetId: "user-prompt",
+            modelPresetId: "user-model",
+            bindedPersona: "user-persona",
+            bindingReview: true,
+        };
+        chatStore.setChatMeta(refK, newerBinding);
+
+        copy.note = "plugin note";
+        copy.message[0].data = "plugin message";
+        copy.promptPresetId = pluginBinding.promptPresetId;
+        copy.bindedPersona = pluginBinding.bindedPersona;
+        delete copy.modelPresetId;
+        delete copy.bindingReview;
+        await api.setChatToIndex(0, 0, copy);
+
+        expect(chatStore.findChat(refK)).toMatchObject({
+            ...newerBinding,
+            note: "plugin note",
+            message: [{ chatId: "a", data: "plugin message" }, { chatId: "b" }],
+        });
+        expect(warnings()).toEqual([]);
+    });
+
+    it.each(["setChatToIndex", "setChar", "setCharacter", "setCharacterToIndex", "setDatabase", "setDatabaseLite"])(
+        "%s keeps the binding when a message reorder replaces the whole chat",
+        async (setter) => {
+            chatStore.setChatMeta(refK, binding);
+            const api = await makeApi();
+            const characters = liveCharacters();
+            const incoming = characters[0];
+            const copy = Object.assign(incoming.chats[0], pluginBinding, { note: "plugin note after reorder" });
+            copy.message.reverse();
+
+            if (setter === "setChatToIndex") await api[setter](0, 0, copy);
+            else if (setter === "setCharacterToIndex") await api[setter](0, incoming);
+            else if (setter === "setDatabase" || setter === "setDatabaseLite") await api[setter]({ characters });
+            else await api[setter](incoming);
+
+            expect(chatStore.findChat(refK)).toMatchObject({
+                ...binding,
+                note: "plugin note after reorder",
+                message: [{ chatId: "b" }, { chatId: "a" }],
+            });
+            expect(warnings()).toEqual([]);
+        },
+    );
+
+    it.each([
+        { setter: "setChar", chaId: "c" },
+        { setter: "setCharacterToIndex", chaId: "replacement" },
+        { setter: "setDatabase", chaId: "added" },
+    ])("$setter creates an unbound chat", async ({ setter, chaId }) => {
+        const api = await makeApi();
+        const characters = liveCharacters();
+        const created = { ...chat("new", "New chat"), ...pluginBinding, note: "plugin note" };
+        const incoming = { ...characters[0], chaId };
+
+        if (setter === "setChar") {
+            await api.setChar({ ...incoming, chats: [...incoming.chats, created] });
+        } else if (setter === "setCharacterToIndex") {
+            await api.setCharacterToIndex(0, { ...incoming, chats: [created] });
+        } else {
+            await api.setDatabase({ characters: [...characters, { ...incoming, chats: [created] }] });
+        }
+
+        const stored = chatStore.findChat({ chaId, chatId: "new" });
+        expect(stored).toMatchObject({ name: "New chat", note: "plugin note" });
+        for (const key of Object.keys(binding)) expect(stored).not.toHaveProperty(key);
+    });
+
+    it("allows an internal chat edit to change a binding field", () => {
+        chatStore.setChatMeta(refK, binding);
+        editChatSync(refK, (draft) => {
+            draft.promptPresetId = "another-preset";
+        });
+        expect(chatStore.findChat(refK)).toMatchObject({ ...binding, promptPresetId: "another-preset" });
     });
 });

@@ -23,7 +23,7 @@ import type {
 import { CHAT_META_FORBIDDEN_KEYS, CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
 import type { ChatStreaming, ChatStreamingSnapshot } from "../../../shared/events.ts";
 import type { GenerationChatPatchEvent, GenerationChunkEvent, StreamingMessage } from "../../../shared/jobs.ts";
-import { readChatBindingIds } from "../../../shared/chatBinding.ts";
+import { readChatBindingIds, type ChatBindingFields } from "../../../shared/chatBinding.ts";
 import { oocLogError, oocSegmentError, oocTogglesError } from "../../../shared/ooc.ts";
 import {
     type ChangeSet,
@@ -4672,7 +4672,11 @@ const nonMetaKeys = new Set(["message", "id", "isStreaming", "activeStreamingDis
  * checked before the mirror changes. A `hypaV3Data` that stays as held (`keepsHeldHypaV3Data`) is
  * dropped from the result alone: the rest of it still applies.
  */
-export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Chat>) {
+export function applyChatResult(
+    baseline: ChatBaseline,
+    result: DeepReadonly<Chat>,
+    preserveBinding: readonly (keyof ChatBindingFields)[] = [],
+) {
     const { ref } = baseline;
     const current = heldChat(ref);
     if (!current) {
@@ -4746,6 +4750,14 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
 
     if (reordered) {
         if (replaces) {
+            // A whole-chat replacement bypasses the metadata diff below.
+            for (const key of preserveBinding) {
+                if (Object.hasOwn(current, key)) {
+                    Object.assign(next, { [key]: current[key] });
+                } else {
+                    delete next[key];
+                }
+            }
             replaceChat(ref, next);
             return;
         }
@@ -4787,6 +4799,7 @@ export function applyChatResult(baseline: ChatBaseline, result: DeepReadonly<Cha
     for (const key of new Set([...Object.keys(baseFields), ...Object.keys(nextFields)])) {
         if (
             nonMetaKeys.has(key) ||
+            preserveBinding.some((field) => field === key) ||
             (key === "hypaV3Data" && heldHypaV3Data) ||
             JSON.stringify(baseFields[key]) === JSON.stringify(nextFields[key])
         ) {
@@ -4841,6 +4854,7 @@ export function reconcileCharacterChats(
     incoming: readonly DeepReadonly<Chat>[],
     chatPage?: number,
     takeBaseline?: (ref: ChatRef) => ChatBaseline | undefined,
+    preserveBinding: readonly (keyof ChatBindingFields)[] = [],
 ) {
     const character = findCharacter(chaId);
     if (!character || !Array.isArray(incoming)) {
@@ -4872,7 +4886,7 @@ export function reconcileCharacterChats(
                         }
                     }
                 }
-                applyChatResult(baseline, chat);
+                applyChatResult(baseline, chat, preserveBinding);
             } catch (error) {
                 console.warn(
                     "[Chat] Skipped a plugin change to a chat (a message being generated, or a refused field)",
@@ -4880,6 +4894,7 @@ export function reconcileCharacterChats(
                 );
             }
         } else {
+            for (const key of preserveBinding) delete chat[key];
             createChat(chaId, chat);
         }
     }

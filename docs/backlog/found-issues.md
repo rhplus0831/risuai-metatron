@@ -141,7 +141,7 @@ validators reject unknown event statuses.
 - [Memory](#memory): 6
 - [Modules and personas](#modules-and-personas): 4
 - [Network jobs](#network-jobs): 2
-- [Plugins](#plugins): 2
+- [Plugins](#plugins): 1
 - [Remote commands](#remote-commands): 1
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 2
@@ -562,24 +562,6 @@ Post-verification of 2026-11-18 (CN-4, what is left), read by one reader after t
 **Suggested handling:** add them to the `Pick`.
 
 ## Plugins
-
-### A plugin's chat write can change the chat's binding
-
-`setChatToIndex` hands the plugin's chat to `applyChatResult` (`src/ts/plugins/apiV3/v3.svelte.ts:3264`), which
-writes every metadata key that differs from the baseline with `setChatMeta`
-(`src/ts/storage/chatStore.svelte.ts:4787`). `nonMetaKeys` (`:4660`) does not list `promptPresetId`,
-`modelPresetId`, `bindedPersona`, or `bindingReview`, so a permitted plugin can rebind a chat, or clear its pending
-review, without `pickBinding` or `chatBindingPatch`. Pre-existing. Found 2026-11-17 by slice 2 of the Sidebar-Only
-Chat Binding plan (its challenger's report, spot-checked in code); re-checked at the run's end, unverified at runtime.
-
-**Why it matters:** that plan's rule is that a chat's binding changes only from its binding panel, the review
-confirmation, and chat creation; plugins are a second writer nobody documents.
-
-**Suggested handling:** an owner decision: exclude the binding keys from plugin chat writes, or document plugins as a
-binding writer in [persistence](../structure/persistence.md) Chat binding.
-
-**Decision:** owner, 2026-11-20: exclude the binding keys (`promptPresetId`, `modelPresetId`, `bindedPersona`,
-`bindingReview`) from plugin chat writes.
 
 ### A TypeScript compilation error can replace a working plugin
 

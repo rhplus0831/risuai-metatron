@@ -2044,6 +2044,18 @@ function warnRefused(what: string, write: () => void) {
     }
 }
 
+const chatBindingKeys = ["promptPresetId", "modelPresetId", "bindedPersona", "bindingReview"] as const;
+
+function withoutNewPluginChatBindings(fields: Record<string, unknown>) {
+    if (!Array.isArray(fields.chats)) return fields;
+    const chats = fields.chats.map((chat) => {
+        const copy: Chat = { ...chat };
+        for (const key of chatBindingKeys) delete copy[key];
+        return copy;
+    });
+    return { ...fields, chats };
+}
+
 /**
  * Applies a whole character a plugin hands back. The same `chaId` as the
  * character at `index`: its own fields replace the character's (`replaceCharacterFields`), and its
@@ -2080,7 +2092,7 @@ function applyPluginCharacter(
             }
             checkCharacterInput(char);
             const { chatSummaries: _summaries, ...fields } = char;
-            replaceCharacterAt(index, fields);
+            replaceCharacterAt(index, withoutNewPluginChatBindings(fields));
             return;
         }
         // Turning memory on counts, as the sidebar toggle's (`supaMemoryOnCount`): it voids every
@@ -2105,6 +2117,7 @@ function applyPluginCharacter(
                 chats,
                 typeof chatPage === "number" ? chatPage : undefined,
                 takeBaseline,
+                chatBindingKeys,
             );
         } else if (typeof chatPage === "number") {
             selectChat(current.chaId, chatPage, index);
@@ -2160,7 +2173,7 @@ function applyPluginCharacters(
         entries.flatMap((char, i) => {
             if (typeof char.chaId === "string" && existingIds.has(char.chaId)) return [];
             const { chatSummaries: _summaries, ...fields } = char;
-            const ready = prepareNewCharacter(fields, `characters[${i}]`);
+            const ready = prepareNewCharacter(withoutNewPluginChatBindings(fields), `characters[${i}]`);
             if (reservedIds.has(ready.chaId)) {
                 throw new MutationValidationError("characters", `a character with chaId ${ready.chaId} already exists`);
             }
@@ -3261,10 +3274,11 @@ const makeRisuaiAPIV3 = (iframe: HTMLIFrameElement, plugin: RisuPlugin, identity
             }
             // Consume the entry read once; writes without one diff against the current chat.
             try {
-                applyChatResult(takeChatRead(contextOwner, ref, baseline) ?? captureChatBaseline(ref), {
-                    ...chat,
-                    id: chatId,
-                });
+                applyChatResult(
+                    takeChatRead(contextOwner, ref, baseline) ?? captureChatBaseline(ref),
+                    { ...chat, id: chatId },
+                    chatBindingKeys,
+                );
             } catch (error) {
                 console.warn("[Plugin] Skipped a chat change (a message being generated, or a refused field)", error);
             }
