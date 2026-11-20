@@ -93,7 +93,7 @@ records only; generation, prompt assembly, Lua, triggers, regex and memory run o
 - **Server MCP** (remote MCP, dice, internal aiaccess / RisuAccess / graph memory) for jobs (`server/src/mcp/`); Iris assistant (`src/ts/iris.ts`).
 - **Server embeddings/vector cache** (`server/src/data/vectorCache.ts:69`) and Transformers worker.
 - **Local-network streaming proxy jobs** over WebSocket (`shared/localNetwork.ts:79`).
-- **Dev tooling**: `pnpm test:agent` wrapper, `dev:agent`/`dev:human` full-stack runner (`util/agentDev.mjs`), Playwright measure/check scripts, timing-test inventory (`docs/reports/audits/timing-dependent-tests-2026-10-19.md`).
+- **Dev tooling**: `pnpm test:agent` wrapper, `dev:agent`/`dev:human` full-stack runner (`util/agentDev.mjs`), Playwright measure/check scripts, timing-test inventory (`docs/reports/audits/codebase/timing-dependent-tests-2026-10-19.md`).
 
 Removed from metatron (a sibling may still have these; porting them in would conflict with metatron's design):
 Google Drive sync, Risu Account sync, Kei auto-backup, cold storage, block save format (`database.bin`), PeerJS multiuser, browser-side generation (cutover 12ed3baec), Custom Sidebar, Loadout, Risuai Pro Tools / Easy Panel, Related Links, first-run welcome wizard, quick settings panel, Bergamot translator, Realm upload/report, Tauri/Capacitor/static hosting, fallback models, per-role separate parameters, Local Toggles.

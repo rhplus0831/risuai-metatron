@@ -366,7 +366,7 @@ delivery and [app shell](app-shell.md#home-screen) for the home entry point.
   spacing). A moved item takes its new page's spacing.
 - The preset list (`botpreset.svelte`) reads every row through its record wrapper, which keeps a 50-preset reorder just
   outside its target; keyed rows made it slower, and a plain-row projection is untried
-  ([preset reorder audit](../reports/measurements/preset-reorder-2026-10-05.md)).
+  ([preset reorder audit](../reports/measurements/client/preset-reorder-2026-10-05.md)).
 - `pluginDevelopMode`, `forceProxyAsOpenAI`, `moveInsteadOfCopyOnCMPConvert`, and `personaNote` are persisted `ui`
   toggles with no reader and no settings item; their fields, defaults, and `shared/sections.ts` places stay for saved
   data.

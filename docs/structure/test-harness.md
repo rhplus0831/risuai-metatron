@@ -106,7 +106,7 @@ None is in the gate; all are in `util/playwright/`.
   in process; `probeDirectAssets.mjs` probes the direct asset mechanics on its own server, not the app.
 - `measureRenderWork.mjs` (dev stack, under `offline.sh`, Linux): render work of a styled, auto-translated chat when it
   opens and after a switch away, its mount trace, its screenshot's peak memory
-  ([results](../reports/measurements/render-work-budget-2026-11-05.md)).
+  ([results](../reports/measurements/client/render-work-budget-2026-11-05.md)).
 - Call counts by name: CDP `Profiler.startPreciseCoverage({ callCount: true, detailed: true })` before navigation,
   `takePreciseCoverage` (it resets) per phase; a function's first range is its call count (without `detailed`, also each
   `await` resumption). Time an uninstrumented run.
@@ -115,7 +115,7 @@ None is in the gate; all are in `util/playwright/`.
 - Run dev-stack checks one at a time and not beside the Vitest suite: the stacks share `node_modules/.vite`, and a
   dependency re-optimization reloads every open page. What sessions learned writing drivers (seeding, selectors,
   measuring, downloads, heap snapshots) is collected in the
-  [observations](../reports/measurements/browser-check-observations-2026-11-11.md).
+  [observations](../reports/measurements/toolchain/browser-check-observations-2026-11-11.md).
 
 ### Fixtures
 
@@ -140,7 +140,8 @@ None is in the gate; all are in `util/playwright/`.
    temporary index in the OS temp directory, so untracked files count (one new probe file misses the cache) and the
    checkout's own index is never touched.
 2. A whole-suite run waits up to 15 minutes for the machine-wide lock, then runs even if the lock is still held. File
-   filters bypass the lock. See the [parallel run timings](../reports/measurements/test-suite-lock-2026-10-30.md).
+   filters bypass the lock. See the
+   [parallel run timings](../reports/measurements/toolchain/test-suite-lock-2026-10-30.md).
 3. The Vitest child (`AGENT_TEST=1`) runs with the reporter, which holds its output and writes per-file results to the
    file `RISU_REPORT_RESULTS_FILE` names.
 4. When at most `MAX_RERUN_FILES` files failed and no error was unhandled, the wrapper reruns each alone with the file
@@ -398,7 +399,7 @@ case stays in `triggerRuntime.test.ts` ("ends an endless loop with the limit").
 - `vi.resetModules()` keeps evaluated packages and product modules under `shared/`. Their module-level state (the Svelte
   runtime or a memoization cache) survives the reset. Test helpers in `shared/` are re-evaluated. The reset after a
   `vi.doMock` or `vi.doUnmock` is Vitest's full one, because a kept module may import the mocked one. The kept set saves
-  about 4 s of the gate ([measurements](../reports/measurements/test-gate-cpu-profile-2026-11-12.md));
+  about 4 s of the gate ([measurements](../reports/measurements/toolchain/test-gate-cpu-profile-2026-11-12.md));
   `vitest.resetModules.ts` reads Vitest's worker state, and `vitest.resetModules.test.ts` fails when an upgrade changes
   it.
 - `expect(buffer).toEqual(buffer)` walks a Buffer byte by byte (over a second for a database file): compare with
@@ -418,7 +419,7 @@ case stays in `triggerRuntime.test.ts` ("ends an endless loop with the limit").
   the server app under it breaks union narrowing in the server routes, so `pnpm check` fails while the tests pass.
 - For a chat large enough to exceed V8's argument limit, keep a small gated case and run the full-size case in the slow
   tier. See `src/ts/storage/tests/resourceSyncHydration.test.ts`.
-- A probe under `docs/reports/audits/*/probes/` asserts the defect: a passing probe means the bug is present.
+- A probe under `docs/reports/audits/*/*/probes/` asserts the defect: a passing probe means the bug is present.
 - The wrapper writes only git-ignored files (`node_modules/.cache/agent-test/`) and a temporary index outside the
   checkout, so a read-only review may run it. Say so in a read-only agent's brief: told "no writes", an agent refuses
   the wrapper (read-only Astra agents did, 2026-10-26).

@@ -296,8 +296,8 @@ only for those chats; the end of a memory task the open chat was seen running is
 the runs say and no report follows it. `MEMORY_HEALTH_STATES` gives the worst-state order, while `CHAT_STATUS_PRIORITY`
 keeps health below unseen replies. The health route's prefix and byte budget are described in
 [records](records.md#the-read-routes) and its
-[measurement](../../reports/measurements/structured-memory-health-read-2026-11-03.md). Contents' health feeds the writer
-line; a send's `writerState` gets `pending` with reason `repair` from in-hand `records.events`.
+[measurement](../../reports/measurements/server/structured-memory-health-read-2026-11-03.md). Contents' health feeds the
+writer line; a send's `writerState` gets `pending` with reason `repair` from in-hand `records.events`.
 
 In `noteJobDone`, an `error` terminal coded `memoryRequiredOverCap` sets that chat's mark, a preview's included; a
 `done` with a `messageId` clears only that chat's. `DefaultChatScreen` shows health under `ContextMeter` even with the
@@ -440,11 +440,11 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
   is already recorded. Decision: Structured Memory slice 7e, archive.
 - Tokenization and cache reads dominate `selectMemory` in long chats. Recounting identical text within selection saved
   little; assembly has counts that selection could reuse. Late lanes can starve at small contexts. Decision: Found
-  Issues Decisions, 2026-11-08 ([measurements](../../reports/measurements/structured-memory-2026-11-03.md)).
+  Issues Decisions, 2026-11-08 ([measurements](../../reports/measurements/server/structured-memory-2026-11-03.md)).
 - The recent timeline counts full candidates before spending. Counting on demand saved too little to justify losing
   batching (`b29a883a5`, reverted). At small budgets the default page share can lose a long on-stage page. Decision:
   Recent Timeline D14, 2026-11-11
-  ([costs and lane shares](../../reports/measurements/structured-memory-timeline-2026-11-11.md)).
+  ([costs and lane shares](../../reports/measurements/server/structured-memory-timeline-2026-11-11.md)).
 - The story date can lag in an unrecorded or undated tail. Only Gregorian dates get distance labels, and a date without
   a year counts as within the past year of the story. See the
   [design review](../../reports/audits/plan-runner/structured-memory-story-dates-2026-11-18.md).

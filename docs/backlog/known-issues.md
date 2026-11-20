@@ -32,7 +32,7 @@ Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-
   tab's memory (`rerollHistory.begin`), removes it from the chat, and `sendChatMain`'s preflight flushes that removal
   to the server before the job is created; the restoration after a refused or failed send runs in the same tab, so a
   close, reload, or crash in between leaves the chat without the tail. Reproduced in a browser at `1513f9288` by the
-  [durable data loss audit](../reports/audits/durable-data-loss-2026-11-18.md#6-closing-a-tab-during-a-group-reroll-can-discard-the-previous-replies):
+  [durable data loss audit](../reports/audits/codebase/durable-data-loss-2026-11-18.md#6-closing-a-tab-during-a-group-reroll-can-discard-the-previous-replies):
   a bound group chat with a question and two members' replies, the generation request held before the server, and the
   page closed left only the question in SQLite.
   - Scope: not only group chats. `reroll` takes this path whenever it does not reroll in place: when the turn after the

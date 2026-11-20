@@ -397,7 +397,8 @@ Other subsystems' runtime limits live with their owners: [chat-pipeline](chat-pi
   its 30-minute deadline. Decision: Job Protocol D6, archive.
 - Without `hydration=patch`, each callback sends the whole job chat. Older tabs can reapply it only after local work
   settles, so traffic scales with callbacks × chat size
-  ([measured](../reports/measurements/server-measurements-2026-11-01.md)). Decision: Per-Event Server Work D4, archive.
+  ([measured](../reports/measurements/server/server-measurements-2026-11-01.md)). Decision: Per-Event Server Work D4,
+  archive.
 - An owner behind a `streamed` row's `seq` (after missed chunks) reads the job chat whole once (`resync`); `proto` is
   only logged. Decision: Incremental Chat Transport D3, D4, archive.
 - Restart ends a running job as `shutdown`; reply text since its last checkpoint (3 s target, `CHECKPOINT_INTERVAL_MS`)
@@ -432,4 +433,4 @@ Other subsystems' runtime limits live with their owners: [chat-pipeline](chat-pi
 
 - The job receipt writes are synchronous `node:sqlite` calls on the serving thread, at each admission and each job's
   end. A slow volume delays every request while a receipt write runs; a throttled local disk is unmeasured
-  ([measurements](../reports/measurements/server-measurements-2026-11-01.md)).
+  ([measurements](../reports/measurements/server/server-measurements-2026-11-01.md)).

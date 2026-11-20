@@ -208,7 +208,7 @@ abandoned.
 `StructuredMemoryCostAnswer` without writing or accepting a record. A rebuild's, fresh rebuild's, and backfill's preview
 is the synchronous `rebuildCost`, which [the clear route](records.md#the-clear-route) also asks in its write's step. The
 route comment owns query admission, the builder owns window counting, and the shared answer and `memoryCostTokens` own
-the [estimate](../../reports/measurements/structured-memory-2026-11-03.md).
+the [estimate](../../reports/measurements/server/structured-memory-2026-11-03.md).
 
 Rebuild, fresh rebuild and backfill count the stored greeting's UTF-8 bytes in its window and one analysis call for a
 greeting-only window, without adding to `messages`. Record now counts message text only and can omit a greeting-only
@@ -288,9 +288,9 @@ beside the rebuild buttons. The comparison starts no work; a person must press. 
   `pnpm --silent test:agent rebuild memoryStore memoryTasks structuredMemoryRoutes StructuredMemoryPanel MemoryReceiptLine`.
   No `slow` or `e2e` membership of its own.
 - Not tested: a real browser or a real provider. `MEMORY_CALL_OVERHEAD_TOKENS` (3,000) and the 3-byte rule rest on the
-  [2026-11-03 fixtures](../../reports/measurements/structured-memory-2026-11-03.md), scripted pages counted by three
-  tokenizer families: about 2,100 tokens of overhead per call in English and 2,800–3,700 in Korean, growing with the
-  cast.
+  [2026-11-03 fixtures](../../reports/measurements/server/structured-memory-2026-11-03.md), scripted pages counted by
+  three tokenizer families: about 2,100 tokens of overhead per call in English and 2,800–3,700 in Korean, growing with
+  the cast.
 
 ## Known Hazards
 

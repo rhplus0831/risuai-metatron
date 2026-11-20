@@ -418,6 +418,6 @@ character or the tab has an unsaved create. It preserves unknown entries and the
   positions, hidden slots included.
 - Records have no resolve cache (one halved the cost, but its invalidation rule was never proven). Their cost shows in
   list re-renders reading every row through its wrapper, so a bulk writer changes a list in one write
-  ([measurements](../reports/measurements/projection-bindings-2026-10-04.md)).
+  ([measurements](../reports/measurements/client/projection-bindings-2026-10-04.md)).
 - With large plugin data a warm boot's answer is mostly `plugins` and `pluginStorage`, which stay out of the boot cache
-  ([measurements](../reports/measurements/boot-measurements-2026-10-29.md)).
+  ([measurements](../reports/measurements/client/boot-measurements-2026-10-29.md)).

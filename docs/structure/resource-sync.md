@@ -322,7 +322,7 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
   Durable Drafts D2 (d), Out of scope, archive.
 - A same-item or both-reordered `togglePresets` conflict takes the whole server list, so a local addition can vanish
   while its chat link lands. Decision: Durable Drafts D11, archive; F03 in
-  `docs/reports/audits/deep-audit/server-client-stabilization.md`.
+  `docs/reports/audits/codebase/server-client-stabilization-2026-10-26.md`.
 - A quarantined resource stays in the mirror until a changed projection or Retry saves or Discard applies. It survives a
   reload, as a recovery draft at boot, only when the journal runs and its content is eligible and within budget. Other
   edits do not retry it. `resourceSync.svelte.ts` `retryRefused` and edits keep the saved base; a stale attempt can
@@ -344,8 +344,8 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
   Decision: owner, 2026-11-10 (known-issues review).
 - A save's echo arriving before its acknowledgement schedules a cycle 50 ms later (`noteRemoteChanges`), so continuous
   typing can save more often than the debounce.
-  [Measurements](../reports/measurements/projection-bindings-2026-10-04.md) no longer show extra saves. Decision: owner,
-  2026-11-10 (known-issues review): coalescing waits for a measurement that shows them.
+  [Measurements](../reports/measurements/client/projection-bindings-2026-10-04.md) no longer show extra saves. Decision:
+  owner, 2026-11-10 (known-issues review): coalescing waits for a measurement that shows them.
 
 ### Gotchas
 

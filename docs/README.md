@@ -27,15 +27,24 @@ The split is by lifetime. A backlog file is expected to shrink; a report is a sn
 
 ## Reports
 
-Pick the folder by what was studied:
+Pick the folder by what the report examined. The first level is the kind of thing studied; the second is its scope.
 
-| Folder                                         | Studied                                                  | Examples                                               |
-| ---------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------ |
-| [reports/measurements/](reports/measurements/) | A run of this code: timings, bytes, token counts         | boot measurements, guide reads, render work budget     |
-| [reports/audits/](reports/audits/)             | This repository's code, plans, or docs, read for defects | static audit, plan design audits, the full guide audit |
-| [reports/surveys/](reports/surveys/README.md)  | Another project, read for ideas                          | the fork surveys, the community memory systems         |
+| Folder                                                      | Examined                                                                                                   |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| [reports/audits/](reports/audits/README.md)                 | This repository, read for defects. The subfolder is what was read:                                         |
+| [audits/codebase/](reports/audits/codebase/)                | The code across plans and subsystems: one class of defect, the whole tree, or the cause of one symptom     |
+| [audits/finished-plans/](reports/audits/finished-plans/)    | The code one finished plan left, or several plans' combined result, read against the plan                  |
+| [audits/plan-runner/](reports/audits/plan-runner/README.md) | A plan's text, read against the code before the plan is implemented                                        |
+| [audits/guides/](reports/audits/guides/)                    | `STRUCTURE.md` and the guides, read against the source                                                     |
+| [reports/measurements/](reports/measurements/README.md)     | A run of this code: timings, bytes, counts, and what a run showed. The subfolder is which side was run:    |
+| [measurements/client/](reports/measurements/client/)        | The client: the built app driven in a browser, or a client module under a benchmark                        |
+| [measurements/server/](reports/measurements/server/)        | The server: the process, a store, or a server-side module run by a script, with a scripted or a real model |
+| [measurements/toolchain/](reports/measurements/toolchain/)  | The repository's own tools and the sessions using them: test suite, type check, build, checks, guide reads |
+| [reports/surveys/](reports/surveys/README.md)               | Another project, read for ideas, and its fixes checked against this code                                   |
 
-- Name a report `<subject>-<YYYY-MM-DD>.md`. Probe scripts and raw output go in a folder beside the report, named after it.
+- A report that fits two scopes goes where its main result is, and the folder's README says so in its row. A check of this code against another project's fixes stays in `surveys/`, beside the survey that listed the fixes.
+- Name a report `<subject>-<YYYY-MM-DD>.md`, dated by the day it was audited or measured. Probe scripts and raw output go in a folder beside the report, named after it.
+- Add a row for a new report to its folder's README: [audits](reports/audits/README.md), [measurements](reports/measurements/README.md), [surveys](reports/surveys/README.md). The plan-runner audits are the exception: the [plan archive](archived-plan/README.md) links each one from its plan's row.
 - [reports/audits/plan-runner/](reports/audits/plan-runner/README.md) holds the audit each plan gets before the plan-runner schedules it, with the procedure and its re-check list.
 - A report states the commit it read. Do not edit one to follow the code; write a new report, and move anything still to be done into the backlog.
 - `pnpm check:docs` measures only `structure/` and `STRUCTURE.md`. `pnpm format:check` covers everything here.

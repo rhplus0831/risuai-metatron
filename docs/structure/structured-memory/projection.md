@@ -213,7 +213,7 @@ of a committed reset whose answer was lost says `reset: false`.
 - A plugin walking 67 or more loaded chats through `getChatFromIndex` spends the shared per-IP authenticated bucket
   (2,000 a minute): in the loopback measurement a neighbour route was refused until the reset. Coalescing adjacent
   refreshes into one revisions batch would lower the cost. Decision: Found Issues Decisions (owner, 2026-11-08),
-  [audit](../../reports/measurements/structured-memory-2026-11-03.md#getchatfromindex-and-the-rate-limit).
+  [audit](../../reports/measurements/server/structured-memory-2026-11-03.md#getchatfromindex-and-the-rate-limit).
 
 ### Gotchas
 

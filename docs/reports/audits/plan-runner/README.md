@@ -11,9 +11,14 @@ not settle. The plan-runner halts on a P1 until the user revises the plan or cho
 anyway, and quotes the rest in the affected slice briefs.
 
 A report is a snapshot of the plan at that commit. It stays here when the plan is revised,
-runs, or retires; a plan revised after its report gets a new one on its next run. The
-2026-11-04 design audit of five plans, which this folder's procedure grew out of, is in
-[the audits folder](../plan-design-audit-2026-11-04.md).
+runs, or retires; a plan revised after its report gets a new one on its next run.
+
+The folder holds every audit of a plan's text made before the plan was implemented, so it
+also keeps the one that predates the skill: the
+[2026-11-04 design audit of five plans](plan-design-audit-2026-11-04.md), which this folder's
+procedure grew out of. Its summary is that file, and the six reviewer reports behind it are in
+the folder beside it. An audit of what a plan left in the code after it finished is in
+[finished-plans](../finished-plans/).
 
 Each finding carries an id, its severity, the plan sentence it is about (section named, quoted),
 the code it was checked against (`file:line` and what the code does), and a suggested

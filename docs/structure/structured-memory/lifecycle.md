@@ -344,10 +344,10 @@ takes over.
   Memory slice 5b, archive.
 - A checkpoint save reads and hashes every record's text in one synchronous step, however little changed, so its
   event-loop hold grows with the chat's memory. Only the replay target holds a prompt once a settling commit
-  [prunes the rest](writer.md#a-writer-run), which takes old runs' prompts out of the save
-  ([measured](../../reports/measurements/structured-memory-2026-11-03.md#checkpoint-save)). Old runs keep their prompts
-  until that commit, also after an older checkpoint's restore. A load parses every record on top. Decision: Structured
-  Memory slice 5d, archive; the prune, owner, 2026-11-08.
+  [prunes the rest](writer.md#a-writer-run), taking old runs' prompts out of the save
+  ([measured](../../reports/measurements/server/structured-memory-2026-11-03.md#checkpoint-save)). Old runs keep their
+  prompts until that commit, also after an older checkpoint's restore. A load parses every record on top. Decision:
+  Structured Memory slice 5d, archive; the prune, owner, 2026-11-08.
 - A checkpoint, a chat file, the Markdown package, and a restored or imported database carry no chapters
   ([records](records.md#limitations)). A checkpoint load leaves the chapter rows as they are, and the Timeline decides
   each from its events as they now are: one made after the capture stays current when its events, their text and dates,

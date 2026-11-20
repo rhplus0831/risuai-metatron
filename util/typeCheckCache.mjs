@@ -19,7 +19,7 @@
 // repository shares: a branch checked in its worktree and then fast-forwarded into another checkout
 // is the same tree there. Measured over a week of agent sessions, about one check in six would have
 // replayed, a quarter of those from another checkout
-// (docs/reports/measurements/type-check-time-2026-11-12.md).
+// (docs/reports/measurements/toolchain/type-check-time-2026-11-12.md).
 //
 // A result is stored only when the program ran to its end (any exit code, not a signal) and the
 // working tree was the same before and after the run. A failure is stored too: the same inputs fail

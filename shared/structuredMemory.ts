@@ -1162,7 +1162,7 @@ export type StructuredMemoryCostAnswer = {
 /**
  * What one analysis call costs past its window's messages, in tokens: the frame, the cast, the scene, the
  * threads, and the context messages. On the scripted 1,000-turn fixtures of 2026-11-03 it measured about 2,100
- * per call in English and 2,800-3,700 in Korean, growing with the cast (docs/reports/measurements/structured-memory-2026-11-03.md).
+ * per call in English and 2,800-3,700 in Korean, growing with the cast (docs/reports/measurements/server/structured-memory-2026-11-03.md).
  * It is set high on purpose because a preview is better high than low (owner, 2026-11-08).
  */
 export const MEMORY_CALL_OVERHEAD_TOKENS = 3000;

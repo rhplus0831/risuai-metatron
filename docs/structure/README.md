@@ -63,8 +63,8 @@ prefix. Indexes and READMEs have a free outline.
 7. For an owner-requested full audit, read every guide, this README and the index against the same source revision. Have
    a second reader check the findings. Before committing, run `pnpm docs:due --verified <guide>...` with all the guide
    names listed by `pnpm docs:due`. The root index and this maintenance README are covered in the audit report. Write
-   the report under `docs/reports/audits/` and update [Last full audit](../../STRUCTURE.md#doc-maintenance) with the
-   date, source revision and report link. Between full audits, verify the individual guides that are due.
+   the report under `docs/reports/audits/guides/` and update [Last full audit](../../STRUCTURE.md#doc-maintenance) with
+   the date, source revision and report link. Between full audits, verify the individual guides that are due.
 
 ## Size limits
 

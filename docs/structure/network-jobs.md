@@ -278,7 +278,7 @@ The transport below retains this tab's in-memory log.
 - The job owner identity's claim marker is copied with `sessionStorage`, so it reflects the source page when copied, not
   now: a tab duplicated after its page released the id on `pagehide` and before the next page claimed it shares the id
   with that page, and a tab killed without `pagehide` (and not reported as `wasDiscarded`) mints a new id on return and
-  loses reload recovery of its jobs. Decision: U1, [audit](../reports/audits/job-protocol-2026-10-29.md).
+  loses reload recovery of its jobs. Decision: U1, [audit](../reports/audits/finished-plans/job-protocol-2026-10-29.md).
 - A remote send ends uncertain whenever its state cannot be established (a status read that races the post, the sender's
   own feed down for 60 s, a host result after the end). The draft keeps its ids and the next Send re-posts the command.
   A Stop whose chat has left the list sends no generation cancel. Decision: Remote Host plan (slice 4).

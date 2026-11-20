@@ -38,7 +38,7 @@ reader. Twenty-two were fixed the same day with regression tests, without passin
 permissions on the server, destinations captured before a wait in the tab and its components, card and module format
 round trips, credentials in the settings report and the request log, names and translated text in HTML exports); the
 three that need a decision or real providers are entries below. Wave 4 broke the rules of six areas one at a time to
-see whether a test fails; the tests it found missing were written the same day. The review's method, counts, and cost are in [its report](../reports/audits/wide-review-2026-11-14.md).
+see whether a test fails; the tests it found missing were written the same day. The review's method, counts, and cost are in [its report](../reports/audits/codebase/wide-review-2026-11-14.md).
 
 The entry on thirteen remote calls of the tab that bypassed the request wrappers was fixed later the same day: the
 buffered calls go through `globalFetch`, and Stability's multipart form, the Chub download, and `#import=` card links
@@ -69,7 +69,7 @@ by the owner's decision.
 The twenty-fifth batch is the Remote Host post-audit of 2026-11-16 at `56c612168` (four read-only verifiers, one per
 contract boundary, then a second reader that tried to refute each P1 and P2): eight entries below, the six P1 and P2
 ones each reproduced by a probe test kept with the review material outside the repository. The method, the cost, and
-the ratings are in [its report](../reports/audits/remote-host-post-audit-2026-11-16.md).
+the ratings are in [its report](../reports/audits/finished-plans/remote-host-2026-11-16.md).
 
 Seven of the eight were fixed the same day by the session that ran the audit, each with a regression test that was
 run against its fix reverted, together with the Remote commands entry the plan's run had left (a host's `uncertain`
@@ -107,7 +107,7 @@ reproduced by a probe kept with the review material outside the repository and t
 were filed by one reader and not re-read, and are grouped where they are alike. Two filed findings have no entry: a
 plugin's refused edit of a locked reply is in the plugin guide, and a hook's screen-local busy state is the plan's
 own decision. The method, the cost, and the ratings are in
-[its report](../reports/audits/plan-post-verification-2026-11-18.md).
+[its report](../reports/audits/finished-plans/plan-post-verification-2026-11-18.md).
 
 Sixteen of the findings were fixed the same day, each with a regression test that was run against its fix reverted,
 and the ten guide sentences were written: the headless host trusts only the local listener's own key, keeps its

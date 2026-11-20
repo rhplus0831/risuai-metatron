@@ -203,4 +203,4 @@ For the guide outline, size limits, fact-ledger checks, and issue inbox, see
 [Doc Maintenance](docs/structure/README.md).
 
 Last full audit on 2026-11-18 covered this index, Doc Maintenance and all 37 guides at `744d17cad`.
-[Audit report](docs/reports/audits/structure-audit-2026-11-18.md).
+[Audit report](docs/reports/audits/guides/structure-audit-2026-11-18.md).

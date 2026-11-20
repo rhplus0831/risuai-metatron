@@ -6,7 +6,7 @@ import { vi } from "vitest";
 // Why: about 100 test files reset the module graph before each test to get fresh client state (the
 // storage tests' `boot()`), and a third of what one reset re-evaluates is the Svelte runtime and
 // `shared/`, which hold no state a test needs fresh. Keeping them takes about 4 s off the gate
-// (`docs/reports/measurements/test-gate-cpu-profile-2026-11-12.md`).
+// (`docs/reports/measurements/toolchain/test-gate-cpu-profile-2026-11-12.md`).
 //
 // What makes it safe:
 // - Nothing kept imports anything reset: packages import packages, and `shared/` imports only itself and
