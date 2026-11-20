@@ -78,7 +78,8 @@ this audit. They lead from the November 5 incremental-chat and job-handoff repor
 
 The separate findings file records 12 follow-ups with evidence. Seven were exercised in isolation, including the HypaV2
 blank-summary case narrowed from the existing inbox. Four runtime risks were identified by source review, and one test
-header still describes a removed UI control. [Audit findings](../../../research/found-issues.md)
+header still describes a removed UI control. The findings file was folded into the backlog on 2026-11-20:
+[known issues](../../../backlog/known-issues.md) and [found issues](../../../backlog/found-issues.md).
 
 Two earlier inbox entries were retired. The plugin guide is below its size target. For unknown memory event statuses,
 the JSON chat restore rejected the event, Markdown import rejected the affected record, and the shared

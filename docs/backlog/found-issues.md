@@ -123,27 +123,30 @@ time limit box that is emptied stays blank while the server stores the default).
 kept as recorded by the owner's rule for that round (a fix whose cost is out of proportion to how often the trigger
 happens is not made); each says so.
 
+The twelve findings of the [structure audit of 2026-11-18](../reports/audits/guides/structure-audit-2026-11-18.md) sat in `docs/research/found-issues.md`, outside this file's counts,
+until 2026-11-20. The seven it had exercised in an isolated run moved to [known issues](known-issues.md), the HypaV2
+entry among them; the four it had only read and its stale test header are entries below, each marked "structure audit
+of 2026-11-18"; its settings drag finding joined the Settings entry on a row drag. None was run again at the move.
+The audit also retired the plugin guide size warning and verified that the JSON, Markdown, snapshot and checkpoint
+validators reject unknown event statuses.
+
 ## Contents
 
-The [2026-11-18 structure audit findings](../research/found-issues.md) have their evidence and follow-up in one place.
-The HypaV2 entry below points to that record. The audit also retired the plugin guide size warning and verified that the
-JSON, Markdown, snapshot and checkpoint validators reject unknown event statuses.
-
-- [Backup and sync](#backup-and-sync): 5
+- [Backup and sync](#backup-and-sync): 6
 - [Build and CI](#build-and-ci): 1
 - [Chat screen](#chat-screen): 6
 - [Docs](#docs): 2
 - [Headless host](#headless-host): 2
-- [LLM requests](#llm-requests): 2
+- [LLM requests](#llm-requests): 3
 - [Memory](#memory): 6
 - [Modules and personas](#modules-and-personas): 4
 - [Network jobs](#network-jobs): 2
-- [Plugins](#plugins): 1
+- [Plugins](#plugins): 2
 - [Remote commands](#remote-commands): 1
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 2
 - [Settings](#settings): 4
-- [Tests](#tests): 1
+- [Tests](#tests): 2
 - [Translation](#translation): 1
 
 ## Backup and sync
@@ -212,6 +215,21 @@ with the comment "Match isValidResourceId in server/src/data/resourceStore.ts".
 **Why it matters:** the copy can drift from the server's check, and its comment names the rule's old home.
 
 **Suggested handling:** import `isValidResourceId` from `shared/resources.ts` in `bootCache.ts` and drop the copy.
+
+### Journal recovery can replay an edit after a newer chat revision
+
+Structure audit of 2026-11-18, read and not run. `recoverJournal` reads the boot summary revision before it awaits the
+full chat, and for pending by-id edits it classifies the returned body with that earlier revision. A pending append
+whose id is still absent can replay after another writer changed the chat, although the recovery classifier would
+file a draft with the newer revision.
+[Recovery decision](../../src/ts/storage/journalRecovery.ts#L1335) ·
+[Classifier](../../src/ts/storage/journalRecovery.ts#L567) ·
+[Server acceptance](../../server/src/data/chatStore.ts#L2237)
+
+**Why it matters:** a recovered edit can land on a chat that another tab or device changed in between.
+
+**Suggested handling:** reproduce with a write that arrives during the boot read; then pair the full body with its
+installed revision.
 
 ## Build and CI
 
@@ -378,6 +396,17 @@ Found 2026-11-20 during slice 2 of the Response Checks plan (raised by its chall
 
 **Suggested handling:** keep the attempt's fields on the rejection's `fail` (spread the success without its `result`), in both loops, with a test that the final failure names the last request's id.
 
+### Tab-side MCP tool discovery can keep fetching pages
+
+Structure audit of 2026-11-18, read and not run. The tab's `MCPClient.getToolList` appends successive pages while a
+remote server supplies a cursor, with no check for a repeated cursor and no limit on pages, tools, or bytes. The
+server's client already enforces those bounds.
+[Tab discovery](../../src/ts/process/mcp/mcplib.ts#L1047) · [Server discovery](../../server/src/mcp/client.ts#L874)
+
+**Why it matters:** a malfunctioning service keeps discovery pending and growing until it is cancelled.
+
+**Suggested handling:** give the tab's discovery the server client's bounds.
+
 ## Memory
 
 ### A long scene may make the send refuse its required memory block
@@ -394,11 +423,20 @@ with the default budgets.
 **Suggested handling:** run a send with three 4,000-character scene fields; then the owner decides whether the
 editor's badge should also warn about it, or the block should be cut.
 
-### HypaV2 accepts whitespace from two summarizers
+### The memory writer's field limit lets three scene fields pass the required-page limit
 
-The structure audit reproduced this on HypaV2's local and submodel paths. The server's HypaV3 summarizer rejects blank
-answers, and Hanurai uses embeddings. Evidence and follow-up are in the
-[HypaV2 finding](../research/found-issues.md#hypav2-can-mark-messages-summarized-by-a-blank-answer).
+Derived on 2026-11-20 from the long-scene reproduction, not run. A send is refused once the scene's required page
+passes the required-page limit (1,500 tokens by default), which the reproduction measured at about 1,982 Korean
+characters in total, 661 per field. The memory writer's default limit for a new or short scene field is 800 characters
+(`shared/structuredMemory.ts`), so three Korean fields the writer filled near its limit come to about 2,400 characters
+and pass the limit without the user having edited anything. Whether the writer fills all three fields that far in
+practice was not looked at.
+
+**Why it matters:** every send in that chat fails until the user shortens the scene or raises the limit, and the
+editor's badge counts characters per field, not tokens.
+
+**Suggested handling:** the owner's separate decision (2026-11-20, kept out of the long-scene fix): give the writer a
+token-aware limit for the scene, or lower its character limit for scene fields.
 
 ### The story-date anchor line can be dropped while dated lines stay
 
@@ -543,6 +581,19 @@ binding writer in [persistence](../structure/persistence.md) Chat binding.
 **Decision:** owner, 2026-11-20: exclude the binding keys (`promptPresetId`, `modelPresetId`, `bindedPersona`,
 `bindingReview`) from plugin chat writes.
 
+### A TypeScript compilation error can replace a working plugin
+
+Structure audit of 2026-11-18, read and not run. `importPlugin` reports a transpilation error and goes on with the
+original TypeScript as the guest script (the `catch` after `pluginCodeTranspiler` shows the error and does not
+return). A supported plugin that passes the remaining import checks can therefore overwrite its installed version.
+[Compiler error path](../../src/ts/plugins/plugins.svelte.ts#L355) ·
+[Install write](../../src/ts/plugins/plugins.svelte.ts#L441)
+
+**Why it matters:** an update whose source does not compile replaces a plugin that worked.
+
+**Suggested handling:** return on a compilation failure, with a test that replacing a working plugin leaves its saved
+script intact.
+
 ## Remote commands
 
 ### The relay's identity differs from the generation's for fields a send does not use
@@ -640,6 +691,8 @@ Post-verification of 2026-11-18 (SB-1, what is left), read by one reader after t
 
 **Suggested handling:** kept as recorded by the owner's rule for the fix round. If it is taken up: remember the row's identity (the rule id, the record identity) and not its index.
 
+The structure audit of 2026-11-18 read the same for a reorder that arrives from another tab during the drag, in both the prompt template editor and the request rule editor; its half about a drop on another preset was fixed the same day (`10b7cfa58`).
+
 ### A live settings update discards the text typed in a rule's popup editor
 
 Post-verification of 2026-11-18 (RI-1), reproduced by two readers. A live update of the `providers` section installs new rule objects, so the row identity (`recordValueIdentity` in `PromptDataItem.svelte`) of an unchanged rule changes, `TextAreaInput.svelte` closes the popup session as stale, and the popup's text is not written back. Any provider setting saved by another tab or device while the popup is open does it; removing an earlier rule also collapses the row.
@@ -684,6 +737,16 @@ Post-verification of 2026-11-18 (RI-4), shown by one reader's break-test and not
 **Why it matters:** the plan named this test as the guard of that line.
 
 **Suggested handling:** either remove the redundant branch or say in the test which invariant it proves.
+
+### The toggle test's header describes a removed memory control
+
+Structure audit of 2026-11-18, read. The header of `src/lib/SideBars/Toggles.test.ts` says its checkbox writes the
+character's memory switch; the tests now assert the switch is absent there, and the per-chat control lives in
+`src/lib/SideBars/ChatMemoryPanel.svelte`.
+
+**Why it matters:** a search for the old field leads to a comment that describes a control that is gone.
+
+**Suggested handling:** rewrite the header to the current contract.
 
 ## Translation
 

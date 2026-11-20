@@ -17,11 +17,31 @@ plugin's in-memory value overwrites a newer value from another tab or device), i
 read and did not fix is in [found issues](found-issues.md); what a person has to look at is in
 [manual checks](manual-checks.md#a-real-desktop-browser-by-hand).
 
+Seven findings of the [structure audit of 2026-11-18](../reports/audits/guides/structure-audit-2026-11-18.md) moved here on 2026-11-20 from `docs/research/found-issues.md`, a file that
+audit had kept apart from the backlog: each was exercised in an isolated run at `744d17cad`. The five findings the
+audit only read are in [found issues](found-issues.md). None was run again at the move; the files they name had no
+commit between the audit and the move.
+
 ## Contents
 
-- [chat-pipeline](#chat-pipeline) (1)
+- [build-test-platforms](#build-test-platforms) (1)
+- [chat-pipeline](#chat-pipeline) (4)
+- [media-aux](#media-aux) (1)
+- [memory](#memory) (1)
 - [persistence](#persistence) (1)
-- [structured-memory](#structured-memory) (1)
+- [structured-memory](#structured-memory) (2)
+
+## build-test-platforms
+
+Guide: [Build, Service Worker, Release](../structure/build-test-platforms.md#known-hazards).
+
+- The type-check cache can replay a pass for a failing ignored file. The initial cache key includes ignored files under
+  source roots; the final unchanged-tree check omits them. In an isolated Git project (structure audit, 2026-11-18)
+  the cache keyed an ignored file that held a type error; the file was corrected before the compiler read it, so the
+  run passed, and after the error was restored the cache replayed success while a forced compiler run failed. Not
+  fixed. A fix compares the program's complete input key again before saving the result.
+  [Input hashing](../../util/typeCheckCache.mjs#L62) · [End-of-run check](../../util/changedChecks.mjs#L259) ·
+  [Cache write](../../util/typeCheckCache.mjs#L154)
 
 ## chat-pipeline
 
@@ -45,6 +65,49 @@ Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-
   - Not fixed. Recorded on 2026-11-18 at the owner's request with this scope. A fix keeps the rows until the server can
     commit the replacement (the removal inside the job's admission, with the removed tail held server-side for
     restoration) or keeps a durable copy of the pending reroll that survives a client exit.
+
+- A refused multisend can clear the chat's history. `runMultisend` clears the history in clear mode and appends the
+  next user message before `prepareServerJob` checks the chat binding. An isolated run with a refused send (structure
+  audit, 2026-11-18) left only the newly appended message. A retained slash draft can reach this path through Enter,
+  and a binding can become invalid between parts. The PO translator and the DevTool autopilot also append before this
+  check. Not fixed. A fix checks the binding before each part's first mutation, with a test of a refusal over an
+  existing transcript.
+  [Slash command](../../src/ts/process/command.ts#L40) ·
+  [Composer dispatch](../../src/lib/ChatScreens/DefaultChatScreen.svelte#L703) ·
+  [Job admission](../../src/ts/process/serverCommands.ts#L1162)
+- Two tabs can replace each other's OOC answer. A retry checks that an exchange is unanswered before it asks for the
+  preview; while the tab waits for the answer another tab can answer the same question, and the final write checks only
+  that the exchange still exists before it replaces the answer. An isolated run (structure audit, 2026-11-18) inserted
+  an answer during that wait and saw it overwritten. Not fixed. A fix decides the write rule for competing completions
+  of one exchange and makes it hold across tabs.
+  [OOC admission and answer write](../../src/ts/ooc/oocSession.svelte.ts#L183)
+- PO translation can download an incomplete file. `sendPofile` finishes an entry only on an exactly empty line. In
+  isolated runs (structure audit, 2026-11-18) CRLF input lost an entry, and the last entry of a file without a
+  trailing newline was never translated; an ordinary comment past line index 100 can also break the loop and reach
+  the download with only a prefix. Not fixed. A fix covers line endings, the end of the file, and comments in a long
+  catalog. [PO reader and download](../../src/ts/process/files/multisend.ts#L32)
+
+## media-aux
+
+Guide: [Media and Auxiliary Features: TTS, Image Generation, Media, Playground](../structure/media-aux.md#known-hazards).
+
+- Hugging Face TTS can silently discard a service error. An isolated run of `sayTTS` (structure audit, 2026-11-18)
+  with a JSON HTTP 503 error and no retry estimate made one request and returned without playback, retry, or alert;
+  with the same body and HTTP 502 the error alert appeared. Not fixed. A fix surfaces the provider's error when the
+  503 answer supplies no usable estimate. [TTS response handling](../../src/ts/process/tts.ts#L439)
+
+## memory
+
+Guide: [Long-Term Memory and Embeddings](../structure/memory.md#known-hazards).
+
+- HypaV2 can mark messages summarized by a blank answer. A whitespace-only answer from the `subModel` or the
+  `distilbart` branch returned success in the existing cold-overflow fixture (structure audit, 2026-11-18): HypaV2
+  marked 11 messages as covered and produced no retrievable chunk. The fixed-completion branch already rejects an
+  answer that is empty after trimming; the server's HypaV3 summarizer rejects blank answers, and Hanurai uses
+  embeddings. Not fixed. A fix applies the same check before coverage advances in the two branches.
+  [HypaV2 summarization](../../server/src/prompt/memory/hypav2.ts#L19) ·
+  [Chunk and coverage update](../../server/src/prompt/memory/hypav2.ts#L448) ·
+  [Fixture](../../server/src/tests/fixtures/memory/scenarios.ts)
 
 ## persistence
 
@@ -85,3 +148,12 @@ Guide: [Structured Memory Records](../structure/structured-memory/records.md#kno
     it there made one row fail the memory export of every chat. The package export has no caller in the product.
 
   Not fixed: the byte charge, since measuring costs every round; the owner has not said whether it is a Limitation.
+
+- Record now can skip the confirmation for a second model call
+  ([rebuild guide](../structure/structured-memory/rebuild.md)). With a marked greeting-only event and one confirmed
+  ordinary turn, the cost query reported one call (structure audit, 2026-11-18); the real planner produced two windows,
+  one to repair the greeting and one for the turn. The panel asks for confirmation at two estimated calls. Not fixed.
+  A fix counts greeting-only work in the record estimate, with a test of the confirmation on the same chat.
+  [Cost query](../../server/src/prompt/memory/structured/rebuild.ts#L758) ·
+  [Window planner](../../server/src/prompt/memory/structured/window.ts#L403) ·
+  [Panel confirmation](../../src/lib/Others/StructuredMemory/memoryRecordPress.ts#L44)
