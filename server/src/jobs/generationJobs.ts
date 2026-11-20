@@ -225,12 +225,15 @@ export type JobWriteResult = AppliedChanges & { written?: WrittenChanges };
 type Distribute<T> = T extends unknown ? Omit<T, "epoch"> : never;
 /**
  * The registry computes chunk deltas and retry counts from runner reports, and adds the epoch.
- * `retry` and `output` are registry-only inputs; output counts go only to live-update progress.
+ * `retry`, `output`, and `outputReset` are registry-only inputs; output counts go only to live-update progress.
+ * `outputReset` drops the count of a reply text the runner discarded (it requests that reply again), which a
+ * `retry` alone keeps.
  */
 export type JobEventInput =
     | Distribute<Exclude<GenerationEvent, { type: "ping" | "chatPatch" | "chunk" | "retry" }>>
     | { type: "retry" }
     | { type: "output"; tokens: number; since: number; at: number }
+    | { type: "outputReset" }
     | Omit<GenerationChunkEvent, "epoch" | "base" | "keep">;
 type TerminalInput = Distribute<GenerationTerminalEvent>;
 
@@ -257,11 +260,13 @@ export type RunningJob = {
     /**
      * Sends an event to the owner. `accepted` is preceded by the job chat's hydration; `done` and
      * `error` end the job (the chat's hydration and the terminal event go out, and later calls other
-     * than `output` throw `GenerationJobEndedError`). A `resource` of a hidden kind throws.
+     * than `output` and `outputReset` throw `GenerationJobEndedError`). A `resource` of a hidden kind throws.
      * A `stage` equal to the job's current one is not sent; the registry keeps the latest and
      * replays it on attach while the job runs. `retry` is a report the registry turns into a count.
      * `output` only updates live-update progress, without flushing pending writes or sending to job
      * sockets; reports after the job ends or its epoch changes are silently dropped, and never throw.
+     * `outputReset` clears that output count under the same rules and publishes the progress without it
+     * at once.
      */
     emit(event: JobEventInput): void;
     /**
@@ -2082,6 +2087,17 @@ export function createGenerationJobs(options: {
                         if (job.ended || job.epoch !== store.epoch()) return;
                         job.output = { tokens: input.tokens, since: input.since, at: input.at };
                         publishOutputProgress(job);
+                    } catch (error) {
+                        logEvent("generation.progressPublish", { job: job.id }, error, diagnostics);
+                    }
+                    return;
+                }
+                if (input.type === "outputReset") {
+                    try {
+                        if (job.ended || job.epoch !== store.epoch()) return;
+                        job.output = undefined;
+                        // Immediate, and it cancels a pending coalesced publication of the dropped count.
+                        publishProgress(job);
                     } catch (error) {
                         logEvent("generation.progressPublish", { job: job.id }, error, diagnostics);
                     }

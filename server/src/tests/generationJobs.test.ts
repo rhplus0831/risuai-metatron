@@ -622,6 +622,22 @@ describe("generation progress on the live-update feed", () => {
         }
     });
 
+    it("keeps the estimate on retry and immediately publishes its removal when the output is discarded", async () => {
+        clock();
+        const published: Progress[] = [];
+        const s = setup({ publishGeneration: (event) => published.push(event) });
+        const held = holdRunner(s);
+        s.create();
+        const job = await held.started;
+        const running = published[0];
+        const output = { tokens: 9, since: 100, at: 100 };
+        job.emit({ type: "output", ...output });
+        job.emit({ type: "retry" });
+        job.emit({ type: "outputReset" });
+        expect(published).toEqual([running, { ...running, retry: 1, output }, { ...running, retry: 1 }]);
+        expect(s.jobs.generationSnapshot()[0]).not.toHaveProperty("output");
+    });
+
     it("clears the previous reply's output when another reply is accepted", async () => {
         clock();
         const published: Progress[] = [];

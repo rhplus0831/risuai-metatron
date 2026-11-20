@@ -45,6 +45,7 @@ import {
 import { LLMFormat } from "../../../shared/llm.ts";
 import { interceptionMessages } from "../../../shared/llm/interception.ts";
 import type { StreamResponseChunk } from "../../../shared/llm/request.ts";
+import { responseRejection } from "../../../shared/llm/responseChecks.ts";
 import { resolveModelInfo } from "../../../shared/llm/models.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
 import { oocTail, oocToggleValues } from "../../../shared/ooc.ts";
@@ -347,6 +348,12 @@ function reportStage(job: RunningJob, stage: GenerationStage): void {
  *    only this reply request to stream (except OobaLegacy). A stream received this way keeps the same
  *    counts, final writes, and tail, but emits no chunks or checkpoints and claims chunk sequence 0.
  *    A buffered answer keeps the buffered path.
+ *    A stream read to its end passes the response checks the request layer applies to a buffered answer
+ *    (`responseRejection`: a banned script, the reply kind's minimum length). A rejected stream that was
+ *    shown fails the send with its text stored and is not requested again. A rejected Half Streaming
+ *    stream showed nothing: its text is dropped unwritten and the reply is requested again, at most
+ *    `requestRetrys` times per round, with the job's retry count and a cleared output count; past that
+ *    the send fails with the last text stored. The tail runs once, on the answer that is kept.
  * 6. The tail of a completed reply, in the tab's order on each path: `editoutput` once on
  *    the completed text, the output trigger, inlays, the `chatOutput` listeners, TTS; the
  *    auto-continue decision, `igp`, a trigger's resend, the notification, the emotion modes or the
@@ -1923,51 +1930,217 @@ async function runSpeaker(arg: {
             job.kind !== "previewPrompt" &&
             replyModel.kind === "resolved" &&
             replyModel.modelInfo.format !== LLMFormat.OobaLegacy;
-        const req = await services.request(
-            {
-                formated,
-                biasString: biases,
-                currentChar,
-                useStreaming: true,
-                ...(quiet ? { forceStreaming: true } : {}),
-                isGroupChat: owner.type === "group",
-                bias: {},
-                continue: arg.continueSend,
-                chatId: generationId,
-                chatRef,
-                imageResponse: db.outputImageModal,
-                previewBody: job.kind === "previewPrompt",
-                escape: owner.type === "character" && owner.escapeOutput,
-                rememberToolUsage: db.rememberToolUsage,
-            } as Parameters<typeof services.request>[0],
-            "model",
-            nativeCtx,
-            "send",
-            // The reply's message: a continue's own, else the one the reply is appended as.
-            { messageId: generation?.messageId ?? generationId, ...(toolSet !== undefined ? { toolSet } : {}) },
-        );
-        setup.check();
-        if (req.model) {
-            generationInfo.model = getGenerationModelString(db, req.model);
-        }
-        if (job.kind === "previewPrompt" && req.type === "success") {
-            return { type: "preview", result: req.result };
-        }
-        if (!chatNow()) {
-            // The chat was deleted while the request ran: the send is cancelled.
-            return { type: "stop" };
-        }
-        const prefixOf = (id: string) => scopeChat(scope)?.message.find((message) => message.chatId === id)?.data ?? "";
-
-        if (req.type === "fail") {
-            return throwError(
-                req.result,
+        /**
+         * One request for the reply. Its arguments are built on every call, since an adapter writes into them
+         * (`bias`). `resent` marks the call that asks again for a reply whose quiet stream was rejected: the job's
+         * retry count then rises as that request goes out.
+         */
+        const requestReply = (resent: boolean) =>
+            services.request(
                 {
-                    stage: "request",
-                    ...(req.request ? { requestId: req.request.id, providerCode: req.request.providerCode } : {}),
+                    formated,
+                    biasString: biases,
+                    currentChar,
+                    useStreaming: true,
+                    ...(quiet ? { forceStreaming: true } : {}),
+                    isGroupChat: owner.type === "group",
+                    bias: {},
+                    continue: arg.continueSend,
+                    chatId: generationId,
+                    chatRef,
+                    imageResponse: db.outputImageModal,
+                    previewBody: job.kind === "previewPrompt",
+                    escape: owner.type === "character" && owner.escapeOutput,
+                    rememberToolUsage: db.rememberToolUsage,
+                } as Parameters<typeof services.request>[0],
+                "model",
+                nativeCtx,
+                "send",
+                // The reply's message: a continue's own, else the one the reply is appended as.
+                {
+                    messageId: generation?.messageId ?? generationId,
+                    ...(toolSet !== undefined ? { toolSet } : {}),
+                    ...(resent ? { resent: true as const } : {}),
                 },
-                req.localModelRefusal?.status,
             );
+        const prefixOf = (id: string) => scopeChat(scope)?.message.find((message) => message.chatId === id)?.data ?? "";
+        /** The model assembly named: the reply's model when the answer that is kept names none. */
+        const assembledModel = generationInfo.model;
+        /**
+         * The row the reply's streams are read into and the text it held before them (a continue's), both fixed
+         * when the first stream arrives: a later stream of the same reply finds a row whatever the send's kind.
+         */
+        let streamTarget: { messageId: string; prefix: string } | undefined;
+        /** The streams of this reply the response checks rejected; only a quiet one is followed by a request. */
+        let rejections = 0;
+        /** The read of the stream that is kept as the reply; none while the answer is buffered. */
+        let stream: Awaited<ReturnType<typeof readReply>> | undefined;
+        let req = await requestReply(false);
+
+        // The request and, for a stream, its read. A stream that ends whole goes through the response checks the
+        // request layer applies to a buffered answer only (`responseRejection`). A stream the user saw fails
+        // there with its text kept. A quiet stream showed nothing, so its text is dropped and the reply is
+        // requested again, up to `requestRetrys` times; the row is not written until an answer is kept, so a stop
+        // in between closes it as stored. Every result, the first as a later one, passes the same checks.
+        while (true) {
+            setup.check();
+            if (req.model) {
+                generationInfo.model = getGenerationModelString(db, req.model);
+            } else if (rejections > 0) {
+                // Not the model of an answer that was dropped.
+                generationInfo.model = assembledModel;
+            }
+            if (job.kind === "previewPrompt" && req.type === "success") {
+                return { type: "preview", result: req.result };
+            }
+            if (!chatNow()) {
+                // The chat was deleted while the request ran: the send is cancelled.
+                return { type: "stop" };
+            }
+
+            if (req.type === "fail") {
+                return throwError(
+                    req.result,
+                    {
+                        stage: "request",
+                        ...(req.request ? { requestId: req.request.id, providerCode: req.request.providerCode } : {}),
+                    },
+                    req.localModelRefusal?.status,
+                );
+            }
+            if (req.type !== "streaming") {
+                break;
+            }
+
+            if (!streamTarget) {
+                if (generation) {
+                    // Continue keeps the message's id and text; the final write refreshes its time once.
+                    continuingStream = true;
+                    streamTarget = { messageId: generation.messageId, prefix: prefixOf(generation.messageId) };
+                } else {
+                    writeOwn([
+                        {
+                            op: "append",
+                            messages: [
+                                {
+                                    role: "char",
+                                    data: "",
+                                    saying: currentChar.chaId,
+                                    time: Date.now(),
+                                    generationInfo,
+                                    promptInfo,
+                                    chatId: generationId,
+                                },
+                            ],
+                            anchor: { end: true },
+                        },
+                        { op: "begin", id: generationId, generationId },
+                    ]);
+                    generation = { messageId: generationId, generationId, seq: 0, final: false };
+                    job.emit({
+                        type: "accepted",
+                        jobId: job.id,
+                        messageId: generationId,
+                        generationId,
+                        revision: scope.chatRevision,
+                        text: "",
+                    });
+                    streamTarget = { messageId: generationId, prefix: "" };
+                }
+            }
+            const { messageId, prefix } = streamTarget;
+            const meter = createOutputMeter({
+                count: (text) => deps.tokens.countLocal(text, tokenScopeFor(requestDb)),
+                report: (output) => job.emit({ type: "output", ...output }),
+                now: Date.now,
+                log: (error) => logEvent("generation.outputCount", { job: job.id }, error, deps.diagnostics),
+            });
+            let read: Awaited<ReturnType<typeof readReply>>;
+            try {
+                read = await readReply(job, req.result, {
+                    prefix,
+                    ...(quiet ? { quiet: true } : {}),
+                    removeIncompleteResponse: !!db.removeIncompleteResponse,
+                    onRaw: meter.note,
+                    emitChunk: (text, seq) => job.emit({ type: "chunk", messageId, generationId, text, seq }),
+                    checkpoint: (text, seq) => {
+                        generation!.seq += 1;
+                        writeOwn(
+                            [
+                                {
+                                    op: "setText",
+                                    id: messageId,
+                                    text,
+                                    generation: { id: generationId, seq: generation!.seq },
+                                },
+                            ],
+                            [{ messageId, generationId, seq, raw: true }],
+                        );
+                    },
+                });
+            } finally {
+                meter.stop();
+            }
+            if (read.error !== undefined || job.signal.aborted) {
+                // An abort or a read failure: the final write carries the text so far; nothing after
+                // the stream runs.
+                // A failure of that write is the job's error instead.
+                failed = true;
+                finalize(read.text, read.seq);
+                if (read.error !== undefined && !job.signal.aborted) {
+                    const failure = read.failure ?? {};
+                    // A read failure is the request's; a checkpoint's is the write's.
+                    throw new GenerationRunnerError(
+                        500,
+                        read.error,
+                        failure.stage === "request" && req.request
+                            ? { requestId: req.request.id, ...failure }
+                            : failure,
+                    );
+                }
+                return { type: "stop" };
+            }
+
+            // The provider's text as it arrived: before punctuation trimming, without a continue's prefix. A
+            // `previewPrompt` result is not an answer.
+            let rejection: string | null = null;
+            if (job.kind !== "previewPrompt") {
+                try {
+                    rejection = responseRejection(read.lastChunk[Object.keys(read.lastChunk)[0]] ?? "", requestDb, {
+                        mode: "model",
+                        continue: arg.continueSend,
+                    });
+                } catch (error) {
+                    // A check that cannot run (a banned-script entry that names no script) fails the send, with
+                    // the read's text stored first.
+                    failed = true;
+                    finalize(read.text, read.seq);
+                    throw error;
+                }
+            }
+            if (rejection === null) {
+                stream = read;
+                break;
+            }
+            rejections += 1;
+            if (!quiet || rejections > requestDb.requestRetrys) {
+                // As a read failure: the final write carries the rejected text (a reroll gets its previous
+                // candidate back), and the send fails without the `risuerror` text of a buffered failure. A
+                // failure of that write is the job's error instead. A quiet read's sequence is 0.
+                failed = true;
+                finalize(read.text, read.seq);
+                throw new GenerationRunnerError(500, rejection, {
+                    stage: "request",
+                    ...(req.request ? { requestId: req.request.id } : {}),
+                });
+            }
+            // The dropped text's token count leaves the progress now; the retry report alone would keep it.
+            job.emit({ type: "outputReset" });
+            setup.check();
+            if (!chatNow()) {
+                return { type: "stop" };
+            }
+            req = await requestReply(true);
         }
 
         // ---- The tail: what `sendChatInner` does after the provider answers, in its order on each
@@ -2099,101 +2272,19 @@ async function runSpeaker(arg: {
             }
         };
 
-        if (req.type === "streaming") {
-            let messageId: string;
-            let prefix = "";
-            if (generation) {
-                // Continue keeps the message's id and text; the final write refreshes its time once.
-                continuingStream = true;
-                messageId = generation.messageId;
-                prefix = prefixOf(messageId);
-            } else {
-                messageId = generationId;
-                writeOwn([
-                    {
-                        op: "append",
-                        messages: [
-                            {
-                                role: "char",
-                                data: "",
-                                saying: currentChar.chaId,
-                                time: Date.now(),
-                                generationInfo,
-                                promptInfo,
-                                chatId: messageId,
-                            },
-                        ],
-                        anchor: { end: true },
-                    },
-                    { op: "begin", id: messageId, generationId },
-                ]);
-                generation = { messageId, generationId, seq: 0, final: false };
-                job.emit({
-                    type: "accepted",
-                    jobId: job.id,
-                    messageId,
-                    generationId,
-                    revision: scope.chatRevision,
-                    text: "",
-                });
-            }
-            const meter = createOutputMeter({
-                count: (text) => deps.tokens.countLocal(text, tokenScopeFor(requestDb)),
-                report: (output) => job.emit({ type: "output", ...output }),
-                now: Date.now,
-                log: (error) => logEvent("generation.outputCount", { job: job.id }, error, deps.diagnostics),
-            });
-            let stream: Awaited<ReturnType<typeof readReply>>;
-            try {
-                stream = await readReply(job, req.result, {
-                    prefix,
-                    ...(quiet ? { quiet: true } : {}),
-                    removeIncompleteResponse: !!db.removeIncompleteResponse,
-                    onRaw: meter.note,
-                    emitChunk: (text, seq) => job.emit({ type: "chunk", messageId, generationId, text, seq }),
-                    checkpoint: (text, seq) => {
-                        generation!.seq += 1;
-                        writeOwn(
-                            [
-                                {
-                                    op: "setText",
-                                    id: messageId,
-                                    text,
-                                    generation: { id: generationId, seq: generation!.seq },
-                                },
-                            ],
-                            [{ messageId, generationId, seq, raw: true }],
-                        );
-                    },
-                });
-            } finally {
-                meter.stop();
-            }
-            if (stream.error !== undefined || job.signal.aborted) {
-                // An abort or a read failure: the final write carries the text so far; nothing after
-                // the stream runs.
-                // A failure of that write is the job's error instead.
-                failed = true;
-                finalize(stream.text, stream.seq);
-                if (stream.error !== undefined && !job.signal.aborted) {
-                    const failure = stream.failure ?? {};
-                    // A read failure is the request's; a checkpoint's is the write's.
-                    throw new GenerationRunnerError(
-                        500,
-                        stream.error,
-                        failure.stage === "request" && req.request
-                            ? { requestId: req.request.id, ...failure }
-                            : failure,
-                    );
-                }
-                return { type: "stop" };
-            }
+        if (stream && streamTarget) {
+            const { messageId } = streamTarget;
             state.stage = "tail";
             reportStage(job, "finishing");
             // Store completed raw text before hooks; a failed reroll later restores its previous candidate.
             // Every later write of the reply claims the stream's last chunk.
             coverSeq = stream.seq;
             writeReplyText(stream.text);
+            if (rejections > 0) {
+                // The row may still name the model of an answer that was dropped, and the exits that close the
+                // reply before its last generation-info write would keep that name.
+                writeReplyGenerationInfo();
+            }
             result = stream.result;
             replyId = messageId;
             samples = Object.values(stream.lastChunk).slice(1);
@@ -2237,7 +2328,12 @@ async function runSpeaker(arg: {
                 const [role, mess] = msgs[i];
                 // The message a continue extends (locked since the send started).
                 const lastMessage = generation ? storedReply() : chatNow()?.message.at(-1);
-                const outputIndex = chatNow()?.message.length ?? 0;
+                // The reply's index for its output scripts: where it is appended, or, once a rejected quiet
+                // stream left this reply its row, that row's own place (other rows may follow it by now).
+                const outputIndex =
+                    i === 0 && rejections > 0 && generation
+                        ? indexOfMessage(generation.messageId)
+                        : (chatNow()?.message.length ?? 0);
                 const rawText = (i === 0 && arg.continueSend ? (lastMessage?.data ?? "") + mess : mess).trim();
                 // Protect the raw reply before hooks, as for streams; later writes update this same generation.
                 if (i === 0 && generation) {

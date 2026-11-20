@@ -39,6 +39,7 @@ describe("requestChatDataOuter", () => {
             afterRequest?: OuterRequestDeps["afterRequest"];
             beforeRequest?: OuterRequestDeps["beforeRequest"];
             reportRetry?: OuterRequestDeps["reportRetry"];
+            resent?: OuterRequestDeps["resent"];
         } = {},
     ) {
         let attempts = 0;
@@ -60,6 +61,7 @@ describe("requestChatDataOuter", () => {
             afterRequest: options.afterRequest,
             beforeRequest: options.beforeRequest,
             reportRetry: options.reportRetry,
+            resent: options.resent,
             attempt: async (arg) => {
                 const index = attempts++;
                 if (index >= answers.length) {
@@ -71,6 +73,22 @@ describe("requestChatDataOuter", () => {
         });
         return { result, attempts };
     }
+
+    it("reports a retry at the first dispatch only when the caller marks the request as re-sent", async () => {
+        const events: string[] = [];
+        for (const resent of [undefined, true] as const) {
+            await run([clean], {
+                resent,
+                beforeRequest: async (messages) => {
+                    events.push("prepare");
+                    return messages;
+                },
+                reportRetry: () => events.push("retry"),
+                onAttempt: () => events.push("dispatch"),
+            });
+        }
+        expect(events).toEqual(["prepare", "dispatch", "prepare", "retry", "dispatch"]);
+    });
 
     it("reports immediately before each resend after a failure or banned answer, but not on give-up", async () => {
         const events: string[] = [];

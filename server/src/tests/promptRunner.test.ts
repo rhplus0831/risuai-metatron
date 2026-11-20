@@ -35,6 +35,7 @@ import * as resourceStores from "../data/resourceStore.ts";
 import type { ChatGroup, ChatOp } from "../../../shared/chats.ts";
 import type { triggerscript } from "../../../shared/triggers.ts";
 import type { RunningJob } from "../jobs/generationJobs.ts";
+import type { requestDataResponse } from "../llm/request.ts";
 import { loadJobScope, scopeHistoryChat } from "../jobs/jobScope.ts";
 import { createJobRunState, createRunSetup } from "../jobs/runSetup.ts";
 import * as localModels from "../prompt/transformers.ts";
@@ -2965,6 +2966,215 @@ describe("Half Streaming", () => {
         expect(result.terminal?.type).toBe("done");
         expect(streamedTexts(result.events)).toEqual([]);
         expect((await readChat(chaId)).data.message.at(-1).data).toBe("A whole sentence.");
+    });
+
+    describe("reply stream response checks", () => {
+        beforeEach(async () => {
+            await patchProviders({ minResponseLengthModel: 6, banCharacterset: ["Cyrl"], requestRetrys: 1 });
+        });
+
+        function stream(...snapshots: string[]): requestDataResponse {
+            return {
+                type: "streaming",
+                result: new ReadableStream({
+                    start(controller) {
+                        for (const text of snapshots) controller.enqueue({ "0": text });
+                        controller.close();
+                    },
+                }),
+            };
+        }
+
+        function scriptReplies(...answers: requestDataResponse[]) {
+            let attempts = 0;
+            const upstream = vi.spyOn(server.context.llmRequests, "runInJob").mockImplementation(async () => {
+                await socketOpen;
+                const answer = answers[attempts++];
+                if (!answer) throw new Error(`Unexpected provider request ${attempts}`);
+                return { ...answer, request: { id: `request-${attempts}`, providerCode: null } };
+            });
+            onTestFinished(() => upstream.mockRestore());
+            return upstream;
+        }
+
+        const acceptances = (events: GenerationEvent[]) => events.filter((e) => e.type === "accepted" && e.messageId);
+        const question = { role: "user", chatId: "u", data: "Question." };
+        const shortError = "The model's answer was shorter than the minimum (3 < 6)";
+
+        it.each([
+            { rejected: "No.", cause: "is too short" },
+            { rejected: "Привет", cause: "contains a banned script" },
+        ])("retries a quiet reply that $cause and accepts one row for the second answer", async ({ rejected }) => {
+            const chaId = await seedCharacter({ name: "Ann" });
+            const upstream = scriptReplies(stream(rejected), stream("Second answer."));
+            const { terminal, events } = await job("send", chaId);
+            expect(upstream).toHaveBeenCalledTimes(2);
+            const rows = (await readChat(chaId)).data.message;
+            expect(rows).toMatchObject([{ role: "char", data: "Second answer." }]);
+            expect(terminal).toMatchObject({ type: "done", messageId: rows[0].chatId });
+            expect(acceptances(events)).toMatchObject([{ messageId: rows[0].chatId, text: "" }]);
+            expect(events.filter((e) => e.type === "retry" && e.retry !== null)).toMatchObject([{ retry: 1 }]);
+            expect(streamedTexts(events)).toEqual([]);
+        });
+
+        it("stores the last rejected quiet reply and names its request after exhausting the reply's own budget", async () => {
+            const chaId = await seedCharacter({ name: "Ann" });
+            const failure = { type: "fail", result: "temporary failure" } as const;
+            // Each request uses its outer retry before delivering a stream to the reply check.
+            const upstream = scriptReplies(failure, stream("?"), failure, stream("No."));
+            const { terminal } = await job("send", chaId);
+            expect(terminal).toMatchObject({
+                type: "error",
+                stage: "request",
+                requestId: "request-4",
+                message: shortError,
+            });
+            expect(texts(await readChat(chaId))).toEqual(["char:No."]);
+            expect(upstream).toHaveBeenCalledTimes(4);
+        });
+
+        it("keeps the quiet reply row empty when stopped after the rejected output estimate clears", async () => {
+            const chaId = await seedCharacter({ name: "Ann" });
+            const h = await heldStream(chaId);
+            h.upstream.mockResolvedValue({ type: "fail", result: "Unexpected second request", noRetry: true });
+            // Let the first output count publish, then end the stream. Stop synchronously on its removal,
+            // before another request can dispatch.
+            await vi.advanceTimersByTimeAsync(1000);
+            let metered = false;
+            const unsubscribe = runnerFeed.subscribe((event) => {
+                if (event.type !== "generation" || event.jobId !== h.acceptance.jobId || event.state !== "running")
+                    return;
+                if (event.output) {
+                    metered = true;
+                    h.close();
+                } else if (metered && !event.retry) {
+                    server.context.generationJobs.abort(event.jobId, "tab");
+                }
+            });
+            onTestFinished(unsubscribe);
+            h.controller.enqueue({ primary: "No." });
+            const { terminal, events } = await h.pending;
+            expect(terminal).toMatchObject({ type: "error", reason: "aborted" });
+            expect(h.upstream).toHaveBeenCalledTimes(1);
+            expect(streamedTexts(events)).toEqual([]);
+            expect((await readChat(chaId)).data.message).toMatchObject([{ chatId: h.acceptance.messageId, data: "" }]);
+        });
+
+        it("runs editoutput at the existing reply row's index when the retry answers buffered", async () => {
+            const chaId = await seedCharacter({
+                name: "Ann",
+                messages: [question],
+                customscript: [
+                    {
+                        comment: "Show the row index",
+                        type: "editoutput",
+                        in: "answer",
+                        out: "answer at row {{chatindex}}",
+                    },
+                ],
+            });
+            const upstream = scriptReplies(stream("No."), { type: "success", result: "Buffered answer." });
+            const { terminal, events } = await job("send", chaId);
+            const rows = (await readChat(chaId)).data.message;
+            expect(rows).toMatchObject([question, { role: "char", data: "Buffered answer at row 1." }]);
+            expect(acceptances(events)).toMatchObject([{ messageId: rows[1].chatId }]);
+            expect(terminal).toMatchObject({ type: "done", messageId: rows[1].chatId });
+            expect(upstream).toHaveBeenCalledTimes(2);
+        });
+
+        it.each([
+            {
+                inlay: false,
+                outcome: "fails the send and leaves the row empty",
+                text: "",
+                expected: { type: "error", stage: "request", requestId: "request-2", message: "upstream failed" },
+            },
+            {
+                inlay: true,
+                outcome: "writes the error into the reply row and stops",
+                text: "\n```risuerror\nupstream failed\n```",
+                expected: { type: "done", stopped: true },
+            },
+        ])("a failed quiet retry $outcome with inlayErrorResponse=$inlay", async ({ inlay, expected, text }) => {
+            await patchProviders({ inlayErrorResponse: inlay });
+            const chaId = await seedCharacter({ name: "Ann" });
+            const upstream = scriptReplies(stream("No."), { type: "fail", result: "upstream failed", noRetry: true });
+            const { terminal, events } = await job("send", chaId);
+            expect(terminal).toMatchObject(expected);
+            const rows = (await readChat(chaId)).data.message;
+            expect(rows).toMatchObject([{ role: "char", data: text }]);
+            expect(acceptances(events)).toMatchObject([{ messageId: rows[0].chatId }]);
+            expect(upstream).toHaveBeenCalledTimes(2);
+        });
+
+        it("keeps the shown text of a short full stream and fails without a retry or an inlaid error", async () => {
+            await patchProviders({ useStreaming: true, inlayErrorResponse: true });
+            const chaId = await seedCharacter({ name: "Ann" });
+            const upstream = scriptReplies(stream("Long enough.", "No."));
+            const { terminal, events } = await job("send", chaId);
+            expect(terminal).toMatchObject({
+                type: "error",
+                stage: "request",
+                requestId: "request-1",
+                message: shortError,
+            });
+            expect(streamedTexts(events).map((chunk) => chunk.text)).toEqual(["Long enough.", "No."]);
+            expect(texts(await readChat(chaId))).toEqual(["char:No."]);
+            expect(upstream).toHaveBeenCalledTimes(1);
+        });
+
+        it("restores the selected candidate when a full-stream reroll is too short", async () => {
+            await patchProviders({ useStreaming: true });
+            const previous = {
+                role: "char",
+                chatId: "r",
+                data: "Selected reply.",
+                selected: 1,
+                candidates: [
+                    { id: "a", data: "First reply." },
+                    { id: "b", data: "Selected reply." },
+                ],
+            };
+            const chaId = await seedCharacter({ name: "Ann", messages: [question, previous] });
+            const upstream = scriptReplies(stream("No."));
+            const { terminal } = await job("reroll", chaId, { rerollMessageId: "r" });
+            expect(terminal).toMatchObject({
+                type: "error",
+                stage: "request",
+                requestId: "request-1",
+                message: shortError,
+            });
+            expect((await readChat(chaId)).data.message).toMatchObject([question, previous]);
+            expect(upstream).toHaveBeenCalledTimes(1);
+        });
+
+        it.each([
+            { suffix: "!", outcome: "accepts a short addition", expected: { type: "done", messageId: "r" } },
+            {
+                suffix: "x",
+                outcome: "rejects a banned script in the addition",
+                expected: {
+                    type: "error",
+                    stage: "request",
+                    requestId: "request-1",
+                    message: "The model answered in a banned script (Latn)",
+                },
+            },
+        ])("a full-stream continuation $outcome", async ({ suffix, expected }) => {
+            await patchProviders({ useStreaming: true, banCharacterset: ["Latn"] });
+            const chaId = await seedCharacter({
+                name: "Ann",
+                messages: [question, { role: "char", chatId: "r", data: "Hi" }],
+            });
+            const upstream = scriptReplies(stream(suffix));
+            const { terminal } = await job("continue", chaId);
+            expect(terminal).toMatchObject(expected);
+            expect((await readChat(chaId)).data.message).toMatchObject([
+                question,
+                { chatId: "r", data: "Hi" + suffix },
+            ]);
+            expect(upstream).toHaveBeenCalledTimes(1);
+        });
     });
 
     it.each([false, true])(

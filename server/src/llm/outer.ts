@@ -80,6 +80,11 @@ export type OuterRequestDeps = {
     attempt: (arg: RequestArgs) => Promise<requestDataResponse>;
     /** Reports immediately before a re-sent attempt; the retry budget is not a request count. */
     reportRetry?: () => void;
+    /**
+     * This call re-sends a request whose answer its caller rejected (a streamed reply that failed the response
+     * checks), so its first attempt is a re-sent one too and is reported through `reportRetry`.
+     */
+    resent?: true;
     /** The plugins' `replacerbeforeRequest` hooks, in order (a job's channel callback). */
     beforeRequest?: (formated: OpenAIChat[], model: ModelModeExtended) => Promise<OpenAIChat[]>;
     /** The plugins' `replacerafterRequest` hooks, in order. */
@@ -123,6 +128,9 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
  * `escape` clears `useStreaming` and `forceStreaming`. An attempt that streams anyway (a plugin provider) is read to
  * its last snapshot and continues as a buffered success (escaping, after-replacers, response checks) or, for a stream
  * error, as an ordinary failure. Without `escape` a stream returns as it is, unchecked.
+ * `deps.reportRetry` runs right before every attempt after the first, once that turn's abort check, replacers, and
+ * trigger are through, so only an attempt that goes out is reported. With `deps.resent` (the caller sends again a
+ * request whose streamed answer it rejected) the first attempt is reported in the same place.
  */
 export async function requestChatDataOuter(
     input: RequestArgs & { escape?: boolean },
@@ -134,7 +142,8 @@ export async function requestChatDataOuter(
     const arg: RequestArgs = { ...rest };
     let da: requestDataResponse;
     let trys = 0;
-    let attempted = false;
+    // A re-sent call's first attempt is already a retry of the caller's request.
+    let attempted = deps.resent === true;
 
     if (escape) {
         arg.useStreaming = false;

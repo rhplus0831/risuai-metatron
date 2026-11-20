@@ -214,13 +214,14 @@ export type LuaBindingServices = {
     /**
      * A request of the job, recorded as `source` made it (and for `messageId`, where known).
      * An absent `toolSet` lists tools; a prepared set, including null for no registry, is reused.
+     * `resent`: this call re-sends a rejected reply, so the job's retry count rises when it goes out.
      */
     request(
         arg: RequestArgs,
         mode: ModelModeExtended,
         ctx: HostContext,
         source: RequestSource,
-        meta?: { messageId?: string; toolSet?: JobToolSet | null },
+        meta?: { messageId?: string; toolSet?: JobToolSet | null; resent?: true },
     ): Promise<requestDataResponse>;
     collectStreamText(stream: ReadableStream<StreamResponseChunk>): Promise<string>;
     /**
@@ -1014,7 +1015,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         mode: ModelModeExtended,
         ctx: HostContext,
         source: RequestSource,
-        meta?: { messageId?: string; toolSet?: JobToolSet | null },
+        meta?: { messageId?: string; toolSet?: JobToolSet | null; resent?: true },
     ): Promise<requestDataResponse> =>
         runRequest(arg, mode, ctx, source, meta).catch((error: unknown) => {
             throw markFailure(error, { stage: "request" });
@@ -1025,7 +1026,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
         mode: ModelModeExtended,
         ctx: HostContext,
         source: RequestSource,
-        meta?: { messageId?: string; toolSet?: JobToolSet | null },
+        meta?: { messageId?: string; toolSet?: JobToolSet | null; resent?: true },
     ): Promise<requestDataResponse> => {
         const signal = AbortSignal.any([job.signal, ctx.signal]);
         const replacer = async <N extends "replacerbeforeRequest" | "replacerafterRequest">(
@@ -1078,6 +1079,7 @@ export function createLuaBindings(deps: LuaBindingDeps): LuaBindings {
             db,
             signal,
             reportRetry,
+            ...(meta?.resent ? { resent: true as const } : {}),
             ...(requestTrigger ? { requestTrigger } : {}),
             isFatal: (error) => error instanceof LuaJobFatalError || fatalError !== null || signal.aborted,
             attempt: (attemptArg) =>

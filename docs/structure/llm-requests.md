@@ -214,7 +214,19 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
   escaping and the after-request replacers. A rejection becomes an ordinary failure with the rejection as its text, so
   it uses one retry of `requestRetrys` and is the request's failure once they run out. A `previewBody` request skips
   both checks (its success is a request body or a diagnostic); a continue request skips the minimum, since its answer is
-  only the added text. A stream returned as it is and a `multiline` answer are not checked.
+  only the added text. The outer loops return a stream as it is, unchecked, and never check a `multiline` answer.
+- The chat reply's stream: `runSpeaker` checks a reply stream after a read that ended without an error or an abort, on
+  the last snapshot's first value as it arrived (before `removeIncompleteResponse` trimming, without a continue's
+  prefix). A full stream (its text was shown) that is rejected fails like a read failure: its text is stored, an
+  in-place reroll gets its previous candidate back, and the job ends with a request-stage error carrying the rejection
+  and the request's id, without a retry or `risuerror` text.
+- A Half Streaming reply (nothing was shown) that is rejected is requested again while its own count of rejections is at
+  most `requestRetrys`; each request runs a new outer loop with its own budget. The re-sent call carries the binding's
+  `resent` mark, so the outer loop reports a retry at its first dispatch, and the job's output estimate is cleared
+  (`outputReset`). Nothing of a rejected read is written.
+- The next answer is read quietly when it streams, or takes the buffered path, written into the same row with output
+  scripts given that row's index. When the count runs out, the last rejected text is stored and the job fails as for a
+  full stream. See [server generation](server-generation.md#streamed-and-buffered-replies).
 
 ### Provider responses and tools
 
@@ -373,8 +385,9 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
   `requestPresetScope.test.ts` (plugin provider), `llmRequests.test.ts` (server payload, retries and history), and
   `server/src/tests/promptRunner.test.ts` (preview and send token budget).
 - Response-check coverage crosses `shared/llm/tests/responseChecks.test.ts` (the measure, the value rule, the messages),
-  `llmCharsetRetries.test.ts` (the server loop's retries and skips), and
-  `src/ts/process/request/tests/responseRetries.test.ts` (the tab loop).
+  `llmCharsetRetries.test.ts` (the server loop's retries and skips, the re-sent mark),
+  `src/ts/process/request/tests/responseRetries.test.ts` (the tab loop), `promptRunner.test.ts` (reply streams), and
+  `generationJobs.test.ts` (the cleared estimate).
 - `slow`:
   `pnpm --silent test:agent --tags-filter=slow server/src/tests/{llmCharsetRetries,tokenParity,tokenPlainNode}.test.ts`
   ([test-harness](test-harness.md) `Slow-test table`).
@@ -433,6 +446,17 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
   images, and TTS are not intercepted. What rewrites the provider body afterwards (additional parameters, a plugin's
   body interceptor, a plugin provider) can still change or drop the inserted text. Decision: Request Interception plan,
   owner, 2026-11-17.
+- Response checks measure what they receive: a reply that is only an image is rejected when its kind has a minimum,
+  since its marker is not counted; a thought outside the `<Thoughts>` wrapper and an in-stream provider error count as
+  answer text; later trimming (`removeIncompleteResponse`) can still store a shorter or an empty reply; a long refusal
+  passes. A fully streamed reply is not retried, since its text was shown. Decision: Response Checks plan, owner,
+  2026-11-20.
+- Response checks do not reach a plugin's `runLLMModel`, a tab request that streams, a stream a Lua script or a native
+  trigger reads itself, or any `multiline` answer. Decision: Response Checks plan, owner, 2026-11-20.
+- The Structured Memory writer is response-checked like every other `memory` request, so a Memory minimum can reject
+  valid writer JSON: when the retries of an analysis or a required page patch run out, that recording attempt fails and
+  its window stays unrecorded until a later recording; a rejected compaction adds a warning. Decision: Response Checks
+  plan, owner, 2026-11-20.
 - Auxiliary requests still tokenize bias strings with the main model, not their own profile's tokenizer. Decision:
   `shared/llm/request.ts` `tokenizer`.
 - A legacy plugin `custom` tokenizer counts with `cl100k_base` on screen and for `/api/llm/request` calls using the

@@ -161,10 +161,14 @@ refusal the memory step recovered from or outlived replaces no later error.
   row, `accepted`, a meter, and final text on stop or failure. It publishes no partial text or raw checkpoints and keeps
   chunk sequence zero. A buffered answer uses the buffered path.
 - Both paths store the raw answer under its generation before output processing. A failed output hook leaves that
-  answer, except a failed in-place reroll restores the previous candidate. A stream returned by the request layer skips
-  buffered after-request replacers and charset retries. With `escape`, the request layer consumes a provider that
-  streams anyway and processes its last snapshot as buffered. See `server/src/llm/outer.ts` `requestChatDataOuter` and
-  `runSpeaker` for output processing and candidate storage.
+  answer, except a failed in-place reroll restores the previous candidate. With `escape`, the request layer consumes a
+  provider that streams anyway and processes its last snapshot as buffered. See `server/src/llm/outer.ts`
+  `requestChatDataOuter` and `runSpeaker` for output processing and candidate storage.
+- A stream returned by the request layer skips the buffered after-request replacers and the outer loop's retries, but
+  not the response checks: `runSpeaker` runs them after the read ([LLM requests](llm-requests.md#response-checks)). A
+  rejected full stream keeps its text and fails the job without a retry. A rejected Half Streaming read writes nothing;
+  the reply is requested again into the same row (no second `accepted`, a new meter, the estimate cleared) until its
+  rejections pass `requestRetrys`. The successful tail runs once, on the accepted answer.
 
 ### Reroll in place
 
@@ -210,7 +214,8 @@ client (a participant's `DELETE` too) is attributed; `stop`'s comment holds the 
 - `publishProgress` sends a live-update `generation` frame at admission, each stage/retry/sequence change and job end.
   It includes previews, identifies the creator across handoff, and fences on the current epoch. The feed's hello
   snapshots running jobs for observers and reconnects ([live-update hello](live-update-feed.md#live-update-hello)).
-- Only the feed carries the latest reply's `output` estimate. `accepted` and a transition to `preparing` clear it.
+- Only the feed carries the latest reply's `output` estimate. `accepted`, a transition to `preparing`, and the
+  registry-only `outputReset` (a Half Streaming reply rejected by the response checks) clear it; a `retry` keeps it.
   `publishOutputProgress` coalesces count-only changes per job at `GENERATION_PROGRESS_INTERVAL_MS`. Other progress
   publishes immediately with the latest count. A late count cannot reopen an ended job. For the tab's progress store see
   [live updates](live-updates.md#files).
