@@ -23,7 +23,8 @@
 
 <span class="text-textcolor mt-4">{language.colorScheme}</span>
 
-<div class="mt-2 grid grid-cols-[repeat(auto-fill,minmax(7.5rem,1fr))] gap-2">
+<!-- `mb-2`: with the 0.5rem the field below adds, the grid ends 1rem above it, as a field does. -->
+<div class="mt-2 mb-2 grid grid-cols-[repeat(auto-fill,minmax(7.5rem,1fr))] gap-2">
     {#each colorSchemeList as scheme}
         <button
             type="button"

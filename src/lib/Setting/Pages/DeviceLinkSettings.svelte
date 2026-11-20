@@ -6,10 +6,10 @@
     /** The header items, then each section of `deviceLinkSettingsSections` with a rule between them. */
 </script>
 
-<SettingRenderer items={deviceLinkSettingsHeader} />
+<SettingRenderer items={deviceLinkSettingsHeader} itemSpacing />
 {#each deviceLinkSettingsSections as section, index (section.id)}
     {#if index > 0}
         <hr class="mt-6 border-darkborderc" />
     {/if}
-    <SettingsSections sections={[section]} />
+    <SettingsSections sections={[section]} itemSpacing />
 {/each}

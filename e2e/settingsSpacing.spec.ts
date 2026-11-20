@@ -6,12 +6,21 @@ import { isolateContext, openApp } from "../util/playwright/stack.mjs";
 // or field 0.5rem below its heading, description, or container edge, and 0.5rem of its own margin after
 // a block or a handwritten element; a field before a block, a handwritten element, or the end keeps 1rem
 // below it. An item's box is the union of its anchor's boxed children (the anchor is `display: contents`).
-// The flags and translator fields below show the conditional items, collapsible sections are opened.
 
-/** Each page's menu index and the anchor ids it must show, by kind. */
-const pages = [
+type ExpectedItems = Partial<Record<"block" | "row" | "field", string[]>>;
+
+interface SettingsView extends ExpectedItems {
+    name: string;
+    menu: number;
+    ready: string;
+    sections?: string[];
+    open?: () => Promise<void>;
+}
+
+const pages: SettingsView[] = [
     {
         name: "Interaction",
+        ready: "interaction.header",
         menu: 22,
         block: ["interaction.header"],
         field: ["acc.newChatBinding", "interaction.contextMeterTurnUnit", "interaction.contextMeterFixedWarn"],
@@ -41,6 +50,7 @@ const pages = [
     },
     {
         name: "Accessibility",
+        ready: "acc.header",
         menu: 11,
         block: ["acc.header"],
         field: ["acc.newMessageButtonStyle"],
@@ -54,7 +64,9 @@ const pages = [
     },
     {
         name: "Advanced",
+        ready: "adv.header",
         menu: 6,
+        sections: ["advanced.developer", "advanced.experimental", "advanced.legacy"],
         block: ["adv.header", "adv.warn", "adv.export", "adv.diagnosticsPanel"],
         field: [
             "adv.chatLoadInitial",
@@ -92,7 +104,9 @@ const pages = [
     },
     {
         name: "Translation",
+        ready: "translation.header",
         menu: 21,
+        sections: ["translation.experimental"],
         block: ["translation.header", "lang.llmPresets", "lang.exportCache", "lang.importCache", "lang.clearCache"],
         field: [
             "lang.translatorLang",
@@ -104,12 +118,125 @@ const pages = [
     },
     {
         name: "Language",
+        ready: "lang.header",
         menu: 10,
         block: ["lang.header"],
         field: ["lang.uiLanguage"],
         row: [],
     },
+    {
+        name: "Voice",
+        menu: 20,
+        ready: "adv.emoPrompt",
+        field: ["adv.emoPrompt"],
+    },
+    {
+        name: "Storage",
+        menu: 23,
+        ready: "storage.header",
+        sections: ["storage.owners", "storage.details"],
+        block: [
+            "storage.header",
+            "storage.description",
+            "adv.storagePanel",
+            "storage.cleanupPanel",
+            "storage.snapshotsPanel",
+            "storage.ownersPanel",
+            "storage.detailsPanel",
+        ],
+    },
+    {
+        name: "Device link",
+        menu: 25,
+        ready: "deviceLink.header",
+        block: [
+            "deviceLink.header",
+            "deviceLink.localNote",
+            "deviceLink.description",
+            "deviceLink.name",
+            "display.remoteHost",
+            "deviceLink.startHost",
+            "display.handoff",
+        ],
+    },
 ];
+
+function displayTabs(themeFields: string[]) {
+    return [
+        {
+            name: "Theme",
+            ready: "display.theme",
+            sections: ["display.theme.customCSS"],
+            field: [
+                "display.theme",
+                ...themeFields,
+                "display.textTheme",
+                "display.font",
+                "display.customFont",
+                "display.customCSS",
+            ],
+            block: [
+                "display.colorScheme",
+                "display.customColorScheme",
+                "display.customTextTheme",
+                "display.customBackground",
+            ],
+            row: [],
+        },
+        {
+            name: "Layout & sizing",
+            ready: "display.zoomsize",
+            field: [
+                "display.zoomsize",
+                "display.lineHeight",
+                "display.chatScreenWidth",
+                "display.iconsize",
+                "display.textAreaSize",
+                "display.textAreaTextSize",
+                "display.sideBarSize",
+                "display.animationSpeed",
+                "display.settingsCloseButtonSize",
+                "adv.heightMode",
+            ],
+            row: ["display.menuSideBar", "display.showFolderName", "display.hideRealm", "display.showSavingIcon"],
+            block: [],
+        },
+        {
+            name: "Chat appearance",
+            ready: "display.showMemoryLimit",
+            field: [
+                "display.memoryLimitThickness",
+                "display.leadingDoubleQuote",
+                "display.trailingDoubleQuote",
+                "display.leadingSingleQuote",
+                "display.trailingSingleQuote",
+                "display.assetWidth",
+            ],
+            row: [
+                "display.showMemoryLimit",
+                "display.showFirstMessagePages",
+                "display.roundIcons",
+                "display.textBorder",
+                "display.textScreenRounded",
+                "display.useChatCopy",
+                "display.unformatQuotes",
+                "display.blockquoteStyling",
+                "display.customQuotes",
+                "display.useChatSticker",
+                "display.hideAllImages",
+                "display.useAdditionalAssetsPreview",
+            ],
+            block: ["display.textScreenColor", "display.textScreenBorder"],
+        },
+        {
+            name: "Sound & notifications",
+            ready: "display.playMessage",
+            field: ["adv.keepSessionAlive", "display.completionWaitMaxSeconds"],
+            row: ["display.playMessage", "display.playMessageOnTranslateEnd"],
+            block: ["display.notification"],
+        },
+    ];
+}
 
 function measureSpacing(contentSelector: string) {
     const root = document.querySelector(contentSelector)!;
@@ -176,35 +303,36 @@ test("settings rows and fields follow their neighbors' spacing", async ({ page, 
     await isolateContext(page.context());
     await openApp(page, baseURL!);
     await settle(page);
-    await page.evaluate(async () => {
-        const { settings } = await import("/src/ts/storage/settingsViews.svelte.ts");
-        settings.ui.didFirstSetup = true;
-        settings.ui.showUnrecommended = true;
-        settings.ui.useExperimental = true;
-        settings.ui.contextMeter = true;
-        settings.ui.autoScrollToNewMessage = true;
-        settings.ui.alwaysScrollToNewMessage = false;
-        settings.ui.promptInfoInsideChat = true;
-        settings.memoryTranslateMedia.dynamicAssets = true;
-        settings.memoryTranslateMedia.translator = "ko";
-        settings.memoryTranslateMedia.translatorType = "llm";
-        settings.memoryTranslateMedia.llmTranslationTarget = "message";
+    // All specs in the browser run share a server. Restore the settings and profiles this one edits.
+    const restore = await page.evaluateHandle(async () => {
+        const { recordData, replaceRecord } = await import("/src/ts/storage/records.svelte.ts");
+        const { settingsOpen } = await import("/src/ts/stores.svelte.ts");
+        const kinds = ["ui", "memoryTranslateMedia", "modelProfiles", "presets"] as const;
+        const saved = kinds.map((kind) => [kind, JSON.stringify(recordData(kind))] as const);
+        return () => {
+            settingsOpen.set(false);
+            for (const [kind, data] of saved) replaceRecord(kind, JSON.parse(data));
+        };
     });
-    await settle(page);
 
     const contentSelector = ".rs-setting-cont-4";
     const content = page.locator(contentSelector);
-    for (const { name, menu, ...expectedKinds } of pages) {
+    async function visit({ name, menu, ready, open, sections = [], ...expectedKinds }: SettingsView) {
         await test.step(name, async () => {
             await page.evaluate(async (index) => {
                 const { settingsOpen, SettingsMenuIndex } = await import("/src/ts/stores.svelte.ts");
                 settingsOpen.set(true);
                 SettingsMenuIndex.set(index);
             }, menu);
-            const heading = expectedKinds.block[0];
-            await expect(content.locator(`[data-setting-id="${heading}"]`), `${name} ${heading}`).toBeAttached();
-            const closed = content.locator('button[aria-expanded="false"]');
-            while (await closed.count()) await closed.first().click();
+            await open?.();
+            for (const section of sections) {
+                // These sections start closed. In particular, leave Storage's nested action menus alone.
+                await content
+                    .locator(`[data-settings-section="${section}"]`)
+                    .getByRole("button", { expanded: false })
+                    .click();
+            }
+            await expect(content.locator(`[data-setting-id="${ready}"]`), `${name} ${ready}`).toBeAttached();
 
             const { items, measurements } = await page.evaluate(measureSpacing, contentSelector);
             for (const { id, kind, display } of items) {
@@ -219,5 +347,168 @@ test("settings rows and fields follow their neighbors' spacing", async ({ page, 
                 expect(actual, `${name} ${pair} (px)`).toBeCloseTo(expected, 0);
             }
         });
+    }
+
+    try {
+        await page.evaluate(async () => {
+            const { settings, editedMainProfile, editedPreset } =
+                await import("/src/ts/storage/settingsViews.svelte.ts");
+            const { changeLanguage } = await import("/src/lang/index.ts");
+            settings.ui.language = "en";
+            changeLanguage("en");
+            settings.ui.didFirstSetup = true;
+            settings.ui.showUnrecommended = true;
+            settings.ui.useExperimental = true;
+            settings.ui.useLegacyGUI = false;
+            settings.ui.contextMeter = true;
+            settings.ui.autoScrollToNewMessage = true;
+            settings.ui.alwaysScrollToNewMessage = false;
+            settings.ui.promptInfoInsideChat = true;
+            settings.memoryTranslateMedia.dynamicAssets = true;
+            settings.memoryTranslateMedia.translator = "ko";
+            settings.memoryTranslateMedia.translatorType = "llm";
+            settings.memoryTranslateMedia.llmTranslationTarget = "message";
+
+            settings.ui.theme = "waifu";
+            settings.ui.colorSchemeName = "custom";
+            settings.ui.textTheme = "custom";
+            settings.ui.font = "custom";
+            settings.ui.showMemoryLimit = true;
+            settings.ui.customQuotes = true;
+            editedPreset.maxContextOverride = true;
+            editedMainProfile.enableCustomFlags = false;
+            editedMainProfile.modelId = "ooba";
+            editedMainProfile.instructChatTemplate = "chatml";
+        });
+        await settle(page);
+
+        await visit({
+            name: "Model",
+            menu: 1,
+            ready: "acc.applyAdditionalParamsToAll",
+            open: () => content.getByRole("button", { name: /^Additional Parameters/, expanded: false }).click(),
+            sections: ["model.advanced", "model.customModels"],
+            block: ["adv.customModels"],
+            field: ["adv.retries", "adv.genTime", "adv.visionQual", "adv.autoContinueMin"],
+            row: [
+                "acc.applyAdditionalParamsToAll",
+                "adv.autoFill",
+                "adv.autoCont",
+                "adv.remIncomp",
+                "adv.newOai",
+                "adv.dynamicModelRegistry",
+                "adv.antiOverload",
+                "adv.openAIFlex",
+                "adv.claudeCache",
+                "adv.claudeBatch",
+            ],
+        });
+        await visit({
+            name: "Memory",
+            menu: 2,
+            ready: "adv.remPunc",
+            open: async () => {
+                await content.locator('select:has(option[value="supaMemory"])').selectOption("supaMemory");
+            },
+            field: ["adv.lbDepth", "adv.lbToken"],
+            row: ["adv.remPunc", "acc.localActivationInGlobalLorebook", "acc.bulkEnabling"],
+        });
+
+        const chatFormat = ["chatFormat.template", "chatFormat.jinjaTemplate"];
+        await visit({
+            name: "Connections / Chat Formatting",
+            menu: 18,
+            ready: "chatFormat.jinjaTemplate",
+            open: async () => {
+                // Only the explicitly selected connection uses Jinja here.
+                const id = await page.evaluate(async () => {
+                    const { addModelProfile } = await import("/src/ts/storage/collectionStore.svelte.ts");
+                    return addModelProfile({ name: "Jinja connection", instructChatTemplate: "jinja" });
+                });
+                await content.locator(`[data-profile-id="${id}"]`).click();
+                await content.getByRole("button", { name: "Chat Formatting", exact: true, expanded: false }).click();
+            },
+            field: ["params.maxContext", ...chatFormat],
+        });
+
+        const parameterFields = ["params.maxResponse", "params.maxContextOverrideSize"];
+        await visit({
+            name: "Prompt preset / Parameters / Ooba Settings",
+            menu: 16,
+            ready: "chatFormat.jinjaTemplate",
+            open: async () => {
+                await page.evaluate(async () => {
+                    const { editedMainProfile } = await import("/src/ts/storage/settingsViews.svelte.ts");
+                    editedMainProfile.instructChatTemplate = "jinja";
+                });
+                await content.getByRole("button", { name: "Parameters", exact: true }).click();
+                await content.getByRole("button", { name: "Ooba Settings", exact: true, expanded: false }).click();
+            },
+            row: ["params.maxContextOverride"],
+            field: [...parameterFields, ...chatFormat],
+        });
+        await visit({
+            name: "Prompt preset / Parameters / OpenRouter",
+            menu: 16,
+            ready: "params.seed",
+            open: () =>
+                page.evaluate(async () => {
+                    const { editedMainProfile } = await import("/src/ts/storage/settingsViews.svelte.ts");
+                    editedMainProfile.modelId = "openrouter";
+                }),
+            row: ["params.maxContextOverride"],
+            field: [
+                ...parameterFields,
+                "params.seed",
+                "params.temperature",
+                "params.topK",
+                "params.minP",
+                "params.topA",
+                "params.repetitionPenalty",
+                "params.topP",
+                "params.frequencyPenalty",
+                "params.presencePenalty",
+            ],
+        });
+        await visit({
+            name: "Prompt preset / Others",
+            menu: 16,
+            ready: "adv.addPrompt",
+            open: () => content.getByRole("button", { name: "Others", exact: true }).click(),
+            sections: ["prompt.advanced"],
+            field: ["adv.addPrompt", "adv.descPrefix", "adv.presetChain"],
+            row: ["adv.sayNothing", "adv.cot", "display.showPromptComparison"],
+            block: ["adv.banChar"],
+        });
+
+        for (const tab of displayTabs(["display.waifuWidth", "display.waifuWidth2"])) {
+            await visit({
+                ...tab,
+                name: `Display / ${tab.name}`,
+                menu: 3,
+                open: () => content.getByRole("button", { name: tab.name, exact: true }).click(),
+            });
+        }
+        for (const view of pages) await visit(view);
+
+        // Display reads the legacy flag at mount. Custom HTML and the Waifulike sliders are mutually exclusive.
+        await page.evaluate(async () => {
+            const { settings } = await import("/src/ts/storage/settingsViews.svelte.ts");
+            settings.ui.useLegacyGUI = true;
+            settings.ui.theme = "customHTML";
+        });
+        const stacked = displayTabs(["display.guiHTML"]);
+        await visit({
+            name: "Display / legacy",
+            menu: 3,
+            ready: "display.guiHTML",
+            sections: stacked.flatMap((tab) => tab.sections ?? []),
+            row: stacked.flatMap((tab) => tab.row),
+            field: stacked.flatMap((tab) => tab.field),
+            block: stacked.flatMap((tab) => tab.block),
+        });
+    } finally {
+        await restore.evaluate((undo) => undo());
+        await settle(page);
     }
 });

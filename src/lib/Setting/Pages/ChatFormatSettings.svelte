@@ -8,4 +8,4 @@
     let { profile = editedMainProfile }: Props = $props();
 </script>
 
-<SettingRenderer items={chatFormatSettingsItems} modelProfile={profile} />
+<SettingRenderer items={chatFormatSettingsItems} modelProfile={profile} itemSpacing />

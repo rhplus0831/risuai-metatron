@@ -14,7 +14,6 @@ export const modelSettingsItems: SettingItem[] = [
         bindKey: "requestRetrys",
         helpKey: "requestretrys",
         options: { min: 0, max: 20 },
-        classes: "mt-4",
     },
     {
         id: "adv.genTime",
@@ -30,8 +29,6 @@ export const modelSettingsItems: SettingItem[] = [
         labelKey: "visionQuality",
         bindKey: "gptVisionQuality",
         helpKey: "gptVisionQuality",
-        // Follows `adv.genTime`'s number field, which ends with its own 1rem bottom margin.
-        classes: "mt-0",
         options: {
             selectOptions: [
                 { value: "low", label: "Low" },
@@ -45,7 +42,6 @@ export const modelSettingsItems: SettingItem[] = [
         labelKey: "autoFillRequestURL",
         bindKey: "autofillRequestUrl",
         helpKey: "autoFillRequestURL",
-        classes: "mt-4",
     },
     {
         id: "adv.autoCont",
@@ -53,7 +49,6 @@ export const modelSettingsItems: SettingItem[] = [
         labelKey: "autoContinueChat",
         bindKey: "autoContinueChat",
         helpKey: "autoContinueChat",
-        classes: "mt-4",
     },
     {
         id: "adv.autoContinueMin",
@@ -61,30 +56,25 @@ export const modelSettingsItems: SettingItem[] = [
         labelKey: "autoContinueMinTokens",
         bindKey: "autoContinueMinTokens",
         options: { min: 0 },
-        classes: "mt-2",
     },
     {
         id: "adv.remIncomp",
         type: "check",
         labelKey: "removeIncompleteResponse",
         bindKey: "removeIncompleteResponse",
-        // Follows `adv.autoContinueMin`'s number field.
-        classes: "mt-0",
     },
-    { id: "adv.newOai", type: "check", labelKey: "newOAIHandle", bindKey: "newOAIHandle", classes: "mt-4" },
+    { id: "adv.newOai", type: "check", labelKey: "newOAIHandle", bindKey: "newOAIHandle" },
     {
         id: "adv.dynamicModelRegistry",
         type: "check",
         labelKey: "dynamicModelRegistry",
         bindKey: "dynamicModelRegistry",
-        classes: "mt-4",
     },
     {
         id: "adv.antiOverload",
         type: "check",
         labelKey: "antiServerOverload",
         bindKey: "antiServerOverloads",
-        classes: "mt-4",
     },
     {
         id: "adv.openAIFlex",
@@ -93,14 +83,12 @@ export const modelSettingsItems: SettingItem[] = [
         bindKey: "openAIFlexProcessing",
         helpKey: "openAIFlexProcessing",
         showExperimental: true,
-        classes: "mt-4",
     },
     {
         id: "adv.claudeCache",
         type: "check",
         labelKey: "claude1HourCaching",
         bindKey: "claude1HourCaching",
-        classes: "mt-4",
     },
     {
         id: "adv.claudeBatch",
@@ -108,7 +96,6 @@ export const modelSettingsItems: SettingItem[] = [
         labelKey: "claudeBatching",
         bindKey: "claudeBatching",
         showExperimental: true,
-        classes: "mt-4",
     },
     // In a collapsible section, so without its own accordion.
     {

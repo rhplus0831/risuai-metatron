@@ -20,7 +20,6 @@ export const displaySettingsItems: SettingItem[] = [
         type: "select",
         labelKey: "theme",
         bindKey: "theme",
-        classes: "mt-4",
         options: {
             selectOptions: [
                 { value: "metatron", labelKey: "metatronTheme" },
@@ -53,7 +52,6 @@ export const displaySettingsItems: SettingItem[] = [
             max: 200,
             customText: (value) => `${value}%`,
         },
-        classes: "mt-4",
         keywords: ["waifu", "width"],
     },
     {
@@ -67,7 +65,6 @@ export const displaySettingsItems: SettingItem[] = [
             max: 150,
             customText: (value) => `${value}%`,
         },
-        classes: "mt-4",
         keywords: ["waifu", "width"],
     },
 
@@ -90,7 +87,6 @@ export const displaySettingsItems: SettingItem[] = [
         type: "select",
         labelKey: "textColor",
         bindKey: "textTheme",
-        classes: "mt-4",
         onChange: () => updateTextThemeAndCSS(),
         options: {
             selectOptions: [
@@ -113,7 +109,6 @@ export const displaySettingsItems: SettingItem[] = [
         type: "select",
         labelKey: "font",
         bindKey: "font",
-        classes: "mt-4",
         onChange: () => updateTextThemeAndCSS(),
         options: {
             selectOptions: [
@@ -147,7 +142,6 @@ export const displaySettingsItems: SettingItem[] = [
         labelKey: "customCSS",
         helpKey: "customCSS",
         bindKey: "customCSS",
-        classes: "mt-4",
         onChange: () => updateTextThemeAndCSS(),
         keywords: ["custom", "css"],
     },
@@ -158,7 +152,6 @@ export const displaySettingsItems: SettingItem[] = [
         type: "slider",
         labelKey: "UISize",
         bindKey: "zoomsize",
-        classes: "mt-4",
         options: { min: 50, max: 200 },
         keywords: ["ui", "size", "zoom"],
     },
@@ -459,7 +452,6 @@ export const displaySettingsItems: SettingItem[] = [
         type: "slider",
         labelKey: "assetWidth",
         bindKey: "assetWidth",
-        classes: "mt-4",
         options: {
             min: -1,
             max: 40,

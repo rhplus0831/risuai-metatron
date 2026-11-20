@@ -40,7 +40,7 @@
             </button>
         {/each}
     </div>
-    <SettingsSections sections={displaySettingsTabs[submenu].sections} />
+    <SettingsSections sections={displaySettingsTabs[submenu].sections} itemSpacing />
 {:else}
-    <SettingsSections sections={displaySettingsSections} />
+    <SettingsSections sections={displaySettingsSections} itemSpacing />
 {/if}

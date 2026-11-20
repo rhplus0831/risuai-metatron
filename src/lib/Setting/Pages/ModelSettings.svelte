@@ -132,7 +132,7 @@
             {/each}
         </tbody>
     </table>
-    <SettingRenderer items={modelAdditionalParamsItems} />
+    <SettingRenderer items={modelAdditionalParamsItems} itemSpacing />
 </Accordion>
 
-<SettingsSections sections={modelSettingsSections} />
+<SettingsSections sections={modelSettingsSections} itemSpacing />

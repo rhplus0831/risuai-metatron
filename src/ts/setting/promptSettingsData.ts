@@ -13,7 +13,6 @@ export const promptSettingsItems: SettingItem[] = [
         labelKey: "additionalPrompt",
         bindKey: "additionalPrompt",
         helpKey: "additionalPrompt",
-        classes: "mt-4",
     },
     {
         id: "adv.descPrefix",
@@ -35,7 +34,6 @@ export const promptSettingsItems: SettingItem[] = [
         labelKey: "sayNothing",
         bindKey: "useSayNothing",
         helpKey: "sayNothing",
-        classes: "mt-4",
     },
     {
         id: "adv.cot",
@@ -45,7 +43,6 @@ export const promptSettingsItems: SettingItem[] = [
         condition: (ctx) => ctx.settings.ui.showUnrecommended,
         helpKey: "customChainOfThought",
         helpUnrecommended: true,
-        classes: "mt-4",
     },
     // From Display, by way of Advanced.
     {
@@ -54,7 +51,6 @@ export const promptSettingsItems: SettingItem[] = [
         labelKey: "showPromptComparison",
         bindKey: "showPromptComparison",
         keywords: ["prompt", "comparison"],
-        classes: "mt-4",
     },
     // In a collapsible section, so without its own accordion.
     {

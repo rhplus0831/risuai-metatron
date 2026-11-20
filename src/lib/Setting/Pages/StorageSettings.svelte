@@ -19,7 +19,7 @@
 
 <div class="flex min-w-0 flex-wrap items-end justify-between gap-x-6 gap-y-3">
     <div class="min-w-0 flex-1 basis-64 break-words">
-        <SettingRenderer items={storageSettingsHeader} />
+        <SettingRenderer items={storageSettingsHeader} itemSpacing />
     </div>
     <div class="flex min-w-0 flex-wrap items-center gap-2 text-sm text-textcolor">
         {#if controller.report}
@@ -41,4 +41,4 @@
         <p role="alert" class="w-full text-sm text-draculared whitespace-pre-wrap break-all">{controller.error}</p>
     {/if}
 </div>
-<SettingsSections sections={storageSettingsSections} />
+<SettingsSections sections={storageSettingsSections} itemSpacing />

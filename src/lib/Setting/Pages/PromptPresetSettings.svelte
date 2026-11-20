@@ -141,7 +141,7 @@
 
 {#if submenu === 1 || submenu === -1}
     <!-- Data-driven basic parameters -->
-    <SettingRenderer items={allBasicParameterItems} {modelInfo} {subModelInfo} />
+    <SettingRenderer items={allBasicParameterItems} {modelInfo} {subModelInfo} itemSpacing />
     {#if modelInfo.id === "textgen_webui" || modelInfo.id === "mancer" || modelInfo.id.startsWith("local_") || modelInfo.id.startsWith("hf:::")}
         <span class="text-textcolor">Repetition Penalty</span>
         <SliderInput
@@ -528,7 +528,7 @@
         </button>
     </Accordion>
 
-    <SettingsSections sections={promptSettingsSections} />
+    <SettingsSections sections={promptSettingsSections} itemSpacing />
 {/if}
 
 {#if submenu === 2 || submenu === -1}

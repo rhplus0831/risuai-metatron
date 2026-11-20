@@ -325,7 +325,7 @@ delivery and [app shell](app-shell.md#home-screen) for the home entry point.
   comparison, alert, and global-hotkey isolation contract.
 - `slow`: none in this area.
 - `e2e`: `e2e/settingsPages.spec.ts` (page mounting, subsequent no-write traversal, and control writes),
-  `e2e/settingsSpacing.spec.ts` (the item spacing measured on the pages that pass `itemSpacing`),
+  `e2e/settingsSpacing.spec.ts` (the item spacing measured on every page that mounts the renderer),
   `e2e/presetSelection.spec.ts` (an edit in the real settings UI followed by a hotkey switch; the selection per client
   and per tab), `e2e/chatBinding.spec.ts` (the binding panel's Model Presets and Prompt Presets pickers bind the chat,
   show its name, close, and leave the tab's selection alone; a settings pick with a bound chat open selects for the tab,
@@ -360,15 +360,17 @@ delivery and [app shell](app-shell.md#home-screen) for the home entry point.
 
 - Conditions read `ctx.preset` for prompt fields, `ctx.modelPreset` for slot configuration, and `ctx.modelProfile` for
   connection and capacity fields; model capability gates read `ctx.modelInfo`.
-- A page that passes `itemSpacing` to its renderers (Interaction, Accessibility, Advanced, Translation, Language) is
-  spaced by `SettingRenderer`'s style rule over `data-spacing-kind` (`row`: check, color; `field`: a labelled control;
-  `block`: the rest): rows 0.5rem apart, a field 1rem on each side without adding up, a run's first row or field 0.5rem
-  below what precedes it. Its rows and fields take no margin in `classes`; blocks keep their own. Only a `!` utility
-  overrides the rule.
-- On the other pages the wrappers' default margins do not compose, so a page that mixes them sets `classes` per item.
-  Checks and colors default to `mt-2`, a select's label to `mt-4`, all with no bottom margin; the number, slider, text,
-  and segmented wrappers give the label no top margin and end with a 1rem bottom margin. Between checks such a control
-  takes `classes: "mt-4"` and the check after it `"mt-0"`. A moved item takes its new page's spacing.
+- Every page mount of `SettingRenderer` and `SettingsSections` passes `itemSpacing` (`ChatFormatSettings` on its own),
+  so items are spaced by `SettingRenderer`'s style rule over `data-spacing-kind` (`row`: check, color; `field`: a
+  labelled control; `block`: the rest): rows 0.5rem apart, a field 1rem on each side without adding up, a run's first
+  row or field 0.5rem below what precedes it. Rows and fields take no margin in `classes`; blocks keep their own. Only a
+  `!` utility overrides the rule. A handwritten neighbour keeps its own margin, which adds to the item's.
+- The rule does not reach inside a custom component: one that sits beside a row or a field sets its own margins so its
+  edges read as that neighbour's kind would (Display's `ColorSchemeSelect`, `CustomColorSchemeEditor`,
+  `CustomTextThemeEditor`, and `CustomBackgroundToggle` say which side they supply).
+- A renderer mounted without `itemSpacing` falls back to the wrappers' default margins, which do not compose: checks and
+  colors `mt-2`, a select's label `mt-4`, and a 1rem bottom margin under the number, slider, text, and segmented
+  controls.
 - The preset list (`botpreset.svelte`) reads every row through its record wrapper, which keeps a 50-preset reorder just
   outside its target; keyed rows made it slower, and a plain-row projection is untried
   ([preset reorder audit](../reports/measurements/client/preset-reorder-2026-10-05.md)).

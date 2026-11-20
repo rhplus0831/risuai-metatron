@@ -45,5 +45,5 @@
         <OptionInput value="submodel">Ax. Model</OptionInput>
         <OptionInput value="embedding">MiniLM-L6-v2</OptionInput>
     </SelectInput>
-    <SettingRenderer items={voiceSettingsItems} />
+    <SettingRenderer items={voiceSettingsItems} itemSpacing />
 </section>
