@@ -132,7 +132,7 @@ validators reject unknown event statuses.
 
 ## Contents
 
-- [Backup and sync](#backup-and-sync): 5
+- [Backup and sync](#backup-and-sync): 4
 - [Build and CI](#build-and-ci): 1
 - [Chat screen](#chat-screen): 5
 - [Docs](#docs): 2
@@ -179,18 +179,6 @@ metatron-only, and the list's promise is false.
 
 **Suggested handling:** add the five fields to the list, and add a test that compares `SECTION_FIELDS` with
 upstream's `Database` keys (or a kept snapshot of them) so a new metatron-only field cannot drift past it again.
-
-### A partial native backup leaves out an asset only a plugin's data references
-
-Fix round of 2026-11-17, read and not run. The compatible export now follows asset keys inside retained plugin values
-(`collectUpstreamAssetReferences`, `server/src/data/upstream/assetReferences.ts`). The partial native backup selects
-its files from its own, deliberately limited inventory (`selectPartialBackupAssets`, `shared/backups.ts`, and
-`src/ts/drive/backuplocal.ts`), which does not read plugin data. The full native backup takes every asset on disk.
-
-**Why it matters:** a restored partial backup can hold a plugin value that names a file the archive does not hold.
-
-**Suggested handling:** reproduce first; then feed the same walker into the partial selection, or say in the partial
-backup's notes that plugin-referenced files need the full backup.
 
 ### The boot cache keeps its own copy of the resource id rule
 
