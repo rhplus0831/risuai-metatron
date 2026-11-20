@@ -51,6 +51,7 @@ import {
     writerPaused,
     type MemoryChapter,
     type MemoryEvent,
+    type MemoryManifestItem,
     type MemoryPage,
     type MemoryThread,
     type StructuredMemoryContentsAnswer,
@@ -668,6 +669,65 @@ it("runs Preview only on its button and keeps the job's memory block and manifes
     expect(await previewChatReport(ref)).toEqual({ messages, report: memoryReport(), memoryBlock: [0] });
     io.runServerJob.mockResolvedValue(previewAnswer({ messages, context: { v: 99 } }));
     expect(await previewChatReport(ref)).toEqual({ messages, report: null });
+});
+
+it("shows the story-date anchor with the separately placed dated event in Preview", async () => {
+    serveMemory([{ id: "old", title: "Bridge crossing", status: "active", bytes: 100 }]);
+    const eventText = "(2 days ago) Bridge crossing: We crossed the bridge.";
+    // Use the real card text in the job mock. A computed import keeps the server type graph out of svelte-check.
+    const cardPath = "../../../../server/src/prompt/memory/structured/card.ts";
+    const { buildMemoryCard } = await import(/* @vite-ignore */ cardPath);
+    const card:
+        | { type: "card"; stable: string; volatile: string; items: MemoryManifestItem[] }
+        | {
+              type: "requiredOverLimit";
+          } = await buildMemoryCard(
+        { tokenizeChat: async ({ content }: { content: string }) => content.length },
+        {
+            maximum: 1000,
+            storyDate: { year: 2025, month: 4, day: 3 },
+            volatileBeforeLastUser: true,
+            lanes: [
+                {
+                    lane: "events",
+                    target: 1000,
+                    items: [
+                        {
+                            id: "old",
+                            lane: "events",
+                            kind: "event",
+                            reason: "selected",
+                            score: 1,
+                            order: 0,
+                            line: `[m:old] ${eventText}`,
+                            relativeDate: true,
+                        },
+                    ],
+                },
+            ],
+        },
+    );
+    if (card.type !== "card") throw new Error("The memory card refused");
+    io.runServerJob.mockResolvedValueOnce(
+        previewAnswer({
+            messages: [
+                { role: "system", content: card.stable },
+                { role: "system", content: card.volatile.replace("[m:old] ", "") },
+                { role: "user", content: "Do you remember the bridge?" },
+            ],
+            context: memoryReport(card.items.map((item) => ({ ...item, verified: true }))),
+            memoryBlock: [1],
+        }),
+    );
+    await open();
+    await chooseTab("preview");
+    click("[data-memory-preview-run]");
+    await settle();
+
+    const anchor = 'Story date at the newest record: 2025-04-03. An event\'s "N days ago" counts back from it.';
+    expect([...target.querySelectorAll("[data-memory-preview-entry]")].map((row) => row.textContent?.trim())).toEqual([
+        `${anchor}\n\nEarlier events:\n${eventText}`,
+    ]);
 });
 
 it("never displays a pending preview's answer after the user switches chats", async () => {

@@ -127,6 +127,62 @@ describe("structured memory card", () => {
         expect(await preflightMemoryCard(characters, { maximum, lanes })).toEqual({ type: "ready", embeddings: true });
     });
 
+    const datedEvent = (id: string, text: string, order = 0): LaneCandidate => ({
+        ...candidate("events", id, `[m:${id}] ${text}`, order),
+        relativeDate: true,
+    });
+
+    it("admits two dated events at exact fit by charging the separate anchor once", async () => {
+        const earlier = datedEvent("old", "(2 days ago) Bridge crossing");
+        const newer = datedEvent("new", "(same day) Lantern lit", 1);
+        const stable = `${rule}\n${anchor}`;
+        const volatile = `${anchor}\n\nEarlier events:\n${earlier.line}\n${newer.line}`;
+        const maximum = stable.length + volatile.length;
+        const options = {
+            storyDate,
+            volatileBeforeLastUser: true,
+            lanes: [{ lane: "events", target: maximum, items: [earlier, newer] }] satisfies Lane<LaneCandidate>[],
+        };
+        const exact = await spentCard(characters, { ...options, maximum });
+        expect(exact.items.map(({ id }) => id)).toEqual(["old", "new"]);
+        expect(exact).toMatchObject({ stable, volatile, tokens: maximum });
+
+        const tight = await spentCard(characters, { ...options, maximum: maximum - 1 });
+        expect(tight.items.map(({ id }) => id)).toEqual(["old"]);
+        expect(tight.volatile).toBe(`${anchor}\n\nEarlier events:\n${earlier.line}`);
+    });
+
+    it("admits an undated event when the preceding dated event cannot fit with its separate anchor", async () => {
+        const dated = datedEvent("old", "(2 days ago) At the bridge");
+        const undated = candidate("events", "undated", "[m:undated] The path to the east gate was clear.", 1);
+        const stable = `${rule}\n${anchor}`;
+        const volatile = `Earlier events:\n${undated.line}`;
+        const maximum = stable.length + volatile.length;
+        const card = await spentCard(characters, {
+            maximum,
+            storyDate,
+            volatileBeforeLastUser: true,
+            lanes: [{ lane: "events", target: maximum, items: [dated, undated] }],
+        });
+        expect(card.items.map(({ id }) => id)).toEqual(["undated"]);
+        expect(card).toMatchObject({ stable, volatile, tokens: maximum });
+    });
+
+    it.each([
+        { behavior: "keeps the volatile entry anchor-free without a story date", date: undefined, apart: true },
+        { behavior: "keeps the volatile entry anchor-free with joined placement", date: storyDate, apart: false },
+    ])("$behavior", async ({ date, apart }) => {
+        const event = datedEvent("old", "(2 days ago) Bridge crossing");
+        const card = await spentCard(characters, {
+            maximum: 1000,
+            storyDate: date,
+            volatileBeforeLastUser: apart,
+            lanes: [{ lane: "events", target: 1000, items: [event] }],
+        });
+        expect(card.stable).toBe(date ? `${rule}\n${anchor}` : rule);
+        expect(card.volatile).toBe(`Earlier events:\n${event.line}`);
+    });
+
     it("counts the anchor in the required-alone refusal in both build and preflight", async () => {
         const line = "[m:scene] At the gate";
         const lanes: Lane<LaneCandidate>[] = [

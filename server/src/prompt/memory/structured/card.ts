@@ -47,7 +47,8 @@ export { itemTag } from "../../../../../shared/structuredMemory.ts";
 type CardParts = { stable: string; volatile: string };
 
 /** What the text around the lines depends on: the flow lane's heading and the story date's anchor line. */
-type CardFrame = { timeline?: boolean; storyDate?: MemoryStoryDate };
+type CardFrame = { timeline?: boolean; storyDate?: MemoryStoryDate; volatileAnchor?: boolean };
+type CardInput = { maximum: number; lanes: readonly Lane<LaneCandidate>[]; storyDate?: MemoryStoryDate };
 
 /** The card's answer. `items` are in admission order, none verified yet. */
 export type MemoryCard = CardParts & {
@@ -187,14 +188,17 @@ export function pageLine(
  */
 function renderParts(
     lines: ReadonlyMap<MemoryManifestLane, readonly string[]>,
-    { timeline = false, storyDate }: CardFrame = {},
+    { timeline = false, storyDate, volatileAnchor }: CardFrame = {},
 ): CardParts {
-    const header = storyDate ? `${RULE_HEADER}\n${anchorLine(storyDate)}` : RULE_HEADER;
+    const anchor = storyDate && anchorLine(storyDate);
+    const header = anchor ? `${RULE_HEADER}\n${anchor}` : RULE_HEADER;
     const blocks = (part: keyof CardParts) =>
         MEMORY_MANIFEST_LANES.filter((lane) => CARD_LANES[lane].part === part && lines.has(lane)).map((lane) =>
             [lane === "flow" && timeline ? TIMELINE_HEADING : CARD_LANES[lane].heading, ...lines.get(lane)!].join("\n"),
         );
-    return { stable: [header, ...blocks("stable")].join("\n\n"), volatile: blocks("volatile").join("\n\n") };
+    const volatile = blocks("volatile");
+    if (volatileAnchor && anchor && lines.has("events")) volatile.unshift(anchor);
+    return { stable: [header, ...blocks("stable")].join("\n\n"), volatile: volatile.join("\n\n") };
 }
 
 /** Within a lane the card lists items by `order`, which is chat order for events and rank for pages. */
@@ -237,11 +241,7 @@ async function frameTokens(
  */
 export async function preflightMemoryCard(
     tokenizer: MemoryTokenizer,
-    {
-        maximum,
-        lanes,
-        storyDate,
-    }: { maximum: number; lanes: readonly Lane<LaneCandidate>[]; storyDate?: MemoryStoryDate },
+    { maximum, lanes, storyDate, volatileEventsNeedAnchor }: CardInput & { volatileEventsNeedAnchor?: boolean },
 ): Promise<RequiredOverLimit | { type: "ready"; embeddings: boolean }> {
     const required = lanes.filter(({ lane }) => lane === "required");
     const card = await buildMemoryCard(tokenizer, { maximum, lanes: required, storyDate });
@@ -253,7 +253,11 @@ export async function preflightMemoryCard(
                     lane !== "required" && (lane === "flow" && flow ? flow.timeline || flow.titles > 0 : target > 0),
             )
             .map(({ lane, flow }) =>
-                frameTokens(tokenizer, required[0]?.items ?? [], [lane], { timeline: flow?.timeline, storyDate }),
+                frameTokens(tokenizer, required[0]?.items ?? [], [lane], {
+                    timeline: flow?.timeline,
+                    storyDate,
+                    volatileAnchor: volatileEventsNeedAnchor,
+                }),
             ),
     );
     return { type: "ready", embeddings: maximum > Math.min(...frames) };
@@ -280,11 +284,7 @@ export async function preflightMemoryCard(
  */
 export async function buildMemoryCard(
     tokenizer: MemoryTokenizer,
-    {
-        maximum,
-        lanes,
-        storyDate,
-    }: { maximum: number; lanes: readonly Lane<LaneCandidate>[]; storyDate?: MemoryStoryDate },
+    { maximum, lanes, storyDate, volatileBeforeLastUser }: CardInput & { volatileBeforeLastUser?: boolean },
 ): Promise<MemoryCard | RequiredOverLimit> {
     const count = (content: string) => cardTextTokens(tokenizer, content);
     const partTokens = async ({ stable, volatile }: CardParts) =>
@@ -327,20 +327,32 @@ export async function buildMemoryCard(
     }
 
     const spending = counted.filter((lane) => lane !== required);
-    const frameCost = await frameTokens(
-        tokenizer,
-        reserved,
-        spending.filter(({ target, items }) => target > 0 && items.length > 0).map(({ lane }) => lane),
-        frame,
-    );
-
-    const { included: admitted, excluded, spend } = spendLanes({ maximum: maximum - frameCost, lanes: spending });
+    const active = spending.filter(({ target, items }) => target > 0 && items.length > 0);
+    const headings = active.map(({ lane }) => lane);
+    const frameCost = await frameTokens(tokenizer, reserved, headings, frame);
+    let volatileAnchorTokens = 0;
+    if (volatileBeforeLastUser && storyDate && active.some(({ items }) => items.some((item) => item.relativeDate))) {
+        const anchored = await frameTokens(tokenizer, reserved, headings, { ...frame, volatileAnchor: true });
+        volatileAnchorTokens = anchored - frameCost;
+    }
+    const {
+        included: admitted,
+        excluded,
+        spend,
+    } = spendLanes({
+        maximum: maximum - frameCost,
+        lanes: spending,
+        volatileAnchorTokens,
+    });
     const included = [...reserved, ...admitted];
     if (required) {
         spend.unshift({ lane: "required", target: required.target, spent: reservedTokens });
     }
     while (included.length > 0) {
-        const parts = renderParts(linesOf(included), frame);
+        const parts = renderParts(linesOf(included), {
+            ...frame,
+            volatileAnchor: volatileBeforeLastUser && included.some((item) => item.relativeDate),
+        });
         const whole = await partTokens(parts);
         if (whole <= maximum) {
             const items = included.map(({ id, kind, lane, reason, tokens }) => {

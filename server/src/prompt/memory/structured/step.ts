@@ -306,11 +306,21 @@ export async function selectMemory(
         maximum,
         lanes: prepared.lanes,
         storyDate: prepared.storyDate,
+        // Until ranking, an eligible undated event can still use the cheaper frame.
+        volatileEventsNeedAnchor:
+            structured.volatileBeforeLastUser &&
+            prepared.eligible.length > 0 &&
+            prepared.eligible.every(({ label }) => label !== undefined),
     });
     host.fence();
     if (preflight.type === "requiredOverLimit") return requiredAlert(preflight);
     const retrieved = await retrieveLanes(host, retrievalInput, { prepared, embeddings: preflight.embeddings });
-    let card = await buildMemoryCard(tokenizer, { maximum, lanes: retrieved.lanes, storyDate: retrieved.storyDate });
+    const cardOptions = {
+        maximum,
+        storyDate: retrieved.storyDate,
+        volatileBeforeLastUser: structured.volatileBeforeLastUser,
+    };
+    let card = await buildMemoryCard(tokenizer, { ...cardOptions, lanes: retrieved.lanes });
     if (card.type === "requiredOverLimit") {
         return requiredAlert(card);
     }
@@ -360,9 +370,8 @@ export async function selectMemory(
         if (removed.size > 0) {
             const evidence = await retrieved.evidence(removed);
             const nextCard = await buildMemoryCard(tokenizer, {
-                maximum,
+                ...cardOptions,
                 lanes: retrieved.lanes.map((lane) => (lane.lane === "evidence" ? { ...lane, items: evidence } : lane)),
-                storyDate: retrieved.storyDate,
             });
             if (nextCard.type === "requiredOverLimit") {
                 return requiredAlert(nextCard);

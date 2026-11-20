@@ -43,6 +43,8 @@ export type LaneItem = {
     order: number;
     line: string;
     tokens: number;
+    /** A volatile event line whose generated date label refers to the story-date anchor. */
+    relativeDate?: true;
     /** A full flow line without its optional key lines. */
     plain?: { line: string; tokens: number };
     requires?: string;
@@ -113,7 +115,16 @@ export function itemKey({ lane, id }: Pick<LaneItem, "lane" | "id">): string {
  * `included` is in admission order. Unadmitted candidates are `budget`, restricted in timeline flow to
  * its final title window. Full flow lines and events items never show the same event in full twice.
  */
-export function spendLanes({ maximum, lanes }: { maximum: number; lanes: readonly Lane[] }): {
+export function spendLanes({
+    maximum,
+    lanes,
+    volatileAnchorTokens = 0,
+}: {
+    maximum: number;
+    lanes: readonly Lane[];
+    /** Shared frame cost, charged once if a relative date is admitted to the volatile part. */
+    volatileAnchorTokens?: number;
+}): {
     included: LaneItem[];
     excluded: ExcludedItem[];
     spend: LaneSpend[];
@@ -130,11 +141,13 @@ export function spendLanes({ maximum, lanes }: { maximum: number; lanes: readonl
     const satisfied = new Set<string>();
     const fullFlow = new Set<string>();
     let total = 0;
+    let unspentAnchor = volatileAnchorTokens;
+    const itemCost = (item: LaneItem) => item.tokens + (item.relativeDate ? unspentAnchor : 0);
     const timeline = ({ lane }: Row) => lane.lane === "flow" && lane.flow?.timeline === true;
     const titleWindow = ({ lane, run }: Row) => lane.items.filter(({ id }) => !run.has(id)).slice(0, lane.flow!.titles);
     const admissible = ({ lane, admitted }: Row, item: LaneItem, replaced?: LaneItem) =>
         lane.target > 0 &&
-        total + item.tokens - (replaced?.tokens ?? 0) <= maximum &&
+        total + itemCost(item) - (replaced?.tokens ?? 0) <= maximum &&
         (lane.limit === undefined || admitted - (replaced ? 1 : 0) < lane.limit) &&
         !(item.lane === "events" && fullFlow.has(item.id)) &&
         (item.requires === undefined || satisfied.has(item.requires));
@@ -142,7 +155,8 @@ export function spendLanes({ maximum, lanes }: { maximum: number; lanes: readonl
         included.push(item);
         keys.add(itemKey(item));
         satisfied.add(itemKey(item));
-        total += item.tokens;
+        total += itemCost(item);
+        if (item.relativeDate) unspentAnchor = 0;
         row.spent += item.tokens;
         row.admitted++;
     };

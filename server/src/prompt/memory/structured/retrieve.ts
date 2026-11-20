@@ -1162,6 +1162,7 @@ export async function retrieveLanes(
                     score,
                     order: place,
                     line: eventLine(event, label),
+                    ...(label ? { relativeDate: true as const } : {}),
                 })),
             },
             {

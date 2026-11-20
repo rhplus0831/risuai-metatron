@@ -9,6 +9,7 @@ import { serve } from "@hono/node-server";
 import { parseContextReport } from "../../../shared/contextReport.ts";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
+    type GenerationPreviewResult,
     type GenerationTerminalEvent,
     type StructuredMemoryTaskInput,
     type MemoryTaskRecordAnswer,
@@ -3970,6 +3971,110 @@ describe("structured memory job hand-offs", () => {
                 store.close();
                 await patchHypaV3(priorSettings);
             }
+        });
+
+        describe("story-date anchors", () => {
+            const rule =
+                "These records are authoritative for the past, and the scene for the present; recent messages win over both.";
+            const anchor = 'Story date at the newest record: 2025-04-03. An event\'s "N days ago" counts back from it.';
+            const datedEvent = `${anchor}\n\nEarlier events:\n(2 days ago) Bridge crossing: We crossed the bridge.`;
+
+            async function seedDatedEvents(apart: boolean, rangeStart: number) {
+                const memoryPresets = (await single("hypaV3Presets")).data;
+                const previous = memoryPresets.items.find(
+                    ({ id }: { id: string }) => id === memoryPresets.selectedId,
+                ).settings;
+                onTestFinished(() => patchHypaV3(previous));
+                await patchHypaV3({
+                    budgetMode: "tokens",
+                    memoryBudgetTokens: 300,
+                    structured: {
+                        cadence: "manual",
+                        windowTurns: 1,
+                        flowEvents: 0,
+                        laneSplit: "manual",
+                        laneTargets: { flow: 0, events: 200, pages: 0, threads: 0, evidence: 0 },
+                        volatileBeforeLastUser: apart,
+                    },
+                });
+                const presets = (await single("presets")).data;
+                const preset = presets.find(({ id }: { id: string }) => id === presetId);
+                onTestFinished(() => patchPreset("presets", { promptTemplate: preset.promptTemplate ?? null }));
+                await patchPreset("presets", { promptTemplate: [{ type: "chat", rangeStart, rangeEnd: "end" }] });
+
+                const history = [
+                    { role: "char", chatId: "old", data: "We crossed the bridge." },
+                    { role: "user", chatId: "middle", data: "Where now?" },
+                    { role: "char", chatId: "new", data: "The lantern is lit." },
+                    { role: "user", chatId: "question", data: "Do you remember the bridge?" },
+                ] satisfies Message[];
+                const chaId = await seedCharacter({ messages: history, extra: { firstMessage: "" } });
+                const store = openStore();
+                try {
+                    const events = [
+                        { index: 0, title: "Bridge crossing", day: 1 },
+                        { index: 2, title: "Lantern lit", day: 3 },
+                    ].map(({ index, title, day }) => {
+                        const message = history[index];
+                        return {
+                            ...memoryRecords([message.chatId], title).events[0],
+                            summary: message.data,
+                            storyTime: { text: "", date: { year: 2025, month: 4, day } },
+                            sources: [{ messageId: message.chatId, index, hash: messageSourceHash(message) }],
+                        };
+                    });
+                    writeMemory(store, chaId, "k", { events });
+                } finally {
+                    store.close();
+                }
+                return chaId;
+            }
+
+            it.each([
+                {
+                    apart: true,
+                    rangeStart: -1,
+                    behavior: "sends the anchor beside a dated event with a last-message range",
+                },
+                { apart: false, rangeStart: 0, behavior: "sends one anchor with joined memory placement" },
+            ])("$behavior", async ({ apart, rangeStart }) => {
+                const chaId = await seedDatedEvents(apart, rangeStart);
+                const { terminal } = await job("send", chaId);
+                expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                expect(mains()).toHaveLength(1);
+                const entries = (mains()[0].body.messages as { content: string }[]).map(({ content }) => content);
+                const expectedEntry = apart ? datedEvent : `${rule}\n${datedEvent}`;
+                expect(entries).toContainEqual(expect.stringContaining(expectedEntry));
+                expect(entries.join("\n").split(anchor)).toHaveLength(2);
+                if (apart) {
+                    expect(entries.at(-2)).toBe(datedEvent);
+                    expect(entries.join("\n")).not.toContain(rule);
+                }
+
+                const reply = (await readChat(chaId)).data.message.at(-1) as Message;
+                expect(parseContextReport(reply.generationInfo?.context)?.memory?.items).toContainEqual(
+                    expect.objectContaining({ id: "old", lane: "events", verified: true }),
+                );
+                const history = server.context.requestHistory;
+                const [request] = history.list({ chaId, chatId: "k" }).items;
+                const logged = JSON.parse(history.get(request.id)!.prompt!);
+                expect(logged).toContainEqual(
+                    expect.objectContaining({ content: expect.stringContaining(expectedEntry) }),
+                );
+            });
+
+            it("returns the anchor in Preview's memory block when only the separate event entry has an item", async () => {
+                const chaId = await seedDatedEvents(true, 0);
+                const { terminal } = await job("preview", chaId);
+                expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+                if (terminal?.type !== "done") throw new Error("Preview failed");
+                const { context, messages, memoryBlock } = terminal.result as GenerationPreviewResult;
+                const entries = messages.map(({ content }) => content);
+                expect(entries).toContainEqual(expect.stringContaining(`${rule}\n${anchor}`));
+                expect(memoryBlock?.map((index) => entries[index])).toEqual([datedEvent]);
+                expect(parseContextReport(context)?.memory?.items?.map(({ lane }) => lane)).toEqual(["events"]);
+                expect(upstream).toEqual([]);
+            });
         });
 
         it("both preview kinds return the selected memory without questions, writer hand-offs, receipts or stored changes", async () => {

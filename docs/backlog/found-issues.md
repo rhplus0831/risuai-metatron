@@ -138,7 +138,7 @@ validators reject unknown event statuses.
 - [Docs](#docs): 2
 - [Headless host](#headless-host): 2
 - [LLM requests](#llm-requests): 3
-- [Memory](#memory): 5
+- [Memory](#memory): 4
 - [Modules and personas](#modules-and-personas): 4
 - [Network jobs](#network-jobs): 2
 - [Plugins](#plugins): 1
@@ -380,24 +380,6 @@ editor's badge counts characters per field, not tokens.
 
 **Suggested handling:** the owner's separate decision (2026-11-20, kept out of the long-scene fix): give the writer a
 token-aware limit for the scene, or lower its character limit for scene fields.
-
-### The story-date anchor line can be dropped while dated lines stay
-
-Structured Memory Story Dates run, 2026-11-18, from slice 2's challenger; read, not run. The anchor line ("Story date
-at the newest record: ...") is part of the card's stable header (`renderParts` in
-`server/src/prompt/memory/structured/card.ts`). With `volatileBeforeLastUser` the stable part goes through history and
-the volatile part is placed after formatting (`step.ts`, `server/src/prompt/assemble.ts`), so a chat range that keeps
-only the last message can drop the stable entry, anchor included, while volatile `(2 days ago)` lines stay; item
-verification checks item tags, not the header. Preview also skips an entry with no item tag
-(`src/lib/Others/StructuredMemory/PreviewTab.svelte:21`, "a tagless rule header is not a block"), so a card whose items
-are all volatile shows no anchor in Preview although the model receives it. The plain `RULE_HEADER` has the same
-exposure today.
-
-**Why it matters:** the anchor is how the model sees the lag between the newest record and the chat (the plan's D6);
-without it the labels read as counted from the present, and the plan's manual check 3 expects to see it in Preview.
-
-**Suggested handling:** a Preview on a dated chat with only volatile items, and a send under a one-message chat range;
-then decide whether the header belongs with the volatile part or Preview should show a tagless header.
 
 ### A Timeline reveal settles on held coverage, so a reread that retracts the event leaves Read without its row
 
