@@ -4,8 +4,6 @@ Plans live here while work is in progress. Current architecture guides describe
 shipped behavior; [the archive](../archived-plan/README.md) indexes completed plans with
 their last commit and path, and the [backlog](../README.md) holds what they left open.
 
-- [Settings item spacing](settings-item-spacing.md): the distance between two declarative settings items follows from
-  their kinds through one rule in the renderer, measured by a browser spec, in place of a margin per item.
 - [Response checks](response-checks.md): a minimum answer length per request kind fails a too-short answer, retried
   where no text was shown, with the banned-script check moved to the same place so Half Streaming replies get it.
 

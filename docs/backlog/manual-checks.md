@@ -40,6 +40,7 @@ Checks that a finished plan left to a person, a device, a real provider, or a sc
 - [ ] **Module and Persona Folders (3)**: on a touch device the persona page's folder, back, and add tiles open on a tap (`preventOnFilter: false`) and do not start a drag.
 - [ ] **Timeline Chapter Synopses (2)**: at phone width (about 360px), a long chat's Timeline Read view after making chapters: a chapter card's heading wraps (the title a size above its dates, event count, and turns ago), a closed chapter shows a two-line muted preview of its synopsis, an open one shows the whole synopsis with the events toggle and the remove icon on one row, and with a font that has no bold weight the chapter and event titles still stand apart from the text under them by size.
 - [ ] **Timeline Reading View (2, 4)**: at phone width (about 360px), the Timeline Read view of a long chat: a group heading (date, event count, turns ago) wraps and the ★ of an important event does not shift its title (2); the search input and its button stay on one line (4).
+- [ ] **Settings Item Spacing**: at phone width (about 360px) the Interaction, Advanced, and Model settings pages read evenly (rows 0.5rem apart, 1rem around a labelled control), and no label wraps onto its control.
 
 ## iOS Safari and the Home Screen app
 
@@ -111,6 +112,7 @@ One tab:
 - [ ] **Request Interception (1, 2, 3, 4)**: on the Request interception settings page, add, edit, reorder, and remove rules in English and Korean, and reload (2); the context meter of a chat with a `model` rule counts the inserted text in its total and shows it as its own row (3); the server request history's expanded row of an intercepted request shows the count (4); the upstream export reports a non-empty rule list as not exported (1).
 - [ ] **Timeline Chapter Synopses (3)**: send in a chat while "Make synopses" is running: the send is refused with a clear message, and works again once the chapter job ends.
 - [ ] **Timeline Reading View (2, 3, 4)**: a real chat with dated events groups by day in the Timeline Read view and reads top to bottom as expected, and "Open in Manage" on an open event lands on the same event in Manage (2); changing "Events per Timeline group" in the memory settings and reopening the panel regroups a long day into the expected parts (3); typing a Korean query with an IME in the Read search does not submit while a syllable is still composing, on a desktop browser and on a phone keyboard (4).
+- [ ] **Settings Item Spacing**: with the legacy GUI on (`useLegacyGUI`), the Interaction, Advanced, and Model settings pages read evenly with their accordions open; a settings search jump to an item inside a collapsible section still scrolls to the item and highlights it.
 
 Two tabs, two browsers, or a dropped connection:
 
