@@ -2232,9 +2232,16 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
 
     const memories: OpenAIChat[] = [];
 
-    if (!promptTemplate && chats.length > 0) {
-        unformated.lastChat.push(chats[chats.length - 1]);
-        chats.splice(chats.length - 1, 1);
+    const lastHistory = chats.at(-1);
+    const latestUserHistory = chats.findLast((chat) => sourceOf.get(chat)?.user && !blankEntry(chat));
+    // Templates need to keep the same trailing reply that the template-less path sets aside.
+    const keptHistory = [latestUserHistory ?? lastHistory, promptTemplate ? lastHistory : undefined].filter(
+        (entry) => entry !== undefined,
+    );
+    const keptHistorySources = keptHistory.map((entry) => sourceOf.get(entry));
+    if (!promptTemplate && lastHistory) {
+        unformated.lastChat.push(lastHistory);
+        chats.pop();
     }
 
     unformated.chats = chats
@@ -2620,17 +2627,25 @@ export async function assemblePrompt(host: AssemblyHost, input: AssembleInput): 
                         (inputTokens + reservedTokens + db.maxResponse),
                 };
             }
-            if (formated[pointer].removable && keptEntry(formated[pointer])) {
-                const provenance = provenanceOf(formated[pointer]);
-                if (!provenance || provenance.untraced) {
-                    attributionExact = false;
-                }
-                recheckCleared.add(formated[pointer]);
-                formated[pointer].content = "";
-                delete formated[pointer].multimodals;
-                inputTokens = keptTokens();
+            const chat = formated[pointer++];
+            if (!chat.removable || !keptEntry(chat)) {
+                continue;
             }
-            pointer++;
+            const provenance = provenanceOf(chat);
+            // A system merge or an editRequest copy can carry protected history on a different entry.
+            if (
+                keptHistory.includes(chat) ||
+                provenance?.sources.some((source) => keptHistorySources.includes(source))
+            ) {
+                continue;
+            }
+            if (!provenance || provenance.untraced) {
+                attributionExact = false;
+            }
+            recheckCleared.add(chat);
+            chat.content = "";
+            delete chat.multimodals;
+            inputTokens = keptTokens();
         }
         formated = formated.filter((v) => v.content !== "" || (v.multimodals && v.multimodals.length > 0));
     }

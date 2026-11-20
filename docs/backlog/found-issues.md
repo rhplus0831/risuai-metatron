@@ -144,7 +144,7 @@ validators reject unknown event statuses.
 - [Plugins](#plugins): 1
 - [Remote commands](#remote-commands): 1
 - [Rendering](#rendering): 1
-- [Server generation](#server-generation): 2
+- [Server generation](#server-generation): 1
 - [Settings](#settings): 3
 - [Tests](#tests): 2
 - [Translation](#translation): 1
@@ -615,22 +615,6 @@ can still leave an instance answering nobody for seconds to tens of seconds on t
 **Suggested handling:** the owner's note of 2026-11-14: "Token counting isn't always fast, so I'm considering moving
 it to a worker thread." That design covers every family. Short of it, look at `novellist` on emoji and `gemma` on
 letters first, since their times grow faster than the text.
-
-### The final token recheck can clear every history entry and send an empty chat
-
-In assembly's final recheck (`server/src/prompt/assemble.ts`, the `promptBudget` loop near `:2607`), each `removable`
-entry is cleared until the prompt fits, and the token refusal fires only when the pointer runs past the end with
-protected content still over the budget. With a prompt template, every history entry is marked removable (`:2240`;
-only the template-less path keeps the last chat apart, `:2235`), the last user message included. When the
-reservations (`maxResponse`, the tool schemas, and since the Request Interception plan its inserted messages) leave
-little room, the loop can clear all of them and assembly succeeds with no chat in the prompt. Seen 2026-11-18 by
-slice 3 of that plan while reserving the inserted messages; read, not run.
-
-**Why it matters:** a large reservation can send a request without the user's message instead of telling the user
-the context is too small.
-
-**Suggested handling:** reproduce with a template-only prompt and a reservation larger than the history, then decide
-whether the recheck should keep the last user message or refuse when nothing of the chat is left.
 
 ## Settings
 

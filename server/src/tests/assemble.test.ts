@@ -2184,7 +2184,7 @@ describe("the context report", () => {
         host.toolSchemaTokens = async () => 7;
         host.insertedMessages = [{ role: "system", content: "i".repeat(247) }];
         // Before insertion, all history fits: 53 fixed + 132 history + 10 response + 50 overhead.
-        // After every removable entry goes, 53 fixed + 7 schemas + 250 inserted + 10 response = 320.
+        // The latest user turn stays: 53 fixed + 23 user + 7 schemas + 250 inserted + 10 response = 343.
         const result = await assemblePrompt(host, {
             chatAdditonalTokens: 3,
             continue: false,
@@ -2193,7 +2193,7 @@ describe("the context report", () => {
         });
         expect(result).toEqual({
             type: "error",
-            error: "Error: The minimum required token is greater than the max context size.\n\nAt token rechecking. Required Tokens: 320",
+            error: "Error: The minimum required token is greater than the max context size.\n\nAt token rechecking. Required Tokens: 343",
         });
     });
 
@@ -2398,7 +2398,7 @@ describe("the context report", () => {
         },
     );
 
-    it("sendChatAsSystem: one merged entry keeps every source; a recheck removal of it drops them all", async () => {
+    it("sendChatAsSystem: a merged entry carries every source and the recheck protects the latest user turn", async () => {
         const messages: Entry[] = [
             { chatId: "u1", data: "hello" },
             { chatId: "c1", data: "yo", role: "char" },
@@ -2425,22 +2425,22 @@ describe("the context report", () => {
             },
         });
 
-        // A late depth prompt (uncounted, 403) pushes the recheck over 420: the merged entry goes.
-        const removed = contextAssembly({
+        // The late depth prompt adds 403 tokens. The merged history and the response bring the total to 458.
+        const { host } = contextAssembly({
             messages,
             maxContext: 420,
             promptSettings: { sendChatAsSystem: true },
             character: { depth_prompt: { depth: 0, prompt: "d".repeat(400) } },
         });
-        const b = await removed.run();
-        expect(b.texts).toEqual(["d".repeat(400)]);
-        expect(b.report).toEqual({
-            ...fixed(removed.chat, 420),
-            input: 403,
-            sections: [],
-            adjustment: 403,
-            attributionExact: true,
-            history: { total: 3, kept: 0, totalUser: 1, keptUser: 0, droppedTokens: 19 },
+        const b = await assemblePrompt(host, {
+            chatAdditonalTokens: 3,
+            continue: false,
+            generationId: "counting",
+            stageTimings: { stage1Duration: 0, stage2Duration: 0 },
+        });
+        expect(b).toEqual({
+            type: "error",
+            error: "Error: The minimum required token is greater than the max context size.\n\nAt token rechecking. Required Tokens: 458",
         });
     });
 
@@ -2467,10 +2467,14 @@ describe("the context report", () => {
             // displaced again.
         });
 
-        // A depth lore entry (no source) merged into systemized history, then removed by the recheck.
+        // The depth lore merges into the systemized greeting. Its removal leaves the separate user turn intact.
         const untraced = contextAssembly({
             messages: [{ chatId: "u1", data: "hello" }],
-            maxContext: 420,
+            maxContext: 425,
+            template: [
+                { type: "chat", rangeStart: 0, rangeEnd: -1 },
+                { type: "chat", rangeStart: -1, rangeEnd: "end", chatAsOriginalOnSystem: true },
+            ],
             promptSettings: { sendChatAsSystem: true },
             character: { depth_prompt: { depth: 0, prompt: "d".repeat(400) } },
             lore: [
@@ -2488,15 +2492,18 @@ describe("the context report", () => {
             ],
         });
         const b = await untraced.run();
-        expect(b.texts).toEqual(["d".repeat(400)]);
+        expect(b.texts).toEqual(["hello", "d".repeat(400)]);
         expect(b.report).toEqual({
-            ...fixed(untraced.chat, 420),
+            ...fixed(untraced.chat, 425),
             lore: { ...fixed(untraced.chat).lore, active: 1 },
-            input: 403,
-            sections: [{ kind: "lorebook", tokens: 7 }],
+            input: 411,
+            sections: [
+                { kind: "lorebook", tokens: 7 },
+                { kind: "history", tokens: 8 },
+            ],
             adjustment: 396,
             attributionExact: false,
-            history: { total: 2, kept: 0, totalUser: 1, keptUser: 0, droppedTokens: 14 },
+            history: { total: 2, kept: 1, totalUser: 1, keptUser: 1, droppedTokens: 6 },
         });
     });
 

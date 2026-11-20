@@ -2257,6 +2257,118 @@ describe("a send", () => {
     );
 });
 
+describe("the final token recheck with a prompt template", () => {
+    const diceId = "recheck-dice";
+    const maxContext = 200;
+    const maxResponse = 100;
+
+    beforeEach(async () => {
+        const preset = (await single("presets")).data.find((item: any) => item.id === presetId);
+        const profile = (await single("modelProfiles")).data.find((item: any) => item.id === profileId);
+        const providers = (await single("providers")).data;
+        const modules = await single("modules");
+        const previousMode = mode;
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        onTestFinished(async () => {
+            vi.useRealTimers();
+            mode = previousMode;
+            await patchPreset("modelProfiles", profileId, profile);
+            await patchPreset("presets", presetId, { ...preset, promptTemplate: preset.promptTemplate });
+            await patchProviders(providers);
+            const current = await single("modules");
+            const restored = await batch({
+                ops: [{ kind: "modules", id: "main", baseRevision: current.revision, data: modules.data ?? [] }],
+            });
+            expect(restored.status, JSON.stringify(restored.body)).toBe(200);
+        });
+        mode = { chunks: ["Reply."], delayMs: 0 };
+        await patchProviders({ useStreaming: false, autoContinueChat: false, inlayErrorResponse: false });
+        await patchPreset("modelProfiles", profileId, { maxContext });
+        await patchPreset("presets", presetId, {
+            maxResponse,
+            regex: [],
+            promptTemplate: [{ type: "chat", rangeStart: 0, rangeEnd: "end" }],
+            promptSettings: { ...preset.promptSettings, trimStartNewChat: true, sendName: false },
+        });
+        const configured = await batch({
+            ops: [
+                {
+                    kind: "modules",
+                    id: "main",
+                    baseRevision: modules.revision ?? null,
+                    data: [...(modules.data ?? []), { id: diceId, name: "Dice", mcp: { url: "internal:dice" } }],
+                },
+            ],
+        });
+        expect(configured.status).toBe(200);
+    });
+
+    it("refuses a send one token over budget without losing its user row and sends the adjacent fitting turn intact", async () => {
+        // With 100 reply tokens and 64 for the dice schema, 36 remain for history including 3 per message.
+        const fitting = "detail ".repeat(33).trim();
+        const overBudget = `${fitting} detail`;
+        const character = { name: "Ann", extra: { firstMessage: "", desc: "" }, chat: { modules: [diceId] } };
+        const before = bodies.length;
+
+        const refusedChat = await seedCharacter(character);
+        const refused = await job("send", refusedChat, { input: overBudget, userMessageId: "over" });
+        expect(refused.terminal).toMatchObject({
+            type: "error",
+            stage: "assembly",
+            message:
+                "Error: The minimum required token is greater than the max context size.\n\n" +
+                `At token rechecking. Required Tokens: ${maxContext + 1}`,
+        });
+        expect(bodies).toHaveLength(before);
+        expect((await readChat(refusedChat)).data.message).toMatchObject([
+            { role: "user", chatId: "over", data: overBudget },
+        ]);
+
+        const fittingChat = await seedCharacter(character);
+        const sent = await job("send", fittingChat, { input: fitting, userMessageId: "fit" });
+        expect(sent.terminal).toMatchObject({ type: "done" });
+        expect(bodies.slice(before)).toEqual([
+            expect.objectContaining({
+                messages: [{ role: "user", content: fitting }],
+                tools: [expect.objectContaining({ function: expect.objectContaining({ name: "rollDice" }) })],
+            }),
+        ]);
+    });
+
+    it("keeps the newest user turn and trailing reply when a Continue trims older history", async () => {
+        // Put the recent exchange first so the recheck reaches the reply before the removable older turn.
+        await patchPreset("presets", presetId, {
+            promptTemplate: [
+                { type: "chat", rangeStart: -2, rangeEnd: "end" },
+                { type: "chat", rangeStart: 0, rangeEnd: -2 },
+            ],
+        });
+        const question = "question";
+        const reply = "answer";
+        const chaId = await seedCharacter({
+            name: "Ann",
+            extra: { firstMessage: "", desc: "" },
+            chat: { modules: [diceId] },
+            messages: [
+                { role: "user", chatId: "old", data: "detail ".repeat(28).trim() },
+                { role: "user", chatId: "recent", data: question },
+                { role: "char", chatId: "reply", data: reply },
+            ],
+        });
+        const before = bodies.length;
+
+        const { terminal } = await job("continue", chaId);
+
+        expect(terminal).toMatchObject({ type: "done", messageId: "reply" });
+        const sent = bodies.slice(before);
+        expect(sent).toHaveLength(1);
+        expect(sent[0].messages.filter(({ role }: { role: string }) => role !== "system")).toEqual([
+            { role: "user", content: question },
+            { role: "assistant", content: reply },
+        ]);
+    });
+});
+
 describe("the route", () => {
     it("accepts userMessageId only for send, continue, reroll, and group jobs", async () => {
         const chaId = await seedCharacter({ name: "Ann" });
