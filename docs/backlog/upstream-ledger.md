@@ -4,8 +4,9 @@ This records which upstream RisuAI commits Metatron has integrated, matched, exc
 deferred, and how to perform the next intake. It preserves the Inventory from the Upstream
 Integration plan (archived; `git show 2e359afde:docs/plan/upstream-integration.md`) and,
 for `f50b5942..4d87a70ff`, from the Upstream Intake 2 plan (archived;
-`git show 4d1542d92:docs/plan/upstream-intake-2.md`), checked against the code and port
-history below.
+`git show 4d1542d92:docs/plan/upstream-intake-2.md`) and, for `4d87a70ff..b5bbc5647`, from
+the Upstream Intake 3 plan (`docs/plan/upstream-intake-3.md`), checked against the code and
+port history below.
 Paths refer to Metatron unless explicitly marked upstream; identifiers are lookup anchors.
 
 ## Baseline
@@ -13,25 +14,32 @@ Paths refer to Metatron unless explicitly marked upstream; identifiers are looku
 | Reference              | Value                                                                                                          |
 | ---------------------- | -------------------------------------------------------------------------------------------------------------- |
 | Upstream checkout      | `/home/codex/Risuai`, branch `main`                                                                            |
-| Observed upstream head | `4d87a70ffb325db84dd35cb1b76b31d7074da156` (release 2026.10.295), the `kwaroran/main` ref, observed 2026-11-10 |
+| Observed upstream head | `b5bbc5647974a883ae098410388ca4201df01fa3` (version 2026.10.295), the `kwaroran/main` ref, observed 2026-11-21 |
 | Common ancestor        | `25001174e0452e3b9d16aee459ce9d2444c197d7`                                                                     |
-| Inventoried through    | `4d87a70ffb325db84dd35cb1b76b31d7074da156`                                                                     |
-| Triaged through        | `4d87a70ffb325db84dd35cb1b76b31d7074da156`                                                                     |
-| Metatron checked       | `c98bdf50518fd5c0cfdb640fd7de807659287356`, `dev` with every Upstream Intake 2 port                            |
+| Inventoried through    | `b5bbc5647974a883ae098410388ca4201df01fa3`                                                                     |
+| Triaged through        | `b5bbc5647974a883ae098410388ca4201df01fa3`                                                                     |
+| Metatron checked       | `38199a52ce59b6c2f8fe75c468090f2654cf6397`, `dev` with every Upstream Intake 3 port                            |
 | Harness legacy target  | `669b12ceabe1c5066d3dadbe0973f2188d10cc97` (default)                                                           |
 | Harness current target | `f50b5942ec6aa59aa3c56049ac687ca09667fec7`                                                                     |
 
 The ancestor-to-upstream range contains 133 commits: 79 non-merge commits and 54 merges,
 with 41 first-parent entries, read from the upstream checkout. The second intake's range
 `f50b5942..4d87a70ff` contains 66 commits: 53 non-merge commits and 13 merges, with 30
-first-parent entries. It was read from this repository's `kwaroran` remote (Intake
-procedure, step 2); the upstream checkout still sits at `f50b5942` with a clean working
-tree. Neither is a claim about a later upstream head.
+first-parent entries. The third intake's range `4d87a70ff..b5bbc5647` contains 27 commits:
+10 non-merge commits and 17 merges, with 9 first-parent entries. Both later ranges were
+read from this repository's `kwaroran` remote (Intake procedure, step 2); the upstream
+checkout sits at `4d87a70ff` on `main` with a clean working tree, checked 2026-11-21. None
+of these counts is a claim about a later upstream head.
+
+Compatibility version (`STRUCTURE.md` R1): `4d87a70ff..b5bbc5647` holds no upstream release,
+so `version.json` and `appVer` stay at 2026.10.295.
 
 The harness targets stay as they were after the second intake: `f50b5942..4d87a70ff`
 changes upstream's `src/ts/storage/database.svelte.ts` only in its version line and
-`src/ts/storage/nodeStorage.ts` only for the `f5c563110` sign-in link, so no commit in it
-changes the save format, and the upstream checkout the harness reads was not updated.
+`src/ts/storage/nodeStorage.ts` only for the `f5c563110` sign-in link, and
+`4d87a70ff..b5bbc5647` changes upstream's `src/ts/storage/` only in `autoStorage.ts` (the
+account sync check) and its test, so no commit in either changes the save format, and the
+upstream checkout the harness reads was not updated.
 
 The target pins come from `UPSTREAM_TARGETS` in `util/upstream/upstreamHarness.mjs`.
 Run `node util/upstream/checkBinCompat.mjs --target legacy` or
@@ -52,8 +60,8 @@ not new run results. Update this header's targets whenever a target is added.
 
 ## Commit ledger
 
-One row per non-merge commit: first `25001174..f50b5942`, then `f50b5942..4d87a70ff`, each in
-`git rev-list --reverse --topo-order` order.
+One row per non-merge commit: first `25001174..f50b5942`, then `f50b5942..4d87a70ff`, then
+`4d87a70ff..b5bbc5647`, each in `git rev-list --reverse --topo-order` order.
 The Metatron column names port commits or later coverage; a dash means no port is claimed.
 
 | Upstream commit                                                                        | Disposition | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | Metatron commit(s)                          |
@@ -190,6 +198,16 @@ The Metatron column names port commits or later coverage; a dash means no port i
 | `2229a7f4d` use isTrustedHubOrigin for checking origin                                 | integrated  | Parser hunk: the DOMPurify `href` hook in `src/ts/parser/parser.svelte.ts` gives external links `rel="noopener noreferrer"` and replaces a supplied `rel`; `src/ts/parser/tests/trimMarkdownStyle.test.ts`. The other hunks are excluded or equivalent (Partial ports).                                                                                                                                                                                                                                                                | `08603a57e`                                 |
 | `afb5918bb` refactor url that is allowed                                               | integrated  | `src/ts/plugins/apiV3/v3.svelte.ts` `assertPluginUrlAllowed` parses the URL and refuses a blocked host or a subdomain of one before `risuFetch` and `nativeFetch`; a blocked name in a path or query passes. `src/ts/plugins/apiV3/nativeFetch.test.ts`.                                                                                                                                                                                                                                                                               | `70a6a82ab`                                 |
 | `4d87a70ff` bump version to 2026.10.295                                                | excluded    | Upstream version bump; `version.json` and `appVer` were set to 2026.10.295 when this range was triaged (intake step 6).                                                                                                                                                                                                                                                                                                                                                                                                                | —                                           |
+| `66ab5e5f5` cache Lua edit callback presence                                           | deferred    | Upstream skips the call into a live engine whose script registered no listener. Metatron loads the script in a one-use engine per hook, and one load's registrations do not show that another may be skipped (a top level can register in one chat only, a script can dispatch through its own `callListenMain`). Revisit on a report of slow chat rendering with Lua modules, with a design that keeps a script's own dispatcher and an identical `editRequest` result (Upstream Intake 3 plan, D1).                                  | —                                           |
+| `a97723687` defer the account sync database snapshot                                   | excluded    | Metatron has no `src/ts/storage/autoStorage.ts`, `AutoStorage`, `AccountStorage` or `checkAccountSync`; the only `accountst` and `dosync` use left is the boot cleanup of flags the removed Risu Account sync wrote.                                                                                                                                                                                                                                                                                                                   | —                                           |
+| `46311cc28` no full key scan when pruning database backups                             | excluded    | Metatron has no live `dbbackup-` key pruning and no `getDbBackups`; it only decodes block backups on import. The server's own snapshots (`server/src/data/snapshots.ts`) list one directory and keep, by default, the newest 20 unpinned files plus the protected ones.                                                                                                                                                                                                                                                                | —                                           |
+| `43e084756` skip the IndexedDB backup scan for OPFS storage                            | excluded    | Narrows the fast path of `46311cc28`, which has no target; Metatron has no `OpfsStorage`.                                                                                                                                                                                                                                                                                                                                                                                                                                              | —                                           |
+| `603469c44` multi-byte characters across Anthropic stream chunks                       | equivalent  | `SseLines` (`server/src/llm/sseLines.ts`) decodes with one `TextDecoder` and `{ stream: true }` and flushes at the end; the Anthropic, OpenAI and Google readers share it. `server/src/tests/llmStreamParsing.test.ts` splits a character at every byte.                                                                                                                                                                                                                                                                               | —                                           |
+| `9067f47a6` keep message metadata in Lua `setFullChat`                                 | integrated  | The defect itself was fixed earlier by `b3e0022a6`: `fullChatMessages` in `server/src/lua/bindings.ts` keeps the stored message an item names and lays role and text over it. The port adds the name: the chat getters give the message id as `chatId` beside `id`, and each `setFullChat` item matches an unused stored message by `id`, then `chatId`, then position. `server/src/tests/luaBindings.test.ts` ("Lua full-chat updates"). Differences in Partial ports.                                                                | `4f563fa1e`                                 |
+| `d897bec3a` optional default value in Lua `alertInput`                                 | integrated  | `LUA_PRELUDE` in `server/src/lua/runtime.ts` forwards a string third argument of `alertInput`, and `alertInputMain` in `server/src/lua/bindings.ts` puts it on the question payload as `defaultValue`; any other value asks without a default. `server/src/tests/luaBindings.test.ts`.                                                                                                                                                                                                                                                 | `2d37f0f61`                                 |
+| `fc3dcfeab` textarea and JSON upload for the ComfyUI workflow                          | integrated  | `src/lib/Setting/Pages/ImageGenerationSettings.svelte`: the `comfyui` workflow is a `TextAreaInput` labelled `comfyWorkflow`, with an upload button (`comfyWorkflowUpload`) that stores a file's text after `JSON.parse` accepts it and raises `comfyWorkflowInvalidJson` otherwise. `src/lib/Setting/Pages/ImageGenerationSettings.test.ts`. Differences in Partial ports.                                                                                                                                                            | `5fb726c20`                                 |
+| `bd02ca878` inlay name in Lua `generateImage`                                          | integrated  | `LUA_PRELUDE` forwards a string `options.name`; `generateImageMain` in `server/src/lua/bindings.ts` puts a non-empty name on the `generateImage` callback payload, and `src/ts/network/jobChannel.ts` passes it to `writeInlayImage`, which stores it as the inlay's name. `server/src/tests/luaBindings.test.ts` and `src/ts/network/jobChannel.test.ts`. Differences in Partial ports.                                                                                                                                               | `2b678465d`                                 |
+| `918d63543` NAI 5 medium effort model                                                  | integrated  | The NovelAI model select in `src/lib/Setting/Pages/ImageGenerationSettings.svelte` offers `nai-diffusion-5-full-medium` and no longer offers `nai-diffusion-2`; a stored value is left alone and `src/ts/process/stableDiff.ts` keeps its `nai-diffusion-2` request branches for it. `src/lib/Setting/Pages/ImageGenerationSettings.test.ts`.                                                                                                                                                                                          | `5fb726c20`                                 |
 
 ## Partial ports
 
@@ -249,6 +267,19 @@ The Metatron column names port commits or later coverage; a dash means no port i
   `6982d982e`) have no target.
 - `d77de065e` from upstream `34f04fd76`: the behavior only, on Metatron's browser transports.
   Tauri's `cancel_streamed_fetch` command and stream loop have no target.
+- `2b678465d` from upstream `bd02ca878`: an inlay name is limited to 200 characters
+  (`MAX_LUA_INLAY_NAME_LENGTH` in `shared/jobs.ts`, counted as `string.length`). A longer
+  name makes `generateImage` return an error string before any image is generated, and the
+  tab ignores one; upstream accepts any non-empty name.
+- `4f563fa1e` from upstream `9067f47a6`: Metatron keeps its own matching rule from
+  `b3e0022a6` (a copy instead of upstream's in-place mutation, and a positional fallback)
+  and adds `chatId` as a second name. The getters give both `id` and `chatId`, and an item
+  matches an unused stored message by `id`, then `chatId`, then position; a usable `id` wins
+  when the two disagree.
+- `5fb726c20` from upstream `fc3dcfeab`: the nested `help.comfyWorkflow` Korean entry keeps
+  this fork's wording instead of upstream's rewording, and the legacy `comfy` provider block
+  is unchanged, as upstream left it. The upload button has an accessible name
+  (`comfyWorkflowUpload`); upstream's icon button has none.
 
 ## Merges
 
@@ -275,6 +306,12 @@ The 13 merges in `f50b5942..4d87a70ff` were checked the same way against this re
 `kwaroran` remote (`git show --remerge-diff <merge>`). Twelve have no difference from Git's
 automatic merge. `5365e410d` differs only in upstream's Tauri `src-tauri/src/main.rs`,
 which Metatron does not have. No merge in this range needs a row either.
+
+The 17 merges in `4d87a70ff..b5bbc5647` were checked the same way against the `kwaroran`
+remote. Sixteen have no difference from Git's automatic merge. `72baef272` resolves two
+conflicts and adds no behavior: it keeps both test groups in upstream's
+`src/ts/process/scriptings.test.ts` and joins two import lines in upstream's
+`src/ts/process/scriptings.ts`. No merge in this range needs a row.
 
 ## Intake procedure for the next scan
 
