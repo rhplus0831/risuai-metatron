@@ -2,7 +2,7 @@
 
 Status: drafted 2026-11-21 at `6e70b1e51` and committed at `bfdec4e5e`, then audited against the code at that commit
 ([report](../reports/audits/plan-runner/upstream-intake-3-2026-11-21.md)) and corrected in the same commit as the
-report. Landed: 1 (`2d37f0f61`), 2 (`2b678465d`), 3 (`4f563fa1e`), 4 (`5fb726c20`). The audit's two P1 findings removed the edit hook skip (the former slice 5): `66ab5e5f5` is now
+report. Landed: 1 (`2d37f0f61`), 2 (`2b678465d`), 3 (`4f563fa1e`), 4 (`5fb726c20`), 5 (`b8b3caf5d`); every slice landed. The audit's two P1 findings removed the edit hook skip (the former slice 5): `66ab5e5f5` is now
 `deferred` (D1), which the owner confirmed on 2026-11-21 after reading the audit. The owner accepted the defaults of D2
 and D3 the same day; D4 is this plan's own and open to the owner's change. This is the third upstream intake, run by the
 [ledger](../backlog/upstream-ledger.md)'s procedure over `4d87a70ff..b5bbc5647`: 10 non-merge commits and 17 merges,
