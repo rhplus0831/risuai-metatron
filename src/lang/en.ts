@@ -1989,6 +1989,7 @@ export const languageEnglish = {
             memoryRebuild: "A conflict discarded local changes; the memory work did not start",
         },
         saveFailed: "Local changes could not be saved: {0}",
+        sendSaveTimedOut: "The send timed out waiting for a save response. Please send again.",
         refusedDraft:
             "This chat has local changes the server refused. Choose Retry or Discard in the refused-changes banner first.",
         chatLoadFailed: "The chat could not be loaded: {0}",

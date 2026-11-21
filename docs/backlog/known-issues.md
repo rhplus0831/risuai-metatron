@@ -138,28 +138,20 @@ Guide: [Long-Term Memory and Embeddings](../structure/memory.md#known-hazards).
 Guide:
 [Network and Jobs: Fetch Routing, Aux Fetch, Generation Job Client, Job Channel, Web Push](../structure/network-jobs.md#known-hazards).
 
-- The send preflight waits for a resource write's answer without a bound. `prepareServerJob`
-  (`src/ts/process/serverCommands.ts`) awaits `flushResources()` and tests the send's abort signal only after it, and
-  the resource client gives the batch request no deadline and no signal. A write whose answer never arrives holds the
-  send, the chat's send reservation, its pin, and Stop until the request settles or the page reloads. Reproduced on
-  2026-11-21 at `ddb0c225b` on both paths into the wait (`runServerJob`, and `remoteSend` on the sending device): with
-  the batch committed on the server and its answer withheld, Stop did not end the send in two simulated hours
-  (`ended: 0, reserved: true`) and nothing was dispatched; releasing the answer ended it. First seen on 2026-11-16 by
-  the Remote Host post-audit (L-1).
-  - Reach: a phone that changes networks between a save's request and its answer. A local send makes pending work
-    itself (the message statistic), so no earlier edit is needed. A second send in that chat is refused while the
-    reservation is held. A reload frees it, and the composer text comes back only if its journal hand-off committed. A
-    real browser or proxy may fail the request sooner; nothing in the tab guarantees it, and no browser timeout was
-    measured.
-  - The send is not the only waiter: about twenty call sites await `flushResources()` without a bound (backup and
-    snapshot, checkpoint save and load, character, module and plugin import, recovery draft Apply, the reroll
-    candidate switch, the stored translation request, plugin API chat reads, the job channel's callback saves). One
-    unanswered request holds every later batch behind it and keeps the before-unload warning on.
-  - Not fixed. A fix races the wait against the send's signal and a deadline, answers a refusal that keeps the
-    request's uncertainty, and never goes on to a create after the timeout. It must not abort the shared write or
-    count it as saved: the write may be committed, and other callers wait on the same answer.
-  - [Preflight](../../src/ts/process/serverCommands.ts#L1202) · [Remote send](../../src/ts/network/remoteSend.ts#L370)
-    · [Batch cycle](../../src/ts/storage/resourceSync.svelte.ts#L2996) ·
+- Callers other than a send wait for a resource write's answer without a bound. A send's preflight ends on Stop or
+  after 30 seconds (`waitForSendFlush` in `src/ts/process/serverCommands.ts`); about twenty other call sites await
+  `flushResources()` with no deadline and no signal: backup and snapshot, checkpoint save and load, character, module
+  and plugin import, recovery draft Apply, the reroll candidate switch, the stored translation request, plugin API
+  chat reads, the job channel's callback saves, and the command jobs of `prepareServerJob` (script buttons, manual
+  triggers). The resource client gives the batch request no deadline, so one unanswered request holds each of them
+  and every later batch until it settles or the page reloads, and keeps the before-unload warning on.
+  - How far it was checked: reproduced on 2026-11-21 at `ddb0c225b` through the send, before its bound (the batch
+    committed on the server, its answer withheld for two simulated hours); the other callers were read, not run. A
+    real browser or proxy may fail the request sooner; no browser timeout was measured.
+  - Not fixed. A caller with a Stop or Cancel of its own can race its wait the way the send does; it must not abort
+    the shared write or count it as saved.
+  - [Send's bounded wait](../../src/ts/process/serverCommands.ts#L1164) ·
+    [Batch cycle](../../src/ts/storage/resourceSync.svelte.ts#L2996) ·
     [Batch request](../../src/ts/storage/resourceClient.ts#L450)
 
 ## persistence

@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { EventFeedFrame } from "../../../shared/events.ts";
 import {
     REMOTE_COMMAND_PICKUP_MS,
@@ -886,6 +886,93 @@ it("posts nothing when an unmarked send is stopped during preflight", async () =
     expect(stubs.fetch).not.toHaveBeenCalled();
     expect(stubs.local).not.toHaveBeenCalled();
     silent();
+});
+
+describe("remote sends waiting for a save response", () => {
+    const deadline = 30_000;
+    let answerSave: () => void;
+    let isLocalSend: typeof import("../process/localSends").isLocalSend;
+
+    beforeEach(async () => {
+        ({ isLocalSend } = await import("../process/localSends"));
+        const flush = deferred<Awaited<ReturnType<Flush>>>();
+        stubs.flush.mockReturnValue(flush.promise);
+        answerSave = () => flush.resolve({ discarded: [], refused: [] });
+    });
+    afterEach(async () => {
+        answerSave();
+        await drain();
+    });
+
+    it("releases the send reservation on Stop while the save response is still pending", async () => {
+        const controller = new AbortController();
+        const sending = start({ signal: controller.signal });
+        await drain();
+        expect(stubs.flush).toHaveBeenCalledExactlyOnceWith();
+        expect(isLocalSend(target)).toBe(true);
+
+        controller.abort();
+        await ended(sending, false, endRefused, false);
+        expect(isLocalSend(target)).toBe(false);
+        expect(stubs.unpin).toHaveBeenCalledOnce();
+        expect(stubs.fetch).not.toHaveBeenCalled();
+        expect(stubs.local).not.toHaveBeenCalled();
+        silent();
+
+        answerSave();
+        await drain();
+        expect(stubs.fetch).not.toHaveBeenCalled();
+        expect(stubs.local).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        { request: "a fresh request", uncertain: false },
+        { request: "an uncertain request", uncertain: true },
+    ])("refuses $request at the save deadline and ignores a late save response", async ({ uncertain }) => {
+        const reports: SendReport[] = [];
+        const sending = start({ requestUncertain: uncertain, reports });
+        await drain();
+        await vi.advanceTimersByTimeAsync(deadline + 1);
+        await ended(sending, false, { ...endRefused, settled: !uncertain, requestUncertain: uncertain }, uncertain);
+        expect(reports).toEqual([
+            { kind: "error", text: "The send timed out waiting for a save response. Please send again." },
+        ]);
+        expect(isLocalSend(target)).toBe(false);
+        expect(stubs.unpin).toHaveBeenCalledOnce();
+        expect(stubs.fetch).not.toHaveBeenCalled();
+        expect(stubs.local).not.toHaveBeenCalled();
+
+        answerSave();
+        await drain();
+        expect(stubs.fetch).not.toHaveBeenCalled();
+        expect(stubs.local).not.toHaveBeenCalled();
+    });
+
+    it("gives a retry its own deadline while it waits for the same save response", async () => {
+        const first = start();
+        await drain();
+        await vi.advanceTimersByTimeAsync(deadline + 1);
+        await ended(first, false, endRefused, false);
+        expect(isLocalSend(target)).toBe(false);
+
+        const retry = start({ requestId: "retry" });
+        await drain();
+        await vi.advanceTimersByTimeAsync(deadline - 1);
+        expect(stubs.flush).toHaveBeenCalledTimes(2);
+        expect(isLocalSend(target)).toBe(true);
+        expect(retry.onEnd).not.toHaveBeenCalled();
+        expect(stubs.fetch).not.toHaveBeenCalled();
+        expect(stubs.local).not.toHaveBeenCalled();
+
+        postAnswer = () => Response.json(state("done", success));
+        answerSave();
+        await ended(retry, true, endSuccess);
+        expect(posts()).toEqual([
+            expect.objectContaining({ commandId: "retry", command: expect.objectContaining({ requestId: "retry" }) }),
+        ]);
+        expect(isLocalSend(target)).toBe(false);
+        expect(stubs.local).not.toHaveBeenCalled();
+    });
 });
 
 it("cancels the relay and generation when a marked send stops before its post", async () => {

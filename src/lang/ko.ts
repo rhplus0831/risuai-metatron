@@ -1351,6 +1351,7 @@ export const languageKorean = {
             memoryRebuild: "데이터 충돌로 로컬 변경 사항이 취소되어 기억 작업을 시작하지 않았습니다.",
         },
         saveFailed: "로컬 변경 사항을 저장하지 못했습니다: {0}",
+        sendSaveTimedOut: "저장 응답을 기다리다 전송을 중단했습니다. 다시 보내 주세요.",
         refusedDraft:
             "이 채팅에 서버가 거부한 로컬 변경 사항이 있습니다. 먼저 거부 알림 배너에서 '재시도' 또는 '버리기'를 선택해 주세요.",
         chatLoadFailed: "채팅을 불러오지 못했습니다: {0}",

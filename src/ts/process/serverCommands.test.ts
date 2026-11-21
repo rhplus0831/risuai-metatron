@@ -132,6 +132,7 @@ vi.mock("src/lang", () => ({
             sequenceReasons: { chatBindingMismatch: "binding changed" },
             discarded: { send: "discarded: send", button: "discarded: button", trigger: "discarded: trigger" },
             saveFailed: "save failed: {0}",
+            sendSaveTimedOut: "save response timed out",
             chatLoadFailed: "load failed: {0}",
             chatNotSaved: "not saved",
             refusedDraft: "the server still refuses this local draft",
@@ -905,6 +906,117 @@ describe("runServerManualTrigger", () => {
         endWith(follows()[0], done);
         expect(await run).toBe("followed");
         expect(onStart).not.toHaveBeenCalled();
+    });
+});
+
+describe("local sends waiting for a save response", () => {
+    const deadline = 30_000;
+    type SendArg = NonNullable<Parameters<typeof import("./index.svelte").sendChat>[1]>;
+    let sendChat: typeof import("./index.svelte").sendChat;
+    let isLocalSend: typeof import("./localSends").isLocalSend;
+    let answerSave: () => void;
+
+    beforeAll(() => warmModules(() => import("./index.svelte")));
+    beforeEach(async () => {
+        const { installFlatDatabase } = await import("../storage/tests/installFlatDatabase");
+        installFlatDatabase({
+            characters: [{ chaId: ref.chaId, type: "character", name: "c" }],
+            botPresets: [{ id: "preset", name: "preset" }],
+            personas: [{ id: "selected", name: "Selected", personaPrompt: "", icon: "", note: "" }],
+        });
+        ({ sendChat } = await import("./index.svelte"));
+        ({ isLocalSend } = await import("./localSends"));
+        const flush = deferred<Awaited<ReturnType<typeof stubs.flush>>>();
+        stubs.flush.mockReturnValue(flush.promise);
+        answerSave = () => flush.resolve({ discarded: [], refused: [] });
+    });
+    afterEach(async () => {
+        answerSave();
+        await drainContinuations();
+    });
+
+    function start(extra: SendArg = {}) {
+        const reports: SendReport[] = [];
+        const onEnd = vi.fn<NonNullable<SendArg["onEnd"]>>();
+        const promise = sendChat(-1, {
+            target: ref,
+            localOnly: true,
+            input: "Composer text",
+            userMessageId: "message",
+            requestId: "request",
+            ...extra,
+            reports,
+            onEnd,
+        });
+        return { promise, onEnd, reports };
+    }
+
+    async function refused(sending: ReturnType<typeof start>, uncertain = false) {
+        await drainContinuations();
+        expect(sending.onEnd).toHaveBeenCalledExactlyOnceWith({
+            outcome: "refused",
+            settled: !uncertain,
+            requestUncertain: uncertain,
+            blockedChats: [],
+        });
+        expect(await sending.promise).toBe(false);
+        expect(isLocalSend(ref)).toBe(false);
+        expect(stubs.create).not.toHaveBeenCalled();
+    }
+
+    it("releases the send reservation on Stop while the save response is still pending", async () => {
+        const controller = new AbortController();
+        const sending = start({ signal: controller.signal });
+        await drainContinuations();
+        expect(stubs.flush).toHaveBeenCalledExactlyOnceWith();
+        expect(isLocalSend(ref)).toBe(true);
+
+        controller.abort();
+        await refused(sending);
+        expect(sending.reports).toEqual([]);
+
+        answerSave();
+        await drainContinuations();
+        expect(stubs.create).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        { request: "a fresh request", uncertain: false },
+        { request: "an uncertain request", uncertain: true },
+    ])("refuses $request at the save deadline and ignores a late save response", async ({ uncertain }) => {
+        const sending = start({ requestUncertain: uncertain });
+        await vi.advanceTimersByTimeAsync(deadline + 1);
+        await refused(sending, uncertain);
+        expect(sending.reports).toEqual([{ kind: "error", text: "save response timed out" }]);
+
+        answerSave();
+        await drainContinuations();
+        expect(stubs.create).not.toHaveBeenCalled();
+    });
+
+    it("gives a retry its own deadline while it waits for the same save response", async () => {
+        const first = start();
+        await vi.advanceTimersByTimeAsync(deadline + 1);
+        await refused(first);
+
+        const retry = start({ requestId: "retry" });
+        await vi.advanceTimersByTimeAsync(deadline - 1);
+        expect(stubs.flush).toHaveBeenCalledTimes(2);
+        expect(isLocalSend(ref)).toBe(true);
+        expect(retry.onEnd).not.toHaveBeenCalled();
+        expect(stubs.create).not.toHaveBeenCalled();
+
+        stubs.create.mockResolvedValueOnce({ outcome: "created", jobId: "j" });
+        answerSave();
+        await drainContinuations();
+        expect(stubs.create).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ requestId: "retry" }),
+            expect.anything(),
+        );
+        expect(follows()).toHaveLength(1);
+        endWith(follows()[0], done);
+        expect(await retry.promise).toBe(true);
+        expect(isLocalSend(ref)).toBe(false);
     });
 });
 
