@@ -240,6 +240,8 @@
         role?: string;
         onReroll?: () => void;
         unReroll?: () => void;
+        onOpenInlineEditor?: () => void;
+        onCloseInlineEditor?: () => void;
         character?: simpleCharacterArgument | string | null;
         firstMessage?: boolean;
         altGreeting?: boolean;
@@ -275,6 +277,8 @@
         role = null,
         onReroll = () => {},
         unReroll = () => {},
+        onOpenInlineEditor,
+        onCloseInlineEditor,
         character = null,
         firstMessage = false,
         altGreeting = false,
@@ -773,6 +777,7 @@
         message = draft ?? message;
         if (target) closeMessageEditorDraft(target.ref, target.id, "message", messageDraft);
         messageDraft = undefined;
+        onCloseInlineEditor?.();
     }
 
     function startOriginalEdit() {
@@ -783,6 +788,7 @@
             ? openMessageEditorDraft(target.ref, target.id, "message", initial)
             : (messageDraft ?? { ...initial, open: true });
         messageDraft.open = true;
+        if (!autoPopupMessageEditor) onOpenInlineEditor?.();
     }
 
     function setOriginalDraft(value: string | null) {
@@ -795,6 +801,7 @@
         const discard = !!bookmarkMessageId || draft === (editedMessage?.data ?? message);
         if (target && discard) closeMessageEditorDraft(target.ref, target.id, "message", messageDraft);
         if (target || discard) messageDraft = undefined;
+        onCloseInlineEditor?.();
     }
 
     // Lua forms and interactive controls keep body clicks from opening the message editor.
@@ -1001,6 +1008,7 @@
                 translation: edit,
             });
             editTranslationTarget = { kind: "stored", edit };
+            if (!autoPopupTranslationEditor) onOpenInlineEditor?.();
             return;
         }
 
@@ -1025,6 +1033,7 @@
             observedCacheText = cached;
             editTranslationTarget = { kind: "cache", key, ref, messageId: id };
             suppressAutoPopupTranslationEditor = translationChangedElsewhere;
+            if (!autoPopupTranslationEditor) onOpenInlineEditor?.();
         } catch (error) {
             editTranslationTarget = null;
             throw error;
@@ -1043,6 +1052,7 @@
         }
         translationDraft = undefined;
         editTranslationTarget = null;
+        onCloseInlineEditor?.();
     }
 
     function setTranslationDraft(value: string) {

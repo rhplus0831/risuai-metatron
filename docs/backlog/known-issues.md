@@ -32,7 +32,6 @@ Sources the entries name (drop a line when no entry names it any more):
 - [network-jobs](#network-jobs) (1)
 - [persistence](#persistence) (1)
 - [structured-memory](#structured-memory) (2)
-- [ui-theming](#ui-theming) (1)
 
 ## build-test-platforms
 
@@ -194,22 +193,3 @@ Guide: [Structured Memory Records](../structure/structured-memory/records.md#kno
   [Cost query](../../server/src/prompt/memory/structured/rebuild.ts#L758) ·
   [Window planner](../../server/src/prompt/memory/structured/window.ts#L403) ·
   [Panel confirmation](../../src/lib/Others/StructuredMemory/memoryRecordPress.ts#L44)
-
-## ui-theming
-
-Guide: [UI Components and Theming](../structure/ui-theming.md#known-hazards).
-
-- Opening a long message's inline editor moves the transcript, and cancelling does not restore the reader's place.
-  The rendered body is replaced by a text area of a fixed 256 px (the stable-height rule for multiline or
-  over-600-character text), the row shrinks, and the browser's scroll anchoring answers the collapse. Reproduced on
-  2026-11-21 at `ddb0c225b` in headless Chrome 156 (1280 × 800, automatic popup editing off): 300 px up inside the
-  newest message, the click moved `scrollTop` from −300 to +1 (the row went from 1313 to 439 px) and brought the
-  previous message to the view's top; cancel left the reader five paragraphs later. In an older message the offset
-  moved by the 874 px the row lost, and cancel left the reader fifteen paragraphs later.
-  - Not affected: the reader at the bottom, a short message (it uses the autoresizing editor), and the same click with
-    `overflow-anchor: none` on the scroller; in all three the offset stayed and cancel restored the place.
-  - Reach: inline editing needs automatic popup editing off, and it is on by default. No text is lost.
-  - Not fixed. `keepRowHeight` in `src/lib/ChatScreens/Chats.svelte` holds a row's height only when its `Chat` is
-    mounted again, and opening the editor does not remount it.
-  - [Stable-height rule](../../src/lib/ChatScreens/messageEditPopup.ts#L34) ·
-    [Text area sizing](../../src/lib/UI/GUI/TextAreaResizable.svelte#L55)

@@ -104,6 +104,7 @@
         optimized: boolean;
         mode: StreamingDisplayOptimizationMode;
     };
+    type EditorPlace = { top: number | "bottom"; offset: number; inputs: number; anchor: ScrollAnchor | null };
     type Row = {
         instance: {
             updateRow?: (update: Partial<RowUpdate>) => void;
@@ -116,8 +117,9 @@
         held: boolean;
         /** The instance whose render a held row last finished. */
         renderedInstance?: Row["instance"];
-        /** The height and scroll offset from before a remount whose render is still awaited. */
-        kept?: { height: number; scrollTop: number; inputs: number };
+        /** The height held until the new body renders, including when an editor closes in place. */
+        kept?: { height: number; scrollTop: number; inputs: number; editor?: EditorPlace };
+        editorPlace?: EditorPlace;
         dispose: () => void;
     };
     const rows = new Map<string, Row>();
@@ -680,15 +682,65 @@
     // Rows whose kept height still waits for a render, and the reader's scroll inputs so far.
     const keptRows = new Set<Row>();
     let readerInputs = 0;
+    let lastScrollInput = 0;
     $effect(() => {
         const scroller = chatBody?.parentElement;
         if (!scroller) return;
         const moved = () => {
-            knownOffset = scroller.scrollTop;
+            const offset = scroller.scrollTop;
+            if (offset !== knownOffset) lastScrollInput = readerInputs;
+            knownOffset = offset;
         };
         scroller.addEventListener("scroll", moved, { passive: true });
         return () => scroller.removeEventListener("scroll", moved);
     });
+
+    async function openInlineEditor(row: Row) {
+        const scroller = chatBody?.parentElement;
+        if (!scroller || capturing || suspendTrim) return;
+        const offset = scroller.scrollTop;
+        const place: EditorPlace = {
+            top:
+                offset >= 0 ? "bottom" : row.element.getBoundingClientRect().top - scroller.getBoundingClientRect().top,
+            offset,
+            inputs: readerInputs,
+            anchor: null,
+        };
+        row.editorPlace = place;
+        await tick();
+        const area = row.element.querySelector<HTMLTextAreaElement>("textarea.message-edit-area");
+        if (row.editorPlace !== place || !area || !row.element.isConnected) return;
+        applyAnchor();
+        const view = scroller.getBoundingClientRect();
+        const rect = area.getBoundingClientRect();
+        const delta =
+            rect.top < view.top ? Math.floor(rect.top - view.top) : Math.max(0, Math.ceil(rect.bottom - view.bottom));
+        if (rect.height <= view.height && delta && revealBatch?.next !== 0) {
+            // Only yield an existing anchor if it would clip the editor. The opening's mask still owns its view.
+            place.anchor = anchor;
+            anchor = null;
+            scroller.scrollTop += delta;
+        }
+        // A queued scroll from mounting or revealing the field is part of opening it.
+        place.offset = scroller.scrollTop;
+        knownOffset = place.offset;
+    }
+
+    function closeInlineEditor(row: Row) {
+        const place = row.editorPlace;
+        row.editorPlace = undefined;
+        const scroller = chatBody?.parentElement;
+        if (!place || !scroller || capturing || suspendTrim) return;
+        // Only transcript movement counts: a wheel inside the field may scroll just the editor.
+        // Check the live offset too in case the last scroll event is still queued.
+        if (lastScrollInput > place.inputs || (readerInputs !== place.inputs && scroller.scrollTop !== place.offset))
+            return;
+        // Saving can remount Chat. Its replacement finishes this same hold once the saved body renders.
+        if (keepRowHeight(row, row.element.getBoundingClientRect().height)) {
+            row.kept.editor = place;
+            void settleRowHeight(row, row.instance);
+        }
+    }
 
     /**
      * Keeps a row's height while its `Chat` is mounted again (a text change, a stream's end, a reload),
@@ -696,9 +748,8 @@
      * browser's scroll anchoring moves a reader near the bottom there, and nothing brings them back. A
      * remount during the wait keeps the first height and offset; a row never laid out keeps nothing.
      */
-    function keepRowHeight(row: Row) {
+    function keepRowHeight(row: Row, height = rowHeights.get(row.element)) {
         if (row.kept) return true;
-        const height = rowHeights.get(row.element);
         if (!height) return false;
         row.kept = { height, scrollTop: knownOffset, inputs: readerInputs };
         keptRows.add(row);
@@ -710,10 +761,9 @@
      * Lets the row take its new height once this instance has rendered, and puts its top back where it
      * was when the new text is longer or shorter: in this reversed scroller a row's bottom stays and its
      * top moves by the difference. The browser's anchoring does not do that: the remount removed its
-     * anchor node, and a `min-height` change on the row suppresses it for that layout. Nothing is
-     * corrected while the app's anchor holds the view, for a row above the view (its growth moves nothing
-     * the reader sees), after scroll input, or when the offset changed meanwhile (the browser's anchoring
-     * did answer, or something else scrolled).
+     * anchor node, and a `min-height` change on the row suppresses it for that layout. An editor close
+     * restores the place from before it opened. Other remounts skip rows above the view and offsets
+     * that changed meanwhile. The active anchor and intervening scroll input take precedence.
      */
     async function settleRowHeight(row: Row, instance: Row["instance"]) {
         try {
@@ -730,12 +780,24 @@
         row.element.style.minHeight = "";
         const scroller = chatBody?.parentElement;
         if (anchor || kept.inputs !== readerInputs || !scroller || !row.element.isConnected) return;
+        if (kept.editor && (row.editorPlace || capturing || suspendTrim)) return;
         // Measured before the offset is read: this layout is where the browser's anchoring answers.
         const rect = row.element.getBoundingClientRect();
         const offset = scroller.scrollTop;
-        if (offset !== kept.scrollTop) return;
-        if (rect.bottom <= scroller.getBoundingClientRect().top || Math.abs(rect.height - kept.height) < 1) return;
-        scroller.scrollTop = offset + kept.height - rect.height;
+        if (kept.editor) {
+            if (kept.editor.anchor) {
+                setAnchor(kept.editor.anchor);
+                return;
+            }
+            scroller.scrollTop =
+                kept.editor.top === "bottom"
+                    ? 0
+                    : offset + rect.top - scroller.getBoundingClientRect().top - kept.editor.top;
+        } else {
+            if (offset !== kept.scrollTop) return;
+            if (rect.bottom <= scroller.getBoundingClientRect().top || Math.abs(rect.height - kept.height) < 1) return;
+            scroller.scrollTop = offset + kept.height - rect.height;
+        }
         knownOffset = scroller.scrollTop;
         // The rows of the same flush that still wait were kept at the offset this one replaced.
         for (const other of keptRows) if (other.kept.scrollTop === offset) other.kept.scrollTop = knownOffset;
@@ -837,6 +899,8 @@
                                 chatRef: ref,
                                 onReroll,
                                 unReroll,
+                                onOpenInlineEditor: () => void openInlineEditor(row),
+                                onCloseInlineEditor: () => closeInlineEditor(row),
                                 get rerollBusy() {
                                     return rerollBusy;
                                 },

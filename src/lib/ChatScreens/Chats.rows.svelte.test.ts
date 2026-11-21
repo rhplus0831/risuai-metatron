@@ -14,6 +14,8 @@ type RowProps = {
     name: string;
     img: string | Promise<string>;
     largePortrait: boolean;
+    onOpenInlineEditor?: () => void;
+    onCloseInlineEditor?: () => void;
 };
 type Row = {
     props: RowProps;
@@ -1666,6 +1668,79 @@ describe("latest message scroll anchor", () => {
         setLockedMessages(chat, []);
         flushSync();
         expect(ui.scroller.scrollTop).toBe(-120);
+    });
+
+    describe("keeping the reader's place through inline editing", () => {
+        const wheel = (scroller: HTMLElement) => scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: 80 }));
+
+        function reading() {
+            const ui = anchored();
+            ui.natural.set("m5", { top: -450, height: 700 });
+            ui.natural.set("m4", { top: -650, height: 240 });
+            resize();
+            endReveal();
+            wheel(ui.scroller);
+            ui.scroller.scrollTop = -500;
+            ui.scroller.dispatchEvent(new Event("scroll"));
+            return ui;
+        }
+
+        async function open(ui: ReturnType<typeof reading>, id: string, fieldTop: number) {
+            const row = latest(id);
+            const field = document.createElement("textarea");
+            field.className = "message-edit-area";
+            row.props.onOpenInlineEditor?.();
+            row.editing = true;
+            row.element.append(field);
+            vi.spyOn(field, "getBoundingClientRect").mockImplementation(() => {
+                const top = fieldTop - ui.scroller.scrollTop;
+                return rect(top, top + 100);
+            });
+            await vi.advanceTimersByTimeAsync(0);
+            return {
+                row,
+                close() {
+                    row.props.onCloseInlineEditor?.();
+                    row.editing = false;
+                    field.remove();
+                },
+            };
+        }
+
+        it.each(["cancel", "save"])("restores the remembered row top once after %s renders", async (action) => {
+            const ui = reading();
+            const editor = await open(ui, "m5", -300);
+            editor.close();
+            if (action === "save") {
+                ui.props.messages[5].data = "Revised reply";
+                flushSync();
+                expect(latest("m5")).not.toBe(editor.row);
+                editor.row.settle();
+            }
+            // Model the body moving the row's top after close, while it renders.
+            ui.natural.set("m5", { top: -550, height: 700 });
+            ui.scrollWrite.mockClear();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(ui.scrollWrite).not.toHaveBeenCalled();
+            latest("m5").settle();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(ui.scrollWrite.mock.calls).toEqual([[-600]]);
+        });
+
+        it("keeps the reader's later transcript scroll when the editor closes", async () => {
+            const ui = reading();
+            const editor = await open(ui, "m5", -550);
+            expect(ui.scroller.scrollTop).toBe(-650);
+            wheel(ui.scroller);
+            ui.scroller.scrollTop = -720;
+            ui.scrollWrite.mockClear();
+            // Close before the browser's scroll event is delivered.
+            editor.close();
+            editor.row.settle();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(ui.scrollWrite).not.toHaveBeenCalled();
+            expect(ui.scroller.scrollTop).toBe(-720);
+        });
     });
 
     describe("a row mounted again", () => {
