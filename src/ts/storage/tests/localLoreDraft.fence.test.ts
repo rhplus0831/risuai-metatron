@@ -27,6 +27,7 @@ vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globa
 
 import { language } from "src/lang";
 import { chatStatusKey } from "src/ts/process/chatStatus.svelte";
+import { noteGenerationFrame, resetGenerationProgress } from "src/ts/process/generationProgress.svelte";
 import { beginLocalSend } from "src/ts/process/localSends";
 import { followedJobs } from "src/ts/process/serverCommands";
 import { findChat, selectChat, setChatWorkListener, type ChatRef } from "../chatStore.svelte";
@@ -82,6 +83,7 @@ beforeEach(() => {
 
 afterEach(() => {
     setChatWorkListener(null);
+    resetGenerationProgress();
     follow(null);
     for (const release of releases.splice(0)) {
         release();
@@ -152,5 +154,27 @@ describe("localLoreDraft's write fence", () => {
         flushSync();
         expect(stored()).toEqual(["after the send"]);
         expect(mocks.alertError).toHaveBeenCalledTimes(1);
+    });
+
+    it("refuses lore changes while a foreign preview runs and saves again after its end", () => {
+        const draft = useLocalLoreDraft();
+        const job = { jobId: "preview", characterId: ref.chaId, chatId: ref.chatId };
+        noteGenerationFrame({ ...job, state: "running", kind: "preview", clientId: "other-tab", startedAt: 1, at: 1 });
+        flushSync();
+
+        draft.value[0].content = "during the preview";
+        flushSync();
+        expect(mocks.alertError).toHaveBeenCalledWith(language.chatGenerating);
+        expect(draft.value[0].content).toBe("first");
+        expect(stored()).toEqual(["first"]);
+        expect(chatWork).not.toHaveBeenCalled();
+
+        noteGenerationFrame({ ...job, state: "ended" });
+        flushSync();
+        expect(chatWork).not.toHaveBeenCalled();
+        draft.value[0].content = "after the preview";
+        flushSync();
+        expect(stored()).toEqual(["after the preview"]);
+        expect(chatWork).toHaveBeenCalled();
     });
 });

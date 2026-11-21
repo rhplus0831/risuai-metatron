@@ -111,27 +111,20 @@ Guide: [Long-Term Memory and Embeddings](../structure/memory.md#known-hazards).
   [HypaV2 summarization](../../server/src/prompt/memory/hypav2.ts#L19) ·
   [Chunk and coverage update](../../server/src/prompt/memory/hypav2.ts#L448) ·
   [Fixture](../../server/src/tests/fixtures/memory/scenarios.ts)
-- The HypaV2 chunk editor and the SupaMemory text areas write the whole memory field from the tab's copy while a
-  send's memory step writes the same field on the server, and one side's change can be dropped without a notice. The
-  server takes a `meta.set` with an older revision (`stale: true`) and assigns the whole named field. Reproduced on
-  2026-11-21 at `ddb0c225b` (the mounted character sidebar's editors against a real send through the in-process
-  server, with the model answers held to order the two writes):
-  - HypaV2 (`setHypaV2ChunkText` in `src/lib/Others/AlertComp.svelte`): an edit written from a copy older than the
-    job's write removes the job's new chunks. The other order is safe: the job merges with the stored chunks by
-    identity, so an edit that lands first survives.
-  - SupaMemory (the `supaMemoryData` text areas of `src/lib/SideBars/CharConfig.svelte`, character and group): both
-    orders lose. A stale edit restores the older summary; an edit that lands while the summary request is out is
-    replaced by the string the job computed from its earlier copy.
-  - Reach: both modes can be selected (Settings → Memory, with the chat on Legacy and memory on). Neither editor
-    checks for a running generation or turns read-only during one. An open editor adopts the job's write once the
-    change feed delivers it, so the stale window ends at that delivery. A dropped summary's model answer may still be
-    in Request History; a dropped manual edit has no copy.
-  - Not fixed. The fence of `createChatFieldDraft` does not cover it as it is: its predicate was false in the probe
-    while another device's job ran (it fences local sends, followed jobs, and known message locks).
-  - [Chunk setter](../../src/lib/Others/AlertComp.svelte#L295) ·
-    [SupaMemory text areas](../../src/lib/SideBars/CharConfig.svelte#L1856) ·
-    [Job's write](../../server/src/prompt/assemble.ts#L2152) ·
-    [Fence predicate](../../src/ts/storage/chatFieldDraft.svelte.ts#L14)
+- A tab that has not heard of another device's running job can still write a whole HypaV2 or SupaMemory field from
+  its copy. The HypaV2 chunk editor and the SupaMemory text areas are read-only while the tab knows of a generation
+  in the chat (its own send, a followed job, a message lock, a job the live feed lists) or of a chat update it has not
+  read yet (`memoryEditorWriteFence`). Before the first announcement, or while the tab is disconnected, an edit is
+  accepted, and the server takes a `meta.set` with an older revision and assigns the whole field.
+  - What is lost then: an edit from a stale copy drops the job's new chunks or summary, and a SupaMemory summary
+    computed from an older value replaces an edit that landed first (HypaV2 merges by identity and keeps such an
+    edit). Both orders were reproduced on 2026-11-21 at `ddb0c225b`, before the fence, against a real send through
+    the in-process server.
+  - Not fixed. Closing the window needs the server to refuse a whole-field memory write whose base is older than the
+    job's write; the tab cannot know of a job it has not heard of.
+  - [Fence](../../src/ts/storage/chatFieldDraft.svelte.ts#L24) ·
+    [Chunk setter](../../src/lib/Others/AlertComp.svelte#L297) ·
+    [Job's write](../../server/src/prompt/assemble.ts#L2152)
 
 ## network-jobs
 

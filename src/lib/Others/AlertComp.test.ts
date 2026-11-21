@@ -5,11 +5,25 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { alertInput, showHypaV2Alert, type alertData } from "src/ts/alert";
 import { NEXT_DIALOG_GAP_MS, type AlertDialog } from "src/ts/alertQueue";
 import { initHotkey } from "src/ts/hotkey";
+import { noteGenerationFrame, resetGenerationProgress } from "src/ts/process/generationProgress.svelte";
+import { beginLocalSend } from "src/ts/process/localSends";
 import { alertStore, settingsOpen } from "src/ts/stores.svelte";
 import { installFlatDatabase, installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { findCharacter } from "src/ts/storage/characterStore.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
-import { assembleChats, findChat, selectChat, setChatMeta, setChatWorkListener } from "src/ts/storage/chatStore.svelte";
+import {
+    assembleChats,
+    captureChatBaseline,
+    chatNoticeSeq,
+    findChat,
+    finishIdleChatRefresh,
+    hasUnsavedChatWork,
+    noteRemoteChat,
+    seedChats,
+    selectChat,
+    setChatMeta,
+    setChatWorkListener,
+} from "src/ts/storage/chatStore.svelte";
 import SideChatList from "src/lib/SideBars/SideChatList.svelte";
 import AlertComp from "./AlertComp.svelte";
 import { language } from "src/lang";
@@ -72,6 +86,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+    resetGenerationProgress();
     setChatWorkListener(null);
     for (const dialog of dialogs.splice(0)) dialog.cancel();
     alertStore.answer("");
@@ -133,6 +148,22 @@ describe("dialogs keep their requested character and chat", () => {
         input.value = text;
         input.dispatchEvent(new Event("input", { bubbles: true }));
         flushSync();
+    }
+    function memoryTab(label: "Chunks" | "Summarized") {
+        [...target.querySelectorAll("button")].find((button) => button.textContent?.trim() === label)!.click();
+        flushSync();
+        return target.querySelector<HTMLTextAreaElement>("textarea")!;
+    }
+    const initialRevision = "11111111-2222-4333-8444-555555555555:1:1";
+    const jobRevision = "11111111-2222-4333-8444-555555555555:1:2";
+    async function openMemoryFor(chaId: string) {
+        const chat = ref(chaId);
+        installChats();
+        seedChats([{ characterId: chaId, id: chat.chatId, revision: initialRevision }], []);
+        select(chaId);
+        showHypaV2Alert();
+        await showAlert();
+        return chat;
     }
 
     it("shows the requested character's branches after selection changes while queued and while open", async () => {
@@ -196,6 +227,84 @@ describe("dialogs keep their requested character and chat", () => {
         expect(() => flushSync()).not.toThrow();
         expect(target.querySelector("textarea")).toBeNull();
         expect(work).not.toHaveBeenCalled();
+    });
+
+    it("keeps both HypaV2 lists read-only during generation and edits the chunks delivered by the idle read", async () => {
+        const chat = await openMemoryFor("b");
+        const original = memory(chat.chaId);
+        const job = { jobId: "preview", characterId: chat.chaId, chatId: chat.chatId };
+        const workQueued = () => hasUnsavedChatWork((id) => id === chat.chaId);
+        const expectReadOnly = (notice: string) => {
+            for (const tab of ["Chunks", "Summarized"] as const) {
+                const input = memoryTab(tab);
+                expect(input.readOnly, tab).toBe(true);
+                expect(input.disabled, tab).toBe(false);
+                expect(dialogPanel().querySelector('[role="status"]')?.textContent).toBe(notice);
+                edit("refused edit");
+                expect(workQueued()).toBe(false);
+                expect(findChat(chat)?.hypaV2Data).toEqual(original);
+            }
+        };
+
+        const release = beginLocalSend(chat)!;
+        try {
+            flushSync();
+            expectReadOnly(language.chatGenerating);
+        } finally {
+            release();
+        }
+        expect(memoryTab("Chunks").readOnly).toBe(false);
+
+        noteGenerationFrame({ ...job, state: "running", kind: "preview", clientId: "other-tab", startedAt: 1, at: 1 });
+        flushSync();
+        expectReadOnly(language.chatGenerating);
+        expect(noteRemoteChat(chat, jobRevision)).toBe("noticed");
+        noteGenerationFrame({ ...job, state: "ended" });
+        flushSync();
+        expectReadOnly(language.memoryTasks.awaitingSync);
+
+        const data = captureChatBaseline(chat).chat;
+        data.hypaV2Data = {
+            lastMainChunkID: 2,
+            chunks: [...original.chunks, { mainChunkID: 2, text: "generated chunk" }],
+            mainChunks: [
+                { id: 2, text: "generated summary", chatMemos: ["new-message"], lastChatMemo: "new-message" },
+                ...original.mainChunks,
+            ],
+        };
+        expect(
+            finishIdleChatRefresh(
+                { characterId: chat.chaId, id: chat.chatId, revision: jobRevision, data },
+                chatNoticeSeq(chat),
+                initialRevision,
+            ),
+        ).toBe(true);
+        flushSync();
+        expect(workQueued()).toBe(false);
+
+        const chunks = memoryTab("Chunks");
+        expect(chunks.readOnly).toBe(false);
+        expect([...target.querySelectorAll("textarea")].map((field) => field.value)).toEqual([
+            "b chunk",
+            "generated chunk",
+        ]);
+        edit("corrected chunk");
+        const summaries = memoryTab("Summarized");
+        expect(summaries.readOnly).toBe(false);
+        expect(summaries.value).toBe("generated summary");
+        edit("generated summary corrected");
+        expect(findChat(chat)?.hypaV2Data).toEqual({
+            lastMainChunkID: 2,
+            chunks: [
+                { mainChunkID: 1, text: "corrected chunk" },
+                { mainChunkID: 2, text: "generated chunk" },
+            ],
+            mainChunks: [
+                { ...data.hypaV2Data.mainChunks[0], text: "generated summary corrected" },
+                original.mainChunks[0],
+            ],
+        });
+        expect(workQueued()).toBe(true);
     });
 
     it.each(["unloaded", "without memory"])(

@@ -2,6 +2,7 @@
     import { chatMemoryAlgorithm, chatMemoryEnabled } from "../../../shared/chatMemory.ts";
     import { chatMemorySettings } from "src/ts/storage/chatMemory.svelte";
     import { currentChatRef, selectedChat } from "src/ts/storage/chatStore.svelte";
+    import { memoryEditorWriteFence } from "src/ts/storage/chatFieldDraft.svelte";
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { language } from "../../lang";
@@ -102,6 +103,15 @@
 
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
+
+    function currentMemoryFence() {
+        const ref = currentChatRef();
+        return ref ? memoryEditorWriteFence(ref) : null;
+    }
+
+    function setSupaMemoryData(supaMemoryData: string) {
+        if (!currentMemoryFence()) setCurrentChatMeta({ supaMemoryData });
+    }
 
     function setVoicevoxScale(key: keyof typeof VOICEVOX_CONFIG_DEFAULTS, value: number) {
         if (Number.isFinite(value)) currentCharacter.voicevoxConfig[key] = value;
@@ -1828,7 +1838,7 @@
                     if (!chat) {
                         return;
                     }
-                    if (!chat.hypaV2Data) {
+                    if (!chat.hypaV2Data && !currentMemoryFence()) {
                         setCurrentChatMeta({ hypaV2Data: { lastMainChunkID: 0, mainChunks: [], chunks: [] } });
                     }
                     showHypaV2Alert();
@@ -1847,14 +1857,15 @@
                 {language.hypaMemoryV3Modal}
             </Button>
         {:else if currentChat && ((currentChat.supaMemoryData && currentChat.supaMemoryData.length > 4) || chatMemoryEnabled(currentChat, currentCharacter, chatMemorySettings()))}
+            {@const fence = currentMemoryFence()}
             <span class="text-textcolor mt-4">{language.SuperMemory}</span>
+            {#if fence}<p class="text-sm text-textcolor2" role="status">{fence}</p>{/if}
             <TextAreaInput
                 popupEditorContext={chatContext}
                 margin="both"
                 autocomplete="off"
-                bind:value={
-                    () => currentChat.supaMemoryData, (supaMemoryData) => setCurrentChatMeta({ supaMemoryData })
-                }
+                readonly={!!fence}
+                bind:value={() => currentChat.supaMemoryData, setSupaMemoryData}
             ></TextAreaInput>
         {/if}
 
@@ -1878,14 +1889,15 @@
         </Button>
     {:else}
         {#if currentChat && ((currentChat.supaMemoryData && currentChat.supaMemoryData.length > 4) || chatMemoryEnabled(currentChat, currentCharacter, chatMemorySettings()))}
+            {@const fence = currentMemoryFence()}
             <span class="text-textcolor mt-4">{language.SuperMemory}</span>
+            {#if fence}<p class="text-sm text-textcolor2" role="status">{fence}</p>{/if}
             <TextAreaInput
                 popupEditorContext={chatContext}
                 margin="both"
                 autocomplete="off"
-                bind:value={
-                    () => currentChat.supaMemoryData, (supaMemoryData) => setCurrentChatMeta({ supaMemoryData })
-                }
+                readonly={!!fence}
+                bind:value={() => currentChat.supaMemoryData, setSupaMemoryData}
             ></TextAreaInput>
         {/if}
 

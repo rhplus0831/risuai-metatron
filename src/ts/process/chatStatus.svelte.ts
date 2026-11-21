@@ -90,7 +90,8 @@ export function generatingChatKeys(): ReadonlySet<string> {
  * job the live-update feed lists, previews excluded. A new send holds no message lock until its first
  * `begin`, which follows the provider's response, so a tab that does not follow the job (another
  * device, another tab) would otherwise show nothing until then; the feed lists the job from its
- * admission. Display only: `isChatBusy` and the write fences keep `generatingChatKeys`.
+ * admission. Send admission uses `generatingChatKeys`. The local lore, HypaV2 and SupaMemory editors
+ * also count feed jobs, including previews that can write during prompt assembly.
  */
 export function generatingBadgeKeys(): ReadonlySet<string> {
     const keys = new Set(generatingChatKeys());

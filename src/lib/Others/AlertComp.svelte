@@ -22,6 +22,7 @@
 
 <script lang="ts">
     import { findChat, loadChats, pinChats, setChatMeta } from "src/ts/storage/chatStore.svelte";
+    import { memoryEditorWriteFence } from "src/ts/storage/chatFieldDraft.svelte";
     import { onDestroy, untrack } from "svelte";
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
     import { alertRequestLogs, type alertData } from "../../ts/alert";
@@ -73,6 +74,7 @@
     const currentCharacter = $derived(selectedCharacter());
     const hypaV2Ref = $derived($alertStore.type === "hypaV2" ? $alertStore.chatRef : undefined);
     const hypaV2Data = $derived(hypaV2Ref ? findChat(hypaV2Ref)?.hypaV2Data : undefined);
+    const hypaV2Fence = $derived(hypaV2Ref ? memoryEditorWriteFence(hypaV2Ref) : null);
     /** A `requestdata` dialog's own generation info and message, captured when it was opened. */
     const requestInfo = $derived($alertStore.type === "requestdata" ? $alertStore.generationInfo : undefined);
     const requestMessage = $derived(requestInfo?.message);
@@ -295,7 +297,7 @@
     function setHypaV2ChunkText(list: "chunks" | "mainChunks", index: number, text: string) {
         const ref = hypaV2Ref;
         const data = ref ? findChat(ref)?.hypaV2Data : undefined;
-        if (!ref || !data?.[list]?.[index]) {
+        if (!ref || !data?.[list]?.[index] || memoryEditorWriteFence(ref)) {
             return;
         }
         const next = JSON.parse(JSON.stringify(data)) as Chat["hypaV2Data"];
@@ -795,7 +797,7 @@
                         </div>
                     {/if}
                 {/if}
-            {:else if $alertStore.type === "hypaV2" && hypaV2Data}
+            {:else if $alertStore.type === "hypaV2"}
                 <div class="flex flex-wrap gap-2 mb-4 max-w-full w-124">
                     <Button
                         selected={generationInfoMenuIndex === 0}
@@ -822,10 +824,14 @@
                         }}>✖</button
                     >
                 </div>
+                {#if hypaV2Fence}
+                    <p class="text-sm text-textcolor2 mb-2" role="status">{hypaV2Fence}</p>
+                {/if}
                 {#if generationInfoMenuIndex === 0}
                     <div class="flex flex-col gap-2 w-full">
-                        {#each hypaV2Data.chunks as chunk, i}
+                        {#each hypaV2Data?.chunks ?? [] as chunk, i}
                             <TextAreaInput
+                                readonly={!!hypaV2Fence}
                                 bind:value={() => chunk.text, (text) => setHypaV2ChunkText("chunks", i, text)}
                             />
                         {/each}
@@ -833,7 +839,7 @@
                         <!-- Adding non-bound chunk is not okay, change the user flow to edit existing ones. -->
                     </div>
                 {:else}
-                    {#each hypaV2Data.mainChunks as chunk, i}
+                    {#each hypaV2Data?.mainChunks ?? [] as chunk, i}
                         <!-- Summarized should be mainChunks, afaik. Be aware of that chunks are created with mainChunks, however this editing would not change related chunks. -->
                         <div class="flex flex-col p-2 rounded-md border-darkborderc border">
                             {#if i === 0}
@@ -842,6 +848,7 @@
                                 <span>Inactive</span>
                             {/if}
                             <TextAreaInput
+                                readonly={!!hypaV2Fence}
                                 bind:value={() => chunk.text, (text) => setHypaV2ChunkText("mainChunks", i, text)}
                             />
                         </div>
