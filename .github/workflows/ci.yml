@@ -1,12 +1,12 @@
 # One CI workflow: util/ci/check.sh (docs/structure/build-test-platforms.md).
-# Runs for pushes to `metatron` and `main` and for pull requests that target them.
+# Runs for pushes to `main` and for pull requests that target it.
 name: CI
 
 on:
   push:
-    branches: [metatron, main]
+    branches: [main]
   pull_request:
-    branches: [metatron, main]
+    branches: [main]
 
 permissions:
   contents: read

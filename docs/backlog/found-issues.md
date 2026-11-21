@@ -119,21 +119,19 @@ installed revision.
 
 ## Build and CI
 
-### The CI workflow still names `metatron` and pins its actions by tag
+### The CI workflow pins its actions by tag
 
-Read on 2026-11-20 at `bcc698905`, in the file only. `.github/workflows/ci.yml` runs for pushes to `metatron` and
-`main` and for pull requests that target them. `metatron` was renamed `main`, so that trigger names a branch that no
-longer exists. The workflow's three actions are pinned by tag (`actions/checkout@v5`, `actions/setup-node@v5`,
-`actions/cache@v4`), not by commit hash. Not checked: whether the forge runs this workflow at all.
+Read on 2026-11-20 at `bcc698905`, in the file only. The three actions of `.github/workflows/ci.yml` are pinned by tag
+(`actions/checkout@v5`, `actions/setup-node@v5`, `actions/cache@v4`), not by commit hash. Not checked: whether the
+forge runs this workflow at all.
 
-**Why it matters:** low. A stale trigger does nothing; a tag can be moved to other code by the action's publisher.
+**Why it matters:** low. A tag can be moved to other code by the action's publisher.
 
-**Suggested handling:** drop `metatron` from the triggers and from
-[the build guide's sentence](../structure/build-test-platforms.md#ci); pin the actions by hash if the workflow is in
-use.
+**Suggested handling:** pin the actions by hash if the workflow is in use.
 
 **Decision:** owner, 2026-11-20: `dev` stays out of the triggers on purpose
-([build guide](../structure/build-test-platforms.md#ci)); do not file its absence.
+([build guide](../structure/build-test-platforms.md#ci)); do not file its absence. Owner, 2026-11-21: pin by hash only
+if the workflow is in use.
 
 ## Chat screen
 
@@ -457,6 +455,8 @@ can still leave an instance answering nobody for seconds to tens of seconds on t
 **Suggested handling:** the owner's note of 2026-11-14: "Token counting isn't always fast, so I'm considering moving
 it to a worker thread." That design covers every family. Short of it, look at `novellist` on emoji and `gemma` on
 letters first, since their times grow faster than the text.
+
+**Decision:** owner, 2026-11-21: not fixed in a found-issues round; the worker thread design gets its own plan.
 
 ## Settings
 

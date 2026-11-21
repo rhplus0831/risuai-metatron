@@ -216,10 +216,10 @@ in [self-host-server](self-host-server.md).
 
 ### CI
 
-- GitHub Actions runs `.github/workflows/ci.yml`, one job, `check`, on pushes to `metatron` and `main` and on pull
-  requests that target them; a newer run for the same ref cancels the older one. It sets up Node 24, runs
-  `corepack enable` (so `pnpm` is the `packageManager` version), and caches the pnpm store at
-  `${{ runner.temp }}/pnpm-store` (`PNPM_STORE_DIR`), keyed on `pnpm-lock.yaml`.
+- GitHub Actions runs `.github/workflows/ci.yml`, one job, `check`, on pushes to `main` and on pull requests that target
+  it; a newer run for the same ref cancels the older one. It sets up Node 24, runs `corepack enable` (so `pnpm` is the
+  `packageManager` version), and caches the pnpm store at `${{ runner.temp }}/pnpm-store` (`PNPM_STORE_DIR`), keyed on
+  `pnpm-lock.yaml`.
 - It then runs `util/ci/check.sh`, whose header lists the steps: `pnpm install --frozen-lockfile`, `pnpm check --force`,
   `pnpm format:check`, `pnpm check:tests`, `pnpm check:docs`, `CI=1 pnpm test` (no `slow` tag), and `pnpm build`.
   `pnpm test:slow` and `pnpm test:e2e` are not in CI.
