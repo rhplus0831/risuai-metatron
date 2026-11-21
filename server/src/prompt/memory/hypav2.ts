@@ -60,15 +60,7 @@ async function summary(host: MemoryHost, stringlizedChat: string): Promise<{ suc
                 };
             }
 
-            result = (await da.data)?.choices[0]?.text?.trim();
-
-            if (!result) {
-                return {
-                    success: false,
-                    data: "SupaMemory: HTTP: " + host.redact(JSON.stringify(da)),
-                };
-            }
-
+            result = (await da.data)?.choices[0]?.text?.trim() ?? "";
             return { success: true, data: result };
         } catch (error) {
             return {
@@ -426,7 +418,7 @@ export async function hypaMemoryV2(
         // Summarize the accumulated chunk
         const summaryData = await summary(host, stringlizedChat);
 
-        if (!summaryData.success) {
+        if (!summaryData.success || !summaryData.data.trim()) {
             summarizationFailures++;
             if (summarizationFailures >= maxSummarizationFailures) {
                 return {
@@ -435,7 +427,8 @@ export async function hypaMemoryV2(
                     error: "[HypaV2] Summarization failed multiple times. Aborting to prevent infinite loop.",
                 };
             }
-            // If summarization fails, try again in next iteration
+            // Retry the same messages so a later chunk cannot advance coverage past a failed window.
+            idx = startIdx;
             continue;
         }
 

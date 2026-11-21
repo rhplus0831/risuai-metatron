@@ -239,8 +239,33 @@ describe("the server ports against the browser fixture", () => {
     const serverCursorMissing = new Set(["supa-id-not-found", "hyper-id-not-found"]);
 
     for (const scenario of scenarios) {
+        const browser = fixture.cases[scenario.name];
+        // The frozen client skipped failed windows. The server retries them before moving coverage.
+        if (scenario.name === "v2-repeated-failure") {
+            it(`${scenario.name}: the port stops after three tries on the same window`, async () => {
+                const [request] = browser.requests;
+                expect(await runServer(scenario)).toEqual({
+                    ...browser,
+                    requests: [request, request, request],
+                    result: {
+                        ...(browser.result as object),
+                        error: "[HypaV2] Summarization failed multiple times. Aborting to prevent infinite loop.",
+                    },
+                });
+            });
+            continue;
+        }
+        if (scenario.name === "v2-one-failure-then-success") {
+            it(`${scenario.name}: the port records the same window after recovery`, async () => {
+                const recovered = await runServer({ ...scenario, summaries: scenario.summaries?.slice(1) });
+                expect(await runServer(scenario)).toEqual({
+                    ...recovered,
+                    requests: [browser.requests[0], ...recovered.requests],
+                });
+            });
+            continue;
+        }
         it(`${scenario.name}: the port's outcome is the browser's`, async () => {
-            const browser = fixture.cases[scenario.name];
             const keys = serverCacheKeys[scenario.name] ?? browser.cacheKeys?.map(serverCustomKey);
             if (serverCacheKeys[scenario.name]) {
                 // Without the version and position, the keys are the tab's.
@@ -296,6 +321,62 @@ describe("the server ports against the browser fixture", () => {
 });
 
 describe("what the server adds to the algorithms", () => {
+    describe("HypaV2 summarization retries", () => {
+        const coldOverflow = scenarios.find(({ name }) => name === "v2-cold-overflow")!;
+        const blank = " \n\t ";
+        const blanks = [blank, blank, blank];
+
+        it.each([
+            { provider: "subModel", calls: "requests", answers: { summaries: blanks } },
+            { provider: "distilbart", calls: "summarizer", answers: { summarizer: blanks } },
+            {
+                provider: "instruct35",
+                calls: "completions",
+                answers: { completions: blanks.map((text) => ({ ok: true, data: { choices: [{ text }] } })) },
+            },
+        ] as const)("keeps the same messages uncovered after three blank $provider summaries", async (row) => {
+            const outcome = await runServer({
+                ...coldOverflow,
+                settings: { supaModelType: row.provider, hypaChunkSize: 160, hypaModel: "MiniLM" },
+                ...row.answers,
+            });
+
+            expect(outcome.result).toMatchObject({
+                error: "[HypaV2] Summarization failed multiple times. Aborting to prevent infinite loop.",
+                chats: coldOverflow.chats,
+            });
+            expect(outcome.result).not.toHaveProperty("memory");
+            const [first] = outcome[row.calls];
+            expect(outcome[row.calls]).toEqual([first, first, first]);
+        });
+
+        it("records the failed window when its next summary succeeds and leaves later messages in the prompt", async () => {
+            const outcome = await runServer({
+                ...coldOverflow,
+                settings: { hypaChunkSize: 160, hypaModel: "MiniLM" },
+                maxContextTokens: 572,
+                summaries: [{ fail: "Provider temporarily unavailable." }, "Recovered summary."],
+            });
+
+            expect(outcome.result).toMatchObject({
+                memory: {
+                    mainChunks: [
+                        {
+                            text: "Recovered summary.",
+                            chatMemos: ["m1", "m2", "m3", "m4", "m5"],
+                            lastChatMemo: "m5",
+                        },
+                    ],
+                },
+            });
+            expect(outcome.result).not.toHaveProperty("error");
+            const { chats } = outcome.result as { chats: OpenAIChat[] };
+            expect(chats.slice(1)).toEqual(coldOverflow.chats.slice(6));
+            const [first] = outcome.requests;
+            expect(outcome.requests).toEqual([first, first]);
+        });
+    });
+
     it.each([
         { algorithm: "v3", field: "hypaV3Data", data: {}, missing: "summaries" },
         {

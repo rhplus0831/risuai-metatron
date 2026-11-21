@@ -27,7 +27,7 @@ Sources the entries name (drop a line when no entry names it any more):
 
 - [characters-modules](#characters-modules) (1)
 - [chat-pipeline](#chat-pipeline) (4)
-- [memory](#memory) (2)
+- [memory](#memory) (1)
 - [network-jobs](#network-jobs) (1)
 - [persistence](#persistence) (1)
 - [structured-memory](#structured-memory) (2)
@@ -96,14 +96,6 @@ Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-
 
 Guide: [Long-Term Memory and Embeddings](../structure/memory.md#known-hazards).
 
-- HypaV2 can mark messages summarized by a blank answer. A whitespace-only answer from the `subModel` or the
-  `distilbart` branch returned success in the existing cold-overflow fixture (structure audit, 2026-11-18): HypaV2
-  marked 11 messages as covered and produced no retrievable chunk. The fixed-completion branch already rejects an
-  answer that is empty after trimming; the server's HypaV3 summarizer rejects blank answers, and Hanurai uses
-  embeddings. Not fixed. A fix applies the same check before coverage advances in the two branches.
-  [HypaV2 summarization](../../server/src/prompt/memory/hypav2.ts#L19) ·
-  [Chunk and coverage update](../../server/src/prompt/memory/hypav2.ts#L448) ·
-  [Fixture](../../server/src/tests/fixtures/memory/scenarios.ts)
 - A tab that has not heard of another device's running job can still write a whole HypaV2 or SupaMemory field from
   its copy. The HypaV2 chunk editor and the SupaMemory text areas are read-only while the tab knows of a generation
   in the chat (its own send, a followed job, a message lock, a job the live feed lists) or of a chat update it has not
