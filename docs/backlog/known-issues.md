@@ -32,7 +32,6 @@ Sources the entries name (drop a line when no entry names it any more):
 - [network-jobs](#network-jobs) (1)
 - [persistence](#persistence) (1)
 - [structured-memory](#structured-memory) (2)
-- [translation](#translation) (1)
 - [ui-theming](#ui-theming) (3)
 
 ## build-test-platforms
@@ -210,24 +209,6 @@ Guide: [Structured Memory Records](../structure/structured-memory/records.md#kno
   [Cost query](../../server/src/prompt/memory/structured/rebuild.ts#L758) ·
   [Window planner](../../server/src/prompt/memory/structured/window.ts#L403) ·
   [Panel confirmation](../../src/lib/Others/StructuredMemory/memoryRecordPress.ts#L44)
-
-## translation
-
-Guide:
-[Translation: Providers, the LLM Translator, Presets, Server and Stored Translation, Bilingual Display](../structure/translation.md#known-hazards).
-
-- The tab's LLM translator can cache a blank translation. The shared pipeline refuses an answer that is blank after
-  cleaning, but `translateLLM` restores style placeholders after the pipeline returns and drops a placeholder whose
-  index the source did not have, so an answer that is only such a placeholder becomes an empty string, is cached, and
-  is served again without a provider call. Reproduced on 2026-11-21 at `ddb0c225b`: `translateHTML` with a provider
-  answer of `<style-data style-index="7"></style-data>` returned and cached `""`, and the repeated call did not reach
-  the provider.
-  - Reach: the rendered LLM path with Send Text As-Is off. The row shows a blank body (cached-only display counts `""`
-    as a hit). Retranslate overwrites the entry when a new result arrives; Clear Translation Cache removes it. The
-    Playground's Bulk plain-text output takes the same path. The server's stored translation does no style restoration
-    and is not affected (an unknown placeholder stays literal there).
-  - Not fixed. A fix applies the blank check again after the restoration.
-  - [Restoration](../../src/ts/translator/translator.ts#L1188) · [Blank check](../../shared/translation/pipeline.ts#L341)
 
 ## ui-theming
 

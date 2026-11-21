@@ -504,6 +504,54 @@ describe("the LLM translation", () => {
         expect(alerts.alertError).toHaveBeenLastCalledWith("Unexpected response type");
     });
 
+    it("returns the source and alerts when a reply contains only reasoning", async () => {
+        settings.translatorPresets.selectedId = "one";
+        const source = "<p>The gate is open.</p>";
+        succeed("<think>Only reasoning.</think>");
+
+        await expect(translateHTML(source, false, "", -1)).resolves.toBe(source);
+        expect(request.requestChatData).toHaveBeenCalledTimes(1);
+        expect(alerts.alertError).toHaveBeenCalledExactlyOnceWith("Unexpected response type");
+        expect(await exportLLMCacheAsJSON()).toEqual({});
+    });
+
+    it("returns the source and alerts when an unknown style placeholder leaves the reply blank", async () => {
+        settings.translatorPresets.selectedId = "one";
+        const source = "<p>The gate is open.</p>";
+        succeed('<style-data style-index="7"></style-data>');
+
+        const result = await translateHTML(source, false, "", -1);
+        expect(request.requestChatData).toHaveBeenCalledTimes(1);
+        expect({ result, alerts: alerts.alertError.mock.calls, cache: await exportLLMCacheAsJSON() }).toEqual({
+            result: source,
+            alerts: [["Unexpected response type"]],
+            cache: {},
+        });
+    });
+
+    it("retranslates a blank cache entry and caches the text beside an unknown style placeholder", async ({
+        onTestFinished,
+    }) => {
+        settings.translatorPresets.selectedId = "one";
+        const source = "<p>The gate is open.</p>";
+        const translated = "<p>문이 열려 있습니다.</p>";
+        await writeLLMCacheEntry(llmTranslationCacheKey(source), "");
+        const cached = await getLLMCache(source);
+        succeed(`<style-data style-index="7"></style-data>${translated}`);
+        onTestFinished(() => {
+            request.requestChatData.mockReset();
+        });
+
+        const result = await translateHTML(source, false, "", -1);
+        expect({ cached, result, saved: await getLLMCache(source) }).toEqual({
+            cached: null,
+            result: translated,
+            saved: translated,
+        });
+        expect(request.requestChatData).toHaveBeenCalledTimes(1);
+        expect(alerts.alertError).not.toHaveBeenCalled();
+    });
+
     it("translates only from the cache while a chat is generating, with the context read once", async () => {
         let release = sending();
         await expect(translateHTML("Hello", false, "", -1)).resolves.toBe("Hello");
@@ -1169,23 +1217,24 @@ describe("Exclude Chain-of-Thought", () => {
         expect(alerts.alertError).toHaveBeenCalledTimes(4);
     });
 
-    it('a text the strip leaves blank is an empty translation: cached as "" under the original key on the As-Is and direct paths (a regeneration replacing a manual entry, the next read a hit), returned without a request or an entry by the protected path', async () => {
+    it("returns an empty translation without a request for stripped input and treats the blank entry as a cache miss", async () => {
         const only = "<Thoughts>\nonly\n</Thoughts>";
         await expect(translateHTML(only, false, "", -1)).resolves.toBe("");
         expect(request.requestChatData).not.toHaveBeenCalled();
         expect(await exportLLMCacheAsJSON()).toEqual({ [keyOf(ON, only)]: "" });
-        expect(await getLLMCache(only)).toBe("");
+        expect(await getLLMCache(only)).toBeNull();
+        expect(await searchLLMCache(only)).toEqual([]);
         await expect(translateHTML(only, false, "", -1)).resolves.toBe("");
         // A manual entry (the editors) is served until a regeneration replaces it with "".
         await writeLLMCacheEntry(llmTranslationCacheKey(only), "MANUAL");
         await expect(translateHTML(only, false, "", -1)).resolves.toBe("MANUAL");
         await expect(translateHTML(only, false, "", -1, true)).resolves.toBe("");
-        expect(await getLLMCache(only)).toBe("");
+        expect(await getLLMCache(only)).toBeNull();
         await expect(translateHTML(only, false, "", -1)).resolves.toBe("");
-        // While a chat generates, the entry is served; without one the html stays, nothing written.
+        // While a chat generates, a cache miss displays the original text.
         const release = sending();
         try {
-            await expect(translateHTML(only, false, "", -1)).resolves.toBe("");
+            await expect(translateHTML(only, false, "", -1)).resolves.toBe(only);
             await expect(translateHTML("<think>other</think>", false, "", -1)).resolves.toBe("<think>other</think>");
             expect(Object.keys(await exportLLMCacheAsJSON())).toHaveLength(1);
         } finally {

@@ -14,6 +14,7 @@ import type { TranslatorPreset } from "./presets";
 import { currentTranslatorPreset, globalTranslatorPreset } from "./chatTranslation.svelte";
 import type { TranslatorStep } from "../../../shared/settings.ts";
 import {
+    EmptyTranslationError,
     runTranslatorPipeline,
     stripTranslatorReasoning,
     translateProtectingLines,
@@ -993,10 +994,11 @@ export function llmTranslationCacheKey(text: string): string {
     return llmCacheKeyPrefix(llmTranslationContext()) + text;
 }
 
-/** Reads a full captured cache key; null is a miss, while an empty string is a cached translation. */
+/** Reads a full captured cache key, treating blank values as misses. */
 export async function readLLMCacheEntry(key: string): Promise<string | null> {
     try {
-        return await LLMCacheStorage.getItem<string>(key);
+        const value = await LLMCacheStorage.getItem<string>(key);
+        return value?.trim() ? value : null;
     } catch (error) {
         throw markTransient(error);
     }
@@ -1140,9 +1142,9 @@ async function translateLLM(
               return `<style-data style-index="${styleDecodes.length - 1}"></style-data>`;
           });
 
-    let output: string;
+    let result: string;
     try {
-        output = await runTranslatorPipeline(
+        const output = await runTranslatorPipeline(
             {
                 steps: context.steps,
                 sourceText,
@@ -1177,6 +1179,16 @@ async function translateLLM(
             },
         );
         signal?.throwIfAborted();
+        result = context.sendTextAsIs
+            ? output
+            : output
+                  .replace(/<style-data style-index="(\d+)" ?\/?>/g, (match, p1) => {
+                      return styleDecodes[parseInt(p1)] ?? "";
+                  })
+                  .replace(/<\/style-data>/g, "");
+        if (result.trim() === "" && sourceText.trim() !== "") {
+            throw new EmptyTranslationError();
+        }
     } catch (error) {
         signal?.throwIfAborted();
         alertError(error instanceof Error ? error.message : String(error));
@@ -1185,13 +1197,6 @@ async function translateLLM(
         }
         return text;
     }
-    const result = context.sendTextAsIs
-        ? output
-        : output
-              .replace(/<style-data style-index="(\d+)" ?\/?>/g, (match, p1) => {
-                  return styleDecodes[parseInt(p1)] ?? "";
-              })
-              .replace(/<\/style-data>/g, "");
     if (!isNewest || isNewest()) await writeLLMCacheEntry(cacheKey, result);
     return result;
 }
@@ -1209,7 +1214,7 @@ export async function searchLLMCache(partialKey: string): Promise<{ key: string;
     const prefix = llmCacheKeyPrefix(llmTranslationContext());
     const results: { key: string; value: string }[] = [];
     await LLMCacheStorage.iterate<string, void>((value, key) => {
-        if (key.startsWith(prefix) && key.slice(prefix.length).includes(partialKey)) {
+        if (key.startsWith(prefix) && key.slice(prefix.length).includes(partialKey) && value.trim()) {
             results.push({ key: key.slice(prefix.length), value });
         }
     });
