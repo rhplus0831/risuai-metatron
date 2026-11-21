@@ -57,7 +57,7 @@ Sources the entries name (drop a line when no entry names it any more):
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 1
 - [Settings](#settings): 2
-- [Tests](#tests): 2
+- [Tests](#tests): 1
 - [Translation](#translation): 1
 
 ## Backup and sync
@@ -487,16 +487,6 @@ Post-verification of 2026-11-18 (RI-4), shown by one reader's break-test and not
 **Why it matters:** the plan named this test as the guard of that line.
 
 **Suggested handling:** either remove the redundant branch or say in the test which invariant it proves.
-
-### The toggle test's header describes a removed memory control
-
-Structure audit of 2026-11-18, read. The header of `src/lib/SideBars/Toggles.test.ts` says its checkbox writes the
-character's memory switch; the tests now assert the switch is absent there, and the per-chat control lives in
-`src/lib/SideBars/ChatMemoryPanel.svelte`.
-
-**Why it matters:** a search for the old field leads to a comment that describes a control that is gone.
-
-**Suggested handling:** rewrite the header to the current contract.
 
 ## Translation
 

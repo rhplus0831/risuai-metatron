@@ -3,9 +3,9 @@
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The sidebar's memory toggle (`Toggles.svelte`; `docs/structure/memory.md` "The memory toggle
-// count"): the checkbox writes the character's `supaMemory` through a function binding that counts
-// each off→on transition and nothing else, and the toggle is shown for a HypaV2-only configuration too.
+// The sidebar's prompt toggle panel (`Toggles.svelte`): rows from the preset's, the modules' and the
+// owner's toggle definitions, written per chat, with the toggle preset controls. The panel holds no
+// memory switch (the last test); the per-chat memory control is `ChatMemoryPanel.svelte`.
 
 vi.mock("src/ts/process/modules", () => ({
     moduleUpdate: vi.fn(),
