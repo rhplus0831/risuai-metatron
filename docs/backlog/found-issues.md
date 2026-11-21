@@ -44,7 +44,7 @@ Sources the entries name (drop a line when no entry names it any more):
 
 ## Contents
 
-- [Backup and sync](#backup-and-sync): 3
+- [Backup and sync](#backup-and-sync): 2
 - [Build and CI](#build-and-ci): 1
 - [Chat screen](#chat-screen): 6
 - [Headless host](#headless-host): 1
@@ -58,20 +58,6 @@ Sources the entries name (drop a line when no entry names it any more):
 - [Translation](#translation): 1
 
 ## Backup and sync
-
-### HTML chat exports can fail to import or change the original message text
-
-Two export/import round trips reproduced this on 2026-11-18. A chat with the default empty note exported successfully,
-but importing the HTML reported “No Data” and added no chat. With a nonempty note, a message containing literal
-`&lt;tag&gt; &amp; &#65;` was imported and saved as `<tag> & A`. The embedded JSON escapes angle brackets but leaves
-ampersands untouched. The importer reads the HTML parser's decoded text and requires a truthy note.
-[Exporter](../../src/ts/characters.ts#L432), [importer](../../src/ts/characters.ts#L686).
-
-**Why it matters.** Someone transferring a transcript can see a successful import with different message text.
-The original chat survived when the test imported back into the same character. JSON export/import is a workaround.
-
-**Suggested handling.** Encode the embedded JSON so its text round-trips, and accept an empty string for a valid
-note. Cover both cases by feeding the actual HTML download back to the importer.
 
 ### The boot cache keeps its own copy of the resource id rule
 

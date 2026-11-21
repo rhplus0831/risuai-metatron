@@ -573,17 +573,52 @@ describe("importChat prepares each imported chat's binding", () => {
         ]);
     });
 
-    it("an html export", async () => {
+    it("a legacy HTML export", async () => {
         const booted = await boot();
         const ids = existing(booted);
-        const chat = chatWith("Html", { ...ids, promptPresetId: "p-gone", bindingReview: false });
-        const html = `<html><body><div class="idat">${JSON.stringify(chat)}</div></body></html>`;
+        const chat = chatWith("Html", {
+            ...ids,
+            promptPresetId: "p-gone",
+            bindingReview: false,
+            message: [{ role: "user", data: "<tag> & text" }],
+        });
+        const payload = JSON.stringify(chat).replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const html = `<html><body><div class="idat">${payload}</div></body></html>`;
         await booted.run({ name: "chat.html", data: new TextEncoder().encode(html) });
         expect(booted.chatsOf(booted.alpha)[0].name).toBe("Html");
+        expect(booted.texts(booted.alpha, 0)).toEqual(["<tag> & text"]);
         expect(await saved(booted, 1)).toEqual([
             { modelPresetId: ids.modelPresetId, bindedPersona: ids.bindedPersona, bindingReview: true },
         ]);
     });
+});
+
+it.each([
+    { description: "an empty note", note: "" },
+    { description: "a nonempty note", note: "Keep this note" },
+])("round-trips an HTML chat with $description and literal character references", async ({ note }) => {
+    const { alpha, beta, chat, characters, chatsOf, downloads, run, select, sync, texts } = await boot();
+    const message = "&lt;tag&gt; &amp; &#65;";
+    const source = chat.createChat(alpha, {
+        name: "HTML chat",
+        note,
+        localLore: [],
+        fmIndex: -1,
+        message: [{ role: "user", data: message }],
+    });
+    await sync.flushResources();
+    alerts.select.mockResolvedValueOnce("2").mockResolvedValueOnce("1").mockResolvedValueOnce("0");
+
+    await characters.exportChat(source.id!);
+    expect(downloads).toHaveLength(1);
+    const [{ name, data }] = downloads;
+    select(beta);
+    await run({ name, data: new TextEncoder().encode(data) });
+
+    expect(alerts.error).not.toHaveBeenCalled();
+    expect(alerts.normal).toHaveBeenCalledWith(language.successImport);
+    expect(chatsOf(beta)[0]).toMatchObject({ name: "HTML chat", note });
+    expect(texts(beta, 0)).toEqual([message]);
 });
 
 /** Memory HTTP is scripted only in these tests; the real save adapter and server chat store remain in use. */

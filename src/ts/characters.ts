@@ -429,7 +429,7 @@ export async function exportChat(chatId: string) {
                             </div>
                             ${chatContentHTML}
                         </div>
-                        <div class="idat">${JSON.stringify(chat).replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>
+                        <div class="idat">${escapeHtml(JSON.stringify(chat))}</div>
                     </body>
             `;
 
@@ -687,7 +687,7 @@ export async function importChat() {
             const doc = new DOMParser().parseFromString(Buffer.from(dat.data).toString("utf-8"), "text/html");
             const chat = doc.querySelector(".idat").textContent;
             const json = JSON.parse(chat);
-            if (json.message && json.note && json.name && json.localLore) {
+            if (json.message && (json.note || json.note === "") && json.name && json.localLore) {
                 addChats([json]);
                 alertNormal(language.successImport);
             } else {
