@@ -1,26 +1,24 @@
 # Known Issues
 
-Confirmed defects and advertised but unwired behavior, moved here on 2026-11-10 from the `Issues` headings of the focused guides' Known Hazards (95 entries from 25 guides) so they can be worked as one queue, the way [found issues](found-issues.md) was cleared. The guides keep their `Unconfirmed:` claims (reproduction comes first for those), their Limitations, and their Gotchas; a claim that is confirmed moves here. Each entry is one bullet under its owning guide, in the guide's own wording at the move, with its links pointed back at the guide; the Contents list counts each guide's entries. The entries were verified when they were written into the guides, but line numbers and identifiers drift: re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. A defect the owner decides to keep moves back to the guide as a Limitation with the decision. A new confirmed defect goes here, not into the guide.
+Confirmed defects and advertised but unwired behavior, kept as one queue across the focused guides. The guides keep
+their `Unconfirmed:` claims (reproduction comes first for those), their Limitations, and their Gotchas; a claim that
+is confirmed moves here, and so does a [found issues](found-issues.md) entry once it is reproduced. Each entry is one
+bullet under its owning guide, with its links pointed back at the guide, and says how it was reproduced; the Contents
+list counts each guide's entries. Line numbers and identifiers drift: re-check the code before acting on an entry
+(STRUCTURE.md protocol step 5), and delete it in the same commit that fixes it or shows it is gone. A defect the owner
+decides to keep moves back to the guide as a Limitation with the decision. A new confirmed defect goes here, not into
+the guide.
 
-The eleven entries left after the first two rounds were reviewed with the owner on 2026-11-10: the JWT expiry gap, the
-plugin RPC lookup, key events from secret fields, and the plugin listener registry were fixed (and the hub proxy's
-answers got sandbox headers, a finding of the review itself); the rest moved to their guides' Limitations with the
-owner's decision, except the persistence entry below.
+This file holds open entries only, written in the present tense. Do not add history here: which entries moved in
+when, who fixed what and how, and what the owner decided about an entry that has left belong in the commit message of
+the commit that moves, fixes, or closes it (`git log -- docs/backlog/known-issues.md`), and in the guide's Limitation
+when the owner keeps the behavior. When a fix closes part of an entry, rewrite the entry to what is left.
 
-Seventeen entries of the fork data-loss cross-check (`cross-check F<n>`) moved here from [found issues](found-issues.md)
-on 2026-11-17, after each was reproduced at `5f8b0b191` by a probe test that drives the product code through the
-entry's trigger. The owner decided the seven that needed a design choice the same day. Sixteen were then fixed in one
-round and their bullets deleted: implementers by group in separate worktrees, the probes turned into regression tests
-by a second agent, and each new test run against its fix reverted before the commits landed. The seventeenth, F3 (a
-plugin's in-memory value overwrites a newer value from another tab or device), is a
-[Limitation of the plugin guide](../structure/plugin-sandbox.md#limitations) by the owner's decision. What the round
-read and did not fix is in [found issues](found-issues.md); what a person has to look at is in
-[manual checks](manual-checks.md#a-real-desktop-browser-by-hand).
+Sources the entries name (drop a line when no entry names it any more):
 
-Seven findings of the [structure audit of 2026-11-18](../reports/audits/guides/structure-audit-2026-11-18.md) moved here on 2026-11-20 from `docs/research/found-issues.md`, a file that
-audit had kept apart from the backlog: each was exercised in an isolated run at `744d17cad`. The five findings the
-audit only read are in [found issues](found-issues.md). None was run again at the move; the files they name had no
-commit between the audit and the move.
+- Structure audit of 2026-11-18: [report](../reports/audits/guides/structure-audit-2026-11-18.md); each entry was
+  exercised in an isolated run at `744d17cad`.
+- Wide review of 2026-11-14: [report](../reports/audits/codebase/wide-review-2026-11-14.md).
 
 ## Contents
 
@@ -135,17 +133,16 @@ Guide: [Structured Memory Records](../structure/structured-memory/records.md#kno
   - `checkMemoryRow` checks a row's columns, not its record's shape, so an event without `storyTime`, `keyLines`, or
     `participants` loads, where the chat-file restore (`restore.ts`) refuses it. The server's readers take those three
     as empty by the owner's decision of 2026-11-12 (`eventBody` in `card.ts`, `eventVectorTexts` and the timeline's
-    full lines in `retrieve.ts`, `remappedEvent` in `pages.ts`), and the tab's readers supply them. Still open: an
+    full lines in `retrieve.ts`, `remappedEvent` in `pages.ts`), and the tab's readers supply them. An
     event's other parts (`summary`, `stateChanges`, `knowledge`, `relationshipShifts`, `openThreads`, `sources`) and a
-    part of the wrong type are read as written, and the tab's package export (`renderMemoryTimeline`) iterates
-    `keyLines` unguarded. The server has never written such an event. A run on 2026-11-14 in a running server (wide
-    review, cut X2, and a second run) restored 37 crafted events through `tx.restoreMemory`: all were admitted, all
-    259 read rounds answered 200, the panel rendered, and sends in the chat failed during assembly for a missing,
-    null, or wrongly typed `summary`, `knowledge`, or `sources` and for `keyLines` or `participants` of the wrong type
-    (16 of 36 cases). Fixed for sends the same day (`254ed796f`): prompt selection, coverage, retrieval, vector
-    warming, and the recording loop skip an event with such a field (`memoryEventHasReadableFields` in
-    `shared/structuredMemory.ts`) and leave the row as stored. The restore validator still admits such a row: refusing
-    it there made one row fail the memory export of every chat. The package export has no caller in the product.
+    part of the wrong type are admitted as written: the restore validator admits such a row on purpose, since refusing
+    it there made one row fail the memory export of every chat. The read rounds answer such a row and the panel
+    renders it (wide review of 2026-11-14, cut X2, in a running server: 37 crafted events restored through
+    `tx.restoreMemory`, all admitted, all 259 read rounds answered 200). A send does not fail on one: prompt
+    selection, coverage, retrieval, vector warming, and the recording loop skip an event with a missing, null, or
+    wrongly typed field (`memoryEventHasReadableFields` in `shared/structuredMemory.ts`, `254ed796f`) and leave the row
+    as stored. Still open: the tab's package export (`renderMemoryTimeline`) iterates `keyLines` unguarded; it has no
+    caller in the product. The server has never written such an event.
 
   Not fixed: the byte charge, since measuring costs every round; the owner has not said whether it is a Limitation.
 

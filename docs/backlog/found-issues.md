@@ -1,134 +1,46 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, seven more plan-leftover collections from memory the same day, the seventeenth (the Found Issues Decisions run) on 2026-11-09, the nineteenth (the Upstream Intake 2 run) on 2026-11-10, the twentieth (the Memory Panel Readability run) on 2026-11-11, the twenty-first (the Structured Memory Recent Timeline run) the same day, the twenty-second (the Per-Chat Memory run) on 2026-11-13, the twenty-third (the Lore Budget Send Stop run) the same day, the Generation Progress Window run's two findings the same day, and the OOC Session run's two findings the same day, the Remote Host run's finding on 2026-11-16, the Completion Notification After Plugin Work run's finding the same day, and the Sidebar-Only Chat Binding run's finding on 2026-11-17, the Request Interception run's two findings on 2026-11-18, and the Structured Memory Story Dates run's two findings the same day, and the Timeline Reading View run's finding on 2026-11-19, and the Timeline Chapter Synopses run's four findings the same day, and the Response Checks run's finding on 2026-11-20, and the Upstream Intake 3 run's finding on 2026-11-21, and the five findings of the generation lock survey that came with the chat lorebook fix (`4c43d31bd`) the same day; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on
+something else. Each one was outside the scope of the change that found it, so it was recorded instead of fixed.
+Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree
+shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes).
+Findings of a review or an audit are filed here the same way.
 
-These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. An entry is a `###` heading under its area section, a paragraph saying what and where (`file:line`), then a **Why it matters:** line and a **Suggested handling:** line; the Contents list at the top counts each area's entries. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's section of [known issues](known-issues.md) (or to the guide's Known Hazards `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
+These are notes, not verified reports: this file is the inbox, and [known issues](known-issues.md) and the focused
+guides' Known Hazards are where verified entries live. An entry is a `###` heading under its area section, a paragraph
+saying what and where (`file:line`) and how far it was checked (read, reproduced, run in the app), then a
+**Why it matters:** line and a **Suggested handling:** line; the Contents list counts each area's entries. Line
+numbers and identifiers were right when each entry was written; some entries may already be fixed by later work.
+Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that
+fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to
+that guide's section of [known issues](known-issues.md) (or to the guide's Known Hazards `Limitations`, once the owner
+accepts it; STRUCTURE.md Doc Maintenance) and leaves this file.
 
-Reviewed against the current source on 2026-10-24 (first batch), 2026-10-26 (second batch), 2026-10-27 (single entries), and 2026-10-29 (a cleanup pass that fixed eleven entries and narrowed one). Confirmed fixes have been removed, and partially fixed entries have been narrowed to the remaining gap. Entries that still need runtime reproduction are retained.
+This file holds open entries only, written in the present tense: what the code does now and what is wrong with it. Do
+not add history here. Which batch moved in when, who fixed what and how, and why an entry was closed belong in the
+commit message of the commit that moves, fixes, or closes it (`git log -- docs/backlog/found-issues.md`), and a
+review's method and counts belong in its report. When a fix closes part of an entry, rewrite the entry to what is
+left; do not narrate the fixed part.
 
-The inbox was emptied on 2026-11-09 by the Found Issues Clearance plan (retired; `git show e8758c2a8:docs/plan/found-issues-clearance.md`): every entry was fixed by one of its slices, recorded as a Limitation or Issue in its guide, or closed with a reason in slice H1's commit. The eighteenth batch, that run's own findings, moved in the same day.
+Words the entries use:
 
-The eighteenth batch was cleared the same day by a Sol implementer with session verification (seven entries fixed with regression tests; the rendered-translation quote entry was closed as not reproduced: a scratch replay of the rendered path with identity Google and LLM translators kept quoted font names, `url("…")` and `content:"…"` intact in every one of twelve cases).
+- "Latent": no current caller reaches the bad path. "Accepted": the owner chose to keep the behavior.
+- "Kept as recorded by the owner's rule for the fix round": the owner's rule for the fixes of the post-verification of
+  2026-11-18 was that a fix whose cost is out of proportion to how often its trigger happens is recorded and not made.
+  The entry stays open, and its **Suggested handling:** says what to do if it is taken up.
+- A **Decision:** line is the owner's and stands until the owner changes it.
 
-The nineteenth batch and the eight entries of the 2026-11-10 full guide audit (twelve in all) were cleared on 2026-11-10 by Sol implementers and test writers in three worktrees with session verification: eight fixed with regression tests (three in the plugin sandbox, style scoping, the popup editor's row, the chat export's candidate receipts, memory task job ids in shares and reports, the e2e program in `pnpm check:changed`), the dead boot fixture capture driver deleted, the wasmoon upgrade note moved to its module, the checkpoint benchmark given its place in the audit report, and the full-screen alert e2e failure closed as the dev stack's reload on file edits (8 of 8 quiet runs passed; a run under Markdown touches failed the same way).
+Sources the entries name (drop a line when no entry names it any more):
 
-The twentieth and twenty-first batches, a build entry, and one finding still in memory (eight in all) were worked on 2026-11-12 by Sol implementers and test writers in three worktrees with session verification: five fixed (the pdf.js character map URL, the Korean export line, the history jump's scroll and the refresh scan with regression tests, the eval's capture beyond titles); the on-demand timeline count tried and reverted as not worth its cost (`b29a883a5`, `bb2ede7d6`; the read guide's Limitation has the numbers); the read round's byte charge reproduced and moved to [known issues](known-issues.md#structured-memory); and the timeline heading reworded the same day by the owner's decision (`the last ones may already be in the messages below`).
-
-The twenty-second batch is the first wave of the wide review of 2026-11-14 at `05df12543` (eleven read-only reviewers
-by area, then a second reader of another model for each report with a finding): five new entries, each reproduced by
-both readers with a probe test kept with the review material outside the repository, and runtime results added to the
-preview, HypaV3 checkpoint, and lore limit entries below and to the restored-row entry in
-[known issues](known-issues.md#structured-memory). The tokenizer entry was in memory since 2026-11-12.
-
-The twenty-third batch is the second wave of the same review (2026-11-14, twelve reviewers: six over the server's
-routes, five re-reading the fixes made since 2026-11-05, one running the guides' unconfirmed claims; a second reader
-for each of the eleven reports with a finding): seventeen new entries below, each reproduced by both readers except
-the one marked P3, and three confirmed claims moved from the guides' Issues to [known issues](known-issues.md).
-
-The twenty-second and twenty-third batches were worked on 2026-11-14 by implementers and test writers in seven
-worktrees with session verification (each new test was run against its fix reverted, then the whole suite on the
-merged branch): every entry of the two batches was fixed with a regression test except the three below. The message
-search keeps one cost: a hit in a single message of 16 MiB still takes about two seconds to build its snippet. Two
-siblings the implementers found were fixed with them (the tab's MCP client and the tab's lore preview), and the three
-confirmed claims left [known issues](known-issues.md) fixed.
-
-The twenty-fourth batch is the third and fourth waves of the same review (2026-11-14). Wave 3 swept eight
-repository-wide invariants and ran the manual checks an agent can run: 25 findings, every one confirmed by a second
-reader. Twenty-two were fixed the same day with regression tests, without passing through this file (script
-permissions on the server, destinations captured before a wait in the tab and its components, card and module format
-round trips, credentials in the settings report and the request log, names and translated text in HTML exports); the
-three that need a decision or real providers are entries below. Wave 4 broke the rules of six areas one at a time to
-see whether a test fails; the tests it found missing were written the same day. The review's method, counts, and cost are in [its report](../reports/audits/codebase/wide-review-2026-11-14.md).
-
-The entry on thirteen remote calls of the tab that bypassed the request wrappers was fixed later the same day: the
-buffered calls go through `globalFetch`, and Stability's multipart form, the Chub download, and `#import=` card links
-through `fetchNative`, which keeps their bytes and streams; a GET through `globalFetch` no longer gets a default JSON
-content type, which would make a cross-origin plain fetch need a CORS preflight. The calls that need a provider key
-are in [manual checks](manual-checks.md#real-providers-and-external-services).
-
-The entry on a chat panel's `style` element was closed the same day by the owner's decision: a panel that carries one
-asks for the plugin's new `globalStyle` permission and is shown without it when declined
-([permission list](../structure/plugin-sandbox.md#permission-list)). The inline styles and class names it left open
-are the Plugins entry below.
-
-The twelve entries left on 2026-11-15 were worked the same day by Sol implementers and test writers in five worktrees
-with session verification (each new test was run against its fix reverted, then the whole suite on the merged branch).
-Nine were fixed with regression tests or, for the two test-tooling entries, by a run of the repaired test or driver: a
-tool call the request did not offer, the special token at the auto-continue count, the `OobaLegacy` string stream (Half
-Streaming stays off for the format, in [deferred work](deferred-work.md#generation-progress-window)), the greeting
-rebuild, the full OOC log race, the plugin chat panel (the owner's decision: paint containment, no new permission), the
-dead `onCharacterSelected` hook, the working-tree listing test, and the job handoff driver's consent
-(`measurePluginData.mjs` had the same gap and was fixed with it). The OOC race was not fixed as the entry suggested: a
-log of 201 exchanges can consist of entries `oocPrune` protects, so the stored limit got a slack of 16 over the ask
-limit and nothing is dropped. The whole-chat replacement entry was closed: no caller in `src/` or `shared/` builds the
-next chat from a partial field list (`editChat` and `editChatSync` clone the baseline; copy, branch, and import spread
-the whole chat; the two plugin setters forward the whole chat the plugin read), and the persistence guide does not
-carry the plan's absolute claim. The tokenizer entry was narrowed to what is left below, and the `@import` entry stays
-by the owner's decision.
-
-The twenty-fifth batch is the Remote Host post-audit of 2026-11-16 at `56c612168` (four read-only verifiers, one per
-contract boundary, then a second reader that tried to refute each P1 and P2): eight entries below, the six P1 and P2
-ones each reproduced by a probe test kept with the review material outside the repository. The method, the cost, and
-the ratings are in [its report](../reports/audits/finished-plans/remote-host-2026-11-16.md).
-
-Seven of the eight were fixed the same day by the session that ran the audit, each with a regression test that was
-run against its fix reverted, together with the Remote commands entry the plan's run had left (a host's `uncertain`
-report now marks the command attempted): a marked send keeps its request id through a `stale` or
-`chatBindingMismatch` refusal, the relay ignores a late `running` of an attempt already reported `uncertain`, the
-relay has a total bound on entries and retained bytes, the speaker left the relay's identity, a shortened report text
-no longer ends inside a surrogate pair, a leave control sits above the alert layer while an overlay covers the host
-lock screen, and the help text names Continue and the reroll of a single reply. The send preflight's unbounded wait
-predates the plan and is the Network jobs entry below. The two verifiers whose cuts the fixes touch read them again:
-the relay's reader found that a reload recovery's result-less `uncertain` still erased a stored result and that a
-result could grow past the body cap when parsed (both fixed with tests), and that the relay's identity still differs
-from the generation's for field combinations no caller sends, which is the Remote commands entry below.
-
-The twenty-sixth batch is the fork data-loss cross-check of 2026-11-17 at `003f367fc`: 233 failure scenarios taken
-from the data-loss fixes of four other RisuAI forks, each checked against this app by a read-only reviewer per
-subsystem, then a second reader that tried to refute each P2 finding. Seventeen entries, each marked
-`cross-check F<n>`. They came from static reading only: none had been reproduced by a test when it was filed. Each
-entry said who read its code. The method, the verdict counts, and the findings that were not filed
-(four that are documented design, five P3 ones nobody challenged) are in
-[its report](../reports/surveys/fork-data-loss-crosscheck.md).
-
-All seventeen were reproduced the same day at `5f8b0b191` and moved to [known issues](known-issues.md), each under its
-owning guide: one probe test per entry, written by five agents in separate worktrees, with a defect case that failed
-and a control case that passed, and each probe run a second time by the session. Fifteen reproduced as filed; the
-import entry (F10) and the module export entry (F16) reproduced narrower, and several descriptions were corrected
-against the code. The module export entry's encoder was then run in headless Chrome and did what the entry said.
-Sixteen of the seventeen were fixed the same day and the last is a Limitation of the plugin guide
-([known issues](known-issues.md) has the account). The six entries marked "fix round of 2026-11-17" below are what
-that round's implementers read next to their fixes and left: none was run.
-
-The twenty-seventh batch is the post-verification of seven retired plans of 2026-11-18 at `504a7af45` (one read-only
-verifier per plan, then a second reader that tried to refute each P1 and P2): twenty-four entries below, each marked
-"post-verification of 2026-11-18" with the finding's id. The seventeen P1 and P2 findings that stood were each
-reproduced by a probe kept with the review material outside the repository and traced by both readers; the P3 ones
-were filed by one reader and not re-read, and are grouped where they are alike. Two filed findings have no entry: a
-plugin's refused edit of a locked reply is in the plugin guide, and a hook's screen-local busy state is the plan's
-own decision. The method, the cost, and the ratings are in
-[its report](../reports/audits/finished-plans/plan-post-verification-2026-11-18.md).
-
-Sixteen of the findings were fixed the same day, each with a regression test that was run against its fix reverted,
-and the ten guide sentences were written: the headless host trusts only the local listener's own key, keeps its
-restart wait through the time a page is down, reads Windows environment keys in any case, and keeps a console
-message's position; Send Draft follows the local send state; a template drag stays on its preset; the catalog's trash
-button removes the row its dialog named and the module's own button clears a repeated id; the picker shows a folder's
-enabled count; a literal prompt's popup (a request interception rule, a hook prompt, a translator step) opens as
-plain text; the compaction rules carry the rule against day-relative words; the Timeline row keeps a sparse event's
-date and ordinal; the time limit box shows the clamped value; the request context type names the hold; the group
-notification test tells its two speakers apart. Each verifier then read the fixes of its own findings: all closed
-their triggers, and what the verifiers found beside them is in the six narrowed entries below (one thing is not: a
-time limit box that is emptied stays blank while the server stores the default). Seven entries are
-kept as recorded by the owner's rule for that round (a fix whose cost is out of proportion to how often the trigger
-happens is not made); each says so.
-
-The twelve findings of the [structure audit of 2026-11-18](../reports/audits/guides/structure-audit-2026-11-18.md) sat in `docs/research/found-issues.md`, outside this file's counts,
-until 2026-11-20. The seven it had exercised in an isolated run moved to [known issues](known-issues.md), the HypaV2
-entry among them; the four it had only read and its stale test header are entries below, each marked "structure audit
-of 2026-11-18"; its settings drag finding joined the Settings entry on a row drag. None was run again at the move.
-The audit also retired the plugin guide size warning and verified that the JSON, Markdown, snapshot and checkpoint
-validators reject unknown event statuses.
+- Wide review of 2026-11-14: [report](../reports/audits/codebase/wide-review-2026-11-14.md).
+- Remote Host post-audit of 2026-11-16: [report](../reports/audits/finished-plans/remote-host-2026-11-16.md).
+- Fix round of 2026-11-17: the fixes of the [fork data-loss cross-check](../reports/surveys/fork-data-loss-crosscheck.md);
+  these entries are what its implementers read next to their fixes.
+- Post-verification of 2026-11-18: [report](../reports/audits/finished-plans/plan-post-verification-2026-11-18.md);
+  the ids (`IH-1`, `MF-2`) are its findings'.
+- Structure audit of 2026-11-18: [report](../reports/audits/guides/structure-audit-2026-11-18.md).
+- Generation lock survey of 2026-11-21: no report; a read-only survey that came with the chat lorebook fix
+  (`4c43d31bd`).
 
 ## Contents
 
@@ -145,7 +57,7 @@ validators reject unknown event statuses.
 - [Remote commands](#remote-commands): 1
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 1
-- [Settings](#settings): 3
+- [Settings](#settings): 4
 - [Tests](#tests): 2
 - [Translation](#translation): 1
 
@@ -221,37 +133,38 @@ longer exists. The workflow's three actions are pinned by tag (`actions/checkout
 [the build guide's sentence](../structure/build-test-platforms.md#ci); pin the actions by hash if the workflow is in
 use.
 
-**Decision:** owner, 2026-11-20: `dev` stays out of the triggers on purpose, and the guide's CI section now says so.
-That part of the entry is closed; do not file it again.
+**Decision:** owner, 2026-11-20: `dev` stays out of the triggers on purpose
+([build guide](../structure/build-test-platforms.md#ci)); do not file its absence.
 
 ## Chat screen
 
 ### Back and forward between multi-reply bundles swaps the messages only
 
-Fix round of 2026-11-17, read and not run. A removal reroll now restores the variables its removed replies changed.
-`move` in `src/ts/process/rerollHistory.ts`, which steps back and forward between the stored bundles of a multi-reply
-turn, still swaps the message bundles and leaves the chat's variables as the shown bundle did not set them.
+Fix round of 2026-11-17, read and not run. `move` in `src/ts/process/rerollHistory.ts`, which steps back and forward
+between the stored bundles of a multi-reply turn, swaps the message bundles and leaves the chat's variables as the
+shown bundle did not set them. A removal reroll, by contrast, restores the variables its removed replies changed.
 
 **Why it matters:** after stepping back to an earlier bundle, counters and flags are those of the bundle that was
-shown last, the same drift the reroll fix removed.
+shown last.
 
 **Suggested handling:** reproduce with a two-speaker turn whose replies change a counter; then keep each bundle's
-variable values with it, as the recovery path now does.
+variable values with it, as the removal reroll's recovery path does.
 
 ### The expanded editor popup and two small editors still lose their text on a remount
 
-Fix round of 2026-11-17, read and not run. The message editor and the stored-translation editor now keep their text in
+Fix round of 2026-11-17, read and not run. The message editor and the stored-translation editor keep their text in
 tab memory (`src/ts/storage/messageEditorDrafts.svelte.ts`). Three other surfaces keep theirs in component state: the
 manually expanded popup of `src/lib/UI/GUI/TextAreaResizable.svelte` (it discards unreturned text when destroyed), the
 partial-edit popover, and the editor of a rendered (cached) translation in `src/lib/ChatScreens/Chat.svelte`.
 
-**Why it matters:** the same loss as the fixed entry, on less used surfaces.
+**Why it matters:** text typed in one of the three is lost when its component is destroyed and mounted again; they
+are less used than the message editor.
 
 **Suggested handling:** reproduce each; the popup can hand its text back to its owner on destruction.
 
 ### Sending newer text overwrites a failed send that was waiting to be placed back
 
-Post-verification of 2026-11-18 (IH-1), reproduced by two readers; older than the Input Hooks plan, which widened it. A chat has one send hand-off row and one in-memory entry (`putComposerSend` in `src/ts/storage/draftJournal.ts`, `sendDraft.ts`). When a send fails before its user message lands while the composer holds newer text, the failed text is not placed back and stays only there. The next send of the newer text overwrites both, and its success removes the row. The first text is then in neither the composer, the journal, nor the chat. Since the plan, a failed draft send is also kept out by a newer draft, translation, or attachment alone, and its row holds both boxes.
+Post-verification of 2026-11-18 (IH-1), reproduced by two readers. A chat has one send hand-off row and one in-memory entry (`putComposerSend` in `src/ts/storage/draftJournal.ts`, `sendDraft.ts`). When a send fails before its user message lands while the composer holds newer text, the failed text is not placed back and stays only there. The next send of the newer text overwrites both, and its success removes the row. The first text is then in neither the composer, the journal, nor the chat. A failed draft send is also kept out by a newer draft, translation, or attachment alone, and its row holds both boxes.
 
 **Why it matters:** the user loses a message they wrote (and, for a draft send, the reviewed draft) without a notice. It needs a send that fails while the user has already typed the next message.
 
@@ -259,7 +172,7 @@ Post-verification of 2026-11-18 (IH-1), reproduced by two readers; older than th
 
 ### A send that fails after a Settings round trip is not placed back until the chat is shown again
 
-Post-verification of 2026-11-18 (IH-3), reproduced by two readers; older than the Input Hooks plan, which extended it to a draft send's whole snapshot. Opening and closing Settings remounts the chat screen. A send that was pending across the remount settles into the destroyed composer (`placeSend` in `src/ts/process/composerDrafts.svelte.ts` returns on `destroyed`), and the new screen is not told.
+Post-verification of 2026-11-18 (IH-3), reproduced by two readers. Opening and closing Settings remounts the chat screen. A send that was pending across the remount settles into the destroyed composer (`placeSend` in `src/ts/process/composerDrafts.svelte.ts` returns on `destroyed`), and the new screen is not told. For a draft send this holds for its whole snapshot.
 
 **Why it matters:** the composer stays empty after the refusal. The text is in the hand-off row and returns on a chat switch, another remount, or a reload.
 
@@ -354,7 +267,7 @@ is gone or no longer universal.
 ### The records guide says chapters sit outside every lifecycle walk
 
 Timeline Chapter Synopses run, 2026-11-19, from slice 5; read. `docs/structure/structured-memory/records.md:240`
-(Memory tables) says `memory_chapters` "sits outside the memory table group and all lifecycle walks". Since that run
+(Memory tables) says `memory_chapters` "sits outside the memory table group and all lifecycle walks". But
 the rebuild swap deletes a chat's chapters for every mode but backfill (`server/src/data/memoryStore.ts`, `swap`) and
 the `/inherit` route copies them (`store.memory.chapters.copy`); the record walks of a restore, the package, chat
 files, and checkpoints still skip the table.
@@ -391,7 +304,7 @@ Post-verification of 2026-11-18 (HH-2), reproduced by two readers. A remote comm
 
 ### An uncaught page error from a script URL with a query loses its position in the headless host's log
 
-Post-verification of 2026-11-18 (HH-5, what is left), read by one reader after the fix. A console message now keeps its line and column: its URL is redacted by itself and the position is appended. The `pageerror` handler in `util/headlessHost.mjs` still logs `error.stack` through the whole-line redaction, which removes everything after a `?` in each frame's URL.
+Post-verification of 2026-11-18 (HH-5), read by one reader. The `pageerror` handler in `util/headlessHost.mjs` logs `error.stack` through the whole-line redaction, which removes everything after a `?` in each frame's URL. A console message keeps its line and column: its URL is redacted by itself and the position is appended.
 
 **Why it matters:** on a dev stack, whose modules carry a version query, an uncaught error's stack names files without positions.
 
@@ -517,7 +430,7 @@ these editors like `createChatFieldDraft`.
 
 ### With two modules of one id, edit, export, conversion, and Apply module act on the first
 
-Post-verification of 2026-11-18 (MF-1, what is left), read by one reader after the fix. The catalog's trash button now removes the row its dialog named, and the guide says two modules with one id are filed together. The catalog's other row actions and the Apply module picker still find the module by id and so act on the first of the pair. An upstream database import and a plugin's whole-list write can store such a pair.
+Post-verification of 2026-11-18 (MF-1), read by one reader. The catalog's row actions other than the trash button, and the Apply module picker, find the module by id and so act on the first of two modules with one id. The trash button removes the row its dialog named. An upstream database import and a plugin's whole-list write can store such a pair.
 
 **Why it matters:** the user opens, exports, or applies another module than the row they chose; nothing is deleted.
 
@@ -541,7 +454,7 @@ Post-verification of 2026-11-18 (MF-3), reproduced by two readers. An upstream d
 
 ### The character's module toggle removes one entry of a repeated id
 
-Post-verification of 2026-11-18 (MF-4, what is left), read by one reader after the fix. The catalog row's button now removes every occurrence of the id, as the folder's switch does. The character-level toggle (the row's right-click action) still splices one occurrence, so a module whose id is stored twice stays on after one click.
+Post-verification of 2026-11-18 (MF-4), read by one reader. The character-level toggle (the row's right-click action) splices one occurrence of the id, so a module whose id is stored twice stays on after one click. The catalog row's button and the folder's switch remove every occurrence.
 
 **Why it matters:** the same list reads differently depending on the control; it needs a stored list that repeats an id (an upstream import).
 
@@ -555,9 +468,9 @@ Post-verification of 2026-11-18 (MF-4, what is left), read by one reader after t
 only after it. The flush awaits the resource batch's HTTP exchange (`runCycle` in
 `src/ts/storage/resourceSync.svelte.ts`), and the resource client gives that request no deadline and no signal
 (`src/ts/storage/resourceClient.ts`). A write whose answer never arrives therefore holds the send, its local send
-reservation, the chat pin, and Stop until the request settles or the page reloads. The draft keeps the text. The same
-wait was in `runServerJob` before the Remote Host plan (`git show 952c4baec:src/ts/process/serverCommands.ts`); the
-plan added the remote adapter as a second caller. Found 2026-11-16 by the Remote Host post-audit (L-1): two probes
+reservation, the chat pin, and Stop until the request settles or the page reloads. The draft keeps the text. Both
+paths into it wait this way: `runServerJob` and the remote host's send (`src/ts/network/remoteSend.ts`). Found 2026-11-16
+by the Remote Host post-audit (L-1): two probes
 held the answer for two simulated hours, one through `runSend` and one through `flushResources` against the fake
 resource server. A real browser can end the request sooner (a network error, a proxy timeout); nothing in the tab
 guarantees it.
@@ -571,7 +484,7 @@ abort the shared write or count it as saved: it may be committed, and other call
 
 ### The job request's context type does not name two reroll fields
 
-Post-verification of 2026-11-18 (CN-4, what is left), read by one reader after the fix. `ServerJobRequest.context` in `src/ts/process/serverCommands.ts` now names `completionHoldMs`. It still leaves out `rerollMessageId` and `speakerChaId`, which reach the job at runtime through spreads that type-check.
+Post-verification of 2026-11-18 (CN-4), read by one reader. `ServerJobRequest.context` in `src/ts/process/serverCommands.ts` leaves out `rerollMessageId` and `speakerChaId`, which reach the job at runtime through spreads that type-check.
 
 **Why it matters:** the type does not describe two fields the code sends.
 
@@ -602,9 +515,8 @@ script intact.
 where the relay sees a changed command: `continueMessageId` on a plain send, `userMessageId` on a Continue without
 input, `input` or `userMessageId` on a reroll, and `continue` absent or true in a group chat. The relay answers 409
 `commandChanged` to a re-post that the generation would replay. Found 2026-11-16 by the re-reading of the Remote Host
-post-audit's fixes (R-6); the speaker, the one field of this kind the audit first named, was taken out of the identity
-the same day. No caller that ships posts one id with such a change, and the relay errs on the strict side: the sender
-keeps a `commandChanged` send uncertain.
+post-audit's fixes (R-6). No caller that ships posts one id with such a change, and the relay errs on the strict side:
+the sender keeps a `commandChanged` send uncertain.
 
 **Why it matters:** two definitions of "the same request"; a future caller that retries with a normalized field would
 be refused.
@@ -632,8 +544,7 @@ opens. No plugin and no low-level grant is needed.
 stops cards that load web fonts this way; allowing only known font hosts (whose sheets hold `@font-face` rules) keeps
 most of those; loading and scoping the imported sheet is a larger change.
 
-**Decision:** owner, 2026-11-15: left as it is; the owner will deal with it separately, outside the batch that cleared
-the rest of this file. Do not fix it in passing.
+**Decision:** owner, 2026-11-15: left as it is; the owner will deal with it separately. Do not fix it in passing.
 
 ## Server generation
 
@@ -641,17 +552,17 @@ the rest of this file. Do not fix it in passing.
 
 The server encodes synchronously on the thread that serves every request (`server/src/prompt/tokenizers/index.ts`),
 and the count route passes the caller's text with a 2 MiB body cap and no limit per string
-(`server/src/routes/tokens.ts`). The first form of this entry was about the two tiktoken families, whose encoders take
-quadratic time on one long pre-tokenizer piece: a 200 KB run of letters held an unrelated boot read for 17.6 s, a send
-over a chat that stores such a message took 78.7 s (wide review of 2026-11-14, cut X3). Those two were bounded on
-2026-11-15 (`tokenizers/tiktoken.ts` splits a piece over 512 UTF-8 bytes; 200 KB of any slow class now counts in under
-0.1 s). What is left, measured the same day on one shared machine:
+(`server/src/routes/tokens.ts`). The two tiktoken families are bounded for ordinary text: `tokenizers/tiktoken.ts`
+splits a pre-tokenizer piece over 512 UTF-8 bytes, and 200 KB of any slow class counts in under 0.1 s. What is not
+bounded, measured on 2026-11-15 on one shared machine:
 
 - The other local families at 2 MiB: `novellist` 38.9 s on repeated emoji, `gemma` 16.2 s on letters (0.8 s at
   200 KB), `claude` 6.0 s on letters, the rest 1 to 4 s. At 200 KB every one of them stayed under a second.
 - A tiktoken text that keeps the package path on purpose: one with a code point whose Unicode category differs between
-  Node and the package, or non-ASCII text on a Node whose Unicode version was not measured (16 and 17 were). A long
-  run in such a text is as slow as before.
+  Node and the package, or non-ASCII text on a Node whose Unicode version was not measured (16 and 17 were). The
+  package's encoders take quadratic time on one long piece: without the split, a 200 KB run of letters held an
+  unrelated boot read for 17.6 s, and a send over a chat that stores such a message took 78.7 s (wide review of
+  2026-11-14, cut X3).
 
 The `llm-requests` guide's Limitations record the split; the `server-generation` guide's record tokenizer calls on the
 main thread as accepted on 2026-11-10 (worker isolation is a separate design).
@@ -667,13 +578,13 @@ letters first, since their times grow faster than the text.
 
 ### A row drag in progress when another tab removes an earlier row moves the wrong row
 
-Post-verification of 2026-11-18 (SB-1, what is left), read by one reader after the fix. A template drag now remembers its preset and drops nothing once the page shows another one. Within one list, the drag still remembers the row's index (`PromptDataItem.svelte`): when another tab removes an earlier row of the same preset, or an earlier request interception rule, during the drag, the drop moves the row that slid into that index.
+Post-verification of 2026-11-18 (SB-1), read by one reader. Within one list, a drag remembers the row's index (`PromptDataItem.svelte`): when another tab removes an earlier row of the same preset, or an earlier request interception rule, during the drag, the drop moves the row that slid into that index. A drag onto another preset is not affected: a template drag remembers its preset and drops nothing once the page shows another one.
 
 **Why it matters:** one row lands in the wrong place; it is visible and one move undoes it. It needs another tab's removal inside one drag gesture.
 
 **Suggested handling:** kept as recorded by the owner's rule for the fix round. If it is taken up: remember the row's identity (the rule id, the record identity) and not its index.
 
-The structure audit of 2026-11-18 read the same for a reorder that arrives from another tab during the drag, in both the prompt template editor and the request rule editor; its half about a drop on another preset was fixed the same day (`10b7cfa58`).
+The structure audit of 2026-11-18 read the same for a reorder that arrives from another tab during the drag, in both the prompt template editor and the request rule editor.
 
 ### A live settings update discards the text typed in a rule's popup editor
 
@@ -690,8 +601,8 @@ after the plan landed. With `maxContextOverride` off, the last declarative item 
 `params.maxContextOverride` check row, which has no bottom margin. With the main model `mancer`, `textgen_webui`,
 `local_*`, or `hf:::` the handwritten "Repetition Penalty" label follows it
 (`src/lib/Setting/Pages/PromptPresetSettings.svelte:146`), and with a NovelList-format model the "Top P" label (`:337`);
-neither has a top margin, so the row and the label touch. The gap was 0 before the plan too: the spacing rule in
-`SettingRenderer.svelte` sets nothing on a handwritten element.
+neither has a top margin, so the row and the label touch. The spacing rule in `SettingRenderer.svelte` sets nothing
+on a handwritten element.
 
 **Why it matters:** a check that touches the next label reads as one control; everywhere else on the page a field
 stands 1rem from a row.
@@ -699,6 +610,17 @@ stands 1rem from a row.
 **Suggested handling:** an unconditional `mt-*` on the label would widen the other case (override on: the size field
 before it already ends with 1rem). Either make the label's margin depend on what precedes it, or move the handwritten
 parameters into the declarative data so the rule spaces them.
+
+### An emptied plugin wait time limit box stays blank while the server stores the default
+
+Post-verification of 2026-11-18, seen by one verifier beside the fix that makes the box show its clamped value; not
+run again. The "Plugin wait time limit (seconds)" field (`display.completionWaitMaxSeconds` in
+`src/ts/setting/displaySettingsData.svelte.ts`, a number item with `clampOnCommit`) stays blank when the user empties
+it, while `normalizeUi` (`server/src/data/normalize/ui.ts`) stores the default.
+
+**Why it matters:** low. The page shows no value where the stored one is the default.
+
+**Suggested handling:** reproduce; then show the default the server stored when an emptied box is committed.
 
 ## Tests
 
@@ -724,7 +646,7 @@ character's memory switch; the tests now assert the switch is absent there, and 
 
 ### A tab translation that is only an unknown style placeholder can be stored blank
 
-Fix round of 2026-11-17, read and not run. The shared pipeline now refuses a translation that is blank after cleaning
+Fix round of 2026-11-17, read and not run. The shared pipeline refuses a translation that is blank after cleaning
 (`shared/translation/pipeline.ts`). The tab restores style placeholders after the pipeline returns
 (`src/ts/translator/translator.ts`, `translateLLM`, before `writeLLMCacheEntry`): an answer that holds only a
 placeholder with an unknown index can become blank there and be cached.
