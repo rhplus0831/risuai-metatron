@@ -6,6 +6,7 @@ import type { StoredTranslationEdit } from "../translator/storedTranslation.svel
 type EditorKind = "message" | "translation" | `cache:${string}` | `partial:${number}`;
 interface PartialSelection {
     target: string | null;
+    reply: string | null;
     text: string;
     unique: boolean;
     before: string;
@@ -16,6 +17,7 @@ export interface MessageEditorDraft {
     text: string;
     base: string;
     translation?: StoredTranslationEdit;
+    saving?: boolean;
 }
 
 const drafts = new Map<
@@ -27,11 +29,20 @@ const drafts = new Map<
         owner: string;
         draft: MessageEditorDraft;
         selection?: PartialSelection;
+        retention?: { holders: number; lastWrite: number };
         dispose: () => void;
     }
 >();
 const keyOf = (ref: ChatRef, messageId: string | undefined, kind: EditorKind) =>
     JSON.stringify([ref.chaId, ref.chatId, messageId, kind]);
+
+/** Candidate switches and in-place generations can replace the reply while preserving its message id. */
+export function messageEditorReplyKey(ref: ChatRef | null, messageId: string | undefined) {
+    const message = ref && messageId ? heldMessageById(ref, messageId) : undefined;
+    const candidate = message?.candidates?.[message.selected ?? 0]?.id;
+    const generation = message?.generationInfo?.generationId;
+    return candidate || generation ? JSON.stringify([candidate, generation]) : null;
+}
 
 /** Row drafts and their open state live for this tab, including while Settings has destroyed the chat screen. */
 export function findMessageEditorDraft(ref: ChatRef, messageId: string | undefined, kind: EditorKind) {
@@ -88,6 +99,67 @@ export function closeMessageEditorDraft(
 }
 
 let partialSequence = 0;
+let writeSequence = 0;
+const MAX_INACTIVE_DRAFTS = 8;
+
+function trimInactiveDrafts(ref: ChatRef, messageId: string | undefined) {
+    const inactive = [...drafts.values()].filter(
+        (entry) =>
+            entry.retention?.holders === 0 &&
+            entry.messageId === messageId &&
+            entry.ref.chaId === ref.chaId &&
+            entry.ref.chatId === ref.chatId,
+    );
+    if (inactive.length <= MAX_INACTIVE_DRAFTS) return;
+    inactive.sort((a, b) => a.retention!.lastWrite - b.retention!.lastWrite);
+    for (const entry of inactive.slice(0, inactive.length - MAX_INACTIVE_DRAFTS)) {
+        closeMessageEditorDraft(ref, messageId, entry.kind, entry.draft);
+    }
+}
+
+function holdEditorDraft(
+    ref: ChatRef,
+    messageId: string | undefined,
+    kind: EditorKind,
+    initial: Pick<MessageEditorDraft, "base" | "text">,
+    selection?: PartialSelection,
+) {
+    const draft = openMessageEditorDraft(ref, messageId, kind, initial);
+    const entry = drafts.get(keyOf(ref, messageId, kind))!;
+    const retention = (entry.retention ??= { holders: 0, lastWrite: ++writeSequence });
+    retention.holders++;
+    // An untouched reopen keeps matching against the source where the user last typed.
+    if (entry.selection) draft.base = entry.selection.text;
+    entry.selection ??= selection;
+    let held = true;
+    return {
+        draft,
+        setText(value: string) {
+            if (draft.text === value) return;
+            draft.text = value;
+            retention.lastWrite = ++writeSequence;
+            entry.selection = selection;
+        },
+        release() {
+            if (!held) return;
+            held = false;
+            if (--retention.holders === 0 && draft.open) trimInactiveDrafts(ref, messageId);
+        },
+        close: () => closeMessageEditorDraft(ref, messageId, kind, draft),
+    };
+}
+
+export function openCachedTranslationDraft(
+    ref: ChatRef,
+    messageId: string | undefined,
+    key: string,
+    reply: string | null,
+    cached: string | null,
+) {
+    const draftKey = reply === null ? key : JSON.stringify([key, reply]);
+    return holdEditorDraft(ref, messageId, `cache:${draftKey}`, { text: cached ?? "", base: JSON.stringify(cached) });
+}
+
 export function openPartialEditorDraft(
     ref: ChatRef,
     messageId: string,
@@ -98,6 +170,7 @@ export function openPartialEditorDraft(
     const text = source.slice(range.start, range.end);
     const selection = {
         target,
+        reply: messageEditorReplyKey(ref, messageId),
         text,
         unique: source.indexOf(text) === source.lastIndexOf(text),
         before: textHash(source.slice(0, range.start)),
@@ -111,6 +184,7 @@ export function openPartialEditorDraft(
             entry.ref.chaId !== ref.chaId ||
             entry.ref.chatId !== ref.chatId ||
             !old ||
+            old.reply !== selection.reply ||
             old.target !== target
         )
             continue;
@@ -119,18 +193,13 @@ export function openPartialEditorDraft(
             match = entry.kind;
             break;
         }
-        if (
-            old.text === text &&
-            (old.before === selection.before || old.after === selection.after || (old.unique && selection.unique))
-        ) {
+        if (old.text === text && old.unique && selection.unique) {
             // The range moved. If several drafts fit the new location, keep them until one can be identified.
             match = match === undefined ? entry.kind : null;
         }
     }
     const kind = match ?? (`partial:${++partialSequence}` as const);
-    const draft = openMessageEditorDraft(ref, messageId, kind, { base: text, text });
-    drafts.get(keyOf(ref, messageId, kind))!.selection = selection;
-    return { draft, close: () => closeMessageEditorDraft(ref, messageId, kind, draft) };
+    return holdEditorDraft(ref, messageId, kind, { base: text, text }, selection);
 }
 
 onChatRemoved((removal) => {

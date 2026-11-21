@@ -21,6 +21,8 @@
     import {
         closeMessageEditorDraft,
         findMessageEditorDraft,
+        messageEditorReplyKey,
+        openCachedTranslationDraft,
         openMessageEditorDraft,
         type MessageEditorDraft,
     } from "src/ts/storage/messageEditorDrafts.svelte";
@@ -186,12 +188,11 @@
     let retranslate = $state(false);
     let loadingTranslationEdit = $state(false);
     let translationDraft = $state<MessageEditorDraft>();
-    const editTranslationMode = $derived(translationDraft?.open ?? false);
     let editTranslationText = $derived(translationDraft?.text ?? "");
     let observedCacheText = $state<string | null>(null);
     /** What the open translation editor writes back to: a rendered translation's cache key, or a stored translation. */
     let editTranslationTarget = $state.raw<
-        | { kind: "cache"; key: string; ref: ChatRef | null; messageId?: string }
+        | { kind: "cache"; key: string; reply: string | null; session?: ReturnType<typeof openCachedTranslationDraft> }
         | { kind: "stored"; edit: StoredTranslationEdit }
         | null
     >(null);
@@ -294,6 +295,11 @@
     }: Props = $props();
 
     const editorMessageId = $derived(messageId ?? bookmarkMessageId);
+    const editorReply = $derived(messageEditorReplyKey(chatRef, editorMessageId));
+    const editTranslationMode = $derived(
+        !!translationDraft?.open &&
+            (editTranslationTarget?.kind !== "cache" || editTranslationTarget.reply === editorReply),
+    );
     untrack(() => {
         if (!chatRef || !editorMessageId) return;
         const original = findMessageEditorDraft(chatRef, editorMessageId, "message");
@@ -447,6 +453,7 @@
     );
     let translationEditControlDisabled = $derived(
         translationEditLocked ||
+            translationDraft?.saving ||
             editMode ||
             loadingTranslationEdit ||
             (storedPath && !editTranslationMode && (storedFresh === null || storedPending)),
@@ -645,7 +652,7 @@
         const editorIsCurrent = () =>
             !popupEditorsDestroyed &&
             run === autoPopupTranslationEditorRun &&
-            editTranslationMode &&
+            translationDraft?.open &&
             editTranslationText === initialValue &&
             editTranslationTarget === target &&
             isCurrentMessageTarget(rowTarget);
@@ -698,6 +705,14 @@
 
     $effect(() => {
         if (!editTranslationMode) {
+            const target = editTranslationTarget;
+            if (target?.kind === "cache" && target.reply !== editorReply) {
+                // Equal-text candidates can switch without remounting this row. Keep the leaving popup's text.
+                untrack(() => retainPopupTranslationDraft?.());
+                target.session?.release();
+                translationDraft = undefined;
+                editTranslationTarget = null;
+            }
             autoPopupTranslationEditorAttempted = false;
             autoPopupTranslationEditorRun += 1;
             suppressAutoPopupTranslationEditor = false;
@@ -1015,6 +1030,7 @@
         loadingTranslationEdit = true;
         const ref = displayedChat;
         const id = editorMessageId;
+        const reply = editorReply;
         try {
             const key = await getTranslationCacheKey();
             const cached = await readLLMCacheEntry(key);
@@ -1022,16 +1038,15 @@
                 popupEditorsDestroyed ||
                 ref?.chaId !== displayedChat?.chaId ||
                 ref?.chatId !== displayedChat?.chatId ||
-                id !== editorMessageId
+                id !== editorMessageId ||
+                reply !== editorReply
             ) {
                 return;
             }
-            const initial = { text: cached ?? "", base: JSON.stringify(cached) };
-            translationDraft = ref
-                ? openMessageEditorDraft(ref, id, `cache:${key}`, initial)
-                : { ...initial, open: true };
+            const session = ref ? openCachedTranslationDraft(ref, id, key, reply, cached) : undefined;
+            translationDraft = session?.draft ?? { text: cached ?? "", base: JSON.stringify(cached), open: true };
             observedCacheText = cached;
-            editTranslationTarget = { kind: "cache", key, ref, messageId: id };
+            editTranslationTarget = { kind: "cache", key, reply, session };
             suppressAutoPopupTranslationEditor = translationChangedElsewhere;
             if (!autoPopupTranslationEditor) onOpenInlineEditor?.();
         } catch (error) {
@@ -1047,41 +1062,50 @@
         const edit = translationDraft?.translation;
         if (edit) closeMessageEditorDraft(edit.ref, edit.messageId, "translation", translationDraft);
         const target = editTranslationTarget;
-        if (target?.kind === "cache" && target.ref) {
-            closeMessageEditorDraft(target.ref, target.messageId, `cache:${target.key}`, translationDraft);
-        }
+        if (target?.kind === "cache") target.session?.close();
         translationDraft = undefined;
         editTranslationTarget = null;
         onCloseInlineEditor?.();
     }
 
     function setTranslationDraft(value: string) {
-        if (translationDraft) translationDraft.text = value;
+        if (editTranslationTarget?.kind === "cache" && editTranslationTarget.session) {
+            editTranslationTarget.session.setText(value);
+        } else if (translationDraft) {
+            translationDraft.text = value;
+        }
     }
 
     async function saveTranslationEdit() {
         const target = editTranslationTarget;
-        if (target === null) return;
+        const draft = translationDraft;
+        if (!target || !draft || !editTranslationMode || draft.saving) return;
 
         if (target.kind === "stored") {
             // A refused write keeps the editor open with the draft.
             if (!saveStoredTranslationEdit(target.edit, editTranslationText)) return;
         } else {
             const text = editTranslationText;
-            const cached = await readLLMCacheEntry(target.key);
-            if (
-                popupEditorsDestroyed ||
-                !editTranslationMode ||
-                target !== editTranslationTarget ||
-                text !== editTranslationText
-            )
-                return;
-            if (cached !== observedCacheText) {
-                observedCacheText = cached;
-                if (translationChangedElsewhere) return;
+            draft.saving = true;
+            try {
+                const cached = await readLLMCacheEntry(target.key);
+                if (
+                    popupEditorsDestroyed ||
+                    !editTranslationMode ||
+                    target !== editTranslationTarget ||
+                    text !== editTranslationText
+                ) {
+                    return;
+                }
+                if (cached !== observedCacheText) {
+                    observedCacheText = cached;
+                    if (translationChangedElsewhere) return;
+                }
+                await updateTranslationCache(target.key, text);
+                if (target !== editTranslationTarget || text !== editTranslationText) return;
+            } finally {
+                draft.saving = false;
             }
-            await updateTranslationCache(target.key, text);
-            if (target !== editTranslationTarget || text !== editTranslationText) return;
         }
         cancelTranslationEdit();
     }
@@ -1171,6 +1195,10 @@
         if (shownTarget) releaseDisplayTransformSource(shownTarget.ref, shownTarget.id, shownOwner);
         retainPopupMessageDraft?.();
         retainPopupTranslationDraft?.();
+        if (editTranslationTarget?.kind === "cache" && editTranslationTarget.session) {
+            // The manually expanded textarea hands its value back during this same teardown.
+            queueMicrotask(editTranslationTarget.session.release);
+        }
         popupEditorsDestroyed = true;
         if (activeAutoPopupMessageSessionId !== null) {
             closePopupEditorSession(activeAutoPopupMessageSessionId);
@@ -1590,7 +1618,7 @@
             {/key}
         </span>
         {#if idx >= 0 && !editMode && !editTranslationMode && !isOptimizedStreamingMessage && !locked && partialEditEnabled && storedBilingual === null && (settings.ui.enableBlockPartialEdit || settings.ui.enableDragPartialEdit)}
-            {#key storedShown ? storedFresh?.text : message}
+            {#key [editorReply, storedShown ? storedFresh?.text : message]}
                 <PartialEditController
                     messageData={message}
                     chatRef={displayedChat}

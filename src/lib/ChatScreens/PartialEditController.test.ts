@@ -24,6 +24,7 @@ vi.mock("src/ts/process/modules", () => ({
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 
+import { language } from "src/lang";
 import { installFlatDatabase, installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import PartialEditController from "./PartialEditController.svelte";
 
@@ -513,6 +514,53 @@ describe("retained paragraph edits", () => {
         replacement.type("My opening");
         replacement.save();
         expect(replacement.saved).toEqual([{ newData: "My opening\n\nNew ending", target: "original" }]);
+    });
+
+    it("keeps the draft from a removed repeat away from the remaining repeated paragraph", async () => {
+        const row = render({
+            chatRef,
+            source: "Repeat\n\nRepeat\n\nEnding",
+            html: "<p>Repeat</p><p>Repeat</p><p>Ending</p>",
+        });
+        await row.start("edit", { settle: false });
+        expect(row.choices()).toEqual(["Repeat", "Repeat"]);
+        await row.choose(0);
+        row.type("Draft on the first repeat");
+        await row.remove();
+
+        const replacement = render({ chatRef, source: "Repeat\n\nEnding", html: "<p>Repeat</p><p>Ending</p>" });
+        await replacement.start("edit", { settle: false });
+        replacement.save();
+        expect(replacement.saved).toEqual([{ newData: "Repeat\n\nEnding", target: "original" }]);
+    });
+
+    it("recovers an overwritten paragraph between unchanged neighbors and shows the overwrite notice", async () => {
+        const hovered = (bodyRoot: HTMLElement) => bodyRoot.querySelectorAll("p")[1];
+        const row = render({
+            chatRef,
+            source: "Opening\n\nMiddle\n\nEnding",
+            html: "<p>Opening</p><p>Middle</p><p>Ending</p>",
+            hovered,
+        });
+        await row.start("edit", { settle: false });
+        row.type("My middle paragraph");
+        await row.remove();
+
+        const replacement = render({
+            chatRef,
+            source: "Opening\n\nAn outside rewrite\n\nEnding",
+            html: "<p>Opening</p><p>An outside rewrite</p><p>Ending</p>",
+            hovered,
+        });
+        await replacement.start("edit", { settle: false });
+        expect(replacement.textarea()?.value).toBe("My middle paragraph");
+        expect(replacement.query('.partial-edit-modal [role="status"]')?.textContent?.trim()).toBe(
+            language.messageEditorChangedElsewhere,
+        );
+        replacement.save();
+        expect(replacement.saved).toEqual([
+            { newData: "Opening\n\nMy middle paragraph\n\nEnding", target: "original" },
+        ]);
     });
 });
 

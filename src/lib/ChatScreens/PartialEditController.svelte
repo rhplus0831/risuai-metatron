@@ -72,7 +72,7 @@
     const emptyDraft = { text: "", base: "", open: false };
     let editDraft = $state<MessageEditorDraft>(emptyDraft);
     let isEditing = $derived(editDraft.open);
-    let discardDraft: (() => void) | undefined;
+    let draftSession: ReturnType<typeof openPartialEditorDraft> | undefined;
     let textareaRef: HTMLTextAreaElement | null = $state(null);
 
     let isConfirmingDelete = $state(false);
@@ -369,9 +369,8 @@
         matchingState.mode = null;
         const source = matchingState.sourceData;
         if (chatRef && messageId) {
-            const session = openPartialEditorDraft(chatRef, messageId, matchingState.draftKey, source, match);
-            editDraft = session.draft;
-            discardDraft = session.close;
+            draftSession = openPartialEditorDraft(chatRef, messageId, matchingState.draftKey, source, match);
+            editDraft = draftSession.draft;
         } else {
             const base = source.slice(match.start, match.end);
             editDraft = { text: base, base, open: true };
@@ -453,7 +452,7 @@
         if (target === "translation") {
             // The edit session this save belongs to: a cancel or another edit started meanwhile ends it.
             const session = matchingRequestId;
-            const discard = discardDraft;
+            const discard = draftSession?.close;
             const written = await writeTranslation(newData, translationKey);
             if (draft.text !== text) return;
             if (session !== matchingRequestId) {
@@ -484,8 +483,8 @@
 
     // Close edit mode
     function closeEdit() {
-        discardDraft?.();
-        discardDraft = undefined;
+        draftSession?.close();
+        draftSession = undefined;
         editDraft = emptyDraft;
         resetMatchingState();
     }
@@ -759,6 +758,7 @@
     // Cleanup on component unmount
     onDestroy(() => {
         matchingRequestId += 1;
+        draftSession?.release();
         if (blockButtonWrapper) {
             blockButtonWrapper.remove();
             blockButtonWrapper = null;
@@ -944,7 +944,13 @@
             {/if}
             <textarea
                 bind:this={textareaRef}
-                bind:value={editDraft.text}
+                bind:value={
+                    () => editDraft.text,
+                    (value) => {
+                        if (draftSession) draftSession.setText(value);
+                        else editDraft.text = value;
+                    }
+                }
                 class="partial-edit-textarea"
                 onkeydown={handleKeydown}
                 oninput={adjustHeight}

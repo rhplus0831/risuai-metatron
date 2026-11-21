@@ -108,6 +108,11 @@ import {
     selectChat,
     setMessageText,
 } from "src/ts/storage/chatStore.svelte";
+import {
+    findMessageEditorDraft,
+    openCachedTranslationDraft,
+    openPartialEditorDraft,
+} from "src/ts/storage/messageEditorDrafts.svelte";
 import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { language } from "src/lang";
@@ -124,7 +129,7 @@ import Chat from "./Chat.svelte";
 const ref = { chaId: "c", chatId: "draft-chat" };
 const editorDraftsPath = "src/ts/storage/messageEditorDrafts.svelte";
 const mounted: ReturnType<typeof mount>[] = [];
-function render(theme = "", overrides: { message?: string; idx?: number; isComment?: boolean } = {}) {
+function bootDraftChat(theme = "") {
     installFlatDatabase({
         characters: [
             {
@@ -167,6 +172,10 @@ function render(theme = "", overrides: { message?: string; idx?: number; isComme
     assembleChats([{ chaId: "c" }] as never, listed, orders);
     selectCharacter("c");
     selectChat("c", ref.chatId);
+}
+
+function render(theme = "", overrides: { message?: string; idx?: number; isComment?: boolean } = {}) {
+    bootDraftChat(theme);
     return mountRow(overrides);
 }
 
@@ -447,6 +456,53 @@ describe("original message draft", () => {
 // popup saves. Typing inline meanwhile keeps the inline edit and drops the popup, and the setting
 // turns the auto popup off. Timeout functions are faked before mounting; render completion is
 // signalled by the component, and the popup loop advances only under the test's control.
+describe("retaining cached and paragraph drafts", () => {
+    it("evicts inactive drafts by last write and protects a paragraph until its final editor closes", () => {
+        bootDraftChat();
+        const paragraph = (target: string | null) =>
+            openPartialEditorDraft(ref, "a", target, "Original", { start: 0, end: "Original".length });
+        const first = paragraph(null);
+        first.setText("Draft in the transcript");
+        const second = paragraph(null);
+        expect(second.draft).toBe(first.draft);
+        const old = paragraph("an old translation");
+        old.setText("Old paragraph draft");
+        old.release();
+
+        const cache = (index: number) => openCachedTranslationDraft(ref, "a", `key-${index}`, null, null);
+        const retained = (index: number) => findMessageEditorDraft(ref, "a", `cache:key-${index}`)?.text;
+        const write = (index: number, text = `Draft ${index}`) => {
+            const session = cache(index);
+            session.setText(text);
+            session.release();
+        };
+        for (let index = 0; index < 8; index++) write(index);
+        expect(old.draft.open).toBe(false);
+        write(0, "Rewritten draft 0");
+        cache(1).release();
+        write(8);
+        expect(retained(1)).toBeUndefined();
+        expect(retained(0)).toBe("Rewritten draft 0");
+
+        first.release();
+        write(9);
+        expect(retained(2)).toBeUndefined();
+        expect(second.draft).toMatchObject({ open: true, text: "Draft in the transcript" });
+        second.release();
+        expect(second.draft.open).toBe(false);
+        expect([0, 3, 4, 5, 6, 7, 8, 9].map(retained)).toEqual([
+            "Rewritten draft 0",
+            "Draft 3",
+            "Draft 4",
+            "Draft 5",
+            "Draft 6",
+            "Draft 7",
+            "Draft 8",
+            "Draft 9",
+        ]);
+    });
+});
+
 describe("Chat message editor auto popup", () => {
     beforeEach(() => {
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });

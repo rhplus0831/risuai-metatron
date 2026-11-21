@@ -102,8 +102,10 @@ import {
     findChat,
     hydrateChat,
     noteRemoteStreaming,
+    patchMessage,
     removeMessages,
     seedChats,
+    selectCandidate,
     selectChat,
     setChatMeta,
     setMessageText,
@@ -115,7 +117,7 @@ import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from 
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { createSimpleCharacter, popupStore, ReloadChatPointer, reloadChatKey } from "src/ts/stores.svelte";
-import { readLLMCacheEntry } from "src/ts/translator/translator";
+import { readLLMCacheEntry, writeLLMCacheEntry } from "src/ts/translator/translator";
 import PopupEditor from "../Others/PopupEditor.svelte";
 import PopupList from "../UI/PopupList.svelte";
 import Chat from "./Chat.svelte";
@@ -1266,6 +1268,7 @@ describe("cached translation drafts", () => {
     });
     afterEach(() => {
         vi.mocked(readLLMCacheEntry).mockReset().mockResolvedValue(null);
+        vi.mocked(writeLLMCacheEntry).mockReset().mockResolvedValue(undefined);
         vi.restoreAllMocks();
     });
 
@@ -1290,5 +1293,92 @@ describe("cached translation drafts", () => {
         await vi.advanceTimersByTimeAsync(20);
         await replacement.instance.whenRendered();
         expect((await openTranslation(replacement)).value).toBe("My translation draft");
+    });
+
+    it.each(["candidate", "generation"])(
+        "keeps drafts separate for each %s with the same rendered text",
+        async (kind) => {
+            const { ref } = boot(`same-rendered-text-${kind}`, { autoTranslate: true, target: "rendered" });
+            settings.ui.disableAutoPopupMessageEditor = true;
+            if (kind === "candidate") {
+                patchMessage(ref, "a", {
+                    candidates: [
+                        { id: "first", data: "A" },
+                        { id: "second", data: "A" },
+                    ],
+                    selected: 0,
+                });
+            }
+            const select = async (id: string) => {
+                if (kind === "candidate") selectCandidate(ref, "a", id);
+                else patchMessage(ref, "a", { generationInfo: { generationId: id } });
+                flushSync();
+                await vi.advanceTimersByTimeAsync(0);
+            };
+            await select("first");
+            const row = await renderTranslatedRow();
+            type(await openTranslation(row), "First reply draft");
+
+            await select("second");
+            expect(row.textarea()).toBeNull();
+            const second = await openTranslation(row);
+            expect(second.value).toBe("Cached reply");
+            type(second, "Second reply draft");
+            await select("first");
+            expect((await openTranslation(row)).value).toBe("First reply draft");
+        },
+    );
+
+    it("requires a fresh Save after a pending cache read discovers an outside edit", async () => {
+        boot("cache-save-conflict", { autoTranslate: true, target: "rendered" });
+        settings.ui.disableAutoPopupMessageEditor = true;
+        const row = await renderTranslatedRow();
+        type(await openTranslation(row), "My translation draft");
+        let cached = "A newer translation from another tab";
+        const read = deferred<string>();
+        vi.mocked(readLLMCacheEntry).mockReturnValue(read.promise);
+        vi.mocked(writeLLMCacheEntry).mockImplementation(async (_key, text) => {
+            cached = text;
+        });
+
+        const save = row.button(language.editTranslationSave)!;
+        row.click(save);
+        const disabledWhileReading = save.disabled;
+        row.click(save);
+        read.resolve(cached);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(cached).toBe("A newer translation from another tab");
+        expect(disabledWhileReading).toBe(true);
+        expect(row.target.querySelector('[role="status"]')?.textContent).toBe(
+            language.translationEditorChangedElsewhere,
+        );
+        expect(row.textarea()?.value).toBe("My translation draft");
+        row.click(row.button(language.editTranslationSave));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(cached).toBe("My translation draft");
+        expect(row.textarea()).toBeNull();
+    });
+
+    it("keeps Save disabled through a pending cache write", async () => {
+        boot("cache-write-pending", { autoTranslate: true, target: "rendered" });
+        settings.ui.disableAutoPopupMessageEditor = true;
+        const row = await renderTranslatedRow();
+        type(await openTranslation(row), "My translation draft");
+        const write = deferred<void>();
+        vi.mocked(writeLLMCacheEntry).mockReturnValue(write.promise);
+
+        const save = row.button(language.editTranslationSave)!;
+        row.click(save);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(writeLLMCacheEntry).toHaveBeenCalledOnce();
+        expect(save.disabled).toBe(true);
+        row.click(save);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(writeLLMCacheEntry).toHaveBeenCalledOnce();
+
+        write.resolve(undefined);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(row.textarea()).toBeNull();
     });
 });
