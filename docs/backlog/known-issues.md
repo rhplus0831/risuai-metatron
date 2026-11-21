@@ -26,7 +26,7 @@ Sources the entries name (drop a line when no entry names it any more):
 ## Contents
 
 - [build-test-platforms](#build-test-platforms) (1)
-- [chat-pipeline](#chat-pipeline) (5)
+- [chat-pipeline](#chat-pipeline) (4)
 - [media-aux](#media-aux) (1)
 - [memory](#memory) (2)
 - [network-jobs](#network-jobs) (1)
@@ -91,17 +91,6 @@ Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-
   trailing newline was never translated; an ordinary comment past line index 100 can also break the loop and reach
   the download with only a prefix. Not fixed. A fix covers line endings, the end of the file, and comments in a long
   catalog. [PO reader and download](../../src/ts/process/files/multisend.ts#L32)
-- Undo Reroll and Redo over a multi-reply turn swap the messages and leave the chat's variables at the values of the
-  bundle that was shown last. `move` in `src/ts/process/rerollHistory.ts` replaces the tail with the stored bundle's
-  cloned messages and writes no variable. Reproduced on 2026-11-21 at `ddb0c225b` on the mounted group chat screen (two
-  speakers each add to a counter, the turn is rerolled, Undo is clicked): both first replies came back while the tab
-  and the saved chat read `20`, where the first bundle had set `2`.
-  - Scope: every writer of the per-chat variables (an output trigger, `setvar` or `addvar` in a reply, a plugin's
-    write). A single reply's candidate arrows are not affected: the candidate switch sets each key back when its value
-    still matches the departing candidate, and in the same probe moved the counter `2 → 1 → 2`.
-  - The values to restore are already stored: a bundle's newest reply keeps its `scriptstateCheckpoint` (a bounded
-    snapshot, absent on legacy or oversized ones), and the removal reroll's recovery uses it. Not fixed.
-  - [`move`](../../src/ts/process/rerollHistory.ts#L104) · [Candidate switch](../../shared/rerollCandidates.ts#L173)
 
 ## media-aux
 

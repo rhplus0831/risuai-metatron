@@ -221,6 +221,61 @@ describe("createRerollHistory", () => {
         expect(server.texts("c", ref.chatId)).toEqual(["Hi", "Only Carol"]);
     });
 
+    it.each([
+        {
+            title: "undo and redo restore and save variables with multi-reply bundles",
+            laterCounter: undefined,
+        },
+        {
+            title: "undo and redo preserve a variable edited after a multi-reply reroll",
+            laterCounter: "99",
+        },
+    ])("$title", ({ laterCounter }) => {
+        const history = createRerollHistory();
+        const baseline = { $counter: "0" };
+        const original = { $counter: "2", $originalOnly: "Alice" };
+        const rerolled = { $counter: "20", $rerollOnly: "Bob" };
+        const ref = freshChat([
+            m("u", "Hi", "user"),
+            m("a1", "Alice's first reply"),
+            { ...m("b1", "Bob's first reply"), scriptstateCheckpoint: { before: baseline, after: original } },
+        ]);
+        editChatSync(ref, (c) => {
+            c.scriptstate = original;
+        });
+        history.record(ref, "u", tail(ref, "u"));
+        rerollTo(history, ref, "u", [
+            m("a2", "Alice's new reply"),
+            { ...m("b2", "Bob's new reply"), scriptstateCheckpoint: { before: baseline, after: rerolled } },
+        ]);
+        editChatSync(ref, (c) => {
+            c.scriptstate = rerolled;
+        });
+        commit();
+        if (laterCounter !== undefined) {
+            editChatSync(ref, (c) => {
+                c.scriptstate!.$counter = laterCounter;
+            });
+            commit();
+        }
+
+        expect(history.back(ref)).toBe(true);
+        expect(ids(ref)).toEqual(["u", "a1", "b1"]);
+        const undoneVariables = { $counter: laterCounter ?? "2", $originalOnly: "Alice" };
+        expect(chat.findChat(ref)!.scriptstate).toEqual(undoneVariables);
+        commit();
+        expect(server.texts("c", ref.chatId)).toEqual(["Hi", "Alice's first reply", "Bob's first reply"]);
+        expect(server.chat("c", ref.chatId)!.data.scriptstate).toEqual(undoneVariables);
+
+        expect(history.forward(ref)).toBe(true);
+        expect(ids(ref)).toEqual(["u", "a2", "b2"]);
+        const redoneVariables = { $counter: laterCounter ?? "20", $rerollOnly: "Bob" };
+        expect(chat.findChat(ref)!.scriptstate).toEqual(redoneVariables);
+        commit();
+        expect(server.texts("c", ref.chatId)).toEqual(["Hi", "Alice's new reply", "Bob's new reply"]);
+        expect(server.chat("c", ref.chatId)!.data.scriptstate).toEqual(redoneVariables);
+    });
+
     it("a bundle at the start of the chat has no anchor", () => {
         const history = createRerollHistory();
         const ref = freshChat([m("r1", "greeting one")]);

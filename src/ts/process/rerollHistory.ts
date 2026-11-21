@@ -111,8 +111,17 @@ export function createRerollHistory() {
                 clear(ref);
                 return;
             }
-            slot.bundles[slot.cursor] = safeStructuredClone(chat.message.slice(anchorIndex + 1));
-            chat.message = [...chat.message.slice(0, anchorIndex + 1), ...safeStructuredClone(slot.bundles[cursor])];
+            const leaving = chat.message.slice(anchorIndex + 1);
+            const arriving = slot.bundles[cursor];
+            const leavingAfter = leaving.findLast((message) => !message.isComment && message.role === "char")
+                ?.scriptstateCheckpoint?.after;
+            const arrivingAfter = arriving.findLast((message) => !message.isComment && message.role === "char")
+                ?.scriptstateCheckpoint?.after;
+            slot.bundles[slot.cursor] = safeStructuredClone(leaving);
+            chat.message = [...chat.message.slice(0, anchorIndex + 1), ...safeStructuredClone(arriving)];
+            if (leavingAfter !== undefined && arrivingAfter !== undefined) {
+                chat.scriptstate = restoredScriptstate(arrivingAfter, leavingAfter, chat.scriptstate);
+            }
             applied = true;
         });
         if (applied) {
