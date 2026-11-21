@@ -45,6 +45,7 @@
 
     const currentCharacter = $derived(selectedCharacter());
     interface Props {
+        readOnly: boolean;
         summaryIndex: number;
         hypaV3Data: SerializableHypaV3Data;
         summaryItemStateMap: WeakMap<SerializableSummary, SummaryItemState>;
@@ -61,6 +62,7 @@
     }
 
     let {
+        readOnly,
         summaryIndex,
         hypaV3Data,
         summaryItemStateMap,
@@ -365,7 +367,8 @@
             {#if bulkEditState?.isEnabled}
                 <input
                     type="checkbox"
-                    class="w-4 h-4 text-blue-600 bg-zinc-900 border-zinc-600 rounded-sm focus:ring-blue-500"
+                    disabled={readOnly}
+                    class="disabled:opacity-50 disabled:cursor-not-allowed w-4 h-4 text-blue-600 bg-zinc-900 border-zinc-600 rounded-sm focus:ring-blue-500"
                     checked={isSelected()}
                     onchange={() => onToggleSummarySelection?.(summaryIndex)}
                 />
@@ -385,7 +388,8 @@
             {#if summary.tags && summary.tags.length > 0}
                 {#each summary.tags as tag}
                     <button
-                        class="px-2 py-1 text-xs rounded-full bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+                        disabled={readOnly}
+                        class="disabled:opacity-50 disabled:cursor-not-allowed px-2 py-1 text-xs rounded-full bg-blue-600 hover:bg-blue-500 text-white transition-colors"
                         onclick={() => onOpenTagManager?.(summaryIndex)}
                     >
                         #{tag}
@@ -395,7 +399,8 @@
 
             <!-- Add Tag Button -->
             <button
-                class="px-2 py-1 text-xs rounded-full bg-zinc-600 hover:bg-zinc-500 text-zinc-300 transition-colors"
+                disabled={readOnly}
+                class="disabled:opacity-50 disabled:cursor-not-allowed px-2 py-1 text-xs rounded-full bg-zinc-600 hover:bg-zinc-500 text-zinc-300 transition-colors"
                 onclick={() => onOpenTagManager?.(summaryIndex)}
                 title={language.hypaV3Modal.tagManager}
             >
@@ -460,7 +465,8 @@
 
             <!-- Important Button -->
             <button
-                class="p-2 transition-colors {summary.isImportant
+                disabled={readOnly}
+                class="disabled:opacity-50 disabled:cursor-not-allowed p-2 transition-colors {summary.isImportant
                     ? 'text-yellow-400 hover:text-yellow-300'
                     : 'text-zinc-400 hover:text-zinc-200'}"
                 tabindex="-1"
@@ -471,9 +477,9 @@
 
             <!-- Reroll Button -->
             <button
-                class="p-2 transition-colors text-zinc-400 hover:text-zinc-200"
+                class="disabled:opacity-50 disabled:cursor-not-allowed p-2 transition-colors text-zinc-400 hover:text-zinc-200"
                 tabindex="-1"
-                disabled={isOrphan()}
+                disabled={readOnly || isOrphan()}
                 onclick={async () => await toggleReroll()}
             >
                 <RefreshCw class="w-4 h-4" />
@@ -481,7 +487,8 @@
 
             <!-- Delete This Button -->
             <button
-                class="p-2 transition-colors text-zinc-400 hover:text-rose-300"
+                disabled={readOnly}
+                class="disabled:opacity-50 disabled:cursor-not-allowed p-2 transition-colors text-zinc-400 hover:text-rose-300"
                 tabindex="-1"
                 onclick={async () => await deleteThis()}
             >
@@ -490,7 +497,8 @@
 
             <!-- Delete After Button -->
             <button
-                class="p-2 transition-colors text-zinc-400 hover:text-rose-300"
+                disabled={readOnly}
+                class="disabled:opacity-50 disabled:cursor-not-allowed p-2 transition-colors text-zinc-400 hover:text-rose-300"
                 tabindex="-1"
                 onclick={async () => await deleteAfter()}
             >
@@ -504,6 +512,7 @@
         <textarea
             class="w-full p-2 transition-colors border rounded-sm sm:p-4 min-h-40 sm:min-h-56 resize-vertical border-zinc-700 focus:outline-hidden focus:ring-2 focus:ring-zinc-500 text-zinc-200 bg-zinc-900"
             bind:this={summaryItemState.originalRef}
+            readonly={readOnly}
             bind:value={summary.text}
             onfocus={() => {
                 if (searchState && !searchState.isNavigating) {
@@ -557,7 +566,8 @@
 
                     <!-- Apply Button -->
                     <button
-                        class="p-2 transition-colors text-zinc-400 hover:text-rose-300"
+                        disabled={readOnly}
+                        class="disabled:opacity-50 disabled:cursor-not-allowed p-2 transition-colors text-zinc-400 hover:text-rose-300"
                         tabindex="-1"
                         onclick={applyRerolled}
                     >
@@ -572,6 +582,7 @@
             <textarea
                 class="w-full p-2 transition-colors border rounded-sm sm:p-4 min-h-40 sm:min-h-56 resize-vertical border-zinc-700 focus:outline-hidden focus:ring-2 focus:ring-zinc-500 text-zinc-200 bg-zinc-900"
                 tabindex="-1"
+                readonly={readOnly}
                 bind:value={rerolled}></textarea>
         </div>
 

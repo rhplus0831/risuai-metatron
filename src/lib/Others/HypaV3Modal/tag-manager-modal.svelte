@@ -11,12 +11,13 @@
      */
 
     interface Props {
+        readOnly: boolean;
         /** The modal's editing copy of the memory data (its changes are saved by the modal). */
         hypaV3Data: SerializableHypaV3Data;
         tagManagerState: TagManagerState;
     }
 
-    let { tagManagerState = $bindable(), hypaV3Data }: Props = $props();
+    let { readOnly, tagManagerState = $bindable(), hypaV3Data }: Props = $props();
     const currentSummary = $derived(hypaV3Data.summaries[tagManagerState.currentSummaryIndex]);
 
     function closeTagManager() {
@@ -53,7 +54,7 @@
     }
 
     function saveEditingTag() {
-        if (tagManagerState.editingTagIndex === -1 || !tagManagerState.editingTag.trim()) return;
+        if (readOnly || tagManagerState.editingTagIndex === -1 || !tagManagerState.editingTag.trim()) return;
 
         const summary = hypaV3Data.summaries[tagManagerState.currentSummaryIndex];
         if (
@@ -74,6 +75,7 @@
     }
 
     function handleAddTagEnter() {
+        if (readOnly) return;
         addTag(tagManagerState.currentSummaryIndex, tagManagerState.editingTag);
         tagManagerState.editingTag = "";
     }
@@ -116,11 +118,13 @@
                         type="text"
                         class="flex-1 px-3 py-2 text-sm rounded-sm border border-zinc-600 bg-zinc-900 text-zinc-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
                         placeholder={language.hypaV3Modal.newTagName}
+                        readonly={readOnly}
                         bind:value={tagManagerState.editingTag}
                         onkeydown={handleAddTagKeydown}
                     />
                     <button
-                        class="px-4 py-2 rounded-sm bg-blue-600 hover:bg-blue-700 text-white text-sm transition-colors"
+                        disabled={readOnly}
+                        class="disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2 rounded-sm bg-blue-600 hover:bg-blue-700 text-white text-sm transition-colors"
                         onclick={handleAddTagEnter}
                     >
                         {language.add}
@@ -137,11 +141,13 @@
                                 <input
                                     type="text"
                                     class="flex-1 px-2 py-1 text-sm rounded-sm border border-zinc-600 bg-zinc-900 text-zinc-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                                    readonly={readOnly}
                                     bind:value={tagManagerState.editingTag}
                                     onkeydown={handleEditTagKeydown}
                                 />
                                 <button
-                                    class="p-1.5 text-green-400 hover:text-green-300 transition-colors"
+                                    disabled={readOnly}
+                                    class="disabled:opacity-50 disabled:cursor-not-allowed p-1.5 text-green-400 hover:text-green-300 transition-colors"
                                     onclick={saveEditingTag}
                                 >
                                     <CheckIcon class="w-4 h-4" />
@@ -155,13 +161,15 @@
                             {:else}
                                 <span class="flex-1 text-sm text-zinc-200">#{tag}</span>
                                 <button
-                                    class="p-1.5 text-zinc-400 hover:text-zinc-200 transition-colors"
+                                    disabled={readOnly}
+                                    class="disabled:opacity-50 disabled:cursor-not-allowed p-1.5 text-zinc-400 hover:text-zinc-200 transition-colors"
                                     onclick={() => startEditTag(tagIndex, tag)}
                                 >
                                     <SquarePenIcon class="w-4 h-4" />
                                 </button>
                                 <button
-                                    class="p-1.5 text-red-400 hover:text-red-300 transition-colors"
+                                    disabled={readOnly}
+                                    class="disabled:opacity-50 disabled:cursor-not-allowed p-1.5 text-red-400 hover:text-red-300 transition-colors"
                                     onclick={() => removeTag(tagManagerState.currentSummaryIndex, tagIndex)}
                                 >
                                     <Trash2Icon class="w-4 h-4" />

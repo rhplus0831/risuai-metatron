@@ -2,6 +2,8 @@
     import { ChevronDownIcon, ChevronRightIcon } from "@lucide/svelte";
     import { language } from "src/lang";
     import { alertError, alertToast } from "src/ts/alert";
+    import { chatStatusKey, generatingChatKeys } from "src/ts/process/chatStatus.svelte";
+    import { isLocalSend, localSends } from "src/ts/process/localSends";
     import { memoryTaskStatus } from "src/ts/process/memoryTasks.svelte";
     import {
         memoryReceiptView,
@@ -62,6 +64,9 @@
     const view = $derived(memoryReceiptView(stored, { newest, taskLive }));
     /** The buttons are off: a press is in flight, the writer is working, or a job owns the message. */
     const busy = $derived(pressing || reverting || taskLive || locked);
+    const revertDisabled = $derived(
+        busy || isLocalSend(chatRef, $localSends) || generatingChatKeys().has(chatStatusKey(chatRef)),
+    );
 
     /** A stored code's text from `reasons`; the code itself for one this tab does not know. */
     function reasonText(reasons: Record<string, string>, code: string | undefined): string {
@@ -129,7 +134,7 @@
 
     /** Undoes `change`. An `epoch` refusal already raised its own notice. */
     async function revert({ pageId, historyId }: MemoryReceiptChange) {
-        if (busy || historyId === undefined) {
+        if (revertDisabled || historyId === undefined) {
             return;
         }
         reverting = true;
@@ -210,8 +215,8 @@
                                 {:else if change.historyId !== undefined}
                                     <button
                                         class={"shrink-0 rounded-md border border-darkborderc px-2 py-0.5 transition-all " +
-                                            (busy ? "opacity-50 cursor-not-allowed" : "hover:text-textcolor")}
-                                        disabled={busy}
+                                            (revertDisabled ? "opacity-50 cursor-not-allowed" : "hover:text-textcolor")}
+                                        disabled={revertDisabled}
                                         onclick={() => revert(change)}
                                         data-memory-receipt-revert
                                     >

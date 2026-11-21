@@ -9,8 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // in the copy with the `chatGenerating` notice and is not replayed when the fence drops; the empty default
 // of a chat without memory data is never written by the saving effect (the immediate initialization write
 // is quietly refused while fenced and the chat keeps no `hypaV3Data` after the job), while an unfenced open
-// still initializes it; the V2→V3 conversion is offered for a chat without `hypaV3Data` and reports no
-// success while fenced.
+// still initializes it; the V2→V3 conversion is disabled while fenced.
 
 const mocks = vi.hoisted(() => ({
     alertError: vi.fn(),
@@ -176,6 +175,20 @@ function open(ref: ChatRef) {
 
 const follow = (ref: ChatRef | null) => followedJobs.set(ref ? new Map([["job-1", chatStatusKey(ref)]]) : new Map());
 const storedSummaries = (ref: ChatRef) => (findChat(ref)?.hypaV3Data as any)?.summaries?.map((s: any) => s.text);
+const buttonWithIcon = (root: HTMLElement, icon: string) =>
+    root.querySelector<HTMLButtonElement>(`button:has(.lucide-${icon})`)!;
+const summaryRow = (textarea: HTMLTextAreaElement) => textarea.parentElement!.parentElement!;
+
+function typeIn(input: HTMLInputElement, value: string) {
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    flushSync();
+}
+
+function pressEnter(input: HTMLInputElement) {
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    flushSync();
+}
 
 beforeEach(() => {
     mocks.alertConfirm.mockReset().mockResolvedValue(true);
@@ -222,11 +235,8 @@ describe("HypaV3Modal's summary identity after deletion", () => {
         setChatMeta(withData, { hypaV3Data: { summaries: four(), categories: [] } });
         return open(withData).target;
     }
-    const buttonWithIcon = (root: HTMLElement, icon: string) =>
-        root.querySelector<HTMLButtonElement>(`button:has(.lucide-${icon})`)!;
     const row = (target: HTMLElement, text: string) =>
-        [...target.querySelectorAll("textarea")].find((textarea) => textarea.value === text)!.parentElement!
-            .parentElement!;
+        summaryRow([...target.querySelectorAll("textarea")].find((textarea) => textarea.value === text)!);
     const boxes = (target: HTMLElement) => [...target.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')];
     const selectedTexts = (target: HTMLElement) =>
         boxes(target)
@@ -388,6 +398,178 @@ describe("HypaV3Modal's ready summaries", () => {
 });
 
 describe("HypaV3Modal's write fence", () => {
+    it("fences summary and bulk edits through the search highlight and keeps the summary text selectable", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+            const modal = open(withData);
+            modal.type("one, drafted");
+            const field = modal.textarea();
+            const row = summaryRow(field);
+            const retrySummary = buttonWithIcon(row, "refresh-cw");
+            vi.mocked(summarize).mockResolvedValueOnce("A new summary");
+            retrySummary.click();
+            for (let i = 0; i < 6; i++) await tick();
+            const rerolled = row.querySelector<HTMLTextAreaElement>('textarea[tabindex="-1"]')!;
+            expect(rerolled.value).toBe("A new summary");
+            expect(rerolled.readOnly).toBe(false);
+
+            const bulkMode = buttonWithIcon(modal.target, "square-pen");
+            bulkMode.click();
+            flushSync();
+            const selections = [...modal.target.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')];
+            expect(selections).toHaveLength(2);
+            for (const selection of selections) selection.click();
+            flushSync();
+            const bulkNumbers = modal.target.querySelector<HTMLInputElement>('input[placeholder="1,3,5-8"]')!;
+            const bulkActions = bulkNumbers.closest<HTMLElement>(".sticky")!;
+            const bulkButton = (label: string) =>
+                [...bulkActions.querySelectorAll("button")].find((button) => button.textContent.trim() === label)!;
+            buttonWithIcon(modal.target, "search").click();
+            await tick();
+            const search = modal.target.querySelector<HTMLInputElement>(
+                `input[placeholder="${language.hypaV3Modal.searchPlaceholder}"]`,
+            )!;
+            typeIn(search, "drafted");
+            pressEnter(search);
+            expect(field.value.slice(field.selectionStart, field.selectionEnd)).toBe("drafted");
+            expect(field.readOnly).toBe(true);
+
+            const more = buttonWithIcon(modal.target, "ellipsis-vertical");
+            more.click();
+            flushSync();
+            const controls = {
+                "summary importance": buttonWithIcon(row, "star"),
+                "summary tags": row.querySelector<HTMLButtonElement>(
+                    `button[title="${language.hypaV3Modal.tagManager}"]`,
+                )!,
+                "summary retry": retrySummary,
+                "apply rerolled summary": buttonWithIcon(row, "check"),
+                "summary deletion": buttonWithIcon(row, "trash-2"),
+                "summary delete after": buttonWithIcon(row, "scissors-line-dashed"),
+                "reset memory": buttonWithIcon(more.parentElement!, "trash-2"),
+                "bulk mode": bulkMode,
+                "summary selection": selections[0],
+                "bulk category": bulkActions.querySelector("select")!,
+                "bulk importance": buttonWithIcon(bulkActions, "star"),
+                "bulk range": bulkNumbers,
+                "bulk select range": bulkButton(language.select),
+                "bulk clear selection": bulkButton(language.cancel),
+                "bulk apply category": bulkButton(language.apply),
+                "bulk resummarize": bulkButton(language.hypaV3Modal.reSummarize),
+            };
+            for (const [label, control] of Object.entries(controls)) expect(control.disabled, label).toBe(false);
+            const release = send(withData);
+            for (const [label, control] of Object.entries(controls)) expect.soft(control.disabled, label).toBe(true);
+            expect.soft(rerolled.readOnly, "rerolled summary").toBe(true);
+            vi.advanceTimersByTime(300);
+            expect(document.activeElement).toBe(search);
+            expect.soft(field.readOnly, "summary after the search timer").toBe(true);
+            field.select();
+            expect(field.value.slice(field.selectionStart, field.selectionEnd)).toBe("one, drafted");
+            expect(mocks.alertError).not.toHaveBeenCalled();
+
+            release();
+            flushSync();
+            expect(field.readOnly).toBe(false);
+            expect(rerolled.readOnly).toBe(false);
+            expect(rerolled.value).toBe("A new summary");
+            for (const [label, control] of Object.entries(controls)) expect(control.disabled, label).toBe(false);
+            modal.type(field.value + " and revised");
+            expect(storedSummaries(withData)).toEqual(["one, drafted and revised", "two"]);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it.each([
+        { action: "add", name: "new tag", expected: ["old tag", "keep", "new tag"] },
+        { action: "rename", name: "renamed tag", expected: ["renamed tag", "keep"] },
+    ])("retains a pending tag $action when Enter is pressed while fenced", ({ action, name, expected }) => {
+        setChatMeta(withData, {
+            hypaV3Data: {
+                summaries: [{ ...summaries()[0], tags: ["old tag", "keep"] }, summaries()[1]],
+                categories: [],
+            },
+        });
+        const modal = open(withData);
+        summaryRow(modal.textarea())
+            .querySelector<HTMLButtonElement>(`button[title="${language.hypaV3Modal.tagManager}"]`)!
+            .click();
+        flushSync();
+        const addField = modal.target.querySelector<HTMLInputElement>(
+            `input[placeholder="${language.hypaV3Modal.newTagName}"]`,
+        )!;
+        const manager = addField.closest<HTMLElement>(".max-w-md")!;
+        const add = [...manager.querySelectorAll("button")].find(
+            (button) => button.textContent.trim() === language.add,
+        )!;
+        let input = addField;
+        let submit = add;
+        if (action === "rename") {
+            buttonWithIcon(manager, "square-pen").click();
+            flushSync();
+            input = manager.querySelector<HTMLInputElement>("input:not([placeholder])")!;
+            submit = buttonWithIcon(manager, "check");
+        }
+        typeIn(input, name);
+        const edit = buttonWithIcon(manager, "square-pen");
+        const remove = buttonWithIcon(manager, "trash-2");
+        const release = send(withData);
+        for (const button of new Set([add, edit, remove, submit])) expect.soft(button.disabled).toBe(true);
+        expect.soft(input.readOnly).toBe(true);
+        pressEnter(input);
+        expect.soft(mocks.alertError).not.toHaveBeenCalled();
+        expect(input.value).toBe(name);
+        expect(findChat(withData)?.hypaV3Data?.summaries[0].tags).toEqual(["old tag", "keep"]);
+
+        release();
+        flushSync();
+        expect(input.readOnly).toBe(false);
+        expect(submit.disabled).toBe(false);
+        pressEnter(input);
+        expect(findChat(withData)?.hypaV3Data?.summaries[0].tags).toEqual(expected);
+    });
+
+    it("keeps a pending category name while its edit controls are fenced and saves it after release", async () => {
+        const categories = [
+            { id: "dock", name: "Dock" },
+            { id: "gate", name: "Gate" },
+        ];
+        setChatMeta(withData, { hypaV3Data: { summaries: summaries(), categories } });
+        const modal = open(withData);
+        buttonWithIcon(modal.target, "tag").click();
+        flushSync();
+        const manager = modal.target.querySelector("h2")!.parentElement!.parentElement!;
+        buttonWithIcon(manager, "square-pen").click();
+        flushSync();
+        const input = manager.querySelector<HTMLInputElement>(
+            `input[placeholder="${language.hypaV3Modal.categoryName}"]`,
+        )!;
+        typeIn(input, "Harbor");
+        await tick();
+        const controls = ["plus", "square-pen", "trash-2", "check"].map((icon) => buttonWithIcon(manager, icon));
+        for (const control of controls) expect(control.disabled).toBe(false);
+        const save = buttonWithIcon(manager, "check");
+
+        const release = send(withData);
+        for (const control of controls) expect.soft(control.disabled).toBe(true);
+        expect.soft(input.readOnly).toBe(true);
+        save.click();
+        flushSync();
+        expect.soft(mocks.alertError).not.toHaveBeenCalled();
+        expect(manager.contains(input)).toBe(true);
+        expect(input.value).toBe("Harbor");
+        expect(findChat(withData)?.hypaV3Data?.categories).toEqual(categories);
+
+        release();
+        flushSync();
+        expect(input.readOnly).toBe(false);
+        expect(save.disabled).toBe(false);
+        save.click();
+        flushSync();
+        expect(findChat(withData)?.hypaV3Data?.categories).toEqual([{ id: "dock", name: "Harbor" }, categories[1]]);
+    });
+
     it("writes an edit through the chat module when nothing runs in the chat", () => {
         const modal = open(withData);
         modal.type("one, edited");
@@ -467,18 +649,19 @@ describe("HypaV3Modal's write fence", () => {
         expect(mocks.alertError).not.toHaveBeenCalled();
         expect(chatWork).not.toHaveBeenCalled();
 
-        // The conversion is offered for a chat without `hypaV3Data`, and refused while fenced without a success notice.
+        // Conversion becomes available when the job releases the chat.
         const convert = modal.convertButton();
-        expect(convert).not.toBeNull();
+        expect(convert?.disabled).toBe(true);
         convert!.click();
         flushSync();
-        expect(mocks.alertError).toHaveBeenCalledWith(language.chatGenerating);
+        expect(mocks.alertError).not.toHaveBeenCalled();
         expect(mocks.alertNormalWait).not.toHaveBeenCalled();
         expect(findChat(withoutData)?.hypaV3Data).toBeUndefined();
 
         // The job ends (the mirror may not hold its write yet): the empty copy is not written over it.
         follow(null);
         flushSync();
+        expect(convert!.disabled).toBe(false);
         expect(findChat(withoutData)?.hypaV3Data).toBeUndefined();
         expect(chatWork).not.toHaveBeenCalled();
     });
@@ -546,6 +729,28 @@ describe("HypaV3Modal's bulk resummary", () => {
         run.apply();
         expect(storedSummaries(withData)).toEqual(["merged", "two"]);
         expect(storedMetrics(withData)).toEqual(lastSelection([1]));
+    });
+
+    it("keeps a finished bulk summary available and disables Retry and Apply until the fence clears", async () => {
+        const run = await resummarizeFirstAndLast();
+        await run.finish("merged");
+        const buttons = [language.hypaV3Modal.retry, language.apply].map((title) =>
+            run.modal.target.querySelector<HTMLButtonElement>(`button[title="${title}"]`)!,
+        );
+        for (const button of buttons) expect(button.disabled).toBe(false);
+        const release = send(withData);
+        for (const button of buttons) expect.soft(button.disabled, button.title).toBe(true);
+        run.apply();
+        flushSync();
+        expect.soft(mocks.alertError).not.toHaveBeenCalled();
+        expect(storedSummaries(withData)).toEqual(["one", "two", "three"]);
+        expect([...run.modal.target.querySelectorAll("textarea")].some((field) => field.value === "merged")).toBe(true);
+
+        release();
+        flushSync();
+        for (const button of buttons) expect(button.disabled).toBe(false);
+        run.apply();
+        expect(storedSummaries(withData)).toEqual(["merged", "two"]);
     });
 
     it("keeps a cancelled bulk resummary hidden when its pending request resolves", async () => {
@@ -731,6 +936,7 @@ describe("HypaV3Modal's memory task fence", () => {
 
     it("refuses an edit while the task runs and until the terminal's revision is in the mirror, and accepts after", () => {
         const modal = open(withData);
+        expect(modal.textarea().readOnly).toBe(false);
         expect(taskBlock(modal.target).dataset.risuMemoryTask).toBe("none");
         expect(startButton(modal.target).disabled).toBe(false);
         expect(cancelButton(modal.target)).toBeNull();
@@ -741,6 +947,7 @@ describe("HypaV3Modal's memory task fence", () => {
         expect(taskBlock(modal.target).textContent).toContain(language.memoryTasks.running(0, 1));
         expect(startButton(modal.target).disabled).toBe(true);
         expect(cancelButton(modal.target)).not.toBeNull();
+        expect.soft(modal.textarea().readOnly, "running task").toBe(true);
         modal.type("one, edited");
         expect(mocks.alertError).toHaveBeenCalledWith(language.memoryTasks.editFenced);
         expect(modal.textarea().value).toBe("one");
@@ -763,6 +970,7 @@ describe("HypaV3Modal's memory task fence", () => {
         expect(syncLine(modal.target)).not.toBeNull();
         expect(startButton(modal.target).disabled).toBe(false);
         expect(cancelButton(modal.target)).toBeNull();
+        expect.soft(modal.textarea().readOnly, "terminal revision pending").toBe(true);
         modal.type("one, again");
         expect(mocks.alertError).toHaveBeenCalledTimes(2);
         expect(mocks.alertError).toHaveBeenLastCalledWith(language.memoryTasks.editFenced);
@@ -777,6 +985,7 @@ describe("HypaV3Modal's memory task fence", () => {
         flushSync();
         expect(modal.target.querySelectorAll("textarea")).toHaveLength(3);
         expect(syncLine(modal.target)).toBeNull();
+        expect(modal.textarea().readOnly).toBe(false);
         modal.type("one, later");
         expect(storedSummaries(withData)).toEqual(["one, later", "two", "three"]);
         expect(mocks.alertError).toHaveBeenCalledTimes(2);

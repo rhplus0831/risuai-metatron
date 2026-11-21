@@ -1874,6 +1874,59 @@ it.each(["pages", "threads"] as const)(
     },
 );
 
+it("keeps a section draft selectable through the writer fence and saves the same text after release", async () => {
+    const state = serveMemory();
+    const answer = deferred<Response>();
+    const fetch = io.authFetch.getMockImplementation()!;
+    io.authFetch.mockImplementation((url, init, options) =>
+        url.endsWith("/edits") ? answer.promise : fetch(url, init, options),
+    );
+    await open();
+    await chooseTab("pages");
+    click('[data-memory-page="p"]');
+    await settle();
+    await choosePageView("manage");
+    press("[data-memory-section-edit]");
+    const text = "My pending section revision";
+    typeSection(text);
+    const field = () => target.querySelector("textarea")!;
+    const save = () => query("[data-memory-section-save]")!.closest("button")!;
+    expect(field().readOnly).toBe(false);
+    expect(save().disabled).toBe(false);
+
+    const release = beginLocalSend(ref)!;
+    releases.push(release);
+    await settle();
+    expect.soft(field().readOnly).toBe(true);
+    field().select();
+    expect(field().value.slice(field().selectionStart, field().selectionEnd)).toBe(text);
+    expect(save().disabled).toBe(true);
+    save().click();
+    await settle();
+    expect(sentEdits()).toEqual([]);
+
+    release();
+    await settle();
+    expect(field().readOnly).toBe(false);
+    expect(field().value).toBe(text);
+    expect(save().disabled).toBe(false);
+    save().click();
+    await settle();
+    expect(sentEdits()).toEqual([
+        { revision: "read-revision", edit: { kind: "section", pageId: "p", heading: "Facts", body: text } },
+    ]);
+    expect.soft(field().readOnly, "pending save").toBe(true);
+    answer.resolve(
+        Response.json({
+            revision: "saved-revision",
+            kind: "pages",
+            data: { ...state.page, sections: [{ ...state.page.sections[0], body: text }] },
+        }),
+    );
+    await settle();
+    expect(query("[data-memory-section-body]")?.textContent).toBe(text);
+});
+
 it("closes an overtaken section draft with a changed notice when the writer fence falls", async () => {
     const state = serveMemory();
     await open();

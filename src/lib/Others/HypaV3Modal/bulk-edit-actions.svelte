@@ -11,6 +11,7 @@
      */
 
     interface Props {
+        readOnly: boolean;
         /** The modal's editing copy of the memory data (its changes are saved by the modal). */
         hypaV3Data: SerializableHypaV3Data;
         bulkEditState: BulkEditState;
@@ -27,6 +28,7 @@
     }
 
     let {
+        readOnly,
         hypaV3Data,
         bulkEditState,
         categories,
@@ -76,7 +78,7 @@
 
 <!-- Bulk Edit Action Bar -->
 {#if bulkEditState.isEnabled}
-    <div class="sticky bottom-0 p-3 bg-darkbg border-t border-darkborderc rounded-b-lg">
+    <div class="sticky bottom-0 p-3 bg-darkbg border-t border-darkborderc rounded-b-lg" class:opacity-50={readOnly}>
         <div class="flex items-center justify-between">
             <!-- Left Side: Resummarize Button -->
             <div class="flex items-center gap-2">
@@ -87,7 +89,7 @@
                         ? 'bg-success-600 hover:bg-success-700 text-neutral-50'
                         : 'bg-darkbutton text-textcolor2 cursor-not-allowed'}"
                     onclick={onResummarize}
-                    disabled={bulkEditState.selectedSummaries.size < 2}
+                    disabled={readOnly || bulkEditState.selectedSummaries.size < 2}
                 >
                     {language.hypaV3Modal.reSummarize}
                 </button>
@@ -99,6 +101,7 @@
                 <select
                     class="risu-select px-3 py-2 rounded-sm border border-darkborderc bg-bgcolor text-textcolor text-sm focus:outline-hidden focus:ring-2 focus:ring-borderc"
                     value={bulkEditState.selectedCategory}
+                    disabled={readOnly}
                     onchange={handleCategoryChange}
                 >
                     {#each categories as category}
@@ -113,7 +116,7 @@
                         ? 'bg-primary-600 hover:bg-primary-700 text-neutral-50'
                         : 'bg-darkbutton text-textcolor2 cursor-not-allowed'}"
                     onclick={applyCategoryToSelected}
-                    disabled={bulkEditState.selectedSummaries.size === 0}
+                    disabled={readOnly || bulkEditState.selectedSummaries.size === 0}
                 >
                     {language.apply}
                 </button>
@@ -125,7 +128,7 @@
                         ? 'opacity-50 cursor-not-allowed'
                         : ''}"
                     onclick={bulkToggleImportant}
-                    disabled={bulkEditState.selectedSummaries.size === 0}
+                    disabled={readOnly || bulkEditState.selectedSummaries.size === 0}
                 >
                     <StarIcon class="w-4 h-4" />
                 </button>
@@ -135,6 +138,7 @@
                     <input
                         type="text"
                         value={bulkEditState.bulkSelectInput}
+                        disabled={readOnly}
                         oninput={handleBulkSelectInputChange}
                         placeholder="1,3,5-8"
                         class="w-32 px-3 py-2 text-sm bg-darkbg border border-darkborderc rounded-sm text-textcolor placeholder:text-textcolor2 focus:border-borderc outline-hidden"
@@ -142,6 +146,7 @@
                     />
                     <button
                         class="px-3 py-2 rounded-sm border border-primary-600 hover:bg-primary-700 text-primary-300 text-sm transition-colors"
+                        disabled={readOnly}
                         onclick={parseAndSelectSummaries}
                     >
                         {language.select}
@@ -151,6 +156,7 @@
                 <!-- Clear Selection Button -->
                 <button
                     class="px-3 py-2 rounded-sm border border-danger-600 hover:bg-danger-700 text-danger-300 text-sm transition-colors"
+                    disabled={readOnly}
                     onclick={clearSelection}
                 >
                     {language.cancel}

@@ -20,7 +20,7 @@ import { language } from "src/lang";
 import { runServerJob } from "src/ts/process/serverCommands";
 import { resetMemoryTasks, noteMemoryTaskFrame } from "src/ts/process/memoryTasks.svelte";
 import { findCharacter, type AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
-import { patchMessage } from "src/ts/storage/chatStore.svelte";
+import { noteRemoteStreaming, patchMessage } from "src/ts/storage/chatStore.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import MemoryReceiptLine from "./MemoryReceiptLine.svelte";
 
@@ -277,6 +277,64 @@ it("labels highlighted creates without a revert and links sections to history wi
     expect(rows[0].querySelector("[data-memory-receipt-revert]")).toBeNull();
     expect(rows[0].querySelector("[data-memory-receipt-reverted]")).not.toBeNull();
     hypaV3ModalOpen.set(false);
+});
+
+it("disables Revert on an older receipt only while a newer reply in its own chat generates", async () => {
+    const fetch = vi.mocked(authFetch).mockReset();
+    fetch.mockResolvedValue(Response.json({ error: "Memory is fenced" }, { status: 409 }));
+    render("a1", 0);
+    patchMessage(ref, "a1", {
+        generationInfo: {
+            memory: receipt({
+                pages: [
+                    {
+                        pageId: "p",
+                        title: "Harbor",
+                        created: false,
+                        sections: [{ heading: "Gate", historyId: "old", highlighted: "contradiction" }],
+                    },
+                ],
+            }),
+        },
+    });
+    flushSync();
+    target.querySelector<HTMLButtonElement>("button[aria-expanded]")!.click();
+    flushSync();
+    const revert = target.querySelector<HTMLButtonElement>("[data-memory-receipt-revert]")!;
+    const setLock = (chatId: string, held: boolean) => {
+        noteRemoteStreaming([
+            {
+                characterId: ref.chaId,
+                id: chatId,
+                streaming: held ? [{ messageId: "a2", generationId: `reply-${chatId}`, seq: 0 }] : [],
+            },
+        ]);
+        flushSync();
+    };
+    try {
+        setLock("other", true);
+        expect(revert.disabled).toBe(false);
+        setLock(ref.chatId, true);
+        expect.soft(revert.disabled).toBe(true);
+        revert.click();
+        for (let i = 0; i < 30; i++) await tick();
+        expect.soft(fetch).not.toHaveBeenCalled();
+    } finally {
+        setLock(ref.chatId, false);
+        setLock("other", false);
+    }
+    expect(revert.disabled).toBe(false);
+    fetch
+        .mockClear()
+        .mockImplementation(async (url) =>
+            url.endsWith("/revert")
+                ? Response.json({ revision: "after", data: { id: "p" }, reverted: true, laterEvents: 0 })
+                : Response.json({ revision: "fresh", data: { id: "p" } }),
+        );
+    revert.click();
+    for (let i = 0; i < 30; i++) await tick();
+    expect(fetch.mock.calls.filter(([url]) => url.endsWith("/revert"))).toHaveLength(1);
+    expect(target.querySelector("[data-memory-receipt-reverted]")).not.toBeNull();
 });
 
 it("shows the stored custom prompt label and failure as text on the receipt", () => {

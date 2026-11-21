@@ -23,6 +23,7 @@
      */
 
     interface Props {
+        readOnly: boolean;
         searchState: SearchState;
         filterImportant: boolean;
         dropdownOpen: boolean;
@@ -38,6 +39,7 @@
     }
 
     let {
+        readOnly,
         searchState = $bindable(),
         filterImportant = $bindable(),
         dropdownOpen = $bindable(),
@@ -147,7 +149,8 @@
         <!-- Bulk Edit Mode Button -->
         {#if bulkEditState}
             <button
-                class="p-2 transition-colors {bulkEditState.isEnabled
+                disabled={readOnly}
+                class="disabled:opacity-50 disabled:cursor-not-allowed p-2 transition-colors {bulkEditState.isEnabled
                     ? 'text-blue-400 hover:text-blue-300'
                     : 'text-zinc-400 hover:text-zinc-200'}"
                 tabindex="-1"
@@ -204,7 +207,8 @@
 
                         <!-- Reset Data Button -->
                         <button
-                            class="p-2 transition-colors text-zinc-400 hover:text-rose-300"
+                            disabled={readOnly}
+                            class="disabled:opacity-50 disabled:cursor-not-allowed p-2 transition-colors text-zinc-400 hover:text-rose-300"
                             tabindex="-1"
                             onclick={async () => await resetData()}
                         >

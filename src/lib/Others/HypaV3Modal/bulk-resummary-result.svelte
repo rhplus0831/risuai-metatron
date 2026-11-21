@@ -10,6 +10,7 @@
      */
 
     interface Props {
+        readOnly: boolean;
         bulkResummaryState: BulkResummaryState;
         onToggleTranslation: (regenerate: boolean) => void;
         onReroll: () => void;
@@ -17,7 +18,7 @@
         onCancel: () => void;
     }
 
-    let { bulkResummaryState, onToggleTranslation, onReroll, onApply, onCancel }: Props = $props();
+    let { readOnly, bulkResummaryState, onToggleTranslation, onReroll, onApply, onCancel }: Props = $props();
 </script>
 
 <!-- Bulk Resummarize Result Section -->
@@ -45,11 +46,11 @@
 
                     <!-- Reroll Button -->
                     <button
-                        class="p-2 rounded transition-colors {bulkResummaryState.isProcessing
+                        class="disabled:opacity-50 disabled:cursor-not-allowed p-2 rounded transition-colors {bulkResummaryState.isProcessing
                             ? 'text-zinc-600 cursor-not-allowed'
                             : 'text-orange-400 hover:text-orange-300'}"
                         onclick={onReroll}
-                        disabled={bulkResummaryState.isProcessing}
+                        disabled={readOnly || bulkResummaryState.isProcessing}
                         title={language.hypaV3Modal.retry}
                     >
                         <RefreshCw class="w-4 h-4" />
@@ -57,12 +58,12 @@
 
                     <!-- Apply Button -->
                     <button
-                        class="p-2 rounded transition-colors {bulkResummaryState.isProcessing ||
+                        class="disabled:opacity-50 disabled:cursor-not-allowed p-2 rounded transition-colors {bulkResummaryState.isProcessing ||
                         !bulkResummaryState.result
                             ? 'text-zinc-600 cursor-not-allowed'
                             : 'text-green-400 hover:text-green-300'}"
                         onclick={onApply}
-                        disabled={bulkResummaryState.isProcessing || !bulkResummaryState.result}
+                        disabled={readOnly || bulkResummaryState.isProcessing || !bulkResummaryState.result}
                         title={language.apply}
                     >
                         <CheckIcon class="w-4 h-4" />

@@ -47,7 +47,7 @@ Sources the entries name (drop a line when no entry names it any more):
 - [Backup and sync](#backup-and-sync): 1
 - [Build and CI](#build-and-ci): 1
 - [Chat screen](#chat-screen): 5
-- [Memory](#memory): 3
+- [Memory](#memory): 2
 - [Network jobs](#network-jobs): 1
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 1
@@ -166,21 +166,6 @@ nothing visible. The race is narrow: the event must be retracted between the hel
 **Suggested handling:** reproduce in the app (retract an event in another tab, then follow a Pages link to it before
 the panel's refresh settles); then either keep the target pending while a coverage read is out, or have an open event
 that turns retracted switch the view to Manage.
-
-### The HypaV3 editor undoes an edit made during a generation instead of disabling it
-
-Generation lock survey of 2026-11-21 (Luna workers), read and not run. The HypaV3 modal's summary text, importance,
-category, tag and bulk edits stay enabled while a reply generates; the copy-save effect in
-`src/lib/Others/HypaV3Modal.svelte` (141-163) then alerts `chatGenerating` and restores the saved copy. The Structured
-Memory panel instead derives `readOnly` from the same fence and disables its controls, except the section draft
-textarea in `PagesTab.svelte`, whose Save is disabled while the text stays editable. A memory receipt's Revert under an
-older message (`MemoryReceiptLine.svelte`) stays enabled during another message's generation and is refused by the
-server.
-
-**Why it matters:** typed text is thrown away with a notice, the pattern the chat lorebook fix (`4c43d31bd`) removed.
-
-**Suggested handling:** derive a read-only state from `memoryWriteFence` as the Structured Memory panel does, and
-disable the Pages draft textarea with its Save.
 
 ### The HypaV2 chunk and SupaMemory editors write the whole field during a generation
 

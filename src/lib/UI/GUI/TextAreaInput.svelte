@@ -35,6 +35,7 @@
     interface Props {
         size?: "xs" | "sm" | "md" | "lg" | "xl" | "default";
         autocomplete?: "on" | "off";
+        readonly?: boolean;
         placeholder?: string;
         value: string;
         id?: string;
@@ -57,6 +58,7 @@
     let {
         size = "default",
         autocomplete = "off",
+        readonly = false,
         placeholder = "",
         value = $bindable(),
         id = undefined,
@@ -106,7 +108,7 @@
         const initialContext = popupEditorContext;
         const initialContextRevision = popupEditorContextRevision;
         hideAutoComplete();
-        const sessionId = openPopupEditorSession(value, popupLanguage, popupMode);
+        const sessionId = openPopupEditorSession(value, popupLanguage, popupMode, () => readonly);
         activePopupEditorSessionId = sessionId;
 
         const fieldIsCurrent = () =>
@@ -215,6 +217,7 @@
     };
 
     const insertContent = (insertContent: string, type: "autoComplete" | "paste" = "autoComplete") => {
+        if (readonly) return;
         console.log(insertContent);
         const sel = window.getSelection();
         if (sel) {
@@ -381,13 +384,14 @@
         hideAutoComplete();
     }}
 >
-    {#if !highlight || $disableHighlight}
+    {#if !highlight || $disableHighlight || readonly}
         <textarea
             class="w-full h-full bg-transparent focus-within:outline-hidden resize-none absolute top-0 left-0 z-50 overflow-y-auto"
             class:px-4={padding}
             class:py-2={padding}
             class:pr-10={isPopupEditorButtonVisible()}
             aria-label={ariaLabel}
+            {readonly}
             {autocomplete}
             {placeholder}
             {id}

@@ -1348,6 +1348,7 @@
         {#if editor?.heading === section.heading}
             <TextAreaInput
                 bind:value={draft}
+                readonly={controlsOff}
                 height="36"
                 optimaizedInput={false}
                 popupEditor={false}

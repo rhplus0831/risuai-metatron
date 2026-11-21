@@ -203,6 +203,10 @@
         syncCheck;
         return taskRef !== null && memoryTaskAwaitingSync(taskRef);
     });
+    const readOnly = $derived.by(() => {
+        syncCheck;
+        return taskRef !== null && memoryWriteFence(taskRef) !== null;
+    });
 
     const taskStatusLine = $derived(memoryTaskStatusLine(taskStatus));
 
@@ -855,8 +859,8 @@
                 textarea.readOnly = true;
                 textarea.focus();
                 window.setTimeout(() => {
-                    searchState.ref.focus(); // Restore focus to search bar
-                    textarea.readOnly = false; // Remove readonly after focus moved
+                    searchState?.ref?.focus();
+                    textarea.readOnly = readOnly; // A memory write fence may have arrived during the highlight.
                 }, 300);
             }
         } else {
@@ -1027,6 +1031,7 @@
         >
             <!-- Header -->
             <ModalHeader
+                {readOnly}
                 bind:searchState
                 bind:filterImportant={filterState.showImportantOnly}
                 bind:dropdownOpen={uiState.dropdownOpen}
@@ -1092,7 +1097,8 @@
                                     {language.hypaV3Modal.convertLabel}
                                 </div>
                                 <button
-                                    class="px-4 py-2 my-1 font-semibold transition-colors rounded-md sm:my-2 text-zinc-300 bg-zinc-700 hover:bg-zinc-500"
+                                    class="px-4 py-2 my-1 font-semibold transition-colors rounded-md sm:my-2 text-zinc-300 bg-zinc-700 hover:bg-zinc-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    disabled={readOnly}
                                     tabindex="-1"
                                     onclick={async () => {
                                         const conversionResult = convertHypaV2ToV3();
@@ -1185,6 +1191,7 @@
                     {#if isSummaryVisible(i)}
                         <!-- Summary Item  -->
                         <ModalSummaryItem
+                            {readOnly}
                             summaryIndex={i}
                             {hypaV3Data}
                             {summaryItemStateMap}
@@ -1208,6 +1215,7 @@
 
             <!-- Bulk Resummary Result -->
             <BulkResummaryResult
+                {readOnly}
                 {bulkResummaryState}
                 onToggleTranslation={toggleBulkResummaryTranslation}
                 onReroll={rerollBulkResummary}
@@ -1217,6 +1225,7 @@
 
             <!-- Bulk Edit Actions -->
             <BulkEditActions
+                {readOnly}
                 {hypaV3Data}
                 {bulkEditState}
                 {categories}
@@ -1236,6 +1245,7 @@
 
 <!-- Component Modals -->
 <CategoryManagerModal
+    {readOnly}
     {hypaV3Data}
     bind:categoryManagerState
     bind:searchState
@@ -1243,4 +1253,4 @@
     onCategoryFilter={handleCategoryFilter}
 />
 
-<TagManagerModal {hypaV3Data} bind:tagManagerState />
+<TagManagerModal {readOnly} {hypaV3Data} bind:tagManagerState />
