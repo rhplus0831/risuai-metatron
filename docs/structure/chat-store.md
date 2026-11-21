@@ -311,6 +311,11 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   multisend, a command, a plugin) is refused with `chatGenerating`. A fix would have the terminal name the job's
   generations. Decision: owner, 2026-11-13 (rare, no data lost; reproduced in
   `/home/codex/review-reports/feed-lock-retire-2026-11-13`).
+- The chat settings panels that patch chat metadata through `setChatMeta`, `setCurrentChatMeta` or `mergeChatMeta` stay
+  editable while a reply generates, unlike the chat lorebook and the messages: the author's note, the draft hook, the
+  binding pickers, memory and translation preferences, prompt toggles, chat modules, chat variables, the OOC own-toggles
+  switch, rename and folder moves. The server does not lock metadata ops for a job, and a change made then does not
+  reach the running reply. Decision: owner, 2026-11-21 (found-issues review): a single-field patch needs no lock.
 
 ### Gotchas
 

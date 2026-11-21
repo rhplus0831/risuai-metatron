@@ -367,6 +367,15 @@ entry point.
 - `PromptSettings.svelte` updates its token-count fields from template items and `tokenScopeKey` only;
   `tokenCountField.ts` `createTokenCountField` runs counts untracked, so changing a CBS value alone does not refresh
   prompt-template totals. Decision: Combine Audit Fixes, slice 2, [archive](../archived-plan/README.md).
+- A row drag within one list remembers the row's index (`PromptDataItem.svelte`): when another tab removes or reorders
+  rows of the same preset, or of the request interception rules, during the drag, the drop moves the row that slid into
+  that index. A drag onto another preset drops nothing. Decision: owner, 2026-11-21 (found-issues review): visible,
+  undone by one move, and it needs another tab's change inside one gesture.
+- A live update of the `providers` section installs new rule objects, so an unchanged rule's row identity changes
+  (`recordValueIdentity` in `PromptDataItem.svelte`), `TextAreaInput.svelte` closes the popup session as stale, and text
+  typed in a rule's popup editor since it opened is not written back; removing an earlier rule also collapses the row.
+  Saved text and inline edits are kept. Decision: owner, 2026-11-21 (found-issues review): it needs the user's second
+  device, and a fix changes the shared popup guard.
 
 ### Gotchas
 

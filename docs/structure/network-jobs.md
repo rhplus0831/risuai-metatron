@@ -289,6 +289,11 @@ The transport below retains this tab's in-memory log.
   a reconcile, and whether `navigator.serviceWorker.ready` names the old worker during an upgrade, are browser behaviors
   the tests cannot show (left to a real-browser check). Decision: Web Push (`e148f7276`,
   [archive](../archived-plan/README.md)); Found Issues Clearance (owner, 2026-11-09).
+- A remote command's attempt is kept in the host tab's `sessionStorage` (`remoteHost.ts`). The headless host's own
+  restarts (a crashed or closed page, a failed load, a dialog it cannot dismiss, the plugins-off reload) open a new tab
+  (`util/headlessHost.mjs` `openPage`) with no record and a new client id: the requesting device shows "no answer" after
+  two minutes, and the relay keeps the entry until it drops it. A remote "Reload page" keeps the tab. No chat data is
+  lost. Decision: owner, 2026-11-21 (found-issues review): rare, and a fix changes where attempts are stored.
 
 ### Gotchas
 

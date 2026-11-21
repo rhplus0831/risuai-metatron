@@ -283,6 +283,11 @@
   text is lost. Keeping it would bring sent text back after every uncertain landed end
   ([JR1](../reports/audits/finished-plans/cross-plan-2026-10-29.md#jr1--a-landed-send-deletes-an-identical-drafts-journal-row)).
   Decision: owner, 2026-11-10.
+- A send that is pending across a remount of the chat screen (opening and closing Settings) settles into the destroyed
+  composer: `composerDrafts.svelte.ts` `placeSend` returns on `destroyed` and the new screen is not told. After a
+  refusal the composer stays empty until a chat switch, another remount, or a reload brings the text back from the
+  hand-off row; a draft send's whole snapshot waits the same way. Decision: owner, 2026-11-21 (found-issues review): the
+  text is kept and the trigger is uncommon.
 
 ### Gotchas
 

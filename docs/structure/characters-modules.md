@@ -370,6 +370,18 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
 - Pinning a duplicate-id original assigns it a fresh id. This can detach another chat's `child` link or make another
   chat's override match a different entry; the previously ambiguous link is not migrated. Decision: Chat Lore Override
   States, duplicate owner ids out of scope, [archive](../archived-plan/README.md).
+- With two modules of one id (an upstream database import or a plugin's whole-list write can store such a pair), the
+  catalog's edit, export and conversion actions and the Apply module picker find the module by id and act on the first;
+  the trash button removes the row its dialog named. Decision: owner, 2026-11-21 (found-issues review): a duplicated id
+  is rare and nothing is deleted.
+- `src/ts/storage/recordMerge.ts` `mergeUnit` compares a folder's `data` by position, and `withItemInFolder` appends in
+  click order: two tabs that file the same items into one folder in another order conflict, the losing tab takes the
+  server's folder list, and an unrelated folder rename it held is dropped. Decision: owner, 2026-11-21 (found-issues
+  review): it needs unsaved folder changes on one tab while another device files the same items, and costs one rename.
+- A persona or module whose id is only whitespace cannot be filed (an upstream database import can store one;
+  `shared/ids.ts` accepts any nonempty string): the folder helpers and `normalizeItemFolders` keep nonblank ids only,
+  the persona page's Folder select returns silently, and the module move throws in the store without an alert. The item
+  stays at the root. Decision: owner, 2026-11-21 (found-issues review): one item, otherwise usable.
 
 ### Gotchas
 

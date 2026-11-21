@@ -46,18 +46,18 @@ Sources the entries name (drop a line when no entry names it any more):
 
 - [Backup and sync](#backup-and-sync): 4
 - [Build and CI](#build-and-ci): 1
-- [Chat screen](#chat-screen): 8
+- [Chat screen](#chat-screen): 6
 - [Docs](#docs): 3
-- [Headless host](#headless-host): 2
-- [LLM requests](#llm-requests): 3
+- [Headless host](#headless-host): 1
+- [LLM requests](#llm-requests): 2
 - [Memory](#memory): 6
-- [Modules and personas](#modules-and-personas): 4
+- [Modules and personas](#modules-and-personas): 1
 - [Network jobs](#network-jobs): 2
 - [Plugins](#plugins): 1
 - [Remote commands](#remote-commands): 1
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 1
-- [Settings](#settings): 4
+- [Settings](#settings): 2
 - [Tests](#tests): 2
 - [Translation](#translation): 1
 
@@ -170,14 +170,6 @@ Post-verification of 2026-11-18 (IH-1), reproduced by two readers. A chat has on
 
 **Suggested handling:** kept as recorded by the owner's rule for the fix round (the trigger is uncommon and the fix adds a second kept snapshot to the journal and its budget). If it is taken up: keep the displaced snapshot under its message id and offer it through the composer's recovery.
 
-### A send that fails after a Settings round trip is not placed back until the chat is shown again
-
-Post-verification of 2026-11-18 (IH-3), reproduced by two readers. Opening and closing Settings remounts the chat screen. A send that was pending across the remount settles into the destroyed composer (`placeSend` in `src/ts/process/composerDrafts.svelte.ts` returns on `destroyed`), and the new screen is not told. For a draft send this holds for its whole snapshot.
-
-**Why it matters:** the composer stays empty after the refusal. The text is in the hand-off row and returns on a chat switch, another remount, or a reload.
-
-**Suggested handling:** kept as recorded by the owner's rule for the fix round. If it is taken up: have `settleSend` notify the mounted composer of that chat to run its guarded restore.
-
 ### Opening a message's inline editor moves the transcript before any save
 
 Seen on 2026-11-18 in headless Chrome by both reviewers of the chat scroll fixes (`ec7b2a8eb`), and listed under
@@ -224,24 +216,6 @@ so far into the new chat; the copy was not checked.
 
 **Suggested handling:** reproduce by branching on a streaming reply; if the copy is partial, disable Branch while the
 message is locked.
-
-### Chat settings panels write chat metadata during a generation without a lock
-
-Generation lock survey of 2026-11-21 (Luna workers), read and not run. These panels write the selected chat's fields
-through `setChatMeta`, `setCurrentChatMeta` or `mergeChatMeta` with no generation check and no disabled state: the
-author's note (`ChatNoteEditor.svelte`, `CharConfig.svelte`), the draft hook, the chat binding pickers, the chat's
-memory preferences (`ChatMemoryPanel.svelte`, the Context Meter switch, the chat-owned preset in
-`MemorySettings.svelte`), translation preferences (`ChatTranslationPanel.svelte`), prompt toggles (`Toggles.svelte`),
-chat modules (`ModuleChatMenu.svelte`), chat variables (`DevTool.svelte`), the OOC own-toggles switch, and chat
-rename and folder moves (`SideChatList.svelte`). `Suggestion.svelte` refreshes `suggestMessages` checking only this
-tab's sends. Most are single-field patches and the server does not lock metadata ops for a job, so no lost write was
-shown; the gap is that they stay editable while the lorebook and the messages are locked.
-
-**Why it matters:** inconsistent locking; a setting changed mid-generation does not affect the running reply, which
-the open panel does not say.
-
-**Suggested handling:** decide per field whether it needs a lock; the whole-field writers are a separate entry under
-[Memory](#memory).
 
 ## Docs
 
@@ -294,14 +268,6 @@ in its Metatron column.
 
 ## Headless host
 
-### A restart of the headless host's page loses a pending command's receipt
-
-Post-verification of 2026-11-18 (HH-2), reproduced by two readers. A remote command's attempt is kept in the tab's `sessionStorage` (`src/ts/network/remoteHost.ts`). The script's own restarts (a crashed or closed page, a failed load, a dialog it cannot dismiss, the plugins-off reload) close the tab and open a new one (`openPage` in `util/headlessHost.mjs`), which has no record and a new client id. A remote "Reload page" keeps the tab and is not affected.
-
-**Why it matters:** the requesting device waits two minutes and shows "no answer", and the relay keeps the entry until it drops it. No chat data is lost.
-
-**Suggested handling:** kept as recorded by the owner's rule for the fix round (rare, and the fix changes where attempts are stored). If it is taken up: reuse the tab on a restart where the page is still alive, or keep attempts where a new tab of the same profile reads them.
-
 ### An uncaught page error from a script URL with a query loses its position in the headless host's log
 
 Post-verification of 2026-11-18 (HH-5), read by one reader. The `pageerror` handler in `util/headlessHost.mjs` logs `error.stack` through the whole-line redaction, which removes everything after a `?` in each frame's URL. A console message keeps its line and column: its URL is redacted by itself and the position is appended.
@@ -311,14 +277,6 @@ Post-verification of 2026-11-18 (HH-5), read by one reader. The `pageerror` hand
 **Suggested handling:** redact each frame's URL by itself, as the console line does.
 
 ## LLM requests
-
-### A command job's later parts use request interception rules edited after it started
-
-Post-verification of 2026-11-18 (RI-2), reproduced by two readers. The parts loop of `server/src/jobs/commandRunner.ts` calls `runPromptSend`, which loads the job scope again (`loadJobScope` in `server/src/prompt/runner.ts`), so a rule saved while a `/multisend` command runs reaches its later parts. The plan says a job's later requests use the list the job started with; a group send keeps one list.
-
-**Why it matters:** work already under way changes instructions between its parts. It needs a multi-part command and a rule edit during it.
-
-**Suggested handling:** kept as recorded by the owner's rule for the fix round. If it is taken up: capture the list at command setup and hand it to each part; otherwise reword the guide to say a command's parts each read the list.
 
 ### A buffered answer the response checks reject fails without its request id
 
@@ -427,30 +385,6 @@ tab's copy after a job's write could drop that write, or the job's write could r
 these editors like `createChatFieldDraft`.
 
 ## Modules and personas
-
-### With two modules of one id, edit, export, conversion, and Apply module act on the first
-
-Post-verification of 2026-11-18 (MF-1), read by one reader. The catalog's row actions other than the trash button, and the Apply module picker, find the module by id and so act on the first of two modules with one id. The trash button removes the row its dialog named. An upstream database import and a plugin's whole-list write can store such a pair.
-
-**Why it matters:** the user opens, exports, or applies another module than the row they chose; nothing is deleted.
-
-**Suggested handling:** kept as recorded by the owner's rule for the fix round (a library with a duplicated id is rare). If it is taken up: pass the row's record, as the trash button does, or give imported duplicates new ids where nothing links to them.
-
-### Equal folder membership in another order counts as a conflict
-
-Post-verification of 2026-11-18 (MF-2), reproduced by two readers. `mergeUnit` in `src/ts/storage/recordMerge.ts` compares a folder's `data` by position, and `withItemInFolder` appends in click order. Two tabs that file the same items into one folder in another order therefore conflict, although the plan says the order means nothing and equal changes converge. The losing tab takes the server's folder list, and an unrelated folder rename it held is dropped.
-
-**Why it matters:** it needs one tab holding unsaved folder changes (an outage) while another device files the same items the other way round; the cost is one rename.
-
-**Suggested handling:** kept as recorded by the owner's rule for the fix round. If it is taken up: compare member ids as sets in the three-way merge of the two folder kinds.
-
-### An item whose id is only whitespace cannot be filed
-
-Post-verification of 2026-11-18 (MF-3), reproduced by two readers. An upstream database import can store a persona or module whose id is one space (`shared/ids.ts` accepts any nonempty string). The folder helpers and `normalizeItemFolders` keep nonblank ids only: the persona page's Folder select returns silently, and the module move throws inside the store without an alert.
-
-**Why it matters:** that one item stays at the root; everything else about it works.
-
-**Suggested handling:** kept as recorded by the owner's rule for the fix round. If it is taken up: use the item records' nonempty-string rule in the folder helpers and both filing guards.
 
 ### The character's module toggle removes one entry of a repeated id
 
@@ -575,24 +509,6 @@ it to a worker thread." That design covers every family. Short of it, look at `n
 letters first, since their times grow faster than the text.
 
 ## Settings
-
-### A row drag in progress when another tab removes an earlier row moves the wrong row
-
-Post-verification of 2026-11-18 (SB-1), read by one reader. Within one list, a drag remembers the row's index (`PromptDataItem.svelte`): when another tab removes an earlier row of the same preset, or an earlier request interception rule, during the drag, the drop moves the row that slid into that index. A drag onto another preset is not affected: a template drag remembers its preset and drops nothing once the page shows another one.
-
-**Why it matters:** one row lands in the wrong place; it is visible and one move undoes it. It needs another tab's removal inside one drag gesture.
-
-**Suggested handling:** kept as recorded by the owner's rule for the fix round. If it is taken up: remember the row's identity (the rule id, the record identity) and not its index.
-
-The structure audit of 2026-11-18 read the same for a reorder that arrives from another tab during the drag, in both the prompt template editor and the request rule editor.
-
-### A live settings update discards the text typed in a rule's popup editor
-
-Post-verification of 2026-11-18 (RI-1), reproduced by two readers. A live update of the `providers` section installs new rule objects, so the row identity (`recordValueIdentity` in `PromptDataItem.svelte`) of an unchanged rule changes, `TextAreaInput.svelte` closes the popup session as stale, and the popup's text is not written back. Any provider setting saved by another tab or device while the popup is open does it; removing an earlier rule also collapses the row.
-
-**Why it matters:** the text typed in the popup since it was opened is lost. Saved text and inline edits are not.
-
-**Suggested handling:** kept as recorded by the owner's rule for the fix round (it needs the user's own second device, and the fix changes the shared popup guard). If it is taken up: key the interception page's popup by rule id and write back while the rule's stored text is still what the popup started from.
 
 ### On Prompt preset's Parameters tab the last check row touches the handwritten label after it
 

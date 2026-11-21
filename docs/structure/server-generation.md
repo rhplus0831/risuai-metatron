@@ -435,6 +435,10 @@ Other subsystems' runtime limits live with their owners: [chat-pipeline](chat-pi
 - Server CBS evaluation runs on the main thread under cooperative limits, with no hard deadline or heap bound. Other
   prompt work (Jinja rendering, tokenizer calls after model load, non-worker lore matching) also runs there. Decision:
   owner, 2026-11-10 (known-issues review): worker isolation is a separate design.
+- A command's parts each load the job scope again (`server/src/jobs/commandRunner.ts` calls `runPromptSend`, which calls
+  `loadJobScope`), so a request interception rule saved while a `/multisend` command runs reaches its later parts; a
+  group send keeps one list. Decision: owner, 2026-11-21 (found-issues review): it needs a rule edit during a multi-part
+  command.
 
 ### Gotchas
 
