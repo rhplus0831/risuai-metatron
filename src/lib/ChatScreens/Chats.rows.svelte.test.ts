@@ -1741,6 +1741,35 @@ describe("latest message scroll anchor", () => {
             expect(ui.scrollWrite).not.toHaveBeenCalled();
             expect(ui.scroller.scrollTop).toBe(-720);
         });
+
+        it.each(["before the first Save", "while the first close is rendering"])(
+            "skips the superseded restore when another editor opens %s",
+            async (when) => {
+                const ui = reading();
+                Object.defineProperty(ui.scroller, "scrollHeight", { value: 2000 });
+                ui.natural.set("m4", { top: -450, height: 200 });
+                const earlier = await open(ui, "m4", -350);
+                const remounts = when === "before the first Save";
+                if (remounts) await open(ui, "m5", -250);
+
+                earlier.close();
+                if (remounts) {
+                    ui.props.messages[4].data = "Revised earlier reply";
+                    flushSync();
+                    expect(latest("m4")).not.toBe(earlier.row);
+                    earlier.row.settle();
+                } else {
+                    await open(ui, "m5", -250);
+                }
+                ui.natural.set("m4", { top: -390, height: 140 });
+
+                ui.scrollWrite.mockClear();
+                latest("m4").settle();
+                await vi.advanceTimersByTimeAsync(0);
+                expect(ui.scrollWrite).not.toHaveBeenCalled();
+                expect(ui.scroller.scrollTop).toBe(-500);
+            },
+        );
     });
 
     describe("a row mounted again", () => {

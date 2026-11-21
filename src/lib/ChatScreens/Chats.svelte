@@ -104,7 +104,13 @@
         optimized: boolean;
         mode: StreamingDisplayOptimizationMode;
     };
-    type EditorPlace = { top: number | "bottom"; offset: number; inputs: number; anchor: ScrollAnchor | null };
+    type EditorPlace = {
+        openId: number;
+        top: number | "bottom";
+        offset: number;
+        inputs: number;
+        anchor: ScrollAnchor | null;
+    };
     type Row = {
         instance: {
             updateRow?: (update: Partial<RowUpdate>) => void;
@@ -118,7 +124,7 @@
         /** The instance whose render a held row last finished. */
         renderedInstance?: Row["instance"];
         /** The height held until the new body renders, including when an editor closes in place. */
-        kept?: { height: number; scrollTop: number; inputs: number; editor?: EditorPlace };
+        kept?: { height: number; scrollTop: number; inputs: number; editor?: EditorPlace | null };
         editorPlace?: EditorPlace;
         dispose: () => void;
     };
@@ -311,7 +317,7 @@
     type ScrollAnchor = { mode: "start"; element: Element } | { mode: "end" };
     let anchor: ScrollAnchor | null = null;
 
-    function applyAnchor() {
+    function applyAnchor(keepEditorsVisible = false) {
         const scroller = chatBody?.parentElement;
         if (!anchor || !scroller) return;
         // A removed row (a deletion's, a reroll's, a write that gave the message a new id) hands
@@ -327,6 +333,10 @@
             // (the document, on mobile). The scroller is reversed: 0 is the bottom, and a row shorter
             // than the view leaves it there.
             target = Math.min(0, scroller.scrollTop + rect.top - scroller.getBoundingClientRect().top);
+        }
+        if (keepEditorsVisible && wouldClipEditor(scroller, target)) {
+            anchor = null;
+            return;
         }
         if (Math.abs(scroller.scrollTop - target) >= 1) scroller.scrollTop = target;
         knownOffset = target;
@@ -695,11 +705,15 @@
         return () => scroller.removeEventListener("scroll", moved);
     });
 
+    let latestEditorOpen = 0;
+
     async function openInlineEditor(row: Row) {
+        const openId = ++latestEditorOpen;
         const scroller = chatBody?.parentElement;
         if (!scroller || capturing || suspendTrim) return;
         const offset = scroller.scrollTop;
         const place: EditorPlace = {
+            openId,
             top:
                 offset >= 0 ? "bottom" : row.element.getBoundingClientRect().top - scroller.getBoundingClientRect().top,
             offset,
@@ -709,7 +723,7 @@
         row.editorPlace = place;
         await tick();
         const area = row.element.querySelector<HTMLTextAreaElement>("textarea.message-edit-area");
-        if (row.editorPlace !== place || !area || !row.element.isConnected) return;
+        if (row.editorPlace !== place || place.openId !== latestEditorOpen || !area || !row.element.isConnected) return;
         applyAnchor();
         const view = scroller.getBoundingClientRect();
         const rect = area.getBoundingClientRect();
@@ -731,15 +745,35 @@
         row.editorPlace = undefined;
         const scroller = chatBody?.parentElement;
         if (!place || !scroller || capturing || suspendTrim) return;
+        const ownsPlace = place.openId === latestEditorOpen;
         // Only transcript movement counts: a wheel inside the field may scroll just the editor.
         // Check the live offset too in case the last scroll event is still queued.
-        if (lastScrollInput > place.inputs || (readerInputs !== place.inputs && scroller.scrollTop !== place.offset))
+        if (
+            ownsPlace &&
+            (lastScrollInput > place.inputs || (readerInputs !== place.inputs && scroller.scrollTop !== place.offset))
+        )
             return;
         // Saving can remount Chat. Its replacement finishes this same hold once the saved body renders.
         if (keepRowHeight(row, row.element.getBoundingClientRect().height)) {
-            row.kept.editor = place;
+            // A superseded editor still holds its height so a save remount cannot apply its usual correction.
+            row.kept.editor = ownsPlace ? place : null;
             void settleRowHeight(row, row.instance);
         }
+    }
+
+    function wouldClipEditor(scroller: HTMLElement, target: number) {
+        const fields = chatBody.querySelectorAll<HTMLTextAreaElement>("textarea.message-edit-area");
+        if (!fields.length) return false;
+        const view = scroller.getBoundingClientRect();
+        const reachable = Math.min(0, Math.max(scroller.clientHeight - scroller.scrollHeight, target));
+        const shift = scroller.scrollTop - reachable;
+        const visibleHeight = (top: number, bottom: number) =>
+            Math.max(0, Math.min(view.bottom, bottom) - Math.max(view.top, top));
+        for (const field of fields) {
+            const { top, bottom } = field.getBoundingClientRect();
+            if (visibleHeight(top + shift, bottom + shift) < visibleHeight(top, bottom)) return true;
+        }
+        return false;
     }
 
     /**
@@ -780,19 +814,26 @@
         row.element.style.minHeight = "";
         const scroller = chatBody?.parentElement;
         if (anchor || kept.inputs !== readerInputs || !scroller || !row.element.isConnected) return;
-        if (kept.editor && (row.editorPlace || capturing || suspendTrim)) return;
+        if (
+            kept.editor === null ||
+            (kept.editor && (kept.editor.openId !== latestEditorOpen || capturing || suspendTrim))
+        )
+            return;
         // Measured before the offset is read: this layout is where the browser's anchoring answers.
         const rect = row.element.getBoundingClientRect();
         const offset = scroller.scrollTop;
         if (kept.editor) {
             if (kept.editor.anchor) {
-                setAnchor(kept.editor.anchor);
+                anchor = kept.editor.anchor;
+                applyAnchor(true);
                 return;
             }
-            scroller.scrollTop =
+            const target =
                 kept.editor.top === "bottom"
                     ? 0
                     : offset + rect.top - scroller.getBoundingClientRect().top - kept.editor.top;
+            if (wouldClipEditor(scroller, target)) return;
+            scroller.scrollTop = target;
         } else {
             if (offset !== kept.scrollTop) return;
             if (rect.bottom <= scroller.getBoundingClientRect().top || Math.abs(rect.height - kept.height) < 1) return;
