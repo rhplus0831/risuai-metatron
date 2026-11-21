@@ -57,6 +57,15 @@ function parsePost(value: unknown): RemoteCommandPostBody | null {
         (command.stopOverLoreBudget !== undefined && typeof command.stopOverLoreBudget !== "boolean")
     )
         return null;
+    // Reject unused fields before they can change the relay's retry identity.
+    if (
+        (command.continue !== true &&
+            command.rerollMessageId === undefined &&
+            command.continueMessageId !== undefined) ||
+        (command.continue === true && command.input === "" && command.userMessageId !== undefined) ||
+        (command.rerollMessageId !== undefined && (command.input !== "" || command.userMessageId !== undefined))
+    )
+        return null;
     // Retain only the contract's fields, never an unvalidated extra payload.
     const parsed: RemoteCommand = {
         type: "send",

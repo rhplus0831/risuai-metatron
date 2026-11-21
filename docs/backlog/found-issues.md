@@ -53,7 +53,6 @@ Sources the entries name (drop a line when no entry names it any more):
 - [Modules and personas](#modules-and-personas): 1
 - [Network jobs](#network-jobs): 1
 - [Plugins](#plugins): 1
-- [Remote commands](#remote-commands): 1
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 1
 - [Settings](#settings): 2
@@ -338,25 +337,6 @@ return). A supported plugin that passes the remaining import checks can therefor
 
 **Suggested handling:** return on a compilation failure, with a test that replacing a working plugin leaves its saved
 script intact.
-
-## Remote commands
-
-### The relay's identity differs from the generation's for fields a send does not use
-
-`remoteCommandAction` (`shared/remoteCommands.ts`) hashes `input`, `userMessageId`, `continue`, and
-`continueMessageId` as posted, and the route accepts combinations in which one of them has no effect. `sendChatOnServer`
-(`src/ts/process/serverGeneration.ts`) drops or normalizes those, so the generation's `requestFingerprint` is the same
-where the relay sees a changed command: `continueMessageId` on a plain send, `userMessageId` on a Continue without
-input, `input` or `userMessageId` on a reroll, and `continue` absent or true in a group chat. The relay answers 409
-`commandChanged` to a re-post that the generation would replay. Found 2026-11-16 by the re-reading of the Remote Host
-post-audit's fixes (R-6). No caller that ships posts one id with such a change, and the relay errs on the strict side:
-the sender keeps a `commandChanged` send uncertain.
-
-**Why it matters:** two definitions of "the same request"; a future caller that retries with a normalized field would
-be refused.
-
-**Suggested handling:** refuse the field combinations that have no effect in the route's validation, or normalize the
-command before `remoteCommandAction`, and state the group Continue rule.
 
 ## Rendering
 

@@ -35,6 +35,7 @@ const post = (commandId = "send-1", target = "desk"): SendPostBody => ({
         stopOverLoreBudget: true,
     },
 });
+const noInput = { input: "", userMessageId: undefined, inputOriginal: undefined };
 const report = (state: RemoteCommandStateBody["state"], attempt = 1): RemoteCommandStateBody =>
     state === "refused" ? { clientId: "desk", attempt, state, code: "busy" } : { clientId: "desk", attempt, state };
 const ok = <T>(outcome: RemoteCommandOutcome<T>): T => {
@@ -97,7 +98,10 @@ describe("remote commands over HTTP", () => {
                 { continue: true, continueMessageId: "reply-a" },
                 { continue: true, continueMessageId: "reply-b" },
             ],
-            [{ rerollMessageId: "reply-a" }, { rerollMessageId: "reply-b" }],
+            [
+                { ...noInput, rerollMessageId: "reply-a" },
+                { ...noInput, rerollMessageId: "reply-b" },
+            ],
         ];
         const queued = { state: "queued", attempted: false, stopRequested: false, attempt: 0 };
         for (const [index, [original, changed]] of actions.entries()) {
@@ -112,7 +116,7 @@ describe("remote commands over HTTP", () => {
         // The speaker is outside the identity, as it is outside the generation's request fingerprint: a
         // re-post with another speaker is the same command and the first body stands.
         const reroll = post("speaker");
-        const first = { ...reroll.command, rerollMessageId: "reply-a", speakerChaId: "speaker-a" };
+        const first = { ...reroll.command, ...noInput, rerollMessageId: "reply-a", speakerChaId: "speaker-a" };
         await answer(await client.json(path, { ...reroll, command: first }), 200, queued);
         await answer(
             await client.json(path, { ...reroll, command: { ...first, speakerChaId: "speaker-b" } }),
@@ -179,7 +183,49 @@ describe("remote commands over HTTP", () => {
         });
     });
 
-    it("withholds each action field from older hosts, notifies the sender, and delivers to v2 hosts", async () => {
+    it.each([
+        {
+            action: "a Continue anchor on a plain send",
+            valid: {},
+            unused: { continueMessageId: "reply" },
+        },
+        {
+            action: "a Continue anchor with continue set to false",
+            valid: { continue: false },
+            unused: { continueMessageId: "reply" },
+        },
+        {
+            action: "a user message ID on Continue without input",
+            valid: { ...noInput, continue: true, continueMessageId: "reply" },
+            unused: { userMessageId: "user-message" },
+        },
+        {
+            action: "input on a reroll",
+            valid: { ...noInput, rerollMessageId: "reply" },
+            unused: { input: "New message", userMessageId: "user-message" },
+        },
+        {
+            action: "a user message ID on a reroll without input",
+            valid: { ...noInput, rerollMessageId: "reply" },
+            unused: { userMessageId: "user-message" },
+        },
+    ])("rejects $action before queuing or retrying the command", async ({ valid, unused }) => {
+        const body = post();
+        const command = { ...body.command, ...valid };
+        const invalid = { ...body, command: { ...command, ...unused } };
+        const error = { error: "Invalid remote command" };
+        const queued = { state: "queued", attempted: false, stopRequested: false, attempt: 0 };
+
+        await answer(await client.json(path, invalid), 400, error);
+        await answer(await client.request(`${path}/${body.commandId}/status?clientId=${body.clientId}`), 404, {
+            error: "unknownCommand",
+        });
+        await answer(await client.json(path, { ...body, command }), 200, queued);
+        await answer(await client.json(path, invalid), 400, error);
+        await answer(await client.json(path, { ...body, command }), 200, queued);
+    });
+
+    it("withholds action commands from older hosts, notifies the sender, and delivers to v2 hosts", async () => {
         const sender = new WebSocket(host.url);
         try {
             const registered = new Promise<void>((resolve) => {
@@ -199,8 +245,8 @@ describe("remote commands over HTTP", () => {
             await registered;
             for (const [index, action] of [
                 { continue: true as const },
-                { continueMessageId: "reply" },
-                { rerollMessageId: "reply" },
+                { ...noInput, continue: true as const, continueMessageId: "reply" },
+                { ...noInput, rerollMessageId: "reply" },
                 { speakerChaId: "speaker" },
             ].entries()) {
                 const old = post(`old-${index}`);
@@ -273,7 +319,7 @@ describe("remote commands over HTTP", () => {
 
     it("keeps an already attempted action uncertain when an older host reads it", async () => {
         const body = post();
-        body.command.rerollMessageId = "reply";
+        body.command = { ...body.command, ...noInput, rerollMessageId: "reply" };
         expect((await client.json(path, body)).status).toBe(200);
         expect((await client.request(`${path}/send-1?clientId=desk&contractVersion=2`)).status).toBe(200);
         expect((await client.json(`${path}/send-1/state`, report("running"))).status).toBe(200);
