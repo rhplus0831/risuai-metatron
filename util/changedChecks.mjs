@@ -36,7 +36,6 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { OWNED_ROOTS, ownerOf, readOwnership } from "./docsOwner.mjs";
 import { cacheDirectory, cachedRun, checkSettings, programKey, workingTreeFiles } from "./typeCheckCache.mjs";
-import { workingTreeId } from "./workingTree.mjs";
 
 /** Paths outside all three type-checked programs: docs and assets. */
 const INERT = [
@@ -250,23 +249,30 @@ async function types(root, tag, targets, force) {
     // What shapes a program's stored output: colors for a terminal, and `svelte-check` picks its
     // machine format when CLAUDECODE is 1. A person never gets an agent's block replayed, nor the reverse.
     const style = { terminal: Boolean(process.stdout.isTTY), agent: process.env.CLAUDECODE === "1" };
-    const installed = checkSettings(root);
-    const settings = installed && { ...installed, style };
-    const tree = settings && workingTreeFiles(root);
-    const dir = tree && cacheDirectory(root);
-    if (!dir) console.log(`[${tag}] no result cache: not a git checkout, or the installed packages cannot be read`);
-    const keys = dir ? programKeys(settings, tree.files) : {};
-    const unchanged = () => workingTreeId(root) === tree.tree;
+    const readKeys = () => {
+        const installed = checkSettings(root);
+        const tree = installed && workingTreeFiles(root);
+        return tree ? programKeys({ ...installed, style }, tree.files) : null;
+    };
+    const dir = cacheDirectory(root);
+    const keys = dir && readKeys();
+    if (!keys) console.log(`[${tag}] no result cache: not a git checkout, or the installed packages cannot be read`);
     const runs = [];
     for (const [program, { label, pkg, bin, args }] of Object.entries(PROGRAMS)) {
         if (!targets[program]) {
             console.log(`[${tag}] ${label}: skipped, no changed path reaches the ${program} program`);
             continue;
         }
-        const key = keys[program] ?? null;
+        const key = keys?.[program] ?? null;
         // `tsc` colors its output only for a terminal, and here it writes to a pipe.
         const shown = bin === "tsc" && process.stdout.isTTY ? [...args, "--pretty"] : args;
-        const result = cachedRun({ dir, key, force, unchanged, run: () => execute(root, pkg, bin, shown) });
+        const result = cachedRun({
+            dir,
+            key,
+            force,
+            unchanged: () => readKeys()?.[program] === key,
+            run: () => execute(root, pkg, bin, shown),
+        });
         runs.push(
             result.then(({ code, output, seconds, replayed, finishedAt }) => {
                 const how = replayed

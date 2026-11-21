@@ -22,7 +22,7 @@
 // (docs/reports/measurements/toolchain/type-check-time-2026-11-12.md).
 //
 // A result is stored only when the program ran to its end (any exit code, not a signal) and the
-// working tree was the same before and after the run. A failure is stored too: the same inputs fail
+// program's input key was the same before and after the run. A failure is stored too: the same inputs fail
 // the same way. `--force`, or `CI` in the environment, runs every program and replaces its entry.
 // No key (not a git checkout, nothing installed) means no cache: the program runs.
 // Entries older than MAX_AGE_MS are deleted when a result is stored.

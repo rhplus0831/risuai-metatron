@@ -1,7 +1,7 @@
 // @vitest-environment node
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { execFileSync, spawnSync } from "node:child_process";
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { devNull, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { programKeys } from "./changedChecks.mjs";
@@ -289,5 +289,72 @@ describe("cachedRun", () => {
         await cachedRun(options(dir, async () => passed));
 
         expect(readdirSync(dir).sort()).toEqual(["key-1.json", "recent.json"]);
+    });
+});
+
+describe("the changed-file type check", () => {
+    const ignored = "e2e/ignored.ts";
+    const invalid = 'export const value: number = "wrong";\n';
+    const valid = "export const value: number = 1;\n";
+
+    function project(source: string) {
+        const root = temporaryDirectory();
+        const env = { ...process.env, GIT_CONFIG_GLOBAL: devNull, GIT_CONFIG_NOSYSTEM: "1", CI: "" };
+        const git = (...args: string[]) => execFileSync("git", args, { cwd: root, env });
+        git("init", "--quiet");
+        write(root, ".gitignore", `node_modules/\n${ignored}\n`);
+        write(root, "e2e/checked.ts", "export {};\n");
+        mkdirSync(path.join(root, "util"));
+        for (const file of ["changedChecks.mjs", "typeCheckCache.mjs", "workingTree.mjs", "docsOwner.mjs"]) {
+            copyFileSync(path.join(import.meta.dirname, file), path.join(root, "util", file));
+        }
+        git("add", ".");
+        git("-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-qm", "fixture", "--no-gpg-sign");
+        write(root, "e2e/checked.ts", "export const changed = true;\n");
+        write(root, ignored, source);
+        for (const name of ["typescript", "svelte-check", "svelte"]) {
+            write(root, `node_modules/${name}/package.json`, JSON.stringify({ version: "1", bin: "check.mjs" }));
+        }
+        write(root, "node_modules/.pnpm/lock.yaml", "fixture\n");
+        write(
+            root,
+            "node_modules/typescript/check.mjs",
+            `import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+            if (existsSync(".git/correct-once")) {
+                rmSync(".git/correct-once");
+                writeFileSync(${JSON.stringify(ignored)}, ${JSON.stringify(valid)});
+            }
+            if (readFileSync(${JSON.stringify(ignored)}, "utf8") === ${JSON.stringify(invalid)}) {
+                console.log("fixture type error");
+                process.exitCode = 2;
+            }`,
+        );
+        const check = () =>
+            spawnSync(process.execPath, ["util/changedChecks.mjs", "types", "--base", "HEAD"], {
+                cwd: root,
+                encoding: "utf8",
+                env,
+            });
+        return { root, check };
+    }
+
+    it("reports an ignored input's restored error after the compiler corrected it during a check", () => {
+        const { root, check } = project(invalid);
+        write(root, ".git/correct-once", "");
+        expect(check().status).toBe(0);
+        write(root, ignored, invalid);
+
+        const restored = check();
+        expect(restored.status).toBe(1);
+        expect(restored.stdout).toContain("fixture type error");
+    });
+
+    it("replays a passing type check when all inputs stay unchanged", () => {
+        const { check } = project(valid);
+        expect(check().status).toBe(0);
+
+        const replay = check();
+        expect(replay.status).toBe(0);
+        expect(replay.stdout).toContain("1 replayed from stored results");
     });
 });

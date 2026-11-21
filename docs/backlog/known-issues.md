@@ -25,7 +25,6 @@ Sources the entries name (drop a line when no entry names it any more):
 
 ## Contents
 
-- [build-test-platforms](#build-test-platforms) (1)
 - [characters-modules](#characters-modules) (1)
 - [chat-pipeline](#chat-pipeline) (4)
 - [media-aux](#media-aux) (1)
@@ -34,18 +33,6 @@ Sources the entries name (drop a line when no entry names it any more):
 - [persistence](#persistence) (1)
 - [structured-memory](#structured-memory) (2)
 - [ui-theming](#ui-theming) (1)
-
-## build-test-platforms
-
-Guide: [Build, Service Worker, Release](../structure/build-test-platforms.md#known-hazards).
-
-- The type-check cache can replay a pass for a failing ignored file. The initial cache key includes ignored files under
-  source roots; the final unchanged-tree check omits them. In an isolated Git project (structure audit, 2026-11-18)
-  the cache keyed an ignored file that held a type error; the file was corrected before the compiler read it, so the
-  run passed, and after the error was restored the cache replayed success while a forced compiler run failed. Not
-  fixed. A fix compares the program's complete input key again before saving the result.
-  [Input hashing](../../util/typeCheckCache.mjs#L62) · [End-of-run check](../../util/changedChecks.mjs#L259) ·
-  [Cache write](../../util/typeCheckCache.mjs#L154)
 
 ## characters-modules
 
