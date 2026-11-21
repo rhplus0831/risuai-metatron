@@ -260,9 +260,11 @@ of the group: no walk reads them.
   `openChatSchema` backfills them.
 - `memory_chapters` is a strict table with an autoincrement `seq`, a cascading `chatSeq` reference, `id` and JSON
   `data`, unique on `(chatSeq, id)`. `CHAT_OPEN_SCHEMA_SQL` creates it when missing at every open with no schema version
-  change. Deleting the chat cascades to its chapters. It sits outside the memory table group and all lifecycle walks. A
-  native snapshot and the SQLite payload of a native backup archive physically contain its rows. The restore walk skips
-  them, and the upstream-compatible export omits them.
+  change. Deleting the chat cascades to its chapters. It sits outside the memory table group.
+- The record walks of a restore, the package, chat files and checkpoints skip `memory_chapters`. The rebuild
+  [swap](rebuild.md#the-swap) deletes a chat's chapters in every mode but backfill, and `/inherit` copies them
+  ([lifecycle](lifecycle.md)). A native snapshot and the SQLite payload of a native backup archive physically contain
+  its rows; the upstream-compatible export omits them.
 - `memory_pages` (`type`, `title`), `memory_events` (`title`, `status`, `createdRevision`), `memory_threads` (`title`,
   `state`), `memory_runs` (`result`): each with `seq` autoincrement, `chatSeq`, `id`, and `data`, the whole record as
   stored JSON, unique `(chatSeq, id)`. Sections stay embedded in the page's row.

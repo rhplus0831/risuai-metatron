@@ -32,9 +32,12 @@ cites the current `file:line` for each. Add an entry when an audit finds a plan 
 plan could repeat; drop one when the code no longer has the mechanism.
 
 - `patchMessage` closes an open generation fence.
-- Feed rows are measured whole against `MAX_FEED_PATCH_BYTES`.
+- A chat feed change is sized against `MAX_FEED_PATCH_BYTES` in three forms (whole rows with whole metadata, whole
+  rows with metadata field changes, row diffs): a row travels whole unless the row-diff form is chosen, and when all
+  three are over the cap only the id manifest is sent (`chatFeedChange`).
 - `STORE_TABLES_SQL` runs only on a fresh database.
-- `sendText` counts any open socket as a delivery.
+- `sendText` counts a frame handed to any open socket as a delivery; an open socket over its buffer limit is
+  terminated and does not count.
 
 The four above are the ones that fooled the 2026-11-04 plans.
 

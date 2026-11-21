@@ -47,7 +47,6 @@ Sources the entries name (drop a line when no entry names it any more):
 - [Backup and sync](#backup-and-sync): 4
 - [Build and CI](#build-and-ci): 1
 - [Chat screen](#chat-screen): 6
-- [Docs](#docs): 3
 - [Headless host](#headless-host): 1
 - [LLM requests](#llm-requests): 2
 - [Memory](#memory): 6
@@ -216,55 +215,6 @@ so far into the new chat; the copy was not checked.
 
 **Suggested handling:** reproduce by branching on a streaming reply; if the copy is partial, disable Branch while the
 message is locked.
-
-## Docs
-
-### Two entries of the plan audit re-check list no longer match the code
-
-The "Re-check list" of `docs/reports/audits/plan-runner/README.md` says to drop or reword an entry once the code no
-longer has the mechanism. Two entries may be stale, as read at `ace54e7da` by the read-only auditor of the Request
-Interception plan (2026-11-18) and not run:
-
-- "Feed rows are measured whole against `MAX_FEED_PATCH_BYTES`": chat rows can also travel as field-level `rowDelta`
-  payloads (`server/src/data/chatStore.ts:1977`, `:2017`). A second audit the same day (the Structured Memory story
-  dates plan, at `aafebc9c0`) did not question this entry and cited `chatStore.ts:1942` as measuring the whole
-  manifest JSON, so this one may still hold.
-- "`sendText` counts any open socket as a delivery": `sendText` now accumulates `sendSocket` success, and an
-  overloaded open socket is terminated and returns false (`server/src/jobs/generationJobs.ts:1059`, `:1074`). The
-  second audit read it the same way.
-
-**Why it matters:** every full plan audit re-checks this list, so a stale entry sends auditors after a mechanism that
-is gone or no longer universal.
-
-**Suggested handling:** re-read both mechanisms, then reword or drop the entries in the README.
-
-### The records guide says chapters sit outside every lifecycle walk
-
-Timeline Chapter Synopses run, 2026-11-19, from slice 5; read. `docs/structure/structured-memory/records.md:240`
-(Memory tables) says `memory_chapters` "sits outside the memory table group and all lifecycle walks". But
-the rebuild swap deletes a chat's chapters for every mode but backfill (`server/src/data/memoryStore.ts`, `swap`) and
-the `/inherit` route copies them (`store.memory.chapters.copy`); the record walks of a restore, the package, chat
-files, and checkpoints still skip the table.
-
-**Why it matters:** a reader of the records guide would conclude that no lifecycle path touches chapters and miss the
-swap's delete and the copy.
-
-**Suggested handling:** reword the sentence to name the record walks that skip the table and point at
-[lifecycle](../structure/structured-memory/lifecycle.md) and [rebuild](../structure/structured-memory/rebuild.md),
-which describe the two paths that do touch it.
-
-### The fork ledger's ComfyUI row still lists import as missing
-
-Upstream Intake 3 run, 2026-11-21, from slice 4; read. `docs/backlog/fork-feature-ledger.md:59` (row A10, "ComfyUI
-saved workflows") lists "Named workflows, import, conversion and the viewer" as missing. Slice 4 (`5fb726c20`) added
-an upload button under the `comfyui` workflow textarea in `src/lib/Setting/Pages/ImageGenerationSettings.svelte`
-(`importComfyWorkflow`) that loads one JSON file into the single workflow string.
-
-**Why it matters:** the row now overstates the gap; a later reader may plan a file import that already exists, while
-named workflows, conversion and the viewer are still missing.
-
-**Suggested handling:** narrow "import" in the row to an import into named workflows, or name the single-file import
-in its Metatron column.
 
 ## Headless host
 
