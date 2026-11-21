@@ -44,7 +44,7 @@ Sources the entries name (drop a line when no entry names it any more):
 
 ## Contents
 
-- [Backup and sync](#backup-and-sync): 4
+- [Backup and sync](#backup-and-sync): 3
 - [Build and CI](#build-and-ci): 1
 - [Chat screen](#chat-screen): 6
 - [Headless host](#headless-host): 1
@@ -74,21 +74,6 @@ The original chat survived when the test imported back into the same character. 
 
 **Suggested handling.** Encode the embedded JSON so its text round-trips, and accept an empty string for a valid
 note. Cover both cases by feeding the actual HTML download back to the importer.
-
-### The upstream export's list of metatron-only settings misses newer fields
-
-`METATRON_ONLY_SETTINGS` in `server/src/data/upstream/exportDatabase.ts` says it lists the settings upstream's
-`Database` lacks, but the newer metatron-only `ui` fields never joined it: `contextMeter`, `contextMeterTurnUnit`,
-`contextMeterFixedWarn`, `contextMeterLookahead` (added in `630ba6396`), and `completionWaitMaxSeconds` (the Completion
-Notification After Plugin Work plan). None of them is in upstream's `Database` at `669b12ce`. They reach the upstream
-`.bin` export through `projectSections` (`server/src/data/databaseProjection.ts`) and are neither stripped nor
-reported under the export report's `metatron-settings` exclusion. Found 2026-11-16 by slice 2 of that plan.
-
-**Why it matters:** low impact (upstream ignores unknown root fields), but the export report undercounts what is
-metatron-only, and the list's promise is false.
-
-**Suggested handling:** add the five fields to the list, and add a test that compares `SECTION_FIELDS` with
-upstream's `Database` keys (or a kept snapshot of them) so a new metatron-only field cannot drift past it again.
 
 ### The boot cache keeps its own copy of the resource id rule
 

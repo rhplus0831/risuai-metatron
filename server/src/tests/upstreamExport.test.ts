@@ -613,6 +613,25 @@ describe("buildUpstreamDatabase: presets and the root", () => {
 });
 
 describe("buildUpstreamDatabase: settings", () => {
+    it.each([
+        ["contextMeter", false],
+        ["contextMeterTurnUnit", "message"],
+        ["contextMeterFixedWarn", 75],
+        ["contextMeterLookahead", false],
+        ["completionWaitMaxSeconds", 300],
+        ["realmTermsAccepted", "accepted"],
+        ["scrollToReplyStartAfterStreaming", false],
+        ["disableAutoPopupMessageEditor", true],
+    ])("omits %s from upstream backups and reports only a non-default value", async (field, value) => {
+        const defaults = exportOf(await snapshotOf((w) => w.put(SECTION_KIND.ui, "main", {})));
+        const configured = exportOf(await snapshotOf((w) => w.put(SECTION_KIND.ui, "main", { [field]: value })));
+
+        expect(configured.db).not.toHaveProperty(field);
+        expect(excluded(configured.report, "metatron-settings")).toMatchObject({ count: 1, examples: [field] });
+        expect(defaults.db).not.toHaveProperty(field);
+        expect(excluded(defaults.report, "metatron-settings")).toBeUndefined();
+    });
+
     it("omits all six configured response minimums from an upstream export", async () => {
         const minimums = {
             minResponseLengthModel: 1,
