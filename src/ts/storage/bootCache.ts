@@ -4,6 +4,7 @@ import {
     BOOT_ITEM_KINDS,
     BOOT_RESOURCE_FORMAT,
     chatCollectionClaim,
+    isValidResourceId,
     MAX_BOOT_BODY_BYTES,
     RESOURCE_KIND,
     parseRevisionToken,
@@ -35,23 +36,7 @@ export const MAX_BOOT_CLAIMS = 5000;
 // The @ prefix cannot pass the server registry's resource kind grammar.
 const CHAT_COLLECTION_KIND = "@chatCollection";
 type CachedChatCollection = { format: number; summaries: ChatSummary[]; order: ChatOrderRecord | null };
-const MAX_RECORD_ID_LENGTH = 512;
 const MAX_REVISION_LENGTH = 256;
-// Match isValidResourceId in server/src/data/resourceStore.ts before advertising cached ids.
-const controlCharacterRegex = /[\u0000-\u001f\u007f]/;
-const loneSurrogateRegex = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
-
-function isValidResourceId(id: unknown): id is string {
-    return (
-        typeof id === "string" &&
-        id.length >= 1 &&
-        id.length <= MAX_RECORD_ID_LENGTH &&
-        id !== "." &&
-        id !== ".." &&
-        !controlCharacterRegex.test(id) &&
-        !loneSurrogateRegex.test(id)
-    );
-}
 
 export type CachedRecord =
     | { kind: string; id: string; revision: string; text: string; hashes?: never }

@@ -44,7 +44,7 @@ Sources the entries name (drop a line when no entry names it any more):
 
 ## Contents
 
-- [Backup and sync](#backup-and-sync): 2
+- [Backup and sync](#backup-and-sync): 1
 - [Build and CI](#build-and-ci): 1
 - [Chat screen](#chat-screen): 6
 - [Headless host](#headless-host): 1
@@ -58,17 +58,6 @@ Sources the entries name (drop a line when no entry names it any more):
 - [Translation](#translation): 1
 
 ## Backup and sync
-
-### The boot cache keeps its own copy of the resource id rule
-
-Timeline Chapter Synopses run, 2026-11-19, from slice 1; read, not run. `isValidResourceId` moved from
-`server/src/data/resourceStore.ts` to `shared/resources.ts` (the store re-exports it), so the tab can import it.
-`src/ts/storage/bootCache.ts:38-55` still holds a hand-copied duplicate (`MAX_RECORD_ID_LENGTH` and the function),
-with the comment "Match isValidResourceId in server/src/data/resourceStore.ts".
-
-**Why it matters:** the copy can drift from the server's check, and its comment names the rule's old home.
-
-**Suggested handling:** import `isValidResourceId` from `shared/resources.ts` in `bootCache.ts` and drop the copy.
 
 ### Journal recovery can replay an edit after a newer chat revision
 
