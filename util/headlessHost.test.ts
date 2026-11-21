@@ -123,6 +123,37 @@ it.each([
     });
 });
 
+it("keeps page error frame positions while redacting script URLs", async () => {
+    const host = runHost();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const app = "http://127.0.0.1:6001";
+    host.currentPage().emit("pageerror", {
+        message: "render failed",
+        stack: [
+            "Error: render failed",
+            `    at render (${app}/src/chat.js?session=fixture#entry:12:34)`,
+            "    at eval (eval at setup (https://user:pass@cdn.example.test/private.js?v=2:5:6), <anonymous>:7:8)",
+            `    at ${app}/src/app.js:90:1`,
+        ].join("\n"),
+    });
+
+    expect(host.lines.at(-1)?.replace(/^\S+ /, "")).toBe(
+        `Page error: Error: render failed at render (${app}/src/chat.js[redacted]:12:34) ` +
+            "at eval (eval at setup (https://cdn.example.test/[redacted]:5:6), <anonymous>:7:8) " +
+            `at ${app}/src/app.js:90:1`,
+    );
+});
+
+it("logs the page error message when no stack is available", async () => {
+    const host = runHost();
+    await vi.advanceTimersByTimeAsync(0);
+
+    host.currentPage().emit("pageerror", { message: "render failed" });
+
+    expect(host.lines.at(-1)).toMatch(/ Page error: render failed$/);
+});
+
 it("backs off through repeated crashes and resets after a full minute ready", async () => {
     const host = runHost();
     await vi.advanceTimersByTimeAsync(1_000);

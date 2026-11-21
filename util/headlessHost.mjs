@@ -52,8 +52,24 @@ const safeText = (text) => redactCredentials(text, settings?.password, rootUrl &
 const dialogText = (text) => cutDialogText(safeText(text));
 
 function log(message, location) {
-    const line = oneLine(safeText(message) + consoleLocationText(location, safeText));
+    writeLog(safeText(message) + consoleLocationText(location, safeText));
+}
+
+function writeLog(text) {
+    const line = oneLine(text);
     console.log(`${new Date().toISOString()} ${line.slice(0, LOG_TEXT_LIMIT)}`);
+}
+
+function redactStackFrame(frame) {
+    let end = 0;
+    let text = "";
+    // V8 appends the position after the script URL. Redacting the URL alone keeps that suffix.
+    for (const match of frame.matchAll(/((?:https?|wss?):\/\/[^\s<>"'`]+)(:\d+:\d+)(?=\)*(?:, |$))/gim)) {
+        const [location, url, position] = match;
+        text += safeText(frame.slice(end, match.index)) + safeText(url) + position;
+        end = match.index + location.length;
+    }
+    return text + safeText(frame.slice(end));
 }
 
 /** Every controlled exit, including a signal during launch, closes the persistent context first. */
@@ -277,8 +293,10 @@ async function openPage() {
         if (!consoleTypeLogged(settings.consoleLevel, type)) return;
         log(`Page console ${type}: ${message.text()}`, message.location());
     });
-    // The stack starts with the message in Chrome; its frames say which script threw.
-    page.on("pageerror", (error) => log(`Page error: ${error.stack || error.message}`));
+    page.on("pageerror", (error) => {
+        const [message, ...frames] = (error.stack || error.message).split(/\r?\n(?=[ \t]+at )/);
+        writeLog([safeText(`Page error: ${message}`), ...frames.map(redactStackFrame)].join("\n"));
+    });
     page.on("dialog", async (dialog) => {
         log(`Dismiss native ${dialog.type()}: ${dialogText(dialog.message())}`);
         try {

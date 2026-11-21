@@ -47,7 +47,6 @@ Sources the entries name (drop a line when no entry names it any more):
 - [Backup and sync](#backup-and-sync): 1
 - [Build and CI](#build-and-ci): 1
 - [Chat screen](#chat-screen): 6
-- [Headless host](#headless-host): 1
 - [Memory](#memory): 3
 - [Modules and personas](#modules-and-personas): 1
 - [Network jobs](#network-jobs): 1
@@ -169,16 +168,6 @@ so far into the new chat; the copy was not checked.
 
 **Suggested handling:** reproduce by branching on a streaming reply; if the copy is partial, disable Branch while the
 message is locked.
-
-## Headless host
-
-### An uncaught page error from a script URL with a query loses its position in the headless host's log
-
-Post-verification of 2026-11-18 (HH-5), read by one reader. The `pageerror` handler in `util/headlessHost.mjs` logs `error.stack` through the whole-line redaction, which removes everything after a `?` in each frame's URL. A console message keeps its line and column: its URL is redacted by itself and the position is appended.
-
-**Why it matters:** on a dev stack, whose modules carry a version query, an uncaught error's stack names files without positions.
-
-**Suggested handling:** redact each frame's URL by itself, as the console line does.
 
 ## Memory
 
