@@ -1,6 +1,6 @@
 # Issues Found During Work
 
-Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, seven more plan-leftover collections from memory the same day, the seventeenth (the Found Issues Decisions run) on 2026-11-09, the nineteenth (the Upstream Intake 2 run) on 2026-11-10, the twentieth (the Memory Panel Readability run) on 2026-11-11, the twenty-first (the Structured Memory Recent Timeline run) the same day, the twenty-second (the Per-Chat Memory run) on 2026-11-13, the twenty-third (the Lore Budget Send Stop run) the same day, the Generation Progress Window run's two findings the same day, and the OOC Session run's two findings the same day, the Remote Host run's finding on 2026-11-16, the Completion Notification After Plugin Work run's finding the same day, and the Sidebar-Only Chat Binding run's finding on 2026-11-17, the Request Interception run's two findings on 2026-11-18, and the Structured Memory Story Dates run's two findings the same day, and the Timeline Reading View run's finding on 2026-11-19, and the Timeline Chapter Synopses run's four findings the same day, and the Response Checks run's finding on 2026-11-20, and the Upstream Intake 3 run's finding on 2026-11-21; single entries move as they come up.
+Bugs, latent defects, stale docs and comments, test gaps, and test flakes that agent sessions noticed while working on something else, from 2026-10-14 on. Each one was outside the scope of the change that found it, so it was recorded instead of fixed. Sessions (worktree slice sessions included) first save a finding to the agents' project memory, which every worktree shares; it is moved here from a checkout with nothing in flight (the plan-runner skill does this when a run finishes). The first batch moved on 2026-10-24, the second on 2026-10-26, the third on 2026-10-30, the fourth (the Server Byte Budgets run) and the fifth (the Guide Budgets run) on 2026-11-01, the sixth (the Structured Memory run) on 2026-11-03, six plan-leftover collections from memory the same day, the seventh (the Guides To Source run), the eighth (the Render Work Budget run), the ninth (the Incremental Chat Transport run), the tenth (the Plugin Storage and Data API run), the eleventh (the Reroll Candidates run) and the twelfth (the Found Issues Sweep run) on 2026-11-05, the thirteenth (the Implementation Audit Fixes run) and that plan's excluded and deferred audit findings at its retirement on 2026-11-06, the fourteenth (the Chat Store and Structured Memory Sweep run) and the fifteenth (the Multi-Client Data Safety Checks run) the same day, the sixteenth (the Module Headers run) on 2026-11-08, seven more plan-leftover collections from memory the same day, the seventeenth (the Found Issues Decisions run) on 2026-11-09, the nineteenth (the Upstream Intake 2 run) on 2026-11-10, the twentieth (the Memory Panel Readability run) on 2026-11-11, the twenty-first (the Structured Memory Recent Timeline run) the same day, the twenty-second (the Per-Chat Memory run) on 2026-11-13, the twenty-third (the Lore Budget Send Stop run) the same day, the Generation Progress Window run's two findings the same day, and the OOC Session run's two findings the same day, the Remote Host run's finding on 2026-11-16, the Completion Notification After Plugin Work run's finding the same day, and the Sidebar-Only Chat Binding run's finding on 2026-11-17, the Request Interception run's two findings on 2026-11-18, and the Structured Memory Story Dates run's two findings the same day, and the Timeline Reading View run's finding on 2026-11-19, and the Timeline Chapter Synopses run's four findings the same day, and the Response Checks run's finding on 2026-11-20, and the Upstream Intake 3 run's finding on 2026-11-21, and the five findings of the generation lock survey that came with the chat lorebook fix (`4c43d31bd`) the same day; single entries move as they come up.
 
 These are notes, not verified reports: this file is the inbox, and the focused guides' Known Hazards are where verified entries live. An entry is a `###` heading under its area section, a paragraph saying what and where (`file:line`), then a **Why it matters:** line and a **Suggested handling:** line; the Contents list at the top counts each area's entries. Line numbers and identifiers were right when each entry was written; some entries may already be fixed by later work. Re-check the code before acting on one (STRUCTURE.md protocol step 5), and delete the entry in the same commit that fixes it or shows it is gone. An entry that is re-checked and has an owning guide under `docs/structure/` moves to that guide's section of [known issues](known-issues.md) (or to the guide's Known Hazards `Limitations`, once the owner accepts it; STRUCTURE.md Doc Maintenance) and leaves this file. "Latent" means no current caller reaches the bad path; "accepted" means the owner chose to keep the behavior.
 
@@ -134,11 +134,11 @@ validators reject unknown event statuses.
 
 - [Backup and sync](#backup-and-sync): 4
 - [Build and CI](#build-and-ci): 1
-- [Chat screen](#chat-screen): 5
+- [Chat screen](#chat-screen): 8
 - [Docs](#docs): 3
 - [Headless host](#headless-host): 2
 - [LLM requests](#llm-requests): 3
-- [Memory](#memory): 4
+- [Memory](#memory): 6
 - [Modules and personas](#modules-and-personas): 4
 - [Network jobs](#network-jobs): 2
 - [Plugins](#plugins): 1
@@ -280,6 +280,55 @@ that commit; the case was not run again when this entry was filed on 2026-11-20.
 
 **Suggested handling:** reproduce it first, with `docs/reports/surveys/fork-chat-scroll/probeChatScroll.mjs` as a
 base, and find which element changes height when the editor opens.
+
+### Chat controls stay enabled during a generation and refuse only after the click
+
+Generation lock survey of 2026-11-21 (Luna workers), read and not run; the chat lorebook had the same pattern and was
+fixed in `4c43d31bd`. These controls stay enabled while a reply generates in the chat and refuse with `chatGenerating`
+only once used: Continue and Reroll in the side menu and Ctrl+M (`src/lib/ChatScreens/DefaultChatScreen.svelte`, the
+`isScreenBusy` checks near 945 and 1020); Enter in the draft box, while its Send Draft button is disabled (near 811);
+the unreroll arrows of a row other than the generating one, which `locked` in `src/lib/ChatScreens/Chat.svelte`
+covers only per message; and checkpoint Save and Load in `src/lib/Others/ChatCheckpointsDialog.svelte` (161, 172),
+which refuse only after the name prompt or the confirmation. The message editor's textarea stays editable when the
+generation starts after it opened, and its save refuses; the stored translation editor and retranslation refuse the
+same way.
+
+**Why it matters:** the user writes a name, confirms, or types an edit, and learns only afterwards that it cannot be
+saved; the message bubble's own buttons, by contrast, are disabled.
+
+**Suggested handling:** disable each control from the same predicate its handler checks (`isLocalSend` with
+`generatingChatKeys`, or `isScreenBusy`), and keep the handler checks for a generation that starts during a dialog,
+as the lorebook fix does.
+
+### A message's Branch button has no generation lock
+
+Generation lock survey of 2026-11-21 (Luna workers), read and not run. The Branch button of a message
+(`src/lib/ChatScreens/Chat.svelte`, the handler that calls `createInheritingChat` near 2106) has neither
+`disabled={locked}` nor a busy check. Branching on the message that is still generating may copy the reply as streamed
+so far into the new chat; the copy was not checked.
+
+**Why it matters:** the new chat could start from a cut-off reply that the user takes for the finished one.
+
+**Suggested handling:** reproduce by branching on a streaming reply; if the copy is partial, disable Branch while the
+message is locked.
+
+### Chat settings panels write chat metadata during a generation without a lock
+
+Generation lock survey of 2026-11-21 (Luna workers), read and not run. These panels write the selected chat's fields
+through `setChatMeta`, `setCurrentChatMeta` or `mergeChatMeta` with no generation check and no disabled state: the
+author's note (`ChatNoteEditor.svelte`, `CharConfig.svelte`), the draft hook, the chat binding pickers, the chat's
+memory preferences (`ChatMemoryPanel.svelte`, the Context Meter switch, the chat-owned preset in
+`MemorySettings.svelte`), translation preferences (`ChatTranslationPanel.svelte`), prompt toggles (`Toggles.svelte`),
+chat modules (`ModuleChatMenu.svelte`), chat variables (`DevTool.svelte`), the OOC own-toggles switch, and chat
+rename and folder moves (`SideChatList.svelte`). `Suggestion.svelte` refreshes `suggestMessages` checking only this
+tab's sends. Most are single-field patches and the server does not lock metadata ops for a job, so no lost write was
+shown; the gap is that they stay editable while the lorebook and the messages are locked.
+
+**Why it matters:** inconsistent locking; a setting changed mid-generation does not affect the running reply, which
+the open panel does not say.
+
+**Suggested handling:** decide per field whether it needs a lock; the whole-field writers are a separate entry under
+[Memory](#memory).
 
 ## Docs
 
@@ -434,6 +483,35 @@ Timeline Chapter Synopses run, 2026-11-19, from slice 4; read. `eventsPerGroupHe
 **Why it matters:** the Korean Memory settings page shows two words for one thing.
 
 **Suggested handling:** reword the line with 장 in `ko.ts`.
+
+### The HypaV3 editor undoes an edit made during a generation instead of disabling it
+
+Generation lock survey of 2026-11-21 (Luna workers), read and not run. The HypaV3 modal's summary text, importance,
+category, tag and bulk edits stay enabled while a reply generates; the copy-save effect in
+`src/lib/Others/HypaV3Modal.svelte` (141-163) then alerts `chatGenerating` and restores the saved copy. The Structured
+Memory panel instead derives `readOnly` from the same fence and disables its controls, except the section draft
+textarea in `PagesTab.svelte`, whose Save is disabled while the text stays editable. A memory receipt's Revert under an
+older message (`MemoryReceiptLine.svelte`) stays enabled during another message's generation and is refused by the
+server.
+
+**Why it matters:** typed text is thrown away with a notice, the pattern the chat lorebook fix (`4c43d31bd`) removed.
+
+**Suggested handling:** derive a read-only state from `memoryWriteFence` as the Structured Memory panel does, and
+disable the Pages draft textarea with its Save.
+
+### The HypaV2 chunk and SupaMemory editors write the whole field during a generation
+
+Generation lock survey of 2026-11-21 (Luna workers), read and not run. `setHypaV2ChunkText` in
+`src/lib/Others/AlertComp.svelte` (295-304) copies the chat's whole `hypaV2Data` and writes it back with `setChatMeta`;
+the SupaMemory text areas in `src/lib/SideBars/CharConfig.svelte` (near 1856 and 1887) write `supaMemoryData` whole.
+Neither checks for a running generation, and the memory jobs of a send write these fields on the server. Whether the
+chat revision check refuses or reloads such a write was not checked.
+
+**Why it matters:** this is the whole-field case the chat lorebook draft is fenced for: an edit written from the
+tab's copy after a job's write could drop that write, or the job's write could replace the edit.
+
+**Suggested handling:** reproduce by editing a chunk while a HypaV2 summary job writes; if a write is lost, fence
+these editors like `createChatFieldDraft`.
 
 ## Modules and personas
 
