@@ -48,7 +48,7 @@ Sources the entries name (drop a line when no entry names it any more):
 - [Build and CI](#build-and-ci): 1
 - [Chat screen](#chat-screen): 6
 - [Headless host](#headless-host): 1
-- [LLM requests](#llm-requests): 2
+- [LLM requests](#llm-requests): 1
 - [Memory](#memory): 3
 - [Modules and personas](#modules-and-personas): 1
 - [Network jobs](#network-jobs): 1
@@ -224,14 +224,6 @@ Post-verification of 2026-11-18 (HH-5), read by one reader. The `pageerror` hand
 **Suggested handling:** redact each frame's URL by itself, as the console line does.
 
 ## LLM requests
-
-### A buffered answer the response checks reject fails without its request id
-
-Found 2026-11-20 during slice 2 of the Response Checks plan (raised by its challenger, confirmed by reading; not run in the app). Both outer loops turn a rejected buffered `success` into `da = { type: "fail", result: rejection }` (`server/src/llm/outer.ts:212`, `src/ts/process/request/request.ts:497`), which drops the attempt's `request` (and `model`, `special`). Once `requestRetrys` runs out, `runSpeaker`'s `throwError` gets no `req.request`, so the send's failure carries no `requestId` or `providerCode`, unlike any other request failure and unlike a rejected stream, which keeps its id.
-
-**Why it matters:** the failure of a too-short or banned-script buffered reply cannot be traced to its request history row.
-
-**Suggested handling:** keep the attempt's fields on the rejection's `fail` (spread the success without its `result`), in both loops, with a test that the final failure names the last request's id.
 
 ### Tab-side MCP tool discovery can keep fetching pages
 

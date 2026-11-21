@@ -27,13 +27,25 @@ it("retries a short translation after replacement and returns the complete secon
     expect(attempt).toHaveBeenCalledTimes(2);
 });
 
-it("returns the last length rejection when the tab spends its retry", async () => {
-    attempt.mockResolvedValueOnce({ type: "success", result: "" });
-    attempt.mockResolvedValueOnce({ type: "success", result: "🙂" });
+it("returns the last length rejection with that attempt's model and special metadata when the tab spends its retry", async () => {
+    attempt.mockResolvedValueOnce({
+        type: "success",
+        result: "",
+        model: "first-model",
+        special: { emotion: "neutral" },
+    });
+    attempt.mockResolvedValueOnce({
+        type: "success",
+        result: "🙂",
+        model: "last-model",
+        special: { emotion: "surprised" },
+    });
 
     expect(await translate()).toEqual({
         type: "fail",
         result: "The model's answer was shorter than the minimum (1 < 4)",
+        model: "last-model",
+        special: { emotion: "surprised" },
     });
     expect(attempt).toHaveBeenCalledTimes(2);
 });

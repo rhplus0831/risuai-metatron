@@ -206,10 +206,10 @@ export async function requestChatDataOuter(
         }
 
         if (da.type === "success" && !arg.previewBody) {
-            const rejection = responseRejection(da.result, db, { mode: model, continue: arg.continue });
+            const { result, ...fields } = da;
+            const rejection = responseRejection(result, db, { mode: model, continue: arg.continue });
             if (rejection !== null) {
-                // A rejected answer is retried and given up on as a failed attempt is, below.
-                da = { type: "fail", result: rejection };
+                da = { ...fields, type: "fail", result: rejection };
             }
         }
 

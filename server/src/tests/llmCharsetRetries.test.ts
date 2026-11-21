@@ -200,12 +200,24 @@ describe("requestChatDataOuter", () => {
         ).toEqual({ result: { type: "success", result: " done " }, attempts: 2 });
     });
 
-    it("returns the last length rejection when short answers spend the retry budget", async () => {
+    it("returns the last length rejection with that attempt's metadata when short answers spend the retry budget", async () => {
         expect(
             await run(
                 [
-                    { type: "success", result: "" },
-                    { type: "success", result: "No." },
+                    {
+                        type: "success",
+                        result: "",
+                        request: { id: "first-request", providerCode: null },
+                        model: "first-model",
+                        special: { emotion: "neutral" },
+                    },
+                    {
+                        type: "success",
+                        result: "No.",
+                        request: { id: "last-request", providerCode: null },
+                        model: "last-model",
+                        special: { emotion: "surprised" },
+                    },
                 ],
                 {
                     minimums: { minResponseLengthModel: 6 },
@@ -214,7 +226,13 @@ describe("requestChatDataOuter", () => {
                 },
             ),
         ).toEqual({
-            result: { type: "fail", result: "The model's answer was shorter than the minimum (3 < 6)" },
+            result: {
+                type: "fail",
+                result: "The model's answer was shorter than the minimum (3 < 6)",
+                request: { id: "last-request", providerCode: null },
+                model: "last-model",
+                special: { emotion: "surprised" },
+            },
             attempts: 2,
         });
     });
@@ -417,7 +435,14 @@ describe("a group send with the Echo model and a banned script", () => {
                 attempts: 3,
                 immediateRanAfter: 1,
                 attemptsAtStop: null,
-                terminal: { type: "error", reason: "failed", status: 500, message: BANNED, stage: "request" },
+                terminal: {
+                    type: "error",
+                    reason: "failed",
+                    status: 500,
+                    message: BANNED,
+                    stage: "request",
+                    requestId: expect.any(String),
+                },
             });
         },
     );
