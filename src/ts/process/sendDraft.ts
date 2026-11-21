@@ -1,5 +1,5 @@
 import { v4 } from "uuid";
-import type { ChatRef } from "../storage/chatStore.svelte";
+import { heldMessageById, type ChatRef } from "../storage/chatStore.svelte";
 import type { ComposerDraft } from "./composerDrafts.svelte";
 
 /**
@@ -36,6 +36,19 @@ export type SendDraftOutcome = {
 
 const keyOf = (ref: ChatRef) => `${ref.chaId}\u0000${ref.chatId}`;
 
+export function sameComposerSnapshot(
+    a: Omit<ComposerDraft, "draft"> & { draft?: string },
+    b: Omit<ComposerDraft, "draft"> & { draft?: string },
+): boolean {
+    return (
+        a.input === b.input &&
+        (a.draft ?? "") === (b.draft ?? "") &&
+        a.translate === b.translate &&
+        a.files.length === b.files.length &&
+        a.files.every((file, index) => file === b.files[index])
+    );
+}
+
 /**
  * The text submitted by the composer, including its queued attachments in order (`{{inlayed::id}}`).
  * The one serialization of a composer into send text: the screen's send, the journal's retry lookup,
@@ -59,12 +72,22 @@ export function composerSendText(
  * id for any end that neither landed nor succeeded.
  */
 export function createSendDrafts() {
-    const drafts = new Map<string, SendDraft & { placed: boolean }>();
+    const drafts = new Map<string, SendDraft & { placement: "sending" | "placed" | "unplaced" | "restoredSharedId" }>();
+
+    function matches(ref: ChatRef, text: string, composer?: ComposerDraft) {
+        const pending = drafts.get(keyOf(ref));
+        if (!pending || pending.input !== text) return;
+        // Until a draft has been offered back, equal outgoing text can belong to two different originals.
+        const original = pending.composer;
+        if (original && pending.placement !== "placed" && (!composer || !sameComposerSnapshot(original, composer)))
+            return;
+        return pending;
+    }
 
     function retryIdFor(ref: ChatRef, composer: ComposerDraft): ComposerRetry | undefined {
-        const draft = drafts.get(keyOf(ref));
-        const sent = draft?.composer ? "draft" : undefined;
-        return draft?.input === composerSendText(composer, sent)
+        const sent = drafts.get(keyOf(ref))?.composer ? "draft" : undefined;
+        const draft = matches(ref, composerSendText(composer, sent), composer);
+        return draft
             ? {
                   userMessageId: draft.userMessageId,
                   ...(draft.requestId === undefined ? {} : { requestId: draft.requestId }),
@@ -73,17 +96,24 @@ export function createSendDrafts() {
             : undefined;
     }
 
-    function adopt(ref: ChatRef, draft: SendDraft): void {
+    function adopt(ref: ChatRef, draft: SendDraft, sharedId = false): void {
         const { inputOriginal, ...retained } = draft;
-        drafts.set(keyOf(ref), { ...retained, placed: true });
+        drafts.set(keyOf(ref), { ...retained, placement: sharedId ? "restoredSharedId" : "placed" });
+    }
+
+    function clearRetry(ref: ChatRef): void {
+        drafts.delete(keyOf(ref));
     }
 
     function idFor(ref: ChatRef, text: string, composer?: ComposerDraft): string {
         const key = keyOf(ref);
-        const pending = drafts.get(key);
-        const userMessageId = pending?.input === text ? pending.userMessageId : v4();
+        let retry = matches(ref, text, composer);
+        // Keep a legacy shared id on the editable row, but send under it only to deduplicate a confirmed message.
+        if (retry?.placement === "restoredSharedId" && heldMessageById(ref, retry.userMessageId)?.role !== "user")
+            retry = undefined;
+        const userMessageId = retry?.userMessageId ?? v4();
         // The active send owns the text until it settles; switching chats must not restore it early.
-        drafts.set(key, { input: text, userMessageId, ...(composer ? { composer } : {}), placed: true });
+        drafts.set(key, { input: text, userMessageId, ...(composer ? { composer } : {}), placement: "sending" });
         return userMessageId;
     }
 
@@ -93,9 +123,9 @@ export function createSendDrafts() {
         reuseRequest = true,
         composer?: ComposerDraft,
     ): Pick<SendDraft, "userMessageId" | "requestId" | "requestUncertain"> {
-        const pending = drafts.get(keyOf(ref));
-        const requestId = reuseRequest && pending?.input === text ? pending.requestId : undefined;
+        const previous = drafts.get(keyOf(ref));
         const userMessageId = idFor(ref, text, composer);
+        const requestId = reuseRequest && previous?.userMessageId === userMessageId ? previous.requestId : undefined;
         return { userMessageId, requestId: requestId ?? v4(), requestUncertain: requestId !== undefined };
     }
 
@@ -108,19 +138,23 @@ export function createSendDrafts() {
         // Refusals and accepted jobs that fail recover alike. Keep the id even if the mirror is behind.
         const placed = outcome.selected && outcome.composerEmpty;
         const { requestId, requestUncertain, inputOriginal, ...message } = draft;
-        drafts.set(key, { ...message, ...(outcome.requestUncertain && requestId ? { requestId } : {}), placed });
+        drafts.set(key, {
+            ...message,
+            ...(outcome.requestUncertain && requestId ? { requestId } : {}),
+            placement: placed ? "placed" : "unplaced",
+        });
         return placed ? "restore" : "keep";
     }
 
     function takeUnplaced(ref: ChatRef, canPlace?: (send: SendDraft) => boolean): SendDraft | undefined {
         const draft = drafts.get(keyOf(ref));
-        if (!draft || draft.placed || !(canPlace ? canPlace(draft) : !draft.composer)) {
+        if (draft?.placement !== "unplaced" || !(canPlace ? canPlace(draft) : !draft.composer)) {
             return undefined;
         }
-        draft.placed = true;
-        const { placed, ...send } = draft;
+        draft.placement = "placed";
+        const { placement, ...send } = draft;
         return send;
     }
 
-    return { idFor, idsFor, settle, takeUnplaced, retryIdFor, adopt };
+    return { idFor, idsFor, settle, takeUnplaced, retryIdFor, adopt, clearRetry };
 }

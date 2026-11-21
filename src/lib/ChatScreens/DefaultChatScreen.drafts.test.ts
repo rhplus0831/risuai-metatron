@@ -979,6 +979,62 @@ it("keeps an unanswered send's text and request id across a reload after a follo
     });
 });
 
+it("offers a displaced failed send after reload and applies it once", async () => {
+    const ui = await mountComposer();
+    const original = "First message to recover";
+    let refuse!: (error: Error) => void;
+    io.createJob.mockImplementationOnce(
+        () =>
+            new Promise((_, reject) => {
+                refuse = reject;
+            }),
+    );
+    ui.type(original);
+    ui.click(ui.target.querySelector(".button-icon-send"));
+    await until(() => io.createJob.mock.calls.length === 1);
+    const next = "Newer message that lands";
+    ui.type(next);
+    const { GenerationCreateError } = await import("src/ts/network/generationJobs");
+    refuse(new GenerationCreateError(new Error("create refused"), false));
+    const ref = { chaId: "c", chatId: "a" };
+    const { isChatBusy } = await import("src/ts/process/chatStatus.svelte");
+    await until(() => !isChatBusy(ref));
+    const jobs = await loreJobs();
+    ui.click(ui.target.querySelector(".button-icon-send"));
+    await jobs.finish(0, { stop: false });
+    expect(jobs.chat.findChat(ref)?.message.at(-1)?.data).toBe(next);
+
+    const reloaded = await mountComposer({ reload: true });
+    const { recoverJournal } = await import("src/ts/storage/journalRecovery");
+    const { recoveryDrafts } = await import("src/ts/storage/recoveryDrafts.svelte");
+    const { default: ReloadNotice } = await import("../Others/ReloadNotice.svelte");
+    const notice = mount(ReloadNotice, { target: reloaded.target });
+    try {
+        await drive(recoverJournal());
+        const button = (label: string) =>
+            [...reloaded.target.querySelectorAll("button")].find((node) => node.textContent.trim() === label);
+        const review = button(language.recoveryDrafts.review);
+        expect(review).toBeDefined();
+        reloaded.click(review!);
+        await until(() => button(language.apply)?.disabled === false);
+        expect(reloaded.target.querySelector('[role="dialog"] li')?.textContent).toContain(original);
+        reloaded.type("Another edit");
+        reloaded.click(button(language.apply)!);
+        await until(() => io.alertError.mock.calls.length === 1);
+        expect(reloaded.input().value).toBe("Another edit");
+        reloaded.type("");
+        await until(() => button(language.apply)?.disabled === false);
+        reloaded.click(button(language.apply)!);
+        await until(() => !recoveryDrafts.isOpen);
+        expect(reloaded.input().value).toBe(original);
+        expect(await drive(reloaded.journal.readComposer(a))).toMatchObject({ input: original });
+        expect(await drive(reloaded.journal.listDrafts())).toEqual([]);
+        expect(button(language.recoveryDrafts.review)).toBeUndefined();
+    } finally {
+        await unmount(notice);
+    }
+});
+
 async function useHttpCreation() {
     const { NO_GENERATION_HOOKS } = await import("../../../shared/jobs.ts");
     io.createJob.mockImplementation((body, options) => createHttpJob({ ...body, hooks: NO_GENERATION_HOOKS }, options));
@@ -2318,6 +2374,99 @@ async function attachHookAudio(ui: Awaited<ReturnType<typeof mountHookComposer>>
     ui.hide();
     return (await drive(ui.journal.readComposer(a)))!.files;
 }
+
+it("keeps one reviewed message when a legacy send is confirmed after composer restore", async () => {
+    const { journal } = await mountComposer();
+    selectChat("c", "b");
+    flushSync();
+    const userMessageId = "legacy-message";
+    const reviewed = "Same reviewed text";
+    const saved = { input: "First original", draft: reviewed, translate: "", files: [], sent: "draft" as const };
+    expect(await drive(journal.putComposerSend(a, { ...saved, state: "sending", userMessageId }))).toBe("written");
+    expect(await drive(journal.putComposer(a, { ...saved, input: "Newer original", userMessageId }))).toBe("written");
+
+    const reloaded = await mountHookComposer({ reload: true });
+    await until(() => reloaded.draft()?.value === reviewed);
+    expect(reloaded.input().value).toBe("Newer original");
+    const jobs = await loreJobs();
+    const ref = { chaId: "c", chatId: "a" };
+    const current = JSON.parse(JSON.stringify(jobs.chat.findChat(ref))) as Chat;
+    current.message.push({ role: "user", data: reviewed, chatId: userMessageId });
+    jobs.chat.acceptRemoteChat({
+        characterId: ref.chaId,
+        id: ref.chatId,
+        revision: `${io.server!.epoch}:1:1`,
+        data: current,
+    });
+    flushSync();
+    expect(jobs.chat.heldMessageById(ref, userMessageId)?.role).toBe("user");
+
+    reloaded.click(reloaded.sendDraft());
+    await jobs.finish(0, { stop: false });
+    expect(
+        jobs.chat.findChat(ref)?.message.filter((message) => message.role === "user" && message.data === reviewed),
+    ).toEqual([{ role: "user", data: reviewed, chatId: userMessageId }]);
+});
+
+it("applies displaced draft text without its deleted attachment and sends with fresh ids", async () => {
+    const ui = await mountHookComposer();
+    const restored = {
+        input: "First original",
+        draft: "Same reviewed text",
+        translate: "First translation",
+        files: [],
+    };
+    ui.settings.memoryTranslateMedia.useAutoTranslateInput = true;
+    flushSync();
+    ui.enter(ui.input(), restored.input);
+    ui.enter(ui.draft()!, restored.draft);
+    ui.enter(ui.translation()!, restored.translate);
+    const [file] = await attachHookAudio(ui);
+    const { GenerationCreateError } = await import("src/ts/network/generationJobs");
+    let refuse!: (error: Error) => void;
+    io.createJob.mockImplementationOnce(
+        () =>
+            new Promise((_, reject) => {
+                refuse = reject;
+            }),
+    );
+    ui.click(ui.sendDraft());
+    await until(() => io.createJob.mock.calls.length === 1);
+    ui.enter(ui.input(), "Newer original");
+    ui.enter(ui.draft()!, restored.draft);
+    refuse(new GenerationCreateError(new Error("create refused"), false));
+    await until(() => !ui.sendDraft().disabled);
+
+    io.createJob.mockRejectedValueOnce(new GenerationCreateError(new Error("create answer lost"), true));
+    ui.click(ui.sendDraft());
+    await until(() => ui.input().value === "Newer original");
+    const newer = io.createJob.mock.calls[1][0];
+    expect(await drive(ui.journal.readComposer(a))).toMatchObject({
+        input: "Newer original",
+        userMessageId: newer.context.userMessageId,
+        requestId: newer.requestId,
+    });
+    const [entry] = await drive(ui.journal.listDrafts());
+    expect(entry).toMatchObject({ scope: "composer", value: { ...restored, files: [file] } });
+
+    const { removeInlayAsset } = await import("src/ts/process/files/inlays");
+    await drive(removeInlayAsset(file));
+    ui.enter(ui.input(), "");
+    ui.enter(ui.draft()!, "");
+    const { applyRecoveryDraft } = await import("src/ts/storage/journalRecovery");
+    await drive(applyRecoveryDraft(entry));
+    expect(ui.boxes()).toEqual([restored.input, restored.draft, restored.translate]);
+    expect(await drive(ui.journal.readComposer(a))).toEqual(restored);
+
+    io.createJob.mockRejectedValueOnce(new GenerationCreateError(new Error("create refused"), false));
+    ui.click(ui.sendDraft());
+    await until(() => io.createJob.mock.calls.length === 3);
+    const retry = io.createJob.mock.calls[2][0];
+    expect(retry.context.input).toBe(newer.context.input);
+    expect(retry.context.userMessageId).not.toBe(newer.context.userMessageId);
+    expect(retry.requestId).not.toBe(newer.requestId);
+    await until(() => ui.input().value === restored.input);
+});
 
 it("reads the current raw original and Translation mode at every Send Draft retry", async () => {
     const ui = await mountHookComposer();

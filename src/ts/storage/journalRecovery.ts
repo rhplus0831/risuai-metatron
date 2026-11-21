@@ -67,7 +67,7 @@ import {
 } from "./draftJournal";
 import { isJournalEligible } from "./journalEligibility";
 import { replaceRecord, type RecordKind } from "./records.svelte";
-import { recoveryDrafts } from "./recoveryDrafts.svelte";
+import { composerDraftLanded, recoveryDrafts } from "./recoveryDrafts.svelte";
 import { getResourceEpoch } from "./resourceClient";
 import {
     adoptRecoveredRecord,
@@ -794,6 +794,16 @@ export function recoveryDraftDetails(entry: DraftEntry): {
     blocked: boolean;
     reason?: string;
 } {
+    if (entry.scope === "composer") {
+        const [chaId, chatId] = entry.chatKey.split("\u0000");
+        const ref = { chaId, chatId };
+        const chat = chatEntry(ref);
+        const name = `${chat?.name || chatId} · ${findCharacter(chaId)?.name || chaId}`;
+        if (!chat) return { name, canApply: false, blocked: false, reason: language.recoveryDrafts.noSnapshot };
+        if (composerDraftLanded(entry))
+            return { name, canApply: false, blocked: false, reason: language.recoveryDrafts.unavailable };
+        return { name, canApply: true, blocked: false };
+    }
     let name = entry.target.split("\u0000")[0];
     let reason: string | undefined;
     try {
@@ -1105,6 +1115,12 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
     const details = recoveryDraftDetails(entry);
     if (!details.canApply) throw new Error(details.reason);
     if (entry.createdAt + JOURNAL_ENTRY_TTL_MS <= Date.now()) throw new Error(language.recoveryDrafts.expired);
+    if (entry.scope === "composer") {
+        const { restoreComposerDraft } = await import("../process/composerDrafts.svelte");
+        if (!(await restoreComposerDraft(entry))) throw new Error(language.recoveryDrafts.unavailable);
+        await recoveryDrafts.refresh();
+        return { skipped: [] };
+    }
     const scope = beginMutationScope();
     const keys = new Set<string>();
     const changedMembership = new Set<string>();

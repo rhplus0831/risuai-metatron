@@ -1,7 +1,8 @@
 import { downloadFile } from "../globalApi.svelte";
 import { language } from "src/lang";
 import { alertConfirm, alertError } from "../alert";
-import { JOURNAL_ENTRY_TTL_MS, pageDraftJournal, type DraftEntry } from "./draftJournal";
+import { heldMessageById } from "./chatStore.svelte";
+import { JOURNAL_ENTRY_TTL_MS, pageDraftJournal, type ComposerRecovery, type DraftEntry } from "./draftJournal";
 import { isJournalEligible } from "./journalEligibility";
 import { getResourceEpoch } from "./resourceClient";
 
@@ -9,7 +10,8 @@ import { getResourceEpoch } from "./resourceClient";
  * Reactive view of src/ts/storage/draftJournal.ts listDrafts; the journal remains durable authority.
  * Record drafts are filtered through src/ts/storage/journalEligibility.ts, and entries omit expired
  * rows and tag other epochs. While drafts remain, a 60 s timer removes expired rows from the view,
- * notice and Settings without reloading.
+ * notice and Settings without reloading. A displaced send is retired when its user message appears
+ * in the loaded target chat.
  */
 
 let drafts = $state.raw<DraftEntry[]>([]);
@@ -21,11 +23,26 @@ let refreshing = $state(false);
 let applied = $state.raw(new Set<string>());
 let timer: ReturnType<typeof setInterval> | undefined;
 let refreshVersion = 0;
+
+export function composerDraftLanded(entry: ComposerRecovery): boolean {
+    const [chaId, chatId] = entry.chatKey.split("\u0000");
+    return heldMessageById({ chaId, chatId }, entry.value.userMessageId)?.role === "user";
+}
+
+const landed = $derived(new Set(drafts.filter((entry) => entry.scope === "composer" && composerDraftLanded(entry))));
 const entries = $derived(
     drafts
-        .filter((entry) => entry.createdAt + JOURNAL_ENTRY_TTL_MS > now)
-        .map((entry) => ({ ...entry, otherEpoch: entry.epoch !== epoch })),
+        .filter((entry) => entry.createdAt + JOURNAL_ENTRY_TTL_MS > now && !landed.has(entry))
+        .map((entry) => ({ ...entry, otherEpoch: entry.scope !== "composer" && entry.epoch !== epoch })),
 );
+
+$effect.root(() => {
+    $effect(() => {
+        if (!landed.size) return;
+        for (const entry of landed) void pageDraftJournal().removeDraft(entry.id);
+        drafts = drafts.filter((entry) => !landed.has(entry));
+    });
+});
 
 function expire() {
     now = Date.now();
@@ -72,11 +89,12 @@ export const recoveryDrafts = {
     },
     async refresh() {
         const journal = pageDraftJournal();
-        if (!journal.enabled) return;
         const version = ++refreshVersion;
         refreshing = true;
         try {
             const rows = await journal.listDrafts();
+            // An unavailable journal can still offer displaced sends from this page.
+            if (!journal.enabled) rows.push(...drafts.filter((entry) => entry.scope !== "composer"));
             if (version === refreshVersion) recoveryDrafts.replace(rows, getResourceEpoch());
         } finally {
             refreshing = false;

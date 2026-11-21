@@ -82,6 +82,11 @@
 
     function apply(entry: DraftEntry, name: string) {
         void act(async () => {
+            if (entry.scope === "composer") {
+                await applyRecoveryDraft(entry);
+                recoveryDrafts.close();
+                return;
+            }
             if (!(await alertConfirm(language.recoveryDrafts.applyConfirm(name)))) return;
             const { skipped, memoryKept, kept } = await applyRecoveryDraft(entry);
             let notice =
@@ -143,6 +148,11 @@
                 {@const details = recoveryDraftDetails(entry)}
                 <li class="border border-borderc rounded p-3 flex flex-col gap-2">
                     <h3 class="font-semibold">{details.name}</h3>
+                    {#if entry.scope === "composer"}
+                        <p class="line-clamp-3 whitespace-pre-wrap">
+                            {(entry.value.sent ? entry.value.draft : entry.value.input) || entry.value.files.join(", ")}
+                        </p>
+                    {/if}
                     <time class="text-sm text-textcolor2" datetime={new Date(entry.createdAt).toISOString()}
                         >{new Date(entry.createdAt).toLocaleString()}</time
                     >

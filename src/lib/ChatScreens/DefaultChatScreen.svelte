@@ -126,7 +126,7 @@
     } from "src/ts/process/inputTranslation.svelte";
     import { processMultiCommand } from "src/ts/process/command";
     import { postChatFile } from "src/ts/process/files/multisend";
-    import { getInlayAsset, getInlayMetadata } from "src/ts/process/files/inlays";
+    import { getInlayAsset } from "src/ts/process/files/inlays";
     import { composerPlaceholder } from "./composerPlaceholder";
     import Chats from "./Chats.svelte";
     import ContextMeter from "./ContextMeter.svelte";
@@ -193,6 +193,11 @@
     const composer = createComposer({
         journal: pageDraftJournal(),
         epoch: getResourceEpoch,
+        adopt: (key, draft) => {
+            const [chaId, chatId] = key.split("\u0000");
+            sendDrafts.adopt({ chaId, chatId }, draft);
+        },
+        clearRetry: sendDrafts.clearRetry,
         retryIdFor: (key, draft) => {
             const [chaId, chatId] = key.split("\u0000");
             return sendDrafts.retryIdFor({ chaId, chatId }, draft);
@@ -324,22 +329,19 @@
                                 return undefined;
                             }
                         },
-                        inlayExists: async (id) => {
-                            try {
-                                return (await getInlayMetadata(id)) !== null;
-                            } catch {
-                                return undefined;
-                            }
-                        },
                     })
                     .then((draft) => {
                         if (draft)
-                            sendDrafts.adopt(ref, {
-                                input: draft.text,
-                                userMessageId: draft.userMessageId,
-                                requestId: draft.requestId,
-                                ...(draft.composer ? { composer: draft.composer } : {}),
-                            });
+                            sendDrafts.adopt(
+                                ref,
+                                {
+                                    input: draft.text,
+                                    userMessageId: draft.userMessageId,
+                                    requestId: draft.requestId,
+                                    ...(draft.composer ? { composer: draft.composer } : {}),
+                                },
+                                draft.sharedId,
+                            );
                     });
             }
         });

@@ -324,6 +324,62 @@ describe("durable composers", () => {
         expect(await drive(journal.readComposerSend(a))).toEqual(handoff);
     });
 
+    it("drops a landed legacy editable draft that shares its hand-off's id", async () => {
+        const saved = {
+            input: "First original",
+            draft: "Same reviewed text",
+            translate: "",
+            files: [],
+            sent: "draft" as const,
+            userMessageId: "landed-message",
+        };
+        expect(await drive(journal.putComposerSend(a, { ...saved, state: "sending" }))).toBe("written");
+        expect(await drive(journal.putComposer(a, { ...saved, input: "Newer original" }))).toBe("written");
+
+        const reloaded = composer();
+        reloaded.switchTo(a);
+        await drive(reloaded.restore(a, { ...checks, landed: async (id) => id === saved.userMessageId }));
+        expect(reloaded.draft).toBe("");
+        expect(reloaded.input).toBe("");
+        expect(await drive(journal.readComposer(a))).toBeNull();
+    });
+
+    it("keeps two displaced originals with the same reviewed text in separate recovery drafts", async () => {
+        const ref = { chaId: "c", chatId: "a" };
+        const sends = createSendDrafts();
+        const current = composer();
+        current.switchTo(a);
+        const reviewed = "Same reviewed text";
+        const originals = ["First original", "Second original", "Third original"];
+        const snapshots = originals.map((input) => ({
+            input,
+            draft: reviewed,
+            translate: "Same translation",
+            files: ["first-inlay", "second-inlay"],
+        }));
+        for (const [index, snapshot] of snapshots.entries()) {
+            const input = composerSendText(snapshot, "draft");
+            const ids = sends.idsFor(ref, input, true, snapshot);
+            current.beginSend(a, { snapshot, ...ids, sent: "draft" });
+            const ok = index === snapshots.length - 1;
+            sends.settle(
+                ref,
+                { input, composer: snapshot, ...ids },
+                { landed: ok, ok, selected: true, composerEmpty: false },
+            );
+            current.settleSend(a, ids.userMessageId, ok);
+        }
+
+        const rows = await drive(journal.listDrafts());
+        expect(rows).toHaveLength(2);
+        for (const snapshot of snapshots.slice(0, 2)) {
+            expect(rows).toContainEqual(
+                expect.objectContaining({ scope: "composer", value: expect.objectContaining(snapshot) }),
+            );
+        }
+        expect(rows[0].id).not.toBe(rows[1].id);
+    });
+
     it("persists shown and stashed edits after 500 ms of quiet and restores them", async () => {
         const first = composer();
         first.switchTo(a);

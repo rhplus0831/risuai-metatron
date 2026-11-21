@@ -13,10 +13,11 @@ import { isJournalEligible } from "./journalEligibility";
  * shared journal; its browser-wide rows keep main and draft text, translation, attachments, and a
  * send's retry ids and sent-box marker. Composer rows with draft text or that marker use format 2;
  * other composer rows and all other row types keep format 1. Older readers leave format 2 untouched.
- * A chat has two composer rows: the editable draft, and the hand-off of the send that consumed the
+ * A chat has two active composer rows: the editable draft, and the hand-off of the send that consumed the
  * composer, so typing during that send never replaces what was sent. Composer writes keep
  * `createdAt` while the row is live; a write after expiry starts a new entry. A landed send deletes
  * only a hand-off still carrying its id and drops that id from the draft, keeping the draft's text.
+ * A displaced hand-off moves unchanged to a recovery draft key, where draft eviction and expiry apply.
  *
  * - Database `risu-draft-journal`, stores `entries` (string keys, below) and `meta` (reserved), one
  *   connection per page kept open. A database missing a store or an index is upgraded to the next
@@ -64,7 +65,8 @@ import { isJournalEligible } from "./journalEligibility";
  *   answers as if empty. Startup's seed read and orphan transactions use the open deadline; expiry
  *   aborts the transaction and reports `journalFailed` `timeout`. A failed start releases ownership.
  *   Closing drains calls within the same bound, aborts remaining transactions, closes the connection,
- *   and releases ownership.
+ *   and releases ownership. A hand-off the journal could not write can still be offered as a recovery
+ *   draft on this page if a later send displaces it.
  *
  * Inside a transaction only IndexedDB requests are awaited, so it never commits early. Every method
  * resolves (never rejects); failures are reported as `sync` events (`journalFailed`), and events about
@@ -177,7 +179,7 @@ export type MutationEntry = RowBase & {
 } & ScopedLayers;
 
 /** A recovery draft: work that is not replayed on its own, kept for the user (the entry's layers as they were). */
-export type DraftEntry = RowBase & { type: "draft"; id: string; epoch: string; target: string } & ScopedLayers;
+type ResourceDraft = RowBase & { type: "draft"; id: string; epoch: string; target: string } & ScopedLayers;
 
 /** What a chat's composer held, with an uncertain send's request identity scoped to its epoch. */
 export type ComposerValue = {
@@ -201,7 +203,17 @@ export type ComposerEntry = Omit<RowBase, "format"> & {
     value: ComposerValue;
 };
 
-export type JournalRow = MutationEntry | DraftEntry | ComposerEntry;
+/** A send hand-off listed from a recovery key, using the original row and its original expiry. */
+export type ComposerRecovery = ComposerEntry & {
+    scope: "composer";
+    target: string;
+    id: string;
+    value: ComposerSend;
+    epoch?: never;
+    layers?: never;
+};
+export type DraftEntry = ResourceDraft | ComposerRecovery;
+export type JournalRow = MutationEntry | ResourceDraft | ComposerEntry;
 
 // --- Keys ---
 
@@ -211,6 +223,7 @@ export function mutationKey(epoch: string, tabId: string, scope: JournalScope, t
     return [epoch, tabId, scope, target].join(NUL);
 }
 export const draftKey = (id: string) => `${DRAFT_PREFIX}${id}`;
+const composerRecoveryId = (chatKey: string, id: string) => `composer${NUL}${chatKey}${NUL}${id}`;
 export const composerKey = (chatKey: string) => `${COMPOSER_PREFIX}${chatKey}`;
 export const composerSendKey = (chatKey: string) => `${composerKey(chatKey)}${NUL}send`;
 /** Resource ids hold no control character, so these targets cannot collide. */
@@ -433,6 +446,10 @@ export type JournalRelease = { epoch: string; scope: "chat" | "order"; target: s
 
 /** A send's hand-off: the consumed composer with the attempt's ids. */
 export type ComposerSend = ComposerValue & { state: "sending"; userMessageId: string };
+type ComposerRecoveryChecks = {
+    landed(userMessageId: string): boolean;
+    notify(): void;
+};
 type ComposerUpdate = (row: ComposerEntry | null, time: number) => ComposerValue | undefined;
 
 export interface DraftJournal {
@@ -481,6 +498,12 @@ export interface DraftJournal {
     listDrafts(): Promise<DraftEntry[]>;
     /** Whether the draft is gone: true once deleted or already absent; false on a failure or while off. */
     removeDraft(id: string): Promise<boolean>;
+    /** Restores this recovery into the empty composer only while its mounted owner accepts placement. */
+    restoreComposerDraft(
+        entry: ComposerRecovery,
+        place: (value: ComposerValue) => boolean,
+        missingFiles?: ReadonlySet<string>,
+    ): Promise<boolean>;
     /** Composer calls start the journal on first use. Reads omit expired and unreadable rows. */
     readComposer(chatKey: string): Promise<ComposerValue | null>;
     readComposerSend(chatKey: string): Promise<ComposerSend | null>;
@@ -489,8 +512,8 @@ export interface DraftJournal {
      * that message id in the same transaction: the draft now holds the send's text.
      */
     putComposer(chatKey: string, value: ComposerValue, takeOver?: string): Promise<WriteOutcome>;
-    /** Writes the chat's hand-off and deletes its draft, which the send consumed, in one transaction. */
-    putComposerSend(chatKey: string, value: ComposerSend): Promise<WriteOutcome>;
+    /** The consumed draft, displaced hand-off and new hand-off change in one transaction. */
+    putComposerSend(chatKey: string, value: ComposerSend, recovery?: ComposerRecoveryChecks): Promise<WriteOutcome>;
     /**
      * Updates both rows in one write transaction, checking message id and any stored request id.
      * Clears a known attempt's identity or adds retained identity only to a matching row without it;
@@ -1097,7 +1120,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         if (!enabled || closed) {
             return Promise.resolve(outcome("off"));
         }
-        let preparedDrafts: { row: DraftEntry; eligible: boolean }[];
+        let preparedDrafts: { row: ResourceDraft; eligible: boolean }[];
         try {
             preparedDrafts = drafts.map((input) => {
                 const layers = Object.fromEntries(
@@ -1427,7 +1450,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
     function draftOf(
         entry: ScopedLayers & { epoch: string; target: string; createdAt: number },
         id: string,
-    ): DraftEntry {
+    ): ResourceDraft {
         const base = {
             format: JOURNAL_FORMAT,
             type: "draft" as const,
@@ -1437,7 +1460,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
             createdAt: entry.createdAt,
             size: 0,
         };
-        const row = { ...base, scope: entry.scope, layers: entry.layers } as DraftEntry;
+        const row = { ...base, scope: entry.scope, layers: entry.layers } as ResourceDraft;
         row.size = sizeOf(row);
         return row;
     }
@@ -1648,6 +1671,12 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         });
     }
 
+    /** Filing a recovery draft may reclaim expired rows, while live drafts keep their place. */
+    async function fitsNewDraft(store: IDBObjectStore, size: number): Promise<boolean> {
+        const needed = (await totalSize(store)) + size - MAX_JOURNAL_TOTAL_BYTES;
+        return needed <= 0 || (await evict(store, needed, new Set(), true)) >= needed;
+    }
+
     function putDraft(input: DraftInput): Promise<string | null> {
         if (!enabled || closed) {
             return Promise.resolve(null);
@@ -1680,11 +1709,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
             let skipped = false;
             try {
                 await withDatabase("readwrite", async (store) => {
-                    let total = await totalSize(store);
-                    if (total + row.size > MAX_JOURNAL_TOTAL_BYTES) {
-                        total -= await evict(store, total + row.size - MAX_JOURNAL_TOTAL_BYTES, new Set(), true);
-                    }
-                    if (total + row.size > MAX_JOURNAL_TOTAL_BYTES) {
+                    if (!(await fitsNewDraft(store, row.size))) {
                         skipped = true;
                         return;
                     }
@@ -1702,8 +1727,29 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         });
     }
 
-    function listDrafts(): Promise<DraftEntry[]> {
-        return tracked([], async () => {
+    // A later send can displace an uncommitted hand-off even after its screen unmounts.
+    const handoffs = new Map<string, { value: ComposerSend; createdAt: number; durable: boolean }>();
+    const memoryDrafts = new Map<string, ComposerRecovery>();
+
+    function unwrittenHandoff(chatKey: string) {
+        const handoff = handoffs.get(chatKey);
+        if (handoff && isExpired(handoff.createdAt, now())) handoffs.delete(chatKey);
+        else return handoff;
+    }
+
+    function recoveryOf(row: ComposerEntry): ComposerRecovery | undefined {
+        if (row.value.state !== "sending" || row.value.userMessageId === undefined) return;
+        return {
+            ...row,
+            scope: "composer",
+            target: row.chatKey,
+            id: composerRecoveryId(row.chatKey, row.value.userMessageId),
+            value: row.value as ComposerSend,
+        };
+    }
+
+    async function listDrafts(): Promise<DraftEntry[]> {
+        const rows = await tracked<DraftEntry[]>([], async () => {
             try {
                 return await withDatabase("readonly", async (store) => {
                     const time = now();
@@ -1712,8 +1758,11 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                         store.openCursor(IDBKeyRange.bound(DRAFT_PREFIX, `${DRAFT_PREFIX}\uffff`)),
                         (cursor) => {
                             const row = checkJournalRow(cursor.value);
-                            if (row?.type === "draft" && !isExpired(row.createdAt, time)) {
-                                drafts.push(row);
+                            if (!row || isExpired(row.createdAt, time)) return;
+                            if (row.type === "draft") drafts.push(row);
+                            if (row.type === "composer") {
+                                const entry = recoveryOf(row);
+                                if (entry && cursor.primaryKey === draftKey(entry.id)) drafts.push(entry);
                             }
                         },
                     );
@@ -1724,16 +1773,22 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                 return [];
             }
         });
+        const durable = new Set(rows.map((row) => row.id));
+        for (const [id, row] of memoryDrafts) {
+            if (isExpired(row.createdAt, now())) memoryDrafts.delete(id);
+            else if (!durable.has(id)) rows.push(row);
+        }
+        return rows;
     }
 
-    function removeDraft(id: string): Promise<boolean> {
-        return tracked(false, async () => {
+    async function removeDraft(id: string): Promise<boolean> {
+        const removed = await tracked(memoryDrafts.has(id), async () => {
             try {
                 await withDatabase("readwrite", async (store) => {
                     const key = draftKey(id);
-                    if (checkJournalRow(await requestValue(store.get(key)))?.type === "draft") {
+                    const row = checkJournalRow(await requestValue(store.get(key)));
+                    if (row?.type === "draft" || (row?.type === "composer" && recoveryOf(row)?.id === id))
                         store.delete(key);
-                    }
                 });
                 return true;
             } catch (error) {
@@ -1741,6 +1796,61 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
                 return false;
             }
         });
+        if (removed) memoryDrafts.delete(id);
+        return removed;
+    }
+
+    async function restoreComposerDraft(
+        entry: ComposerRecovery,
+        place: (value: ComposerValue) => boolean,
+        missingFiles?: ReadonlySet<string>,
+    ): Promise<boolean> {
+        function editableValue({ state, ...value }: ComposerValue): ComposerValue {
+            if (!missingFiles?.size) return value;
+            const files = value.files.filter((id) => !missingFiles.has(id));
+            if (files.length === value.files.length) return value;
+            // A changed attachment list sends different input and cannot retry the original request.
+            const { userMessageId, requestId, requestEpoch, sent, ...draft } = value;
+            return { ...draft, files };
+        }
+        const { id, chatKey } = entry;
+        if (!enabled) {
+            const memory = memoryDrafts.get(id);
+            if (!memory || isExpired(memory.createdAt, now()) || unwrittenHandoff(chatKey)) return false;
+            if (!place(editableValue(memory.value))) return false;
+            memoryDrafts.delete(id);
+            return true;
+        }
+        const restored = await composerTransaction(false, false, async (store, skip) => {
+            const key = draftKey(id);
+            const raw: unknown = await requestValue(store.get(key));
+            const source = checkJournalRow(raw);
+            const row = source?.type === "composer" && recoveryOf(source)?.id === id ? source : undefined;
+            if (raw !== undefined && !row) return false;
+            for (const target of [composerKey(chatKey), composerSendKey(chatKey)]) {
+                const raw: unknown = await requestValue(store.get(target));
+                const existing = checkJournalRow(raw);
+                if (raw !== undefined && (existing?.type !== "composer" || !isExpired(existing.createdAt, now())))
+                    return false;
+            }
+            const saved = row ?? memoryDrafts.get(id);
+            if (!saved || saved.chatKey !== chatKey || isExpired(saved.createdAt, now()) || unwrittenHandoff(chatKey))
+                return false;
+            const value = editableValue(saved.value);
+            if (!place(value)) return false;
+            if (row) {
+                // Removing the sending marker makes this move smaller than its source, even at the budget limit.
+                const editable = { ...row, updatedAt: now(), value };
+                editable.size = sizeOf(editable);
+                store.put(editable, composerKey(chatKey));
+                store.delete(key);
+            } else {
+                await putComposerRow(store, composerKey(chatKey), chatKey, () => value, skip);
+            }
+            return true;
+        });
+        if (restored) memoryDrafts.delete(id);
+        return restored;
     }
 
     function readComposerRow(key: string): Promise<ComposerValue | null> {
@@ -1763,6 +1873,8 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
 
     async function readComposerSend(chatKey: string): Promise<ComposerSend | null> {
         const value = await readComposerRow(composerSendKey(chatKey));
+        const memory = unwrittenHandoff(chatKey);
+        if (memory) return copyComposer(memory.value) ?? null;
         return value?.state === "sending" ? (value as ComposerSend) : null;
     }
 
@@ -1778,28 +1890,108 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
     function putComposer(chatKey: string, value: ComposerValue, takeOver?: string): Promise<WriteOutcome> {
         const copy = copyComposer(value);
         if (!copy) return Promise.resolve("failed");
+        if (takeOver !== undefined) {
+            if (handoffs.get(chatKey)?.value.userMessageId === takeOver) handoffs.delete(chatKey);
+            memoryDrafts.delete(composerRecoveryId(chatKey, takeOver));
+        }
         return composerTransaction<WriteOutcome>("off", "failed", async (store, skip) => {
-            const sendKey = composerSendKey(chatKey);
-            const replaced =
-                takeOver === undefined
-                    ? null
-                    : await composerRowIf(store, sendKey, (sent) => sent.userMessageId === takeOver);
-            const outcome = await putComposerRow(store, composerKey(chatKey), chatKey, () => copy, skip, replaced);
-            if (outcome === "written" && replaced) store.delete(sendKey);
+            let sourceKey = composerSendKey(chatKey);
+            let replaced: ComposerEntry | null = null;
+            if (takeOver !== undefined) {
+                const matches = (sent: ComposerValue) => sent.userMessageId === takeOver;
+                replaced = await composerRowIf(store, sourceKey, matches);
+                if (!replaced) {
+                    // Another tab may have displaced the hand-off before this screen placed it.
+                    sourceKey = draftKey(composerRecoveryId(chatKey, takeOver));
+                    replaced = await composerRowIf(store, sourceKey, matches);
+                }
+            }
+            const outcome = await putComposerRow(
+                store,
+                composerKey(chatKey),
+                chatKey,
+                () => copy,
+                skip,
+                replaced,
+                sourceKey,
+            );
+            if (outcome === "written" && replaced) store.delete(sourceKey);
             return outcome;
         });
     }
 
-    function putComposerSend(chatKey: string, value: ComposerSend): Promise<WriteOutcome> {
+    async function putComposerSend(
+        chatKey: string,
+        value: ComposerSend,
+        recovery?: ComposerRecoveryChecks,
+    ): Promise<WriteOutcome> {
         const copy = copyComposer(value);
-        if (!copy) return Promise.resolve("failed");
-        return composerTransaction<WriteOutcome>("off", "failed", async (store, skip) => {
-            const draftKey = composerKey(chatKey);
-            const consumed = await composerRowIf(store, draftKey, () => true);
-            const outcome = await putComposerRow(store, composerSendKey(chatKey), chatKey, () => copy, skip, consumed);
-            if (outcome === "written" && consumed) store.delete(draftKey);
-            return outcome;
+        if (!copy) return "failed";
+        if (copy.state !== "sending" || !checkComposerValue(copy)) {
+            report({ kind: "sync", phase: "journalSkipped", reason: "format", entries: 1 });
+            return "skipped";
+        }
+        const previous = unwrittenHandoff(chatKey);
+        const current = { value: copy, createdAt: now(), durable: false };
+        handoffs.set(chatKey, current);
+        const fallback =
+            previous &&
+            previous.value.userMessageId !== copy.userMessageId &&
+            !recovery?.landed(previous.value.userMessageId)
+                ? composerRow(chatKey, previous.value, previous.createdAt, previous.createdAt)
+                : undefined;
+        let movedId: string | undefined;
+        let filedFallback = false;
+        const outcome = await composerTransaction<WriteOutcome>("off", "failed", async (store, skip) => {
+            const sendKey = composerSendKey(chatKey);
+            const previousRow = await composerRowIf(store, sendKey, (v) => v.userMessageId !== value.userMessageId);
+            const displaced = previousRow && !isExpired(previousRow.createdAt, now()) && recoveryOf(previousRow);
+            if (displaced && !recovery?.landed(displaced.value.userMessageId)) {
+                const key = draftKey(displaced.id);
+                if ((await requestValue(store.getKey(key))) !== undefined) {
+                    skip("format");
+                    return "skipped";
+                }
+                // Moving the same bytes always fits. Protect them from eviction by this send's write.
+                store.put(previousRow, key);
+                store.delete(sendKey);
+                movedId = displaced.id;
+            }
+            const editable = composerKey(chatKey);
+            const consumed = await composerRowIf(store, editable, () => true);
+            const result = await putComposerRow(
+                store,
+                sendKey,
+                chatKey,
+                () => copy,
+                skip,
+                consumed,
+                movedId && draftKey(movedId),
+            );
+            if (result === "written" && consumed) store.delete(editable);
+            if (fallback && !previous.durable) {
+                const id = composerRecoveryId(chatKey, previous.value.userMessageId);
+                if (id !== movedId && fallback.size <= MAX_JOURNAL_ENTRY_BYTES) {
+                    const key = draftKey(id);
+                    if (
+                        (await requestValue(store.getKey(key))) === undefined &&
+                        (await fitsNewDraft(store, fallback.size))
+                    ) {
+                        store.put(fallback, key);
+                        filedFallback = true;
+                    }
+                }
+            }
+            return result;
         });
+        current.durable = outcome === "written";
+        if (current.durable && handoffs.get(chatKey) === current) handoffs.delete(chatKey);
+        if (fallback && !previous.durable) {
+            const entry = recoveryOf(fallback)!;
+            if (outcome === "failed" || (!filedFallback && movedId !== entry.id)) memoryDrafts.set(entry.id, entry);
+        }
+        if ((movedId && outcome !== "failed") || (fallback && !previous.durable)) recovery?.notify();
+        return outcome;
     }
 
     function updateComposerRequest(
@@ -1808,6 +2000,17 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         retained?: { requestId: string; requestEpoch: string },
     ): Promise<void> {
         const identity = retained && { ...retained };
+        const handoff = handoffs.get(chatKey)?.value;
+        const recoveredKey = composerRecoveryId(chatKey, userMessageId);
+        const pending = handoff?.userMessageId === userMessageId ? handoff : memoryDrafts.get(recoveredKey)?.value;
+        if (
+            pending?.userMessageId === userMessageId &&
+            (pending.requestId === undefined || pending.requestId === requestId)
+        ) {
+            delete pending.requestId;
+            delete pending.requestEpoch;
+            Object.assign(pending, identity);
+        }
         const update: ComposerUpdate = (row, time) => {
             if (!row || isExpired(row.createdAt, time) || row.value.userMessageId !== userMessageId) return;
             if (row.value.requestId !== undefined && row.value.requestId !== requestId) return;
@@ -1822,12 +2025,17 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         return composerTransaction<void>(undefined, undefined, async (store, skip) => {
             await putComposerRow(store, composerSendKey(chatKey), chatKey, update, skip);
             await putComposerRow(store, composerKey(chatKey), chatKey, update, skip);
+            await putComposerRow(store, draftKey(recoveredKey), chatKey, update, skip);
         });
     }
 
     function settleComposerSend(chatKey: string, userMessageId: string): Promise<void> {
+        if (handoffs.get(chatKey)?.value.userMessageId === userMessageId) handoffs.delete(chatKey);
+        const recovered = composerRecoveryId(chatKey, userMessageId);
+        memoryDrafts.delete(recovered);
         return composerTransaction<void>(undefined, undefined, async (store, skip) => {
             await deleteComposerRow(store, composerSendKey(chatKey), (sent) => sent.userMessageId === userMessageId);
+            await deleteComposerRow(store, draftKey(recovered), (sent) => sent.userMessageId === userMessageId);
             // A hand-off an older page kept in the draft row is the sent text itself.
             await deleteComposerRow(
                 store,
@@ -1873,6 +2081,21 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         });
     }
 
+    function composerRow(chatKey: string, copy: ComposerValue, createdAt: number, updatedAt: number): ComposerEntry {
+        const { draft, sent, ...ordinary } = copy;
+        const row: ComposerEntry = {
+            format: draft || sent ? COMPOSER_DRAFT_FORMAT : JOURNAL_FORMAT,
+            type: "composer",
+            chatKey,
+            createdAt,
+            updatedAt,
+            value: { ...ordinary, ...(draft ? { draft } : {}), ...(sent ? { sent } : {}) },
+            size: 0,
+        };
+        row.size = sizeOf(row);
+        return row;
+    }
+
     /**
      * Puts the row `update` makes of the stored one (none: "stale") inside the caller's transaction.
      * `replaced` is a row the caller deletes once this one is written; the budget counts it as gone.
@@ -1886,6 +2109,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         update: ComposerUpdate,
         skip: (reason: SyncReason) => void,
         replaced: ComposerEntry | null = null,
+        protectedDraft?: string,
     ): Promise<WriteOutcome> {
         const raw: unknown = await requestValue(store.get(key));
         const existing = checkJournalRow(raw);
@@ -1900,22 +2124,8 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
             skip("format");
             return "skipped";
         }
-        const { draft, sent, ...ordinary } = copy;
-        const value: ComposerValue = {
-            ...ordinary,
-            ...(draft ? { draft } : {}),
-            ...(sent ? { sent } : {}),
-        };
-        const row: ComposerEntry = {
-            format: draft || sent ? COMPOSER_DRAFT_FORMAT : JOURNAL_FORMAT,
-            type: "composer",
-            chatKey,
-            createdAt: existing && !isExpired(existing.createdAt, time) ? existing.createdAt : time,
-            updatedAt: time,
-            value,
-            size: 0,
-        };
-        row.size = sizeOf(row);
+        const createdAt = existing && !isExpired(existing.createdAt, time) ? existing.createdAt : time;
+        const row = composerRow(chatKey, copy, createdAt, time);
         if (row.size > MAX_JOURNAL_ENTRY_BYTES) {
             skip("tooLarge");
             return "skipped";
@@ -1924,6 +2134,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         if (total > MAX_JOURNAL_TOTAL_BYTES) {
             // The replaced row is already counted as gone.
             const kept = new Set([key, composerKey(chatKey), composerSendKey(chatKey)]);
+            if (protectedDraft) kept.add(protectedDraft);
             total -= await evict(store, total - MAX_JOURNAL_TOTAL_BYTES, kept);
         }
         if (total > MAX_JOURNAL_TOTAL_BYTES) {
@@ -1962,6 +2173,11 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
     }
 
     function removeComposersOf(chaId: string, chatId?: string): Promise<void> {
+        for (const key of handoffs.keys()) {
+            if (chatId === undefined ? key.startsWith(`${chaId}${NUL}`) : key === `${chaId}${NUL}${chatId}`) {
+                handoffs.delete(key);
+            }
+        }
         const lower = composerKey(chatId === undefined ? `${chaId}${NUL}` : `${chaId}${NUL}${chatId}`);
         const upper = chatId === undefined ? `${lower}￿` : `${lower}${NUL}￿`;
         return composerTransaction<void>(undefined, undefined, (store) =>
@@ -2069,6 +2285,7 @@ export function createDraftJournal(deps: DraftJournalDeps = {}): DraftJournal {
         putDraft,
         listDrafts,
         removeDraft,
+        restoreComposerDraft,
         readComposer,
         readComposerSend,
         putComposer,

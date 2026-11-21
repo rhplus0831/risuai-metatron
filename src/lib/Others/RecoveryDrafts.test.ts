@@ -1018,6 +1018,42 @@ describe("recovery drafts", () => {
         expect(target.querySelector('[role="status"]')).toBeNull();
     });
 
+    it("retires only the displaced send confirmed as a user message in its chat", async () => {
+        const send = { translate: "", files: [], state: "sending" as const };
+        const displaced = [
+            { chatId: "k", id: "confirmed", input: "Confirmed input" },
+            { chatId: "k", id: "reply", input: "Input that matches a reply ID" },
+            { chatId: "j", id: "another-chat", input: "Input from another chat" },
+        ];
+        for (const { chatId, id, input } of displaced) {
+            const key = `c\0${chatId}`;
+            expect(await journal.putComposerSend(key, { ...send, input, userMessageId: id })).toBe("written");
+            expect(
+                await journal.putComposerSend(key, { ...send, input: "Later send", userMessageId: "replacement" }),
+            ).toBe("written");
+            await journal.settleComposerSend(key, "replacement");
+        }
+        await drafts.recoveryDrafts.refresh();
+        await render();
+        const previews = () =>
+            [...target.querySelectorAll("li")].map((li) => li.querySelector("p")?.textContent?.trim()).sort();
+        expect(previews()).toEqual(displaced.map(({ input }) => input).sort());
+
+        const chat = plain(h.chat.findChat(refK));
+        chat.message.push(
+            m("reply", "Assistant reply", "char"),
+            m("another-chat", "Same ID"),
+            m("confirmed", "Confirmed input"),
+        );
+        h.chat.acceptRemoteChat({ characterId: "c", id: "k", revision: `${epoch()}:1:99`, data: chat });
+        svelte.flushSync();
+        expect(previews()).toEqual(["Input from another chat", "Input that matches a reply ID"]);
+        const durable = await journal.listDrafts();
+        expect(
+            durable.map((entry) => (entry.scope === "composer" ? entry.value.userMessageId : entry.id)).sort(),
+        ).toEqual(["another-chat", "reply"]);
+    });
+
     it("shows the record name, creation time and remaining lifetime, then removes expired drafts", async () => {
         const createdAt = Date.now() - (47 * 60 + 58) * 60_000;
         const input = recordInput();

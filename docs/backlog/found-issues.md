@@ -46,7 +46,7 @@ Sources the entries name (drop a line when no entry names it any more):
 
 - [Backup and sync](#backup-and-sync): 1
 - [Build and CI](#build-and-ci): 1
-- [Chat screen](#chat-screen): 5
+- [Chat screen](#chat-screen): 4
 - [Memory](#memory): 2
 - [Network jobs](#network-jobs): 1
 - [Rendering](#rendering): 1
@@ -112,14 +112,6 @@ partial-edit popover, and the editor of a rendered (cached) translation in `src/
 are less used than the message editor.
 
 **Suggested handling:** reproduce each; the popup can hand its text back to its owner on destruction.
-
-### Sending newer text overwrites a failed send that was waiting to be placed back
-
-Post-verification of 2026-11-18 (IH-1), reproduced by two readers. A chat has one send hand-off row and one in-memory entry (`putComposerSend` in `src/ts/storage/draftJournal.ts`, `sendDraft.ts`). When a send fails before its user message lands while the composer holds newer text, the failed text is not placed back and stays only there. The next send of the newer text overwrites both, and its success removes the row. The first text is then in neither the composer, the journal, nor the chat. A failed draft send is also kept out by a newer draft, translation, or attachment alone, and its row holds both boxes.
-
-**Why it matters:** the user loses a message they wrote (and, for a draft send, the reviewed draft) without a notice. It needs a send that fails while the user has already typed the next message.
-
-**Suggested handling:** kept as recorded by the owner's rule for the fix round (the trigger is uncommon and the fix adds a second kept snapshot to the journal and its budget). If it is taken up: keep the displaced snapshot under its message id and offer it through the composer's recovery.
 
 ### Opening a message's inline editor moves the transcript before any save
 

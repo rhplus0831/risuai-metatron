@@ -1163,6 +1163,46 @@ describe("uncloneable values", () => {
 describe("budgets and expiry", () => {
     const big = (bytes: number) => "x".repeat(bytes);
 
+    it("preserves a displaced send and the editable row when the replacement cannot fit", async () => {
+        const h = harness();
+        const tab = await started(h);
+        const { journal } = tab;
+        const key = "c\0a";
+        const editable = { input: "Newer edit", translate: "", files: [] };
+        const original = {
+            ...editable,
+            input: "Earlier failed send",
+            state: "sending" as const,
+            userMessageId: "first",
+        };
+        expect(await journal.putComposerSend(key, original)).toBe("written");
+        expect(await journal.putComposer(key, editable)).toBe("written");
+        const stored = await rows(h.factory);
+        const occupied =
+            checkJournalRow(stored[composerSendKey(key)])!.size + checkJournalRow(stored[composerKey(key)])!.size;
+        // The size index counts an unreadable row, which occupies the budget without a large fixture.
+        await rawPut(h.factory, "opaque", { ...UNKNOWN_FORMAT_ROW, size: MAX_JOURNAL_TOTAL_BYTES - occupied });
+
+        h.clock.now += HOUR;
+        expect(await journal.putComposerSend(key, { ...original, input: editable.input, userMessageId: "newer" })).toBe(
+            "skipped",
+        );
+        expect(tab.events.at(-1)).toMatchObject({ phase: "journalSkipped", reason: "budget" });
+        await journal.settleComposerSend(key, "newer");
+        expect(await journal.readComposerSend(key)).toBeNull();
+        expect(await journal.readComposer(key)).toEqual(editable);
+        await journal.close();
+
+        const { journal: reloaded } = await started(h, { storage: () => tab.storage });
+        try {
+            expect(await reloaded.listDrafts()).toMatchObject([{ scope: "composer", createdAt: T0, value: original }]);
+            h.clock.now = T0 + JOURNAL_ENTRY_TTL_MS;
+            expect(await reloaded.listDrafts()).toEqual([]);
+        } finally {
+            await reloaded.close();
+        }
+    });
+
     it("does not write a layer that takes the entry over its budget (`journalSkipped tooLarge`), removes its older value, fences the version, and keeps the entry's other layers", async () => {
         const h = harness();
         const tab = await started(h);
