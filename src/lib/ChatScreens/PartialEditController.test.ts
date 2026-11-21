@@ -24,7 +24,7 @@ vi.mock("src/ts/process/modules", () => ({
 vi.mock("src/ts/parser/parser.svelte", () => ({ risuChatParser: vi.fn((text: string) => text) }));
 vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globalApiMock")).createGlobalApiMock());
 
-import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
+import { installFlatDatabase, installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import PartialEditController from "./PartialEditController.svelte";
 
 type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void };
@@ -62,6 +62,7 @@ function render(props: {
     /** Which rendered block the pointer is over (default the first paragraph). */
     hovered?: (bodyRoot: HTMLElement) => HTMLElement;
     dragEditEnabled?: boolean;
+    chatRef?: { chaId: string; chatId: string };
 }) {
     const source = props.source ?? SOURCE;
     const target = document.createElement("div");
@@ -73,26 +74,27 @@ function render(props: {
     // The hover detection asks the document what is under the pointer.
     document.elementFromPoint = () => block;
     const saved: SaveEvent[] = [];
-    mounted.push(
-        mount(PartialEditController, {
-            target,
-            props: {
-                messageData: source,
-                chatIndex: 0,
-                bodyRoot,
-                blockEditEnabled: true,
-                dragEditEnabled: props.dragEditEnabled ?? false,
-                translatedView: props.translatedView ?? false,
-                getTranslationEditContext: props.context,
-                saveTranslation: props.saveTranslation,
+    const instance = mount(PartialEditController, {
+        target,
+        props: {
+            chatRef: props.chatRef,
+            messageId: props.chatRef ? "reply" : undefined,
+            messageData: source,
+            chatIndex: 0,
+            bodyRoot,
+            blockEditEnabled: true,
+            dragEditEnabled: props.dragEditEnabled ?? false,
+            translatedView: props.translatedView ?? false,
+            getTranslationEditContext: props.context,
+            saveTranslation: props.saveTranslation,
+        },
+        events: {
+            save: (event: CustomEvent<SaveEvent>) => {
+                saved.push(event.detail);
             },
-            events: {
-                save: (event: CustomEvent<SaveEvent>) => {
-                    saved.push(event.detail);
-                },
-            },
-        }),
-    );
+        },
+    });
+    mounted.push(instance);
     flushSync();
 
     const query = <T extends Element>(selector: string) => document.querySelector<T>(selector);
@@ -190,7 +192,26 @@ function render(props: {
         query<HTMLButtonElement>(".partial-edit-modal .partial-edit-cancel-btn")!.click();
         flushSync();
     };
-    return { saved, start, dragStart, choices, choose, confirmDelete, textarea, type, save, cancel, query, block };
+    const remove = async () => {
+        await unmount(instance);
+        mounted.splice(mounted.indexOf(instance), 1);
+        target.remove();
+    };
+    return {
+        saved,
+        start,
+        dragStart,
+        choices,
+        choose,
+        confirmDelete,
+        textarea,
+        type,
+        save,
+        cancel,
+        query,
+        block,
+        remove,
+    };
 }
 
 beforeEach(() => {
@@ -450,6 +471,48 @@ describe("PartialEditController occurrence targeting", () => {
         ui.save();
         await vi.waitFor(() => expect(ui.saved).toHaveLength(1));
         expect(ui.saved[0].newData).toBe("EDITNext");
+    });
+});
+
+describe("retained paragraph edits", () => {
+    const chatRef = { chaId: "c", chatId: "paragraph-drafts" };
+
+    beforeEach(() => {
+        window.getSelection()?.removeAllRanges();
+        installFlatDatabaseWithChats({
+            characters: [
+                {
+                    chaId: "c",
+                    type: "character",
+                    chats: [
+                        { id: chatRef.chatId, message: [{ chatId: "reply", role: "char", data: "Opening\n\nEnding" }] },
+                    ],
+                },
+            ],
+            zoomsize: 100,
+            lineHeight: 1.25,
+        });
+    });
+
+    it("recovers a paragraph after the row is replaced and saves it alongside the outside edit", async () => {
+        const row = render({ chatRef, source: "Opening\n\nEnding", html: "<p>Opening</p><p>Ending</p>" });
+        await row.start("edit", { settle: false });
+        row.type("My opening");
+        await row.remove();
+
+        const replacement = render({
+            chatRef,
+            source: "Opening\n\nNew ending",
+            html: "<p>Opening</p><p>New ending</p>",
+        });
+        await replacement.start("edit", { settle: false });
+        expect(replacement.textarea()?.value).toBe("My opening");
+        replacement.cancel();
+        await replacement.start("edit", { settle: false });
+        expect(replacement.textarea()?.value).toBe("Opening");
+        replacement.type("My opening");
+        replacement.save();
+        expect(replacement.saved).toEqual([{ newData: "My opening\n\nNew ending", target: "original" }]);
     });
 });
 

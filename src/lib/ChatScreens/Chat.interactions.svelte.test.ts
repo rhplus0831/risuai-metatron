@@ -21,6 +21,7 @@ import { alertToast, doingAlert } from "src/ts/alert";
 import { chatFoldedStateMessageIndex, foldChatToMessage } from "src/ts/globalApi.svelte";
 import { displaySettingsItems } from "src/ts/setting/displaySettingsData.svelte";
 import { captureTransform, rerenderMessage, serverProcessScript } from "src/ts/parser/transformClient";
+import * as popupEditorMode from "src/ts/gui/popupEditorMode";
 import * as serverAuth from "src/ts/storage/serverAuth";
 import * as diagnostics from "src/ts/diagnostics/collector";
 import { chatCheckpointsDialog } from "src/ts/checkpoints/chatCheckpoints.svelte";
@@ -30,6 +31,7 @@ import {
     appendMessage,
     createChat,
     findChat,
+    noteRemoteStreaming,
     patchMessage,
     selectChat,
     seedChats,
@@ -48,10 +50,12 @@ import {
     openModelPresetList,
     openPersonaList,
     openPresetList,
+    popUpEditorStore,
     ReloadChatPointer,
 } from "src/ts/stores.svelte";
 import { translateHTML } from "src/ts/translator/translator";
 import BookmarkList from "../Others/BookmarkList.svelte";
+import PopupEditor from "../Others/PopupEditor.svelte";
 import Chat from "./Chat.svelte";
 import Chats from "./Chats.svelte";
 
@@ -198,6 +202,7 @@ afterEach(async () => {
     setStreamingState(ref, null);
     document.body.replaceChildren();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     // Resets the page-visibility mirror and drains pending display transform retries between tests.
     document.dispatchEvent(new Event("visibilitychange"));
     window.dispatchEvent(new Event("online"));
@@ -207,6 +212,55 @@ afterEach(async () => {
 });
 
 describe("chat message interactions", () => {
+    it("recovers a paragraph draft when its reply unlocks", async () => {
+        vi.stubGlobal(
+            "IntersectionObserver",
+            class {
+                constructor(private readonly callback: (entries: { isIntersecting: boolean }[]) => void) {}
+                observe() {
+                    this.callback([{ isIntersecting: true }]);
+                }
+                disconnect() {}
+            },
+        );
+        settings.ui.enableBlockPartialEdit = true;
+        setMessageText(ref, "message", "Opening\n\nEnding");
+        const { element, instance } = renderChat("Opening\n\nEnding");
+        await settle(10);
+        await instance.whenRendered();
+        vi.spyOn(document, "elementFromPoint").mockImplementation(() => element.querySelector(".chattext p"));
+        const field = () => document.querySelector<HTMLTextAreaElement>(".partial-edit-textarea");
+        const open = async () => {
+            document.dispatchEvent(new MouseEvent("mousemove", { clientX: 5, clientY: 5 }));
+            await settle(32);
+            click(document.body, ".partial-edit-btn-edit");
+            await settle();
+            expect(field()).not.toBeNull();
+            return field()!;
+        };
+        const area = await open();
+        area.value = "My opening";
+        area.dispatchEvent(new Event("input", { bubbles: true }));
+        noteRemoteStreaming([
+            {
+                characterId: ref.chaId,
+                id: ref.chatId,
+                streaming: [{ messageId: "message", generationId: "reply", seq: 0 }],
+            },
+        ]);
+        try {
+            await settle();
+            expect(field()).toBeNull();
+            expect(findChat(ref)?.message[0].data).toBe("Opening\n\nEnding");
+        } finally {
+            noteRemoteStreaming([{ characterId: ref.chaId, id: ref.chatId, streaming: [] }]);
+            await settle();
+        }
+        expect((await open()).value).toBe("My opening");
+        click(document.body, ".partial-edit-modal .partial-edit-save-btn");
+        expect(findChat(ref)?.message[0].data).toBe("My opening\n\nEnding");
+    });
+
     const memory: MemoryReceipt = { state: "recorded", pages: [], refused: [], unverified: [], warnings: [] };
 
     it("hides the model button for a receipt-only generation info and keeps it for a model", async () => {
@@ -828,6 +882,42 @@ describe("display transform recovery", () => {
 });
 
 describe("bookmark list interactions", () => {
+    it("recovers an expanded draft when the bookmark preview reopens", async () => {
+        settings.ui.disableAutoPopupMessageEditor = true;
+        vi.spyOn(popupEditorMode, "readPopupEditorMonaco").mockReturnValue(false);
+        setMessageText(ref, "message", "Bookmarked reply");
+        setChatMeta(ref, { bookmarks: ["message"] });
+        const element = renderBookmarks();
+        const list = mounted.at(-1)!;
+        click(element, `button[title="${language.expandAll}"]`);
+        await settle(10);
+        click(element, ".button-icon-edit");
+        await settle();
+        click(element, `button[aria-label="${language.hotkeyDesc.popupEditor}"]`);
+        const popupTarget = target();
+        mounted.push(mount(PopupEditor, { target: popupTarget }));
+        flushSync();
+        const field = popupTarget.querySelector("textarea")!;
+        field.value = "My bookmark draft";
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+        flushSync();
+        expect(popUpEditorStore.value).toBe("My bookmark draft");
+
+        field.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+        expect(get(bookmarkListOpen)).toBe(false);
+        await unmount(list);
+        mounted.splice(mounted.indexOf(list), 1);
+        await settle();
+        expect(popUpEditorStore.open).toBe(false);
+
+        const reopened = renderBookmarks();
+        click(reopened, `button[title="${language.expandAll}"]`);
+        await settle();
+        if (!reopened.querySelector(".message-edit-area")) click(reopened, ".button-icon-edit");
+        expect(reopened.querySelector<HTMLTextAreaElement>(".message-edit-area")?.value).toBe("My bookmark draft");
+        expect(findChat(ref)?.message[0].data).toBe("Bookmarked reply");
+    });
+
     it("keeps bookmarks open on Escape under an alert, picker, binding dialog, or checkpoints dialog", () => {
         const element = renderBookmarks();
         const escape = () => {

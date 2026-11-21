@@ -91,6 +91,7 @@ vi.mock("src/ts/storage/resourceSync.svelte", async () =>
 );
 
 import { language } from "src/lang";
+import * as popupEditorMode from "src/ts/gui/popupEditorMode";
 import { runServerJob } from "src/ts/process/serverCommands";
 import { characterList, selectedCharacter } from "src/ts/storage/characterStore.svelte";
 import {
@@ -114,6 +115,8 @@ import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from 
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
 import { createSimpleCharacter, popupStore, ReloadChatPointer, reloadChatKey } from "src/ts/stores.svelte";
+import { readLLMCacheEntry } from "src/ts/translator/translator";
+import PopupEditor from "../Others/PopupEditor.svelte";
 import PopupList from "../UI/PopupList.svelte";
 import Chat from "./Chat.svelte";
 
@@ -1232,5 +1235,60 @@ describe("the rendered path is unchanged", () => {
         ui.click(ui.toggle());
         await ui.expectText("Hello");
         expect(fetchCalls).toEqual([]);
+    });
+});
+
+describe("cached translation drafts", () => {
+    async function renderTranslatedRow() {
+        const row = render();
+        await vi.advanceTimersByTimeAsync(20);
+        await row.instance.whenRendered();
+        expect(row.text()).toBe("[T]A");
+        return row;
+    }
+
+    async function openTranslation(row: ReturnType<typeof render>) {
+        row.click(row.button(language.editTranslation));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(row.textarea()).not.toBeNull();
+        return row.textarea()!;
+    }
+
+    const type = (field: HTMLTextAreaElement, value: string) => {
+        field.value = value;
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+        flushSync();
+    };
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.mocked(readLLMCacheEntry).mockReset().mockResolvedValue("Cached reply");
+    });
+    afterEach(() => {
+        vi.mocked(readLLMCacheEntry).mockReset().mockResolvedValue(null);
+        vi.restoreAllMocks();
+    });
+
+    it.each(["inline", "expanded"])("recovers the %s draft after the row remounts", async (mode) => {
+        boot(`cache-remount-${mode}`, { autoTranslate: true, target: "rendered" });
+        settings.ui.disableAutoPopupMessageEditor = true;
+        const row = await renderTranslatedRow();
+        let field = await openTranslation(row);
+        expect(field.value).toBe("Cached reply");
+        if (mode === "expanded") {
+            vi.spyOn(popupEditorMode, "readPopupEditorMonaco").mockReturnValue(false);
+            row.click(row.target.querySelector(`button[aria-label="${language.hotkeyDesc.popupEditor}"]`));
+            const popupTarget = document.createElement("div");
+            document.body.append(popupTarget);
+            mounted.push(mount(PopupEditor, { target: popupTarget }));
+            flushSync();
+            field = popupTarget.querySelector("textarea")!;
+        }
+        type(field, "My translation draft");
+
+        const replacement = row.remount();
+        await vi.advanceTimersByTimeAsync(20);
+        await replacement.instance.whenRendered();
+        expect((await openTranslation(replacement)).value).toBe("My translation draft");
     });
 });

@@ -32,7 +32,7 @@ Sources the entries name (drop a line when no entry names it any more):
 - [network-jobs](#network-jobs) (1)
 - [persistence](#persistence) (1)
 - [structured-memory](#structured-memory) (2)
-- [ui-theming](#ui-theming) (2)
+- [ui-theming](#ui-theming) (1)
 
 ## build-test-platforms
 
@@ -199,20 +199,6 @@ Guide: [Structured Memory Records](../structure/structured-memory/records.md#kno
 
 Guide: [UI Components and Theming](../structure/ui-theming.md#known-hazards).
 
-- Three small editors of a chat row lose unsaved text when their owner is destroyed or locked. The message editor and
-  the stored-translation editor keep their text in tab memory (`src/ts/storage/messageEditorDrafts.svelte.ts`), their
-  expanded popup included; these three do not. Reproduced on 2026-11-21 at `ddb0c225b` in component probes:
-  - The editor of a rendered (cached) translation, inline or in the expanded popup: its text is a row-local string. A
-    stream that starts and ends on the same row (a Continue) mounts the row again and the editor reopens with the
-    cached value. Opening Settings and returning, or switching chats, destroys it too (read in the code). A lock alone
-    keeps the text, and the field stays writable during it.
-  - The partial-edit popover (`src/lib/ChatScreens/PartialEditController.svelte`): a lock on its row removes the
-    controller, with no remount needed, and an outside edit to another paragraph of the same message replaces the row.
-    Either way the typed paragraph is gone when the popover is opened again.
-  - The expanded original editor in a bookmark preview (`src/lib/Others/BookmarkList.svelte`): Escape closes Bookmarks
-    and the text is gone. The preview passes no message id, so no tab draft receives the popup's hand-back.
-  - Not fixed. The popup hands its text back on destruction; what these three lack is a draft that outlives the owner.
-  - [Editors](../../src/lib/ChatScreens/Chat.svelte#L1445) · [Draft store](../../src/ts/storage/messageEditorDrafts.svelte.ts#L13)
 - Opening a long message's inline editor moves the transcript, and cancelling does not restore the reader's place.
   The rendered body is replaced by a text area of a fixed 256 px (the stable-height rule for multiline or
   over-600-character text), the row shrinks, and the browser's scroll anchoring answers the collapse. Reproduced on

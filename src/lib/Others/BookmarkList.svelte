@@ -176,7 +176,7 @@
             <p class="text-textcolor2">{language.noBookmarks}</p>
         {:else}
             <div class="flex flex-col gap-2">
-                {#each bookmarkedMessages as msg (msg.chatId)}
+                {#each bookmarkedMessages as msg (JSON.stringify([msg.chatRef.chaId, msg.chatRef.chatId, msg.chatId]))}
                     <div class="border border-darkborderc rounded-lg">
                         <div
                             class="flex items-center p-3 cursor-pointer hover:bg-selected transition-colors"
@@ -225,6 +225,7 @@
                                 {#if chara.type === "group"}
                                     <Chat
                                         chatRef={msg.chatRef}
+                                        bookmarkMessageId={msg.chatId}
                                         streamingOverride={isStreamingMessage(msg.chatRef, msg.chatId)}
                                         idx={msg.originalIndex}
                                         message={msg.data}
@@ -240,6 +241,7 @@
                                 {:else}
                                     <Chat
                                         chatRef={msg.chatRef}
+                                        bookmarkMessageId={msg.chatId}
                                         streamingOverride={isStreamingMessage(msg.chatRef, msg.chatId)}
                                         idx={msg.originalIndex}
                                         message={msg.data}

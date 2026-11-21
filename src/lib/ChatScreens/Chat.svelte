@@ -171,9 +171,9 @@
      */
 
     let translating = $state(false);
-    let editMode = $state(false);
     /** Both original-message editors share the tab's draft; cancel closes it but retains changed text for reopening. */
     let messageDraft = $state<MessageEditorDraft>();
+    const editMode = $derived(messageDraft?.open ?? false);
     let draft = $derived(messageDraft?.text ?? null);
     /**
      * An original or translation editor is open (or loading): `Chats.svelte` neither trims this row away nor
@@ -184,13 +184,17 @@
     }
     let statusMessage: string = $state("");
     let retranslate = $state(false);
-    let editTranslationMode = $state(false);
     let loadingTranslationEdit = $state(false);
-    let editTranslationText = $state("");
     let translationDraft = $state<MessageEditorDraft>();
+    const editTranslationMode = $derived(translationDraft?.open ?? false);
+    let editTranslationText = $derived(translationDraft?.text ?? "");
+    let observedCacheText = $state<string | null>(null);
     /** What the open translation editor writes back to: a rendered translation's cache key, or a stored translation. */
-    let editTranslationTarget: { kind: "cache"; key: string } | { kind: "stored"; edit: StoredTranslationEdit } | null =
-        null;
+    let editTranslationTarget = $state.raw<
+        | { kind: "cache"; key: string; ref: ChatRef | null; messageId?: string }
+        | { kind: "stored"; edit: StoredTranslationEdit }
+        | null
+    >(null);
     /** Renders the body again in place (`ChatBody`'s `renderRevision`), without remounting it. */
     let chatBodyRevision = $state(0);
     /** Whether this message was locked when last seen (the server transform skips a locked message). */
@@ -224,6 +228,8 @@
          * preview passes none.
          */
         messageId?: string;
+        /** Identifies the preview's editors while its display and row menu keep their preview behavior. */
+        bookmarkMessageId?: string;
         chatRef?: ChatRef | null;
         messageGenerationInfo?: MessageGenerationInfo | null;
         rerollIcon?: boolean;
@@ -258,6 +264,7 @@
         img = "",
         idx = -1,
         messageId = undefined,
+        bookmarkMessageId,
         chatRef = untrack(currentChatRef),
         rerollIcon = false,
         rerollBusy,
@@ -282,24 +289,27 @@
         pendingReveal = false,
     }: Props = $props();
 
+    const editorMessageId = $derived(messageId ?? bookmarkMessageId);
     untrack(() => {
-        if (!chatRef || !messageId) return;
-        messageDraft = findMessageEditorDraft(chatRef, messageId, "message");
-        editMode = messageDraft?.open ?? false;
+        if (!chatRef || !editorMessageId) return;
+        const original = findMessageEditorDraft(chatRef, editorMessageId, "message");
+        if (original?.open) messageDraft = original;
+        if (!messageId) return;
         translationDraft = findMessageEditorDraft(chatRef, messageId, "translation");
         if (translationDraft?.open && translationDraft.translation) {
             editTranslationTarget = { kind: "stored", edit: translationDraft.translation };
-            editTranslationText = translationDraft.text;
-            editTranslationMode = true;
         }
     });
 
-    const editedMessage = $derived(chatRef && messageId ? heldMessage(chatRef, messageId) : undefined);
+    const editedMessage = $derived(chatRef && editorMessageId ? heldMessage(chatRef, editorMessageId) : undefined);
     const messageChangedElsewhere = $derived(
         !!messageDraft && !!editedMessage && editedMessage.data !== messageDraft.base,
     );
     const translationChangedElsewhere = $derived(
-        !!translationDraft && JSON.stringify(editedMessage?.translation) !== translationDraft.base,
+        !!translationDraft &&
+            (editTranslationTarget?.kind === "cache"
+                ? JSON.stringify(observedCacheText) !== translationDraft.base
+                : JSON.stringify(editedMessage?.translation) !== translationDraft.base),
     );
 
     let autoPopupMessageEditorAttempted = false;
@@ -368,7 +378,7 @@
      * Whether this message is locked by a server generation job (its edit, delete, and regenerate are
      * off): while it streams and until the job releases it, and also a previous group speaker's reply.
      */
-    let locked = $derived(isMessageLocked(displayedChat, messageId));
+    let locked = $derived(isMessageLocked(displayedChat, editorMessageId));
     const rerollsDisabled = $derived(rerollBusy ?? (displayedChat !== null && isChatGenerating(displayedChat)));
     let originalEditControlDisabled = $derived(editTranslationMode || loadingTranslationEdit || locked);
 
@@ -421,7 +431,9 @@
     let bilingualDisplay = $state<{ source: string; options: BilingualInterleaveOptions } | null>(null);
     /** The translation view is on: shown, or asked for and being requested (the toggle's highlight). */
     let translationViewOn = $derived(storedPath ? storedShown || (storedWanted && storedPending) : translated);
-    const translationEditLocked = $derived(locked && (editTranslationMode ? !!translationDraft : storedPath));
+    const translationEditLocked = $derived(
+        locked && (editTranslationMode ? editTranslationTarget?.kind === "stored" : storedPath),
+    );
     const retranslationDisabled = $derived(
         translationViewControlsDisabled || (storedPath && (storedPending || locked)),
     );
@@ -544,9 +556,9 @@
     });
 
     /** The chat this message belongs to, captured before any await (a later chat switch cannot redirect a write). */
-    function messageTarget(): { ref: ChatRef; id: string } | null {
+    function messageTarget(id = messageId): { ref: ChatRef; id: string } | null {
         const ref = displayedChat;
-        return ref && messageId ? { ref, id: messageId } : null;
+        return ref && id ? { ref, id } : null;
     }
 
     function isCurrentMessageTarget(target: { ref: ChatRef; id: string }): boolean {
@@ -602,7 +614,7 @@
             if (!isPopupEditorSessionCurrent(sessionId)) return;
 
             setOriginalDraft(popUpEditorStore.value);
-            if (!locked && edit()) editMode = false;
+            if (!locked) edit();
         } finally {
             if (activeAutoPopupMessageSessionId === sessionId) {
                 activeAutoPopupMessageSessionId = null;
@@ -749,31 +761,28 @@
         }
     }
 
-    /** Saves the edited text; false (the editor stays open) when a generation locked the message meanwhile. */
-    function edit(): boolean {
-        const target = messageTarget();
+    /** A generation can lock the message after editing began. A refused save leaves its draft open. */
+    function edit() {
+        const target = messageTarget(editorMessageId);
         if (target && refuseLocked(target.ref, [target.id])) {
-            return false;
+            return;
         }
         if (target) {
             setMessageText(target.ref, target.id, draft ?? message);
         }
         message = draft ?? message;
-        if (target) closeMessageEditorDraft(target.ref, target.id, "message");
+        if (target) closeMessageEditorDraft(target.ref, target.id, "message", messageDraft);
         messageDraft = undefined;
-        editMode = false;
-        return true;
     }
 
     function startOriginalEdit() {
         if (originalEditControlDisabled) return;
-        const target = messageTarget();
+        const target = messageTarget(editorMessageId);
         const initial = { text: message, base: message };
         messageDraft = target
             ? openMessageEditorDraft(target.ref, target.id, "message", initial)
             : (messageDraft ?? { ...initial, open: true });
         messageDraft.open = true;
-        editMode = true;
     }
 
     function setOriginalDraft(value: string | null) {
@@ -781,13 +790,11 @@
     }
 
     function cancelOriginalEdit() {
-        const target = messageTarget();
+        const target = messageTarget(editorMessageId);
         if (messageDraft) messageDraft.open = false;
-        if (draft === (editedMessage?.data ?? message)) {
-            if (target) closeMessageEditorDraft(target.ref, target.id, "message");
-            messageDraft = undefined;
-        }
-        editMode = false;
+        const discard = !!bookmarkMessageId || draft === (editedMessage?.data ?? message);
+        if (target && discard) closeMessageEditorDraft(target.ref, target.id, "message", messageDraft);
+        if (target || discard) messageDraft = undefined;
     }
 
     // Lua forms and interactive controls keep body clicks from opening the message editor.
@@ -803,9 +810,7 @@
         if (originalEditControlDisabled) return;
 
         if (editMode) {
-            if (edit()) {
-                editMode = false;
-            }
+            edit();
         } else {
             startOriginalEdit();
         }
@@ -883,6 +888,8 @@
             alertError(language.translationEditStale);
             return false;
         }
+        const target = messageTarget(editorMessageId);
+        if (target && refuseLocked(target.ref, [target.id])) return false;
         await updateTranslationCache(key, newData);
         return true;
     }
@@ -899,8 +906,9 @@
             return;
         }
 
-        const target = messageTarget();
+        const target = messageTarget(editorMessageId);
         if (target && refuseLocked(target.ref, [target.id])) {
+            e.preventDefault();
             return;
         }
         message = e.detail.newData;
@@ -912,7 +920,6 @@
 
     async function updateTranslationCache(key: string, data: string) {
         await writeLLMCacheEntry(key, data);
-        editTranslationText = data;
         chatBodyRevision += 1;
     }
 
@@ -930,7 +937,11 @@
             const key = `stored:${++storedPartialEditSeq}`;
             storedPartialEdits.clear();
             storedPartialEdits.set(key, edit);
-            return { key, data: edit.base.text };
+            return {
+                key,
+                data: edit.base.text,
+                draftKey: JSON.stringify(["stored", edit.sourceHash, edit.base.targetLanguage, edit.base.presetId]),
+            };
         }
         if (!translated || settings.memoryTranslateMedia.translatorType !== "llm") {
             return null;
@@ -990,18 +1001,30 @@
                 translation: edit,
             });
             editTranslationTarget = { kind: "stored", edit };
-            editTranslationText = translationDraft.text;
-            editTranslationMode = true;
             return;
         }
 
         loadingTranslationEdit = true;
+        const ref = displayedChat;
+        const id = editorMessageId;
         try {
             const key = await getTranslationCacheKey();
             const cached = await readLLMCacheEntry(key);
-            editTranslationTarget = { kind: "cache", key };
-            editTranslationText = cached ?? "";
-            editTranslationMode = true;
+            if (
+                popupEditorsDestroyed ||
+                ref?.chaId !== displayedChat?.chaId ||
+                ref?.chatId !== displayedChat?.chatId ||
+                id !== editorMessageId
+            ) {
+                return;
+            }
+            const initial = { text: cached ?? "", base: JSON.stringify(cached) };
+            translationDraft = ref
+                ? openMessageEditorDraft(ref, id, `cache:${key}`, initial)
+                : { ...initial, open: true };
+            observedCacheText = cached;
+            editTranslationTarget = { kind: "cache", key, ref, messageId: id };
+            suppressAutoPopupTranslationEditor = translationChangedElsewhere;
         } catch (error) {
             editTranslationTarget = null;
             throw error;
@@ -1013,14 +1036,16 @@
     /** Closes the translation editor without writing. */
     function cancelTranslationEdit() {
         const edit = translationDraft?.translation;
-        if (edit) closeMessageEditorDraft(edit.ref, edit.messageId, "translation");
+        if (edit) closeMessageEditorDraft(edit.ref, edit.messageId, "translation", translationDraft);
+        const target = editTranslationTarget;
+        if (target?.kind === "cache" && target.ref) {
+            closeMessageEditorDraft(target.ref, target.messageId, `cache:${target.key}`, translationDraft);
+        }
         translationDraft = undefined;
         editTranslationTarget = null;
-        editTranslationMode = false;
     }
 
     function setTranslationDraft(value: string) {
-        editTranslationText = value;
         if (translationDraft) translationDraft.text = value;
     }
 
@@ -1032,7 +1057,21 @@
             // A refused write keeps the editor open with the draft.
             if (!saveStoredTranslationEdit(target.edit, editTranslationText)) return;
         } else {
-            await updateTranslationCache(target.key, editTranslationText);
+            const text = editTranslationText;
+            const cached = await readLLMCacheEntry(target.key);
+            if (
+                popupEditorsDestroyed ||
+                !editTranslationMode ||
+                target !== editTranslationTarget ||
+                text !== editTranslationText
+            )
+                return;
+            if (cached !== observedCacheText) {
+                observedCacheText = cached;
+                if (translationChangedElsewhere) return;
+            }
+            await updateTranslationCache(target.key, text);
+            if (target !== editTranslationTarget || text !== editTranslationText) return;
         }
         cancelTranslationEdit();
     }
@@ -1445,7 +1484,7 @@
         <AutoresizeArea
             bind:value={() => editTranslationText, setTranslationDraft}
             readonly={translationEditLocked}
-            retainPopupDraftOnUnmount={!!translationDraft}
+            retainPopupDraftOnUnmount
             popupEditor
             ariaLabel={language.editTranslation}
             stableHeight={useStableTranslationEditor}
@@ -1541,17 +1580,21 @@
             {/key}
         </span>
         {#if idx >= 0 && !editMode && !editTranslationMode && !isOptimizedStreamingMessage && !locked && partialEditEnabled && storedBilingual === null && (settings.ui.enableBlockPartialEdit || settings.ui.enableDragPartialEdit)}
-            <PartialEditController
-                messageData={message}
-                chatIndex={idx}
-                {bodyRoot}
-                blockEditEnabled={settings.ui.enableBlockPartialEdit}
-                dragEditEnabled={settings.ui.enableDragPartialEdit}
-                translatedView={storedPath ? storedShown : translated}
-                getTranslationEditContext={getTranslationPartialEditContext}
-                saveTranslation={savePartialTranslation}
-                on:save={handlePartialEditSave}
-            />
+            {#key storedShown ? storedFresh?.text : message}
+                <PartialEditController
+                    messageData={message}
+                    chatRef={displayedChat}
+                    messageId={editorMessageId}
+                    chatIndex={idx}
+                    {bodyRoot}
+                    blockEditEnabled={settings.ui.enableBlockPartialEdit}
+                    dragEditEnabled={settings.ui.enableDragPartialEdit}
+                    translatedView={storedPath ? storedShown : translated}
+                    getTranslationEditContext={getTranslationPartialEditContext}
+                    saveTranslation={savePartialTranslation}
+                    on:save={handlePartialEditSave}
+                />
+            {/key}
         {/if}
     {/if}
 {/snippet}
