@@ -6,8 +6,8 @@ tiktoken counts it" was left to (owner, 2026-11-21: "the worker thread design ge
 D1 to D12 on 2026-11-22 as proposed, answering Q1 to Q4 with the proposals. Audited the same day by GPT-6.2-Astra
 against `2f129b7b2`: [report](../reports/audits/plan-runner/tokenizer-worker-2026-11-22.md), 18 findings (1 P1, 10 P2,
 7 P3) and 8 more in the corrections (4 P2, 4 P3), all fixed in this text. Two corrections changed what the owner
-accepted and wait for the owner's approval: D11 (a worker with work holds the process, in place of always `unref`ed)
-and D4 with D8 (the length limit is not a bound on time). Landed: none.
+accepted, and the owner approved them on 2026-11-22 before any run: D11 (a worker with work holds the process, in
+place of always `unref`ed) and D4 with D8 (the length limit is not a bound on time). Landed: none.
 
 Sources: `server/src/prompt/tokenizers/` (every file), `server/src/prompt/tokens.ts`, `server/src/routes/tokens.ts`,
 `shared/prompt/chatTokens.ts`, the counter's call sites, `server/src/app.ts` (`createServerContext`), and the existing
@@ -134,7 +134,7 @@ second file. Not kept in the repository.
 ## Decisions
 
 Accepted by the owner on 2026-11-22 as proposed. The audit then corrected D4, D8, and D11 in ways that change what
-was accepted (Status); those three wait for the owner's approval, and the rest stand.
+was accepted (Status), and the owner approved those three as corrected the same day.
 
 - **D1. The boundary is the tokenizer set.** `Tokenizers` becomes an explicit type (`load`, `encode`, `count`,
   `dispose`) with two implementations: `createTokenizers`, unchanged, and a new `createWorkerTokenizers` that owns

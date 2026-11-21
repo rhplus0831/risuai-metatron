@@ -27,9 +27,9 @@ rule through a replacement, two live workers loading the same families, and `cl1
 package path. The three turns took about 19 minutes and 10.2 M tokens. `read_only_violation` was `false` after every
 turn.
 
-Two corrections change what the owner accepted on 2026-11-22 and are named in the plan's `Status:` line for the
-owner's review: D11's `unref` rule (A1, B1) and the claim of D4 and D8 that a count under the length limit takes
-under a second (A3).
+Two corrections change what the owner accepted on 2026-11-22 and are named in the plan's `Status:` line: D11's
+`unref` rule (A1, B1) and the claim of D4 and D8 that a count under the length limit takes under a second (A3). The
+owner approved both the same day, after this report was first filed and before any run.
 
 Re-check list: none of the four mechanisms is touched by a planned edit. The plan reads job signals and counts; it
 changes no `patchMessage` call or fence (`server/src/data/chatStore.ts:2596`), no feed form or manifest choice
