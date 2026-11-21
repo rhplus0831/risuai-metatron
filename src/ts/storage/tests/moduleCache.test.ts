@@ -435,6 +435,34 @@ describe("module reloads", () => {
         }
     });
 
+    it("a single character module toggle removes every copy of that ID", async () => {
+        const { character, collectionStore: c, flushSync, mount, record, sync, unmount } = await boot();
+        c.setEnabledModules([]);
+        character("c").modules = ["b", "a", "off", "a", "b"];
+        await sync.flushResources();
+        const Menu = (await import("../../../lib/Setting/Pages/Module/ModuleChatMenu.svelte")).default;
+        const target = document.createElement("div");
+        document.body.append(target);
+        const component = mount(Menu, { target });
+        flushSync();
+        try {
+            const row = [...target.querySelectorAll("span")].find((span) => span.textContent === "a")!.parentElement!;
+            const button = row.querySelector("button")!;
+            expect(button.classList.contains("text-violet-500")).toBe(true);
+
+            button.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+            flushSync();
+
+            expect(character("c").modules).toEqual(["b", "off", "b"]);
+            expect(button.classList.contains("text-violet-500")).toBe(false);
+            await sync.flushResources();
+            expect(record("characters", "c").modules).toEqual(["b", "off", "b"]);
+        } finally {
+            await unmount(component);
+            target.remove();
+        }
+    });
+
     it("shows the folder's enabled and total counts in the module picker without a bulk switch", async () => {
         const { chat, collectionStore: c, settings, flushSync, mount, unmount } = await boot();
         c.setEnabledModules(["a"]);

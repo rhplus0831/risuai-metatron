@@ -17,6 +17,7 @@
         chatSwitchTargets,
         moduleCatalog,
         switchAllForChat,
+        switchAllGlobally,
     } from "./moduleCatalog";
 
     import { setCurrentChatMeta } from "src/ts/storage/chatEdits";
@@ -162,17 +163,10 @@
                                     oncontextmenu={(e) => {
                                         e.preventDefault();
                                         e.stopPropagation();
-                                        if (!currentCharacter.modules) {
-                                            currentCharacter.modules = [];
-                                        }
-                                        if (currentCharacter.modules.includes(rmodule.id)) {
-                                            currentCharacter.modules.splice(
-                                                currentCharacter.modules.indexOf(rmodule.id),
-                                                1,
-                                            );
-                                        } else {
-                                            currentCharacter.modules.push(rmodule.id);
-                                        }
+                                        currentCharacter.modules = switchAllGlobally(
+                                            [rmodule.id],
+                                            currentCharacter.modules ?? [],
+                                        );
                                     }}
                                 >
                                     <CircleCheckIcon size={18} />

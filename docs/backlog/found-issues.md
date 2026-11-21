@@ -48,7 +48,6 @@ Sources the entries name (drop a line when no entry names it any more):
 - [Build and CI](#build-and-ci): 1
 - [Chat screen](#chat-screen): 6
 - [Memory](#memory): 3
-- [Modules and personas](#modules-and-personas): 1
 - [Network jobs](#network-jobs): 1
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 1
@@ -215,16 +214,6 @@ tab's copy after a job's write could drop that write, or the job's write could r
 
 **Suggested handling:** reproduce by editing a chunk while a HypaV2 summary job writes; if a write is lost, fence
 these editors like `createChatFieldDraft`.
-
-## Modules and personas
-
-### The character's module toggle removes one entry of a repeated id
-
-Post-verification of 2026-11-18 (MF-4), read by one reader. The character-level toggle (the row's right-click action) splices one occurrence of the id, so a module whose id is stored twice stays on after one click. The catalog row's button and the folder's switch remove every occurrence.
-
-**Why it matters:** the same list reads differently depending on the control; it needs a stored list that repeats an id (an upstream import).
-
-**Suggested handling:** use the same one-id rule there.
 
 ## Network jobs
 
