@@ -80,11 +80,11 @@ function placedEvents(events: readonly MemoryEvent[], messages: readonly Message
 export function chapterUnits(store: ChapterStore, chatRef: MemoryChatRef): ChapterEvent[][] | null {
     const chat = store.readChatSource(chatRef.chaId, chatRef.chatId).data;
     if (!chat) return null;
-    const covered = new Set(listChapters(store, chatRef).flatMap(({ events }) => events.map(({ id }) => id)));
+    const claimed = store.memory.chapters.claimedEventIds(chatRef.chaId, chatRef.chatId);
     const events = placedEvents(readEvents(store, chatRef), chat.message);
     const { eventsPerGroup } = store.memory.readWriterSettings(chat.memoryPresetId);
     return memoryChapterUnits(
-        events.map((event) => ({ ...event, chaptered: covered.has(event.id) })),
+        events.map((event) => ({ ...event, chaptered: claimed.has(event.id) })),
         eventsPerGroup,
         LIMITS.chapterRecentEvents,
     );

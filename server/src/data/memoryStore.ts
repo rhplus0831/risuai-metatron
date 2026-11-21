@@ -769,6 +769,10 @@ function createChapterTables(db: DatabaseSync, selectChat: StatementSync, revisi
             }
             return { revision: revisionToken(chat.seq), chapters };
         },
+        claimedEventIds(characterId: string, chatId: string): Set<string> {
+            const chat = selectChat.get(characterId, chatId) as ChatRow | undefined;
+            return new Set(chat && ownedEventIds(chat.seq, null));
+        },
         add(characterId: string, chatId: string, chapter: MemoryChapter) {
             save(requireChatSeq(characterId, chatId), chapter, null);
         },

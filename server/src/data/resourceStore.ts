@@ -2234,6 +2234,10 @@ export function createResourceStore(options: {
                     assertOpen();
                     return memoryTables.chapters.list(...args);
                 },
+                claimedEventIds(...args: Parameters<typeof memoryTables.chapters.claimedEventIds>) {
+                    assertOpen();
+                    return memoryTables.chapters.claimedEventIds(...args);
+                },
                 add(characterId: string, chatId: string, epoch: string | undefined, chapter: MemoryChapter) {
                     assertWritable();
                     assertEpochNow(epoch);

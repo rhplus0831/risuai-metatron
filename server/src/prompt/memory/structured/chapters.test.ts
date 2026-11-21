@@ -1,4 +1,6 @@
 // @vitest-environment node
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import type { ChatOp } from "../../../../../shared/chats.ts";
 import { memoryChapterMark, type MemoryChapter } from "../../../../../shared/structuredMemory.ts";
@@ -78,6 +80,7 @@ function timeline(count: number) {
             ),
         );
     return {
+        dir: fixture.dir,
         events,
         messages,
         write,
@@ -106,6 +109,25 @@ it("re-reads the oldest unit after each add, stores the marks sent and leaves th
     const units = [t.events.slice(0, 10), t.events.slice(10, 22)];
     expect(t.sent()).toEqual(units.map((events) => events.map(({ id }) => id)));
     expect(t.chapters()).toEqual(units.map((events) => ({ id: expect.any(String), ...text, events: members(events) })));
+});
+
+it("skips a unit claimed by a malformed chapter without requesting a synopsis or changing the row", async () => {
+    const t = timeline(20);
+    const old = t.add("old", t.events[0]);
+    const data = JSON.stringify({ ...old, synopsis: null }, null, 2);
+    const db = new DatabaseSync(path.join(t.dir, "resources.sqlite"));
+    try {
+        db.prepare("UPDATE memory_chapters SET data = ? WHERE id = ?").run(data, old.id);
+
+        const result = await t.make(1);
+
+        expect(t.request).not.toHaveBeenCalled();
+        expect(result).toEqual({ made: 0, failed: 0, left: 0 });
+        expect(t.chapters()).toEqual([]);
+        expect(db.prepare("SELECT data FROM memory_chapters WHERE id = ?").get(old.id)).toEqual({ data });
+    } finally {
+        db.close();
+    }
 });
 
 it("counts each unusable reply once and leaves its unit unwritten", async () => {

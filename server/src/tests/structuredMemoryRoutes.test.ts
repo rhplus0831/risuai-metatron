@@ -879,6 +879,25 @@ it("counts eligible chapter units without writing or cleaning up orphans", async
     }
 });
 
+it("excludes a unit claimed by a malformed chapter from the chapter cost", async () => {
+    const s = await server();
+    bindChat(s);
+    const events = Array.from({ length: 20 }, (_, i) => ({
+        ...event(`e${i}`),
+        sources: [{ messageId: "u", index: 0, hash: messageSourceHash({ role: "user", data: "A gate." }) }],
+    }));
+    s.write({ events });
+    const existing = chapter(events[0]);
+    s.store.memory.chapters.add(characterId, chatId, s.epoch, existing);
+    const data = JSON.stringify({ ...existing, synopsis: null }, null, 2);
+    const db = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"));
+    cleanups.push(() => db.close());
+    db.prepare("UPDATE memory_chapters SET data = ? WHERE id = ?").run(data, existing.id);
+
+    expect(await answer(await s.request(`${base}/chapters/cost`))).toEqual({ units: 0 });
+    expect(db.prepare("SELECT data FROM memory_chapters WHERE id = ?").get(existing.id)).toEqual({ data });
+});
+
 it("lists chapters with the memory revision and refuses an oversized list before reading any chapter body", async () => {
     const events = [event("first"), event("second")];
     const [first, second] = events.map((e) => chapter(e));

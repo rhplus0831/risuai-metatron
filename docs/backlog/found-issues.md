@@ -49,7 +49,7 @@ Sources the entries name (drop a line when no entry names it any more):
 - [Chat screen](#chat-screen): 6
 - [Headless host](#headless-host): 1
 - [LLM requests](#llm-requests): 2
-- [Memory](#memory): 5
+- [Memory](#memory): 4
 - [Modules and personas](#modules-and-personas): 1
 - [Network jobs](#network-jobs): 1
 - [Plugins](#plugins): 1
@@ -277,21 +277,6 @@ nothing visible. The race is narrow: the event must be retracted between the hel
 **Suggested handling:** reproduce in the app (retract an event in another tab, then follow a Pages link to it before
 the panel's refresh settles); then either keep the target pending while a coverage read is out, or have an open event
 that turns retracted switch the view to Manage.
-
-### A malformed chapter row still claims its events, so every press pays for a failed chapter
-
-Timeline Chapter Synopses run, 2026-11-19, from slice 2's challenger; reproduced in a scratch SQLite database, not in
-the app. The chapter list (`createChapterTables` `list`, `server/src/data/memoryStore.ts:755`) leaves out a row that
-fails `isMemoryChapter`, but `save` (`:728`, through `ownedEventIds` at `:709`) still counts every event id in such a
-row's `events` array as owned. `chapterUnits` (`server/src/prompt/memory/structured/chapters.ts:83`) takes ownership
-from the list, so an event claimed only by a malformed row looks loose: `/chapters/cost` counts its unit, the model is
-called, and `add` refuses with "already belongs to another chapter", counted as failed, on every press.
-
-**Why it matters:** each press pays one model request for nothing. Only a malformed row reaches it (another build's
-shape, a manual edit, corruption); every row this build writes passes `isMemoryChapter`.
-
-**Suggested handling:** give `chapterUnits` a store read of claimed event ids that shares `save`'s extraction rule, or
-have the maker's first step remove malformed rows.
 
 ### The HypaV3 editor undoes an edit made during a generation instead of disabling it
 
