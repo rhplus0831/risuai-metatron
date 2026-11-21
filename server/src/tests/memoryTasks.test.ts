@@ -3494,7 +3494,7 @@ describe("structured memory tasks", () => {
     it.each([
         { storedLength: 4000, answerLength: 1520, limit: 4000 },
         { storedLength: 4000, answerLength: 4200, limit: 4000 },
-        { storedLength: 500, answerLength: 1000, limit: 800 },
+        { storedLength: 500, answerLength: 1000, limit: 600 },
     ])(
         "shows the whole $storedLength-character scene field and admits a $answerLength-character rewrite up to $limit with clipping warnings",
         async ({ storedLength, answerLength, limit }) => {
@@ -3518,7 +3518,7 @@ describe("structured memory tasks", () => {
             });
             const prompt = t.provider.asked(request);
             expect.soft(prompt.split("Scene:\n")[1].split("\n\nOpen threads:")[0]).toBe(`state: ${stored}`);
-            expect.soft(prompt).toContain(`place 800, time 800, state ${limit}`);
+            expect.soft(prompt).toContain(`place 600, time 600, state ${limit}`);
             request.answer(
                 JSON.stringify({
                     ...analysis(),
