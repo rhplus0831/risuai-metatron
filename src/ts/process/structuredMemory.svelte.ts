@@ -1826,21 +1826,44 @@ export function renderMemoryTimeline(events: readonly MemoryEvent[], revision: s
         .sort((a, b) => (a.first === b.first ? 0 : a.first - b.first));
     const lines = [...packageHeader(revision)];
     for (const { event } of ordered) {
+        const { storyTime, keyLines, participants } = event;
+        // Snapshot rows can lack these fields. Apply defaults to the package copy only.
+        const record = {
+            ...event,
+            storyTime:
+                isPlainObject(storyTime) &&
+                typeof storyTime.text === "string" &&
+                (storyTime.ordinal === undefined || Number.isFinite(storyTime.ordinal)) &&
+                (storyTime.date === undefined || storedStoryDate(storyTime.date))
+                    ? storyTime
+                    : { text: "" },
+            keyLines:
+                Array.isArray(keyLines) &&
+                keyLines.every(
+                    (line) => isPlainObject(line) && typeof line.speaker === "string" && typeof line.text === "string",
+                )
+                    ? keyLines
+                    : [],
+            participants:
+                Array.isArray(participants) && participants.every((participant) => typeof participant === "string")
+                    ? participants
+                    : [],
+        };
         lines.push(
             `## ${collapsed(event.title)}`,
             "",
             "```yaml",
-            ...metadataLines(event, ["summary"]),
+            ...metadataLines(record, ["summary"]),
             `summaryLines: ${lineCount(event.summary)}`,
             "```",
             "",
             event.summary,
             "",
         );
-        for (const { speaker, text } of event.keyLines) {
+        for (const { speaker, text } of record.keyLines) {
             lines.push(`> ${collapsed(speaker)}: ${collapsed(text)}`);
         }
-        if (event.keyLines.length > 0) {
+        if (record.keyLines.length > 0) {
             lines.push("");
         }
     }

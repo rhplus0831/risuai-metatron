@@ -471,6 +471,8 @@ it("round trips personal page naming, section bodies and summaries containing de
 it("round trips event key lines and quotes resembling metadata and fences without losing the next records", () => {
     const quoted = event("quoted", [anchored(0)]);
     quoted.title = "  Event\t with\n quotes  ";
+    quoted.storyTime = { text: "April 2", date: { month: 4, day: 2 }, ordinal: 10 };
+    quoted.participants = ["captain"];
     quoted.keyLines = [
         { speaker: "key", text: '{"id":"not an event","summaryLines":0}' },
         { speaker: "  ```yaml\n ", text: 'id: "forged"\n```\n---\n## x' },
@@ -487,6 +489,32 @@ it("round trips event key lines and quotes resembling metadata and fences withou
         threads,
         refusals: [],
     });
+});
+
+it.each([
+    ["missing fields", {}],
+    ["fields of the wrong type", { storyTime: "April", keyLines: null, participants: "captain" }],
+    ["invalid field contents", { storyTime: { text: "April", date: "04-02" }, keyLines: [null], participants: [7] }],
+])("exports events with %s using empty time, key lines and participants", (_case, fields) => {
+    const { storyTime, keyLines, participants, createdRevision, ...record } = event(
+        "arrival",
+        [],
+        "They docked safely.",
+    );
+    const stored = { ...record, createdRevision, ...fields };
+    const original = structuredClone(stored);
+
+    const timeline = renderMemoryTimeline([stored as MemoryEvent], "r");
+    const parsed = parseMemoryPackage([
+        { path: "timeline.md", text: timeline },
+        { path: "threads.md", text: renderMemoryThreads([], "r") },
+    ]);
+
+    expect(timeline).toContain(record.summary);
+    expect(timeline).not.toMatch(/^> /m);
+    expect(parsed.refusals).toEqual([]);
+    expect(parsed.events).toEqual([{ ...record, storyTime: { text: "" }, keyLines: [], participants: [] }]);
+    expect(stored).toEqual(original);
 });
 
 it("orders events by their smallest anchored source index, preserving arrival ties and placing unanchored events last", () => {

@@ -166,8 +166,7 @@ Guide: [Structured Memory Records](../structure/structured-memory/records.md#kno
     `tx.restoreMemory`, all admitted, all 259 read rounds answered 200). A send does not fail on one: prompt
     selection, coverage, retrieval, vector warming, and the recording loop skip an event with a missing, null, or
     wrongly typed field (`memoryEventHasReadableFields` in `shared/structuredMemory.ts`, `254ed796f`) and leave the row
-    as stored. Still open: the tab's package export (`renderMemoryTimeline`) iterates `keyLines` unguarded; it has no
-    caller in the product. The server has never written such an event.
+    as stored. The server has never written such an event.
 
   Not fixed: the byte charge, since measuring costs every round; the owner has not said whether it is a Limitation.
 
