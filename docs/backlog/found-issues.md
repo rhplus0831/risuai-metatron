@@ -49,7 +49,7 @@ Sources the entries name (drop a line when no entry names it any more):
 - [Chat screen](#chat-screen): 6
 - [Headless host](#headless-host): 1
 - [LLM requests](#llm-requests): 2
-- [Memory](#memory): 6
+- [Memory](#memory): 5
 - [Modules and personas](#modules-and-personas): 1
 - [Network jobs](#network-jobs): 2
 - [Plugins](#plugins): 1
@@ -292,16 +292,6 @@ shape, a manual edit, corruption); every row this build writes passes `isMemoryC
 
 **Suggested handling:** give `chapterUnits` a store read of claimed event ids that shares `save`'s extraction rule, or
 have the maker's first step remove malformed rows.
-
-### The Korean group-size help calls a chapter 챕터
-
-Timeline Chapter Synopses run, 2026-11-19, from slice 4; read. `eventsPerGroupHelp` in `src/lang/ko.ts:3400` reads
-"챕터가 생기면 같은 수를 챕터의 목표 크기로 씁니다", while the chapters plan's string rule fixes 장 for a chapter and
-줄거리 for its text, and the new `chapterAuto` help beside it and the Read view's strings use 장.
-
-**Why it matters:** the Korean Memory settings page shows two words for one thing.
-
-**Suggested handling:** reword the line with 장 in `ko.ts`.
 
 ### The HypaV3 editor undoes an edit made during a generation instead of disabling it
 
