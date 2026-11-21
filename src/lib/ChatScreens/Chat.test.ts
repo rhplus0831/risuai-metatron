@@ -646,6 +646,57 @@ describe("branching with Create Folder on Branch", () => {
     });
 });
 
+describe("branching while a reply generates", () => {
+    async function branchButton(row: ReturnType<typeof render>) {
+        row.click(row.target.querySelector(".button-icon-menu"));
+        await vi.advanceTimersByTimeAsync(0);
+        const popupTarget = document.createElement("div");
+        row.target.appendChild(popupTarget);
+        mounted.push(mount(PopupList, { target: popupTarget }));
+        flushSync();
+        return row.button(language.branch)!;
+    }
+
+    it.each(["before the menu opens", "after the click"])(
+        "leaves the chat and its folders alone when the reply locks %s",
+        async (when) => {
+            vi.useFakeTimers();
+            const lockedBeforeClick = when === "before the menu opens";
+            const { ref } = boot(lockedBeforeClick ? "locked-branch" : "branch-lock-race");
+            settings.ui.createFolderOnBranch = true;
+            answerWith(async () => json(200, { revision: "memory-r1", inherited: true }));
+            if (lockedBeforeClick) setReplyLock(ref, "b");
+            const branch = await branchButton(render({ message: "B", messageId: "b", idx: 1 }));
+            expect(branch.disabled).toBe(lockedBeforeClick);
+            branch.click();
+            if (!lockedBeforeClick) setReplyLock(ref, "b");
+            await vi.advanceTimersByTimeAsync(1);
+
+            expect(chatList("c").map(({ id }) => id)).toEqual([ref.chatId]);
+            expect(selectedCharacter()?.chatFolders ?? []).toEqual([]);
+            expect(findChat(ref)?.folderId).toBeUndefined();
+        },
+    );
+
+    it("copies through the preceding finished reply while the later reply generates", async () => {
+        vi.useFakeTimers();
+        const { ref } = boot("earlier-branch");
+        settings.ui.createFolderOnBranch = true;
+        answerWith(async () => json(200, { revision: "memory-r1", inherited: true }));
+        setReplyLock(ref, "b");
+        const branch = await branchButton(render());
+        expect(branch.disabled).toBe(false);
+        branch.click();
+        await vi.advanceTimersByTimeAsync(1);
+
+        const copy = chatList("c").find(({ id }) => id !== ref.chatId)!;
+        expect(findChat({ ...ref, chatId: copy.id })?.message.filter(({ isComment }) => !isComment)).toEqual([
+            { chatId: "a", role: "char", data: "A" },
+        ]);
+        expect((selectedCharacter()?.chatFolders ?? []).map(({ id }) => id)).toEqual([copy.folderId]);
+    });
+});
+
 describe("the Disable toggles", () => {
     it("Disable Message and Cut Messages for AI queue a patch of the one `disabled` field, never the row", async () => {
         const { ref, held } = boot("toggles");

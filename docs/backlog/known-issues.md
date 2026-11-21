@@ -32,7 +32,7 @@ Sources the entries name (drop a line when no entry names it any more):
 - [network-jobs](#network-jobs) (1)
 - [persistence](#persistence) (1)
 - [structured-memory](#structured-memory) (2)
-- [ui-theming](#ui-theming) (3)
+- [ui-theming](#ui-theming) (2)
 
 ## build-test-platforms
 
@@ -227,10 +227,3 @@ Guide: [UI Components and Theming](../structure/ui-theming.md#known-hazards).
     mounted again, and opening the editor does not remount it.
   - [Stable-height rule](../../src/lib/ChatScreens/messageEditPopup.ts#L34) ·
     [Text area sizing](../../src/lib/UI/GUI/TextAreaResizable.svelte#L55)
-- Branch on a reply that is still streaming copies the text streamed so far, and the new chat keeps that prefix. The
-  Branch handler of `src/lib/ChatScreens/Chat.svelte` checks only that the target exists; it copies from the tab's
-  chat, and the final text is installed in the source chat only. Reproduced on 2026-11-21 at `ddb0c225b` on the mounted
-  row menu: the branch held `The door` after the source finished with `The door opened.`. Branch on an earlier,
-  finished message while another reply streams copies up to that message and is harmless. The row's other controls
-  (Edit, Remove, Disable, the reroll arrows) are locked while it generates. Not fixed. A fix disables Branch on the
-  locked row. [Branch handler](../../src/lib/ChatScreens/Chat.svelte#L2058)

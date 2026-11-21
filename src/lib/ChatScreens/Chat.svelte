@@ -2056,7 +2056,9 @@
     {/if}
 
     <button
-        class="flex items-center hover:text-blue-500 transition-colors"
+        class={"flex items-center transition-colors " +
+            (locked ? "opacity-50 cursor-not-allowed" : "hover:text-blue-500")}
+        disabled={locked}
         onclick={async () => {
             const target = messageTarget();
             // Captured with the target: its owner (a replacement of the character's chats meanwhile
@@ -2074,7 +2076,8 @@
                 !currentChat ||
                 !owner ||
                 chatOwnerToken(target.ref.chaId) !== ownerToken ||
-                branchIndex === -1
+                branchIndex === -1 ||
+                isMessageLocked(target.ref, target.id)
             ) {
                 return;
             }
