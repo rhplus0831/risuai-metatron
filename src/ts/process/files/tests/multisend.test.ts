@@ -5,7 +5,7 @@ import type { InlayResource } from "../../../../../shared/resources.ts";
 import { downloadFile } from "src/ts/globalApi.svelte";
 import { sendChat } from "src/ts/process/index.svelte";
 import { beginLocalSend } from "src/ts/process/localSends";
-import { findChat, selectChat, setChatMeta } from "src/ts/storage/chatStore.svelte";
+import { appendMessage, findChat, selectChat, setChatMeta } from "src/ts/storage/chatStore.svelte";
 import { alertError } from "src/ts/alert";
 import { language } from "src/lang";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
@@ -327,6 +327,56 @@ describe("postChatFile with a PO file", () => {
         expect(texts()).toEqual(["hello", "world"]);
         expect(downloadFile).toHaveBeenCalledTimes(1);
         expect(vi.mocked(downloadFile).mock.calls[0][0]).toBe("translated.po");
+    });
+
+    it.each([
+        { boundary: "CRLF blank lines", newline: "\r\n", ending: "\r\n\r\n" },
+        { boundary: "the final entry ending at EOF", newline: "\n", ending: "" },
+        { boundary: "an ordinary comment past line 100", newline: "\n", ending: "\n\n", comment: "# Translator note" },
+    ])("downloads every translation with $boundary", async ({ newline, ending, comment }) => {
+        const { postChatFile } = await import("../multisend");
+        const entry = (source: string) => `msgid "${source}"${newline}msgstr ""`;
+        const between = comment ? `${newline.repeat(100)}${comment}${newline}` : "";
+        const catalog = [entry("hello"), `${between}${entry("world")}${ending}`].join(newline.repeat(2));
+        const lastSendStarted = gate<void>();
+        const finishLastSend = gate<void>();
+        let downloadedBeforeLastReply = false;
+
+        await vi.mocked(sendChat).withImplementation(
+            async () => {
+                const source = texts().at(-1);
+                if (source === "world") {
+                    lastSendStarted.resolve();
+                    await finishLastSend.promise;
+                }
+                appendMessage(ref, { role: "char", data: source === "hello" ? "bonjour\nsalut" : "monde" });
+                return true;
+            },
+            async () => {
+                const translating = postChatFile({ name: "lines.po", data: new TextEncoder().encode(catalog) });
+                await Promise.race([lastSendStarted.promise, translating]);
+                downloadedBeforeLastReply = vi.mocked(downloadFile).mock.calls.length > 0;
+                finishLastSend.resolve();
+                await translating;
+            },
+        );
+
+        expect(texts()).toEqual(["hello", "bonjour\nsalut", "world", "monde"]);
+        expect(sendChat).toHaveBeenCalledTimes(2);
+        expect(downloadedBeforeLastReply).toBe(false);
+        expect(downloadFile).toHaveBeenCalledExactlyOnceWith("translated.po", expect.any(String));
+        const output = String(vi.mocked(downloadFile).mock.calls[0][1]);
+        expect(output.replaceAll(newline, "")).not.toMatch(/[\r\n]/);
+        expect(output.split(newline).filter(Boolean)).toEqual([
+            'msgid "hello"',
+            'msgstr ""',
+            '"bonjour"',
+            '"salut"',
+            ...(comment ? [comment] : []),
+            'msgid "world"',
+            'msgstr ""',
+            '"monde"',
+        ]);
     });
 
     it("stops at an entry whose send did not run, appending nothing more and downloading nothing", async () => {

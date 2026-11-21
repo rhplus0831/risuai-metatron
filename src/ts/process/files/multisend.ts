@@ -45,13 +45,14 @@ async function sendPofile(arg: sendFileArg, ref: ChatRef | null, owner: string |
     ) {
         return;
     }
+    const newline = arg.file.match(/\r?\n/)?.[0] ?? "\n";
     const lines = arg.file.split("\n");
-    for (let i = 0; i < lines.length; i++) {
-        console.log(i);
-        const line = lines[i];
+    // EOF also finishes an entry, even if the file has no final blank line.
+    for (let i = 0; i <= lines.length; i++) {
+        const line = lines[i]?.replace(/\r$/, "") ?? "";
         if (line === "") {
             if (msgId === "") {
-                result += "\n";
+                if (i < lines.length) result += newline;
                 continue;
             }
             let text = msgId;
@@ -86,8 +87,8 @@ async function sendPofile(arg: sendFileArg, ref: ChatRef | null, owner: string |
                 .map((str) => {
                     return `"${str.replaceAll('"', '\\"')}"`;
                 })
-                .join("\n");
-            result += `msgstr ""\n${msgStr}\n\n`;
+                .join(newline);
+            result += `msgstr ""${newline}${msgStr}${newline}${newline}`;
             note = "";
             speaker = "";
             msgId = "";
@@ -112,17 +113,17 @@ async function sendPofile(arg: sendFileArg, ref: ChatRef | null, owner: string |
             if (msgId === "") {
                 parseMode = 1;
             }
-            result += line + "\n";
+            result += line + newline;
             continue;
         }
         if (parseMode === 1 && line.startsWith('"') && line.endsWith('"')) {
             msgId += line.substring(1, line.length - 1).replaceAll('\\"', '"');
-            result += line + "\n";
+            result += line + newline;
             continue;
         }
         if (line.startsWith("msgstr")) {
             if (msgId === "") {
-                result += line + "\n";
+                result += line + newline;
                 parseMode = 0;
             } else {
                 parseMode = 2;
@@ -132,11 +133,7 @@ async function sendPofile(arg: sendFileArg, ref: ChatRef | null, owner: string |
         if (parseMode === 2 && line.startsWith('"') && line.endsWith('"')) {
             continue;
         }
-        result += line + "\n";
-
-        if (i > 100) {
-            break; //prevent too long message in testing
-        }
+        result += line + newline;
     }
     await downloadFile("translated.po", result);
 }

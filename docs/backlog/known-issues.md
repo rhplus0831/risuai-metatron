@@ -26,7 +26,7 @@ Sources the entries name (drop a line when no entry names it any more):
 ## Contents
 
 - [characters-modules](#characters-modules) (1)
-- [chat-pipeline](#chat-pipeline) (4)
+- [chat-pipeline](#chat-pipeline) (3)
 - [memory](#memory) (1)
 - [network-jobs](#network-jobs) (1)
 - [persistence](#persistence) (1)
@@ -85,11 +85,6 @@ Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-
   an answer during that wait and saw it overwritten. Not fixed. A fix decides the write rule for competing completions
   of one exchange and makes it hold across tabs.
   [OOC admission and answer write](../../src/ts/ooc/oocSession.svelte.ts#L183)
-- PO translation can download an incomplete file. `sendPofile` finishes an entry only on an exactly empty line. In
-  isolated runs (structure audit, 2026-11-18) CRLF input lost an entry, and the last entry of a file without a
-  trailing newline was never translated; an ordinary comment past line index 100 can also break the loop and reach
-  the download with only a prefix. Not fixed. A fix covers line endings, the end of the file, and comments in a long
-  catalog. [PO reader and download](../../src/ts/process/files/multisend.ts#L32)
 
 ## memory
 
