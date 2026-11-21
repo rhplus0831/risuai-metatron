@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, expect, it, vi } from "vitest";
+import { saveOverUnseenMemory } from "src/ts/storage/tests/memoryEditorServer";
 
 // `CharConfig`'s fields follow the selected character, which the previous/next character hotkeys
 // change while a popup editor stays open. Each field passes its character as the popup's context,
@@ -31,7 +32,7 @@ vi.mock("src/lib/SideBars/Toggles.svelte", () => ({ default: () => {} }));
 import CharConfig from "./CharConfig.svelte";
 import { normalizeCharacter } from "../../../shared/characters";
 import { language } from "src/lang";
-import { showHypaV2Alert } from "src/ts/alert";
+import { alertReloadNotice, showHypaV2Alert } from "src/ts/alert";
 import { noteGenerationFrame, resetGenerationProgress } from "src/ts/process/generationProgress.svelte";
 import { beginLocalSend } from "src/ts/process/localSends";
 import { CharConfigSubMenu, closePopupEditorSession, popUpEditorStore } from "src/ts/stores.svelte";
@@ -168,6 +169,23 @@ function mountSupaMemory(chaId: string, type: "character" | "group") {
     };
     return { ...editor, input, edit };
 }
+
+it.each(["character", "group"] as const)(
+    "shows the job's summary in the open %s SupaMemory editor after an unseen memory write",
+    async (type) => {
+        const { chat, input, edit } = mountSupaMemory(`stale-supa-${type}`, type);
+        const notice = vi.mocked(alertReloadNotice).mockClear();
+        const { stored, reread } = await saveOverUnseenMemory(chat, { supaMemoryData: generatedSummary }, () => {
+            expect(input.readOnly).toBe(false);
+            edit("old-message\nCorrection from the old copy");
+        });
+        expect(stored.supaMemoryData).toBe(generatedSummary);
+        expect(reread).toBe(true);
+        flushSync();
+        expect(input.value).toBe(generatedSummary);
+        expect(notice).toHaveBeenCalledExactlyOnceWith(language.memoryEditRefused);
+    },
+);
 
 it.each(["character", "group"] as const)(
     "fences the %s SupaMemory editor until the generated summary and its cursor arrive",

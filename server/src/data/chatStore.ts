@@ -147,6 +147,16 @@ export const CHAT_GROUP_TABLE_SQL = `
     ) STRICT;
 `;
 
+// Only jobs create these rows. Old chats have no floor; a restored snapshot starts a new epoch.
+const CHAT_MEMORY_WRITES_SQL = `
+    CREATE TABLE IF NOT EXISTS chatMemoryWrites (
+        chatSeq INTEGER NOT NULL REFERENCES chats (seq) ON DELETE CASCADE,
+        field TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        PRIMARY KEY (chatSeq, field)
+    ) STRICT;
+`;
+
 /**
  * Each chat's summary projection, so a summary read costs its stored text and not a parse of the
  * whole metadata. `text` is `summaryText` of the chat's stored metadata: without the last message's
@@ -393,7 +403,7 @@ const MEMORY_ROUND_INDEXES_SQL = `
  * What `openChatSchema` adds to `CHAT_TABLES_SQL`, each created when missing, and a staged store's
  * writer too, so a staged file has the live schema.
  */
-export const CHAT_OPEN_SCHEMA_SQL = `${CHAT_GROUP_TABLE_SQL}${CHAT_SUMMARY_TABLE_SQL}${MEMORY_TABLES_SQL}${MEMORY_REBUILD_TABLES_SQL}${MEMORY_EVENT_SOURCES_SQL}${MEMORY_CHAPTERS_SQL}${MESSAGE_ROLE_INDEX_SQL}${MESSAGE_CHECKPOINT_INDEX_SQL}${MEMORY_ROUND_INDEXES_SQL}`;
+export const CHAT_OPEN_SCHEMA_SQL = `${CHAT_GROUP_TABLE_SQL}${CHAT_MEMORY_WRITES_SQL}${CHAT_SUMMARY_TABLE_SQL}${MEMORY_TABLES_SQL}${MEMORY_REBUILD_TABLES_SQL}${MEMORY_EVENT_SOURCES_SQL}${MEMORY_CHAPTERS_SQL}${MESSAGE_ROLE_INDEX_SQL}${MESSAGE_CHECKPOINT_INDEX_SQL}${MEMORY_ROUND_INDEXES_SQL}`;
 
 /** A chat's user messages, answered from `messages_role` alone: no message row is read. */
 export const COUNT_USER_TURNS_SQL = `SELECT COUNT(*) AS count FROM messages WHERE chatSeq = ? AND ${MESSAGE_ROLE_SQL} = 'user'`;
@@ -414,6 +424,7 @@ export const MAX_CHAT_GROUP_ID_LENGTH = 128;
 
 /** A remembered group's answer besides its ids and revision (`chatGroups.result`). */
 type RememberedResult = {
+    memoryRefused?: true;
     stale?: true;
     /** Only when the server gave a message a fresh id; otherwise rebuilt from the replayed group. */
     messageIds?: string[];
@@ -1509,6 +1520,13 @@ export function createChatTables(
     const characterExists = db.prepare("SELECT 1 AS found FROM resources WHERE kind = ? AND id = ?");
     const selectChat = db.prepare("SELECT seq, revision, meta FROM chats WHERE characterId = ? AND id = ?");
     const selectChatRevision = db.prepare("SELECT seq, revision FROM chats WHERE characterId = ? AND id = ?");
+    const newerMemoryWrite = db.prepare(
+        "SELECT 1 FROM chatMemoryWrites WHERE chatSeq = ? AND field = ? AND revision > ?",
+    );
+    const markMemoryWrite = db.prepare(
+        "INSERT INTO chatMemoryWrites (chatSeq, field, revision) VALUES (?, ?, ?) " +
+            "ON CONFLICT (chatSeq, field) DO UPDATE SET revision = excluded.revision",
+    );
     const selectRestoreFloor = db.prepare("SELECT revision FROM chatRestoreFloors WHERE chatSeq = ?");
     const insertChat = db.prepare(
         "INSERT INTO chats (characterId, id, revision, schemaVersion, meta) VALUES (?, ?, 0, ?, ?)",
@@ -2122,6 +2140,7 @@ export function createChatTables(
         if (remembered.translations) {
             result.translations = remembered.translations;
         }
+        if (remembered.memoryRefused) result.memoryRefused = true;
         if (remembered.selections) result.selections = remembered.selections;
         if (remembered.candidateRows) result.candidateRows = remembered.candidateRows;
         if (remembered.targets) {
@@ -2167,6 +2186,7 @@ export function createChatTables(
         if (result.translations) {
             remembered.translations = result.translations;
         }
+        if (result.memoryRefused) remembered.memoryRefused = true;
         if (result.selections) remembered.selections = result.selections;
         if (result.candidateRows) remembered.candidateRows = result.candidateRows;
         if (result.targets) {
@@ -2241,12 +2261,12 @@ export function createChatTables(
         }
         /** Whether the group names an older revision of this chat (allowed for by-id ops). */
         let stale = false;
+        const base = group.baseRevision === null ? null : tokens.parse(group.baseRevision);
         if (group.baseRevision === null) {
             if (row || !characterExists.get(RESOURCE_KIND.characters, characterId)) {
                 conflictHere(row);
             }
         } else {
-            const base = tokens.parse(group.baseRevision);
             if (
                 !row ||
                 !base ||
@@ -2304,6 +2324,7 @@ export function createChatTables(
         const speakerChangedIds = new Set<string>();
         let reappended = false;
         let metaChanged = false;
+        let memoryRefused = false;
         let applied = 0;
         let messageIds: string[] | undefined;
         let messageIdsRenamed = false;
@@ -2437,12 +2458,36 @@ export function createChatTables(
                         : op.unset.includes("memoryMode")
                           ? undefined
                           : current.memoryMode;
-                    const set =
+                    let set =
                         Object.hasOwn(op.set, "hypaV3Data") &&
                         refusesHypaV3Data(chatSeq, current, modeAfter, restoredFields)
                             ? kept
                             : op.set;
-                    for (const key of op.unset) {
+                    let unset = op.unset;
+                    if (jobToken || stale) {
+                        const refused = new Set<string>();
+                        for (const field of ["hypaV2Data", "supaMemoryData"]) {
+                            if (!Object.hasOwn(set, field) && !unset.includes(field)) continue;
+                            if (jobToken) {
+                                markMemoryWrite.run(chatSeq, field, nextRevision(row!.revision, applied + 1));
+                            } else if (base && newerMemoryWrite.get(chatSeq, field, base.revision)) {
+                                refused.add(field);
+                            }
+                        }
+                        if (refused.size) {
+                            memoryRefused = true;
+                            set = Object.fromEntries(Object.entries(set).filter(([key]) => !refused.has(key)));
+                            unset = unset.filter((key) => !refused.has(key));
+                            if (
+                                !Object.keys(set).length &&
+                                !unset.length &&
+                                !Object.keys(op.merge).length &&
+                                !Object.keys(op.mergeUnset).length
+                            )
+                                break;
+                        }
+                    }
+                    for (const key of unset) {
                         delete current[key];
                     }
                     Object.assign(current, set);
@@ -2892,6 +2937,7 @@ export function createChatTables(
         if (translations.length > 0) {
             result.translations = translations;
         }
+        if (memoryRefused) result.memoryRefused = true;
         if (selections.length) result.selections = selections;
         if (!deleted && row) {
             const candidateRows: NonNullable<ChatGroupResult["candidateRows"]> = [];

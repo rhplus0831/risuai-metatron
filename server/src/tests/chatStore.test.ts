@@ -7,10 +7,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { ChatOp, ChatRecord } from "../../../shared/chats.ts";
 import type { Message, MessageTranslation } from "../../../shared/database.ts";
+import { mergeHypaV2Write } from "../../../shared/memory.ts";
 import { MAX_FEED_PATCH_BYTES, type BatchConflict } from "../../../shared/resources.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { storedTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { createChangeFeed, type ChangeFeedEvent } from "../data/changeFeed.ts";
+import { createCheckpointService } from "../data/checkpointService.ts";
 import { CHAT_TABLES_SQL, MAX_CHAT_GROUP_IDS, MAX_GENERATION_HISTORY } from "../data/chatStore.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import {
@@ -1987,6 +1989,197 @@ describe("per-chat toggle metadata", () => {
             chats: [group("k", base, [{ op: "meta", set: { GLGlobalVariables: { toggle_flag: "0" } } }])],
         });
         expect(chat(store, "k")!.data.GLGlobalVariables).toEqual({ toggle_flag: "0" });
+    });
+});
+
+describe("job memory writes", () => {
+    function openMemoryStore(file = ":memory:") {
+        const guard = createGenerationLock();
+        guard.addToken("memory-job");
+        return createResourceStore({ file, kinds, guard });
+    }
+
+    const hypaMemory = (...chunks: string[]) => ({
+        lastMainChunkID: chunks.length,
+        chunks: chunks.map((text, index) => ({ mainChunkID: index + 1, text })),
+        mainChunks: chunks.map((text, index) => {
+            const messageId = index === 0 ? "a" : "b";
+            return { id: index + 1, text, chatMemos: [messageId], lastChatMemo: messageId };
+        }),
+    });
+
+    it("refuses only stale fields written by a job and remembers the refusal on replay", () => {
+        const store = openMemoryStore();
+        stores.push(store);
+        const base = seed(store).chat;
+        const generated = hypaMemory("Job chunk");
+        const job = store.applyChanges(
+            { chats: [group("k", base, [{ op: "meta", set: { hypaV2Data: generated } }])] },
+            { jobToken: "memory-job" },
+        ).chats[0];
+        const stale = {
+            ...group("k", base, [
+                {
+                    op: "meta",
+                    set: {
+                        hypaV2Data: hypaMemory("Stale chunk"),
+                        supaMemoryData: "Independent summary",
+                        note: "Same op",
+                    },
+                },
+                { op: "meta", set: { name: "Next op" } },
+            ]),
+            groupId: "mixed-memory-edit",
+        };
+        const receipt = store.applyChanges({ chats: [stale] }).chats[0];
+        expect(receipt).toMatchObject({ stale: true, memoryRefused: true, revision: bumped(job.revision!, 2) });
+        expect(chat(store, "k")!.data).toMatchObject({
+            hypaV2Data: generated,
+            supaMemoryData: "Independent summary",
+            note: "Same op",
+            name: "Next op",
+        });
+        expect(store.applyChanges({ chats: [{ ...stale, retry: true }] }).chats[0]).toEqual(receipt);
+
+        // The HypaV2 base is current for this field even though the chat has newer sibling edits.
+        const fresh = hypaMemory("Fresh chunk edit");
+        expect(
+            store.applyChanges({ chats: [group("k", job.revision, [{ op: "meta", set: { hypaV2Data: fresh } }])] })
+                .chats[0].memoryRefused,
+        ).toBeUndefined();
+        const summary = store.applyChanges(
+            { chats: [group("k", base, [{ op: "meta", set: { supaMemoryData: "Job summary" } }])] },
+            { jobToken: "memory-job" },
+        ).chats[0];
+        const refused = store.applyChanges({ chats: [group("k", base, [{ op: "meta", unset: ["supaMemoryData"] }])] })
+            .chats[0];
+        expect(refused).toMatchObject({ memoryRefused: true, revision: summary.revision });
+        expect(chat(store, "k")!.data).toMatchObject({ hypaV2Data: fresh, supaMemoryData: "Job summary" });
+    });
+
+    it("preserves a retained HypaV2 chunk edit when the job writes memory second", () => {
+        const store = openMemoryStore();
+        stores.push(store);
+        const original = hypaMemory("Original chunk");
+        const base = store.applyChanges({
+            chats: [group("k", seed(store).chat, [{ op: "meta", set: { hypaV2Data: original } }])],
+        }).chats[0].revision;
+        const corrected = hypaMemory("Corrected chunk");
+        store.applyChanges({
+            chats: [
+                group("k", base, [{ op: "meta", set: { hypaV2Data: corrected, supaMemoryData: "Manual summary" } }]),
+            ],
+        });
+
+        const merged = mergeHypaV2Write(
+            original,
+            hypaMemory("Original chunk", "New chunk"),
+            chat(store, "k")!.data.hypaV2Data,
+        );
+        expect(merged).not.toBeNull();
+        expect(
+            store.applyChanges(
+                {
+                    chats: [
+                        group("k", base, [
+                            { op: "meta", set: { hypaV2Data: merged!, supaMemoryData: "Computed summary" } },
+                        ]),
+                    ],
+                },
+                { jobToken: "memory-job" },
+            ).chats[0].memoryRefused,
+        ).toBeUndefined();
+        expect(chat(store, "k")!.data).toMatchObject({
+            hypaV2Data: hypaMemory("Corrected chunk", "New chunk"),
+            supaMemoryData: "Computed summary",
+        });
+    });
+
+    it("opens a pre-stamp database and preserves refusal boundaries across restart, rollback, and restore", async () => {
+        const dir = tempDir();
+        const file = path.join(dir, "memory.sqlite");
+        const old = openMemoryStore(file);
+        const base = seed(old).chat;
+        old.close();
+        const legacy = new DatabaseSync(file);
+        legacy.exec("DROP TABLE IF EXISTS chatMemoryWrites");
+        legacy.close();
+
+        const set = (supaMemoryData: string): ChatOp => ({ op: "meta", set: { supaMemoryData } });
+        const manual = openMemoryStore(file);
+        let beforeJob: string;
+        try {
+            manual.applyChanges({ chats: [group("k", base, [{ op: "meta", set: { note: "Newer note" } }])] });
+            beforeJob = manual.applyChanges({ chats: [group("k", base, [set("Legacy edit")])] }).chats[0].revision!;
+            expect(chat(manual, "k")!.data.supaMemoryData).toBe("Legacy edit");
+            manual.applyChanges({ chats: [group("k", beforeJob, [set("Job summary")])] }, { jobToken: "memory-job" });
+        } finally {
+            manual.close();
+        }
+        const store = openMemoryStore(file);
+        stores.push(store);
+        const current = () => chat(store, "k")!.revision;
+        expect(
+            store.applyChanges({ chats: [group("k", beforeJob, [set("Stale after restart")])] }).chats[0],
+        ).toMatchObject({ memoryRefused: true, revision: current() });
+
+        const jobRevision = current();
+        expect(() =>
+            store.applyChanges(
+                {
+                    chats: [
+                        group("k", jobRevision, [set("Rolled back")]),
+                        group("absent", jobRevision, [set("Absent")]),
+                    ],
+                },
+                { jobToken: "memory-job" },
+            ),
+        ).toThrow(ResourceBatchConflictError);
+        store.applyChanges({ chats: [group("k", jobRevision, [{ op: "meta", set: { note: "Later note" } }])] });
+        store.applyChanges({ chats: [group("k", jobRevision, [set("Fresh after rollback")])] });
+        expect(chat(store, "k")!.data.supaMemoryData).toBe("Fresh after rollback");
+
+        const checkpoint = store.checkpoints.save("c", "k", "Before next job", "manual")!;
+        const beforeRestore = current();
+        store.applyChanges(
+            { chats: [group("k", beforeRestore, [set("New job summary")])] },
+            { jobToken: "memory-job" },
+        );
+        const checkpoints = createCheckpointService({ store, busy: () => false, memoryTasks: null });
+        expect(
+            checkpoints.load({
+                epoch: store.epoch(),
+                body: { characterId: "c", chatId: "k", id: checkpoint.id, chatBaseRevision: current() },
+            }).status,
+        ).toBe(200);
+        expect(chat(store, "k")!.data.supaMemoryData).toBe("Fresh after rollback");
+        expect(() =>
+            store.applyChanges({ chats: [group("k", beforeRestore, [set("Before checkpoint restore")])] }),
+        ).toThrow(ResourceBatchConflictError);
+
+        const snapshot = path.join(dir, "snapshot.sqlite");
+        await store.backupTo(snapshot);
+        await installSnapshot(store, snapshot, kinds);
+        const restored = current();
+        expect(chat(store, "k")!.data.supaMemoryData).toBe("Fresh after rollback");
+        store.applyChanges({ chats: [group("k", restored, [{ op: "meta", set: { note: "After restore" } }])] });
+        store.applyChanges({ chats: [group("k", restored, [set("Fresh after restore")])] });
+        expect(chat(store, "k")!.data.supaMemoryData).toBe("Fresh after restore");
+
+        store.applyChanges(
+            { chats: [group("k", current(), [set("Job summary before deletion")])] },
+            { jobToken: "memory-job" },
+        );
+        store.applyChanges({ chats: [group("k", current(), [{ op: "delete" }])] });
+        const recreated = store.applyChanges({
+            chats: [group("k", null, [{ op: "create", chat: { id: "k", message: [] } as never }])],
+        }).chats[0].revision!;
+        expect(() => store.applyChanges({ chats: [group("k", restored, [set("Previous incarnation")])] })).toThrow(
+            ResourceBatchConflictError,
+        );
+        store.applyChanges({ chats: [group("k", recreated, [{ op: "meta", set: { note: "Recreated chat" } }])] });
+        store.applyChanges({ chats: [group("k", recreated, [set("Fresh incarnation")])] });
+        expect(chat(store, "k")!.data.supaMemoryData).toBe("Fresh incarnation");
     });
 });
 

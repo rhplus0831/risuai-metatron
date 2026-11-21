@@ -21,6 +21,7 @@ import { MAX_ARCHIVE_RECORDS } from "../data/archive.ts";
 import { CHAT_TABLES_SQL } from "../data/chatStore.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, ResourceValidationError, type ResourceStore } from "../data/resourceStore.ts";
+import { createGenerationLock, type GenerationLock } from "../jobs/generationLock.ts";
 import {
     buildArchive,
     createResourceTestClient,
@@ -1586,7 +1587,7 @@ describe("chats in snapshots and archives", () => {
 describe("checkpoints and memory in backups", () => {
     async function checkpointServer(
         label = "Saved",
-        beforeStart?: (store: ResourceStore, savePath: string) => Promise<void>,
+        beforeStart?: (store: ResourceStore, savePath: string, lock: GenerationLock) => void | Promise<void>,
     ) {
         const rootDir = mkdtempSync(path.join(os.tmpdir(), "risu-checkpoint-backups-"));
         const savePath = path.join(rootDir, "save");
@@ -1595,7 +1596,12 @@ describe("checkpoints and memory in backups", () => {
         mkdirSync(path.join(savePath, "server"), { recursive: true });
         writeFileSync(path.join(savePath, "server", "password"), "pw");
         const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
-        const store = createResourceStore({ file: path.join(savePath, "data", "resources.sqlite"), kinds });
+        const lock = createGenerationLock();
+        const store = createResourceStore({
+            file: path.join(savePath, "data", "resources.sqlite"),
+            kinds,
+            guard: lock,
+        });
         try {
             store.put(kinds.get("characters")!, "c", character("c", { image: "assets/profile.png" }), null);
             const chat: Chat = {
@@ -1647,7 +1653,7 @@ describe("checkpoints and memory in backups", () => {
                 ],
             });
             const expected = { chat, checkpoint, policy };
-            await beforeStart?.(store, savePath);
+            await beforeStart?.(store, savePath, lock);
             store.close();
             return { s: await defaultServer({ rootDir }), expected };
         } catch (error) {
@@ -1689,6 +1695,67 @@ describe("checkpoints and memory in backups", () => {
             store.close();
         }
     }
+
+    it("restores the stored summary through a version-2 archive and starts a new memory write history", async () => {
+        const target = { characterId: "c", chatId: "k" };
+        let baseRevision!: string;
+        const { s } = await checkpointServer("Saved", (store, _savePath, lock) => {
+            baseRevision = store.chatRevision("c", "k")!;
+            lock.addToken("summary-job");
+            store.applyChanges(
+                {
+                    chats: [{ ...target, baseRevision, ops: [{ op: "meta", set: { supaMemoryData: "Job summary" } }] }],
+                },
+                { jobToken: "summary-job" },
+            );
+            lock.endJob("summary-job");
+        });
+        const edit = (baseRevision: string) => ({
+            chats: [{ ...target, baseRevision, ops: [{ op: "meta", set: { supaMemoryData: "Manual summary" } }] }],
+        });
+        const refused = await s.json("/api/resources/batch", edit(baseRevision));
+        expect(refused.status).toBe(200);
+        expect(await refused.json()).toMatchObject({ chats: [{ memoryRefused: true }] });
+
+        const stampedFields = () => {
+            const db = new DatabaseSync(path.join(s.savePath, "data", "resources.sqlite"), { readOnly: true });
+            try {
+                return db.prepare("SELECT field FROM chatMemoryWrites").all();
+            } finally {
+                db.close();
+            }
+        };
+        expect(stampedFields()).toEqual([{ field: "supaMemoryData" }]);
+        const archive = await exportArchive(s);
+        const epoch = s.epoch;
+        expect((await importArchive(s, archive)).status).toBe(200);
+        expect(await s.readEpoch()).not.toBe(epoch);
+        expect(stampedFields()).toEqual([]);
+        const read = async () => {
+            const response = await s.json("/api/resources/read", { chats: [{ characterId: "c", id: "k" }] });
+            expect(response.status).toBe(200);
+            return ((await response.json()) as { chats: ChatRecord[] }).chats[0];
+        };
+        const restored = await read();
+        expect(restored.data?.supaMemoryData).toBe("Job summary");
+        expect(
+            (
+                await s.json("/api/resources/batch", {
+                    chats: [
+                        {
+                            ...target,
+                            baseRevision: restored.revision,
+                            ops: [{ op: "meta", set: { note: "Newer note" } }],
+                        },
+                    ],
+                })
+            ).status,
+        ).toBe(200);
+        expect((await s.json("/api/resources/batch", edit(baseRevision), {}, epoch)).status).toBe(412);
+        const written = await s.json("/api/resources/batch", edit(restored.revision!));
+        expect(written.status).toBe(200);
+        expect((await read()).data).toMatchObject({ note: "Newer note", supaMemoryData: "Manual summary" });
+    });
 
     it("restores structured memory rows through the snapshot restore route", async () => {
         const snapshotId = "resources-20260101T000000000Z-12345678";

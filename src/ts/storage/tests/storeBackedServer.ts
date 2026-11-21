@@ -320,6 +320,33 @@ export class StoreBackedServer {
         return this.store.applyChanges({ chats });
     }
 
+    /** Write job metadata without delivering any feed frames to the tab. */
+    writeJobChatMeta(
+        characterId: string,
+        chatId: string,
+        set: NonNullable<Extract<ChatOp, { op: "meta" }>["set"]>,
+    ): void {
+        const jobToken = "metadata-job";
+        this.lock!.addToken(jobToken);
+        try {
+            this.store.applyChanges(
+                {
+                    chats: [
+                        {
+                            characterId,
+                            chatId,
+                            baseRevision: this.chat(characterId, chatId)!.revision,
+                            ops: [{ op: "meta", set }],
+                        },
+                    ],
+                },
+                { jobToken },
+            );
+        } finally {
+            this.lock!.endJob(jobToken);
+        }
+    }
+
     batchBodies() {
         return this.requests
             .filter((request) => request.path === "/api/resources/batch")

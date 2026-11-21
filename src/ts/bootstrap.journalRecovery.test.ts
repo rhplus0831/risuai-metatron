@@ -61,7 +61,7 @@ const releases: (() => void)[] = [];
 
 beforeAll(() =>
     warmModules(async () => {
-        const seed = await StoreBackedServer.create();
+        const seed = await StoreBackedServer.create({ lock: true });
         await recoveryBootServer(seed);
         seed.close();
         await import("./bootstrap");
@@ -114,7 +114,7 @@ beforeEach(async () => {
     });
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    server = await StoreBackedServer.create();
+    server = await StoreBackedServer.create({ lock: true });
     server.set("ui", "main", { ...server.record("ui", "main")!.data, didFirstSetup: true });
     server.set("modules", "main", []);
     server.set("plugins", "main", []);
@@ -1049,6 +1049,135 @@ describe("Apply preserves refused recovery memory", () => {
         await expect(applyRecoveryDraft(draft)).rejects.toThrow(language.recoveryDrafts.memoryDraftFailed);
         expect(await current.journal.listDrafts()).toEqual([draft]);
         expect(server.chat("c", "chat")!.data).not.toHaveProperty("hypaV3Data");
+    });
+});
+
+async function stageChatDraft(current: Awaited<ReturnType<typeof boot>>, ops: ChatOp[]) {
+    await current.chat.ensureChatLoaded(ref());
+    const id = await current.journal.putDraft({
+        epoch: server.store.epoch(),
+        scope: "chat",
+        target: "c\0chat",
+        layers: {
+            pending: {
+                baseRevision: server.chat("c", "chat")!.revision,
+                groupId: "original-chat-draft",
+                ops: ops.map((op) => ({ op })),
+            },
+        },
+    });
+    const draft = (await current.journal.listDrafts()).find((entry) => entry.id === id);
+    if (!draft) throw new Error("Missing recovery draft");
+    return draft;
+}
+
+describe("Apply after an intervening memory job", () => {
+    const recoveredSummary = "Memory from the draft";
+    const jobSummary = "Memory from the job";
+    const hypaMemory = (text: string) => ({
+        chunks: [{ mainChunkID: 1, text }],
+        mainChunks: [],
+        lastMainChunkID: 1,
+    });
+
+    it("keeps a mixed draft when its memory edit is refused and its note saves", async () => {
+        seedChats();
+        const current = await boot();
+        await flush();
+        const draft = await stageChatDraft(current, [
+            { op: "meta", set: { supaMemoryData: recoveredSummary, note: "Recovered note" } },
+        ]);
+        const { applyRecoveryDraft } = await import("./storage/journalRecovery");
+        const { language } = await import("src/lang");
+        server.beforeNextBatch = () => server.writeJobChatMeta("c", "chat", { supaMemoryData: jobSummary });
+
+        await expect(applyRecoveryDraft(draft)).rejects.toThrow(language.recoveryDrafts.notSaved);
+        expect(server.chat("c", "chat")!.data).toMatchObject({ supaMemoryData: jobSummary, note: "Recovered note" });
+        expect(await current.journal.listDrafts()).toEqual([draft]);
+        await flush();
+        expect(current.chat.findChat(ref())!.supaMemoryData).toBe(jobSummary);
+        await expect(applyRecoveryDraft(draft)).resolves.toEqual({ skipped: [] });
+        expect(server.chat("c", "chat")!.data.supaMemoryData).toBe(recoveredSummary);
+        expect(await current.journal.listDrafts()).toEqual([]);
+    });
+
+    it.each(["supaMemoryData", "hypaV2Data"] as const)(
+        "waits for a held refusal reread before retrying a %s draft",
+        async (field) => {
+            seedChats();
+            const current = await boot();
+            await flush();
+            const value = (text: string) => (field === "supaMemoryData" ? text : hypaMemory(text));
+            const draft = await stageChatDraft(current, [{ op: "meta", set: { [field]: value(recoveredSummary) } }]);
+            const { applyRecoveryDraft } = await import("./storage/journalRecovery");
+            const { language } = await import("src/lang");
+            const read = latch();
+            const release = latch();
+            releases.push(release.resolve);
+            io.fetch = async (path, init) => {
+                if (
+                    path === "/api/resources/read" &&
+                    JSON.parse(init!.body as string).chats?.some((row: { id: string }) => row.id === "chat")
+                ) {
+                    read.resolve();
+                    await release.promise;
+                }
+                return transport.fetch(path, init);
+            };
+            server.beforeNextBatch = () => server.writeJobChatMeta("c", "chat", { [field]: value(jobSummary) });
+
+            await expect(applyRecoveryDraft(draft)).rejects.toThrow(language.recoveryDrafts.notSaved);
+            await vi.advanceTimersByTimeAsync(1200);
+            await read.promise;
+            expect(current.chat.findChat(ref())![field]).toEqual(value(recoveredSummary));
+            const retry = applyRecoveryDraft(draft);
+            // Observe settlement even if a regression returns before the held read.
+            const finished = retry.then(
+                () => true,
+                () => false,
+            );
+            await drain();
+            expect(await current.journal.listDrafts()).toEqual([draft]);
+            expect(server.chat("c", "chat")!.data[field]).toEqual(value(jobSummary));
+
+            release.resolve();
+            expect(await finished).toBe(true);
+            expect(server.chat("c", "chat")!.data[field]).toEqual(value(recoveredSummary));
+            expect(await current.journal.listDrafts()).toEqual([]);
+        },
+    );
+
+    it("keeps the draft when a reread confirms that the last displayed chat is gone", async () => {
+        seedChats(["chat"]);
+        const current = await boot();
+        await flush();
+        const draft = await stageChatDraft(current, [{ op: "meta", set: { supaMemoryData: recoveredSummary } }]);
+        const { applyRecoveryDraft } = await import("./storage/journalRecovery");
+        const { language } = await import("src/lang");
+        const list = latch();
+        releases.push(list.resolve);
+        io.fetch = async (path, init) => {
+            if (path === "/api/resources/read" && JSON.parse(init!.body as string).chatSummaryCollections?.length) {
+                await list.promise;
+            }
+            return transport.fetch(path, init);
+        };
+        const removed = server.chat("c", "chat")!;
+        remoteChat([{ op: "delete" }]);
+        server.chatBatch([
+            {
+                characterId: "c",
+                chatId: "replacement",
+                baseRevision: null,
+                ops: [{ op: "create", chat: { ...removed.data, id: "replacement" } }],
+            },
+        ]);
+        current.chat.markChatStale(ref());
+        await expect(applyRecoveryDraft(draft)).rejects.toThrow(language.recoveryDrafts.unavailable);
+        expect(current.chat.findChat(ref())).toBeDefined();
+        await expect(applyRecoveryDraft(draft)).rejects.toThrow(language.recoveryDrafts.unavailable);
+        expect(await current.journal.listDrafts()).toEqual([draft]);
+        expect(server.chat("c", "replacement")!.data.supaMemoryData).toBeUndefined();
     });
 });
 

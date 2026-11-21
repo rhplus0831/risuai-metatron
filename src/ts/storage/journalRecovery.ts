@@ -31,6 +31,7 @@ import {
 import {
     appendMessage,
     chatEntry,
+    chatHydrationHold,
     chatList,
     chatOwnerToken,
     createChat,
@@ -41,7 +42,9 @@ import {
     installRecoveredChat,
     installRecoveredOrder,
     isCharacterGenerating,
+    isChatBehind,
     isChatGenerating,
+    isChatKnownAbsent,
     mergeChatMeta,
     patchMessage,
     pinChat,
@@ -77,6 +80,7 @@ import {
     beginMutationScope,
     flushResources,
     heldRecordSnapshot,
+    refreshStaleChat,
     sameJson,
 } from "./resourceSync.svelte";
 import { reconcileSelection, settings } from "./settingsViews.svelte";
@@ -1088,6 +1092,25 @@ async function keepRecoveryMemory(
     return true;
 }
 
+/** A loaded mirror can still contain an optimistic edit that a previous Apply lost. */
+async function loadChatForApply(ref: ChatRef, flush: () => Promise<unknown>) {
+    if (!(await ensureChatLoaded(ref))) throw new Error(language.recoveryDrafts.unavailable);
+    if (!isChatBehind(ref)) return;
+    // A recovered resend must settle before the idle read can replace its optimistic copy.
+    if (chatHydrationHold(ref) === "saving") await flush();
+    await refreshStaleChat(ref);
+}
+
+function assertCurrentChatForApply(ref: ChatRef, owner: string, epoch: string) {
+    if (chatOwnerToken(ref.chaId) !== owner || !findChat(ref) || isChatKnownAbsent(ref)) {
+        throw new Error(language.recoveryDrafts.unavailable);
+    }
+    assertSaveAdmission();
+    if (epoch !== getResourceEpoch()) throw new Error(language.recoveryDrafts.otherEpoch);
+    if (isChatGenerating(ref)) throw new Error(language.chatGenerating);
+    if (isChatBehind(ref)) throw new Error(language.recoveryDrafts.notSaved);
+}
+
 /**
  * Applies confirmed intent through the normal writers, retaining the draft until saving succeeds.
  * Admission and expiry are checked before opening a mutation scope. Record priority is latest,
@@ -1122,6 +1145,7 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
         return { skipped: [] };
     }
     const scope = beginMutationScope();
+    const flush = () => flushResources({ scope });
     const keys = new Set<string>();
     const changedMembership = new Set<string>();
     let skipped: string[] = [];
@@ -1176,19 +1200,14 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
                 // A previous Apply queued the complete create; its lost answer only needs a flush.
                 keys.add(`chats/${destination.chaId}/${destination.chatId}`);
                 const memory = finalHypaV3Data(tail);
-                if (memory !== undefined && !isSealedHypaV3Data(memory)) {
+                const checkMemory = memory !== undefined && !isSealedHypaV3Data(memory);
+                if (checkMemory || isChatBehind(destination) || isChatKnownAbsent(destination)) {
                     const owner = chatOwnerToken(destination.chaId);
                     release = pinChat(destination);
-                    if (
-                        !(await ensureChatLoaded(destination)) ||
-                        chatOwnerToken(destination.chaId) !== owner ||
-                        !findChat(destination)
-                    ) {
-                        throw new Error(language.recoveryDrafts.unavailable);
-                    }
-                    assertSaveAdmission();
-                    if (entry.epoch !== getResourceEpoch()) throw new Error(language.recoveryDrafts.otherEpoch);
-                    if (await keepRecoveryMemory(entry, destination, memory, true)) memoryKept = "filed";
+                    await loadChatForApply(destination, flush);
+                    assertCurrentChatForApply(destination, owner, entry.epoch);
+                    if (checkMemory && (await keepRecoveryMemory(entry, destination, memory, true)))
+                        memoryKept = "filed";
                 }
             } else if (!chatEntry(ref)) {
                 if (!snapshot) throw new Error(language.recoveryDrafts.noSnapshot);
@@ -1199,12 +1218,8 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
             } else {
                 const owner = chatOwnerToken(ref.chaId);
                 release = pinChat(ref);
-                if (!(await ensureChatLoaded(ref)) || chatOwnerToken(ref.chaId) !== owner || !findChat(ref)) {
-                    throw new Error(language.recoveryDrafts.unavailable);
-                }
-                assertSaveAdmission();
-                if (entry.epoch !== getResourceEpoch()) throw new Error(language.recoveryDrafts.otherEpoch);
-                if (isChatGenerating(ref)) throw new Error(language.chatGenerating);
+                await loadChatForApply(ref, flush);
+                assertCurrentChatForApply(ref, owner, entry.epoch);
                 keys.add(`chats/${ref.chaId}/${ref.chatId}`);
                 ({ skipped, skippedOps, refusedHypaV3Data } = applyChatOps(ref, ops));
                 if (refusedHypaV3Data !== undefined && !snapshot && onlyHypaV3Data(ops)) {
@@ -1217,7 +1232,7 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
             }
             appliedChatRef = appliedRef;
         }
-        const result = await flushResources({ scope });
+        const result = await flush();
         // Flush reports kind/id for records and chats/characterId[/chatId] for chat work.
         const affected = (key: string) => {
             const normalized = key.replaceAll("\u0000", "/");

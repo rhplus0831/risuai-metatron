@@ -1,8 +1,10 @@
 // @vitest-environment happy-dom
 
 import { flushSync, mount, tick, unmount } from "svelte";
+import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { alertInput, showHypaV2Alert, type alertData } from "src/ts/alert";
+import { alertInput, dismissReloadNotice, reloadNotice, showHypaV2Alert, type alertData } from "src/ts/alert";
+import { saveOverUnseenMemory } from "src/ts/storage/tests/memoryEditorServer";
 import { NEXT_DIALOG_GAP_MS, type AlertDialog } from "src/ts/alertQueue";
 import { initHotkey } from "src/ts/hotkey";
 import { noteGenerationFrame, resetGenerationProgress } from "src/ts/process/generationProgress.svelte";
@@ -341,6 +343,25 @@ describe("dialogs keep their requested character and chat", () => {
         expect(input.value).toBe("generated while disconnected");
         expect(dialogPanel().querySelector('[role="status"]')).toBeNull();
         expect(workQueued()).toBe(false);
+    });
+
+    it("shows the job's chunks in the open HypaV2 editor after an unseen memory write", async () => {
+        const chat = await openMemoryFor("a");
+        const hypaV2Data = memory("a");
+        hypaV2Data.chunks[0].text = "New job chunk";
+        try {
+            const { stored, reread } = await saveOverUnseenMemory(chat, { hypaV2Data }, () => {
+                expect(target.querySelector("textarea")!.readOnly).toBe(false);
+                edit("Correction from the old copy");
+            });
+            expect(stored.hypaV2Data).toEqual(hypaV2Data);
+            expect(reread).toBe(true);
+            flushSync();
+            expect(target.querySelector("textarea")!.value).toBe("New job chunk");
+            expect(get(reloadNotice)).toBe(language.memoryEditRefused);
+        } finally {
+            dismissReloadNotice();
+        }
     });
 
     it.each(["unloaded", "without memory"])(

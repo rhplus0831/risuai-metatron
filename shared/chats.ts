@@ -167,6 +167,8 @@ export type ChatGroupResult = {
     checkpoints?: CheckpointOutcome[];
     /** One entry per `setTranslation` op, in op order. */
     translations?: TranslationOutcome[];
+    /** A whole HypaV2 or SupaMemory field was skipped because a job wrote it after the group's base. */
+    memoryRefused?: true;
     /** One entry per `selectCandidate` op, in op order; present whenever the group has one. */
     selections?: ("applied" | "refused")[];
     /**

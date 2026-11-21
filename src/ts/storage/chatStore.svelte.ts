@@ -57,7 +57,7 @@ import { textHash } from "../../../shared/textHash.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { dropInvalidTranslation, isMessageTranslation } from "../../../shared/translation/messageTranslation.ts";
 import { language } from "src/lang";
-import { alertConfirm, alertError, alertToast } from "../alert";
+import { alertConfirm, alertError, alertReloadNotice, alertToast } from "../alert";
 import type { character, Chat, groupChat, Message, MessageTranslation } from "./database.svelte";
 import { characterData, setCharacterChatView } from "./records.svelte";
 import { readRefs } from "./resourceClient";
@@ -308,9 +308,9 @@ class ChatWorkSet extends Set<string> {
 const ackedRevisions = new Map<string, string>();
 
 /**
- * Chats (`keyOf`) this client still holds a revision of that an authoritative chat list showed the
- * server no longer has, while this client keeps them (local work, a quarantine, a generation, or a
- * delete that cannot be sent): the server's order cannot hold them, so reorders, create indices, and
+ * Chats (`keyOf`) this client still holds a revision of that a server read or list showed gone,
+ * while this client keeps them (local work, a quarantine, a generation, a last-chat placeholder,
+ * or a delete that cannot be sent): the server's order cannot hold them, so reorders, create indices, and
  * order acknowledgements leave them out (`serverHolds`). The held revision stays (the base of their
  * work, whose conflict removes them). Cleared only by positive membership evidence: a list that
  * places the chat, an acknowledged create whose answer lists the chat in the order, or the revision
@@ -2570,6 +2570,11 @@ export function isChatBehind(ref: ChatRef): boolean {
     untrack(dropAnsweredNotices);
     const key = keyOf(ref.chaId, ref.chatId);
     return staleChats.has(key) || noticedChats.has(key);
+}
+
+/** A server read or list confirmed this chat is gone, but its placeholder or local work is still held. */
+export function isChatKnownAbsent(ref: ChatRef): boolean {
+    return absentChats.has(keyOf(ref.chaId, ref.chatId));
 }
 
 /**
@@ -6137,6 +6142,7 @@ export function ackChatWork(
         jobBlocked.delete(group.key);
         const result = results[index];
         if (result) {
+            if (result.memoryRefused) alertReloadNotice(language.memoryEditRefused);
             if (conflictListener && result.targets?.includes("missing")) {
                 let targetIndex = 0;
                 const missingOps = group.ops.filter((op) => {
@@ -6222,7 +6228,12 @@ export function ackChatWork(
             }
             adoptCandidateRows(group, result, previousRevision);
         }
-        settleKey(group.key, group.seq);
+        if (result?.memoryRefused) {
+            // Recovery Apply keeps its source draft when the scoped flush reports a discarded edit.
+            markDiscarded(group.key, group.seq);
+        } else {
+            settleKey(group.key, group.seq);
+        }
         if (
             result &&
             !pending.has(group.key) &&
@@ -7166,6 +7177,7 @@ function removeRemoteChat(chaId: string, chatId: string) {
     const ids = findCharacter(chaId) ? memberIds(chaId) : [];
     const index = ids.indexOf(chatId);
     if (index !== -1 && ids.length === 1) {
+        absentChats.add(key);
         notifyRemoval({ chaId, chatId });
         return;
     }
@@ -7499,6 +7511,7 @@ export function applyRemoteCollection(
             orderRevisions.set(chaId, collection.order.revision);
         }
         for (const key of removed) {
+            absentChats.add(key);
             notifyRemoval({ chaId, chatId: key.slice(prefix.length) });
         }
         return true;

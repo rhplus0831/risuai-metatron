@@ -90,6 +90,7 @@ export function createChatStoreMock(overrides: ModuleMockOverrides<ChatStoreModu
         hydrateChatPatch: vi.fn(() => "old" as const),
         isChatStale: vi.fn(() => false),
         isChatBehind: vi.fn(() => false),
+        isChatKnownAbsent: vi.fn(() => false),
         chatHydrationHold: vi.fn(() => "none" as const),
         prepareChatHydrationRefresh: vi.fn(() => null),
         heldChatRevision: vi.fn(() => null),

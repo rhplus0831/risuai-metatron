@@ -3796,6 +3796,7 @@ export const languageEnglish = {
     customModels: "Custom Models",
     igpPrompt: "IGP Prompt",
     useTokenizerCaching: "Tokenizer Caching",
+    memoryEditRefused: "Memory changed elsewhere, so your edit could not be saved. The latest memory has been loaded.",
     hypaMemoryV2Modal: "Hypa V2 Modal",
     hypaMemoryV3Modal: "Hypa V3 Modal",
     showMenuHypaMemoryModal: "Show Menu HypaV2 Modal",

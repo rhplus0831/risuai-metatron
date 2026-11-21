@@ -27,7 +27,6 @@ Sources the entries name (drop a line when no entry names it any more):
 
 - [characters-modules](#characters-modules) (1)
 - [chat-pipeline](#chat-pipeline) (3)
-- [memory](#memory) (1)
 - [network-jobs](#network-jobs) (1)
 - [persistence](#persistence) (1)
 - [structured-memory](#structured-memory) (1)
@@ -84,25 +83,6 @@ Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-
   an answer during that wait and saw it overwritten. Not fixed. A fix decides the write rule for competing completions
   of one exchange and makes it hold across tabs.
   [OOC admission and answer write](../../src/ts/ooc/oocSession.svelte.ts#L183)
-
-## memory
-
-Guide: [Long-Term Memory and Embeddings](../structure/memory.md#known-hazards).
-
-- A tab that has not heard of another device's running job can still write a whole HypaV2 or SupaMemory field from
-  its copy. The HypaV2 chunk editor and the SupaMemory text areas are read-only while the tab knows of a generation
-  in the chat (its own send, a followed job, a message lock, a job the live feed lists) or of a chat update it has not
-  read yet (`memoryEditorWriteFence`). Before the first announcement, or while the tab is disconnected, an edit is
-  accepted, and the server takes a `meta.set` with an older revision and assigns the whole field.
-  - What is lost then: an edit from a stale copy drops the job's new chunks or summary, and a SupaMemory summary
-    computed from an older value replaces an edit that landed first (HypaV2 merges by identity and keeps such an
-    edit). Both orders were reproduced on 2026-11-21 at `ddb0c225b`, before the fence, against a real send through
-    the in-process server.
-  - Not fixed. Closing the window needs the server to refuse a whole-field memory write whose base is older than the
-    job's write; the tab cannot know of a job it has not heard of.
-  - [Fence](../../src/ts/storage/chatFieldDraft.svelte.ts#L24) ·
-    [Chunk setter](../../src/lib/Others/AlertComp.svelte#L297) ·
-    [Job's write](../../server/src/prompt/assemble.ts#L2152)
 
 ## network-jobs
 

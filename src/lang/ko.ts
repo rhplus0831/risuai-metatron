@@ -3683,6 +3683,7 @@ export const languageKorean = {
     customModels: "커스텀 모델",
     igpPrompt: "IGP 프롬프트",
     useTokenizerCaching: "토크나이저 캐싱 사용",
+    memoryEditRefused: "다른 곳에서 메모리가 바뀌어 편집을 저장하지 못했습니다. 최신 내용을 불러왔습니다.",
     hypaMemoryV2Modal: "하이파 V2 모달",
     hypaMemoryV3Modal: "하이파 V3 모달",
     showMenuHypaMemoryModal: "메뉴에 하이파 V2 모달 버튼 표시",
