@@ -27,7 +27,6 @@ Sources the entries name (drop a line when no entry names it any more):
 
 - [characters-modules](#characters-modules) (1)
 - [chat-pipeline](#chat-pipeline) (4)
-- [media-aux](#media-aux) (1)
 - [memory](#memory) (2)
 - [network-jobs](#network-jobs) (1)
 - [persistence](#persistence) (1)
@@ -92,15 +91,6 @@ Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-
   trailing newline was never translated; an ordinary comment past line index 100 can also break the loop and reach
   the download with only a prefix. Not fixed. A fix covers line endings, the end of the file, and comments in a long
   catalog. [PO reader and download](../../src/ts/process/files/multisend.ts#L32)
-
-## media-aux
-
-Guide: [Media and Auxiliary Features: TTS, Image Generation, Media, Playground](../structure/media-aux.md#known-hazards).
-
-- Hugging Face TTS can silently discard a service error. An isolated run of `sayTTS` (structure audit, 2026-11-18)
-  with a JSON HTTP 503 error and no retry estimate made one request and returned without playback, retry, or alert;
-  with the same body and HTTP 502 the error alert appeared. Not fixed. A fix surfaces the provider's error when the
-  503 answer supplies no usable estimate. [TTS response handling](../../src/ts/process/tts.ts#L439)
 
 ## memory
 

@@ -456,6 +456,41 @@ describe("sayTTS and stopTTS", () => {
         expect(deps.alert).not.toHaveBeenCalled();
     });
 
+    it.each([
+        ["a missing estimate", '{"error":"Service unavailable"}'],
+        ["a nonnumeric estimate", '{"error":"Service unavailable","estimated_time":"unknown"}'],
+        ["malformed JSON", "Upstream service unavailable"],
+    ])("shows the Hugging Face 503 response body for %s without retrying", async (_case, body) => {
+        vi.useFakeTimers();
+        const speaker = character("huggingface");
+        speaker.hfTTS = { language: "en", model: "test/speech-model" };
+        deps.globalFetch
+            .mockResolvedValueOnce({ ...globalJson(null, 503), data: new TextEncoder().encode(body) })
+            .mockResolvedValue(globalJson({ error: "Unexpected retry" }, 502));
+        const work = sayTTS(speaker, "Read this");
+        try {
+            await vi.runAllTimersAsync();
+            await work;
+            expect(deps.alert).toHaveBeenCalledExactlyOnceWith(`HTTP error: ${body}`);
+            expect(deps.globalFetch).toHaveBeenCalledOnce();
+        } finally {
+            stopTTS();
+            vi.useRealTimers();
+        }
+    });
+
+    it("shows the Hugging Face 502 response body without retrying", async () => {
+        const speaker = character("huggingface");
+        speaker.hfTTS = { language: "en", model: "test/speech-model" };
+        const body = { error: "Service unavailable" };
+        deps.globalFetch.mockResolvedValueOnce(globalJson(body, 502));
+
+        await sayTTS(speaker, "Read this");
+
+        expect(deps.alert).toHaveBeenCalledExactlyOnceWith(`HTTP error: ${JSON.stringify(body)}`);
+        expect(deps.globalFetch).toHaveBeenCalledOnce();
+    });
+
     it("ends a Hugging Face estimated_time wait on Stop without retrying or alerting", async () => {
         vi.useFakeTimers();
         const estimatedSeconds = 5;

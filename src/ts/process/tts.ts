@@ -191,8 +191,8 @@ async function playAudio(audio: ArrayBuffer, mimeType: string, ctx: TTSPlaybackC
  * VOICEVOX and Hugging Face pass the run's signal to their translators in
  * `src/ts/translator/translator.ts`, suppressing translator alerts after cancellation.
  * When `character.hfTTS.language !== "en"`, Hugging Face calls `runTranslator` once
- * before the retry loop and reuses its result. A JSON 503 `estimated_time` waits with
- * `retryDelay` on the same signal before retrying.
+ * before the retry loop and reuses its result. A JSON 503 with a usable `estimated_time`
+ * waits with `retryDelay` on the same signal before retrying.
  * GPT-SoVITS with non-default gain runs `runPostprocessorPipeline` explicitly before
  * `playProcessedAudio`, preserving audio hooks while adding its GainNode.
  */
@@ -435,14 +435,24 @@ export async function sayTTS(character: ClientCharacter, text: string) {
                     );
                     signal.throwIfAborted();
 
-                    if (response.status === 503 && response.headers["content-type"] === "application/json") {
-                        const json = JSON.parse(Buffer.from(response.data).toString());
-                        if (json.estimated_time) {
-                            await retryDelay(json.estimated_time * 1000, signal);
-                            continue;
+                    if (response.status >= 400) {
+                        const body = Buffer.from(response.data).toString();
+                        if (response.status === 503 && response.headers["content-type"] === "application/json") {
+                            let estimate: unknown;
+                            try {
+                                estimate = JSON.parse(body)?.estimated_time;
+                            } catch {
+                                // A malformed JSON body can still contain the provider's error.
+                            }
+                            if (typeof estimate === "number" || typeof estimate === "string") {
+                                const delay = Number(estimate) * 1000;
+                                if (delay > 0 && delay <= 2 ** 31 - 1) {
+                                    await retryDelay(delay, signal);
+                                    continue;
+                                }
+                            }
                         }
-                    } else if (response.status >= 400) {
-                        alertError(language.errors.httpError + Buffer.from(response.data).toString());
+                        alertError(language.errors.httpError + body);
                         return;
                     } else if (response.status === 200) {
                         const mimeType = response.headers["content-type"] || "audio/wav";
