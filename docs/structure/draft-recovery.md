@@ -258,6 +258,11 @@
 - Before-value checks protect the state recovery observed; a remote edit between that read and dispatch can still be
   overwritten by a by-id op, because the server has no field preconditions. Decision: Durable Drafts D2 (e), Review
   record point 11, archive.
+- Boot recovery takes a chat's revision from the boot snapshot and then awaits the full chat (`recoverJournal`,
+  `ensureChatLoaded`). A commit by another writer that lands during that read is in the loaded body, but the pending
+  edit is classified with the earlier revision and replays without a draft; the server accepts the stale group. Nothing
+  is overwritten: the skipped step is the review. Decision: owner, 2026-11-21 (found-issues review): the window is
+  narrow and nothing is lost.
 - Chrome discards a journal write begun in `pagehide` when the page unloads
   ([observation](../reports/measurements/client/durable-drafts-observations-2026-10-29.md)), so the hide flush protects
   only a page that stays alive hidden, such as a backgrounded PWA killed later. Crash and kill protection is per-cycle

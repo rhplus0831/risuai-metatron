@@ -27,13 +27,12 @@ Sources the entries name (drop a line when no entry names it any more):
 
 - [build-test-platforms](#build-test-platforms) (1)
 - [chat-pipeline](#chat-pipeline) (5)
-- [draft-recovery](#draft-recovery) (1)
 - [media-aux](#media-aux) (1)
 - [memory](#memory) (2)
 - [network-jobs](#network-jobs) (1)
 - [persistence](#persistence) (1)
 - [settings-i18n](#settings-i18n) (1)
-- [structured-memory](#structured-memory) (3)
+- [structured-memory](#structured-memory) (2)
 - [translation](#translation) (1)
 - [ui-theming](#ui-theming) (3)
 
@@ -103,30 +102,6 @@ Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-
   - The values to restore are already stored: a bundle's newest reply keeps its `scriptstateCheckpoint` (a bounded
     snapshot, absent on legacy or oversized ones), and the removal reroll's recovery uses it. Not fixed.
   - [`move`](../../src/ts/process/rerollHistory.ts#L104) · [Candidate switch](../../shared/rerollCandidates.ts#L173)
-
-## draft-recovery
-
-Guide: [Draft Recovery: Journal, Composer Rows, Recovery Drafts](../structure/draft-recovery.md#known-hazards).
-
-- Boot recovery can replay a pending edit into a chat that another writer changed during the recovery's own read.
-  `recoverJournal` takes each candidate chat's revision from the boot snapshot and then awaits the full chat
-  (`ensureChatLoaded`). A commit by another tab or device that lands before the server answers that read is in the
-  loaded body, but the pending edit is classified and sent with the earlier revision; the server accepts a group with
-  a stale revision (HTTP 200, `stale: true`), so the edit lands and no recovery draft is filed. Reproduced on
-  2026-11-21 at `ddb0c225b` (the product journal over fake IndexedDB against the fixture's SQLite store, a second
-  device's note edit committed at the full-chat read): the pending append was inserted and both draft lists were
-  empty, where the classifier files a draft when it is given the newer revision.
-  - Scope: an append whose id is absent and whose anchor is usable (run). By the code also a pending `setText`,
-    `setMessage`, `patchMessage`, supported `meta` change, or single-message `remove` whose recorded before-values
-    still match.
-  - Reach: the app is reopened with an unsent journaled edit, and another writer commits to the same chat during the
-    boot's full-chat read (the whole recovery has a five-second deadline); an idle second tab is not enough. Nothing is
-    overwritten: the other writer's change stays and the replayed edit is the user's own. What is skipped is the
-    review.
-  - Not fixed. A fix pairs the loaded body with the revision it was installed at.
-  - [Replay loop](../../src/ts/storage/journalRecovery.ts#L1350) ·
-    [Classifier](../../src/ts/storage/journalRecovery.ts#L567) ·
-    [Stale acceptance](../../server/src/data/chatStore.ts#L2249)
 
 ## media-aux
 
@@ -261,20 +236,6 @@ Guide: [Structured Memory Records](../structure/structured-memory/records.md#kno
   [Cost query](../../server/src/prompt/memory/structured/rebuild.ts#L758) ·
   [Window planner](../../server/src/prompt/memory/structured/window.ts#L403) ·
   [Panel confirmation](../../src/lib/Others/StructuredMemory/memoryRecordPress.ts#L44)
-- A Timeline search hit opened while a coverage reread is out lands on nothing when the reread marks the event
-  retracted. The pending-reveal effect of `src/lib/Others/StructuredMemory/TimelineTab.svelte` settles in Read from
-  the held coverage when the id is there as an active event; it waits for coverage only when the id is absent.
-  Reproduced on 2026-11-21 at `ddb0c225b` in the mounted panel (Refresh pressed, the coverage answer held, a search hit
-  clicked, the answer then retracting the event): Read stayed selected with no row for the event and no "This event is
-  no longer recorded." status; a second Refresh changed nothing, and the Manage segment showed the event expanded. Not
-  run in the app with two tabs.
-  - Scope: a reveal inside an already mounted Timeline (a search hit). "Open in Manage" switches the segment at once
-    and a Pages link mounts a new Timeline, so neither holds stale coverage.
-  - Reach: the event must be retracted between the held read and the one in flight, by a memory writer task that
-    re-records a marked event, or by another tab or device (an explicit retraction, or deleting a cited message).
-  - Not fixed. A fix keeps the target pending while a coverage read is out, or switches to Manage when an open event
-    turns retracted.
-  - [Reveal effect](../../src/lib/Others/StructuredMemory/TimelineTab.svelte#L692)
 
 ## translation
 

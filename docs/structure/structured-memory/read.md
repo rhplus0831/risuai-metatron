@@ -419,6 +419,9 @@ meter off; pressing opens the panel. Character and folder badges use `groupHealt
 - Timeline rereads chapters only on `refresh` and after its own chapter actions: a chapter change from another tab, or
   one that lands while another fence keeps the panel read-only, shows on the next `refresh`. Decision: Timeline Chapter
   Synopses C16, 2026-11-18.
+- A Timeline search hit opened while a coverage reread is out settles in Read from the held coverage. If that reread
+  marks the event retracted, Read keeps no row and shows no notice; the Manage segment lists the event. Decision: owner,
+  2026-11-21 (found-issues review): the window is narrow and nothing is lost.
 - A test run refuses a Plugin `memory` slot or a `request` trigger, because a tab callback saves its mutations even when
   it throws. Decision: Structured Memory slice 7c, archive.
 - A test run leaves the request history row, its diagnostics event, and the job's generation receipt: the call's logs,
