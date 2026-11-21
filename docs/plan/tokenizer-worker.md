@@ -7,7 +7,7 @@ D1 to D12 on 2026-11-22 as proposed, answering Q1 to Q4 with the proposals. Audi
 against `2f129b7b2`: [report](../reports/audits/plan-runner/tokenizer-worker-2026-11-22.md), 18 findings (1 P1, 10 P2,
 7 P3) and 8 more in the corrections (4 P2, 4 P3), all fixed in this text. Two corrections changed what the owner
 accepted, and the owner approved them on 2026-11-22 before any run: D11 (a worker with work holds the process, in
-place of always `unref`ed) and D4 with D8 (the length limit is not a bound on time). Landed: 1 (`07376234a`), 2 (`349d882c4`), 3 (`737a559ec`).
+place of always `unref`ed) and D4 with D8 (the length limit is not a bound on time). Landed: 1 (`07376234a`), 2 (`349d882c4`), 3 (`737a559ec`), 4 (`0cfa55abd`).
 
 Sources: `server/src/prompt/tokenizers/` (every file), `server/src/prompt/tokens.ts`, `server/src/routes/tokens.ts`,
 `shared/prompt/chatTokens.ts`, the counter's call sites, `server/src/app.ts` (`createServerContext`), and the existing

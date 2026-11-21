@@ -5,7 +5,7 @@ shipped behavior; [the archive](../archived-plan/README.md) indexes completed pl
 their last commit and path, and the [backlog](../README.md) holds what they left open.
 
 - [Tokenizer Worker](tokenizer-worker.md): token counts in worker threads, so a long text does not hold the
-  server. Decisions accepted and audited 2026-11-22; slices 1 to 3 landed.
+  server. Decisions accepted and audited 2026-11-22; every slice landed.
 
 When a plan is completed or retired, remove its file and active link and record it
 in the archive, following the archive's procedure for the plan's open items. Use `None`
