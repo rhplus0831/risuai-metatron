@@ -64,6 +64,7 @@ import {
     setPluginCustomValue,
     setOwnedPluginStorageItem,
 } from "src/ts/storage/pluginStorageStore.svelte";
+import { waitForResourceFlush } from "src/ts/storage/resourceFlushWait";
 import { assertSaveAdmission, flushResources, onPluginStorageDiscarded } from "src/ts/storage/resourceSync.svelte";
 import { selectPersona, selectedIndex } from "src/ts/storage/selection.svelte";
 import { batchRecordWrites } from "src/ts/storage/records.svelte";
@@ -1711,7 +1712,7 @@ async function withDetachedDatabaseChats<T>(
             flushedLegacyAlgorithm = legacyMemoryAlgorithm(flushedSettings);
             let flushed: Awaited<ReturnType<typeof flushResources>>;
             try {
-                flushed = await flushResources();
+                flushed = await waitForResourceFlush(flushResources());
             } catch {
                 assertSaveAdmission();
                 return false;

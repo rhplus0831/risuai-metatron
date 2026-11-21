@@ -83,19 +83,19 @@ Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-
 Guide:
 [Network and Jobs: Fetch Routing, Aux Fetch, Generation Job Client, Job Channel, Web Push](../structure/network-jobs.md#known-hazards).
 
-- Callers other than a send wait for a resource write's answer without a bound. A send's preflight ends on Stop or
-  after 30 seconds (`waitForSendFlush` in `src/ts/process/serverCommands.ts`); about twenty other call sites await
-  `flushResources()` with no deadline and no signal: backup and snapshot, checkpoint save and load, character, module
-  and plugin import, recovery draft Apply, the reroll candidate switch, the stored translation request, plugin API
-  chat reads, the job channel's callback saves, and the command jobs of `prepareServerJob` (script buttons, manual
-  triggers). The resource client gives the batch request no deadline, so one unanswered request holds each of them
-  and every later batch until it settles or the page reloads, and keeps the before-unload warning on.
-  - How far it was checked: reproduced on 2026-11-21 at `ddb0c225b` through the send, before its bound (the batch
-    committed on the server, its answer withheld for two simulated hours); the other callers were read, not run. A
-    real browser or proxy may fail the request sooner; no browser timeout was measured.
-  - Not fixed. A caller with a Stop or Cancel of its own can race its wait the way the send does; it must not abort
-    the shared write or count it as saved.
-  - [Send's bounded wait](../../src/ts/process/serverCommands.ts#L1164) ·
+- One unanswered resource batch still holds every later batch until it settles or the page reloads, and keeps the
+  before-unload warning on: the resource client gives the batch request no deadline. The send, command jobs, and the
+  callers a user waits on (backup and snapshot, checkpoint save and load, character, module and plugin import, recovery
+  draft Apply, the reroll candidate switch, stored translation, chat export, memory task start, standalone and
+  auxiliary requests, the job channel's callback barriers) end their own wait on Stop or after 30 seconds
+  (`waitForResourceFlush`) and leave the shared write running. Reroll reply restoration, new-chat memory inheritance
+  or restore, the two browser-local boot migrations, and background generation resync still wait without a bound.
+  - How far it was checked: reproduced on 2026-11-21 at `ddb0c225b` (the batch committed on the server, its answer
+    withheld for two simulated hours); the bounded callers were run against a held answer in the second fix round of
+    2026-11-22. A real browser or proxy may fail the request sooner; no browser timeout was measured.
+  - Not fixed: the shared batch. A deadline on the batch request needs a retry that cannot replay a batch the server
+    already committed.
+  - [Bounded wait](../../src/ts/storage/resourceFlushWait.ts#L10) ·
     [Batch cycle](../../src/ts/storage/resourceSync.svelte.ts#L2996) ·
     [Batch request](../../src/ts/storage/resourceClient.ts#L450)
 

@@ -886,6 +886,7 @@ export const languageKorean = {
     },
     chatCreateRefused:
         "서버에 이 채팅을 생성하지 못했습니다. 작성한 로컬 메시지는 그대로 보관되어 있습니다. 채팅을 수정·삭제하거나 '재시도'를 눌러 다시 시도해 주세요. 거부 알림 배너에서 로컬 데이터를 내보내거나 버릴 수도 있습니다.",
+    resourceSaveTimedOut: "서버가 저장 요청에 응답하지 않습니다. 잠시 후 다시 시도해 주세요.",
     resourceRecordRefused:
         "이 항목을 저장하지 못했습니다. 다른 항목은 정상적으로 계속 저장됩니다. 거부된 항목을 수정하면 저장을 다시 시도합니다.",
     chatSaveRefused:
@@ -938,6 +939,8 @@ export const languageKorean = {
         "모델을 가져왔지만, 압축 파일 내 {count}개 파일이 업로드 한도(약 100 MiB)를 초과하여 제외되었습니다: {names}",
     successImport: "성공적으로 가져왔습니다.",
     importedCharacter: "가져온 캐릭터",
+    importSavePending:
+        "가져온 항목은 이미 목록에 있고 저장 응답을 기다리는 중입니다. 다시 가져오지 말고 잠시 후 확인해 주세요.",
     characterImportUnconfirmed: "캐릭터를 추가했으나 저장 완료 여부를 확인하지 못했습니다 ({{error}}).",
     characterImportDiscarded: "가져온 캐릭터 또는 첫 채팅을 저장하지 못했습니다. 다시 가져와 주세요.",
     importedLoreSettings: {
@@ -994,6 +997,8 @@ export const languageKorean = {
     pluginPermissionsCarriedOver: "이전 버전에 허용했던 권한이 체크되어 있습니다.",
     pluginPermissionsInstallNote: "어느 쪽을 선택해도 플러그인은 설치됩니다.",
     pluginPermissionSaveError: "플러그인 권한을 저장하지 못했습니다: {error}",
+    pluginImportSavePending:
+        "플러그인 저장 응답을 기다리는 중입니다. 저장이 끝나면 탭을 새로고침해야 새 버전이 실행됩니다.",
     pluginImportUnconfirmed:
         "플러그인은 이 탭에 남아 있으나 저장 완료 여부를 확인하지 못했습니다 ({{error}}). 플러그인을 시작하지 않았습니다. 저장을 다시 시도할 수 있도록 페이지를 열어 두거나 파일을 다시 가져와 주세요.",
     pluginImportDiscarded: "다른 저장으로 가져온 플러그인이 교체되었습니다. 다시 가져와 주세요.",

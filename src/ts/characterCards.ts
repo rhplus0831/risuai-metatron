@@ -49,6 +49,7 @@ import {
     type ClientCharacter,
 } from "./storage/characterStore.svelte";
 import { incrementStatic } from "./storage/collectionStore.svelte";
+import { ResourceFlushTimeoutError, waitForResourceFlush } from "./storage/resourceFlushWait";
 import { beginMutationScope, flushResources, GenerationBlockedError } from "./storage/resourceSync.svelte";
 import { hasher } from "./parser/parser.svelte";
 import { type CharacterCardV3, type LorebookEntry } from "@risuai/ccardlib";
@@ -1502,10 +1503,14 @@ async function addImportedCharacter(char: character): Promise<string | null> {
     let discarded: string[];
     let refused: string[];
     try {
-        ({ discarded, refused } = await flushResources({ scope }));
+        ({ discarded, refused } = await waitForResourceFlush(flushResources({ scope })));
     } catch (error) {
         if (!characterSnapshot(chaId)) {
             alertError(language.characterImportDiscarded);
+            return null;
+        }
+        if (error instanceof ResourceFlushTimeoutError) {
+            alertError(language.importSavePending);
             return null;
         }
         const reason =

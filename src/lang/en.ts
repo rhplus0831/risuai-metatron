@@ -999,6 +999,8 @@ export const languageEnglish = {
         "Model imported, but {count} files in the zip are too large to upload (the limit is just under 100 MiB) and were skipped: {names}",
     successImport: "Successfuly imported",
     importedCharacter: "Imported Character",
+    importSavePending:
+        "This item is already in your list and its save is still pending. Please check back shortly without importing it again.",
     characterImportUnconfirmed: "The character was added, but its save could not be confirmed ({{error}}).",
     characterImportDiscarded: "The imported character or its first chat could not be saved. Please import it again.",
     importedLoreSettings: {
@@ -1054,6 +1056,8 @@ export const languageEnglish = {
     pluginPermissionsCarriedOver: "The permissions the previous version was allowed are checked.",
     pluginPermissionsInstallNote: "The plugin is installed whichever you answer.",
     pluginPermissionSaveError: "Could not save plugin permissions: {error}",
+    pluginImportSavePending:
+        "The server has not answered the plugin save request yet. Once the save finishes, reload this tab to run the new version.",
     pluginImportUnconfirmed:
         "The plugin is still in this tab, but its save could not be confirmed ({{error}}). It has not been started. Keep this page open to retry saving, or import the file again.",
     pluginImportDiscarded: "The imported plugin was replaced by another save. Please import it again.",
@@ -1921,6 +1925,7 @@ export const languageEnglish = {
     chatUnavailable: "the chat is not available on the server",
     chatCreateRefused:
         "This chat could not be created on the server. Its local messages have been kept. Edit or delete the chat, or choose Retry, to try again. Use the refusal banner to export or discard the local data.",
+    resourceSaveTimedOut: "The server has not answered the save request. Please try again shortly.",
     resourceRecordRefused:
         "This record could not be saved. Other records will continue saving. Edit the refused record to try again.",
     chatSaveRefused:

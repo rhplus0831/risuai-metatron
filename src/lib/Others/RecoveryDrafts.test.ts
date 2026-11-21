@@ -443,6 +443,36 @@ describe("recovery drafts", () => {
         },
     );
 
+    it("keeps the source draft when Apply's save response misses the deadline", async () => {
+        const entry = await put(recordInput());
+        const source = { id: entry.id, layers: entry.layers };
+        await render();
+        h.fake.holdNextBatchResponse = true;
+        const apply = button(language.apply, row());
+        apply.click();
+        try {
+            await settle();
+            expect(h.fake.releaseBatchResponse).not.toBeNull();
+            expect(h.record("ui").theme).toBe("recovered");
+            expect(apply.disabled).toBe(true);
+
+            await vi.advanceTimersByTimeAsync(30_000);
+            await settle();
+            expect(io.error).toHaveBeenCalledExactlyOnceWith(
+                `${language.recoveryDrafts.failed}\nError: The server has not answered the save request. Please try again shortly.`,
+            );
+            expect(apply.disabled).toBe(false);
+            expect(await journal.listDrafts()).toMatchObject([source]);
+        } finally {
+            h.fake.releaseBatchResponse?.();
+            await h.sync.flushResources();
+            await settle();
+        }
+        expect(await journal.listDrafts()).toMatchObject([source]);
+        expect(button(language.apply, row()).disabled).toBe(false);
+        expect(io.normal).not.toHaveBeenCalled();
+    });
+
     it("confirms applying chat operations by id on the current chat and keeps missing targets as a draft", async () => {
         const ops: ChatOp[] = [
             { op: "setText", id: "b", text: "Recovered B" },

@@ -11,6 +11,7 @@ import { compareRevision, RESOURCE_EPOCH_HEADER } from "../../../shared/resource
 import { isPlainObject } from "../../../shared/valueKinds.ts";
 import { heldChatRevision, isChatGenerating, loadChat, type ChatRef } from "../storage/chatStore.svelte";
 import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
+import { waitForResourceFlush } from "../storage/resourceFlushWait";
 import {
     assertSaveAdmission,
     flushResources,
@@ -226,7 +227,7 @@ async function prepare(ref: ChatRef): Promise<CheckpointFailure | null> {
     if (refused) return refused;
     const notices = generatingNoticeCount();
     try {
-        const { discarded } = await flushResources();
+        const { discarded } = await waitForResourceFlush(flushResources());
         if (discarded.includes(`chats/${ref.chaId}/${ref.chatId}`) || discarded.includes(`chats/${ref.chaId}`)) {
             return { status: "not-sent", reason: "discarded" };
         }

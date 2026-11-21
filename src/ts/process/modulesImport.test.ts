@@ -659,6 +659,35 @@ describe("the import alert waits for the acknowledgement", () => {
         expect(alerts.error).not.toHaveBeenCalled();
     });
 
+    it("points to the module already in the list when its save response misses the deadline", async () => {
+        const { modules, list, record, fake, sync, shown } = await boot();
+        picker.file = json("Pending module");
+        fake.holdNextBatchResponse = true;
+        const settled = vi.fn();
+        const importing = modules.importModule().then(settled);
+        const notice =
+            "This item is already in your list and its save is still pending. Please check back shortly without importing it again.";
+        try {
+            await vi.advanceTimersByTimeAsync(29_999);
+            expect(fake.releaseBatchResponse).not.toBeNull();
+            expect(names(list())).toEqual(["Pending module"]);
+            expect(record("modules")).toEqual(list());
+            expect(shown()).toEqual({ type: "wait", msg: language.moduleImportSaving });
+            expect(settled).not.toHaveBeenCalled();
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(shown()).toEqual({ type: "error", msg: notice });
+            expect(settled).toHaveBeenCalledOnce();
+        } finally {
+            fake.releaseBatchResponse?.();
+            await importing;
+            await sync.flushResources();
+        }
+        expect(names(list())).toEqual(["Pending module"]);
+        expect(shown()).toEqual({ type: "error", msg: notice });
+        expect(alerts.normal).not.toHaveBeenCalled();
+    });
+
     it("an import alone survives another tab's rename of a different module: both saved, success announced, no notice", async () => {
         const h = await boot();
         const { modules, list, record, fake, sync } = h;

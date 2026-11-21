@@ -33,6 +33,7 @@ import {
     ReloadGUIPointer,
 } from "../stores.svelte";
 import { addModule } from "../storage/collectionStore.svelte";
+import { ResourceFlushTimeoutError, waitForResourceFlush } from "../storage/resourceFlushWait";
 import { beginMutationScope, flushResources, GenerationBlockedError } from "../storage/resourceSync.svelte";
 import { get } from "svelte/store";
 import { moduleMembershipRevision, moduleAssetsRevision, moduleFieldPlain } from "../storage/records.svelte";
@@ -570,10 +571,14 @@ export async function addImportedModule(module: unknown, { announce }: { announc
     alertWait(language.moduleImportSaving);
     let discarded: string[];
     try {
-        ({ discarded } = await flushResources({ scope }));
+        ({ discarded } = await waitForResourceFlush(flushResources({ scope })));
     } catch (error) {
         if (!settings.modules.some((entry) => entry.id === id)) {
             alertError(language.moduleImportDiscarded);
+            return false;
+        }
+        if (error instanceof ResourceFlushTimeoutError) {
+            alertError(language.importSavePending);
             return false;
         }
         const reason =

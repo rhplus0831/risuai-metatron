@@ -16,6 +16,7 @@ import {
 import { pluginCodeTranspiler } from "./apiV3/transpiler";
 import { onPermissionGrantsRemoved } from "./apiV3/permissionStore";
 import { clearPluginHooks } from "./pluginHooks";
+import { ResourceFlushTimeoutError, waitForResourceFlush } from "../storage/resourceFlushWait";
 import {
     beginMutationScope,
     flushResources,
@@ -442,10 +443,14 @@ export async function importPlugin(
             upsertPlugin(pluginData);
             let discarded: string[];
             try {
-                ({ discarded } = await flushResources({ scope }));
+                ({ discarded } = await waitForResourceFlush(flushResources({ scope })));
             } catch (error) {
                 if (!settings.plugins.some((p) => p.name === pluginData.name && p.script === pluginData.script)) {
                     alertError(language.pluginImportDiscarded);
+                    return false;
+                }
+                if (error instanceof ResourceFlushTimeoutError) {
+                    alertError(language.pluginImportSavePending);
                     return false;
                 }
                 const reason =

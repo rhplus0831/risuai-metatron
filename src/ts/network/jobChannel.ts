@@ -66,6 +66,7 @@ import {
     selectedChatId,
     withChatsCopy,
 } from "../storage/chatStore.svelte";
+import { waitForResourceFlush } from "../storage/resourceFlushWait";
 import {
     applyHydration,
     beginMutationScope,
@@ -646,7 +647,7 @@ function holds(receipt: HydrationReceipt): boolean {
 async function barrier(entry: Outstanding, event: GenerationCallbackEvent) {
     let discarded: string[];
     try {
-        ({ discarded } = await flushResources());
+        ({ discarded } = await waitForResourceFlush(flushResources(), entry.abort.signal));
     } catch (error) {
         throw new CallbackFailed("barrier", `Local changes could not be saved: ${errorText(error)}`);
     }
@@ -1312,9 +1313,10 @@ async function runCallback(event: GenerationCallbackEvent, entry: Outstanding): 
         threw = true;
         hookError = error;
     }
-    // The hook's changes are settled even when it threw: a barrier failure wins over its error.
+    // Start the scoped flush even if the hook threw. An interrupted wait fails the barrier
+    // while the write continues.
     try {
-        const { discarded } = await flushResources({ scope });
+        const { discarded } = await waitForResourceFlush(flushResources({ scope }), entry.abort.signal);
         if (discarded.length > 0) {
             return failedAnswer("barrier", "A conflict discarded changes the callback made", discarded);
         }

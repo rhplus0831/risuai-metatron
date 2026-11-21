@@ -26,7 +26,12 @@ vi.mock("../storage/serverAuth", async () =>
 );
 vi.mock("../alert", async () => (await import("src/ts/tests/alertMock")).createAlertMock());
 vi.mock("src/lang", () => ({
-    language: { resourceReloaded: "reloaded", resourceRestored: "restored", chatGenerating: "generating" },
+    language: {
+        resourceReloaded: "reloaded",
+        resourceRestored: "restored",
+        resourceSaveTimedOut: "save response timed out",
+        chatGenerating: "generating",
+    },
     changeLanguage: vi.fn(),
 }));
 vi.mock("../process/modules", () => ({
@@ -674,6 +679,47 @@ describe("the callback barrier over the real stores", () => {
             discarded: ["ui/main"],
         });
         expect(b.record("ui").theme).toBe("remote");
+    });
+
+    it.each([
+        { stage: "before the hook", beforeHook: true, error: "Local changes could not be saved" },
+        { stage: "after the hook", beforeHook: false, error: "The callback's changes could not be saved" },
+    ])("fails the callback barrier at the save deadline $stage", async ({ beforeHook, error }) => {
+        const b = await boot();
+        const hook = vi.fn((text: string) => {
+            b.chat.appendMessage(refK, m("e", "From the hook"));
+            return `${text}!`;
+        });
+        b.hooks.editoutput.add(hook);
+        b.fake.holdNextBatchResponse = true;
+        if (beforeHook) b.settings.ui.theme = "Before the hook";
+        b.apply(b.callbackEvent("held-save"));
+        const expectedAnswer = {
+            type: "answer",
+            id: "held-save",
+            outcome: "failed",
+            failure: "barrier",
+            error: `${error}: save response timed out`,
+        };
+        const messages = beforeHook ? ["A", "B", "C"] : ["A", "B", "C", "From the hook"];
+        try {
+            await vi.advanceTimersByTimeAsync(29_999);
+            expect(b.fake.releaseBatchResponse).not.toBeNull();
+            expect(b.fake.texts("c", "k")).toEqual(messages);
+            expect(hook).toHaveBeenCalledTimes(beforeHook ? 0 : 1);
+            expect(b.answers).toEqual([]);
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(b.answers).toEqual([expectedAnswer]);
+            expect(b.fake.releaseBatchResponse).not.toBeNull();
+        } finally {
+            b.fake.releaseBatchResponse?.();
+            await b.sync.flushResources();
+            await vi.advanceTimersByTimeAsync(0);
+        }
+        expect(b.answers).toEqual([expectedAnswer]);
+        expect(hook).toHaveBeenCalledTimes(beforeHook ? 0 : 1);
+        expect(b.fake.texts("c", "k")).toEqual(messages);
     });
 
     it("fails before the hook runs when the client cannot hold a listed record at the receipt's revision, or holds it from another epoch", async () => {

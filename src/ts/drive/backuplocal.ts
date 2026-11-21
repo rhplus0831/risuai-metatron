@@ -5,6 +5,7 @@ import { language } from "src/lang";
 import { type BackupArchiveManifest, RESOURCE_KIND } from "../../../shared/resources.ts";
 import { selectPartialBackupAssets } from "../../../shared/backups.ts";
 import { exportBackup, importBackup, ResourceEpochMismatchError } from "../storage/resourceClient";
+import { waitForResourceFlush } from "../storage/resourceFlushWait";
 import { flushResources, refusedItems } from "../storage/resourceSync.svelte";
 import { findCharacter } from "../storage/characterStore.svelte";
 import { chatEntry } from "../storage/chatStore.svelte";
@@ -125,7 +126,7 @@ async function downloadArchive(
     let discarded: string[];
     let refused: string[];
     try {
-        ({ discarded, refused } = await flushResources());
+        ({ discarded, refused } = await waitForResourceFlush(flushResources()));
     } catch (error) {
         alertError(`Could not save your latest changes before the backup: ${error}`);
         return null;
@@ -427,7 +428,7 @@ export async function SaveUpstreamLocalBackup() {
     let discarded: string[];
     let refused: string[];
     try {
-        ({ discarded, refused } = await flushResources());
+        ({ discarded, refused } = await waitForResourceFlush(flushResources()));
     } catch (error) {
         alertError(`Could not save your latest changes before the backup: ${error}`);
         return;

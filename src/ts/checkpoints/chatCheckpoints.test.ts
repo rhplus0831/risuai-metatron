@@ -323,6 +323,40 @@ describe("chat checkpoints over the server store", () => {
         expect(checkpointRequests("load")).toHaveLength(1);
     });
 
+    it("releases the load guard at the save deadline without sending a checkpoint request", async () => {
+        const checkpoint = await checkpointThenChange();
+        const warnsBeforeUnload = () => {
+            const event = new Event("beforeunload", { cancelable: true });
+            window.dispatchEvent(event);
+            return event.defaultPrevented;
+        };
+        const resources = server.resources;
+        resources.holdNextBatchResponse = true;
+        tab.chat.setMessageText(ref, "reply", "Newer local edit");
+        const settled = vi.fn();
+        const loading = tab.checkpoints.loadCheckpoint(ref, checkpoint.id).then(settled);
+        try {
+            await vi.advanceTimersByTimeAsync(29_999);
+            expect(resources.releaseBatchResponse).not.toBeNull();
+            expect(resources.texts(ref.chaId, ref.chatId)).toEqual(["Newer local edit"]);
+            expect(get(tab.checkpoints.checkpointLoadBusy)).toBe(true);
+            expect(settled).not.toHaveBeenCalled();
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(settled).toHaveBeenCalledExactlyOnceWith({ status: "not-sent", reason: "saveFailed" });
+            expect(get(tab.checkpoints.checkpointLoadBusy)).toBe(false);
+            expect(checkpointRequests("load")).toHaveLength(0);
+            expect(warnsBeforeUnload()).toBe(true);
+        } finally {
+            resources.releaseBatchResponse?.();
+            await loading;
+            await tab.sync.flushResources();
+        }
+        expect(checkpointRequests("load")).toHaveLength(0);
+        expect(texts()).toEqual(["Newer local edit"]);
+        expect(warnsBeforeUnload()).toBe(false);
+    });
+
     it("discards another tab's queued pre-load text edit with a reload notice and shows the loaded chat", async () => {
         const checkpoint = await checkpointThenChange();
         const olderTab = tab;

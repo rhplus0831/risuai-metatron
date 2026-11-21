@@ -20,6 +20,7 @@ import {
     setMessageTranslation,
 } from "../storage/chatStore.svelte";
 import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
+import { waitForResourceFlush } from "../storage/resourceFlushWait";
 import { flushResources, GenerationBlockedError } from "../storage/resourceSync.svelte";
 import { authFetch } from "../storage/serverAuth";
 import { settings } from "../storage/settingsViews.svelte";
@@ -179,7 +180,7 @@ async function runRequest(
         // The server translates its own copy: save this tab's changes first (the message may be new,
         // or its text edited). This saves every pending change, not only this chat's.
         try {
-            const { discarded, refused } = await flushResources();
+            const { discarded, refused } = await waitForResourceFlush(flushResources());
             if (discarded.includes(`chats/${ref.chaId}/${ref.chatId}`)) {
                 alertError(language.translationSourceChanged);
                 return false;

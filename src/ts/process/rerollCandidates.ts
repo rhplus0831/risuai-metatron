@@ -11,6 +11,7 @@ import {
     pinChat,
     selectCandidate,
 } from "../storage/chatStore.svelte";
+import { waitForResourceFlush } from "../storage/resourceFlushWait";
 import { flushResources, refreshStaleChat } from "../storage/resourceSync.svelte";
 import { chatStatusKey, isChatBusy } from "./chatStatus.svelte";
 
@@ -52,7 +53,7 @@ export async function switchCandidate(ref: ChatRef, messageId: string, candidate
     try {
         selectCandidate(ref, messageId, candidateId);
         unsettled.add(key);
-        await flushResources();
+        await waitForResourceFlush(flushResources());
         if (!(await refreshStaleChat(ref)) || chatHasUnackedWork(ref))
             throw new Error(language.rerollCandidateRefreshFailed);
         unsettled.delete(key);

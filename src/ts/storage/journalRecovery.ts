@@ -72,6 +72,7 @@ import { isJournalEligible } from "./journalEligibility";
 import { replaceRecord, type RecordKind } from "./records.svelte";
 import { composerDraftLanded, recoveryDrafts } from "./recoveryDrafts.svelte";
 import { getResourceEpoch } from "./resourceClient";
+import { waitForResourceFlush } from "./resourceFlushWait";
 import {
     adoptRecoveredRecord,
     adoptRecoveredChat,
@@ -1152,7 +1153,7 @@ export async function applyRecoveryDraft(entry: DraftEntry): Promise<{
         return { skipped: [] };
     }
     const scope = beginMutationScope();
-    const flush = () => flushResources({ scope });
+    const flush = () => waitForResourceFlush(flushResources({ scope }));
     const keys = new Set<string>();
     const changedMembership = new Set<string>();
     let skipped: string[] = [];

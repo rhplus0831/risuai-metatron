@@ -106,6 +106,7 @@ class BlockedError extends Error {
 vi.mock("src/lang", () => ({
     language: {
         chatGenerating: "generating",
+        resourceSaveTimedOut: "command save response timed out",
         serverJob: {
             stoppedElsewhere: "stopped elsewhere",
             stopOther: {
@@ -818,6 +819,54 @@ describe("runServerButton", () => {
         await commands.runServerButton(char, "go", ref);
         expect(follows()).toHaveLength(1);
         expect(stubs.alertError).toHaveBeenCalledWith("generating");
+    });
+});
+
+describe("command jobs waiting for a save response", () => {
+    it.each([
+        { interruption: "Stop", reports: [] },
+        { interruption: "the save deadline", reports: [{ kind: "error", text: "command save response timed out" }] },
+    ])("refuses a command on $interruption while the save is still pending", async ({ interruption, reports }) => {
+        const save = deferred<Awaited<ReturnType<typeof stubs.flush>>>();
+        stubs.flush.mockReturnValueOnce(save.promise);
+        const controller = new AbortController();
+        const actualReports: SendReport[] = [];
+        const settled = vi.fn();
+        const char = { chaId: "c", type: "character" } as never;
+        const command = commands
+            .runServerJob(
+                char,
+                ref,
+                { kind: "command", label: "button", command: { type: "button", data: "go" } },
+                { signal: controller.signal, reports: actualReports },
+            )
+            .then(settled);
+        try {
+            await drainContinuations();
+            expect(stubs.flush).toHaveBeenCalledExactlyOnceWith();
+            expect(settled).not.toHaveBeenCalled();
+
+            if (interruption === "Stop") {
+                controller.abort();
+                await drainContinuations();
+            } else {
+                await vi.advanceTimersByTimeAsync(29_999);
+                expect(settled).not.toHaveBeenCalled();
+                await vi.advanceTimersByTimeAsync(1);
+            }
+            expect(settled).toHaveBeenCalledExactlyOnceWith({
+                outcome: "refused",
+                terminal: null,
+                requestUncertain: false,
+            });
+            expect(actualReports).toEqual(reports);
+            expect(stubs.refresh).not.toHaveBeenCalled();
+            expect(stubs.create).not.toHaveBeenCalled();
+        } finally {
+            save.resolve({ discarded: [], refused: [] });
+            await command;
+        }
+        expect(stubs.create).not.toHaveBeenCalled();
     });
 });
 

@@ -87,6 +87,7 @@ import {
     pinChat,
 } from "../storage/chatStore.svelte";
 import { getResourceEpoch, ResourceEpochMismatchError, ResourceRequestError } from "../storage/resourceClient";
+import { ResourceFlushTimeoutError, waitForResourceFlush } from "../storage/resourceFlushWait";
 import {
     flushResources,
     GenerationBlockedError,
@@ -120,8 +121,6 @@ const MAX_ATTACHES = 5;
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000];
 /** The longest a status read or the chat's read after a lost follow may take. */
 const STEP_DEADLINE_MS = 10_000;
-/** A flush can span several batches and a 20 s save dependency. */
-const SEND_FLUSH_DEADLINE_MS = 30_000;
 
 /** The wait before retry `attempt` (1-based). */
 const retryDelay = (attempt: number) => RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length) - 1];
@@ -1160,20 +1159,14 @@ type ServerJobOptions = {
     identity?: { presetId: string | null; modelPresetId: string | null; personaId: string | null };
 };
 
-/** Only the send stops waiting. The shared write still needs its acknowledgement. */
+/** A preflight interrupted before dispatch keeps the request's previous uncertainty. */
 async function waitForSendFlush(signal?: AbortSignal) {
     if (signal?.aborted) return null;
-    let stop: () => void;
-    const interrupted = new Promise<null>((resolve) => {
-        stop = () => resolve(null);
-    });
-    const timer = setTimeout(stop, SEND_FLUSH_DEADLINE_MS);
-    signal?.addEventListener("abort", stop, { once: true });
     try {
-        return await Promise.race([interrupted, flushResources()]);
-    } finally {
-        clearTimeout(timer);
-        signal?.removeEventListener("abort", stop);
+        return await waitForResourceFlush(flushResources(), signal);
+    } catch (error) {
+        if (signal?.aborted || error instanceof ResourceFlushTimeoutError) return null;
+        throw error;
     }
 }
 
@@ -1227,9 +1220,15 @@ export async function prepareServerJob(ref: ChatRef, request: ServerJobRequest, 
             return refused;
         }
         try {
-            const flush = request.kind === "command" ? await flushResources() : await waitForSendFlush(options.signal);
+            const flush = await waitForSendFlush(options.signal);
             if (flush === null) {
-                if (!options.signal?.aborted) errorReport(language.serverJob.sendSaveTimedOut);
+                if (!options.signal?.aborted) {
+                    errorReport(
+                        request.kind === "command"
+                            ? language.resourceSaveTimedOut
+                            : language.serverJob.sendSaveTimedOut,
+                    );
+                }
                 return refused;
             }
             const { discarded, refused: refusedKeys } = flush;

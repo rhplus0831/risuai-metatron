@@ -1,3 +1,4 @@
+import { waitForResourceFlush } from "src/ts/storage/resourceFlushWait";
 import { language } from "src/lang";
 import { alertConfirm, alertNormal, alertNormalWait } from "src/ts/alert";
 import {
@@ -38,7 +39,10 @@ export class StorageController {
     snapshotLabel = $state("");
     editingLabel: string | null = $state(null);
     labelText = $state("");
-    private disposed = false;
+    private readonly lifetime = new AbortController();
+    private get disposed() {
+        return this.lifetime.signal.aborted;
+    }
     private pollTimer: ReturnType<typeof setTimeout> | undefined;
 
     formatBytes = (bytes: number): string => {
@@ -208,7 +212,7 @@ export class StorageController {
             let discarded: string[];
             let refused: string[];
             try {
-                ({ discarded, refused } = await flushResources());
+                ({ discarded, refused } = await waitForResourceFlush(flushResources(), this.lifetime.signal));
             } catch (cause) {
                 throw new Error(language.storage.snapshotSaveFailed(this.message(cause)));
             }
@@ -289,7 +293,7 @@ export class StorageController {
     };
 
     dispose = () => {
-        this.disposed = true;
+        this.lifetime.abort();
         clearTimeout(this.pollTimer);
     };
 }

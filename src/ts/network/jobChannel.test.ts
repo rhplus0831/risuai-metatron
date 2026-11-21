@@ -1177,7 +1177,6 @@ describe("callbacks", () => {
         deps.mcps.set("plugin:x", { callTool: tool });
         send(callback("m", "mcpTool", { identifier: "plugin:x", tool: "t", args: {} }));
         send(cancel("m"));
-        flushing.resolve({ discarded: [], refused: [] });
         await pump();
         expect(tool).not.toHaveBeenCalled();
         expect(tx.answers).toEqual([]);
@@ -1193,8 +1192,9 @@ describe("callbacks", () => {
         await pump();
         expect(second).not.toHaveBeenCalled();
         expect(tx.answers).toEqual([]);
-        // The mutations of what did run were still settled (the scoped flush ran).
-        expect(deps.flush).toHaveBeenCalledTimes(4);
+        // Both pre-flushes ran, but only the hook that started flushed its mutation scope.
+        expect(deps.flush.mock.calls).toEqual([[undefined], [undefined], [{ scope: { resource: 7, chat: 3 } }]]);
+        flushing.resolve({ discarded: [], refused: [] });
         // The lane is free again: both hooks run for the next callback (the first resolves at once now).
         send(callback("next"));
         await pump();
