@@ -17,7 +17,7 @@ import { sendChat } from "./index.svelte";
 import { chatStatusKey, generatingChatKeys, isChatBusy } from "./chatStatus.svelte";
 import type { LocalSendReservation } from "./localSends";
 import { loadLoreBookV3Prompt } from "./lorebook.svelte";
-import { runServerManualTrigger } from "./serverCommands";
+import { checkServerJobBinding, runServerManualTrigger } from "./serverCommands";
 import { refuseOrphanedOverrides } from "./loreOverrides";
 
 /**
@@ -32,8 +32,8 @@ import { refuseOrphanedOverrides } from "./loreOverrides";
  * `/multisend`: each part appended as a user message and sent, one after the other, in the chat
  * `ref`; with `clearMode` the chat's messages are removed before each part. Before each part, the
  * chat must be there and not busy (`isChatBusy`: a send of this tab, a followed job, or a lock);
- * other chats' work does not refuse it. Orphaned lore overrides refuse a part before its chat is
- * cleared or appended to. Stops when a part's chat is gone, busy, or refused, or its send returns
+ * other chats' work does not refuse it. Orphaned lore overrides and an incomplete binding refuse
+ * a part before its chat is cleared or appended to. Stops when a part's chat is gone, busy, or refused, or its send returns
  * false (refused, failed, lost, or stopped); false then. This is the typed command's page-owned loop;
  * command jobs run their queued parts on the server (`server/src/jobs/commandRunner.ts`).
  */
@@ -49,7 +49,7 @@ export async function runMultisend(
         const busy = reservation
             ? !reservation.owns(ref) || generatingChatKeys().has(chatStatusKey(ref))
             : isChatBusy(ref);
-        if (!chat || busy || refuseOrphanedOverrides(ref)) {
+        if (!chat || busy || refuseOrphanedOverrides(ref) || !checkServerJobBinding(ref)) {
             return false;
         }
         if (clearMode) {

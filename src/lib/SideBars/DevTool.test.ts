@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { flushSync, mount, unmount } from "svelte";
 import { afterEach, expect, it, vi } from "vitest";
+import { language } from "src/lang";
 import { alertError, alertMd } from "src/ts/alert";
 import { findChat, selectChat, setChatMeta } from "src/ts/storage/chatStore.svelte";
 import { selectCharacter, selectPersona } from "src/ts/storage/selection.svelte";
@@ -103,20 +104,31 @@ it("renders instruct preview with the starting chat's character and user after s
     expect(alertMd).toHaveBeenCalledExactlyOnceWith("### Instruction\n```\nLuna speaks to Alice: Hello.\n```\n");
 });
 
-it("autopilot appends nothing while the chat has orphaned lore overrides, and checks again before each line", async () => {
+function renderAutopilot() {
     installFlatDatabaseWithChats({
         characters: [
-            { chaId: "c1", type: "character", name: "Luna", chats: [{ id: "k1", name: "Chat", message: [] }] },
+            {
+                chaId: "c1",
+                type: "character",
+                name: "Luna",
+                chats: [
+                    {
+                        id: "k1",
+                        name: "Chat",
+                        message: [],
+                        promptPresetId: "fixture-preset",
+                        modelPresetId: "fixture-preset",
+                        bindedPersona: "p1",
+                    },
+                ],
+            },
         ],
+        botPresets: [{ id: "fixture-preset", name: "Prompt" }],
+        personas: [{ id: "p1", name: "Alice" }],
     });
     selectCharacter("c1");
     selectChat("c1", "k1");
     const ref = { chaId: "c1", chatId: "k1" };
-    // An override whose owner entry is gone (the character has no lore).
-    setChatMeta(ref, {
-        loreOverrides: [{ entry: { id: "gone", key: "", comment: "Gone entry", content: "" }, off: false }],
-    });
-    mocks.serverSend.mockResolvedValue({ ok: true, outcome: "started", settled: true });
 
     target = document.createElement("div");
     document.body.append(target);
@@ -137,6 +149,16 @@ it("autopilot appends nothing while the chat has orphaned lore overrides, and ch
     flushSync();
     const run = () =>
         [...target!.querySelectorAll("button")].find((button) => button.textContent.trim() === "Run")!.click();
+    return { ref, run };
+}
+
+it("autopilot appends nothing while the chat has orphaned lore overrides, and checks again before each line", async () => {
+    const { ref, run } = renderAutopilot();
+    // An override whose owner entry is gone (the character has no lore).
+    setChatMeta(ref, {
+        loreOverrides: [{ entry: { id: "gone", key: "", comment: "Gone entry", content: "" }, off: false }],
+    });
+    mocks.serverSend.mockResolvedValue({ ok: true, outcome: "started", settled: true });
 
     run();
     await vi.waitFor(() => expect(alertError).toHaveBeenCalledTimes(1));
@@ -157,4 +179,30 @@ it("autopilot appends nothing while the chat has orphaned lore overrides, and ch
     await vi.waitFor(() => expect(alertError).toHaveBeenCalledTimes(2));
     expect(mocks.serverSend).toHaveBeenCalledTimes(1);
     expect(findChat(ref)!.message.map((message) => message.data)).toEqual(["hello"]);
+});
+
+it.each([
+    { line: "first", sent: [] },
+    { line: "second", sent: ["hello"] },
+])("autopilot refuses to append the $line line while the binding is pending review", async ({ line, sent }) => {
+    vi.useFakeTimers();
+    const { ref, run } = renderAutopilot();
+    mocks.serverSend.mockReset().mockResolvedValue({ ok: true, outcome: "started", settled: true });
+    if (line === "first") {
+        setChatMeta(ref, { bindingReview: true });
+    } else {
+        mocks.serverSend.mockImplementationOnce(async () => {
+            setChatMeta(ref, { bindingReview: true });
+            return { ok: true, outcome: "started", settled: true };
+        });
+    }
+
+    run();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(findChat(ref)!.message.map((message) => message.data)).toEqual(sent);
+    expect(mocks.serverSend).toHaveBeenCalledTimes(sent.length);
+    expect(alertError).toHaveBeenCalledExactlyOnceWith(
+        `${language.chatBinding.refused}\n${language.chatBinding.review}`,
+    );
 });

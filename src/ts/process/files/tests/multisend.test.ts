@@ -7,6 +7,7 @@ import { sendChat } from "src/ts/process/index.svelte";
 import { beginLocalSend } from "src/ts/process/localSends";
 import { findChat, selectChat, setChatMeta } from "src/ts/storage/chatStore.svelte";
 import { alertError } from "src/ts/alert";
+import { language } from "src/lang";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
 import * as assetClient from "src/ts/storage/assetClient";
 import * as serverAuth from "src/ts/storage/serverAuth";
@@ -200,11 +201,24 @@ describe("postChatFile with a PO file", () => {
                         type: "character",
                         name: "C",
                         chatPage: 0,
-                        chats: [{ id: "k", name: "K", note: "", localLore: [], message: [] }],
+                        chats: [
+                            {
+                                id: "k",
+                                name: "K",
+                                note: "",
+                                localLore: [],
+                                message: [],
+                                promptPresetId: "multisend-po-preset",
+                                modelPresetId: "multisend-po-preset",
+                                bindedPersona: "persona",
+                            },
+                        ],
                     },
                 ],
                 hypaModel: "voyage4",
                 voyageApiKey: "voyage-key",
+                botPresets: [{ id: "multisend-po-preset", name: "Prompt" }],
+                personas: [{ id: "persona", name: "Persona" }],
             },
             "multisend-po-preset",
         );
@@ -363,5 +377,22 @@ describe("postChatFile with a PO file", () => {
         expect(texts()).toEqual(["hello"]);
         expect(downloadFile).not.toHaveBeenCalled();
         expect(alertError).toHaveBeenCalledTimes(1);
+    });
+
+    it("stops before appending the next entry when a PO send leaves the binding pending review", async () => {
+        const { postChatFile } = await import("../multisend");
+        vi.mocked(sendChat).mockImplementationOnce(async () => {
+            setChatMeta(ref, { bindingReview: true });
+            return true;
+        });
+
+        await postChatFile({ name: "lines.po", data: po });
+
+        expect(texts()).toEqual(["hello"]);
+        expect(sendChat).toHaveBeenCalledOnce();
+        expect(downloadFile).not.toHaveBeenCalled();
+        expect(alertError).toHaveBeenCalledExactlyOnceWith(
+            `${language.chatBinding.refused}\n${language.chatBinding.review}`,
+        );
     });
 });

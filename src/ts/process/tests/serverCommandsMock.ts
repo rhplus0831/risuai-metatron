@@ -30,6 +30,7 @@ export function createServerCommandsMock(overrides: Partial<ServerCommandsModule
         followJobToEnd: vi.fn<ServerCommandsModule["followJobToEnd"]>(async () => "lost"),
         readChatAgain: vi.fn<ServerCommandsModule["readChatAgain"]>(),
         readRecoveringChat: vi.fn<ServerCommandsModule["readRecoveringChat"]>(async () => false),
+        checkServerJobBinding: vi.fn<ServerCommandsModule["checkServerJobBinding"]>(() => null),
         prepareServerJob: vi.fn<ServerCommandsModule["prepareServerJob"]>(async () => ({
             outcome: "refused",
             terminal: null,

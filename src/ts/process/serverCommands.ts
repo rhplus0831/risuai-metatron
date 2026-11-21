@@ -1177,6 +1177,16 @@ async function waitForSendFlush(signal?: AbortSignal) {
     }
 }
 
+/** Checks the chat's binding and reports the same refusal for a job and its caller's preflight. */
+export function checkServerJobBinding(ref: ChatRef, reports?: SendReport[]) {
+    const binding = chatBinding(ref);
+    if (!binding?.ok) {
+        reportError(chatBindingRefusalText(chatBindingProblems(binding)), reports);
+        return null;
+    }
+    return binding;
+}
+
 /**
  * Saves pending writes and refreshes a pinned chat before dispatch, retaining the binding captured
  * before the first await. Local jobs and remote sends share the same refusal and reporting rules.
@@ -1191,9 +1201,8 @@ export async function prepareServerJob(ref: ChatRef, request: ServerJobRequest, 
     };
     // The send guard: every job of a chat (send, continue, reroll, group, preview, command) runs on
     // the chat's complete binding or not at all.
-    const binding = chatBinding(ref);
-    if (!binding?.ok) {
-        errorReport(chatBindingRefusalText(chatBindingProblems(binding)));
+    const binding = checkServerJobBinding(ref, options.reports);
+    if (!binding) {
         return refused;
     }
     const { presetId, modelPresetId, personaId } = options.identity ?? chatContextIds(binding.ids);

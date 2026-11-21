@@ -71,15 +71,14 @@ Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-
     commit the replacement (the removal inside the job's admission, with the removed tail held server-side for
     restoration) or keeps a durable copy of the pending reroll that survives a client exit.
 
-- A refused multisend can clear the chat's history. `runMultisend` clears the history in clear mode and appends the
-  next user message before `prepareServerJob` checks the chat binding. An isolated run with a refused send (structure
-  audit, 2026-11-18) left only the newly appended message. A retained slash draft can reach this path through Enter,
-  and a binding can become invalid between parts. The PO translator and the DevTool autopilot also append before this
-  check. Not fixed. A fix checks the binding before each part's first mutation, with a test of a refusal over an
-  existing transcript.
-  [Slash command](../../src/ts/process/command.ts#L40) ·
-  [Composer dispatch](../../src/lib/ChatScreens/DefaultChatScreen.svelte#L703) ·
-  [Job admission](../../src/ts/process/serverCommands.ts#L1162)
+- A multisend part can still change the transcript before the server refuses its job. Each part of `runMultisend`,
+  the PO translator, and the DevTool autopilot checks the chat binding as the tab sees it (`checkServerJobBinding`)
+  before it clears or appends, so a binding the tab knows to be incomplete refuses the part with the transcript
+  unchanged. A refusal that only the server's admission finds (a binding mismatch the tab cannot see yet) still comes
+  after that part's clear or append, so a clear-mode part can leave the chat with only its new message. Read in the
+  fix round of 2026-11-22, not run. A fix moves the clear and append into the job's admission, or restores them when
+  the job is refused. [Slash command](../../src/ts/process/command.ts#L52) ·
+  [Binding check](../../src/ts/process/serverCommands.ts#L1181)
 - Two tabs can replace each other's OOC answer. A retry checks that an exchange is unanswered before it asks for the
   preview; while the tab waits for the answer another tab can answer the same question, and the final write checks only
   that the exchange still exists before it replaces the answer. An isolated run (structure audit, 2026-11-18) inserted

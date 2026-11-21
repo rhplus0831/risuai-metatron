@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { get } from "svelte/store";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { language } from "src/lang";
 import { StoreBackedServer } from "../storage/tests/storeBackedServer";
 
 // Slash commands (`command.ts`) over the real chat module and the real server store: every chat
@@ -59,14 +60,16 @@ vi.mock("./modules", () => ({
 }));
 vi.mock("../globalApi.svelte", async () => (await import("../tests/globalApiMock")).createGlobalApiMock());
 // The followed-job registry is the factory's real writable: a test registers a job in another chat.
-vi.mock("./serverCommands", async () =>
-    (await import("src/ts/process/tests/serverCommandsMock")).createServerCommandsMock({
+vi.mock("./serverCommands", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("./serverCommands")>();
+    return (await import("src/ts/process/tests/serverCommandsMock")).createServerCommandsMock({
+        checkServerJobBinding: actual.checkServerJobBinding,
         runServerManualTrigger: vi.fn(async (char: any, name: string, ref: any) => {
             hooks.serverRuns.push({ char, name, ref });
             return "started" as const;
         }),
-    }),
-);
+    });
+});
 
 import { processMultiCommand, runMultisend } from "./command";
 import { alertConfirm, alertError, alertMd } from "../alert";
@@ -119,6 +122,9 @@ function freshChat(): chat.ChatRef {
             name: `Chat ${chatNumber}`,
             note: "",
             localLore: [],
+            promptPresetId: "prompt",
+            modelPresetId: "model",
+            bindedPersona: "persona",
             message: [m("a", "A", "char"), m("b", "B"), m("c", "C", "char"), m("d", "D")],
         } as any,
         { select: true },
@@ -145,7 +151,12 @@ beforeAll(async () => {
     });
     const read = server.store.readKinds([characters], { chats: true });
     // The characters are records: installed into the records, so the selection (by id) sees them.
-    const raw = { characters: read.kinds.characters.map((record) => record.data) } as any;
+    const raw = {
+        characters: read.kinds.characters.map((record) => record.data),
+        botPresets: [{ id: "prompt", name: "Prompt" }],
+        modelPresets: [{ id: "model", name: "Model" }],
+        personas: [{ id: "persona", name: "Persona" }],
+    };
     initializeRecords(takeRecordFields(raw));
     chat.seedChats(read.chats!, read.chatOrders!);
     chat.assembleChats(characterList(), read.chats!, read.chatOrders!);
@@ -634,5 +645,34 @@ describe("/multisend", () => {
         // The first part cleared and appended; the second neither cleared nor appended.
         expect(texts(ref)).toEqual(["one"]);
         expect(vi.mocked(alertError)).toHaveBeenCalledTimes(1);
+    });
+
+    it("preserves the transcript when the first clear part has an incomplete binding", async () => {
+        vi.mocked(alertError).mockClear();
+        const ref = freshChat();
+        chat.setChatMeta(ref, { modelPresetId: "deleted-model" });
+        commit();
+
+        expect(await processMultiCommand('/multisend "clear|||one|||two"', ref)).toBe("");
+
+        expect(texts(ref)).toEqual(["A", "B", "C", "D"]);
+        expect(commit().work.groups).toEqual([]);
+        expect(hooks.sends).toEqual([]);
+        const { refused, fields, gone } = language.chatBinding;
+        expect(alertError).toHaveBeenCalledExactlyOnceWith(`${refused}\n${fields.modelPresetId}: ${gone}`);
+    });
+
+    it("keeps the first clear part when its send leaves the binding pending review", async () => {
+        vi.mocked(alertError).mockClear();
+        const ref = freshChat();
+        hooks.onSend = () => chat.setChatMeta(ref, { bindingReview: true });
+
+        expect(await processMultiCommand('/multisend "clear|||one|||two|||three"', ref)).toBe("");
+
+        expect(texts(ref)).toEqual(["one"]);
+        expect(hooks.sends).toHaveLength(1);
+        expect(alertError).toHaveBeenCalledExactlyOnceWith(
+            `${language.chatBinding.refused}\n${language.chatBinding.review}`,
+        );
     });
 });

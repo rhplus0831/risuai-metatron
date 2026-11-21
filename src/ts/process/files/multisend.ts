@@ -10,6 +10,7 @@ import {
 import { sendChat } from "../index.svelte";
 import { isChatBusy } from "../chatStatus.svelte";
 import { refuseOrphanedOverrides } from "../loreOverrides";
+import { checkServerJobBinding } from "../serverCommands";
 import { downloadFile } from "src/ts/globalApi.svelte";
 import { HypaProcesser } from "../memory/hypamemory";
 import { BufferToText as BufferToText, selectMultipleFile } from "src/ts/util";
@@ -20,7 +21,7 @@ import { alertError } from "src/ts/alert";
  * Converts picked or supplied files into inlay ids, retrieved text, or PO translation sends.
  * Media storage goes through `src/ts/process/files/inlays.ts`; text, PDF, and XML retrieval uses
  * `HypaProcesser`. PO entries send sequentially to one captured chat, stopping without a download
- * when a send fails or its chat is unavailable, busy, or has orphaned lore overrides. Failed media
+ * when a send fails or its chat is unavailable, busy, unbound, or has orphaned lore overrides. Failed media
  * uploads are alerted and skipped so later files can still be processed.
  */
 
@@ -64,7 +65,8 @@ async function sendPofile(arg: sendFileArg, ref: ChatRef | null, owner: string |
                 chatOwnerToken(ref.chaId) !== owner ||
                 !findChat(ref) ||
                 isChatBusy(ref) ||
-                refuseOrphanedOverrides(ref)
+                refuseOrphanedOverrides(ref) ||
+                !checkServerJobBinding(ref)
             ) {
                 return;
             }
