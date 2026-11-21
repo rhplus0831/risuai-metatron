@@ -72,6 +72,9 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
   across waits.
 - In the modal, `memoryWriteFence` protects the edited copy ([memory writes](#memory-writes)). `resummarizeBulkSelected`
   and `resolveBulkTargets` fence bulk results against replacement. The component contract owns copy refresh and discard.
+- While the fence holds, the modal's edit controls are read-only and keep pending input; the copy-save guard still
+  restores a change that races the fence. The Structured Memory section draft and a memory receipt's Revert follow the
+  same rule.
 - `src/lib/Others/HypaV3Modal/taskStatusLine.ts` formats task status. The modal calls `startMemoryTask` and
   `cancelMemoryTask` in `src/ts/process/memoryTasks.svelte.ts`; `showMemoryTaskResult` handles their answers.
 - `src/lib/Others/HypaV3Modal/utils.ts` `processRegexScript`: a summary's message through `risuChatParser` and the

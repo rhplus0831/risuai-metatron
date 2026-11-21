@@ -52,6 +52,12 @@
 - A nonempty draft box or a `sent: "draft"` marker selects composer format 2. The marker is tied to `userMessageId`.
   Other composer rows and mutation/draft rows use format 1. An older reader preserves unfamiliar rows. A draft-send
   hand-off can restore both boxes, the translation and attachments.
+- Before another send replaces a hand-off that was never placed back, the journal moves its whole snapshot, in the same
+  transaction, to a recovery draft keyed by its chat and message id, with its original expiry (`draftJournal.ts`).
+  Recovered changes offers it: Apply restores it into the original chat's empty composer without an attachment that was
+  deleted meanwhile, and Discard removes it. With storage unavailable it is kept for the page only.
+- A displaced snapshot whose user message is later confirmed in the chat is sent text: it is retired and not listed. An
+  applied snapshot that carries no message id clears the chat's earlier retry, so its next send gets fresh ids.
 - `onChatRemoved` in `chatStore.svelte.ts` notifies isolated listeners for local and remote single-chat deletion (a
   retained last chat included), collection removals, conflict reconciliation, and
   `forgetCharacterChats`/`forgetCharacter` (`chatId: null` for a character). The composer subscribes at app load and

@@ -203,7 +203,7 @@ tool.
 The scene is created by `commitPages` even when analysis returns none; its fields are rewritten without a patch call.
 `newScenePage` and `rewriteScene` own the page rules, while the store's `memory_pages_scene` index and snapshot walk
 enforce one scene page. The read path exposes scene attendance as `stage`. The analysis prompt shows each scene field
-whole and states its limit (`memorySceneFieldLimit`): 800 characters, or the stored length while that is longer, up to
+whole and states its limit (`memorySceneFieldLimit`): 600 characters, or the stored length while that is longer, up to
 the editor's 4,000. An answer past the limit is clipped with a `sceneClipped` warning on the run, and the health figures
 count a scene field as over budget only past 4,000.
 

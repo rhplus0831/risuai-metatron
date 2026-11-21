@@ -147,6 +147,10 @@ The transport below retains this tab's in-memory log.
   so a message that lands before the host runs is not continued instead. A Continue with input names nothing: its job
   appends the user message and continues it. A Continue or reroll is never retried under its request id (each press is a
   new command, as locally); the adapter forgets such a command at its end.
+- The relay's route (`parsePost` in `server/src/routes/remoteCommands.ts`) answers 400 to a send whose fields have no
+  effect, so they cannot change the command's retry identity: `continueMessageId` on a plain send, `userMessageId` on a
+  Continue without input, `input` or `userMessageId` on a reroll. For a group chat send, generation ignores `continue`
+  and `continueMessageId`, which the relay still compares on a re-post of the same command id.
 - The removal reroll stays local: its bundle history cannot be kept through a host. An uncertain end leaves the host's
   later replies unrecorded, so Undo loses the removed bundle; Undo (`rerollHistory.back`) has no settlement guard while
   the host's job may still write; and a host `busy` refusal is settled without `blockedChats`, so restoration could

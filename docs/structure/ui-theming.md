@@ -288,7 +288,11 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - Components never `bind:` a chat field directly: bind a getter/setter pair that calls the module, or a synced editing
   copy.
 - A locked message (`isMessageLocked`: generating, or its final write not yet acknowledged) has its edit, delete, and
-  regenerate controls disabled; reroll and chat deletion alert `chatGenerating` while the chat holds a lock.
+  regenerate controls disabled, and its open message or stored-translation editor turns read-only with the text kept
+  until release, the expanded popup included.
+- While the chat is busy, the reroll arrows of every row, the side menu's Continue and Reroll, and checkpoint Save and
+  Load are disabled, and Enter in the draft box does what its disabled Send Draft button does. The handlers keep their
+  checks: the Ctrl+M hotkey and chat deletion alert `chatGenerating`.
 - `Chat.svelte` `isInteractiveBodyTarget` excludes an entire `form[risu-form]` from click-to-edit, but plain form text
   still opens message editing when `clickToEdit` is enabled; preserve that distinction when changing the selector.
 - HTML boundaries:

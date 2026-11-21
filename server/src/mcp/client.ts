@@ -20,9 +20,10 @@ import { parseSseEvent, SseFramer } from "../../../shared/mcp/sse.ts";
  *   (`McpIo`), which only that call's own work holds (a handshake until it settles). Concurrent
  *   callers share one handshake; when the caller that started it is aborted, the next one starts its
  *   own;
- * - what it reads is bounded: one SSE event or JSON body (`MAX_MCP_MESSAGE_BYTES`), a whole tool
- *   list (`MAX_TOOL_LIST_*`), every OAuth answer (`MAX_OAUTH_BODY_BYTES`, `MCP_OAUTH_TIMEOUT_MS`),
- *   and the time the legacy session stream may take to connect and name its endpoint;
+ * - what it reads is bounded: one SSE event or JSON body (`MAX_MCP_MESSAGE_BYTES`), every OAuth
+ *   answer (`MAX_OAUTH_BODY_BYTES`, `MCP_OAUTH_TIMEOUT_MS`), and the time the legacy session stream
+ *   may take to connect and name its endpoint (a whole tool list is bounded on both sides,
+ *   `MAX_TOOL_LIST_*`, which the tab client mirrors);
  * - a session that ended while its handshake was still running is not taken as initialized (the
  *   session generation), and a client closed while an owner's question is open settles its callers;
  * - all OAuth endpoints a server names must be `http:` or `https:`, and one handshake logs in at

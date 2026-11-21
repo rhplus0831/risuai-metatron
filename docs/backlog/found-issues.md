@@ -25,9 +25,6 @@ left; do not narrate the fixed part.
 Words the entries use:
 
 - "Latent": no current caller reaches the bad path. "Accepted": the owner chose to keep the behavior.
-- "Kept as recorded by the owner's rule for the fix round": the owner's rule for the fixes of the post-verification of
-  2026-11-18 was that a fix whose cost is out of proportion to how often its trigger happens is recorded and not made.
-  The entry stays open, and its **Suggested handling:** says what to do if it is taken up.
 - A **Decision:** line is the owner's and stands until the owner changes it.
 
 Sources the entries name (drop a line when no entry names it any more):
@@ -36,8 +33,7 @@ Sources the entries name (drop a line when no entry names it any more):
 - Remote Host post-audit of 2026-11-16: [report](../reports/audits/finished-plans/remote-host-2026-11-16.md).
 - Fix round of 2026-11-17: the fixes of the [fork data-loss cross-check](../reports/surveys/fork-data-loss-crosscheck.md);
   these entries are what its implementers read next to their fixes.
-- Post-verification of 2026-11-18: [report](../reports/audits/finished-plans/plan-post-verification-2026-11-18.md);
-  the ids (`IH-1`, `MF-2`) are its findings'.
+- Post-verification of 2026-11-18: [report](../reports/audits/finished-plans/plan-post-verification-2026-11-18.md).
 - Structure audit of 2026-11-18: [report](../reports/audits/guides/structure-audit-2026-11-18.md).
 - Generation lock survey of 2026-11-21: no report; a read-only survey that came with the chat lorebook fix
   (`4c43d31bd`).

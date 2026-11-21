@@ -131,6 +131,8 @@ The tab's own requests (`/api/llm/request`) run their tool loops on the server t
   session; success or failure releases a slot, and each admitted reply keeps its deadline.
 - Every `tools/list` page must have a successful HTTP status, no RPC error, and a `tools` array, which may be empty. A
   failed page rejects the listing without caching a partial list; recovery fetches every page again.
+- Tab-side tool and prompt discovery (`mcplib.ts`) rejects a repeated cursor and a list over 32 pages, 512 entries, or 1
+  MiB of JSON-encoded entries, the server client's bounds (`MAX_TOOL_LIST_*`); a rejected list is not cached.
 - A RisuAccess write tool goes through a mutation module, as [a plugin's write](plugin-sandbox.md#invariants) does; a
   refused value answers an `Error:` text and changes nothing.
 - A RisuAccess write tool re-resolves its record by the id captured before the consent prompt, and builds its patch
