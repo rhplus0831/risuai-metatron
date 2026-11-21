@@ -70,8 +70,8 @@ export const TOKENIZER_FAMILIES = Object.keys(LOADERS) as TokenizerFamily[];
 /** Lazy family loading, encoding/counting, and terminal asynchronous disposal. */
 export type Tokenizers = {
     load(family: TokenizerFamily): Promise<void>;
-    encode(family: TokenizerFamily, text: string): Promise<ArrayLike<number>>;
-    count(family: TokenizerFamily, text: string): Promise<number>;
+    encode(family: TokenizerFamily, text: string, signal?: AbortSignal): Promise<ArrayLike<number>>;
+    count(family: TokenizerFamily, text: string, signal?: AbortSignal): Promise<number>;
     dispose(): Promise<void>;
 };
 
@@ -126,14 +126,18 @@ export function createTokenizers(options: { rootDir: string }): Tokenizers {
         }
     }
 
+    async function encode(family: TokenizerFamily, text: string, signal?: AbortSignal): Promise<ArrayLike<number>> {
+        const encoder = await acquire(family);
+        signal?.throwIfAborted();
+        return encoder.encode(text);
+    }
+
     return {
         load: async (family: TokenizerFamily): Promise<void> => {
             await acquire(family);
         },
-        encode: async (family: TokenizerFamily, text: string): Promise<ArrayLike<number>> =>
-            (await acquire(family)).encode(text),
-        count: async (family: TokenizerFamily, text: string): Promise<number> =>
-            (await acquire(family)).encode(text).length,
+        encode,
+        count: async (family, text, signal) => (await encode(family, text, signal)).length,
         dispose: (): Promise<void> => (disposal ??= disposeAll()),
     };
 }

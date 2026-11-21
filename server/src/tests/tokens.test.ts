@@ -225,6 +225,14 @@ function stubTokenizers() {
     return { tokenizers, calls };
 }
 
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => {
+        resolve = done;
+    });
+    return { promise, resolve };
+}
+
 const family = (name: string): TokenizerChoice => ({ kind: "family", family: name as TokenizerFamily });
 
 describe("selectTokenizer (the shared routing)", () => {
@@ -420,6 +428,34 @@ describe("createTokenCounter", () => {
     });
 
     describe("with useTokenizerCaching", () => {
+        it("calls the set with two arguments and rejects an aborted cache hit", async () => {
+            const { tokenizers } = stubTokenizers();
+            const counter = createTokenCounter({ tokenizers });
+            const cached = scope({ useTokenizerCaching: true });
+            await counter.count("cached", cached);
+            await counter.count("cached", cached);
+            const reason = new Error("caller already left");
+            await expect(counter.count("cached", cached, AbortSignal.abort(reason))).rejects.toBe(reason);
+            expect(tokenizers.encode).toHaveBeenCalledExactlyOnceWith("o200k_base", "cached");
+        });
+
+        it("forwards a family count's signal and discards ids that arrive after abort", async () => {
+            const { tokenizers } = stubTokenizers();
+            const ids = deferred<number[]>();
+            const encode = vi.mocked(tokenizers.encode).mockReturnValueOnce(ids.promise);
+            const counter = createTokenCounter({ tokenizers });
+            const cached = scope({ useTokenizerCaching: true });
+            const caller = new AbortController();
+            const pending = counter.count("retry", cached, caller.signal);
+            expect(encode.mock.calls[0][2]).toBe(caller.signal);
+            caller.abort(new Error("count no longer needed"));
+            ids.resolve([11]);
+            await expect(pending).rejects.toBe(caller.signal.reason);
+
+            await expect(counter.count("retry", cached)).resolves.toBe(2);
+            expect(encode).toHaveBeenCalledTimes(2);
+        });
+
         it("answers a repeated text of the same scope from the cache and separates the scopes by every field", async () => {
             const { tokenizers, calls } = stubTokenizers();
             const counter = createTokenCounter({ tokenizers });
@@ -566,6 +602,45 @@ describe("createTokenCounter", () => {
                 );
                 return { requests, fetchImpl };
             }
+
+            it.each(["finishes", "leaves"] as const)(
+                "shares the fallback until the remaining caller %s",
+                async (last) => {
+                    const { tokenizers } = stubTokenizers();
+                    const started = deferred<AbortSignal | undefined>();
+                    const ids = deferred<number[]>();
+                    const encode = vi.mocked(tokenizers.encode).mockImplementation((_family, _text, signal) => {
+                        started.resolve(signal);
+                        return ids.promise;
+                    });
+                    const fetchImpl = vi.fn<typeof fetch>(async () => new Response("quota", { status: 429 }));
+                    const counter = createTokenCounter({ tokenizers, fetchImpl });
+                    const left = new AbortController();
+                    const right = new AbortController();
+                    const withdrawn = counter.count("shared", google(), left.signal);
+                    const remaining = counter.count("shared", google(), right.signal);
+                    const settled = Promise.allSettled([withdrawn, remaining]);
+                    try {
+                        const fallbackSignal = await started.promise;
+                        expect(fallbackSignal).toBe(fetchImpl.mock.calls[0][1]?.signal);
+                        left.abort(new Error("first caller left"));
+                        await expect(withdrawn).rejects.toBe(left.signal.reason);
+                        expect(fallbackSignal?.aborted).toBe(false);
+                        if (last === "leaves") {
+                            right.abort(new Error("last caller left"));
+                            await expect(remaining).rejects.toBe(right.signal.reason);
+                            expect(fallbackSignal?.reason).toBe(right.signal.reason);
+                        } else {
+                            ids.resolve([1, 2, 3]);
+                            await expect(remaining).resolves.toBe(3);
+                        }
+                        expect(encode).toHaveBeenCalledExactlyOnceWith("gemmaSentencePiece", "shared", fallbackSignal);
+                    } finally {
+                        ids.resolve([]);
+                        await settled;
+                    }
+                },
+            );
 
             it("shares in-flight counts by text and model and aborts the request only when its last caller aborts", async () => {
                 const { tokenizers } = stubTokenizers();

@@ -1,11 +1,11 @@
 // @vitest-environment node
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { setImmediate } from "node:timers/promises";
 import { Worker } from "node:worker_threads";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { LLMTokenizer } from "../../../shared/llm.ts";
 import { createTokenizers } from "../prompt/tokenizers/index.ts";
-import type { TokenizerWorkerCall, TokenizerWorkerData, TokenizerWorkerMessage } from "../prompt/tokenizers/worker.ts";
+import type { TokenizerWorkerCall, TokenizerWorkerMessage } from "../prompt/tokenizers/worker.ts";
 import {
     createWorkerTokenizers,
     startTokenizerWorker,
@@ -52,6 +52,8 @@ function deferred<T>() {
 
 const refusal = "The text contains a special token that is not allowed: <|endoftext|>";
 const disposed = new Error("The tokenizers are disposed");
+const atLimit = "😀".repeat(65_536); // 131,072 UTF-16 units.
+const longText = atLimit + "x";
 
 describe("the tokenizer worker queue", () => {
     it("posts load, encode and count in arrival order and holds a ref until the last answer", async () => {
@@ -151,6 +153,118 @@ describe("the tokenizer worker queue", () => {
         ]);
     });
 
+    it("answers the count at the UTF-16 limit and a load while the longer encode runs", async () => {
+        const ordinary = new ScriptedPort();
+        const long = new ScriptedPort();
+        const set = workerSet({ startWorker: (_data, lane) => (lane === "ordinary" ? ordinary : long) });
+        const encoded = set.encode("llama", longText);
+        const counted = set.count("llama", atLimit);
+        const loaded = set.load("claude");
+        const results = Promise.allSettled([encoded, counted, loaded]);
+
+        expect(long.posted.map((call) => call.op)).toEqual(["encode"]);
+        expect(ordinary.posted.map((call) => call.op)).toEqual(["count"]);
+        ordinary.answer(0, { value: 11 });
+        await expect(counted).resolves.toBe(11);
+        expect(ordinary.posted[1]).toMatchObject({ op: "load", family: "claude" });
+        ordinary.answer(1);
+        await expect(loaded).resolves.toBeUndefined();
+        expect(await Promise.race([encoded, setImmediate("pending")])).toBe("pending");
+        long.answer(0, { value: Uint32Array.of(7) });
+        await results;
+        await expect(encoded).resolves.toEqual(Uint32Array.of(7));
+    });
+
+    it("retires and replaces the long worker only after a full idle minute", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+            const first = new ScriptedPort();
+            const replacement = new ScriptedPort();
+            const ordinary = new ScriptedPort();
+            const startLong = vi.fn(() => replacement).mockReturnValueOnce(first);
+            const set = workerSet({ startWorker: (_data, lane) => (lane === "long" ? startLong() : ordinary) });
+            const loaded = set.load("llama");
+            ordinary.answer(0);
+            await loaded;
+            const initial = set.count("llama", longText);
+            first.answer(0, { value: 1 });
+            await initial;
+
+            vi.advanceTimersByTime(59_999);
+            expect(first.terminate).not.toHaveBeenCalled();
+            const calls = Promise.allSettled([set.count("llama", longText), set.count("llama", longText)]);
+            vi.advanceTimersByTime(60_000);
+            expect(first.terminate).not.toHaveBeenCalled();
+            expect(first.posted).toHaveLength(2);
+            first.answer(1, { value: 2 });
+            vi.advanceTimersByTime(60_000);
+            expect(first.terminate).not.toHaveBeenCalled();
+            first.answer(2, { value: 3 });
+            expect(await calls).toEqual([
+                { status: "fulfilled", value: 2 },
+                { status: "fulfilled", value: 3 },
+            ]);
+
+            vi.advanceTimersByTime(59_999);
+            expect(first.terminate).not.toHaveBeenCalled();
+            vi.advanceTimersByTime(1);
+            expect(first.terminate).toHaveBeenCalledTimes(1);
+            expect(ordinary.terminate).not.toHaveBeenCalled();
+            first.emit("exit", 0);
+            expect(startLong).toHaveBeenCalledTimes(1);
+            const next = set.count("llama", longText);
+            replacement.answer(0, { value: 4 });
+            await expect(next).resolves.toBe(4);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("skips a withdrawn encode and waits for the aborted ordinary count's answer", async () => {
+        const port = new ScriptedPort();
+        const set = workerSet({ startWorker: () => port });
+        const running = new AbortController();
+        const queued = new AbortController();
+        const counted = set.count("llama", "running", running.signal);
+        const skipped = set.encode("llama", "skip", queued.signal);
+        const next = set.count("llama", "next");
+        const results = Promise.allSettled([counted, skipped, next]);
+
+        queued.abort(new Error("withdrew queued encode"));
+        await expect(Promise.race([skipped, setImmediate("still queued")])).rejects.toBe(queued.signal.reason);
+        running.abort(new Error("withdrew running count"));
+        await expect(Promise.race([counted, setImmediate("still running")])).rejects.toBe(running.signal.reason);
+        expect(port.terminate).not.toHaveBeenCalled();
+        expect(port.posted).toMatchObject([{ text: "running" }]);
+        port.answer(0, { value: 11 });
+        expect(port.posted).toMatchObject([{ text: "running" }, { text: "next" }]);
+        port.answer(1, { value: 23 });
+        await results;
+        await expect(next).resolves.toBe(23);
+    });
+
+    it("ends a running long encode on abort and continues its queue on a new worker", async () => {
+        const first = new ScriptedPort();
+        const replacement = new ScriptedPort();
+        const startWorker = vi.fn(() => replacement).mockReturnValueOnce(first);
+        const set = workerSet({ startWorker });
+        const caller = new AbortController();
+        const running = set.encode("llama", longText, caller.signal);
+        const queued = set.count("llama", longText);
+        const results = Promise.allSettled([running, queued]);
+        expect(first.posted.map((call) => call.op)).toEqual(["encode"]);
+
+        caller.abort(new Error("withdrew long encode"));
+        await expect(running).rejects.toBe(caller.signal.reason);
+        expect(first.terminate).toHaveBeenCalledTimes(1);
+        expect(startWorker).toHaveBeenCalledTimes(1);
+        first.emit("exit", 1);
+        expect(replacement.posted.map((call) => call.op)).toEqual(["count"]);
+        replacement.answer(0, { value: 37 });
+        await results;
+        await expect(queued).resolves.toBe(37);
+    });
+
     it("disposes running and queued calls and waits for one termination", async () => {
         const end = deferred<void>();
         const port = new ScriptedPort();
@@ -177,9 +291,52 @@ describe("the tokenizer worker queue", () => {
             end.resolve();
         }
     });
+
+    it("ends both workers and waits for the long worker to finish terminating", async () => {
+        const ordinary = new ScriptedPort();
+        const long = new ScriptedPort();
+        const end = deferred<void>();
+        long.terminate.mockImplementation(() => end.promise);
+        const set = workerSet({ startWorker: (_data, lane) => (lane === "ordinary" ? ordinary : long) });
+        const calls = Promise.allSettled([
+            set.load("llama"),
+            set.encode("llama", longText),
+            set.count("llama", longText),
+        ]);
+        try {
+            const disposal = set.dispose();
+            expect(await calls).toEqual([
+                { status: "rejected", reason: disposed },
+                { status: "rejected", reason: disposed },
+                { status: "rejected", reason: disposed },
+            ]);
+            expect(ordinary.terminate).toHaveBeenCalledTimes(1);
+            expect(long.terminate).toHaveBeenCalledTimes(1);
+            expect(await Promise.race([disposal, setImmediate("pending")])).toBe("pending");
+            end.resolve();
+            await disposal;
+        } finally {
+            end.resolve();
+        }
+    });
 });
 
 describe("the tokenizer thread", () => {
+    function holdFirstThread() {
+        const held = deferred<Worker>();
+        const latch = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+        const startWorker = vi
+            .fn<typeof startTokenizerWorker>(({ rootDir }, lane) => startTokenizerWorker({ rootDir }, lane))
+            .mockImplementationOnce((data, lane) => {
+                const worker = startTokenizerWorker(data, lane);
+                worker.on("message", (message: TokenizerWorkerMessage) => {
+                    if ("type" in message && message.type === "held") held.resolve(worker);
+                });
+                return worker;
+            });
+        return { set: workerSet({ latch, startWorker }), startWorker, held: held.promise };
+    }
+
     it("returns the in-thread llama ids as a Uint32Array and preserves cl100k_base refusals", async () => {
         const worker = workerSet();
         const local = createTokenizers({ rootDir: REPO_ROOT });
@@ -195,27 +352,34 @@ describe("the tokenizer thread", () => {
     });
 
     it("rejects the call held inside a terminated thread and answers the next on a new thread", async () => {
-        const held = deferred<Worker>();
-        const latch = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
-        const startWorker = vi
-            .fn(({ rootDir }: TokenizerWorkerData) => startTokenizerWorker({ rootDir }))
-            .mockImplementationOnce((data) => {
-                const worker = startTokenizerWorker(data);
-                worker.on("message", (message: TokenizerWorkerMessage) => {
-                    if ("type" in message && message.type === "held") held.resolve(worker);
-                });
-                return worker;
-            });
-        const set = workerSet({ latch, startWorker });
+        const { set, startWorker, held } = holdFirstThread();
         const running = set.count("llama", "held");
         const next = set.encode("llama", materialize(fixture.texts.ascii));
         const results = Promise.allSettled([running, next]);
-        const first = await held.promise;
+        const first = await held;
         await first.terminate();
         await results;
         await expect(running).rejects.toThrow(/The tokenizer worker stopped/);
         expect(startWorker).toHaveBeenCalledTimes(2);
         expect({ ids: Array.from(await next) }).toEqual(fixture.families.llama.ascii);
+    });
+
+    it("aborts a latched long count and answers the next long count", async () => {
+        const text = " a".repeat(65_537);
+        const local = createTokenizers({ rootDir: REPO_ROOT });
+        onTestFinished(() => local.dispose());
+        const expected = await local.count("llama", text);
+        const { set, held } = holdFirstThread();
+        const caller = new AbortController();
+        const running = set.count("llama", text, caller.signal);
+        const next = set.count("llama", text);
+        const results = Promise.allSettled([running, next]);
+        const exited = once(await held, "exit");
+        caller.abort(new Error("stop the held count"));
+        await expect(running).rejects.toBe(caller.signal.reason);
+        await exited;
+        await results;
+        await expect(next).resolves.toBe(expected);
     });
 });
 

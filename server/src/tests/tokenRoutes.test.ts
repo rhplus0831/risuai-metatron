@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { serve } from "@hono/node-server";
+import { once } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import type { Server } from "node:http";
 import os from "node:os";
@@ -10,7 +11,7 @@ import { LLMTokenizer } from "../../../shared/llm.ts";
 import { encodeSecretPath } from "../../../shared/llmSecrets.ts";
 import type { TabTokenScope } from "../../../shared/tokenizerChoice.ts";
 import { createServerContext } from "../app.ts";
-import { createTokenizers } from "../prompt/tokenizers/index.ts";
+import { createTokenizers, type Tokenizers } from "../prompt/tokenizers/index.ts";
 import { createTokenCounter, GOOGLE_COUNT_TIMEOUT_MS, type TokenCountScope } from "../prompt/tokens.ts";
 import { createAuthStore } from "../routes/auth.ts";
 import {
@@ -114,6 +115,30 @@ const routes = [
     { name: "count", route: TOKEN_COUNT_PATH, body: { scope: tabScope, texts: [mixed] } },
     { name: "encode", route: TOKEN_ENCODE_PATH, body: { tokenizer: "tik", text: mixed } },
 ];
+
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => {
+        resolve = done;
+    });
+    return { promise, resolve };
+}
+
+async function listenForTokenRequests(app: Hono<AppEnv>, routeCounter: typeof counter, routeTokenizers: Tokenizers) {
+    registerTokenRoutes(app, {
+        counter: routeCounter,
+        tokenizers: routeTokenizers,
+        googleAccessToken: () => GOOGLE_KEY,
+        auth: createAuthStore(savePath),
+        limiter: async (_c, next) => next(),
+        maintenance: context.snapshots.gate,
+        shuttingDown: () => false,
+    });
+    const listening = deferred<void>();
+    const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 }, () => listening.resolve()) as Server;
+    await listening.promise;
+    return { server, origin: allowListenerOrigin(server) };
+}
 
 describe("token routes", () => {
     it.each(routes)("$name authenticates before reading the body or tokenizing", async ({ route, body }) => {
@@ -300,13 +325,6 @@ describe("token routes", () => {
     });
 
     it("count aborts the pending Google fetch and stops the batch when the HTTP client disconnects", async () => {
-        function deferred<T>() {
-            let resolve!: (value: T) => void;
-            const promise = new Promise<T>((done) => {
-                resolve = done;
-            });
-            return { promise, resolve };
-        }
         const firstStarted = deferred<void>();
         const releaseFirst = deferred<Response>();
         const disconnected = deferred<void>();
@@ -332,19 +350,7 @@ describe("token routes", () => {
                 handled.resolve();
             }
         });
-        registerTokenRoutes(app, {
-            counter: googleCounter,
-            tokenizers,
-            googleAccessToken: () => GOOGLE_KEY,
-            auth: createAuthStore(savePath),
-            limiter: async (_c, next) => next(),
-            maintenance: context.snapshots.gate,
-            shuttingDown: () => false,
-        });
-        const listening = deferred<void>();
-        const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 0 }, () => listening.resolve()) as Server;
-        await listening.promise;
-        const origin = allowListenerOrigin(server);
+        const { server, origin } = await listenForTokenRequests(app, googleCounter, tokenizers);
         const client = new AbortController();
         // Hold the provider deadline so only the disconnect can abort it; socket timers run normally.
         const realSetTimeout = globalThis.setTimeout;
@@ -373,6 +379,46 @@ describe("token routes", () => {
             timers.mockRestore();
             client.abort();
             releaseFirst.resolve(Response.json({ totalTokens: 5 }));
+            server.closeAllConnections();
+            await new Promise<void>((resolve) => server.close(() => resolve()));
+        }
+    });
+
+    it("aborts the outstanding encode at the set and returns no ids after a disconnect", async () => {
+        const started = deferred<AbortSignal | undefined>();
+        const ids = deferred<number[]>();
+        const handled = deferred<Response>();
+        const app = new Hono<AppEnv>();
+        app.use(async (c, next) => {
+            await next();
+            handled.resolve(c.res.clone());
+        });
+        const { server, origin } = await listenForTokenRequests(app, counter, {
+            ...tokenizers,
+            encode: (_family, _text, signal) => {
+                started.resolve(signal);
+                return ids.promise;
+            },
+        });
+        const client = new AbortController();
+        try {
+            const request = httpFetch(`${origin}${TOKEN_ENCODE_PATH}`, {
+                ...json({ tokenizer: "tik", text: mixed }, headers),
+                signal: client.signal,
+            }).catch((error: unknown) => error);
+            const signal = await started.promise;
+            expect(signal).toBeInstanceOf(AbortSignal);
+            const abortedAtSet = once(signal!, "abort");
+            client.abort();
+            await expect(request).resolves.toMatchObject({ name: "AbortError" });
+            await abortedAtSet;
+            ids.resolve([42]);
+            const response = await handled.promise;
+            expect(response.status).toBe(400);
+            expect(await response.json()).not.toHaveProperty("ids");
+        } finally {
+            client.abort();
+            ids.resolve([]);
             server.closeAllConnections();
             await new Promise<void>((resolve) => server.close(() => resolve()));
         }

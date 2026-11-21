@@ -85,7 +85,9 @@ JWT, authenticated limiter.
   (`{ clientId, callbackId, outcome, value | error }`). 429 past `MAX_REQUESTS_PER_CLIENT` (32,
   `server/src/llm/requests.ts`); the answer route is 404 for an unknown, another client's, or an ended request.
 - `POST /api/tokens/count` and `POST /api/tokens/encode` (`server/src/routes/tokens.ts` `registerTokenRoutes`): counts
-  for a `TabTokenScope`, ids for the tab's playground tokenizer.
+  for a `TabTokenScope`, ids for the tab's playground tokenizer. Both pass the request's signal on, so a client that
+  disconnects gives up its outstanding local count or encode ([tokenizers](tokenizers.md#flows) says which worker
+  stops).
 
 ## Flows
 
@@ -354,7 +356,7 @@ mode); like the request history, in no snapshot or archive.
   synchronous store transaction as the write.
 - Credentials for server provider requests are resolved server-side; the record stays
   [write-only](server-resources.md#invariants).
-- In `server/src/routes/tokens.ts`, `registerTokenRoutes` answers an aborted count with HTTP 400 and
+- In `server/src/routes/tokens.ts`, `registerTokenRoutes` answers an aborted count or encode with HTTP 400 and
   `The request was aborted`; shutdown takes precedence and raises `MaintenanceError` instead.
 
 ## Recipes

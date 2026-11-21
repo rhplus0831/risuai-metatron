@@ -15,8 +15,8 @@ import { limitedBody } from "./limitedBody.ts";
  * length. Neither route writes, so neither requires a resource epoch; answers disable caching.
  *
  * Count batches run sequentially with the tab's captured scope and the server's Google key. Only text refusals from
- * server/src/prompt/tokens.ts become individual null counts; other failures propagate. Disconnects detach the caller
- * from shared remote counts. These routes hold no maintenance lease, so shutdown does not wait for those counts.
+ * server/src/prompt/tokens.ts become individual null counts; other failures propagate. Both routes pass the request
+ * signal to outstanding token operations. These routes hold no maintenance lease, so shutdown does not wait for counts.
  */
 
 /** Count endpoint exempted from the app's global body cap in favor of its authenticated cap. */
@@ -43,8 +43,9 @@ async function readTokenBody(c: Context<AppEnv>): Promise<JsonBodyResult> {
  * or a refused encode text; 413 over the body cap or 512 count texts; 429 from the authenticated
  * limiter; 503 with `Retry-After: 5` during maintenance or shutdown. Counts run sequentially and a
  * tokenizer's text refusal yields only that entry's `null`; other failures reach the app's 500.
- * A disconnect ends this caller's batch and detaches its wait from a coalesced Google count
- * (`server/src/prompt/tokens.ts`); the disconnect aborts that fetch only when no other caller still waits.
+ * A disconnect ends the caller's batch or playground encode with 400. It removes queued local work, stops a
+ * running long worker, or drops a running ordinary worker's answer. A shared Google count (including its local
+ * fallback) continues until its last caller leaves.
  * Count bodies { scope: TabTokenScope, texts } answer { counts }; encode bodies { tokenizer, text }
  * answer { ids } using `shared/tokenizerChoice.ts` playgroundFamily for the tab's tokenizer family.
  * Requests hold no maintenance lease, so shutdown does not wait for remote Google counts.
@@ -137,16 +138,19 @@ export function registerTokenRoutes(
         if (typeof tokenizer !== "string" || typeof text !== "string") {
             return c.json({ error: "tokenizer and text must be strings" }, 400);
         }
+        const signal = c.req.raw.signal;
         try {
             assertOpen();
-            if (c.req.raw.signal.aborted) {
-                return c.json({ error: "The request was aborted" }, 400);
-            }
-            const ids = await tokenizers.encode(playgroundFamily(tokenizer), text);
+            signal.throwIfAborted();
+            const ids = await tokenizers.encode(playgroundFamily(tokenizer), text, signal);
+            signal.throwIfAborted();
             return c.json({ ids: Array.from(ids) });
         } catch (error) {
             if (shuttingDown()) {
                 throw new MaintenanceError("The server is shutting down");
+            }
+            if (signal.aborted) {
+                return c.json({ error: "The request was aborted" }, 400);
             }
             if (isTokenizerTextRefusal(error)) {
                 return c.json({ error: error.message }, 400);

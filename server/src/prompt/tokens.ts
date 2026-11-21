@@ -141,7 +141,7 @@ export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?
             clearTimeout(timer);
         }
         controller.signal.throwIfAborted();
-        return await tokenizers.encode("gemmaSentencePiece", text);
+        return await tokenizers.encode("gemmaSentencePiece", text, controller.signal);
     }
 
     function pumpGoogleQueue(): void {
@@ -263,9 +263,12 @@ export function createTokenCounter(options: { tokenizers: Tokenizers; fetchImpl?
                 result = await countWithGoogle(text, scope, signal);
                 break;
             case "family":
-                result = await tokenizers.encode(choice.family, text);
+                result = await (signal
+                    ? tokenizers.encode(choice.family, text, signal)
+                    : tokenizers.encode(choice.family, text));
                 break;
         }
+        signal?.throwIfAborted();
         if (scope.useTokenizerCaching) {
             encodeCache.set(cacheKey, result);
         }

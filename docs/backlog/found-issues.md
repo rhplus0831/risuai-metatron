@@ -37,7 +37,6 @@ Sources the entries name (drop a line when no entry names it any more):
 - [Build and CI](#build-and-ci): 1
 - [Chat screen](#chat-screen): 1
 - [Rendering](#rendering): 1
-- [Server generation](#server-generation): 1
 
 ## Build and CI
 
@@ -89,33 +88,3 @@ stops cards that load web fonts this way; allowing only known font hosts (whose 
 most of those; loading and scoping the imported sheet is a larger change.
 
 **Decision:** owner, 2026-11-15: left as it is; the owner will deal with it separately. Do not fix it in passing.
-
-## Server generation
-
-### A long text holds every other token count while a tokenizer other than tiktoken counts it
-
-The server counts every local text in one tokenizer worker thread, one call at a time in arrival order
-(`server/src/prompt/tokenizers/workerHost.ts`), and the count route passes the caller's text with a 2 MiB body cap and
-no limit per string (`server/src/routes/tokens.ts`). The server's own thread stays free, but a count waits behind
-every count before it. The two tiktoken families are bounded for ordinary text: `tokenizers/tiktoken.ts` splits a
-pre-tokenizer piece over 512 UTF-8 bytes, and 200 KB of any slow class counts in under 0.1 s. What is not bounded,
-measured in thread on 2026-11-15 on one shared machine:
-
-- The other local families at 2 MiB: `novellist` 38.9 s on repeated emoji, `gemma` 16.2 s on letters (0.8 s at
-  200 KB), `claude` 6.0 s on letters, the rest 1 to 4 s. At 200 KB every one of them stayed under a second.
-- A tiktoken text that keeps the package path on purpose: one with a code point whose Unicode category differs between
-  Node and the package, or non-ASCII text on a Node whose Unicode version was not measured (16 and 17 were). The
-  package's encoders take quadratic time on one long piece: without the split, a 200 KB run of letters took 17.6 s
-  (wide review of 2026-11-14, cut X3).
-
-Nothing ends a count early: a caller that leaves (a closed request, a stopped job) still leaves its count running, and
-the counts queued behind it wait for it. The `tokenizers` guide's Limitations record the split.
-
-**Why it matters:** a text near the route's 2 MiB cap, from a signed-in client, an imported card, or a model reply,
-can hold every other token count of the instance (a send's prompt count in another chat, an editor's count) for
-seconds to tens of seconds on those families.
-
-**Suggested handling:** slice 3 of the [Tokenizer Worker plan](../plan/tokenizer-worker.md): a second worker for texts
-over 131,072 UTF-16 units, and an aborted caller ends its long count.
-
-**Decision:** owner, 2026-11-21: not fixed in a found-issues round; the worker thread design gets its own plan.
