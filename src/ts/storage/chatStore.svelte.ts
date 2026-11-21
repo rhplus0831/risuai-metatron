@@ -9,7 +9,7 @@ import {
 } from "../../../shared/chatMemory.ts";
 import { chatMemorySettings } from "./chatMemory.svelte";
 import { untrack } from "svelte";
-import { createSubscriber } from "svelte/reactivity";
+import { createSubscriber, SvelteMap, SvelteSet } from "svelte/reactivity";
 import { v4 as uuidv4 } from "uuid";
 import type {
     ChatGroupResult,
@@ -449,14 +449,14 @@ function clearOrderRefusal(chaId: string) {
 /** Chats whose conflict reload waits for the server job streaming into them. */
 const deferred = new ChatWorkSet();
 /** Chats acknowledged on an older base, awaiting an idle read of the server's complete state. */
-const staleChats = new Set<string>();
+const staleChats = new SvelteSet<string>();
 /**
  * Chats a live update announced as changed on the server (`noteRemoteChat`) → the sequence of the
  * latest notice and the revision it announced (null: deleted). Only an idle read that began after
  * that notice clears it, or this client coming to hold that revision another way (its own save, a
  * job's chat event). An eligible row manifest lives with its notice, so every notice reset drops it too.
  */
-const noticedChats = new Map<string, { seq: number; revision: string | null; rows?: ChatRowsManifest }>();
+const noticedChats = new SvelteMap<string, { seq: number; revision: string | null; rows?: ChatRowsManifest }>();
 let noticeSeq = 0;
 /** Bumped when `serverGenerations` or `feedLocks` changes, so the chat screen's lock reads re-run. */
 const lockState = $state({ version: 0 });
@@ -2566,7 +2566,8 @@ export function isChatStale(ref: ChatRef): boolean {
 
 /** Whether the mirror knows a chat is behind the server: marked stale, or a live notice not yet answered. */
 export function isChatBehind(ref: ChatRef): boolean {
-    dropAnsweredNotices();
+    // A field editor watches its chat's marks. Cleanup also visits notices for other chats.
+    untrack(dropAnsweredNotices);
     const key = keyOf(ref.chaId, ref.chatId);
     return staleChats.has(key) || noticedChats.has(key);
 }

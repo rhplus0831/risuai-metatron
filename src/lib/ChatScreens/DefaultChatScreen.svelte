@@ -69,6 +69,7 @@
         selectedChatLoad,
     } from "../../ts/storage/chatStore.svelte";
     import { editChatSync } from "../../ts/storage/chatEdits";
+    import { memoryEditorWriteFence } from "../../ts/storage/chatFieldDraft.svelte";
     import { getCharImage } from "../../ts/characters";
     import { sendChat } from "../../ts/process/index.svelte";
     import {
@@ -1916,7 +1917,7 @@
                                     onclick={() => {
                                         if (memoryMenuKind === "hypaV2") {
                                             const ref = currentChatRef();
-                                            if (ref && !findChat(ref)?.hypaV2Data) {
+                                            if (ref && !findChat(ref)?.hypaV2Data && !memoryEditorWriteFence(ref)) {
                                                 setChatMeta(ref, {
                                                     hypaV2Data: { lastMainChunkID: 0, mainChunks: [], chunks: [] },
                                                 });

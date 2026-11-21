@@ -1764,6 +1764,47 @@ it("shows the structured memory and HypaV3 menu rows without the menu toggle, an
     hypaV3ModalOpen.set(false);
 });
 
+it.each(["a foreign generation", "a pending chat read"] as const)(
+    "opens HypaV2 from the chat menu without initializing memory during %s",
+    async (reason) => {
+        const { menu, menuItem, click } = await mountComposer();
+        const { settings } = await import("src/ts/storage/settingsViews.svelte");
+        const { captureChatBaseline, findChat, finishIdleChatRefresh, markChatStale } =
+            await import("src/ts/storage/chatStore.svelte");
+        const { noteGenerationFrame } = await import("src/ts/process/generationProgress.svelte");
+        const { showHypaV2Alert } = await import("src/ts/alert");
+        const show = vi.mocked(showHypaV2Alert);
+        settings.ui.showMenuHypaMemoryModal = true;
+        settings.ui.memoryAlgorithmType = "hypaV2";
+        settings.memoryTranslateMedia.hypav2 = true;
+        const ref = { chaId: "c", chatId: "a" };
+        const job = { jobId: "foreign-job", characterId: ref.chaId, chatId: ref.chatId };
+        const generating = reason === "a foreign generation";
+        if (generating) {
+            noteGenerationFrame({ ...job, state: "running", kind: "send", clientId: "other-tab", startedAt: 1, at: 1 });
+        } else {
+            expect(markChatStale(ref)).toBe(true);
+        }
+        flushSync();
+        menu();
+        click(menuItem(language.hypaMemoryV2Modal));
+        expect(show).toHaveBeenCalledTimes(1);
+        expect(findChat(ref)?.hypaV2Data).toBeUndefined();
+
+        if (generating) {
+            noteGenerationFrame({ ...job, state: "ended" });
+        } else {
+            const data = captureChatBaseline(ref).chat;
+            expect(finishIdleChatRefresh({ characterId: ref.chaId, id: ref.chatId, revision: "r1", data })).toBe(true);
+        }
+        flushSync();
+        menu();
+        click(menuItem(language.hypaMemoryV2Modal));
+        expect(show).toHaveBeenCalledTimes(2);
+        expect(findChat(ref)?.hypaV2Data).toEqual({ lastMainChunkID: 0, mainChunks: [], chunks: [] });
+    },
+);
+
 it("renders a memory health badge with the context meter off and opens the panel on press", async () => {
     const { target, click } = await mountComposer();
     const { settings } = await import("src/ts/storage/settingsViews.svelte");

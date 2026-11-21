@@ -307,6 +307,42 @@ describe("dialogs keep their requested character and chat", () => {
         expect(workQueued()).toBe(true);
     });
 
+    it("pauses the open HypaV2 dialog when a revision notice arrives after disconnect", async () => {
+        const chat = await openMemoryFor("c");
+        const job = { jobId: "summary-job", characterId: chat.chaId, chatId: chat.chatId };
+        noteGenerationFrame({ ...job, state: "running", kind: "send", clientId: "other-tab", startedAt: 1, at: 1 });
+        flushSync();
+        const input = target.querySelector<HTMLTextAreaElement>("textarea")!;
+        expect(input.readOnly).toBe(true);
+        resetGenerationProgress();
+        flushSync();
+        expect(input.readOnly).toBe(false);
+
+        expect(noteRemoteChat(chat, jobRevision)).toBe("noticed");
+        flushSync();
+        expect(input.readOnly).toBe(true);
+        expect(dialogPanel().querySelector('[role="status"]')?.textContent).toBe(language.memoryTasks.awaitingSync);
+        edit("refused after reconnect");
+        const workQueued = () => hasUnsavedChatWork((id) => id === chat.chaId);
+        expect(workQueued()).toBe(false);
+        expect(findChat(chat)?.hypaV2Data).toEqual(memory("c"));
+
+        const data = captureChatBaseline(chat).chat;
+        data.hypaV2Data!.chunks[0].text = "generated while disconnected";
+        expect(
+            finishIdleChatRefresh(
+                { characterId: chat.chaId, id: chat.chatId, revision: jobRevision, data },
+                chatNoticeSeq(chat),
+                initialRevision,
+            ),
+        ).toBe(true);
+        flushSync();
+        expect(input.readOnly).toBe(false);
+        expect(input.value).toBe("generated while disconnected");
+        expect(dialogPanel().querySelector('[role="status"]')).toBeNull();
+        expect(workQueued()).toBe(false);
+    });
+
     it.each(["unloaded", "without memory"])(
         "shows no HypaV2 editor and writes nothing when the requested chat is %s",
         async (state) => {

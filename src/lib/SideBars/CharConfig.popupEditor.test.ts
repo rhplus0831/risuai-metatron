@@ -43,6 +43,7 @@ import {
     findChat,
     finishIdleChatRefresh,
     hasUnsavedChatWork,
+    markChatStale,
     noteRemoteChat,
     seedChats,
     selectChat,
@@ -247,3 +248,42 @@ it("opens the sidebar HypaV2 dialog during generation and initializes absent mem
     expect(show).toHaveBeenCalledTimes(2);
     expect(findChat(chat)?.hypaV2Data).toEqual({ lastMainChunkID: 0, mainChunks: [], chunks: [] });
 });
+
+it.each(["a revision notice", "a stale mark"] as const)(
+    "pauses the open SupaMemory editor when %s arrives after the generation fence falls",
+    (reason) => {
+        const { chat, target, input, edit, workQueued } = mountSupaMemory(reason, "character");
+        const job = { jobId: "summary-job", characterId: chat.chaId, chatId: chat.chatId };
+        noteGenerationFrame({ ...job, state: "running", kind: "send", clientId: "other-tab", startedAt: 1, at: 1 });
+        flushSync();
+        expect(input.readOnly).toBe(true);
+        resetGenerationProgress();
+        flushSync();
+        expect(input.readOnly).toBe(false);
+
+        const notice = reason === "a revision notice";
+        if (notice) expect(noteRemoteChat(chat, jobRevision)).toBe("noticed");
+        else expect(markChatStale(chat)).toBe(true);
+        flushSync();
+        expect(input.readOnly).toBe(true);
+        expect(target.textContent).toContain(language.memoryTasks.awaitingSync);
+        edit("refused while awaiting the read");
+        expect(findChat(chat)?.supaMemoryData).toBe(originalSummary);
+        expect(workQueued()).toBe(false);
+
+        const data = captureChatBaseline(chat).chat;
+        if (notice) data.supaMemoryData = generatedSummary;
+        expect(
+            finishIdleChatRefresh(
+                { characterId: chat.chaId, id: chat.chatId, revision: notice ? jobRevision : initialRevision, data },
+                chatNoticeSeq(chat),
+                initialRevision,
+            ),
+        ).toBe(true);
+        flushSync();
+        expect(input.readOnly).toBe(false);
+        expect(input.value).toBe(notice ? generatedSummary : originalSummary);
+        expect(target.textContent).not.toContain(language.memoryTasks.awaitingSync);
+        expect(workQueued()).toBe(false);
+    },
+);
