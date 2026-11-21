@@ -121,7 +121,8 @@ server.
 | Task                                                                                                                   | Guide                                                           |
 | ---------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
 | Send, prompt previews, lore activation/stops, OOC, Draft/BTW hooks, slash commands, groups, rerolls, search and inlays | [chat-pipeline](docs/structure/chat-pipeline.md)                |
-| Models, profiles, slots, credentials, providers, request interception, streaming and token counts                      | [llm-requests](docs/structure/llm-requests.md)                  |
+| Models, profiles, slots, credentials, providers, request interception and streaming                                    | [llm-requests](docs/structure/llm-requests.md)                  |
+| Token counts, tokenizer choice and the tokenizer playground                                                            | [tokenizers](docs/structure/tokenizers.md)                      |
 | Per-chat memory, trim confirmation, SupaMemory, HypaV2/V3, Hanurai, embeddings and background jobs                     | [memory](docs/structure/memory.md)                              |
 | Structured Memory records, projection, writer, story dates, prompt lanes, lifecycle, rebuild and page tools            | [structured-memory](docs/structure/structured-memory/README.md) |
 | CBS, Markdown, sanitizing, variables, partial edit, highlighting and display transforms                                | [cbs-rendering](docs/structure/cbs-rendering.md)                |

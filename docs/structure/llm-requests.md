@@ -1,4 +1,4 @@
-# LLM Requests, Model Catalogue, Tokenizers
+# LLM Requests, Model Catalogue
 
 ## Scope
 
@@ -9,8 +9,7 @@
   prompt insertion follow [request interception](#request-interception), for the banned-script and minimum-length checks
   of an answer [response checks](#response-checks). For tab plugin callbacks see
   [hook entry points](plugin-sandbox.md#hook-entry-points).
-- For token counts and playgrounds start at
-  [tokenizer selection and server counting](#tokenizer-selection-and-server-counting). The tab's WebLLM adapter uses
+- For token counts and playgrounds start at [tokenizers](tokenizers.md). The tab's WebLLM adapter uses
   `src/ts/process/webllm.ts`. Horde model discovery uses `src/ts/horde/getModels.ts`.
 - Neighboring owners cover [prompt assembly](chat-pipeline.md), [MCP tool definitions](mcp.md),
   [network transport](network-jobs.md), [credential storage](persistence.md) and
@@ -109,30 +108,6 @@ A slot here is a model preset's routing position (`mainSlot`, `subSlot`, `auxSlo
 - `server/src/llm/requests.ts` `createLlmRequests`: admission, `runInJob`, and the `strongBan` cache. Request history
   and observer details are in [diagnostics](diagnostics.md) and [server](self-host-server.md).
 
-### Tokenizer selection and server counting
-
-- `shared/tokenizerChoice.ts`: `selectTokenizer` (which family counts a model's text, for the server counter and
-  routes), `TabTokenScope`, `tokenizerIdentityKey`, `byName`, `playgroundFamily`.
-- `server/src/prompt/tokenizers/index.ts` `LOADERS`, `createTokenizers`: one loader per `TokenizerFamily`; payloads are
-  `server/assets/token/` files (`server/src/prompt/tokenizers/payloads.ts`).
-- `server/src/prompt/tokens.ts` `createTokenCounter`, `isTokenizerTextRefusal`, `GOOGLE_COUNT_MAX_CONCURRENT`: the
-  server counter; the routes are `server/src/routes/tokens.ts`. `countLocal` is the same choice without either cache and
-  without Google's endpoint (a `googleCloud` choice counts with `gemmaSentencePiece`); the streamed reply's output meter
-  uses it.
-- `shared/prompt/chatTokens.ts` `ChatTokenCounter`, `ChatTokenHost`, and `shared/prompt/imageTokens.ts` `imageTokens`: a
-  prompt's token arithmetic, the same on both runtimes.
-- `shared/contextReport.ts`: `assemblePrompt` records its existing counts, with `toolSchemas` and `interceptions`
-  outside `input`. Its `tokenScope` is the job's `tokenizerIdentityKey` (`tokenScopeFor`, `pluginTokenizer: "none"`).
-  Use the same scope when comparing a tab's count.
-
-### Tab token counting
-
-- `src/ts/tokenizer.ts`: counts through the server routes, with no tokenizer in the tab: `tabTokenScope` (also what
-  `requestServer` sends), `tokenScopeKey`, `jobTokenScope`, `countTokens`, `tokenizeAccurate`, `tokenCountInput`,
-  `ChatTokenizer`, `tokenizerList`.
-- `src/ts/tokenCountField.ts` `createTokenCountField`: the reusable UI count lifecycle. Editor call sites and component
-  behavior are indexed in [UI](ui-theming.md).
-
 ### Settings pages
 
 Each component's contract is the JSDoc block at the top of its `<script>`.
@@ -176,7 +151,8 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
   model preset's `memory` slot. `resolveScopeMemoryModel` in `server/src/jobs/jobScope.ts` supplies the same resolution
   to fingerprints, task checks, and writer runs. The tab's HypaV3 `summarize` also passes the chat's named profile.
   Deleted named profiles refuse with `missingNamedProfile`, never fall back. Lua's own `memory`-mode request in
-  `server/src/lua/bindings.ts` keeps the slot. Tokenization still follows the main model ([Invariants](#invariants)).
+  `server/src/lua/bindings.ts` keeps the slot. Tokenization still follows the main model
+  ([tokenizer invariants](tokenizers.md#invariants)).
 - An input hook (`src/ts/process/inputHooks.ts` `runInputHook`, [chat pipeline](chat-pipeline.md#input-hooks)) is a tab
   request in `otherAx` mode with the chat's `chatRef` and owner, so it runs on the chat's bound model preset; a hook
   whose model is a profile passes it as `profileId`. It passes `tools: []` (no tool-call record in the chat), but the
@@ -309,11 +285,6 @@ Each component's contract is the JSDoc block at the top of its `<script>`.
   join `collectSecrets`; model answer text remains unredacted.
 - On the server an unhandled promise rejection ends the process: a fire-and-forget promise in a ported adapter (a
   `pipeTo`, a `fetch`) must catch.
-- `cl100k_base` and `o200k_base` refuse text containing their special tokens; the count route returns `null` and the tab
-  rejects that count.
-- Tokenization does not follow a per-call `profileId`: a request's tokenizer scope is still the main model's (the tab's
-  `context.tokenizer`, a job's `tokenScopeFor`), so token biases and bans of a per-call request use the main model's
-  tokenizer (translation sends none).
 - Tool-call and overload retries stay bounded and abortable; the adapter and `outer.ts` comments own the retry limits. A
   job's own request reports each re-send right before it (`reportRetry` on `OuterRequestDeps` and `RequestContext`,
   supplied by `server/src/lua/bindings.ts`); the [job registry](server-generation.md) counts the reports.
@@ -355,16 +326,6 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
   3. Extend `applyParameters` in `server/src/llm/shared.ts` and `src/ts/process/request/shared.ts` (plugins), and the
      adapters' fixed lists and `rename` maps; `-1000` is left out. WebLLM uses `transformersParams`.
   4. Add it to `allBasicParameterItems` (`src/ts/setting/botSettingsParamsData.ts`), gated by `modelInfo.parameters`.
-- Add a tokenizer:
-  1. Append to `LLMTokenizer` (`shared/llm.ts`), add the `TokenizerFamily` and its `selectTokenizer` case
-     (`shared/tokenizerChoice.ts`), and for a name a user can pick, `byName` and `playgroundFamily` there and
-     `tokenizerList` (`src/ts/tokenizer.ts`). Add the `CustomModelsSettings` option.
-  2. Put the payload under `server/assets/token/` and add a `LOADERS` row (`json` or `sentencePiece`).
-  3. Text refusal: only the tiktoken families refuse text with a special token. If a new encoder refuses, it must throw
-     the message `isTokenizerTextRefusal` matches (`server/src/prompt/tokens.ts`), so the count route answers that text
-     `null`; any other throw fails the whole batch.
-  4. `tokens.test.ts` requires a `browser-ids.json` record per family (the fixture's `README.md`). Check the load with
-     `node server/src/prompt/tokenizers/loadAll.ts`.
 - Add a new wire format:
   1. Append the enum values in `shared/llm.ts`.
   2. Add catalogue entries and UI options, including the `CustomModelsSettings` option lists.
@@ -377,11 +338,9 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
 
 ## Tests
 
-- Focused:
-  `pnpm --silent test:agent shared/llm src/ts/model src/ts/process/request src/ts/tokenizer.test.ts src/ts/process/prompt.tokenize.test.ts src/lib/UI/NanoGPTDashboard.test.ts`
+- Focused: `pnpm --silent test:agent shared/llm src/ts/model src/ts/process/request src/lib/UI/NanoGPTDashboard.test.ts`
   for the tab and shared code;
-  `pnpm --silent test:agent server/src/tests/{llm*,token*,toolSchemas,sseLines,imageTokens,auxOps,providerModels}.test.ts`
-  for the server.
+  `pnpm --silent test:agent server/src/tests/{llm*,toolSchemas,sseLines,auxOps,providerModels}.test.ts` for the server.
 - Interception coverage crosses `shared/llm/tests/interception.test.ts` (rule order and normalization),
   `requestPresetScope.test.ts` (plugin provider), `llmRequests.test.ts` (server payload, retries and history), and
   `server/src/tests/promptRunner.test.ts` (preview and send token budget).
@@ -389,8 +348,7 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
   `llmCharsetRetries.test.ts` (the server loop's retries and skips, the re-sent mark),
   `src/ts/process/request/tests/responseRetries.test.ts` (the tab loop), `promptRunner.test.ts` (reply streams), and
   `generationJobs.test.ts` (the cleared estimate).
-- `slow`:
-  `pnpm --silent test:agent --tags-filter=slow server/src/tests/{llmCharsetRetries,tokenParity,tokenPlainNode}.test.ts`
+- `slow`: `pnpm --silent test:agent --tags-filter=slow server/src/tests/llmCharsetRetries.test.ts`
   ([test-harness](test-harness.md) `Slow-test table`).
 - `e2e`: `e2e/apiKeys.spec.ts` (key editing and profile binding through the real server); `e2e/chatBinding.spec.ts` (two
   bound chats reach a mock provider with their own model and `max_tokens`).
@@ -407,14 +365,10 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
   test routing into requests rather than providers.
 - `server/src/tests/llmCharsetRetries.test.ts` drives `requestChatDataOuter` with finite attempt scripts, where an extra
   attempt throws; its `slow` cases run a real group send in a child process the test kills.
-- Token fixtures: `server/src/tests/tokenFixtures.ts` loads the frozen ids in `fixtures/tokens/browser-ids.json` for the
-  tokenizer tests ([test fixtures](test-harness.md#fixtures)).
 - Browser checks outside the gate: `util/playwright/checkCredentialTraffic.mjs` (coverage and exclusions in the file)
   and `checkLlmTransport.mjs`.
 - For transport routing coverage and gaps see [network jobs](network-jobs.md#tests). The `checkCredentialTraffic.mjs`
   browser probe omits non-OpenAI sends, several discovery/account calls, previews, and Whisper through its component.
-- Not tested: aborting the last caller while `server/src/prompt/tokens.ts` `scheduleGoogleCount` waits for a limiter
-  slot; `tokens.test.ts` covers active-call cancellation and queue draining, but not cancellation while queued.
 
 ## Known Hazards
 
@@ -458,27 +412,6 @@ when the write runs is used. `modelId` and `credentialId` are not forwarded prof
   valid writer JSON: when the retries of an analysis or a required page patch run out, that recording attempt fails and
   its window stays unrecorded until a later recording; a rejected compaction adds a warning. Decision: Response Checks
   plan, owner, 2026-11-20.
-- Auxiliary requests still tokenize bias strings with the main model, not their own profile's tokenizer. Decision:
-  `shared/llm/request.ts` `tokenizer`.
-- A legacy plugin `custom` tokenizer counts with `cl100k_base` on screen and for `/api/llm/request` calls using the
-  tab-supplied scope. Job prompt counts use `pluginTokenizer: "none"` and `o200k_base`. Its `tokenizerFunc` is never
-  called, and delayed on-screen counts do not track the plugin tokenizer map. Decision: Server Tokenizer D1 and Combine
-  Audit Fixes, [archive](../archived-plan/README.md).
-- The server's `gemma` tokenizer loads `llama/llama3.json`, so Gemma counts are Llama 3 counts (also for on-screen
-  counts). Decision: `server/src/prompt/tokenizers/gemma.ts` header.
-- The tiktoken families take quadratic time on one long pre-tokenizer piece, so `tokenizers/tiktoken.ts` splits a piece
-  over 512 UTF-8 bytes before encoding. Text without such a piece gets the package's ids; a split run may count a few
-  tokens more per cut. Text with a code point whose Unicode category differs between Node and the package, non-ASCII
-  text on an unmeasured Unicode version, and a pattern JavaScript cannot compile keep the package path. The other
-  families are not bounded ([found issues](../backlog/found-issues.md#server-generation)). Decision: owner, 2026-11-15.
 - NanoGPT's `providers.nanogptSubscriptionState` and `nanogptUseSubscriptionEndpoint` remain global: two profiles on
   different accounts share subscription state and endpoint selection. A model-profile follow-up
   ([deferred work](../backlog/deferred-work.md#model-profiles)). Decision: owner, 2026-11-10 (known-issues review).
-- Multimodal counts remain approximate: Claude/Gemini images use the GPT-4o fallback; video/audio/signature entries use
-  a flat 85 tokens. Decision: owner, 2026-11-10 (known-issues review).
-
-### Gotchas
-
-- Local tokenizer families encode synchronously on the server thread. Encoders stay loaded per server context until
-  disposal; the web-tokenizer module loader is process-wide and serialized, and disposal does not guarantee that the
-  memory returns to the OS.

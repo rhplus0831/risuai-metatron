@@ -108,7 +108,7 @@ bounded, measured on 2026-11-15 on one shared machine:
   unrelated boot read for 17.6 s, and a send over a chat that stores such a message took 78.7 s (wide review of
   2026-11-14, cut X3).
 
-The `llm-requests` guide's Limitations record the split; the `server-generation` guide's record tokenizer calls on the
+The `tokenizers` guide's Limitations record the split; the `server-generation` guide's record tokenizer calls on the
 main thread as accepted on 2026-11-10 (worker isolation is a separate design).
 
 **Why it matters:** a text near the route's 2 MiB cap, from a signed-in client, an imported card, or a model reply,

@@ -7,10 +7,11 @@ message search and inlays. It also owns the shared lore engine, context report, 
 prompts. Start at a topic in **Files**.
 
 Follow [server generation](server-generation.md#prompt-job-execution) for assembly, trimming, scripts and the reply,
-[LLM requests](llm-requests.md) for provider requests and token counts, and [memory](memory.md) for memory algorithms.
-Rendering belongs to [CBS](cbs-rendering.md), regex and Lua to [scripts and triggers](scripts-triggers.md), TTS and
-image generation to [media](media-aux.md). For message search use [UI](ui-theming.md) for the panel and
-[server resources](server-resources.md) for the endpoint. For PDF conversion in MCP tools see [MCP](mcp.md).
+[LLM requests](llm-requests.md) for provider requests, [tokenizers](tokenizers.md) for token counts, and
+[memory](memory.md) for memory algorithms. Rendering belongs to [CBS](cbs-rendering.md), regex and Lua to
+[scripts and triggers](scripts-triggers.md), TTS and image generation to [media](media-aux.md). For message search use
+[UI](ui-theming.md) for the panel and [server resources](server-resources.md) for the endpoint. For PDF conversion in
+MCP tools see [MCP](mcp.md).
 
 ## Files
 

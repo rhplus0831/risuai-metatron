@@ -214,7 +214,7 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 
 - `CharConfig`, `ChatNoteEditor`, `LoreEntryFields`, prompt settings, `PopupEditor`, `PlaygroundTokenizer`, and
   `ContextMeter` use `createTokenCountField` (`src/ts/tokenCountField.ts`); its header owns scope, debounce, abort, and
-  failure behavior. See [LLM](llm-requests.md).
+  failure behavior. See [tab token counting](tokenizers.md#tab-token-counting).
 
 ### Other UI
 

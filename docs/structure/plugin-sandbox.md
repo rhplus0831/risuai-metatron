@@ -411,4 +411,4 @@ instance's ambient context.
 - Generating-character and duplicate-id refusals: `applyPluginCharacter`/`applyPluginCharacters`; `removeChar` also
   refuses permanent deletion during generation.
 - A custom `tokenizerFunc` is never called: tab token counts run on the server, which uses `cl100k_base` for a
-  provider's `custom` tokenizer ([LLM requests](llm-requests.md)).
+  provider's `custom` tokenizer ([tokenizer limitations](tokenizers.md#limitations)).
