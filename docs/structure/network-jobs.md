@@ -143,6 +143,10 @@ The transport below retains this tab's in-memory log.
 - The adapter pins the chat, runs `prepareServerJob` (the job preflight of `serverCommands.ts`), and posts the command
   with the request id as its id (`uncertain` when the send is marked `requestUncertain`); a retry goes to the host it
   went to while that host stays connected.
+- A send's wait for the resource flush in that preflight ends on Stop or after 30 seconds (`waitForSendFlush`,
+  `SEND_FLUSH_DEADLINE_MS`): before a local job, before the relay post, and on the receiving host. It answers the
+  pre-dispatch refusal with any earlier request uncertainty and leaves the shared write running. Command jobs and the
+  other flush callers still wait without a bound ([known issues](../backlog/known-issues.md#network-jobs)).
 - A Continue without input names the message it continues (`continueMessageId`, the chat's last message when pressed),
   so a message that lands before the host runs is not continued instead. A Continue with input names nothing: its job
   appends the user message and continues it. A Continue or reroll is never retried under its request id (each press is a

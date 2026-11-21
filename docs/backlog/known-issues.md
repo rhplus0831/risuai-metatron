@@ -26,12 +26,14 @@ Sources the entries name (drop a line when no entry names it any more):
 ## Contents
 
 - [build-test-platforms](#build-test-platforms) (1)
+- [characters-modules](#characters-modules) (1)
 - [chat-pipeline](#chat-pipeline) (4)
 - [media-aux](#media-aux) (1)
 - [memory](#memory) (2)
 - [network-jobs](#network-jobs) (1)
 - [persistence](#persistence) (1)
 - [structured-memory](#structured-memory) (2)
+- [ui-theming](#ui-theming) (1)
 
 ## build-test-platforms
 
@@ -44,6 +46,21 @@ Guide: [Build, Service Worker, Release](../structure/build-test-platforms.md#kno
   fixed. A fix compares the program's complete input key again before saving the result.
   [Input hashing](../../util/typeCheckCache.mjs#L62) · [End-of-run check](../../util/changedChecks.mjs#L259) ·
   [Cache write](../../util/typeCheckCache.mjs#L154)
+
+## characters-modules
+
+Guide: [Characters, Cards, Modules, Personas](../structure/characters-modules.md#known-hazards).
+
+- A chat lorebook or lore override prompt whose expanded popup is open loses the text typed in it when the write fence
+  rises. `src/lib/SideBars/LoreBook/LoreEntryFields.svelte` replaces the editable field with another text area while
+  the chat is fenced (`loreWriteFenced`), and the destroyed field's popup drops its pending hand-back
+  (`src/lib/UI/GUI/TextAreaInput.svelte`). Reproduced on 2026-11-22 in scratch component tests at `924542c39` (the
+  fence rising from this tab's own send and from a message lock) and at `5121ee5a4` (from a job the live feed lists):
+  the popup closed, the stored entry kept its old prompt, and reopening showed the old prompt. Since `2e0402cbd` the
+  fence also rises for a job or preview another device runs, so the loss has one more trigger. Not fixed. The message
+  editor keeps such text through a lock (read-only popup, text handed back); these fields have no draft to hand to.
+  [Field switch](../../src/lib/SideBars/LoreBook/LoreEntryFields.svelte#L94) ·
+  [Popup teardown](../../src/lib/UI/GUI/TextAreaInput.svelte#L265)
 
 ## chat-pipeline
 
@@ -193,3 +210,14 @@ Guide: [Structured Memory Records](../structure/structured-memory/records.md#kno
   [Cost query](../../server/src/prompt/memory/structured/rebuild.ts#L758) ·
   [Window planner](../../server/src/prompt/memory/structured/window.ts#L403) ·
   [Panel confirmation](../../src/lib/Others/StructuredMemory/memoryRecordPress.ts#L44)
+
+## ui-theming
+
+Guide: [UI Components and Theming](../structure/ui-theming.md#known-hazards).
+
+- The message editor's draft is kept by chat, message id and editor kind only, so it can reopen on another reroll
+  candidate of the same message. Seen on 2026-11-22 in a scratch variation of the editor component test: a draft typed
+  on one candidate reopened after a switch to another candidate, with the "changed elsewhere" notice showing. The
+  rendered-translation and partial-edit drafts carry the reply's candidate and generation ids and are not affected. Not
+  fixed: the notice warns before a Save, so nothing is overwritten silently.
+  [Draft store](../../src/ts/storage/messageEditorDrafts.svelte.ts#L13)

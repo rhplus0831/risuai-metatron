@@ -65,6 +65,11 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
   apply to chats that select those modes directly. The page edits the open chat's existing preset or the default. See
   [settings UI](settings-i18n.md#pages) for import targeting. The Plugin-model warning uses the open chat's resolved
   memory connection.
+- The HypaV2 chunk dialog (`src/lib/Others/AlertComp.svelte`) and the SupaMemory text areas
+  (`src/lib/SideBars/CharConfig.svelte`) write the whole field with `setChatMeta`. They are read-only while
+  `memoryEditorWriteFence` holds: a local send, a followed job, a message lock, a job the live feed lists (a preview
+  too), or a chat update not yet read. Both dialog openers skip initializing an absent `hypaV2Data` then. A tab that has
+  not heard of another device's job is not fenced ([known issues](../backlog/known-issues.md#memory)).
 - `src/lib/Others/HypaV3Modal.svelte` and `src/lib/Others/HypaV3Modal/` children edit the current chat's synced
   `hypaV3Data` copy; its contract owns save, refresh, and discard. Jobs and tasks write send memory.
   `getCurrentHypaV3Preset(chat)` reads its chat's preset; `summarize` captures preset and connection from its context's

@@ -30,10 +30,12 @@ Words the entries use:
 Sources the entries name (drop a line when no entry names it any more):
 
 - Wide review of 2026-11-14: [report](../reports/audits/codebase/wide-review-2026-11-14.md).
+- Fix round of 2026-11-22: no report; the fixes of eight known issues, and what their implementers read beside them.
 
 ## Contents
 
 - [Build and CI](#build-and-ci): 1
+- [Chat screen](#chat-screen): 1
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 1
 
@@ -52,6 +54,19 @@ forge runs this workflow at all.
 **Decision:** owner, 2026-11-20: `dev` stays out of the triggers on purpose
 ([build guide](../structure/build-test-platforms.md#ci)); do not file its absence. Owner, 2026-11-21: pin by hash only
 if the workflow is in use.
+
+## Chat screen
+
+### The sidebar's whole-chat Copy can capture a reply that is still streaming
+
+Fix round of 2026-11-22, read and not run. The chat list's Copy action (`src/lib/SideBars/SideChatList.svelte`, near 147) snapshots every loaded message of the chat with no check for a running generation. A message's Branch item is
+disabled while that message generates, because a branch made then kept the text streamed so far; this action copies
+the same tab-side messages.
+
+**Why it matters:** the copied chat could hold a cut-off reply that the user takes for the finished one.
+
+**Suggested handling:** reproduce by copying a chat while its reply streams; if the copy is partial, disable Copy
+while the chat is busy.
 
 ## Rendering
 

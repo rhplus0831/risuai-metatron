@@ -85,6 +85,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   events: a layout read at the remount sees a row already collapsed and sets off the browser's scroll anchoring. The
   browser's anchoring stays on (no `overflow-anchor` rule) and holds a reader through other growth. Measurements and the
   cases left: [fork chat scroll](../reports/surveys/fork-chat-scroll.md).
+- Opening an inline editor remembers the row's top, or that the reader was at the bottom, and reveals the text area when
+  it fits; closing restores that place through the row-height hold unless the reader scrolled meanwhile. The editor
+  opened last owns the place, and a restore that would clip another open text area is skipped.
 
 ### Message row
 
@@ -98,6 +101,12 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `src/lib/ChatScreens/Chat.svelte` owns original and translation editing, auto-popup eligibility, and `clickToEdit`.
   `src/ts/storage/messageEditorDrafts.svelte.ts` retains original-message and stored-translation drafts across screen or
   row unmounts. It keys text by chat ref, message id, and editor kind, and drops it on owner replacement or deletion.
+- The same store keeps the drafts of the rendered-translation editor (by captured cache key and reply) and of the
+  partial-edit popover (by its source range: both neighbor hashes match, or the text is unique then and now). A reply is
+  its candidate id and generation id; an id that appears or disappears on one generation keeps its drafts. At most 8
+  such drafts per message stay without an open editor, least recently written dropped first.
+- A bookmark preview passes the message id and shares the message's draft. Save and the user's cancel end a draft; the
+  rendered-translation Save cannot overlap itself, and its overwrite notice needs a fresh click.
 - `src/lib/ChatScreens/messageEditPopup.ts`: the pure eligibility and stable-height rules.
 
 ### Context meter
@@ -289,7 +298,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   copy.
 - A locked message (`isMessageLocked`: generating, or its final write not yet acknowledged) has its edit, delete, and
   regenerate controls disabled, and its open message or stored-translation editor turns read-only with the text kept
-  until release, the expanded popup included.
+  until release, the expanded popup included. Its Branch item is disabled too, and the handler checks the lock again
+  before it copies; an earlier, finished row can still branch.
 - While the chat is busy, the reroll arrows of every row, the side menu's Continue and Reroll, and checkpoint Save and
   Load are disabled, and Enter in the draft box does what its disabled Send Draft button does. The handlers keep their
   checks: the Ctrl+M hotkey and chat deletion alert `chatGenerating`.
@@ -363,7 +373,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - Browser scripts: `util/playwright/measureChats.mjs` checks production row counts, memory, and streaming cost;
   `util/playwright/checkSidebarChatStatus.mjs` covers the status badges;
   `docs/reports/surveys/fork-chat-scroll/probeChatScroll.mjs` prints the reader's position through openings, chat writes
-  and streams (no assertions; happy-dom has no layout, so this is the check for a scroll change).
+  and streams (no assertions; happy-dom has no layout, so this is the check for a scroll change); `probeEditorOpen.mjs`
+  beside it asserts the inline editor's open, cancel, save and two-editor cases.
 - Not tested: the search-to-transcript claim and scroll wiring, sidebar composition, mobile interactions, and a failed
   screenshot's restore need a browser check. The mounted `DefaultChatScreen.svelte` bookmark path through
   `scrollToMessageId` is also untested; `messageJump.test.ts` drives only the pure helper.

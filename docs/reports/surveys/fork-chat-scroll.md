@@ -409,7 +409,11 @@ It confirmed in the browser: a reload of every row, the UI's re-render, an edit 
 - M4, by the owner's choice.
 - The two "left" and "reduced" rows above, recorded as a limitation in the
   [UI guide](../../structure/ui-theming.md#limitations).
-- Opening the inline editor moves the view before any save. Both reviewers saw it; the cause was not looked for.
+- Opening the inline editor moved the view before any save, and closing it did not give the place back. Fixed on
+  2026-11-22: the body is replaced by a shorter text area, so the row shrinks and the browser's anchoring answers; the
+  transcript now remembers the row's place at the open and restores it at the close
+  ([UI guide](../../structure/ui-theming.md#transcript-scrolling)). [`probeEditorOpen.mjs`](fork-chat-scroll/probeEditorOpen.mjs)
+  checks it.
 - A render that takes seconds (a slow display transform) followed by the reader's own scrolling gets no correction, as
   before the fixes.
 - Still Chrome only: Safari, Firefox, a phone and touch input were not run.
@@ -418,5 +422,7 @@ It confirmed in the browser: a reload of every row, the UI's re-render, an edit 
 
 - [`fork-chat-scroll/probeChatScroll.mjs`](fork-chat-scroll/probeChatScroll.mjs): the probe. It asserts nothing and
   prints one JSON line per scenario.
+- [`fork-chat-scroll/probeEditorOpen.mjs`](fork-chat-scroll/probeEditorOpen.mjs): the inline editor's scenarios
+  (open, cancel, save, the reader scrolling meanwhile, two editors). It asserts, and exits 1 on a failed expectation.
 - The runs behind the tables, the workers' answers and the verifier's brief are kept outside the repository in
   `/home/codex/review-reports/chat-scroll-2026-11-18/`.

@@ -147,9 +147,11 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   (`memoryEnabled`, `memoryMode`, `memoryPresetId`, `memoryProfileId`) from the current chat before `applyChatResult`,
   covering whole-chat reorder replacements. A retained baseline uses the ordinary diff. Other fields, `memoryTrimAck`,
   and `setChatToIndex` keep their existing rules.
-- A `createChatFieldDraft` copy is fenced by `loreWriteFenced` over `localSends` and `generatingChatKeys`, also before
-  structural override actions; the job's Lua lorebook upsert writes from the stored chat
-  ([scripts](scripts-triggers.md)).
+- A `createChatFieldDraft` copy is fenced by `loreWriteFenced` over `localSends`, `generatingChatKeys`, and the jobs the
+  live feed lists for the chat (`runningGenerations`, previews included), also before structural override actions; the
+  job's Lua lorebook upsert writes from the stored chat ([scripts](scripts-triggers.md)).
+- `memoryEditorWriteFence` is that fence plus a chat that is behind (`isChatBehind`, which tracks the chat's stale mark
+  and notice): the HypaV2 and SupaMemory editors use it ([memory](memory.md#ui)).
 
 ### Deferral
 

@@ -149,6 +149,9 @@ a [chat setting](#state).
 3. The translation editors in `src/lib/ChatScreens/Chat.svelte` capture `llmTranslationCacheKey(text)`, then read and
    write that full key with `readLLMCacheEntry`/`writeLLMCacheEntry`, so a later settings switch cannot redirect the
    edit.
+4. `translateLLM` checks its result again after it restores style placeholders: one that is blank then, for non-blank
+   input, fails like a blank pipeline answer (`EmptyTranslationError`) and is not cached. A blank entry in the browser
+   cache reads as a miss (`readLLMCacheEntry`, `getLLMCache`, the plugin cache search); cache export keeps raw entries.
 
 ### Stored request and refresh
 

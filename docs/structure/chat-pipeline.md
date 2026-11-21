@@ -187,6 +187,10 @@ tab under the same reservation ([remote send](network-jobs.md#remote-send)).
 - A removal reroll puts back, per key, the variables its removed tail changed before it sends again, and a recovered
   tail brings them back; the newest reply of a job carries the baseline of that tail (`rerollTurnStart`,
   `shared/rerollCandidates.ts`). Legacy replies without that baseline keep their values.
+- Undo and Redo over a multi-reply bundle (`move` in `rerollHistory.ts`) move the variables with the messages by the
+  candidate switch's rule: with the after-snapshot of each bundle's newest reply present, a key still at the departing
+  bundle's value takes the arriving one, a key changed since keeps its value, and a missing snapshot leaves the
+  variables alone.
 - `rerollHistory.ts` owns guarded tab restoration; [chat store](chat-store.md#by-id-ops) owns by-id writes; the
   [server job](server-generation.md#reroll-in-place) commits an in-place reroll.
 
