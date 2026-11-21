@@ -3,7 +3,7 @@ import { textHash } from "../../../shared/textHash.ts";
 import { chatEntry, chatOwnerToken, findChat, heldMessageById, onChatRemoved, type ChatRef } from "./chatStore.svelte";
 import type { StoredTranslationEdit } from "../translator/storedTranslation.svelte";
 
-type EditorKind = "message" | "translation" | `cache:${string}` | `partial:${number}`;
+type EditorKind = "message" | `message:${string}` | "translation" | `cache:${string}` | `partial:${number}`;
 interface PartialSelection {
     target: string | null;
     text: string;
@@ -33,23 +33,57 @@ interface DraftEntry {
 const drafts = new Map<string, DraftEntry>();
 const keyOf = (ref: ChatRef, messageId: string | undefined, kind: EditorKind) =>
     JSON.stringify([ref.chaId, ref.chatId, messageId, kind]);
+const replyKey = (candidate: string | undefined, generation: string | undefined) =>
+    candidate || generation ? JSON.stringify([candidate, generation]) : null;
+const messageKind = (reply: string | null): EditorKind => (reply === null ? "message" : `message:${reply}`);
 
 /** Candidate switches and in-place generations can replace the reply while preserving its message id. */
 export function messageEditorReplyKey(ref: ChatRef | null, messageId: string | undefined) {
     const message = ref && messageId ? heldMessageById(ref, messageId) : undefined;
     const candidate = message?.candidates?.[message.selected ?? 0]?.id;
     const generation = message?.generationInfo?.generationId;
-    return candidate || generation ? JSON.stringify([candidate, generation]) : null;
+    return replyKey(candidate, generation);
+}
+
+function resolveEditorKind(ref: ChatRef, messageId: string | undefined, kind: EditorKind): EditorKind {
+    if (kind !== "message" || !messageId) return kind;
+    const message = heldMessageById(ref, messageId);
+    if (message?.role !== "char") return kind;
+    const first = message.candidates?.[0];
+    if (first) {
+        // When a standalone reply gains slots, the job stores that original as the first slot.
+        const generation = first.generationInfo?.generationId;
+        const oldKey = keyOf(ref, messageId, messageKind(replyKey(undefined, generation)));
+        const firstKind = messageKind(replyKey(first.id, generation));
+        const firstKey = keyOf(ref, messageId, firstKind);
+        const original = drafts.get(oldKey);
+        if (original && original.owner === chatOwnerToken(ref.chaId) && !drafts.has(firstKey)) {
+            drafts.delete(oldKey);
+            original.kind = firstKind;
+            drafts.set(firstKey, original);
+        }
+    }
+    return messageKind(messageEditorReplyKey(ref, messageId));
+}
+
+function dropDraft(entry: DraftEntry) {
+    entry.draft.open = false;
+    entry.dispose();
+    drafts.delete(keyOf(entry.ref, entry.messageId, entry.kind));
+}
+
+function findDraftEntry(ref: ChatRef, messageId: string | undefined, kind: EditorKind) {
+    const entry = drafts.get(keyOf(ref, messageId, kind));
+    if (entry && entry.owner !== chatOwnerToken(ref.chaId)) {
+        dropDraft(entry);
+        return undefined;
+    }
+    return entry;
 }
 
 /** Row drafts and their open state live for this tab, including while Settings has destroyed the chat screen. */
 export function findMessageEditorDraft(ref: ChatRef, messageId: string | undefined, kind: EditorKind) {
-    const entry = drafts.get(keyOf(ref, messageId, kind));
-    if (entry && entry.owner !== chatOwnerToken(ref.chaId)) {
-        closeMessageEditorDraft(ref, messageId, kind);
-        return undefined;
-    }
-    return entry?.draft;
+    return findDraftEntry(ref, messageId, resolveEditorKind(ref, messageId, kind))?.draft;
 }
 
 export function openMessageEditorDraft(
@@ -58,8 +92,9 @@ export function openMessageEditorDraft(
     kind: EditorKind,
     initial: Omit<MessageEditorDraft, "open">,
 ): MessageEditorDraft {
+    kind = resolveEditorKind(ref, messageId, kind);
     const key = keyOf(ref, messageId, kind);
-    const existing = findMessageEditorDraft(ref, messageId, kind);
+    const existing = findDraftEntry(ref, messageId, kind)?.draft;
     if (existing) {
         existing.open = true;
         return existing;
@@ -74,7 +109,7 @@ export function openMessageEditorDraft(
                 (messageId && findChat(ref) && !heldMessageById(ref, messageId)) ||
                 owner !== chatOwnerToken(ref.chaId)
             ) {
-                untrack(() => closeMessageEditorDraft(ref, messageId, entry.kind, draft));
+                untrack(() => dropDraft(entry));
             }
         });
     });
@@ -89,12 +124,10 @@ export function closeMessageEditorDraft(
     kind: EditorKind,
     expected?: MessageEditorDraft,
 ) {
-    const key = keyOf(ref, messageId, kind);
+    const key = keyOf(ref, messageId, resolveEditorKind(ref, messageId, kind));
     const entry = drafts.get(key);
     if (!entry || (expected && entry.draft !== expected)) return;
-    entry.draft.open = false;
-    entry.dispose();
-    drafts.delete(key);
+    dropDraft(entry);
 }
 
 let partialSequence = 0;
@@ -250,7 +283,7 @@ export function openPartialEditorDraft(
 onChatRemoved((removal) => {
     for (const entry of drafts.values()) {
         if (entry.ref.chaId === removal.chaId && (removal.chatId === null || entry.ref.chatId === removal.chatId)) {
-            closeMessageEditorDraft(entry.ref, entry.messageId, entry.kind);
+            dropDraft(entry);
         }
     }
 });

@@ -31,7 +31,6 @@ Sources the entries name (drop a line when no entry names it any more):
 - [network-jobs](#network-jobs) (1)
 - [persistence](#persistence) (1)
 - [structured-memory](#structured-memory) (1)
-- [ui-theming](#ui-theming) (1)
 
 ## characters-modules
 
@@ -163,14 +162,3 @@ Guide: [Structured Memory Records](../structure/structured-memory/records.md#kno
     as stored. The server has never written such an event.
 
   Not fixed: the byte charge, since measuring costs every round; the owner has not said whether it is a Limitation.
-
-## ui-theming
-
-Guide: [UI Components and Theming](../structure/ui-theming.md#known-hazards).
-
-- The message editor's draft is kept by chat, message id and editor kind only, so it can reopen on another reroll
-  candidate of the same message. Seen on 2026-11-22 in a scratch variation of the editor component test: a draft typed
-  on one candidate reopened after a switch to another candidate, with the "changed elsewhere" notice showing. The
-  rendered-translation and partial-edit drafts carry the reply's candidate and generation ids and are not affected. Not
-  fixed: the notice warns before a Save, so nothing is overwritten silently.
-  [Draft store](../../src/ts/storage/messageEditorDrafts.svelte.ts#L13)

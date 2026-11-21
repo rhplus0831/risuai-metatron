@@ -106,6 +106,7 @@ import {
     patchMessage,
     removeMessages,
     seedChats,
+    selectCandidate,
     selectChat,
     setMessageText,
 } from "src/ts/storage/chatStore.svelte";
@@ -130,6 +131,8 @@ import Chat from "./Chat.svelte";
 
 const ref = { chaId: "c", chatId: "draft-chat" };
 const editorDraftsPath = "src/ts/storage/messageEditorDrafts.svelte";
+const firstReply = { id: "first-reply", data: "Original", generationInfo: { generationId: "first-generation" } };
+const secondReply = { id: "second-reply", data: "Other", generationInfo: { generationId: "second-generation" } };
 const mounted: ReturnType<typeof mount>[] = [];
 function bootDraftChat(theme = "") {
     installFlatDatabase({
@@ -193,7 +196,7 @@ function mountRow(overrides: { message?: string; idx?: number; isComment?: boole
             isLastMemory: false,
             character: createSimpleCharacter(selectedCharacter()),
             name: "C",
-            role: "char",
+            role: findChat(ref)!.message[0].role,
             img: "",
             ...overrides,
         },
@@ -396,6 +399,98 @@ describe("original message draft", () => {
         expect(ui.target.textContent).not.toContain(language.messageEditorChangedElsewhere);
         const { findMessageEditorDraft } = await import(editorDraftsPath);
         expect(findMessageEditorDraft(ref, "a", "message")).toBeUndefined();
+    });
+
+    it("keeps each candidate's draft through selection changes and row remounts", async () => {
+        bootDraftChat();
+        settings.ui.disableAutoPopupMessageEditor = true;
+        patchMessage(ref, "a", {
+            candidates: [firstReply, { ...secondReply, generationInfo: firstReply.generationInfo }],
+            selected: 0,
+            generationInfo: firstReply.generationInfo,
+        });
+        let ui = mountRow();
+        ui.toggle();
+        ui.type("First candidate draft");
+
+        selectCandidate(ref, "a", secondReply.id);
+        ui.instance.updateRow({ message: secondReply.data });
+        flushSync();
+        expect.soft(ui.textarea()).toBeNull();
+        ui = await ui.remount();
+        expect(ui.textarea()).toBeNull();
+        ui.toggle();
+        expect(ui.textarea().value).toBe(secondReply.data);
+        ui.type("Second candidate draft");
+
+        selectCandidate(ref, "a", firstReply.id);
+        ui.instance.updateRow({ message: firstReply.data });
+        flushSync();
+        expect(ui.textarea()?.value).toBe("First candidate draft");
+
+        const saveFirst = ui.save();
+        selectCandidate(ref, "a", secondReply.id);
+        saveFirst.click();
+        expect(ui.stored()).toBe(secondReply.data);
+        ui = await ui.remount();
+        expect(ui.textarea()?.value).toBe("Second candidate draft");
+    });
+
+    it.each([
+        { reply: "a generated reply", generationInfo: firstReply.generationInfo },
+        { reply: "a legacy reply", generationInfo: undefined },
+    ])("reopens a draft typed before $reply gained its first candidate id", async ({ generationInfo }) => {
+        bootDraftChat();
+        settings.ui.disableAutoPopupMessageEditor = true;
+        if (generationInfo) patchMessage(ref, "a", { generationInfo });
+        let ui = mountRow();
+        ui.toggle();
+        ui.type("Standalone reply draft");
+
+        patchMessage(ref, "a", {
+            candidates: [{ id: firstReply.id, data: firstReply.data, generationInfo }, secondReply],
+            selected: 1,
+            data: secondReply.data,
+            generationInfo: secondReply.generationInfo,
+        });
+        ui.instance.updateRow({ message: secondReply.data });
+        flushSync();
+        expect.soft(ui.textarea()).toBeNull();
+
+        selectCandidate(ref, "a", firstReply.id);
+        ui = await ui.remount();
+        expect(ui.textarea()?.value).toBe("Standalone reply draft");
+    });
+
+    it("keeps drafts separate by generation when a reply has no candidate slots", () => {
+        bootDraftChat();
+        settings.ui.disableAutoPopupMessageEditor = true;
+        patchMessage(ref, "a", { generationInfo: firstReply.generationInfo });
+        const ui = mountRow();
+        ui.toggle();
+        ui.type("First generation draft");
+
+        patchMessage(ref, "a", { generationInfo: secondReply.generationInfo });
+        flushSync();
+        expect(ui.textarea()).toBeNull();
+
+        patchMessage(ref, "a", { generationInfo: firstReply.generationInfo });
+        flushSync();
+        expect(ui.textarea()?.value).toBe("First generation draft");
+    });
+
+    it("keeps a user message draft across a generation id change and row remount", async () => {
+        bootDraftChat();
+        settings.ui.disableAutoPopupMessageEditor = true;
+        patchMessage(ref, "a", { role: "user" });
+        let ui = mountRow();
+        ui.toggle();
+        ui.type("User message draft");
+
+        patchMessage(ref, "a", { generationInfo: firstReply.generationInfo });
+        ui = await ui.remount();
+
+        expect(ui.textarea()?.value).toBe("User message draft");
     });
 
     it("drops retained drafts when their message or chat is deleted without a mounted row", async () => {
@@ -694,6 +789,33 @@ describe("Chat message editor auto popup", () => {
         expect(ui.textarea().readOnly).toBe(false);
         ui.toggle();
         expect(ui.stored()).toBe("Typed in the expanded popup");
+    });
+
+    it("keeps expanded popup text on the candidate it was typed on when both replies have the same text", () => {
+        bootDraftChat();
+        settings.ui.disableAutoPopupMessageEditor = true;
+        patchMessage(ref, "a", {
+            candidates: [firstReply, { ...secondReply, data: firstReply.data }],
+            selected: 0,
+            generationInfo: firstReply.generationInfo,
+        });
+        const ui = mountRow();
+        ui.toggle();
+        ui.target.querySelector<HTMLButtonElement>(`button[aria-label="${language.hotkeyDesc.popupEditor}"]`)!.click();
+        flushSync();
+        expect(popUpEditorStore.open).toBe(true);
+        popUpEditorStore.value = "Expanded first candidate draft";
+        flushSync();
+
+        selectCandidate(ref, "a", secondReply.id);
+        flushSync();
+        expect(popUpEditorStore.open).toBe(false);
+        expect(ui.textarea()).toBeNull();
+        expect(ui.stored()).toBe(firstReply.data);
+
+        selectCandidate(ref, "a", firstReply.id);
+        flushSync();
+        expect(ui.textarea()?.value).toBe("Expanded first candidate draft");
     });
 
     it("opens no popup while the setting turns the auto popup off, and the inline editor still works", async () => {

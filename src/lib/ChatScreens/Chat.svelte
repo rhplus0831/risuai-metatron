@@ -596,7 +596,7 @@
         if (!target) return;
 
         const run = ++autoPopupMessageEditorRun;
-        const initialDraft = draft;
+        const initialDraft = messageDraft;
         const initialValue = draft ?? message;
         const sessionId = openPopupEditorSession(initialValue, undefined, undefined, () => locked);
         activeAutoPopupMessageSessionId = sessionId;
@@ -604,7 +604,7 @@
             !popupEditorsDestroyed &&
             run === autoPopupMessageEditorRun &&
             editMode &&
-            draft === initialDraft &&
+            messageDraft === initialDraft &&
             (draft ?? message) === initialValue &&
             isCurrentMessageTarget(target);
         retainPopupMessageDraft = () => {
@@ -683,6 +683,24 @@
             }
         }
     }
+
+    $effect.pre(() => {
+        if (!chatRef || !editorMessageId) return;
+        const current = findMessageEditorDraft(chatRef, editorMessageId, "message");
+        untrack(() => {
+            const next = current?.open ? current : undefined;
+            if (messageDraft === next) return;
+            // A candidate switch can keep the row mounted. Its popup still belongs to the leaving draft.
+            retainPopupMessageDraft?.();
+            if (activeAutoPopupMessageSessionId !== null) {
+                closePopupEditorSession(activeAutoPopupMessageSessionId);
+                activeAutoPopupMessageSessionId = null;
+                retainPopupMessageDraft = undefined;
+            }
+            if (messageDraft?.open && !next) onCloseInlineEditor?.();
+            messageDraft = next;
+        });
+    });
 
     $effect(() => {
         if (!editMode) {
@@ -783,7 +801,11 @@
     /** A generation can lock the message after editing began. A refused save leaves its draft open. */
     function edit() {
         const target = messageTarget(editorMessageId);
-        if (target && refuseLocked(target.ref, [target.id])) {
+        if (
+            target &&
+            (findMessageEditorDraft(target.ref, target.id, "message") !== messageDraft ||
+                refuseLocked(target.ref, [target.id]))
+        ) {
             return;
         }
         if (target) {
@@ -1533,15 +1555,22 @@
     {/if}
     {#if editMode}
         {@render messageEditorNotice()}
-        <AutoresizeArea
-            bind:value={() => draft, setOriginalDraft}
-            readonly={locked}
-            retainPopupDraftOnUnmount
-            popupEditor
-            ariaLabel={language.input}
-            stableHeight={useStableMessageEditor}
-            handleLongPress={cancelOriginalEdit}
-        />
+        {#each messageDraft ? [messageDraft] : [] as original (original)}
+            <AutoresizeArea
+                bind:value={
+                    () => original.text,
+                    (text) => {
+                        original.text = text ?? "";
+                    }
+                }
+                readonly={locked}
+                retainPopupDraftOnUnmount
+                popupEditor
+                ariaLabel={language.input}
+                stableHeight={useStableMessageEditor}
+                handleLongPress={cancelOriginalEdit}
+            />
+        {/each}
     {:else if isComment}
         <div class="w-full flex justify-center text-textcolor2 italic mb-12">
             {#if msgDisplay.startsWith("{{specialcomment")}
