@@ -56,10 +56,6 @@ vi.mock("./apiV3/v3.svelte", () => ({
     getV3PluginInstance: () => undefined,
 }));
 
-vi.mock("./apiV3/transpiler", () => ({
-    pluginCodeTranspiler: vi.fn(async (code: string) => code),
-}));
-
 import { changeLanguage, language } from "src/lang";
 import { hotReloading } from "src/ts/stores.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
@@ -252,6 +248,30 @@ describe("importPlugin permission review", () => {
         expect(mocks.reviewPluginPermissions).not.toHaveBeenCalled();
         expect(settings.plugins).toEqual([]);
     });
+});
+
+it("keeps the installed plugin when a TypeScript update fails to compile", async () => {
+    const original = "//@name test_plugin\n//@api 3.0\n//@version 1.0.0\nconst value: number = 1;";
+    await importPlugin(original, { isTypescript: true });
+    expect(mocks.alertError).not.toHaveBeenCalled();
+    expect(settings.plugins).toHaveLength(1);
+    const { script: savedScript } = settings.plugins[0];
+    expect(savedScript).toContain("const value = 1;");
+    mocks.loadV3Plugins.mockClear();
+    mocks.reviewPluginPermissions.mockClear();
+
+    await importPlugin("//@name test_plugin\n//@api 3.0\n//@version 2.0.0\nconst value: number = ;", {
+        isTypescript: true,
+        isUpdate: true,
+        originalPluginName: "test_plugin",
+    });
+
+    expect(mocks.alertError).toHaveBeenCalledExactlyOnceWith(
+        expect.stringMatching(/^Failed to transpile TypeScript code: Unexpected token/),
+    );
+    expect(settings.plugins).toMatchObject([{ name: "test_plugin", script: savedScript, versionOfPlugin: "1.0.0" }]);
+    expect(mocks.reviewPluginPermissions).not.toHaveBeenCalled();
+    expect(mocks.loadV3Plugins).not.toHaveBeenCalled();
 });
 
 describe("plugin updates through globalFetch", () => {

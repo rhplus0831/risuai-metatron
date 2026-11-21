@@ -51,7 +51,6 @@ Sources the entries name (drop a line when no entry names it any more):
 - [Memory](#memory): 3
 - [Modules and personas](#modules-and-personas): 1
 - [Network jobs](#network-jobs): 1
-- [Plugins](#plugins): 1
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 1
 - [Settings](#settings): 2
@@ -259,21 +258,6 @@ that neither ends nor stops.
 **Suggested handling:** in `prepareServerJob`, race the wait for the shared flush against the send's signal and a
 deadline, answer a refusal that keeps the request's uncertainty, and never go on to a create after the timeout. Do not
 abort the shared write or count it as saved: it may be committed, and other callers wait on the same answer.
-
-## Plugins
-
-### A TypeScript compilation error can replace a working plugin
-
-Structure audit of 2026-11-18, read and not run. `importPlugin` reports a transpilation error and goes on with the
-original TypeScript as the guest script (the `catch` after `pluginCodeTranspiler` shows the error and does not
-return). A supported plugin that passes the remaining import checks can therefore overwrite its installed version.
-[Compiler error path](../../src/ts/plugins/plugins.svelte.ts#L355) ·
-[Install write](../../src/ts/plugins/plugins.svelte.ts#L441)
-
-**Why it matters:** an update whose source does not compile replaces a plugin that worked.
-
-**Suggested handling:** return on a compilation failure, with a test that replacing a working plugin leaves its saved
-script intact.
 
 ## Rendering
 

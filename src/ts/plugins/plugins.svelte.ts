@@ -359,6 +359,7 @@ export async function importPlugin(
                 jsFile = await pluginCodeTranspiler(jsFile);
             } catch (error) {
                 showError("Failed to transpile TypeScript code: " + error.message);
+                return;
             }
         }
 
