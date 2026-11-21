@@ -51,7 +51,7 @@ Sources the entries name (drop a line when no entry names it any more):
 - [LLM requests](#llm-requests): 2
 - [Memory](#memory): 5
 - [Modules and personas](#modules-and-personas): 1
-- [Network jobs](#network-jobs): 2
+- [Network jobs](#network-jobs): 1
 - [Plugins](#plugins): 1
 - [Remote commands](#remote-commands): 1
 - [Rendering](#rendering): 1
@@ -353,14 +353,6 @@ that neither ends nor stops.
 **Suggested handling:** in `prepareServerJob`, race the wait for the shared flush against the send's signal and a
 deadline, answer a refusal that keeps the request's uncertainty, and never go on to a create after the timeout. Do not
 abort the shared write or count it as saved: it may be committed, and other callers wait on the same answer.
-
-### The job request's context type does not name two reroll fields
-
-Post-verification of 2026-11-18 (CN-4), read by one reader. `ServerJobRequest.context` in `src/ts/process/serverCommands.ts` leaves out `rerollMessageId` and `speakerChaId`, which reach the job at runtime through spreads that type-check.
-
-**Why it matters:** the type does not describe two fields the code sends.
-
-**Suggested handling:** add them to the `Pick`.
 
 ## Plugins
 

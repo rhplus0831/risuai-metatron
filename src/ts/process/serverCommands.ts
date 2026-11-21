@@ -1085,6 +1085,8 @@ export type ServerJobRequest = {
             | "inputOriginal"
             | "userMessageId"
             | "continueMessageId"
+            | "rerollMessageId"
+            | "speakerChaId"
             | "triggerId"
             | "stopOverLoreBudget"
             | "oocExchangeId"
