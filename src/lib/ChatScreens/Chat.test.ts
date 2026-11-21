@@ -100,6 +100,7 @@ import {
     createChat,
     findChat,
     hydrateChat,
+    noteRemoteStreaming,
     removeMessages,
     seedChats,
     selectChat,
@@ -237,7 +238,14 @@ function boot(
 
 const mounted: ReturnType<typeof mount>[] = [];
 
-function render(props: { message?: string; messageId?: string | undefined; idx?: number } = {}) {
+function render(
+    props: Partial<
+        Pick<
+            Parameters<typeof Chat>[1],
+            "message" | "messageId" | "idx" | "rerollIcon" | "altGreeting" | "onReroll" | "unReroll"
+        >
+    > = {},
+) {
     const target = document.createElement("div");
     document.body.appendChild(target);
     const instance = mount(Chat, {
@@ -251,6 +259,7 @@ function render(props: { message?: string; messageId?: string | undefined; idx?:
             name: "C",
             role: "char",
             img: "",
+            ...props,
         },
     });
     mounted.push(instance);
@@ -285,6 +294,17 @@ function render(props: { message?: string; messageId?: string | undefined; idx?:
             return render(props);
         },
     };
+}
+
+function setReplyLock(ref: { chaId: string; chatId: string }, messageId?: string) {
+    noteRemoteStreaming([
+        {
+            characterId: ref.chaId,
+            id: ref.chatId,
+            streaming: messageId ? [{ messageId, generationId: "reply", seq: 0 }] : [],
+        },
+    ]);
+    flushSync();
 }
 
 beforeEach(() => {
@@ -669,6 +689,46 @@ describe("the Disable toggles", () => {
     });
 });
 
+it.each([
+    { row: "older reply", props: { rerollIcon: true } },
+    { row: "alternate greeting", props: { altGreeting: true, idx: -1, messageId: undefined } },
+])("disables both reroll arrows on an $row while another reply generates", ({ row, props }) => {
+    const { ref } = boot(`reroll-${row}`);
+    settings.ui.swipe = true;
+    const onReroll = vi.fn();
+    const unReroll = vi.fn();
+    const ui = render({ ...props, onReroll, unReroll });
+    const arrows = [
+        {
+            direction: "previous",
+            button: ui.target.querySelector<HTMLButtonElement>(".button-icon-unreroll")!,
+            action: unReroll,
+        },
+        {
+            direction: "next",
+            button: ui.target.querySelector<HTMLButtonElement>(".button-icon-reroll")!,
+            action: onReroll,
+        },
+    ];
+    for (const { button } of arrows) expect(button.disabled).toBe(false);
+    setReplyLock(ref, "b");
+    try {
+        for (const { direction, button, action } of arrows) {
+            expect.soft(button.disabled, direction).toBe(true);
+            ui.click(button);
+            expect.soft(action, direction).not.toHaveBeenCalled();
+            action.mockClear();
+        }
+    } finally {
+        setReplyLock(ref);
+    }
+    for (const { button, action } of arrows) {
+        expect(button.disabled).toBe(false);
+        ui.click(button);
+        expect(action).toHaveBeenCalledTimes(1);
+    }
+});
+
 describe("the stored path: display", () => {
     it("with the chat's autoTranslate on, shows the stored translation the refresh brings without a remount, the original again when it is cleared, and a replacement in its turn", async () => {
         const { ref, hydrate } = boot("k1", { autoTranslate: true });
@@ -911,6 +971,52 @@ describe("the stored path: requests", () => {
 });
 
 describe("the stored path: the full editor", () => {
+    it("keeps a stored translation draft selectable and disables Save and Retranslate until the reply unlocks", async () => {
+        const { ref, held } = boot("locked-translation", { autoTranslate: true, translation: tr("Stored", "A") });
+        settings.ui.disableAutoPopupMessageEditor = true;
+        const ui = render();
+        await ui.instance.whenRendered();
+        const retranslate = ui.button(language.retranslate)!;
+        expect(retranslate.disabled).toBe(false);
+        hoisted.alerts.confirm.mockResolvedValue(false);
+        setReplyLock(ref, "a");
+        try {
+            expect.soft(retranslate.disabled).toBe(true);
+            ui.click(retranslate);
+            expect.soft(hoisted.alerts.confirm).not.toHaveBeenCalled();
+            expect(fetchCalls).toEqual([]);
+        } finally {
+            setReplyLock(ref);
+        }
+        expect(retranslate.disabled).toBe(false);
+
+        ui.click(ui.button(language.editTranslation));
+        const draft = ui.textarea()!;
+        draft.value = "My translation";
+        draft.dispatchEvent(new Event("input", { bubbles: true }));
+        flushSync();
+
+        const save = ui.button(language.editTranslationSave)!;
+        expect(save.disabled).toBe(false);
+        expect(draft.readOnly).toBe(false);
+        setReplyLock(ref, "a");
+        try {
+            expect.soft(save.disabled).toBe(true);
+            ui.click(save);
+            expect(held()!.translation?.text).toBe("Stored");
+            expect.soft(draft.readOnly).toBe(true);
+            draft.select();
+            expect(draft.value.slice(draft.selectionStart, draft.selectionEnd)).toBe("My translation");
+        } finally {
+            setReplyLock(ref);
+        }
+        expect(draft.readOnly).toBe(false);
+        expect(save.disabled).toBe(false);
+        ui.click(save);
+        await tick();
+        expect(held()!.translation).toMatchObject({ text: "My translation", edited: true });
+    });
+
     it("opens on the fresh translation, keeps the draft when the text changed since, cancels without writing, and writes `edited: true` on save", async () => {
         const { ref, held } = boot("k7", { autoTranslate: true, translation: tr("ㄱ", "A", { presetId: "tp" }) });
         const ui = render();

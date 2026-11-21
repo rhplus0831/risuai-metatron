@@ -1794,6 +1794,50 @@ function holdHook() {
     return { resolve: (text: string) => resolve(text), reject: (error: Error) => reject(error) };
 }
 
+it("disables the side-menu actions and keeps draft Enter quiet while the chat generates", async () => {
+    const ui = await mountHookComposer();
+    const { followedJobs } = await import("src/ts/process/serverCommands");
+    const sends = vi
+        .spyOn(await import("src/ts/process/index.svelte"), "sendChat")
+        .mockImplementation(async (_index, arg) => {
+            arg?.onEnd?.({ settled: true, outcome: "refused", requestUncertain: false, blockedChats: [] });
+            return false;
+        });
+    ui.settings.ui.sideMenuRerollButton = true;
+    ui.enter(ui.draft()!, "Draft to send");
+    ui.menu();
+    const menuActions = [language.continueResponse, language.reroll].map((label) => ({
+        label,
+        button: () => ui.menuItem(label) as HTMLButtonElement,
+    }));
+    for (const { label, button } of menuActions) expect(button().disabled, label).not.toBe(true);
+    expect(ui.sendDraft().disabled).toBe(false);
+
+    followedJobs.set(new Map([["reply", a]]));
+    flushSync();
+    for (const { label, button } of menuActions) {
+        expect.soft(button().disabled, label).toBe(true);
+        ui.click(button());
+    }
+    expect.soft(io.alertError, "side-menu clicks").not.toHaveBeenCalled();
+    io.alertError.mockClear();
+    expect(ui.sendDraft().disabled).toBe(true);
+    ui.click(ui.sendDraft());
+    ui.sendKey(ui.draft()!);
+    expect.soft(io.alertError, "draft Enter").not.toHaveBeenCalled();
+    expect(sends).not.toHaveBeenCalled();
+    expect(io.createJob).not.toHaveBeenCalled();
+    expect(ui.draft()!.value).toBe("Draft to send");
+
+    followedJobs.set(new Map());
+    flushSync();
+    for (const { label, button } of menuActions) expect.soft(button().disabled, label).toBe(false);
+    expect(ui.sendDraft().disabled).toBe(false);
+    ui.sendKey(ui.draft()!);
+    await until(() => sends.mock.calls.length === 1);
+    expect(sends.mock.calls[0][1]).toMatchObject({ input: "Draft to send" });
+});
+
 async function mountBtwComposer(options: Parameters<typeof mountComposer>[0] = {}) {
     const ui = await mountHookComposer(options);
     ui.settings.inputHooks.push({
@@ -1948,7 +1992,10 @@ it("refuses Send, Send Draft and another hook while BTW runs, and Stop aborts it
     const signal = io.runInputHook.mock.calls[0][1].signal!;
     expect(signal.aborted).toBe(false);
     expect(ui.sendDraft().disabled).toBe(true);
-    for (const action of [() => ui.sendKey(), () => ui.sendKey(ui.draft()!), () => ui.runBtw()]) {
+    ui.sendKey(ui.draft()!);
+    expect(io.alertError).not.toHaveBeenCalled();
+    expect(io.createJob).not.toHaveBeenCalled();
+    for (const action of [() => ui.sendKey(), () => ui.runBtw()]) {
         io.alertError.mockClear();
         action();
         expect(io.alertError).toHaveBeenCalledExactlyOnceWith(language.chatGenerating);

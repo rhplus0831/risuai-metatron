@@ -46,7 +46,7 @@ Sources the entries name (drop a line when no entry names it any more):
 
 - [Backup and sync](#backup-and-sync): 1
 - [Build and CI](#build-and-ci): 1
-- [Chat screen](#chat-screen): 6
+- [Chat screen](#chat-screen): 5
 - [Memory](#memory): 3
 - [Network jobs](#network-jobs): 1
 - [Rendering](#rendering): 1
@@ -136,25 +136,6 @@ that commit; the case was not run again when this entry was filed on 2026-11-20.
 
 **Suggested handling:** reproduce it first, with `docs/reports/surveys/fork-chat-scroll/probeChatScroll.mjs` as a
 base, and find which element changes height when the editor opens.
-
-### Chat controls stay enabled during a generation and refuse only after the click
-
-Generation lock survey of 2026-11-21 (Luna workers), read and not run; the chat lorebook had the same pattern and was
-fixed in `4c43d31bd`. These controls stay enabled while a reply generates in the chat and refuse with `chatGenerating`
-only once used: Continue and Reroll in the side menu and Ctrl+M (`src/lib/ChatScreens/DefaultChatScreen.svelte`, the
-`isScreenBusy` checks near 945 and 1020); Enter in the draft box, while its Send Draft button is disabled (near 811);
-the unreroll arrows of a row other than the generating one, which `locked` in `src/lib/ChatScreens/Chat.svelte`
-covers only per message; and checkpoint Save and Load in `src/lib/Others/ChatCheckpointsDialog.svelte` (161, 172),
-which refuse only after the name prompt or the confirmation. The message editor's textarea stays editable when the
-generation starts after it opened, and its save refuses; the stored translation editor and retranslation refuse the
-same way.
-
-**Why it matters:** the user writes a name, confirms, or types an edit, and learns only afterwards that it cannot be
-saved; the message bubble's own buttons, by contrast, are disabled.
-
-**Suggested handling:** disable each control from the same predicate its handler checks (`isLocalSend` with
-`generatingChatKeys`, or `isScreenBusy`), and keep the handler checks for a generation that starts during a dialog,
-as the lorebook fix does.
 
 ### A message's Branch button has no generation lock
 

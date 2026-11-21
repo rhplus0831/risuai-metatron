@@ -1546,6 +1546,10 @@
         <ClosedChatScreen character={currentCharacter} />
     {:else if currentChat}
         {@const displayedChat = currentChatRef()}
+        {@const screenBusy =
+            displayedChat !== null && (isLocalSend(displayedChat, $localSends) || isScreenBusy(displayedChat))}
+        {@const canContinue = currentChat.message.length >= 2 && currentChat.message.at(-1)?.role === "char"}
+        {@const draftSendDisabled = !composer.draft.trim() || screenBusy}
         {#if displayedChat}
             <div class="chat-screen-content-width" style:--chat-screen-width="{settings.ui.chatScreenWidth ?? 900}px">
                 <RefusedDataBanner form="chat" chaId={displayedChat.chaId} chatId={displayedChat.chatId} />
@@ -1846,23 +1850,17 @@
                                 </div>
                             {/if}
 
-                            <div
-                                class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
-                                class:text-textcolor2={currentChat.message.length < 2 ||
-                                    currentChat.message[currentChat.message.length - 1].role !== "char"}
+                            <button
+                                type="button"
+                                class="flex items-center enabled:hover:text-green-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                disabled={screenBusy || !canContinue}
                                 onclick={() => {
-                                    if (
-                                        currentChat.message.length < 2 ||
-                                        currentChat.message[currentChat.message.length - 1].role !== "char"
-                                    ) {
-                                        return;
-                                    }
-                                    sendContinue();
+                                    if (canContinue) void sendContinue();
                                 }}
                             >
                                 <StepForwardIcon />
                                 <span class="ml-2">{language.continueResponse}</span>
-                            </div>
+                            </button>
 
                             <div
                                 class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
@@ -2036,13 +2034,15 @@
                             </div>
 
                             {#if settings.ui.sideMenuRerollButton}
-                                <div
-                                    class="flex items-center cursor-pointer hover:text-green-500 transition-colors"
+                                <button
+                                    type="button"
+                                    class="flex items-center enabled:hover:text-green-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                    disabled={screenBusy}
                                     onclick={reroll}
                                 >
                                     <RefreshCcwIcon />
                                     <span class="ml-2">{language.reroll}</span>
-                                </div>
+                                </button>
                             {/if}
                         </div>
                     {/if}
@@ -2061,7 +2061,9 @@
                             onkeydown={(event) =>
                                 handleTranslationComposerKeydown(event, {
                                     sendWithEnter: settings.ui.sendWithEnter,
-                                    send: sendDraftMessage,
+                                    send: () => {
+                                        if (!draftSendDisabled) void sendDraftMessage();
+                                    },
                                     reroll,
                                 })}
                             oninput={updateInputSizeAll}
@@ -2070,9 +2072,7 @@
                         <button
                             type="button"
                             class="p-3 rounded-md border border-darkborderc text-textcolor hover:bg-darkbutton transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                            disabled={!composer.draft.trim() ||
-                                (displayedChat !== null &&
-                                    (isLocalSend(displayedChat, $localSends) || isScreenBusy(displayedChat)))}
+                            disabled={draftSendDisabled}
                             onclick={sendDraftMessage}>{language.inputHooks.sendDraft}</button
                         >
                     </div>
@@ -2220,6 +2220,7 @@
                     return keep;
                 }}
                 onReroll={reroll}
+                rerollBusy={screenBusy}
                 {unReroll}
                 {currentCharacter}
                 {currentUsername}
@@ -2247,6 +2248,7 @@
                             )}
                             idx={-1}
                             altGreeting={currentCharacter.alternateGreetings.length > 0}
+                            rerollBusy={screenBusy}
                             largePortrait={currentCharacter.largePortrait}
                             firstMessage={true}
                             onReroll={() => {

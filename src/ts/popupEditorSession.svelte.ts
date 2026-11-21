@@ -4,11 +4,18 @@
  * text back into a field that may belong to the shown preset, and the transcript counts as hidden (`visibleChatKey`,
  * `src/ts/process/chatStatus.svelte.ts`).
  */
-export const popUpEditorStore = $state({
+export const popUpEditorStore = $state<{
+    open: boolean;
+    value: string;
+    mode: "default" | "literal";
+    language: string;
+    sessionId: number;
+    isReadOnly?: () => boolean;
+}>({
     open: false,
     value: "",
-    mode: "default" as "default" | "literal",
-    language: "markdown" as string,
+    mode: "default",
+    language: "markdown",
     sessionId: 0,
 });
 
@@ -30,6 +37,7 @@ export function openPopupEditorSession(
     value: string,
     language = "markdown",
     mode: typeof popUpEditorStore.mode = "default",
+    isReadOnly?: () => boolean,
 ): number {
     const sessionId = ++nextPopupEditorSessionId;
     currentSessionId = sessionId;
@@ -37,6 +45,7 @@ export function openPopupEditorSession(
     popUpEditorStore.mode = mode;
     popUpEditorStore.language = mode === "literal" ? "plaintext" : language;
     popUpEditorStore.sessionId = sessionId;
+    popUpEditorStore.isReadOnly = isReadOnly;
     popUpEditorStore.open = true;
     return sessionId;
 }
@@ -56,5 +65,6 @@ export function isPopupEditorSessionCurrent(sessionId: number): boolean {
 export function closePopupEditorSession(sessionId: number): boolean {
     if (!isPopupEditorSessionCurrent(sessionId)) return false;
     popUpEditorStore.open = false;
+    popUpEditorStore.isReadOnly = undefined;
     return true;
 }

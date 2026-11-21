@@ -11,8 +11,8 @@
     /**
      * A Monaco editor bound to `value` (loaded on demand by `PopupEditor.svelte`). Every content change writes
      * `value` and calls `onchange`; an outside change of `value` replaces the model's text as one edit (undo
-     * keeps working) only when it differs. `language`, `theme`, and `readonly` are read once, at mount. The
-     * Monaco workers are set up for the page by the first instance; there is no CBS language support
+     * keeps working) only when it differs. `language` and `theme` are read at mount. `readonly` follows the open
+     * editor's write fence. The Monaco workers are set up for the page by the first instance; there is no CBS language support
      * (`registerCBSMonaco` does nothing).
      */
 
@@ -100,6 +100,11 @@
 
     onDestroy(() => {
         editor?.dispose();
+    });
+
+    $effect.pre(() => {
+        const options = { readOnly: readonly };
+        editor?.updateOptions(options);
     });
 
     // Sync external value changes into editor without triggering onDidChangeModelContent loop

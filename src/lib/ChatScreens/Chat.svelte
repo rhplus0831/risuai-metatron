@@ -115,6 +115,7 @@
         currentChatRef,
         ensureChatLoaded,
         findChat,
+        isChatGenerating,
         isMessageLocked,
         isStreamingMessage,
         patchMessage,
@@ -226,6 +227,7 @@
         chatRef?: ChatRef | null;
         messageGenerationInfo?: MessageGenerationInfo | null;
         rerollIcon?: boolean;
+        rerollBusy?: boolean;
         candidateCount?: number;
         candidateIndex?: number;
         candidateCarrier?: boolean;
@@ -258,6 +260,7 @@
         messageId = undefined,
         chatRef = untrack(currentChatRef),
         rerollIcon = false,
+        rerollBusy,
         candidateCount = 1,
         candidateIndex = 0,
         candidateCarrier = false,
@@ -366,6 +369,7 @@
      * off): while it streams and until the job releases it, and also a previous group speaker's reply.
      */
     let locked = $derived(isMessageLocked(displayedChat, messageId));
+    const rerollsDisabled = $derived(rerollBusy ?? (displayedChat !== null && isChatGenerating(displayedChat)));
     let originalEditControlDisabled = $derived(editTranslationMode || loadingTranslationEdit || locked);
 
     // The stored translation: the LLM translator on `llmTranslationTarget: "message"`, for a row of a
@@ -417,8 +421,17 @@
     let bilingualDisplay = $state<{ source: string; options: BilingualInterleaveOptions } | null>(null);
     /** The translation view is on: shown, or asked for and being requested (the toggle's highlight). */
     let translationViewOn = $derived(storedPath ? storedShown || (storedWanted && storedPending) : translated);
+    const translationEditLocked = $derived(locked && (editTranslationMode ? !!translationDraft : storedPath));
+    const retranslationDisabled = $derived(
+        translationViewControlsDisabled || (storedPath && (storedPending || locked)),
+    );
+    const translationToggleDisabled = $derived(
+        translationViewControlsDisabled ||
+            (storedPath && locked && !translationViewOn && !storedPending && storedFresh === null),
+    );
     let translationEditControlDisabled = $derived(
-        editMode ||
+        translationEditLocked ||
+            editMode ||
             loadingTranslationEdit ||
             (storedPath && !editTranslationMode && (storedFresh === null || storedPending)),
     );
@@ -562,7 +575,7 @@
         const run = ++autoPopupMessageEditorRun;
         const initialDraft = draft;
         const initialValue = draft ?? message;
-        const sessionId = openPopupEditorSession(initialValue);
+        const sessionId = openPopupEditorSession(initialValue, undefined, undefined, () => locked);
         activeAutoPopupMessageSessionId = sessionId;
         const editorIsCurrent = () =>
             !popupEditorsDestroyed &&
@@ -589,7 +602,7 @@
             if (!isPopupEditorSessionCurrent(sessionId)) return;
 
             setOriginalDraft(popUpEditorStore.value);
-            if (edit()) editMode = false;
+            if (!locked && edit()) editMode = false;
         } finally {
             if (activeAutoPopupMessageSessionId === sessionId) {
                 activeAutoPopupMessageSessionId = null;
@@ -611,7 +624,7 @@
 
         const run = ++autoPopupTranslationEditorRun;
         const initialValue = editTranslationText;
-        const sessionId = openPopupEditorSession(initialValue);
+        const sessionId = openPopupEditorSession(initialValue, undefined, undefined, () => translationEditLocked);
         activeAutoPopupTranslationSessionId = sessionId;
         const editorIsCurrent = () =>
             !popupEditorsDestroyed &&
@@ -639,7 +652,7 @@
 
             suppressAutoPopupTranslationEditor = true;
             setTranslationDraft(popUpEditorStore.value);
-            await saveTranslationEdit();
+            if (!translationEditLocked) await saveTranslationEdit();
         } finally {
             if (activeAutoPopupTranslationSessionId === sessionId) {
                 activeAutoPopupTranslationSessionId = null;
@@ -799,7 +812,7 @@
     }
 
     function toggleTranslation() {
-        if (translationViewControlsDisabled) return;
+        if (translationToggleDisabled) return;
         if (storedPath) {
             toggleStoredTranslation();
             return;
@@ -830,7 +843,7 @@
     }
 
     async function requestRetranslation() {
-        if (translationViewControlsDisabled) return;
+        if (retranslationDisabled) return;
         if (!storedPath) {
             retranslate = true;
             return;
@@ -965,7 +978,7 @@
     }
 
     async function loadTranslationForEdit() {
-        if (translationViewControlsDisabled) return;
+        if (translationEditControlDisabled || editTranslationMode) return;
 
         if (storedPath) {
             // Only a fresh stored translation is edited (the button is off without one).
@@ -1387,10 +1400,10 @@
             {#if !isOptimizedStreamingMessage && !streaming}
                 <button
                     class={"text-sm p-1 text-textcolor2 border-darkborderc float-end mr-2 my-1 rounded-md transition-all flex justify-center items-center " +
-                        (translationViewControlsDisabled || (storedPath && storedPending)
+                        (retranslationDisabled
                             ? "opacity-50 cursor-not-allowed"
                             : "hover:ring-darkbutton hover:ring-3 hover:text-textcolor")}
-                    disabled={translationViewControlsDisabled || (storedPath && storedPending)}
+                    disabled={retranslationDisabled}
                     onclick={requestRetranslation}
                 >
                     <RefreshCcwIcon size={20} />
@@ -1401,10 +1414,10 @@
             {/if}
             <button
                 class={"text-sm p-1 border-darkborderc float-end mr-2 my-1 rounded-md transition-all flex justify-center items-center " +
-                    (editTranslationMode
-                        ? "text-blue-400 hover:ring-darkbutton hover:ring-3 hover:text-textcolor"
-                        : translationEditControlDisabled
-                          ? "text-textcolor2 opacity-50 cursor-not-allowed"
+                    (translationEditControlDisabled
+                        ? "text-textcolor2 opacity-50 cursor-not-allowed"
+                        : editTranslationMode
+                          ? "text-blue-400 hover:ring-darkbutton hover:ring-3 hover:text-textcolor"
                           : "text-textcolor2 hover:ring-darkbutton hover:ring-3 hover:text-textcolor")}
                 disabled={translationEditControlDisabled}
                 onclick={() => {
@@ -1431,6 +1444,8 @@
         {/if}
         <AutoresizeArea
             bind:value={() => editTranslationText, setTranslationDraft}
+            readonly={translationEditLocked}
+            retainPopupDraftOnUnmount={!!translationDraft}
             popupEditor
             ariaLabel={language.editTranslation}
             stableHeight={useStableTranslationEditor}
@@ -1443,6 +1458,8 @@
         {@render messageEditorNotice()}
         <AutoresizeArea
             bind:value={() => draft, setOriginalDraft}
+            readonly={locked}
+            retainPopupDraftOnUnmount
             popupEditor
             ariaLabel={language.input}
             stableHeight={useStableMessageEditor}
@@ -1917,12 +1934,10 @@
     {#if settings.memoryTranslateMedia.translator !== "" && !blankMessage && !isOptimizedStreamingMessage && !streaming}
         <button
             class={"flex items-center transition-colors button-icon-translate " +
-                (translationViewControlsDisabled
-                    ? "opacity-50 cursor-not-allowed"
-                    : "cursor-pointer hover:text-blue-500") +
+                (translationToggleDisabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:text-blue-500") +
                 (translationViewOn ? " text-blue-400" : "")}
             class:translating={storedPath ? storedPending : translating}
-            disabled={translationViewControlsDisabled}
+            disabled={translationToggleDisabled}
             onclick={toggleTranslation}
         >
             <LanguagesIcon />
@@ -1934,10 +1949,10 @@
     {#if idx > -1 && !isOptimizedStreamingMessage}
         <button
             class={"flex items-center transition-colors button-icon-edit " +
-                (editMode
-                    ? "text-blue-400 hover:text-blue-500"
-                    : originalEditControlDisabled
-                      ? "opacity-50 cursor-not-allowed"
+                (originalEditControlDisabled
+                    ? "opacity-50 cursor-not-allowed"
+                    : editMode
+                      ? "text-blue-400 hover:text-blue-500"
                       : "hover:text-blue-500")}
             disabled={originalEditControlDisabled}
             onclick={toggleOriginalEdit}
@@ -1966,9 +1981,9 @@
     {:else if rerollIcon || altGreeting || candidateCarrier}
         {#if settings.ui.swipe || altGreeting || (candidateCarrier && candidateCount >= 2)}
             <button
-                class="flex items-center hover:text-blue-500 transition-colors button-icon-unreroll"
-                class:opacity-50={locked}
-                disabled={locked}
+                class="flex items-center enabled:hover:text-blue-500 disabled:cursor-not-allowed transition-colors button-icon-unreroll"
+                class:opacity-50={rerollsDisabled}
+                disabled={rerollsDisabled}
                 onclick={unReroll}
             >
                 <ArrowLeft size={22} />
@@ -1979,18 +1994,18 @@
                 <span class="flex items-center text-xs text-textcolor2">{currentPage}/{totalPages}</span>
             {/if}
             <button
-                class="flex items-center hover:text-blue-500 transition-colors button-icon-reroll"
-                class:opacity-50={locked}
-                disabled={locked}
+                class="flex items-center enabled:hover:text-blue-500 disabled:cursor-not-allowed transition-colors button-icon-reroll"
+                class:opacity-50={rerollsDisabled}
+                disabled={rerollsDisabled}
                 onclick={onReroll}
             >
                 <ArrowRight size={22} />
             </button>
         {:else}
             <button
-                class="flex items-center hover:text-blue-500 transition-colors button-icon-reroll"
-                class:opacity-50={locked}
-                disabled={locked}
+                class="flex items-center enabled:hover:text-blue-500 disabled:cursor-not-allowed transition-colors button-icon-reroll"
+                class:opacity-50={rerollsDisabled}
+                disabled={rerollsDisabled}
                 onclick={onReroll}
             >
                 <RefreshCcwIcon size={20} />
@@ -2416,6 +2431,7 @@
                             {@render messageEditorNotice()}
                             <textarea
                                 class="grow h-138 sm:h-96 overflow-y-auto bg-transparent text-black p-2 mb-2 resize-none message-edit-area"
+                                readonly={locked}
                                 bind:value={() => draft, setOriginalDraft}></textarea>
                         {:else}
                             <div class="grow h-138 sm:h-96 overflow-y-auto p-2 mb-2 sm:mb-0">

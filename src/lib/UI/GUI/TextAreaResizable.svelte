@@ -19,7 +19,7 @@
      * A textarea that grows with its text, or with `stableHeight` keeps a fixed height and scrolls. The popup editor
      * (button and hotkey) is opt-in with `popupEditor`. Its text is written back only while the value is the one it
      * opened with and the session is still current; a value change while it is open, or the unmount, closes it
-     * unwritten.
+     * unwritten. A retained message draft also takes the current popup text when streaming remounts its row.
      */
 
     let textarea: HTMLTextAreaElement = $state();
@@ -27,6 +27,7 @@
     let resizeRequest = 0;
     let popupEditorRun = 0;
     let activePopupEditorSessionId: number | null = null;
+    let initialPopupValue: string;
     interface Props {
         value?: string;
         handleLongPress?: any;
@@ -34,6 +35,8 @@
         popupLanguage?: string;
         onchange?: () => void;
         stableHeight?: boolean;
+        readonly?: boolean;
+        retainPopupDraftOnUnmount?: boolean;
         ariaLabel?: string;
     }
 
@@ -44,6 +47,8 @@
         popupLanguage = "markdown",
         onchange = () => {},
         stableHeight = false,
+        readonly = false,
+        retainPopupDraftOnUnmount = false,
         ariaLabel = language.input,
     }: Props = $props();
 
@@ -65,8 +70,9 @@
         if (!popupEditor) return;
         const run = ++popupEditorRun;
         const initialValue = value;
-        const sessionId = openPopupEditorSession(value, popupLanguage);
+        const sessionId = openPopupEditorSession(value, popupLanguage, undefined, () => readonly);
         activePopupEditorSessionId = sessionId;
+        initialPopupValue = initialValue;
 
         try {
             while (
@@ -100,6 +106,14 @@
         popupEditorRun += 1;
         resizeRequest += 1;
         if (activePopupEditorSessionId !== null) {
+            if (
+                retainPopupDraftOnUnmount &&
+                value === initialPopupValue &&
+                popUpEditorStore.sessionId === activePopupEditorSessionId &&
+                isPopupEditorSessionCurrent(activePopupEditorSessionId)
+            ) {
+                value = popUpEditorStore.value;
+            }
             closePopupEditorSession(activePopupEditorSessionId);
             activePopupEditorSessionId = null;
         }
@@ -120,6 +134,7 @@
 <div class="relative w-full">
     <textarea
         aria-label={ariaLabel}
+        {readonly}
         bind:this={textarea}
         oninput={handleInput}
         onkeydown={(e) => {
@@ -136,7 +151,9 @@
                 void openPopupEditor();
             }
         }}
-        use:longpress={handleLongPress}
+        use:longpress={(event) => {
+            if (!readonly) handleLongPress(event);
+        }}
         bind:value
         class="rounded-md p-2 text-textcolor bg-transparent resize-none border border-darkborderc w-full message-edit-area"
         class:pr-10={popupEditor}

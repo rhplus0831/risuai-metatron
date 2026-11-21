@@ -6,7 +6,7 @@
     import OptionInput from "../UI/GUI/OptionInput.svelte";
     import SelectInput from "../UI/GUI/SelectInput.svelte";
     import { alertConfirm, alertError, alertInput, alertNormal } from "src/ts/alert";
-    import { chatEntry, type ChatRef } from "src/ts/storage/chatStore.svelte";
+    import { chatEntry, isChatGenerating, type ChatRef } from "src/ts/storage/chatStore.svelte";
     import { ResourceEpochMismatchError } from "src/ts/storage/resourceClient";
     import {
         checkpointLoadBusy,
@@ -53,6 +53,7 @@
     const selected = $derived(checkpoints.find((checkpoint) => checkpoint.id === selectedId));
     let pending = $state(true);
     const disabled = $derived(pending || $checkpointLoadBusy);
+    const generating = $derived(isChatGenerating(chatRef));
     let policyAvailable = $state(false);
     let autoEnabled = $state(false);
     let autoEvery = $state(5);
@@ -152,6 +153,7 @@
     }
 
     function save() {
+        if (generating) return;
         const ref = { ...chatRef };
         const defaultName = truncateCheckpointText(
             `${entry?.name ?? ""} ${new Date().toLocaleDateString()}`,
@@ -165,6 +167,7 @@
     }
 
     function load() {
+        if (generating) return;
         const ref = { ...chatRef };
         const row = selected;
         if (!row) return;
@@ -234,12 +237,12 @@
         <div class="flex flex-wrap gap-2">
             <button
                 class="bg-darkbutton hover:bg-selected rounded px-3 py-2 disabled:opacity-50"
-                {disabled}
+                disabled={disabled || generating}
                 onclick={save}>{language.chatCheckpoints.saveAs}</button
             >
             <button
                 class="bg-darkbutton hover:bg-selected rounded px-3 py-2 disabled:opacity-50"
-                disabled={disabled || !selected}
+                disabled={disabled || generating || !selected}
                 onclick={load}>{language.chatCheckpoints.load}</button
             >
             <button

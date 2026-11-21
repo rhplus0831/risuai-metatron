@@ -49,6 +49,7 @@
         currentCharacter,
         onReroll,
         unReroll,
+        rerollBusy,
         currentUsername,
         userIcon,
         loadPages,
@@ -63,6 +64,7 @@
         currentCharacter: AnyClientCharacter;
         onReroll: () => void;
         unReroll: () => void;
+        rerollBusy?: boolean;
         currentUsername: string;
         userIcon: string;
         loadPages: number;
@@ -835,6 +837,9 @@
                                 chatRef: ref,
                                 onReroll,
                                 unReroll,
+                                get rerollBusy() {
+                                    return rerollBusy;
+                                },
                                 character: createSimpleCharacter(ctx.character),
                                 largePortrait: portrait,
                                 role: message.role,

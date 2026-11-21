@@ -22,6 +22,7 @@
     const sessionId = untrack(() => popUpEditorStore.sessionId);
     const countLiteralTokens = untrack(() => popUpEditorStore.mode === "literal");
     let languageMode = $state(popUpEditorStore.language || "markdown");
+    const readonly = $derived(popUpEditorStore.isReadOnly?.() ?? false);
     let previewing = $state(false);
     let tokens = $state(0);
     let MonacoComponent: typeof MonacoEditorType | null = $state(null);
@@ -166,10 +167,16 @@
                 <textarea
                     class="block w-full h-full resize-none bg-bgcolor text-textcolor p-2 font-mono text-sm focus:outline-none"
                     aria-label={language.hotkeyDesc.popupEditor}
+                    {readonly}
                     spellcheck="false"
                     bind:value={popUpEditorStore.value}></textarea>
             {:else if MonacoComponent}
-                <MonacoComponent bind:value={popUpEditorStore.value} language={languageMode} theme="vs-dark" />
+                <MonacoComponent
+                    {readonly}
+                    bind:value={popUpEditorStore.value}
+                    language={languageMode}
+                    theme="vs-dark"
+                />
             {:else}
                 <div class="flex items-center justify-center h-full text-gray-500">{language.loading}</div>
             {/if}

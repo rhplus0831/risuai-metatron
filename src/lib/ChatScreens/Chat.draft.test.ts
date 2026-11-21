@@ -92,13 +92,17 @@ vi.mock("src/ts/gui/longtouch", () => ({
 }));
 
 import { ParseMarkdown, risuChatParserForDisplay } from "src/ts/parser/parser.svelte";
+import * as popupEditorMode from "src/ts/gui/popupEditorMode";
 import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
 import {
     acceptRemoteChat,
+    applyServerGeneration,
     assembleChats,
     createChat,
     deleteChat,
+    endServerJob,
     findChat,
+    noteRemoteStreaming,
     removeMessages,
     seedChats,
     selectChat,
@@ -114,6 +118,7 @@ import {
     popUpEditorStore,
     ReloadChatPointer,
 } from "src/ts/stores.svelte";
+import PopupEditor from "../Others/PopupEditor.svelte";
 import Chat from "./Chat.svelte";
 
 const ref = { chaId: "c", chatId: "draft-chat" };
@@ -189,6 +194,7 @@ function mountRow(overrides: { message?: string; idx?: number; isComment?: boole
         flushSync();
     };
     const textarea = () => target.querySelector<HTMLTextAreaElement>(".message-edit-area")!;
+    const save = () => target.querySelector<HTMLButtonElement>(".button-icon-edit")!;
     const type = (value: string) => {
         textarea().value = value;
         textarea().dispatchEvent(new Event("input", { bubbles: true }));
@@ -200,6 +206,7 @@ function mountRow(overrides: { message?: string; idx?: number; isComment?: boole
         target,
         instance,
         toggle,
+        save,
         textarea,
         type,
         text,
@@ -333,6 +340,32 @@ describe("original message draft", () => {
             expect(ui.textarea().value).toBe("Saved draft");
         },
     );
+
+    it("keeps a cardboard message draft selectable and saves it only after the reply unlocks", async () => {
+        const ui = render("cardboard");
+        settings.ui.disableAutoPopupMessageEditor = true;
+        ui.toggle();
+        ui.type("My cardboard draft");
+        const stream = { characterId: ref.chaId, id: ref.chatId };
+        noteRemoteStreaming([{ ...stream, streaming: [{ messageId: "a", generationId: "cardboard", seq: 0 }] }]);
+        flushSync();
+        try {
+            expect(ui.save().disabled).toBe(true);
+            ui.toggle();
+            expect(setMessageText).not.toHaveBeenCalled();
+            expect(ui.textarea().readOnly).toBe(true);
+            ui.textarea().select();
+            const { value, selectionStart, selectionEnd } = ui.textarea();
+            expect(value.slice(selectionStart, selectionEnd)).toBe("My cardboard draft");
+        } finally {
+            noteRemoteStreaming([{ ...stream, streaming: [] }]);
+            flushSync();
+        }
+        expect(ui.textarea().readOnly).toBe(false);
+        expect(ui.save().disabled).toBe(false);
+        ui.toggle();
+        expect(ui.stored()).toBe("My cardboard draft");
+    });
 
     it("retains an open draft and its overwrite notice across an outside edit and row remount, then saves it", async () => {
         let ui = render();
@@ -469,6 +502,71 @@ describe("Chat message editor auto popup", () => {
         flushSync();
         expect(setMessageText).toHaveBeenCalledExactlyOnceWith(ref, "a", "Typed inline");
         expect(popUpEditorStore.open).toBe(false);
+    });
+
+    it("keeps a draft inline when the automatic popup closes during a reply and saves it after release", async () => {
+        const ui = render();
+        ui.toggle();
+        popUpEditorStore.value = "Typed before the lock";
+        const stream = { characterId: ref.chaId, id: ref.chatId };
+        noteRemoteStreaming([{ ...stream, streaming: [{ messageId: "a", generationId: "auto-popup", seq: 0 }] }]);
+        flushSync();
+        try {
+            await closePopupWith("Typed before the lock");
+            expect(setMessageText).not.toHaveBeenCalled();
+            expect(ui.textarea().value).toBe("Typed before the lock");
+            expect(ui.textarea().readOnly).toBe(true);
+            expect(ui.save().disabled).toBe(true);
+        } finally {
+            noteRemoteStreaming([{ ...stream, streaming: [] }]);
+            flushSync();
+        }
+        expect(ui.textarea().readOnly).toBe(false);
+        ui.toggle();
+        expect(ui.stored()).toBe("Typed before the lock");
+    });
+
+    it("makes an expanded popup selectable during streaming and retains its draft across the row remount", async () => {
+        const plainEditor = vi.spyOn(popupEditorMode, "readPopupEditorMonaco").mockReturnValue(false);
+        let ui = render();
+        settings.ui.disableAutoPopupMessageEditor = true;
+        ui.toggle();
+        ui.target.querySelector<HTMLButtonElement>(`button[aria-label="${language.hotkeyDesc.popupEditor}"]`)!.click();
+        flushSync();
+        const popup = document.createElement("div");
+        document.body.append(popup);
+        mounted.push(mount(PopupEditor, { target: popup }));
+        flushSync();
+        const field = popup.querySelector<HTMLTextAreaElement>("textarea")!;
+        expect(field.readOnly).toBe(false);
+        field.value = "Typed in the expanded popup";
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+        flushSync();
+
+        const jobId = "popup-stream";
+        try {
+            expect(
+                applyServerGeneration(ref, { jobId, messageId: "a", generationId: jobId, text: "Original", seq: 1 }),
+            ).toBe(true);
+            flushSync();
+            expect.soft(field.readOnly).toBe(true);
+            field.select();
+            expect(field.value.slice(field.selectionStart, field.selectionEnd)).toBe("Typed in the expanded popup");
+
+            ui = await ui.remount();
+            expect(popUpEditorStore.open).toBe(false);
+            expect(setMessageText).not.toHaveBeenCalled();
+            expect.soft(ui.textarea().value).toBe("Typed in the expanded popup");
+            expect.soft(ui.textarea().readOnly).toBe(true);
+            expect(ui.save().disabled).toBe(true);
+        } finally {
+            endServerJob(jobId);
+            flushSync();
+            plainEditor.mockRestore();
+        }
+        expect(ui.textarea().readOnly).toBe(false);
+        ui.toggle();
+        expect(ui.stored()).toBe("Typed in the expanded popup");
     });
 
     it("opens no popup while the setting turns the auto popup off, and the inline editor still works", async () => {
