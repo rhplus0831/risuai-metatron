@@ -3,6 +3,7 @@ import { language } from "src/lang";
 import { isOocId, oocExchangeError, oocPrune, type OocExchange, type OocLog } from "../../../shared/ooc.ts";
 import type { DeepReadonly } from "../../../shared/readonly.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
+import { alertReloadNotice } from "../alert";
 import { chatBinding } from "../storage/chatBinding.svelte";
 import { characterList } from "../storage/characterStore.svelte";
 import {
@@ -47,6 +48,7 @@ export type OocErrorKind =
     | "requestFailed"
     | "stopped"
     | "chatGone"
+    | "alreadyAnswered"
     | "retryUnavailable"
     | "attachmentUnavailable"
     | "updateFailed";
@@ -290,9 +292,15 @@ async function answerQuestion(
     if (!sameChat(ref, owner)) return problem(state, "chatGone", "failed", id);
     const stored = exchangeOf(ref, id);
     if (!stored) return problem(state, "oocExchangeGone", "failed", id);
+    if (stored.answer !== undefined) {
+        state.streamingText = "";
+        state.streamingExchangeId = null;
+        alertReloadNotice(language.ooc.alreadyAnswered);
+        return problem(state, "alreadyAnswered", "refused", id);
+    }
     const exchange = { ...copyExchange(stored), answer };
     if (oocExchangeError(id, exchange)) return problem(state, "tooLarge", "failed", id);
-    mergeChatMeta(ref, "oocLog", { [id]: exchange });
+    mergeChatMeta(ref, "oocLog", { [id]: exchange }, [], id);
     state.streamingText = "";
     state.streamingExchangeId = null;
     state.error = null;

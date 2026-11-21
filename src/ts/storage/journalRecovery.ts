@@ -934,7 +934,14 @@ function applyChatOps(
             }
             const fields = new Set([...Object.keys(op.merge ?? {}), ...Object.keys(op.mergeUnset ?? {})]);
             for (const field of fields)
-                mergeChatMeta(ref, field, op.merge?.[field] ?? {}, op.mergeUnset?.[field] ?? []);
+                mergeChatMeta(
+                    ref,
+                    field,
+                    op.merge?.[field] ?? {},
+                    op.mergeUnset?.[field] ?? [],
+                    op.ifOocUnanswered,
+                    "recovery",
+                );
         } else {
             const id = op.op === "setMessage" ? op.message.chatId : op.id;
             if (!id || !present.has(id)) {

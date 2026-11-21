@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { flushSync, mount, unmount } from "svelte";
+import { flushSync, mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Chat } from "../../../shared/database";
 import type { OocExchange } from "../../../shared/ooc";
@@ -210,6 +210,31 @@ function expectBody(row: Element, text: string, role: "user" | "char") {
     expect(body.getAttribute("data-role")).toBe(role);
     expect(body.getAttribute("data-idx")).toBe("-1");
 }
+
+it.each([
+    { label: "clears the submitted question", typedWhileWaiting: "", expected: "" },
+    { label: "keeps replacement text", typedWhileWaiting: "A different question", expected: "A different question" },
+])("$label when the submitted exchange already has an answer", async ({ typedWhileWaiting, expected }) => {
+    let complete!: (result: Awaited<ReturnType<typeof mocks.askOoc>>) => void;
+    const response = new Promise<Awaited<ReturnType<typeof mocks.askOoc>>>((resolve) => {
+        complete = resolve;
+    });
+    mocks.askOoc.mockReturnValueOnce(response);
+    render();
+    typeQuestion("Which road did she take?");
+    element<HTMLButtonElement>("[data-ooc-send]").click();
+    expect(mocks.askOoc).toHaveBeenCalledExactlyOnceWith(ref, "Which road did she take?");
+    if (typedWhileWaiting) typeQuestion(typedWhileWaiting);
+    await tick();
+    complete({
+        status: "refused",
+        error: { kind: "alreadyAnswered", exchangeId: "current-unanswered", message: "An answer already exists." },
+    });
+    await response;
+    await tick();
+    flushSync();
+    expect(element<HTMLTextAreaElement>("textarea").value).toBe(expected);
+});
 
 it("opens the current segment and expands earlier exchanges in their supplied order", () => {
     render();

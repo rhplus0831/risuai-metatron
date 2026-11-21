@@ -10,6 +10,7 @@ const io = vi.hoisted(() => ({
     request: vi.fn<typeof import("../process/request/request").requestChatData>(),
     alertError: vi.fn<typeof import("../alert").alertError>(),
     alertJobError: vi.fn<typeof import("../alert").alertJobError>(),
+    alertReloadNotice: vi.fn<typeof import("../alert").alertReloadNotice>(),
 }));
 vi.mock("../process/serverCommands", async () =>
     (await import("../process/tests/serverCommandsMock")).createServerCommandsMock({ runServerJob: io.job }),
@@ -21,11 +22,13 @@ vi.mock("../alert", async () =>
     (await import("../tests/alertMock")).createAlertMock({
         alertError: io.alertError,
         alertJobError: io.alertJobError,
+        alertReloadNotice: io.alertReloadNotice,
     }),
 );
 
 const ref = { chaId: "character", chatId: "story" };
 const other = { chaId: "character", chatId: "other" };
+const chatEpoch = "11111111-2222-4333-8444-555555555555";
 const messages: Message[] = [
     { chatId: "first", role: "user", data: "The door opens." },
     { chatId: "newest", role: "char", data: "Someone enters." },
@@ -68,6 +71,7 @@ beforeEach(async () => {
     io.request.mockReset().mockResolvedValue({ type: "success", result: "Buffered answer" });
     io.alertError.mockClear();
     io.alertJobError.mockClear();
+    io.alertReloadNotice.mockClear();
     m = await load();
     m.jobs.followedJobs.set(new Map());
     seed();
@@ -101,8 +105,8 @@ function seed(patch: Partial<Chat> = {}, type = "character", extraChats = 0) {
         characters: [{ chaId: ref.chaId, name: "Character", type, globalLore: [], chats }],
     });
     m.chat.seedChats(
-        chats.map(({ id }) => ({ characterId: ref.chaId, id, revision: "epoch:1:1" })),
-        [{ characterId: ref.chaId, ids: chats.map(({ id }) => id), revision: "epoch:1:1" }],
+        chats.map(({ id }) => ({ characterId: ref.chaId, id, revision: `${chatEpoch}:1:1` })),
+        [{ characterId: ref.chaId, ids: chats.map(({ id }) => id), revision: `${chatEpoch}:1:1` }],
     );
     m.selection.selectCharacter(ref.chaId);
     m.chat.selectChat(ref.chaId, ref.chatId);
@@ -132,8 +136,8 @@ function acknowledge() {
     const work = m.chat.takeChatWork(new Set());
     m.chat.ackChatWork(
         work,
-        work.groups.map(({ characterId, chatId }) => ({ characterId, id: chatId, revision: "epoch:1:2" })),
-        work.orders.map(({ characterId, ids }) => ({ characterId, ids, revision: "epoch:1:2" })),
+        work.groups.map(({ characterId, chatId }) => ({ characterId, id: chatId, revision: `${chatEpoch}:1:2` })),
+        work.orders.map(({ characterId, ids }) => ({ characterId, ids, revision: `${chatEpoch}:1:2` })),
     );
     return work.groups.flatMap(({ ops }) => ops);
 }
@@ -220,7 +224,11 @@ describe("OOC questions", () => {
         expect(onlyExchange().answer).toBe("Revised full answer");
         expect(m.chat.findChat(other)!.oocLog).toBeUndefined();
         expect(acknowledge()).toEqual([
-            { op: "meta", merge: { oocLog: { [id]: { ...onlyExchange(), answer: "Revised full answer" } } } },
+            {
+                op: "meta",
+                ifOocUnanswered: id,
+                merge: { oocLog: { [id]: { ...onlyExchange(), answer: "Revised full answer" } } },
+            },
         ]);
         expect(m.ooc.readOocState(ref).busy).toBe(false);
         await settle();
@@ -443,6 +451,57 @@ describe("OOC questions", () => {
         await run;
         expect(log()).toEqual({});
         expect(m.ooc.readOocState(ref).busy).toBe(false);
+    });
+
+    it("clears the losing stream when a retry learns that its exchange already has an answer", async () => {
+        const question = exchange("retry");
+        seed({ oocSegment: { id: "current", anchorMessageId: "newest" }, oocLog: { retry: question } });
+        const { controller } = streamAnswer();
+        const run = m.ooc.retryOoc(ref, question.id);
+        await settle();
+        controller.enqueue({ "0": "Local draft answer" });
+        await settle();
+        expect(m.ooc.readOocState(ref).streamingText).toBe("Local draft answer");
+        const winner = { ...question, answer: "First stored answer" };
+        expect(
+            m.chat.hydrateChat({
+                characterId: ref.chaId,
+                id: ref.chatId,
+                revision: `${chatEpoch}:1:2`,
+                data: { ...plain(stored()), oocLog: { retry: winner } },
+            }),
+        ).toBe(true);
+        controller.close();
+
+        expect(await run).toMatchObject({ status: "refused", error: { kind: "alreadyAnswered" } });
+        expect(log().retry).toEqual(winner);
+        expect(m.ooc.readOocState(ref)).toMatchObject({ busy: false, streamingText: "" });
+        expect(acknowledge()).toEqual([]);
+        const { language } = await import("src/lang");
+        expect(io.alertReloadNotice).toHaveBeenCalledExactlyOnceWith(language.ooc.alreadyAnswered);
+    });
+
+    it("saves the answer in its original exchange when the current segment moves during a retry", async () => {
+        const question = exchange("retry");
+        seed({ oocSegment: { id: "current", anchorMessageId: "newest" }, oocLog: { retry: question } });
+        const answer = deferred<requestDataResponse>();
+        io.request.mockReturnValueOnce(answer.promise);
+        const run = m.ooc.retryOoc(ref, question.id);
+        await settle();
+        const next = { id: "next", anchorMessageId: "newest" };
+        expect(
+            m.chat.hydrateChat({
+                characterId: ref.chaId,
+                id: ref.chatId,
+                revision: `${chatEpoch}:1:2`,
+                data: { ...plain(stored()), oocSegment: next },
+            }),
+        ).toBe(true);
+        answer.resolve({ type: "success", result: "Answer in the original segment" });
+
+        expect(await run).toEqual({ status: "done", exchangeId: question.id });
+        expect(stored().oocSegment).toEqual(next);
+        expect(log().retry).toEqual({ ...question, answer: "Answer in the original segment" });
     });
 
     it("retries the same unanswered exchange and joins multiline answers in order", async () => {

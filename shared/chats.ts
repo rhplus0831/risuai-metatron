@@ -68,6 +68,10 @@ export type ChatOp =
           unset?: string[];
           merge?: Record<string, Record<string, unknown>>;
           mergeUnset?: Record<string, string[]>;
+          /** Apply this single OOC answer merge only to an existing, unanswered exchange. */
+          ifOocUnanswered?: string;
+          /** Recovery Apply is also satisfied when the entire conditional exchange is already stored. */
+          acceptMatchingOocExchange?: true;
       }
     | { op: "append"; messages: Message[]; anchor: MessageAnchor }
     | { op: "setMessage"; message: Message; generation?: MessageGeneration }
@@ -167,6 +171,8 @@ export type ChatGroupResult = {
     checkpoints?: CheckpointOutcome[];
     /** One entry per `setTranslation` op, in op order. */
     translations?: TranslationOutcome[];
+    /** The reasons any conditional OOC answers in the group were skipped. Other ops still applied. */
+    oocAnswerRefusals?: ("answered" | "missing")[];
     /** A whole HypaV2 or SupaMemory field was skipped because a job wrote it after the group's base. */
     memoryRefused?: true;
     /** One entry per `selectCandidate` op, in op order; present whenever the group has one. */

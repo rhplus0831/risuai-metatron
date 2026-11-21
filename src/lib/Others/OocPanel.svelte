@@ -121,7 +121,7 @@
         const submitted = draft;
         const result = await askOoc(target, text);
         // A late answer must not erase text edited while the question was in flight.
-        if (result.status !== "refused" && draft === submitted) draft = "";
+        if (draft === submitted && (result.status !== "refused" || result.error.kind === "alreadyAnswered")) draft = "";
     }
 
     function composerKeydown(event: KeyboardEvent) {

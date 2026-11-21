@@ -268,6 +268,7 @@ export function acknowledgeTerminalNotice() {
 }
 
 const reloadNoticeStore = writable<string | null>(null);
+const pendingReloadNotices: string[] = [];
 /**
  * The save adapter's "another tab or device changed this data, your change was replaced" notice: a
  * panel (`src/lib/Others/ReloadNotice.svelte`) outside `alertStore`, so no other alert (a progress `wait`, a
@@ -275,20 +276,19 @@ const reloadNoticeStore = writable<string | null>(null);
  */
 export const reloadNotice = readonly(reloadNoticeStore);
 
-/**
- * Shows `msg` as the reload notice. Latched until dismissed: while a notice is shown, another call
- * keeps it (one notice per episode on screen); after `dismissReloadNotice`, the next call shows it
- * again.
- */
+/** Keep the visible notice until dismissal and queue each distinct reason that arrives meanwhile. */
 export function alertReloadNotice(msg: string) {
-    if (get(reloadNoticeStore) === null) {
+    const visible = get(reloadNoticeStore);
+    if (visible === null) {
         reloadNoticeStore.set(msg);
+    } else if (visible !== msg && !pendingReloadNotices.includes(msg)) {
+        pendingReloadNotices.push(msg);
     }
 }
 
-/** Dismisses the reload notice (its OK button); nothing when none is shown. */
+/** Dismisses the visible reason and shows the next one, if any. */
 export function dismissReloadNotice() {
-    reloadNoticeStore.set(null);
+    reloadNoticeStore.set(pendingReloadNotices.shift() ?? null);
 }
 
 /** Queues a plain-text notice without waiting for its dismissal. */

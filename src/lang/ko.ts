@@ -66,6 +66,7 @@ export const languageKorean = {
         requestFailed: "OOC 세션 답변 요청에 실패했습니다. 질문을 재시도해 주세요.",
         stopped: "OOC 세션 질문을 중지했습니다. 답변은 저장하지 않았습니다.",
         chatGone: "이 채팅이 삭제되거나 교체되어 OOC 세션 작업을 완료하지 못했습니다.",
+        alreadyAnswered: "이 질문에는 다른 곳에서 이미 답이 저장되었습니다.",
         retryUnavailable: "현재 OOC 세션 구간에서 답변이 없는 문답만 재시도할 수 있습니다.",
         attachmentUnavailable: "이전 OOC 세션 구간의 문답만 첨부할 수 있습니다.",
         updateFailed: "OOC 세션을 변경하지 못했습니다. 다시 시도해 주세요.",

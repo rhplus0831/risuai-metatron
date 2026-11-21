@@ -32,7 +32,12 @@ vi.mock("../../alert", async () =>
     }),
 );
 vi.mock("src/lang", () => ({
-    language: { resourceReloaded: "reloaded", resourceRestored: "restored" },
+    language: {
+        resourceReloaded: "reloaded",
+        resourceRestored: "restored",
+        memoryEditRefused: "Memory edit refused",
+        ooc: { alreadyAnswered: "Answer already stored", oocExchangeGone: "Question removed" },
+    },
     changeLanguage: vi.fn(),
 }));
 vi.mock("../../process/modules", () => ({
@@ -71,7 +76,7 @@ const originalGlobals = new Map(
  */
 async function boot(prepare?: (server: StoreBackedServer) => void) {
     vi.resetModules();
-    const fake = await StoreBackedServer.create();
+    const fake = await StoreBackedServer.create({ lock: true });
     // The store materialized the sections and collections when it opened; there is no `root` record,
     // and the sample singleton edit of these tests is `ui.theme`.
     fake.set("presets", "main", [{ name: "p1" }]);
@@ -174,6 +179,73 @@ afterEach(() => {
         else Reflect.deleteProperty(globalThis, key);
     }
     server.current?.close();
+});
+
+describe("refused metadata writes", () => {
+    it("rereads an unseen winning OOC answer and saves the note from the same batch", async () => {
+        const question: OocExchange = { id: "q", segment: "s", anchorMessageId: "a", question: "Why?", time: 1 };
+        const { fake, sync, chat } = await boot((server) => {
+            server.chatBatch([
+                {
+                    characterId: "c",
+                    chatId: "k",
+                    baseRevision: server.chat("c", "k")!.revision,
+                    ops: [{ op: "meta", merge: { oocLog: { q: question } } }],
+                },
+            ]);
+        });
+        const winner = { ...question, answer: "First answer" };
+        fake.chatBatch([
+            {
+                characterId: "c",
+                chatId: "k",
+                baseRevision: fake.chat("c", "k")!.revision,
+                ops: [{ op: "meta", ifOocUnanswered: "q", merge: { oocLog: { q: winner } } }],
+            },
+        ]);
+        expect(chat.findChat(refK)!.oocLog?.q).toEqual(question);
+        chat.mergeChatMeta(refK, "oocLog", { q: { ...question, answer: "Later answer" } }, [], "q");
+        chat.setChatMeta(refK, { note: "Independent note" });
+
+        await sync.flushResources();
+        expect(fake.chat("c", "k")!.data).toMatchObject({ note: "Independent note", oocLog: { q: winner } });
+        await vi.advanceTimersByTimeAsync(1200);
+        expect(chat.findChat(refK)).toMatchObject({ note: "Independent note", oocLog: { q: winner } });
+        expect(alerts.normal).toHaveBeenCalledExactlyOnceWith("Answer already stored");
+    });
+
+    it.each(["hypaV2Data", "supaMemoryData"] as const)(
+        "reports a %s refusal once when its first reply is lost",
+        async (field) => {
+            const { fake, sync, chat } = await boot();
+            const value = (text: string) =>
+                field === "supaMemoryData"
+                    ? text
+                    : { chunks: [{ mainChunkID: 1, text }], mainChunks: [], lastMainChunkID: 1 };
+            const baseline = chat.captureChatBaseline(refK);
+            fake.writeJobChatMeta("c", "k", { [field]: value("New job memory") });
+            chat.applyChatResult(baseline, {
+                ...baseline.chat,
+                [field]: value("Older edit"),
+                note: "Plugin note",
+            });
+            fake.dropNextBatchResponse = true;
+            await expect(sync.flushResources()).rejects.toThrow();
+            expect(alerts.normal).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(5000);
+            await sync.flushResources();
+
+            const [lost, replay] = fake.batchBodies().flatMap((body) => body.chats ?? []);
+            expect(replay).toMatchObject({ groupId: lost.groupId, retry: true });
+            const expected = { note: "Plugin note", [field]: value("New job memory") };
+            expect(fake.chat("c", "k")!.data).toMatchObject(expected);
+            expect(chat.findChat(refK)).toMatchObject(expected);
+            expect(alerts.normal).toHaveBeenCalledExactlyOnceWith("Memory edit refused");
+            chat.setChatMeta(refK, { [field]: value("Fresh edit") });
+            await sync.flushResources();
+            expect(fake.chat("c", "k")!.data[field]).toEqual(value("Fresh edit"));
+        },
+    );
 });
 
 describe("boot and mixed batches", () => {

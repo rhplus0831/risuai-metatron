@@ -1874,6 +1874,8 @@ function coalesce(last: ChatOp, next: ChatOp): boolean {
     if (
         last.op === "meta" &&
         next.op === "meta" &&
+        last.ifOocUnanswered === undefined &&
+        next.ifOocUnanswered === undefined &&
         !last.mergeUnset &&
         !next.mergeUnset &&
         Object.keys(next.merge ?? {}).every(
@@ -4568,6 +4570,8 @@ export function mergeChatMeta(
     key: string,
     entries: Record<string, unknown>,
     removals: readonly string[] = [],
+    ifOocUnanswered?: string,
+    source: "write" | "recovery" = "write",
 ) {
     if (!CHAT_META_MERGE_KEYS.includes(key)) {
         throw new Error(`mergeChatMeta cannot merge ${key}`);
@@ -4602,6 +4606,10 @@ export function mergeChatMeta(
         changed(keyOf(ref.chaId, ref.chatId));
     }
     const op: Extract<ChatOp, { op: "meta" }> = { op: "meta" };
+    if (ifOocUnanswered !== undefined) {
+        op.ifOocUnanswered = ifOocUnanswered;
+        if (source === "recovery") op.acceptMatchingOocExchange = true;
+    }
     if (adding) {
         op.merge = { [key]: clone(added) };
     }
@@ -6138,11 +6146,22 @@ export function ackChatWork(
     const placedByOrders = new Map(orders.map((order) => [order.characterId, new Set(order.ids)]));
     work.groups.forEach((group, index) => {
         const previousRevision = chatRevisions.get(group.key);
+        const result = results[index];
+        // A lost response can make the replay the first receipt this tab actually sees.
+        const refusedMeta =
+            (result?.memoryRefused || result?.oocAnswerRefusals?.length) &&
+            inflight.get(group.key)?.groupId === group.groupId;
         inflight.delete(group.key);
         jobBlocked.delete(group.key);
-        const result = results[index];
         if (result) {
-            if (result.memoryRefused) alertReloadNotice(language.memoryEditRefused);
+            if (refusedMeta) {
+                if (result.memoryRefused) alertReloadNotice(language.memoryEditRefused);
+                for (const reason of result.oocAnswerRefusals ?? []) {
+                    alertReloadNotice(
+                        reason === "answered" ? language.ooc.alreadyAnswered : language.ooc.oocExchangeGone,
+                    );
+                }
+            }
             if (conflictListener && result.targets?.includes("missing")) {
                 let targetIndex = 0;
                 const missingOps = group.ops.filter((op) => {
@@ -6214,6 +6233,7 @@ export function ackChatWork(
                     result.stale ||
                     result.targets?.includes("missing") ||
                     result.selections?.includes("refused") ||
+                    result.oocAnswerRefusals?.length ||
                     group.ops.some(writesWholeChatCandidateFields)) &&
                 result.revision !== null
             ) {
@@ -6228,7 +6248,7 @@ export function ackChatWork(
             }
             adoptCandidateRows(group, result, previousRevision);
         }
-        if (result?.memoryRefused) {
+        if (refusedMeta) {
             // Recovery Apply keeps its source draft when the scoped flush reports a discarded edit.
             markDiscarded(group.key, group.seq);
         } else {

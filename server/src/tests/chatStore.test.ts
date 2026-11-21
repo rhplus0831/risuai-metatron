@@ -8,6 +8,7 @@ import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { ChatOp, ChatRecord } from "../../../shared/chats.ts";
 import type { Message, MessageTranslation } from "../../../shared/database.ts";
 import { mergeHypaV2Write } from "../../../shared/memory.ts";
+import { MAX_OOC_EXCHANGES, oocPrune, type OocExchange } from "../../../shared/ooc.ts";
 import { MAX_FEED_PATCH_BYTES, type BatchConflict } from "../../../shared/resources.ts";
 import { translationSourceHash } from "../../../shared/translation/hash.ts";
 import { storedTranslation } from "../../../shared/translation/messageTranslation.ts";
@@ -2204,6 +2205,155 @@ describe("meta merge", () => {
         });
         expect(chat(store, "k")!.data.oocLog).toEqual({ first, second });
         expect(chat(store, "k")!.data.message).toEqual([m("a", "A"), m("b", "B"), m("c", "C")]);
+    });
+
+    describe("conditional OOC answers", () => {
+        const question: OocExchange = { id: "q", segment: "s", anchorMessageId: null, question: "Why?", time: 1 };
+        const complete = (answer: string): Extract<ChatOp, { op: "meta" }> => ({
+            op: "meta",
+            ifOocUnanswered: question.id,
+            merge: { oocLog: { q: { ...question, answer } } },
+        });
+
+        it("validates a single matching answered exchange before changing the chat", () => {
+            const store = memoryStore();
+            const base = seed(store).chat;
+            const valid = complete("");
+            const bad = [
+                { ...valid, ifOocUnanswered: {} },
+                { ...valid, ifOocUnanswered: "another" },
+                { ...valid, merge: { oocLog: { q: question } } },
+                { ...valid, merge: { oocLog: { q: { ...question, answer: "", time: "invalid" } } } },
+                { ...valid, set: { note: "Independent edit" } },
+                { ...valid, mergeUnset: { oocLog: ["another"] } },
+                {
+                    ...valid,
+                    merge: { oocLog: { q: { ...question, answer: "" }, r: { ...question, id: "r", answer: "" } } },
+                },
+                { ...valid, merge: { scriptstate: { q: "Wrong map" } } },
+            ];
+            const before = chat(store, "k");
+            for (const invalid of bad) {
+                expect(() =>
+                    store.applyChanges({
+                        chats: [
+                            {
+                                ...group("k", base, [{ op: "meta", set: { note: "Rolled back" } }]),
+                                ops: [{ op: "meta", set: { note: "Rolled back" } }, invalid],
+                            },
+                        ],
+                    }),
+                ).toThrow(/ifOocUnanswered/);
+                expect(chat(store, "k")).toEqual(before);
+            }
+        });
+
+        it("keeps an empty winning answer, remembers a refusal, and leaves a removed exchange absent", () => {
+            const store = memoryStore();
+            const base = seed(store).chat;
+            store.applyChanges({ chats: [group("k", base, [{ op: "meta", merge: { oocLog: { q: question } } }])] });
+            const won = store.applyChanges({ chats: [group("k", base, [complete("")])] }).chats[0].revision!;
+            const losing = {
+                ...group("k", base, [complete("Late answer"), { op: "meta", set: { note: "Sibling note" } }]),
+                groupId: "losing-answer",
+            };
+            const refused = store.applyChanges({ chats: [losing] }).chats[0];
+            expect(refused).toMatchObject({ revision: bumped(won, 1), oocAnswerRefusals: ["answered"] });
+            expect(store.applyChanges({ chats: [{ ...losing, retry: true }] }).chats[0]).toEqual(refused);
+            expect(chat(store, "k")!.data).toMatchObject({
+                oocLog: { q: { ...question, answer: "" } },
+                note: "Sibling note",
+            });
+
+            const oldTab = { ...question, answer: "Unconditional legacy write" };
+            store.applyChanges({
+                chats: [group("k", refused.revision, [{ op: "meta", merge: { oocLog: { q: oldTab } } }])],
+            });
+            expect(chat(store, "k")!.data.oocLog?.q).toEqual(oldTab);
+            const deleted = store.applyChanges({
+                chats: [group("k", base, [{ op: "meta", mergeUnset: { oocLog: ["q"] } }])],
+            }).chats[0].revision;
+            expect(
+                store.applyChanges({ chats: [group("k", deleted, [complete("Late answer")])] }).chats[0],
+            ).toMatchObject({ revision: deleted, oocAnswerRefusals: ["missing"] });
+            expect(chat(store, "k")!.data.oocLog).toEqual({});
+        });
+
+        it("completes a question after pruning a full log and leaves unrelated operations eligible", () => {
+            const store = memoryStore();
+            const base = seed(store).chat;
+            const earlier = Array.from({ length: MAX_OOC_EXCHANGES }, (_, index) => {
+                const id = `earlier-${index}`;
+                return { ...question, id, segment: "earlier", question: id, time: index, answer: "Saved" };
+            });
+            const full = Object.fromEntries(earlier.map((exchange) => [exchange.id, exchange]));
+            const remove = oocPrune(full, { id: question.segment, anchorMessageId: null }, ["earlier-0"])!;
+            expect(remove).toEqual(["earlier-1"]);
+            store.applyChanges({
+                chats: [
+                    group("k", base, [
+                        { op: "meta", set: { oocLog: full } },
+                        { op: "meta", merge: { oocLog: { q: question } }, mergeUnset: { oocLog: remove } },
+                        complete("New answer"),
+                    ]),
+                ],
+            });
+            const extraCondition = { op: "setText", id: "a", text: "Edited message", ifOocUnanswered: "q" };
+            store.applyChanges({ chats: [{ ...group("k", base, []), ops: [extraCondition] }] });
+            const { oocLog } = chat(store, "k")!.data;
+            expect(Object.keys(oocLog!)).toHaveLength(MAX_OOC_EXCHANGES);
+            expect(oocLog!["earlier-0"]).toEqual(earlier[0]);
+            expect(oocLog!["earlier-1"]).toBeUndefined();
+            expect(oocLog!.q).toEqual({ ...question, answer: "New answer" });
+            expect(text(store, "k", "a")).toBe("Edited message");
+        });
+
+        it("accepts only a full exchange match for recovery and leaves its revision unchanged", () => {
+            const store = memoryStore();
+            const base = seed(store).chat;
+            const winner = { ...question, answer: "", attached: ["earlier-a", "earlier-b"] };
+            const revision = store.applyChanges({
+                chats: [group("k", base, [{ op: "meta", merge: { oocLog: { q: winner } } }])],
+            }).chats[0].revision;
+            const reconcile = (exchange: OocExchange, recovery = true) =>
+                store.applyChanges({
+                    chats: [
+                        group("k", revision, [
+                            {
+                                ...complete(""),
+                                merge: { oocLog: { q: exchange } },
+                                ...(recovery ? { acceptMatchingOocExchange: true } : {}),
+                            },
+                        ]),
+                    ],
+                }).chats[0];
+            const reordered = {
+                answer: "",
+                attached: winner.attached,
+                time: winner.time,
+                question: winner.question,
+                anchorMessageId: winner.anchorMessageId,
+                segment: winner.segment,
+                id: winner.id,
+            };
+            expect(reconcile(reordered)).toMatchObject({ revision });
+            expect(reconcile(reordered).oocAnswerRefusals).toBeUndefined();
+            for (const different of [
+                { ...winner, question: "Different question" },
+                { ...winner, time: 2 },
+                { ...winner, segment: "another" },
+                { ...winner, anchorMessageId: "a" },
+                { ...winner, attached: [...winner.attached].reverse() },
+            ]) {
+                expect(reconcile(different)).toMatchObject({ revision, oocAnswerRefusals: ["answered"] });
+            }
+            expect(reconcile(winner, false)).toMatchObject({ revision, oocAnswerRefusals: ["answered"] });
+            expect(chat(store, "k")).toMatchObject({ revision, data: { oocLog: { q: winner } } });
+            const invalid = { op: "meta", merge: { oocLog: { q: winner } }, acceptMatchingOocExchange: true };
+            expect(() => store.applyChanges({ chats: [{ ...group("k", revision, []), ops: [invalid] }] })).toThrow(
+                /ifOocUnanswered/,
+            );
+        });
     });
 
     const record = (id: string, text = id) => ({

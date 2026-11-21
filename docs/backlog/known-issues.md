@@ -26,7 +26,7 @@ Sources the entries name (drop a line when no entry names it any more):
 ## Contents
 
 - [characters-modules](#characters-modules) (1)
-- [chat-pipeline](#chat-pipeline) (3)
+- [chat-pipeline](#chat-pipeline) (2)
 - [network-jobs](#network-jobs) (1)
 - [persistence](#persistence) (1)
 - [structured-memory](#structured-memory) (1)
@@ -77,12 +77,6 @@ Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-
   fix round of 2026-11-22, not run. A fix moves the clear and append into the job's admission, or restores them when
   the job is refused. [Slash command](../../src/ts/process/command.ts#L52) ·
   [Binding check](../../src/ts/process/serverCommands.ts#L1181)
-- Two tabs can replace each other's OOC answer. A retry checks that an exchange is unanswered before it asks for the
-  preview; while the tab waits for the answer another tab can answer the same question, and the final write checks only
-  that the exchange still exists before it replaces the answer. An isolated run (structure audit, 2026-11-18) inserted
-  an answer during that wait and saw it overwritten. Not fixed. A fix decides the write rule for competing completions
-  of one exchange and makes it hold across tabs.
-  [OOC admission and answer write](../../src/ts/ooc/oocSession.svelte.ts#L183)
 
 ## network-jobs
 

@@ -70,6 +70,7 @@ export const languageEnglish = {
         requestFailed: "The OOC session answer request failed. Retry the question.",
         stopped: "The OOC session question was stopped. No answer was saved.",
         chatGone: "This chat was removed or replaced. The OOC session action could not be completed.",
+        alreadyAnswered: "An answer to this question was already saved elsewhere.",
         retryUnavailable: "Only an unanswered exchange in the current OOC session segment can be retried.",
         attachmentUnavailable: "Only an exchange from an earlier OOC session segment can be picked as an attachment.",
         updateFailed: "The OOC session could not be updated. Try again.",

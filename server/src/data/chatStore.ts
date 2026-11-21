@@ -19,6 +19,7 @@ import type {
     TranslationOutcome,
 } from "../../../shared/chats.ts";
 import { CHAT_META_MERGE_KEYS } from "../../../shared/chats.ts";
+import { oocExchangeError } from "../../../shared/ooc.ts";
 import type { Chat, Message, MessageTranslation } from "../../../shared/database.ts";
 import {
     type ChangeSet,
@@ -425,6 +426,7 @@ export const MAX_CHAT_GROUP_ID_LENGTH = 128;
 /** A remembered group's answer besides its ids and revision (`chatGroups.result`). */
 type RememberedResult = {
     memoryRefused?: true;
+    oocAnswerRefusals?: ChatGroupResult["oocAnswerRefusals"];
     stale?: true;
     /** Only when the server gave a message a fresh id; otherwise rebuilt from the replayed group. */
     messageIds?: string[];
@@ -455,6 +457,8 @@ type PreparedOp =
           unset: string[];
           merge: Record<string, Record<string, unknown>>;
           mergeUnset: Record<string, string[]>;
+          ifOocUnanswered?: string;
+          acceptMatchingOocExchange?: true;
       }
     | { op: "append"; messages: PreparedMessage[]; anchor: { start: true } | { end: true } | { after: string } }
     | { op: "setMessage"; message: PreparedMessage; generation: Generation | null }
@@ -1009,8 +1013,30 @@ function prepareOp(raw: unknown, chatId: string): PreparedOp {
             ) {
                 throw new ResourceValidationError("meta merges a field it also sets or unsets");
             }
+            const condition = raw.ifOocUnanswered;
+            const acceptMatch = raw.acceptMatchingOocExchange;
+            if (condition !== undefined || acceptMatch !== undefined) {
+                const entries = isPlainObject(merge.oocLog) ? Object.entries(merge.oocLog) : [];
+                const [id, answer] = entries[0] ?? [];
+                if (
+                    condition !== id ||
+                    (acceptMatch !== undefined && acceptMatch !== true) ||
+                    entries.length !== 1 ||
+                    !isPlainObject(answer) ||
+                    typeof answer.answer !== "string" ||
+                    oocExchangeError(id, answer) ||
+                    Object.keys(set).length ||
+                    unset.length ||
+                    Object.keys(mergeUnset).length ||
+                    Object.keys(merge).length !== 1
+                ) {
+                    throw new ResourceValidationError("ifOocUnanswered requires a single matching OOC answer merge");
+                }
+            }
             return {
                 op: "meta",
+                ...(typeof condition === "string" ? { ifOocUnanswered: condition } : {}),
+                ...(acceptMatch === true ? { acceptMatchingOocExchange: true } : {}),
                 // A set this leaves empty still applies: the op moves the revision as sent.
                 set: withoutProjection(set),
                 unset,
@@ -2140,6 +2166,7 @@ export function createChatTables(
         if (remembered.translations) {
             result.translations = remembered.translations;
         }
+        if (remembered.oocAnswerRefusals) result.oocAnswerRefusals = remembered.oocAnswerRefusals;
         if (remembered.memoryRefused) result.memoryRefused = true;
         if (remembered.selections) result.selections = remembered.selections;
         if (remembered.candidateRows) result.candidateRows = remembered.candidateRows;
@@ -2186,6 +2213,7 @@ export function createChatTables(
         if (result.translations) {
             remembered.translations = result.translations;
         }
+        if (result.oocAnswerRefusals) remembered.oocAnswerRefusals = result.oocAnswerRefusals;
         if (result.memoryRefused) remembered.memoryRefused = true;
         if (result.selections) remembered.selections = result.selections;
         if (result.candidateRows) remembered.candidateRows = result.candidateRows;
@@ -2325,6 +2353,7 @@ export function createChatTables(
         let reappended = false;
         let metaChanged = false;
         let memoryRefused = false;
+        const oocAnswerRefusals = new Set<"missing" | "answered">();
         let applied = 0;
         let messageIds: string[] | undefined;
         let messageIdsRenamed = false;
@@ -2451,6 +2480,18 @@ export function createChatTables(
                         summaryBefore = freshSummaryText(row!.seq, row!.revision, { meta: row!.meta });
                     }
                     const current = JSON.parse(row!.meta) as Record<string, unknown>;
+                    const exchangeId = op.ifOocUnanswered;
+                    if (exchangeId !== undefined) {
+                        const log = current.oocLog;
+                        const exchange =
+                            isPlainObject(log) && Object.hasOwn(log, exchangeId) ? log[exchangeId] : undefined;
+                        if (!isPlainObject(exchange) || exchange.answer !== undefined) {
+                            if (!op.acceptMatchingOocExchange || !sameJson(exchange, op.merge.oocLog[exchangeId])) {
+                                oocAnswerRefusals.add(exchange === undefined ? "missing" : "answered");
+                            }
+                            break;
+                        }
+                    }
                     const previousVariables = current.scriptstate;
                     const { hypaV3Data: _refused, ...kept } = op.set;
                     const modeAfter = Object.hasOwn(op.set, "memoryMode")
@@ -2937,6 +2978,7 @@ export function createChatTables(
         if (translations.length > 0) {
             result.translations = translations;
         }
+        if (oocAnswerRefusals.size) result.oocAnswerRefusals = [...oocAnswerRefusals];
         if (memoryRefused) result.memoryRefused = true;
         if (selections.length) result.selections = selections;
         if (!deleted && row) {

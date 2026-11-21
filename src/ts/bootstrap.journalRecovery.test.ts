@@ -3,6 +3,7 @@ import { tick } from "svelte";
 import { get } from "svelte/store";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatOp } from "../../shared/chats.ts";
+import type { OocExchange } from "../../shared/ooc.ts";
 import type { DraftJournal, LayerWrites } from "./storage/draftJournal";
 import { createFakeLockManager } from "./storage/tests/fakeLockManager";
 import { StoreBackedServer } from "./storage/tests/storeBackedServer";
@@ -1178,6 +1179,161 @@ describe("Apply after an intervening memory job", () => {
         await expect(applyRecoveryDraft(draft)).rejects.toThrow(language.recoveryDrafts.unavailable);
         expect(await current.journal.listDrafts()).toEqual([draft]);
         expect(server.chat("c", "replacement")!.data.supaMemoryData).toBeUndefined();
+    });
+});
+
+describe("recovery of conditional OOC answers", () => {
+    const question: OocExchange = { id: "q", segment: "s", question: "Why?", anchorMessageId: "m", time: 1 };
+    const answer = { ...question, answer: "Recovered answer" };
+    const winner = { ...question, answer: "First answer" };
+    const write = (exchange: OocExchange): ChatOp => ({ op: "meta", merge: { oocLog: { q: exchange } } });
+    const savedAnswer: ChatOp = { op: "meta", merge: { oocLog: { q: answer } }, ifOocUnanswered: "q" };
+
+    function seedQuestion(ids?: string[]) {
+        seedChats(ids);
+        remoteChat([write(question)]);
+    }
+
+    it.each(["answered", "removed"] as const)(
+        "keeps the OOC draft when Apply finds that the exchange was %s",
+        async (state) => {
+            seedQuestion();
+            const current = await boot();
+            await flush();
+            const draft = await stageChatDraft(current, [savedAnswer]);
+            remoteChat(state === "answered" ? [write(winner)] : [{ op: "meta", mergeUnset: { oocLog: ["q"] } }]);
+            const stored = server.chat("c", "chat");
+            const { applyRecoveryDraft } = await import("./storage/journalRecovery");
+            const { language } = await import("src/lang");
+            await expect(applyRecoveryDraft(draft)).rejects.toThrow(language.recoveryDrafts.notSaved);
+            expect(await current.journal.listDrafts()).toEqual([draft]);
+            expect(server.chat("c", "chat")).toEqual(stored);
+
+            await flush();
+            await expect(applyRecoveryDraft(draft)).rejects.toThrow(language.recoveryDrafts.notSaved);
+            expect(await current.journal.listDrafts()).toEqual([draft]);
+        },
+    );
+
+    it("retires a draft whose exact OOC answer was saved before the first Apply reply was lost", async () => {
+        seedQuestion();
+        const current = await boot();
+        await flush();
+        const draft = await stageChatDraft(current, [savedAnswer]);
+        const { applyRecoveryDraft } = await import("./storage/journalRecovery");
+        server.dropNextBatchResponse = true;
+        await expect(applyRecoveryDraft(draft)).rejects.toThrow();
+        const saved = server.chat("c", "chat")!;
+        expect(saved.data.oocLog?.q).toEqual(answer);
+        expect(await current.journal.listDrafts()).toEqual([draft]);
+
+        await vi.advanceTimersByTimeAsync(5000);
+        await flush();
+        await expect(applyRecoveryDraft(draft)).resolves.toEqual({ skipped: [] });
+        expect(server.chat("c", "chat")).toEqual(saved);
+        expect(await current.journal.listDrafts()).toEqual([]);
+    });
+
+    it("retires a mixed draft after retry saves the refused memory and verifies the answer that already landed", async () => {
+        seedQuestion();
+        const current = await boot();
+        await flush();
+        const draft = await stageChatDraft(current, [
+            { op: "meta", set: { supaMemoryData: "Recovered summary" } },
+            savedAnswer,
+        ]);
+        const { applyRecoveryDraft } = await import("./storage/journalRecovery");
+        const { language } = await import("src/lang");
+        server.beforeNextBatch = () => server.writeJobChatMeta("c", "chat", { supaMemoryData: "Job summary" });
+        await expect(applyRecoveryDraft(draft)).rejects.toThrow(language.recoveryDrafts.notSaved);
+        expect(server.chat("c", "chat")!.data).toMatchObject({ supaMemoryData: "Job summary", oocLog: { q: answer } });
+        expect(await current.journal.listDrafts()).toEqual([draft]);
+
+        await flush();
+        await expect(applyRecoveryDraft(draft)).resolves.toEqual({ skipped: [] });
+        expect(server.chat("c", "chat")!.data).toMatchObject({
+            supaMemoryData: "Recovered summary",
+            oocLog: { q: answer },
+        });
+        expect(await current.journal.listDrafts()).toEqual([]);
+    });
+
+    it("replays an offline answer condition separately from edits that save despite the refusal", async () => {
+        seedQuestion();
+        const first = await boot();
+        await flush();
+        await first.chat.ensureChatLoaded(ref());
+        first.chat.setChatMeta(ref(), { note: "Offline note" });
+        first.chat.mergeChatMeta(ref(), "oocLog", { q: answer }, [], "q");
+        first.chat.setChatMeta(ref(), { name: "Offline name" });
+        await hideUnsent();
+        const second = await reload();
+
+        server.dropNextBatchResponse = true;
+        server.beforeNextBatch = () => {
+            remoteChat([write(winner)]);
+        };
+        await expect(second.sync.flushResources()).rejects.toThrow();
+        await vi.advanceTimersByTimeAsync(5000);
+        await flush();
+        const [sent, replay] = chatGroups();
+        expect(sent.ops).toEqual([
+            { op: "meta", set: { note: "Offline note" }, unset: [] },
+            savedAnswer,
+            { op: "meta", set: { name: "Offline name" }, unset: [] },
+        ]);
+        expect(replay).toMatchObject({ groupId: sent.groupId, retry: true });
+        expect(server.chat("c", "chat")!.data).toMatchObject({
+            name: "Offline name",
+            note: "Offline note",
+            oocLog: { q: winner },
+        });
+        expect(await second.journal.readOwn()).toEqual([]);
+    });
+
+    it("shows each refusal behind an earlier reload notice and ignores a redelivered receipt", async () => {
+        seedQuestion();
+        const current = await boot();
+        await flush();
+        await current.chat.ensureChatLoaded(ref());
+        await current.chat.ensureChatLoaded(ref("untouched"));
+        const { language } = await import("src/lang");
+        const { alertReloadNotice } = await import("./alert");
+        const notices = await vi.importActual<typeof import("./alert")>("./alert");
+        const show = vi.mocked(alertReloadNotice).mockImplementation(notices.alertReloadNotice);
+        const visible = () => get(notices.reloadNotice);
+        const dismiss = notices.dismissReloadNotice;
+        try {
+            notices.alertReloadNotice(language.resourceReloaded);
+            current.chat.setChatMeta(ref("untouched"), { supaMemoryData: "Old memory edit" });
+            current.chat.mergeChatMeta(ref(), "oocLog", { q: answer }, [], "q");
+            server.writeJobChatMeta("c", "untouched", { supaMemoryData: "Job summary" });
+            remoteChat([write(winner)]);
+            const work = current.chat.takeChatWork(new Set());
+            const groups = current.chat.chatWorkBody(work).chats.map((group) => JSON.parse(group));
+            const receipt = server.chatBatch(groups);
+            current.chat.ackChatWork(work, receipt.chats, receipt.chatOrders);
+            expect(show.mock.calls).toEqual([[language.memoryEditRefused], [language.ooc.alreadyAnswered]]);
+            notices.alertReloadNotice(language.resourceReloaded);
+            notices.alertReloadNotice(language.memoryEditRefused);
+            notices.alertReloadNotice(language.ooc.alreadyAnswered);
+            expect(visible()).toBe(language.resourceReloaded);
+            dismiss();
+            expect(visible()).toBe(language.memoryEditRefused);
+            dismiss();
+            expect(visible()).toBe(language.ooc.alreadyAnswered);
+            dismiss();
+            expect(visible()).toBeNull();
+
+            const duplicate = server.chatBatch(groups.map((group) => ({ ...group, retry: true })));
+            current.chat.ackChatWork(work, duplicate.chats, duplicate.chatOrders);
+            expect(visible()).toBeNull();
+            expect(server.chat("c", "untouched")!.data.supaMemoryData).toBe("Job summary");
+            expect(server.chat("c", "chat")!.data.oocLog?.q).toEqual(winner);
+        } finally {
+            show.mockReset();
+            while (visible() !== null) dismiss();
+        }
     });
 });
 
