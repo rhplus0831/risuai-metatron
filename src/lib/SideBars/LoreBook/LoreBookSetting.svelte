@@ -3,6 +3,7 @@
     import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { useLocalLoreDraft } from "src/ts/storage/localLoreDraft.svelte";
+    import { loreWriteFenced } from "src/ts/storage/chatFieldDraft.svelte";
     import { language } from "../../../lang";
     import { DownloadIcon, HardDriveUploadIcon, PlusIcon, SunIcon, LinkIcon, FolderPlusIcon } from "@lucide/svelte";
     import {
@@ -26,11 +27,20 @@
      * edited on its draft), and the lore settings (2). The chat tab's overrides section (`LoreOverrideList.svelte`)
      * opens on a switch to a chat with orphaned overrides, or when a new orphan appears in the same chat.
      * A requested submenu (`loreBookSubmenuRequest`) is shown and the request cleared, at mount or while mounted.
+     *
+     * While a send of this tab or a job this tab knows of runs in the selected chat (`loreWriteFenced`), the chat's
+     * lore is read-only: the chat tab shows the `chatGenerating` notice, its list and overrides disable their write
+     * controls, and its add, folder and import buttons and the CHAT bulk toggle are disabled. Export stays available.
      */
 
     const currentCharacter = $derived(selectedCharacter());
     const currentChat = $derived(selectedChat());
     let submenu = $state(0);
+    const chatLoreLocked = $derived.by(() => {
+        const ref = currentChatRef();
+        return ref !== null && loreWriteFenced(ref);
+    });
+    const listLocked = $derived(submenu === 1 && chatLoreLocked);
     $effect.pre(() => {
         const requested = $loreBookSubmenuRequest;
         if (requested !== null) {
@@ -83,6 +93,7 @@
     }
 
     function toggleChatLoreAlwaysActive() {
+        if (chatLoreLocked) return;
         // Edits the chat's local lorebook copy, which is saved through the chat module.
         const localLore = useLocalLoreDraft().value;
 
@@ -133,7 +144,10 @@
                 : language.globalLoreInfo
             : language.localLoreInfo}</span
     >
-    <LoreBookList {submenu} lorePlus={currentCharacter?.lorePlus} />
+    {#if listLocked}
+        <p class="text-sm text-textcolor2 mb-2" role="status">{language.chatGenerating}</p>
+    {/if}
+    <LoreBookList {submenu} lorePlus={currentCharacter?.lorePlus} locked={listLocked} />
 {:else}
     {#if currentCharacter.loreSettings}
         <div class="flex items-center mt-4">
@@ -181,10 +195,11 @@
 {#if submenu !== 2}
     <div class="text-textcolor2 mt-2 flex">
         <button
+            disabled={listLocked}
             onclick={() => {
                 addLorebook(submenu);
             }}
-            class="hover:text-textcolor cursor-pointer"
+            class="hover:text-textcolor cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
             <PlusIcon />
         </button>
@@ -197,18 +212,20 @@
             <DownloadIcon />
         </button>
         <button
+            disabled={listLocked}
             onclick={() => {
                 addLorebookFolder(submenu);
             }}
-            class="hover:text-textcolor ml-2 cursor-pointer"
+            class="hover:text-textcolor ml-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
             <FolderPlusIcon />
         </button>
         <button
+            disabled={listLocked}
             onclick={() => {
                 importLoreBook(submenu === 0 ? "global" : "local");
             }}
-            class="hover:text-textcolor ml-2 cursor-pointer"
+            class="hover:text-textcolor ml-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
             <HardDriveUploadIcon />
         </button>
@@ -227,10 +244,11 @@
                 <span class="text-xs">CHAR</span>
             </button>
             <button
+                disabled={chatLoreLocked}
                 onclick={() => {
                     toggleChatLoreAlwaysActive();
                 }}
-                class="hover:text-textcolor ml-2 cursor-pointer flex items-center gap-1"
+                class="hover:text-textcolor ml-2 cursor-pointer flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
             >
                 {#if isAllChatLoreAlwaysActive()}
                     <SunIcon />

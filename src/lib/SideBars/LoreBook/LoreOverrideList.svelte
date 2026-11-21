@@ -47,6 +47,9 @@
      * override, removes it while appending a deep copy to `localLore` (a fresh id, its mode, no folder key) in one
      * write. Both confirm and recheck the captured owner and send fence. Off wins over a local activation: a row whose
      * override is off while the chat holds its `child` link gets the off-precedence notice (`offOverrideIds`).
+     *
+     * While the mounted chat is fenced, every row and orphan control is disabled (`locked`); the action checks above
+     * stay for a fence that arrives during a dialog.
      */
 
     const draft = useLoreOverridesDraft();
@@ -54,6 +57,7 @@
     const mountedRef = currentChatRef();
     const keyOf = (ref: ChatRef | null) => (ref ? `${ref.chaId}\u0000${ref.chatId}` : "");
     const mountedKey = keyOf(mountedRef);
+    const locked = $derived(mountedRef !== null && loreWriteFenced(mountedRef));
     const ownerLore = () => selectedCharacter()?.globalLore ?? [];
     const goneEntry = (): loreBook => ({
         key: "",
@@ -346,12 +350,14 @@
             </p>
             <div class="flex flex-wrap gap-2 mt-2">
                 <button
-                    class="rounded-md bg-darkbutton text-textcolor px-2 py-1 hover:bg-selected"
+                    class="rounded-md bg-darkbutton text-textcolor px-2 py-1 hover:bg-selected disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled={locked}
                     onclick={() => resolveOrphan(orphan, false)}>{language.chatLoreOverrides.delete}</button
                 >
                 {#if !orphan.off}
                     <button
-                        class="rounded-md bg-darkbutton text-textcolor px-2 py-1 hover:bg-selected"
+                        class="rounded-md bg-darkbutton text-textcolor px-2 py-1 hover:bg-selected disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled={locked}
                         onclick={() => resolveOrphan(orphan, true)}>{language.chatLoreOverrides.move}</button
                     >
                 {/if}
@@ -383,6 +389,7 @@
             offNotice={hasOffLink(override)}
             releaseAll={() => releaseAll(book)}
             turnOffAll={() => turnOffAll(book)}
+            {locked}
         >
             {@render rows(node.children)}
         </LoreOverrideRow>

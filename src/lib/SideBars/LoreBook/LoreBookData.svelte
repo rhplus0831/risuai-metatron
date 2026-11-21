@@ -13,8 +13,7 @@
         selectedChat,
         setChatMeta,
     } from "../../../ts/storage/chatStore.svelte";
-    import { chatStatusKey, generatingChatKeys } from "src/ts/process/chatStatus.svelte";
-    import { isLocalSend } from "src/ts/process/localSends";
+    import { loreWriteFenced } from "src/ts/storage/chatFieldDraft.svelte";
     import { alertConfirm, alertError, alertMd } from "../../../ts/alert";
     import Check from "../../UI/GUI/CheckInput.svelte";
     import TextInput from "../../UI/GUI/TextInput.svelte";
@@ -28,14 +27,20 @@
      * frozen overrides; the checkbox shows, and unchecking removes, only `mode: "child"` links with the entry's id, so
      * a plain chat entry that kept the same id (an import) is neither shown as linked nor deleted. Off wins over a
      * local activation: an off override (`offOverrideIds`, `shared/lore/overrides.ts`) shows its notice under the
-     * checkbox and on a `child` row.
+     * checkbox and on a `child` row. The checkbox is disabled, and a change refused before any write (the entry's id
+     * included), while a send or job runs in the selected chat (`loreWriteFenced`).
+     *
+     * `locked` (the row belongs to a chat's lore under that fence) disables every write control of the row and its
+     * folder list, and opening the row writes nothing.
      *
      * Delete captures the entry's id, a folder's member ids (`folder === key`), whether it is in the selected
-     * character's `globalLore`, the chat ref, and the owner token before either dialog. Only a successful `onRemove`
-     * of a character entry deactivates those ids in the captured chat: after `ensureChatLoaded` it checks the owner
-     * token and the local-send/job fence at the write, then removes the matching `child` links in one `setChatMeta`.
-     * A chat-local row (a child link or a nested folder member included) is removed only through its list's draft,
-     * with no separate id cascade.
+     * character's `globalLore`, the chat ref, and the owner token before either dialog. A character entry whose ids
+     * the captured chat links (`child`) is not removed while that chat is fenced: the click is refused before the
+     * dialogs when the selected chat shows such a link, and again after them, once `ensureChatLoaded` has the chat
+     * and the owner token still matches; otherwise `onRemove` and the removal of the matching links in one
+     * `setChatMeta` run together. A chat that fails to load, or a replaced owner, removes only the entry. A chat-local
+     * row (a child link or a nested folder member included) is removed only through its list's draft, with no
+     * separate id cascade.
      */
 
     interface Props {
@@ -55,6 +60,8 @@
         hidden?: boolean;
         openFolders?: number;
         isLastInContainer?: boolean;
+        /** The row belongs to a chat's lore while a send or job runs in it: its write controls are disabled. */
+        locked?: boolean;
     }
 
     let {
@@ -72,12 +79,18 @@
         hidden = false,
         openFolders = 0,
         isLastInContainer = false,
+        locked = false,
     }: Props = $props();
 
     let open = $derived(isOpen);
     const shownOpen = $derived(open || forceOpen);
 
     const offIds = $derived(offOverrideIds(selectedCharacter()?.globalLore ?? [], selectedChat()?.loreOverrides ?? []));
+    // The selected chat's lore is fenced: the local activation checkbox writes it from any tab.
+    const chatFenced = $derived.by(() => {
+        const ref = currentChatRef();
+        return ref !== null && loreWriteFenced(ref);
+    });
 
     function isLocallyActivated(book: loreBook) {
         return book.id ? selectedChat()?.localLore.some((e) => e.mode === "child" && e.id === book.id) : false;
@@ -108,6 +121,11 @@
         }
     }
     function toggleLocalActive(check: boolean, book: loreBook) {
+        const ref = currentChatRef();
+        if (ref && loreWriteFenced(ref)) {
+            alertError(language.chatGenerating);
+            return;
+        }
         if (check) {
             activateLocally(book);
         } else {
@@ -144,7 +162,7 @@
                 class="endflex valuer border-darkborderc flex items-center"
                 onclick={() => {
                     if (forceOpen) return;
-                    value.secondkey = value.secondkey ?? "";
+                    if (!locked) value.secondkey = value.secondkey ?? "";
                     if (!open) {
                         open = true;
                         onOpen(value.mode !== "folder"); // If not a folder, pass true
@@ -174,10 +192,12 @@
                 {/if}
             </button>
             <button
-                class="mr-1"
+                class="mr-1 disabled:opacity-50 disabled:cursor-not-allowed"
                 class:text-textcolor2={!value.alwaysActive}
                 class:text-textcolor={value.alwaysActive}
+                disabled={locked}
                 onclick={async () => {
+                    if (locked) return;
                     if (value.mode === "folder") {
                         onFolderActive(!value.alwaysActive);
                     }
@@ -192,7 +212,9 @@
             </button>
             <button
                 class="valuer"
+                disabled={locked}
                 onclick={async () => {
+                    if (locked) return;
                     // Keep only the entry's primitives and the chat address across the dialogs.
                     const members =
                         value.mode === "folder"
@@ -205,25 +227,46 @@
                     const chatTarget = currentChatRef();
                     const chatOwner = chatTarget ? chatOwnerToken(chatTarget.chaId) : null;
                     const removeMessage = language.removeConfirm + (value.comment || "Unnamed Folder");
+                    const isRemovedChild = (entry: Pick<loreBook, "id" | "mode">) =>
+                        entry.mode === "child" && !!entry.id && removedIds.has(entry.id);
+                    const cascades = isCharacterEntry && removedIds.size > 0;
+                    if (
+                        cascades &&
+                        chatTarget &&
+                        loreWriteFenced(chatTarget) &&
+                        (selectedChat()?.localLore ?? []).some(isRemovedChild)
+                    ) {
+                        alertError(language.chatGenerating);
+                        return;
+                    }
                     if (members.length > 0) {
                         if (!(await alertConfirm(language.folderRemoveConfirm))) return;
                     }
                     if (!(await alertConfirm(removeMessage))) return;
-                    const removed = onRemove();
-                    if (!removed || !isCharacterEntry || removedIds.size === 0 || !chatTarget) return;
+                    if (!cascades || !chatTarget) {
+                        onRemove();
+                        return;
+                    }
 
+                    let chat: Awaited<ReturnType<typeof ensureChatLoaded>>;
                     try {
                         // The captured chat may have been evicted while a dialog was open.
-                        const chat = await ensureChatLoaded(chatTarget);
-                        if (!chat || chatOwnerToken(chatTarget.chaId) !== chatOwner) return;
-                        const localLore = chat.localLore ?? [];
-                        const isRemovedChild = (entry: Pick<loreBook, "id" | "mode">) =>
-                            entry.mode === "child" && !!entry.id && removedIds.has(entry.id);
-                        if (!localLore.some(isRemovedChild)) return;
-                        if (isLocalSend(chatTarget) || generatingChatKeys().has(chatStatusKey(chatTarget))) {
-                            alertError(language.chatGenerating);
-                            return;
-                        }
+                        chat = await ensureChatLoaded(chatTarget);
+                    } catch (error) {
+                        onRemove();
+                        alertError(error);
+                        return;
+                    }
+                    const localLore =
+                        chat && chatOwnerToken(chatTarget.chaId) === chatOwner ? (chat.localLore ?? []) : [];
+                    const linked = localLore.some(isRemovedChild);
+                    // Refused before the entry goes: removing it alone would leave the chat's links behind.
+                    if (linked && loreWriteFenced(chatTarget)) {
+                        alertError(language.chatGenerating);
+                        return;
+                    }
+                    if (!onRemove() || !linked) return;
+                    try {
                         setChatMeta(chatTarget, { localLore: localLore.filter((entry) => !isRemovedChild(entry)) });
                     } catch (error) {
                         alertError(error);
@@ -239,7 +282,9 @@
             </button>
             <button
                 class="valuer"
+                disabled={locked}
                 onclick={async () => {
+                    if (locked) return;
                     const d = await alertConfirm(language.removeConfirm + getParentLoreName(value));
                     if (d) {
                         onRemove();
@@ -257,11 +302,12 @@
         {#if value.mode === "folder"}
             <div class="border-0 outline-hidden w-full mt-2 flex flex-col mb-2">
                 <span class="text-textcolor mt-6 mb-2">{language.folderName}</span>
-                <TextInput size="sm" bind:value={value.comment} />
+                <TextInput size="sm" disabled={locked} bind:value={value.comment} />
 
                 <div class="mt-4">
                     <LoreBookList
                         {externalLoreBooks}
+                        {locked}
                         showFolder={value.key}
                         onMemberOpen={() => {
                             if (open) return;
@@ -273,8 +319,10 @@
 
                 <div class="mt-2 flex gap-1">
                     <button
-                        class="text-textcolor2 hover:text-textcolor"
+                        class="text-textcolor2 hover:text-textcolor disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled={locked}
                         onclick={() => {
+                            if (locked) return;
                             externalLoreBooks.push({
                                 key: "",
                                 comment: "",
@@ -293,11 +341,12 @@
                 </div>
             </div>
         {:else}
-            <LoreEntryFields bind:value {lorePlus}>
+            <LoreEntryFields bind:value {lorePlus} disabled={locked}>
                 {#snippet localActivation()}
                     {#if !value.alwaysActive && selectedCharacter()?.globalLore?.includes(value) && settings.ui.localActivationInGlobalLorebook}
                         <div class="flex items-center mt-2">
                             <Check
+                                disabled={chatFenced}
                                 check={isLocallyActivated(value)}
                                 onChange={(check: boolean) => toggleLocalActive(check, value)}
                                 name={language.alwaysActiveInChat}
@@ -314,9 +363,14 @@
 </div>
 
 <style>
-    .valuer:hover {
+    .valuer:hover:not(:disabled) {
         color: rgba(16, 185, 129, 1);
         cursor: pointer;
+    }
+
+    .valuer:disabled {
+        cursor: not-allowed;
+        opacity: 0.5;
     }
 
     .endflex {

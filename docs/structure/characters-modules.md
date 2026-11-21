@@ -278,9 +278,12 @@ upload extracted assets, while preset imports read bytes. Module shares are cons
   of (`generatingChatKeys()`) runs in the chat, they refuse with `chatGenerating` and write nothing; the import checks
   at its write, after the file dialog.
 - `exportLoreBook("local")` while the selected chat loads refuses with `localLoreExportNotLoaded`.
-
-### Characters and chats
-
+- Under the lore draft's fence the chat's lore is read-only, not undone after an edit: the chat tab shows the
+  `chatGenerating` notice and disables its rows, folder lists, drag (`locked`), add, folder and import buttons, CHAT
+  bulk toggle, override controls and orphan buttons; export and the character tab stay. The local activation checkbox is
+  disabled from any tab.
+- A character entry whose ids the fenced chat links is not deleted, so its `child` links never outlive it. The
+  write-time checks stay for a fence that arrives during a dialog or a file picker.
 - Character identity is `chaId`; imports and core creators add through `characterStore`. Create, copy, or ensure chats
   through the chat module after the character is in its mirror. See [persistence](persistence.md) and
   [chat store](chat-store.md#chat-writes) for chat ownership. `importChat` validates every chat before adding folders or

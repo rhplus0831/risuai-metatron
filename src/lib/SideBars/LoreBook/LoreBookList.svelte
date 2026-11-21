@@ -92,6 +92,9 @@
      * `openedRefs` until a member opens inside it, which records its folder chain as open so those details stay
      * mounted across query changes. Every SortableJS instance is disabled while the query is non-empty, and a drop
      * that ends while filtering writes nothing.
+     *
+     * `locked` (a chat's lore while a send or job runs in the chat, passed down to folder lists) disables drag the same
+     * way, and its rows disable their write controls.
      */
 
     const currentCharacter = $derived(selectedCharacter());
@@ -104,12 +107,21 @@
         externalLoreBooks?: loreBook[];
         showFolder?: string;
         onMemberOpen?: () => void;
+        /** The list is read-only: no drag, and every row's write controls are disabled. */
+        locked?: boolean;
     }
 
-    let { submenu = 0, lorePlus = false, externalLoreBooks = null, showFolder = "", onMemberOpen }: Props = $props();
+    let {
+        submenu = 0,
+        lorePlus = false,
+        externalLoreBooks = null,
+        showFolder = "",
+        onMemberOpen,
+        locked = false,
+    }: Props = $props();
     let stb: Sortable = null;
     let destroyed = false;
-    // The `disabled` option `stb` has now (set while the filter is non-empty).
+    // The `disabled` option `stb` has now (set while the filter is non-empty or the list is locked).
     let stbDisabled = false;
     let ele: HTMLDivElement = $state();
     let sorted = $state(0);
@@ -192,6 +204,8 @@
               },
     );
     const filtering = () => (parentFilter ? parentFilter.query : preparedQuery) !== null;
+    /** No drag reorders a filtered view or a locked list. */
+    const dragOff = () => filtering() || locked;
     const matches = $derived(parentFilter ? parentFilter.matches : rootMatches);
     /** Whether the filter hides `book` (a row the shown list holds). */
     const filteredOut = (book: loreBook) => !!matches && !matches.has(book);
@@ -299,8 +313,8 @@
 
     const createStb = () => {
         if (stb || destroyed || !ele || openedDetails > 0) return;
-        // No drag reorders a filtered view: every instance starts disabled while filtering.
-        const disabled = untrack(filtering);
+        // Every instance starts disabled while filtering or locked.
+        const disabled = untrack(dragOff);
         stbDisabled = disabled;
         stb = Sortable.create(ele, {
             ...sortableOptions,
@@ -326,8 +340,8 @@
                     return;
                 }
 
-                // Cancel movement; a drag that ends after the filter started writes nothing either
-                if ((evt.oldIndex === evt.newIndex && evt.from === evt.to) || untrack(filtering)) {
+                // Cancel movement; a drag that ends after the filter started or the list locked writes nothing either
+                if ((evt.oldIndex === evt.newIndex && evt.from === evt.to) || untrack(dragOff)) {
                     // The re-render below rebuilds this list only: take the row back from another one.
                     if (evt.item.parentNode !== evt.from) {
                         evt.from.insertBefore(evt.item, evt.from.children[evt.oldIndex] ?? null);
@@ -486,10 +500,10 @@
 
     onMount(createStb);
 
-    // Turn drag off while filtering and back on after clearing (an instance created meanwhile
-    // already has the current state).
+    // Turn drag off while filtering or locked and back on after both clear (an instance created
+    // meanwhile already has the current state).
     $effect(() => {
-        const disabled = filtering();
+        const disabled = dragOff();
         untrack(() => {
             if (stb && stbDisabled !== disabled) {
                 stb.option("disabled", disabled);
@@ -673,6 +687,7 @@
                             onFolderActive={(active) => setFolderActive(book, active)}
                             onOpen={(isDetail = true) => onOpen(isDetail, book)}
                             onClose={(isDetail = true) => onClose(isDetail, book)}
+                            {locked}
                             {externalLoreBooks}
                         />
                     {:else}
@@ -707,6 +722,7 @@
                             onFolderActive={(active) => setFolderActive(book, active)}
                             onOpen={(isDetail = true) => onOpen(isDetail, book)}
                             onClose={(isDetail = true) => onClose(isDetail, book)}
+                            {locked}
                             {lorePlus}
                             bind:externalLoreBooks={currentCharacter.globalLore}
                         />
@@ -742,6 +758,7 @@
                             onFolderActive={(active) => setFolderActive(book, active)}
                             onOpen={(isDetail = true) => onOpen(isDetail, book)}
                             onClose={(isDetail = true) => onClose(isDetail, book)}
+                            {locked}
                             {lorePlus}
                             bind:externalLoreBooks={localLore.value}
                         />

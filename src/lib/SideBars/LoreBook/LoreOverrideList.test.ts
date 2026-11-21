@@ -715,13 +715,15 @@ it("turns off every entry inside a folder on its own, keeping edits and leaving 
 
     releases.push(beginLocalSend(ref)!);
     flushSync();
+    expect(turnOffAllButtons().map((element) => element.disabled)).toEqual([true, true]);
     click(turnOffAllButtons()[0]);
-    expect(alertError).toHaveBeenCalledExactlyOnceWith(language.chatGenerating);
+    expect(alertError).not.toHaveBeenCalled();
     expect(stored().loreOverrides).toEqual([savedA, savedC, innerOff]);
     expect(chatWrites).not.toHaveBeenCalled();
     releases.pop()!();
     flushSync();
 
+    expect(turnOffAllButtons().map((element) => element.disabled)).toEqual([false, false]);
     click(turnOffAllButtons()[0]);
     const dId = originals()[6].id;
     expect(dId).toBeTruthy();
@@ -845,30 +847,48 @@ it("shows off precedence on the override, the chat child row and the character a
 });
 
 it.each(["local send", "followed job"] as const)(
-    "refuses every state change during a %s and keeps the old segments",
+    "disables every state control and override field during a %s, keeping the old segments until it ends",
     (kind) => {
         const source = entry("No id");
         const pinned = entry("Pinned", { id: "pinned" });
         const folder = entry("Folder", { id: "folder", mode: "folder", key: "folder" });
+        const orphan = { entry: entry("Orphan", { id: "orphan" }), off: false };
         const override = { entry: pinned, off: false };
-        install({ globalLore: [source, pinned, folder], overrides: [override] });
+        install({ globalLore: [source, pinned, folder], overrides: [override, orphan] });
         render();
+        click(button("Pinned"));
+        const segments = () => [...target.querySelectorAll<HTMLButtonElement>("[data-segment-btn]")];
+        const overrideFields = () => [
+            ...row("Pinned").querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("input, textarea"),
+        ];
+        const orphanButtons = () => [button(strings.delete), button(strings.move)];
+        expect(overrideFields().length).toBeGreaterThan(0);
         if (kind === "local send") releases.push(beginLocalSend(ref)!);
         else followedJobs.set(new Map([["job", chatStatusKey(ref)]]));
         flushSync();
+        expect(segments().every((element) => element.disabled)).toBe(true);
+        expect(overrideFields().every((element) => element.disabled || element.readOnly)).toBe(true);
+        expect(orphanButtons().every((element) => element.disabled)).toBe(true);
         setState("No id", strings.off);
         setState("Pinned", strings.off);
         setState("Pinned", strings.original);
         setState("Folder", strings.off);
-        expect(alertError).toHaveBeenCalledTimes(4);
-        expect(vi.mocked(alertError).mock.calls.every(([message]) => message === language.chatGenerating)).toBe(true);
+        click(button(strings.delete));
+        expect(alertError).not.toHaveBeenCalled();
         expect(alertConfirm).not.toHaveBeenCalled();
         expect(pressed("No id")).toBe(strings.original);
         expect(pressed("Pinned")).toBe(strings.overridden);
         expect(pressed("Folder")).toBe(strings.on);
         expect(originals()).toEqual([source, pinned, folder]);
-        expect(stored().loreOverrides).toEqual([override]);
+        expect(stored().loreOverrides).toEqual([override, orphan]);
         expect(chatWrites).not.toHaveBeenCalled();
         expect(characterWrites).not.toHaveBeenCalled();
+
+        if (kind === "local send") releases.pop()!();
+        else followedJobs.set(new Map());
+        flushSync();
+        expect(segments().some((element) => element.disabled)).toBe(false);
+        expect(overrideFields().some((element) => element.disabled || element.readOnly)).toBe(false);
+        expect(orphanButtons().some((element) => element.disabled)).toBe(false);
     },
 );

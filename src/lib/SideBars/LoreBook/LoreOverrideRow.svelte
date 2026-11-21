@@ -16,7 +16,8 @@
      * (Original: none, Override: `off: false`, Off: `off: true`) and a folder's On or Off; it binds through a
      * getter/setter pair, so a refused, cancelled, or aborted change keeps the old segment. An entry's editable body
      * is keyed by its override object and bound through `liveOverride`, which returns a throwaway once the draft
-     * released the object or switched chats; without an override the body shows the original, disabled.
+     * released the object or switched chats; without an override the body shows the original, disabled. `locked` (a
+     * send or job runs in the chat) disables the control, the folder buttons, and the override's fields.
      */
 
     interface Props {
@@ -38,6 +39,8 @@
         offNotice?: boolean;
         releaseAll?: () => void;
         turnOffAll?: () => void;
+        /** The chat's overrides are read-only while a send or job runs in it. */
+        locked?: boolean;
         children?: Snippet;
     }
     let {
@@ -54,6 +57,7 @@
         offNotice = false,
         releaseAll,
         turnOffAll,
+        locked = false,
         children,
     }: Props = $props();
     const indicatorId = $props.id();
@@ -108,6 +112,7 @@
                 {options}
                 size="sm"
                 margin={false}
+                disabled={locked}
                 label={strings.stateFor(name)}
                 describedBy={folder && changed > 0 ? indicatorId : undefined}
             />
@@ -131,13 +136,15 @@
                     <div class="flex flex-wrap gap-2">
                         {#if entriesOn > 0 && turnOffAll}
                             <button
-                                class="rounded-md bg-darkbutton text-textcolor px-2 py-1 hover:bg-selected"
+                                class="rounded-md bg-darkbutton text-textcolor px-2 py-1 hover:bg-selected disabled:opacity-50 disabled:cursor-not-allowed"
+                                disabled={locked}
                                 onclick={turnOffAll}>{strings.turnOffAll}</button
                             >
                         {/if}
                         {#if changed > 0 && releaseAll}
                             <button
-                                class="rounded-md bg-darkbutton text-textcolor px-2 py-1 hover:bg-selected"
+                                class="rounded-md bg-darkbutton text-textcolor px-2 py-1 hover:bg-selected disabled:opacity-50 disabled:cursor-not-allowed"
+                                disabled={locked}
                                 onclick={releaseAll}>{strings.releaseAll}</button
                             >
                         {/if}
@@ -150,6 +157,7 @@
             {#each override ? [override] : [] as target (target)}
                 <div class="mt-2">
                     <LoreEntryFields
+                        disabled={locked}
                         bind:value={() => liveOverride(target).entry, (next) => replaceEntry(target, next)}
                     />
                 </div>
