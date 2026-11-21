@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { MCPPrompt, MCPTool } from "../mcplib";
 
 // The tab's remote MCP client (`src/ts/process/mcp/mcplib.ts` `MCPClient`) over a fake
 // `fetchNative` (no network). Its event stream framed by `shared/mcp/sse.ts` (CRLF, CR, and
@@ -464,6 +465,117 @@ describe("MCPClient tool listing", () => {
         } finally {
             client.destroy();
         }
+    });
+});
+
+describe.each(["tools", "prompts"] as const)("MCPClient %s pagination limits", (kind) => {
+    type Page = { entries: (MCPTool | MCPPrompt)[]; nextCursor?: string };
+    const listName = kind === "tools" ? "tool list" : "prompt list";
+    const entry =
+        kind === "tools"
+            ? { name: "entry", description: "", inputSchema: { type: "object" } }
+            : { name: "entry", description: "", arguments: [{ name: "input" }] };
+
+    function servePages(pages: Page[]) {
+        const cursors: (string | undefined)[] = [];
+        server.handle = (call) => {
+            if (call.body.id === undefined) return reply({ status: 202 });
+            if (call.body.method === "initialize") {
+                return rpcJson(call, { ...INFO, capabilities: { [kind]: {} } });
+            }
+            expect(call.body.method).toBe(`${kind}/list`);
+            const page = pages[cursors.length];
+            cursors.push(call.body.params?.cursor);
+            if (!page) throw new Error("Unexpected extra listing page");
+            return rpcJson(call, { [kind]: page.entries, nextCursor: page.nextCursor });
+        };
+        return cursors;
+    }
+
+    async function expectFailureThenRecovery(
+        pages: Page[],
+        error: string,
+        expectedCursors: (string | undefined)[],
+        recoveryPages: Page[],
+    ) {
+        const client = await newClient();
+        const list = () => (kind === "tools" ? client.getToolList() : client.getPromptList());
+        try {
+            const cursors = servePages(pages);
+            await expect(list().then((entries) => entries.length)).rejects.toThrow(
+                `The MCP server's ${listName} ${error}`,
+            );
+            expect(cursors).toEqual(expectedCursors);
+
+            const retryCursors = servePages(recoveryPages);
+            const expectedRetry = [undefined, ...recoveryPages.slice(0, -1).map((page) => page.nextCursor)];
+            const complete = recoveryPages.flatMap((page) => page.entries);
+            expect(await list()).toEqual(complete);
+            expect(retryCursors).toEqual(expectedRetry);
+            expect(await list()).toEqual(complete);
+            expect(retryCursors).toEqual(expectedRetry);
+        } finally {
+            client.destroy();
+        }
+    }
+
+    it("rejects a repeated cursor and restarts discovery from the first page", async () => {
+        const first = { entries: [entry], nextCursor: "second" };
+        const second = { entries: [{ ...entry, name: "second-entry" }] };
+        await expectFailureThenRecovery(
+            [first, { ...second, nextCursor: "second" }, second],
+            "repeats a cursor",
+            [undefined, "second"],
+            [first, second],
+        );
+    });
+
+    it("accepts 32 pages and rejects a cursor for page 33", async () => {
+        const firstPages = Array.from({ length: 31 }, (_, index) => ({
+            entries: [{ ...entry, name: `entry-${index + 1}` }],
+            nextCursor: `page-${index + 2}`,
+        }));
+        const last = { entries: [{ ...entry, name: "entry-32" }] };
+        const extra = { entries: [{ ...entry, name: "entry-33" }] };
+        await expectFailureThenRecovery(
+            [...firstPages, { ...last, nextCursor: "page-33" }, extra],
+            "has too many pages",
+            [undefined, ...firstPages.map((page) => page.nextCursor)],
+            [...firstPages, last],
+        );
+    });
+
+    it("accepts 512 entries and rejects a 513th entry across pages", async () => {
+        const entries = Array.from({ length: 512 }, (_, index) => ({ ...entry, name: `entry-${index}` }));
+        const first = { entries: entries.slice(0, 256), nextCursor: "second" };
+        const second = { entries: entries.slice(256) };
+        await expectFailureThenRecovery(
+            [first, { entries: [...second.entries, { ...entry, name: "extra" }] }],
+            "is too large",
+            [undefined, "second"],
+            [first, second],
+        );
+    });
+
+    it("accepts 1 MiB of UTF-8 entries and rejects one extra byte across pages", async () => {
+        // Each entry is 8 KiB in UTF-8. The fake transport reuses the description across all entries.
+        const asciiEntry = { ...entry, name: "entry-000" };
+        const padding = 8 * 1024 - JSON.stringify(asciiEntry).length;
+        const description = "한".repeat(Math.floor(padding / 3)) + "x".repeat(padding % 3);
+        const entries = Array.from({ length: 128 }, (_, index) => ({
+            ...entry,
+            name: `entry-${String(index).padStart(3, "0")}`,
+            description,
+        }));
+        const first = { entries: entries.slice(0, 64), nextCursor: "second" };
+        const second = { entries: entries.slice(64) };
+        const extraByte = { ...entries[127], description: description + "x" };
+        await expectFailureThenRecovery(
+            [first, { entries: [...second.entries.slice(0, -1), extraByte] }],
+            "is too large",
+            [undefined, "second"],
+            [first, second],
+        );
     });
 });
 

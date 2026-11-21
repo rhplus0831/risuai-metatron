@@ -17,6 +17,11 @@ import type { PluginCallContext } from "../../plugins/apiV3/pluginContext";
 const MCP_REQUEST_TIMEOUT_MS = 5 * 60_000;
 const MAX_PENDING_PING_REPLIES = 4;
 
+// Mirrors MAX_TOOL_LIST_PAGES, MAX_TOOL_LIST_TOOLS and MAX_TOOL_LIST_BYTES in server/src/mcp/client.ts.
+const MAX_LIST_PAGES = 32;
+const MAX_LIST_ENTRIES = 512;
+const MAX_LIST_BYTES = 1024 * 1024;
+
 /** A caller may leave while the client's OAuth prompt is still open. */
 function waitWithSignal<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
     if (!signal) return work;
@@ -1014,30 +1019,7 @@ export class MCPClient {
         if (this.cached.prompts.length > 0) {
             return this.cached.prompts;
         }
-        let prompts: MCPPrompt[] = [];
-        let cursor: string | null = null;
-        while (true) {
-            const args = {
-                cursor: cursor,
-            } as Record<string, any>;
-
-            if (!args.cursor) {
-                delete args.cursor;
-            }
-
-            const response = await this.request("prompts/list", args);
-            if (response.rpc.result?.prompts) {
-                prompts.push(...response.rpc.result.prompts);
-                if (response.rpc.result.nextCursor) {
-                    cursor = response.rpc.result.nextCursor;
-                } else {
-                    break;
-                }
-            } else {
-                break;
-            }
-        }
-
+        const prompts = await this.listEntries<MCPPrompt>("prompts");
         this.assertOpen();
         this.cached.prompts = prompts;
 
@@ -1054,40 +1036,55 @@ export class MCPClient {
         if (this.cached.tools.length > 0) {
             return this.cached.tools;
         }
-        let tools: MCPTool[] = [];
-        let cursor: string | null = null;
-        while (true) {
-            const args = {
-                cursor: cursor,
-            } as Record<string, any>;
-
-            if (!args.cursor) {
-                delete args.cursor;
-            }
-
-            const response = await this.request("tools/list", args, { signal });
-            console.log("MCP Tools List Response", response);
-            const listed = response.rpc?.result?.tools;
-            if (
-                response.rpc?.error ||
-                response.http.status < 200 ||
-                response.http.status > 299 ||
-                !Array.isArray(listed)
-            ) {
-                throw new Error("Failed to list MCP tools");
-            }
-            tools.push(...listed);
-            if (response.rpc.result.nextCursor) {
-                cursor = response.rpc.result.nextCursor;
-            } else {
-                break;
-            }
-        }
-
+        const tools = await this.listEntries<MCPTool>("tools", signal);
+        signal?.throwIfAborted();
         this.assertOpen();
         this.cached.tools = tools;
 
         return tools;
+    }
+
+    private async listEntries<T>(kind: "prompts" | "tools", signal?: AbortSignal): Promise<T[]> {
+        const entries: T[] = [];
+        const seen = new Set<string>();
+        const encoder = new TextEncoder();
+        const listName = kind === "tools" ? "tool list" : "prompt list";
+        let bytes = 0;
+        let cursor: string | undefined;
+
+        for (let page = 0; page < MAX_LIST_PAGES; page++) {
+            const response = await this.request(`${kind}/list`, cursor ? { cursor } : {}, { signal });
+            const listed = response.rpc?.result?.[kind];
+            if (
+                kind === "tools" &&
+                (response.rpc?.error ||
+                    response.http.status < 200 ||
+                    response.http.status > 299 ||
+                    !Array.isArray(listed))
+            ) {
+                throw new Error("Failed to list MCP tools");
+            }
+            if (!listed) {
+                return entries;
+            }
+            for (const entry of listed) {
+                bytes += encoder.encode(JSON.stringify(entry)).byteLength;
+                if (entries.length >= MAX_LIST_ENTRIES || bytes > MAX_LIST_BYTES) {
+                    throw new Error(`The MCP server's ${listName} is too large`);
+                }
+                entries.push(entry);
+            }
+            const next: unknown = response.rpc.result.nextCursor;
+            if (typeof next !== "string" || next === "") {
+                return entries;
+            }
+            if (seen.has(next)) {
+                throw new Error(`The MCP server's ${listName} repeats a cursor`);
+            }
+            seen.add(next);
+            cursor = next;
+        }
+        throw new Error(`The MCP server's ${listName} has too many pages`);
     }
 
     async callTool(

@@ -48,7 +48,6 @@ Sources the entries name (drop a line when no entry names it any more):
 - [Build and CI](#build-and-ci): 1
 - [Chat screen](#chat-screen): 6
 - [Headless host](#headless-host): 1
-- [LLM requests](#llm-requests): 1
 - [Memory](#memory): 3
 - [Modules and personas](#modules-and-personas): 1
 - [Network jobs](#network-jobs): 1
@@ -207,19 +206,6 @@ Post-verification of 2026-11-18 (HH-5), read by one reader. The `pageerror` hand
 **Why it matters:** on a dev stack, whose modules carry a version query, an uncaught error's stack names files without positions.
 
 **Suggested handling:** redact each frame's URL by itself, as the console line does.
-
-## LLM requests
-
-### Tab-side MCP tool discovery can keep fetching pages
-
-Structure audit of 2026-11-18, read and not run. The tab's `MCPClient.getToolList` appends successive pages while a
-remote server supplies a cursor, with no check for a repeated cursor and no limit on pages, tools, or bytes. The
-server's client already enforces those bounds.
-[Tab discovery](../../src/ts/process/mcp/mcplib.ts#L1047) · [Server discovery](../../server/src/mcp/client.ts#L874)
-
-**Why it matters:** a malfunctioning service keeps discovery pending and growing until it is cancelled.
-
-**Suggested handling:** give the tab's discovery the server client's bounds.
 
 ## Memory
 
