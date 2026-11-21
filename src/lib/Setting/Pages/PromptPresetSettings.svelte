@@ -143,7 +143,7 @@
     <!-- Data-driven basic parameters -->
     <SettingRenderer items={allBasicParameterItems} {modelInfo} {subModelInfo} />
     {#if modelInfo.id === "textgen_webui" || modelInfo.id === "mancer" || modelInfo.id.startsWith("local_") || modelInfo.id.startsWith("hf:::")}
-        <span class="text-textcolor">Repetition Penalty</span>
+        <span class="text-textcolor first-handwritten-parameter">Repetition Penalty</span>
         <SliderInput
             min={1}
             max={1.5}
@@ -334,7 +334,7 @@
             bind:value={editedPreset.NAISettings.cfg_scale}
         />
     {:else if modelInfo.format === LLMFormat.NovelList}
-        <span class="text-textcolor">Top P</span>
+        <span class="text-textcolor first-handwritten-parameter">Top P</span>
         <SliderInput min={0} max={2} step={0.01} marginBottom fixed={2} bind:value={editedPreset.ainconfig.top_p} />
         <span class="text-textcolor">Reputation Penalty</span>
         <SliderInput min={0} max={2} step={0.01} marginBottom fixed={2} bind:value={editedPreset.ainconfig.rep_pen} />
@@ -575,3 +575,10 @@
         <Button onclick={goPromptTemplate} size="sm">{language.promptTemplate}</Button>
     </div>
 {/if}
+
+<style>
+    /* A preceding field already supplies this gap through SettingRenderer. */
+    :global([data-spacing-kind="row"]) + .first-handwritten-parameter {
+        margin-top: 1rem;
+    }
+</style>

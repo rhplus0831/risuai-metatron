@@ -51,7 +51,7 @@ Sources the entries name (drop a line when no entry names it any more):
 - [Network jobs](#network-jobs): 1
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 1
-- [Settings](#settings): 2
+- [Settings](#settings): 1
 - [Translation](#translation): 1
 
 ## Backup and sync
@@ -290,23 +290,6 @@ letters first, since their times grow faster than the text.
 **Decision:** owner, 2026-11-21: not fixed in a found-issues round; the worker thread design gets its own plan.
 
 ## Settings
-
-### On Prompt preset's Parameters tab the last check row touches the handwritten label after it
-
-Seen on 2026-11-20 in the captures of slice 2 of the Settings Item Spacing plan (not kept), and read against the code
-after the plan landed. With `maxContextOverride` off, the last declarative item of `allBasicParameterItems` is the
-`params.maxContextOverride` check row, which has no bottom margin. With the main model `mancer`, `textgen_webui`,
-`local_*`, or `hf:::` the handwritten "Repetition Penalty" label follows it
-(`src/lib/Setting/Pages/PromptPresetSettings.svelte:146`), and with a NovelList-format model the "Top P" label (`:337`);
-neither has a top margin, so the row and the label touch. The spacing rule in `SettingRenderer.svelte` sets nothing
-on a handwritten element.
-
-**Why it matters:** a check that touches the next label reads as one control; everywhere else on the page a field
-stands 1rem from a row.
-
-**Suggested handling:** an unconditional `mt-*` on the label would widen the other case (override on: the size field
-before it already ends with 1rem). Either make the label's margin depend on what precedes it, or move the handwritten
-parameters into the declarative data so the rule spaces them.
 
 ### An emptied plugin wait time limit box stays blank while the server stores the default
 

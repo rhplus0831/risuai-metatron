@@ -470,6 +470,45 @@ test("settings rows and fields follow their neighbors' spacing", async ({ page, 
                 "params.presencePenalty",
             ],
         });
+        await test.step("Prompt preset / Parameters / handwritten labels have a 1rem gap", async () => {
+            const override = content.locator('[data-setting-id="params.maxContextOverride"]');
+            const size = content.locator('[data-setting-id="params.maxContextOverrideSize"]');
+            for (const { modelId, label } of [
+                { modelId: "mancer", label: "Repetition Penalty" },
+                { modelId: "novellist", label: "Top P" },
+            ]) {
+                await page.evaluate(async (id) => {
+                    const { editedMainProfile, editedPreset } = await import("/src/ts/storage/settingsViews.svelte.ts");
+                    editedMainProfile.modelId = id;
+                    editedPreset.maxContextOverride = false;
+                }, modelId);
+                const handwritten = content.getByText(label, { exact: true });
+                await expect(handwritten).toBeVisible();
+                const expectGap = async (settingId: string) => {
+                    const { previousId, gap, rem } = await handwritten.evaluate((element) => {
+                        const previous = element.previousElementSibling!;
+                        const bottom = Math.max(
+                            ...Array.from(previous.children)
+                                .filter((child) => child.getClientRects().length > 0)
+                                .map((child) => child.getBoundingClientRect().bottom),
+                        );
+                        return {
+                            previousId: previous.getAttribute("data-setting-id"),
+                            gap: element.getBoundingClientRect().top - bottom,
+                            rem: parseFloat(getComputedStyle(document.documentElement).fontSize),
+                        };
+                    });
+                    expect(previousId, `${modelId} control before ${label}`).toBe(settingId);
+                    expect(gap, `${modelId} ${settingId} → ${label} (px)`).toBeCloseTo(rem, 0);
+                };
+
+                await expect(size).toHaveCount(0);
+                await expectGap("params.maxContextOverride");
+                await override.locator("label").click();
+                await expect(size).toBeAttached();
+                await expectGap("params.maxContextOverrideSize");
+            }
+        });
         await visit({
             name: "Prompt preset / Others",
             menu: 16,
