@@ -9,8 +9,7 @@ import { loadWebTokenizer } from "./webTokenizers.ts";
  * families read through server/src/prompt/tokenizers/payloads.ts, while tiktoken uses its package data.
  *
  * Disposal is terminal and idempotent: pending loads settle before encoders are freed, and resumed acquisitions
- * refuse once disposal begins. Failed loads do not fail disposal; encoder cleanup errors are aggregated. The shared
- * instance created by server/src/app.ts serves request counts and token routes until server shutdown.
+ * refuse once disposal begins. Failed loads do not fail disposal; encoder cleanup errors are aggregated.
  */
 
 type Encoder = { encode(text: string): ArrayLike<number>; dispose(): void };
@@ -69,16 +68,19 @@ export type { TokenizerFamily };
 export const TOKENIZER_FAMILIES = Object.keys(LOADERS) as TokenizerFamily[];
 
 /** Lazy family loading, encoding/counting, and terminal asynchronous disposal. */
-export type Tokenizers = ReturnType<typeof createTokenizers>;
+export type Tokenizers = {
+    load(family: TokenizerFamily): Promise<void>;
+    encode(family: TokenizerFamily, text: string): Promise<ArrayLike<number>>;
+    count(family: TokenizerFamily, text: string): Promise<number>;
+    dispose(): Promise<void>;
+};
 
 /**
- * The server's tokenizers. Each family loads on first use and stays loaded: counts are
- * deterministic, so one instance per family counts as the client's single replaced instance does.
- * A failed load is not cached. `dispose` is terminal: it refuses every later call, waits for the
- * loads already started, and frees each loaded family once. The owner (the server context) creates
- * one set and disposes it at shutdown.
+ * In-thread tokenizer set used by the worker, standalone tools, and tests. Each family loads on
+ * first use. A failed load can be retried. Disposal refuses later calls, waits for loads already
+ * started, and frees each loaded family once.
  */
-export function createTokenizers(options: { rootDir: string }) {
+export function createTokenizers(options: { rootDir: string }): Tokenizers {
     const loaded = new Map<TokenizerFamily, Promise<Encoder>>();
     let disposal: Promise<void> | null = null;
 

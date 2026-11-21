@@ -890,6 +890,8 @@ describe("a send", () => {
             try {
                 controller.enqueue({ primary: "hello world", alternative: "This is another sample." });
                 await chunks[0].promise;
+                // A count crosses to the tokenizer worker, which answers outside the fake timers' microtask flush.
+                await count.mock.results[0].value;
                 await vi.advanceTimersByTimeAsync(0);
                 expect(server.context.generationJobs.generationSnapshot()[0].output).toEqual({
                     tokens: 2,
@@ -899,6 +901,7 @@ describe("a send", () => {
                 await vi.advanceTimersByTimeAsync(500);
                 controller.enqueue({ primary: "hello world. hello world", alternative: "Another sample grows too." });
                 await chunks[1].promise;
+                await count.mock.results[1].value;
                 await vi.advanceTimersByTimeAsync(0);
                 expect(count.mock.calls.map(([text]) => text)).toEqual(["hello world", ". hello world"]);
                 expect(count.mock.calls.map(([, scope]) => scope)).toEqual([
@@ -2996,8 +2999,14 @@ describe("Half Streaming", () => {
             const initial = await readChat(chaId);
             expect(initial.data.message.at(-1).data).toBe("");
             const since = Date.now();
+            const count = vi.spyOn(runnerTokens, "countLocal");
+            onTestFinished(() => count.mockRestore());
             h.controller.enqueue({ primary: "hello world" });
             await vi.advanceTimersByTimeAsync(3000);
+            // A count crosses to the tokenizer worker, which answers outside the fake timers' microtask flush.
+            expect(count).toHaveBeenCalled();
+            await Promise.all(count.mock.results.map((result) => result.value));
+            await vi.advanceTimersByTimeAsync(0);
             const output = server.context.generationJobs.generationSnapshot()[0].output;
             expect(output).toMatchObject({ since });
             expect(output!.tokens).toBeGreaterThan(0);

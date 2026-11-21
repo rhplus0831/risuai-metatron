@@ -61,7 +61,7 @@ import type { HypaV3SeparatorLimits } from "./prompt/memory/host.ts";
 import { createMemoryTasks, type MemoryTaskLimits, type MemoryTasks } from "./prompt/memory/memoryTasks.ts";
 import { reconcileMessageChanges } from "./prompt/memory/structured/reconcile.ts";
 import { createMcpRegistry } from "./mcp/registry.ts";
-import { createTokenizers } from "./prompt/tokenizers/index.ts";
+import { createWorkerTokenizers } from "./prompt/tokenizers/workerHost.ts";
 import { createTokenCounter } from "./prompt/tokens.ts";
 import { createTransformers } from "./prompt/transformers.ts";
 import { registerAssetLifecycleRoutes } from "./routes/assetLifecycle.ts";
@@ -459,8 +459,8 @@ export function createServerContext(options: {
         ownerAbsentMs: options.generationOwnerAbsentMs,
         ownerSilentMs: options.generationOwnerSilentMs,
     });
-    // The request layer and token routes share one counter and tokenizers, loaded on first use.
-    const tokenizers = createTokenizers({ rootDir: options.rootDir });
+    // The request layer and token routes share one counter. Local tokenizers load and run in a worker on first use.
+    const tokenizers = createWorkerTokenizers({ rootDir: options.rootDir });
     const tokenCounter = createTokenCounter({ tokenizers });
     // Memory on the server: the embedding vectors are a cache in a file of their own (in no snapshot
     // or archive; `save/data/`, `save/models/`, and `save/cache/` are not storage namespaces), and the local models

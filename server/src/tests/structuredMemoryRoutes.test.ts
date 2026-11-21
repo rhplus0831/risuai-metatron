@@ -5,7 +5,7 @@ import { serve } from "@hono/node-server";
 import { WebSocket } from "ws";
 import { LLMFormat } from "../../../shared/llm.ts";
 import type { EventFeedFrame } from "../../../shared/events.ts";
-import fs from "node:fs/promises";
+import { Worker } from "node:worker_threads";
 import { DatabaseSync, StatementSync } from "node:sqlite";
 import { ROUTE_TEMPLATES } from "../../../shared/diagnostics.ts";
 import {
@@ -1879,13 +1879,16 @@ it("refuses edits and inheritance while the real memory task is queued or runnin
     const before = await answer(await s.request(`${base}/records/pages/p`));
     const entered = deferred();
     const release = deferred();
-    const access = fs.access;
-    const spy = vi.spyOn(fs, "access").mockImplementation(async (...args) => {
-        if (String(args[0]).endsWith("/claude/claude.json")) {
+    // The task's first count of its prompt goes to the tokenizer worker: hold that call until the test releases it.
+    const post = Worker.prototype.postMessage;
+    const spy = vi.spyOn(Worker.prototype, "postMessage").mockImplementation(function (this: Worker, ...args) {
+        const [message] = args as [{ family?: string } | undefined];
+        if (message?.family === "claude") {
             entered.resolve();
-            await release.promise;
+            void release.promise.then(() => post.apply(this, args));
+            return;
         }
-        return access(...args);
+        return post.apply(this, args);
     });
     const tasks = s.context.memoryTasks!;
     const lease = await tasks.acquireSummaryWriter(input.chatRef, "hold-queue");
