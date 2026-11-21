@@ -6,7 +6,6 @@ import type { StoredTranslationEdit } from "../translator/storedTranslation.svel
 type EditorKind = "message" | "translation" | `cache:${string}` | `partial:${number}`;
 interface PartialSelection {
     target: string | null;
-    reply: string | null;
     text: string;
     unique: boolean;
     before: string;
@@ -20,19 +19,18 @@ export interface MessageEditorDraft {
     saving?: boolean;
 }
 
-const drafts = new Map<
-    string,
-    {
-        ref: ChatRef;
-        messageId: string | undefined;
-        kind: EditorKind;
-        owner: string;
-        draft: MessageEditorDraft;
-        selection?: PartialSelection;
-        retention?: { holders: number; lastWrite: number };
-        dispose: () => void;
-    }
->();
+interface DraftEntry {
+    ref: ChatRef;
+    messageId: string | undefined;
+    kind: EditorKind;
+    owner: string;
+    draft: MessageEditorDraft;
+    reply?: string | null;
+    selection?: PartialSelection;
+    retention?: { holders: number; lastWrite: number };
+    dispose: () => void;
+}
+const drafts = new Map<string, DraftEntry>();
 const keyOf = (ref: ChatRef, messageId: string | undefined, kind: EditorKind) =>
     JSON.stringify([ref.chaId, ref.chatId, messageId, kind]);
 
@@ -76,11 +74,12 @@ export function openMessageEditorDraft(
                 (messageId && findChat(ref) && !heldMessageById(ref, messageId)) ||
                 owner !== chatOwnerToken(ref.chaId)
             ) {
-                untrack(() => closeMessageEditorDraft(ref, messageId, kind));
+                untrack(() => closeMessageEditorDraft(ref, messageId, entry.kind, draft));
             }
         });
     });
-    drafts.set(key, { ref: { ...ref }, messageId, kind, owner, draft, dispose });
+    const entry: DraftEntry = { ref: { ...ref }, messageId, kind, owner, draft, dispose };
+    drafts.set(key, entry);
     return draft;
 }
 
@@ -102,14 +101,40 @@ let partialSequence = 0;
 let writeSequence = 0;
 const MAX_INACTIVE_DRAFTS = 8;
 
-function trimInactiveDrafts(ref: ChatRef, messageId: string | undefined) {
-    const inactive = [...drafts.values()].filter(
-        (entry) =>
-            entry.retention?.holders === 0 &&
+function retainedDrafts(ref: ChatRef, messageId: string | undefined) {
+    const owner = chatOwnerToken(ref.chaId);
+    const entries: DraftEntry[] = [];
+    for (const entry of drafts.values()) {
+        if (
+            entry.retention &&
+            entry.owner === owner &&
             entry.messageId === messageId &&
             entry.ref.chaId === ref.chaId &&
-            entry.ref.chatId === ref.chatId,
-    );
+            entry.ref.chatId === ref.chatId
+        )
+            entries.push(entry);
+    }
+    return entries;
+}
+
+/** A slot can appear or disappear for a generation. Distinct explicit slots make that move ambiguous. */
+function alternateReplyKey(entries: DraftEntry[], reply: string | null): string | undefined {
+    if (!reply) return;
+    const [candidate, generation]: [string | null, string | null] = JSON.parse(reply);
+    if (!generation) return;
+    let explicitReply = candidate === null ? undefined : reply;
+    for (const entry of entries) {
+        if (!entry.reply || entry.reply === explicitReply) continue;
+        const [otherCandidate, otherGeneration]: [string | null, string | null] = JSON.parse(entry.reply);
+        if (otherCandidate === null || otherGeneration !== generation) continue;
+        if (explicitReply !== undefined) return;
+        explicitReply = entry.reply;
+    }
+    return candidate === null ? explicitReply : JSON.stringify([null, generation]);
+}
+
+function trimInactiveDrafts(ref: ChatRef, messageId: string | undefined) {
+    const inactive = retainedDrafts(ref, messageId).filter((entry) => entry.retention!.holders === 0);
     if (inactive.length <= MAX_INACTIVE_DRAFTS) return;
     inactive.sort((a, b) => a.retention!.lastWrite - b.retention!.lastWrite);
     for (const entry of inactive.slice(0, inactive.length - MAX_INACTIVE_DRAFTS)) {
@@ -122,12 +147,14 @@ function holdEditorDraft(
     messageId: string | undefined,
     kind: EditorKind,
     initial: Pick<MessageEditorDraft, "base" | "text">,
+    reply: string | null,
     selection?: PartialSelection,
 ) {
     const draft = openMessageEditorDraft(ref, messageId, kind, initial);
     const entry = drafts.get(keyOf(ref, messageId, kind))!;
     const retention = (entry.retention ??= { holders: 0, lastWrite: ++writeSequence });
     retention.holders++;
+    entry.reply = reply;
     // An untouched reopen keeps matching against the source where the user last typed.
     if (entry.selection) draft.base = entry.selection.text;
     entry.selection ??= selection;
@@ -145,9 +172,12 @@ function holdEditorDraft(
             held = false;
             if (--retention.holders === 0 && draft.open) trimInactiveDrafts(ref, messageId);
         },
-        close: () => closeMessageEditorDraft(ref, messageId, kind, draft),
+        close: () => closeMessageEditorDraft(ref, messageId, entry.kind, draft),
     };
 }
+
+const cacheKind = (key: string, reply: string | null): EditorKind =>
+    `cache:${reply === null ? key : JSON.stringify([key, reply])}`;
 
 export function openCachedTranslationDraft(
     ref: ChatRef,
@@ -156,8 +186,39 @@ export function openCachedTranslationDraft(
     reply: string | null,
     cached: string | null,
 ) {
-    const draftKey = reply === null ? key : JSON.stringify([key, reply]);
-    return holdEditorDraft(ref, messageId, `cache:${draftKey}`, { text: cached ?? "", base: JSON.stringify(cached) });
+    const kind = cacheKind(key, reply);
+    if (reply && !findMessageEditorDraft(ref, messageId, kind)) {
+        const entries = retainedDrafts(ref, messageId);
+        const alternate = alternateReplyKey(entries, reply);
+        if (alternate !== undefined) {
+            const oldKind = cacheKind(key, alternate);
+            const entry = entries.find((entry) => entry.kind === oldKind);
+            if (entry) {
+                drafts.delete(keyOf(ref, messageId, oldKind));
+                entry.kind = kind;
+                drafts.set(keyOf(ref, messageId, kind), entry);
+            }
+        }
+    }
+    return holdEditorDraft(ref, messageId, kind, { text: cached ?? "", base: JSON.stringify(cached) }, reply);
+}
+
+function partialDraftKind(entries: DraftEntry[], reply: string | null, selection: PartialSelection) {
+    let match: EditorKind | null | undefined;
+    for (const entry of entries) {
+        const old = entry.selection;
+        if (!old || entry.reply !== reply || old.target !== selection.target) continue;
+        // Both sides identify the same range even if another writer replaced the paragraph itself.
+        if (old.before === selection.before && old.after === selection.after) {
+            match = entry.kind;
+            break;
+        }
+        if (old.text === selection.text && old.unique && selection.unique) {
+            // The range moved. If several drafts fit the new location, keep them until one can be identified.
+            match = match === undefined ? entry.kind : null;
+        }
+    }
+    return match;
 }
 
 export function openPartialEditorDraft(
@@ -170,36 +231,20 @@ export function openPartialEditorDraft(
     const text = source.slice(range.start, range.end);
     const selection = {
         target,
-        reply: messageEditorReplyKey(ref, messageId),
         text,
         unique: source.indexOf(text) === source.lastIndexOf(text),
         before: textHash(source.slice(0, range.start)),
         after: textHash(source.slice(range.end)),
     };
-    let match: EditorKind | null | undefined;
-    for (const entry of drafts.values()) {
-        const old = entry.selection;
-        if (
-            entry.messageId !== messageId ||
-            entry.ref.chaId !== ref.chaId ||
-            entry.ref.chatId !== ref.chatId ||
-            !old ||
-            old.reply !== selection.reply ||
-            old.target !== target
-        )
-            continue;
-        // Both sides identify the same range even if another writer replaced the paragraph itself.
-        if (old.before === selection.before && old.after === selection.after) {
-            match = entry.kind;
-            break;
-        }
-        if (old.text === text && old.unique && selection.unique) {
-            // The range moved. If several drafts fit the new location, keep them until one can be identified.
-            match = match === undefined ? entry.kind : null;
-        }
+    const reply = messageEditorReplyKey(ref, messageId);
+    const entries = retainedDrafts(ref, messageId);
+    let match = partialDraftKind(entries, reply, selection);
+    if (match === undefined) {
+        const alternate = alternateReplyKey(entries, reply);
+        if (alternate !== undefined) match = partialDraftKind(entries, alternate, selection);
     }
     const kind = match ?? (`partial:${++partialSequence}` as const);
-    return holdEditorDraft(ref, messageId, kind, { base: text, text }, selection);
+    return holdEditorDraft(ref, messageId, kind, { base: text, text }, reply, selection);
 }
 
 onChatRemoved((removal) => {

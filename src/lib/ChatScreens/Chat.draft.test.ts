@@ -103,6 +103,7 @@ import {
     endServerJob,
     findChat,
     noteRemoteStreaming,
+    patchMessage,
     removeMessages,
     seedChats,
     selectChat,
@@ -110,6 +111,7 @@ import {
 } from "src/ts/storage/chatStore.svelte";
 import {
     findMessageEditorDraft,
+    messageEditorReplyKey,
     openCachedTranslationDraft,
     openPartialEditorDraft,
 } from "src/ts/storage/messageEditorDrafts.svelte";
@@ -457,10 +459,11 @@ describe("original message draft", () => {
 // turns the auto popup off. Timeout functions are faked before mounting; render completion is
 // signalled by the component, and the popup loop advances only under the test's control.
 describe("retaining cached and paragraph drafts", () => {
+    const paragraph = (target: string | null = null) =>
+        openPartialEditorDraft(ref, "a", target, "Original", { start: 0, end: "Original".length });
+
     it("evicts inactive drafts by last write and protects a paragraph until its final editor closes", () => {
         bootDraftChat();
-        const paragraph = (target: string | null) =>
-            openPartialEditorDraft(ref, "a", target, "Original", { start: 0, end: "Original".length });
         const first = paragraph(null);
         first.setText("Draft in the transcript");
         const second = paragraph(null);
@@ -499,6 +502,74 @@ describe("retaining cached and paragraph drafts", () => {
             "Draft 7",
             "Draft 8",
             "Draft 9",
+        ]);
+    });
+
+    it.each(["gains", "loses"])("recovers the same paragraph draft after the reply %s a candidate ID", (change) => {
+        bootDraftChat();
+        const generationInfo = { generationId: "first-generation" };
+        const withCandidate = () =>
+            patchMessage(ref, "a", {
+                generationInfo,
+                candidates: [
+                    { id: "first", data: "Original", generationInfo },
+                    { id: "second", data: "Another reply" },
+                ],
+                selected: 0,
+            });
+        const standalone = () => patchMessage(ref, "a", { generationInfo }, ["candidates", "selected"]);
+        const gainsId = change === "gains";
+        if (gainsId) standalone();
+        else withCandidate();
+        const original = paragraph();
+        original.setText("My paragraph draft");
+
+        if (gainsId) withCandidate();
+        else standalone();
+        const reopened = paragraph();
+        expect(reopened.draft.text).toBe("My paragraph draft");
+        expect(reopened.draft).toBe(original.draft);
+        original.close();
+        expect(reopened.draft.open).toBe(false);
+        expect(paragraph().draft.text).toBe("Original");
+    });
+
+    it("keeps exact drafts separate when several candidate IDs share a generation", () => {
+        bootDraftChat();
+        const generationInfo = { generationId: "shared-generation" };
+        const candidates = ["first", "second", "third"].map((id) => ({ id, data: "Original", generationInfo }));
+        const select = (selected: number) => patchMessage(ref, "a", { generationInfo, candidates, selected });
+        const cache = () =>
+            openCachedTranslationDraft(ref, "a", "same-key", messageEditorReplyKey(ref, "a"), "Cached reply");
+
+        select(0);
+        const first = cache();
+        first.setText("First candidate's translation draft");
+        first.release();
+        select(1);
+        const second = paragraph();
+        second.setText("Second candidate's paragraph draft");
+        second.release();
+
+        patchMessage(ref, "a", { generationInfo }, ["candidates", "selected"]);
+        const standaloneCache = cache();
+        const standaloneParagraph = paragraph();
+        expect([standaloneCache.draft.text, standaloneParagraph.draft.text]).toEqual(["Cached reply", "Original"]);
+        standaloneCache.setText("Standalone translation draft");
+        standaloneParagraph.setText("Standalone paragraph draft");
+        standaloneCache.release();
+        standaloneParagraph.release();
+
+        select(2);
+        expect([cache().draft.text, paragraph().draft.text]).toEqual(["Cached reply", "Original"]);
+        select(0);
+        expect(cache().draft.text).toBe("First candidate's translation draft");
+        select(1);
+        expect(paragraph().draft.text).toBe("Second candidate's paragraph draft");
+        patchMessage(ref, "a", { generationInfo }, ["candidates", "selected"]);
+        expect([cache().draft.text, paragraph().draft.text]).toEqual([
+            "Standalone translation draft",
+            "Standalone paragraph draft",
         ]);
     });
 });

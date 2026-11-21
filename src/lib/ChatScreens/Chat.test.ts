@@ -113,6 +113,7 @@ import {
     takeChatWork,
 } from "src/ts/storage/chatStore.svelte";
 import { setResourceEpoch } from "src/ts/storage/resourceClient";
+import { messageEditorReplyKey, openCachedTranslationDraft } from "src/ts/storage/messageEditorDrafts.svelte";
 import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabase } from "src/ts/storage/tests/installFlatDatabase";
@@ -1380,5 +1381,38 @@ describe("cached translation drafts", () => {
         write.resolve(undefined);
         await vi.advanceTimersByTimeAsync(0);
         expect(row.textarea()).toBeNull();
+    });
+
+    it.each(["gains", "loses"])("reopens the same cache draft after the reply %s a candidate ID", async (change) => {
+        const { ref } = boot(`cache-candidate-id-${change}`, { autoTranslate: true, target: "rendered" });
+        settings.ui.disableAutoPopupMessageEditor = true;
+        const generationInfo = { generationId: "reply-generation" };
+        const withCandidate = () =>
+            patchMessage(ref, "a", {
+                generationInfo,
+                candidates: [
+                    { id: "first", data: "A", generationInfo },
+                    { id: "second", data: "B" },
+                ],
+                selected: 0,
+            });
+        const standalone = () => patchMessage(ref, "a", { generationInfo }, ["candidates", "selected"]);
+        const gainsId = change === "gains";
+        if (gainsId) standalone();
+        else withCandidate();
+        const row = await renderTranslatedRow();
+        type(await openTranslation(row), "My translation draft");
+        const [key] = vi.mocked(readLLMCacheEntry).mock.lastCall!;
+        const hold = () => openCachedTranslationDraft(ref, "a", key, messageEditorReplyKey(ref, "a"), "Cached reply");
+        const original = hold();
+        original.release();
+
+        if (gainsId) withCandidate();
+        else standalone();
+        flushSync();
+        expect((await openTranslation(row)).value).toBe("My translation draft");
+        const reopened = hold();
+        expect(reopened.draft).toBe(original.draft);
+        reopened.release();
     });
 });
