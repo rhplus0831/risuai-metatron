@@ -114,6 +114,7 @@ One tab:
 - [ ] **Timeline Chapter Synopses (3)**: send in a chat while "Make synopses" is running: the send is refused with a clear message, and works again once the chapter job ends.
 - [ ] **Timeline Reading View (2, 3, 4)**: a real chat with dated events groups by day in the Timeline Read view and reads top to bottom as expected, and "Open in Manage" on an open event lands on the same event in Manage (2); changing "Events per Timeline group" in the memory settings and reopening the panel regroups a long day into the expected parts (3); typing a Korean query with an IME in the Read search does not submit while a syllable is still composing, on a desktop browser and on a phone keyboard (4).
 - [ ] **Settings Item Spacing**: with the legacy GUI on (`useLegacyGUI`), the Interaction, Advanced, and Model settings pages read evenly with their accordions open; a settings search jump to an item inside a collapsible section still scrolls to the item and highlights it.
+- [ ] **Tokenizer Worker**: the tokenizer playground encodes a short text with each tokenizer in its list.
 
 Two tabs, two browsers, or a dropped connection:
 
@@ -129,6 +130,7 @@ Two tabs, two browsers, or a dropped connection:
 - [ ] **Remote Host (post-audit fix)**: on a host tab with a dialog or a wait/progress overlay open, the second "Leave host mode" control shows at the top right above the overlay, covers none of the dialog's buttons, and one click leaves the mode with the overlay still shown.
 - [ ] **Module and Persona Folders (1, 2)**: a module folder folded and reloaded stays folded on that device and open on another (2); with two devices, moving a module into a folder on one while editing that module's lorebook on the other keeps both changes after both save, with no conflict notice (1).
 - [ ] **Response Checks (1)**: two devices that each set a different request kind's minimum on the Request Rules page while apart both keep their value after syncing.
+- [ ] **Tokenizer Worker**: start a very long count in the tokenizer playground and close the browser tab (a real disconnect: editing the text or leaving the page does not end the request). A second very long count from another tab then finishes in about the time of one such count, not two. A short count answers at once in either case.
 
 ## Real providers and external services
 
@@ -156,6 +158,7 @@ Two tabs, two browsers, or a dropped connection:
 - [ ] **Response Checks (1, 2)**: with a real model, a chat reply minimum above the length of a known short answer and a prompt that makes the model give it, on a plain send: the reply is regenerated when it arrives buffered or under Half Streaming, and fails with its text left in place when it is streamed to the screen. A provider can answer buffered with Response Streaming on (Claude with tools), so judge by whether text appeared while it was generated.
 - [ ] **Response Checks (2)**: under Half Streaming with a real model, the token estimate restarts on a regeneration, and Stop during a retry's read keeps what had arrived.
 - [ ] **Response Checks (1)**: with a real model, a translation minimum set too high fails a translation with a message that names the minimum; an emotion minimum set too high makes the emotion step report the failure while the reply stands.
+- [ ] **Tokenizer Worker**: on the real instance, with a model whose family is not tiktoken (a Claude, Gemma, or NovelAI model): open the editor of a character whose description is very long while a reply streams in another chat. The stream keeps moving and the count appears when it is ready.
 
 ## The server process, Docker, and a production deployment
 
@@ -165,6 +168,7 @@ Two tabs, two browsers, or a dropped connection:
 - [ ] **Static Audit Fixes (SA12)**: durable writes on Windows, macOS, and network mounts, and under real power loss.
 - [ ] **Boot Resource Cache**: the reporting user comparing DevTools Timing on their own server before and after.
 - [ ] **Headless Host**: the server restarted under a running `pnpm host:headless` (the host is listed again without a restart of the script); a server with HTTPS files (the script connects, and a second start reuses the profile); the `PORT`/`RISU_HOST` forms of the owner's own setup (a service unit, a Tailscale-bound server), where the refusal message must be clear when the server is not on loopback. On Windows: a start with `Port` or `Risu_Chrome` spelled in mixed case finds the server's port and the Chrome binary (checked on Linux with the Windows lookup only). With HTTPS files whose certificate does not verify: the page loads, and its public stylesheets still load (only the local listener's key is excepted).
+- [ ] **Tokenizer Worker**: the Docker image: the first send after a start counts its prompt (the worker finds `server/assets/token/` under the image's root), and the container stops within its grace period while a count is running ([found issues](found-issues.md#server-generation) records why a count queued behind a long encode can hold shutdown).
 
 ## Scripts, specs, and measurements nobody ran
 
