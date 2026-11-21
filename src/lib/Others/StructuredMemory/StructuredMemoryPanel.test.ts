@@ -1669,24 +1669,24 @@ it("shows the saved scene charge and warns only above the required-page limit", 
     expect(target.textContent).toContain("Saved scene token count unavailable.");
 });
 
-it("shows the long scene field badge only above 800 characters while editing", async () => {
+it("shows the long scene field badge only above 600 characters while editing", async () => {
     const state = serveMemory();
-    state.page.sections[0] = { ...state.page.sections[0], heading: "state", body: "S".repeat(800), locked: false };
+    state.page.sections[0] = { ...state.page.sections[0], heading: "state", body: "S".repeat(600), locked: false };
     await open();
     await chooseTab("pages");
     click('[data-memory-page="scene"]');
     await settle();
     await choosePageView("manage");
     const badge =
-        "Over 800 characters: prompts get longer. The memory writer may rewrite this field up to this length.";
+        "Over 600 characters: prompts get longer. The memory writer may rewrite this field up to this length.";
     expect(target.textContent).not.toContain(badge);
     press("[data-memory-section-edit]");
-    typeSection("S".repeat(801));
+    typeSection("S".repeat(601));
     expect(target.textContent).toContain(badge);
     expect(query("[data-memory-section-count]")?.textContent?.trim()).toBe(
-        language.structuredMemory.pages.characters(801, 4000),
+        language.structuredMemory.pages.characters(601, 4000),
     );
-    typeSection("S".repeat(800));
+    typeSection("S".repeat(600));
     expect(target.textContent).not.toContain(badge);
 });
 

@@ -49,7 +49,7 @@ Sources the entries name (drop a line when no entry names it any more):
 - [Chat screen](#chat-screen): 6
 - [Headless host](#headless-host): 1
 - [LLM requests](#llm-requests): 2
-- [Memory](#memory): 4
+- [Memory](#memory): 3
 - [Modules and personas](#modules-and-personas): 1
 - [Network jobs](#network-jobs): 1
 - [Plugins](#plugins): 1
@@ -246,21 +246,6 @@ server's client already enforces those bounds.
 **Suggested handling:** give the tab's discovery the server client's bounds.
 
 ## Memory
-
-### The memory writer's field limit lets three scene fields pass the required-page limit
-
-Derived on 2026-11-20 from the long-scene reproduction, not run. A send is refused once the scene's required page
-passes the required-page limit (1,500 tokens by default), which the reproduction measured at about 1,982 Korean
-characters in total, 661 per field. The memory writer's default limit for a new or short scene field is 800 characters
-(`shared/structuredMemory.ts`), so three Korean fields the writer filled near its limit come to about 2,400 characters
-and pass the limit without the user having edited anything. Whether the writer fills all three fields that far in
-practice was not looked at.
-
-**Why it matters:** every send in that chat fails until the user shortens the scene or raises the limit, and the
-editor's badge counts characters per field, not tokens.
-
-**Suggested handling:** the owner's separate decision (2026-11-20, kept out of the long-scene fix): give the writer a
-token-aware limit for the scene, or lower its character limit for scene fields.
 
 ### A Timeline reveal settles on held coverage, so a reread that retracts the event leaves Read without its row
 

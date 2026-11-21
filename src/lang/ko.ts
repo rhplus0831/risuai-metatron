@@ -3200,7 +3200,7 @@ export const languageKorean = {
             sceneOverCap:
                 "필수 문서의 토큰 한도를 초과했습니다. 장면 내용을 줄이거나 메모리 설정에서 한도를 높여 주세요.",
             sceneCountUnavailable: "저장된 장면의 토큰 수를 확인할 수 없습니다.",
-            sceneLongField: "800자 초과: 프롬프트가 길어집니다. 기록 모델은 이 길이까지 다시 쓸 수 있습니다.",
+            sceneLongField: "600자 초과: 프롬프트가 길어집니다. 기록 모델은 이 길이까지 다시 쓸 수 있습니다.",
             characters: (count: number, limit: number) => `${count} / ${limit}`,
             provenance: "관련 사건",
             sources: "근거 메시지",

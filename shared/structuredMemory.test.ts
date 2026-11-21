@@ -333,9 +333,9 @@ it("seals the memory revision so a whole-read baseline cannot be retagged", () =
     expect(sealedHypaV3DataIntact(stripped)).toBe(false);
 });
 
-it("keeps the 800-character scene minimum, longer stored lengths, and the 4000-character ceiling", () => {
+it("keeps the 600-character scene minimum, longer stored lengths, and the 4000-character ceiling", () => {
     expect(memorySectionOverBudget("scene", "state", "x".repeat(1520))).toBe(false);
-    expect([500, 800, 801, 1520, 4000, 4200].map(memorySceneFieldLimit)).toEqual([800, 800, 801, 1520, 4000, 4000]);
+    expect([500, 600, 601, 1520, 4000, 4200].map(memorySceneFieldLimit)).toEqual([600, 600, 601, 1520, 4000, 4000]);
     expect(memorySectionOverBudget("scene", "state", "x".repeat(4001))).toBe(true);
 });
 

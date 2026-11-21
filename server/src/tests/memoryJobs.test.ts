@@ -25,6 +25,7 @@ import { createResourceStore } from "../data/resourceStore.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { messageSourceHash } from "../data/memoryStore.ts";
 import type { Message } from "../../../shared/database.ts";
+import { parseAnalysis } from "../prompt/memory/structured/analysis.ts";
 import { readRecordSet, rebuildSeed } from "../prompt/memory/structured/rebuild.ts";
 import { newScenePage } from "../prompt/memory/structured/pages.ts";
 import { confirmedWindows, writerCadence, writerCeiling } from "../prompt/memory/structured/window.ts";
@@ -3859,6 +3860,76 @@ describe("structured memory job hand-offs", () => {
             } finally {
                 store.close();
             }
+        });
+
+        it("sends all three Korean scene fields at the writer limit within the default required-page cap", async () => {
+            const presetRecord = (await single("hypaV3Presets")).data;
+            const priorSettings = presetRecord.items.find(
+                ({ id }: { id: string }) => id === presetRecord.selectedId,
+            ).settings;
+            onTestFinished(() => patchHypaV3(priorSettings));
+            await patchPreset("modelProfiles", { maxContext: 5000 });
+            await patchHypaV3({
+                budgetMode: "tokens",
+                memoryBudgetTokens: 2500,
+                structured: {
+                    cadence: "manual",
+                    laneSplit: "manual",
+                    laneTargets: { flow: 0, pages: 0, events: 0, evidence: 0, threads: 0 },
+                },
+            });
+
+            const text = "오래된 돌다리 옆에서 등불이 길을 밝힌다. ".repeat(40).slice(0, 900);
+            const parsed = parseAnalysis(
+                JSON.stringify({ event: JSON.parse(analysis(0)), scene: { place: text, time: text, state: text } }),
+            );
+            if (!parsed.ok || !parsed.analysis.scene) throw new Error("Expected a scene from the writer");
+            const draft = parsed.analysis.scene;
+            const fields = ["place", "time", "state"] as const;
+            const scene = newScenePage("scene");
+            scene.sections = fields.map((heading) => ({
+                heading,
+                body: draft[heading],
+                provenance: [],
+                sources: [],
+                locked: false,
+                updatedAt: 1,
+            }));
+
+            const chaId = await seedCharacter({ messages: [], extra: { firstMessage: "" } });
+            await setChatMeta(chaId, { memoryEnabled: true, memoryMode: "structuredMemory" });
+            const store = openStore();
+            try {
+                writeMemory(store, chaId, "k", { pages: [scene] });
+            } finally {
+                store.close();
+            }
+
+            const { terminal } = await job("send", chaId, {
+                mode: "normal",
+                input: "Continue the scene.",
+                userMessageId: "question",
+            });
+            expect(terminal?.type, JSON.stringify(terminal)).toBe("done");
+            expect(scene.sections.map(({ body }) => body.length)).toEqual([600, 600, 600]);
+            expect(mains()).toHaveLength(1);
+            const body = text.slice(0, 600).trim();
+            const expectedScene = ["Scene", ...fields.map((heading) => `${heading}: ${body}`)].join(" | ");
+            expect(mains()[0].body.messages).toContainEqual(
+                expect.objectContaining({ content: expect.stringContaining(expectedScene) }),
+            );
+
+            const read = await api(`/api/memory/structured/${chaId}/k/records/pages/scene?sceneBudget=1`);
+            expect(read.status).toBe(200);
+            const budget = read.body.sceneBudget;
+            expect(budget).toMatchObject({ limit: 1500, tokens: expect.any(Number) });
+            expect(budget.requiredTokens).toBe(budget.tokens);
+            expect(budget.tokens).toBeLessThanOrEqual(1500);
+            const reply = (await readChat(chaId)).data.message.at(-1);
+            expect(reply).toMatchObject({ role: "char", data: "Main reply." });
+            expect(parseContextReport(reply.generationInfo.context)?.memory?.items).toContainEqual(
+                expect.objectContaining({ id: scene.id, lane: "required", tokens: budget.tokens }),
+            );
         });
 
         it("keeps screened text and retrieval in the send while storing the gap token report", async () => {

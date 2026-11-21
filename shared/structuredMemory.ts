@@ -192,7 +192,7 @@ export const STRUCTURED_MEMORY_LIMITS = {
     /** Patches one call may return. */
     patchesPerCall: 32,
     /** The default rewrite limit of one scene field; longer stored fields keep their length. */
-    sceneFieldChars: 800,
+    sceneFieldChars: 600,
     /** Failed runs in a row after which automatic recording pauses until the user resumes it. */
     consecutiveFailures: 5,
     axisMax: 3,

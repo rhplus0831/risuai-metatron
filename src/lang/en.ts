@@ -3316,7 +3316,7 @@ export const languageEnglish = {
                 "Required pages exceed their token limit. Shorten the scene or raise the limit in Memory settings.",
             sceneCountUnavailable: "Saved scene token count unavailable.",
             sceneLongField:
-                "Over 800 characters: prompts get longer. The memory writer may rewrite this field up to this length.",
+                "Over 600 characters: prompts get longer. The memory writer may rewrite this field up to this length.",
             characters: (count: number, limit: number) => `${count} / ${limit}`,
             provenance: "Events",
             sources: "Messages",
