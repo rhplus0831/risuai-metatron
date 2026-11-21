@@ -81,7 +81,7 @@ export interface SettingOptions {
     // number, slider
     min?: number;
     max?: number;
-    clampOnCommit?: boolean; // Number inputs with both bounds
+    clampOnCommit?: { defaultValue: number }; // Number inputs with both bounds and a default for an empty commit
     step?: number;
     fixed?: number; // Decimal places for slider
     disableable?: boolean; // Allow -1000 to disable

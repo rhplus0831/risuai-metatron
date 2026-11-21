@@ -260,6 +260,31 @@ describe("SettingNumber", () => {
             stored: expected,
         });
     });
+
+    it("keeps the plugin wait limit while the input is empty and commits the default on change", () => {
+        applyRaw("ui", { completionWaitMaxSeconds: 90 });
+        const item = displaySettingsItems.find(({ id }) => id === "display.completionWaitMaxSeconds")!;
+        const { query } = render(SettingNumber, { item, ctx: ctx() });
+        const input = query<HTMLInputElement>("input");
+
+        expect(input.value).toBe("90");
+        input.focus();
+        typeInto(input, "");
+        expect(settings.ui.completionWaitMaxSeconds).toBe(90);
+        flushSync();
+        expect(input.value).toBe("");
+
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        input.blur();
+        flushSync();
+
+        const stored = recordData<Pick<Database, "completionWaitMaxSeconds">>("ui")?.completionWaitMaxSeconds;
+        expect({ shown: input.valueAsNumber, limit: settings.ui.completionWaitMaxSeconds, stored }).toEqual({
+            shown: 180,
+            limit: 180,
+            stored: 180,
+        });
+    });
 });
 
 describe("SettingSlider", () => {

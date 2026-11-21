@@ -12,9 +12,11 @@
     let { item, ctx }: Props = $props();
 
     function commit(value: number) {
-        if (!item.options?.clampOnCommit || !Number.isFinite(value)) return;
-        const { min, max } = item.options;
-        if (min !== undefined && max !== undefined) {
+        if (!item.options?.clampOnCommit) return;
+        const { min, max, clampOnCommit } = item.options;
+        if (!Number.isFinite(value)) {
+            updateSettingValue(item, clampOnCommit.defaultValue, ctx);
+        } else if (min !== undefined && max !== undefined) {
             updateSettingValue(item, Math.min(max, Math.max(min, value)), ctx);
         }
     }
@@ -29,6 +31,13 @@
     size="sm"
     min={item.options?.min}
     max={item.options?.max}
-    bind:value={() => getSettingValue(item, ctx), (v) => updateSettingValue(item, v, ctx)}
+    bind:value={
+        () => getSettingValue(item, ctx),
+        (value) => {
+            if (!item.options?.clampOnCommit || Number.isFinite(value)) {
+                updateSettingValue(item, value, ctx);
+            }
+        }
+    }
     onChange={(event) => commit(event.currentTarget.valueAsNumber)}
 />

@@ -31,7 +31,6 @@ Sources the entries name (drop a line when no entry names it any more):
 - [memory](#memory) (2)
 - [network-jobs](#network-jobs) (1)
 - [persistence](#persistence) (1)
-- [settings-i18n](#settings-i18n) (1)
 - [structured-memory](#structured-memory) (2)
 - [translation](#translation) (1)
 - [ui-theming](#ui-theming) (3)
@@ -173,20 +172,6 @@ Guide: [Persistence: Database, Records, Mutation Stores](../structure/persistenc
   deletion arrives the stale id renders nothing (the sidebar and pins skip absent and trashed characters) and stays
   through selection and idle refresh; the next local add, remove, restore, or reorder (`checkCharOrder`) or the next
   boot repair removes it. Not fixed: hidden order metadata only; the owner has not yet decided to keep it.
-
-## settings-i18n
-
-Guide: [Settings UI, Bot Presets, Prompt Template Editor, i18n](../structure/settings-i18n.md#known-hazards).
-
-- An emptied "Plugin wait time limit (seconds)" box (`display.completionWaitMaxSeconds`, the only item with
-  `clampOnCommit`) stays blank and leaves `null` in the tab until a reload. The input binding writes the cleared value,
-  `SettingNumber` skips a non-finite number on commit, the patch sends `null`, and `normalizeUi` stores the default 180. Reproduced on 2026-11-21 at `ddb0c225b` (the settings renderer with the real save loop against the SQLite-backed
-  server stand-in): the box showed nothing while the server held 180, and a fresh boot showed 180. Before the reload
-  the Remote Host completion hold already uses 180 (`null` fails its finite-number test), and the plugin settings help
-  can read "null seconds". Not fixed; low. A fix shows the stored default when an emptied box is committed.
-  [Commit handler](../../src/lib/Setting/Wrappers/SettingNumber.svelte#L27) ·
-  [Item](../../src/ts/setting/displaySettingsData.svelte.ts#L504) ·
-  [Normalizer](../../server/src/data/normalize/ui.ts#L168)
 
 ## structured-memory
 
