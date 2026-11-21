@@ -136,8 +136,9 @@
 - The length limit is not a bound on time, and no local count has a deadline or a length limit of its own (the count
   route keeps its 2 MiB body and 512 texts): a long text costs its own caller the time it takes, one long text is
   counted at a time, and an ordinary count waits behind the texts under the limit before it, whatever those take. At the
-  limit the slowest sampled count took 0.6 s, and a text that keeps tiktoken's package path took 6.5 s at half of it.
-  Decision: Tokenizer Worker D4 and D10 (owner, 2026-11-22).
+  limit the slowest sampled count took 0.6 s, and a text that keeps tiktoken's package path took 6.5 s at half of it
+  ([measurements](../reports/measurements/server/tokenizer-worker-2026-11-22.md)). Decision: Tokenizer Worker D4 and D10
+  (owner, 2026-11-22).
 - Stopping a job or a memory task does not end the count it started: only the count route, the encode route, and the
   runner's tool-schema count pass a signal ([deferred work](../backlog/deferred-work.md#tokenizer-worker)). A stopped
   job's count over the limit holds the long worker, and the long calls behind it, until it ends, and a Google count

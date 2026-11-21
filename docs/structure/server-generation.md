@@ -436,8 +436,9 @@ Other subsystems' runtime limits live with their owners: [chat-pipeline](chat-pi
   2026-11-09).
 - Server CBS evaluation runs on the main thread under cooperative limits, with no hard deadline or heap bound. Other
   prompt work (Jinja rendering, non-worker lore matching) also runs there; local tokenizers run in a worker
-  ([tokenizers](tokenizers.md#flows)). Decision: owner, 2026-11-10 (known-issues review): worker isolation is a separate
-  design.
+  ([tokenizers](tokenizers.md#flows)), so a read and a short count are answered while a long count runs
+  ([measurements](../reports/measurements/server/tokenizer-worker-2026-11-22.md)). Decision: owner, 2026-11-10
+  (known-issues review): worker isolation is a separate design.
 - A command's parts each load the job scope again (`server/src/jobs/commandRunner.ts` calls `runPromptSend`, which calls
   `loadJobScope`), so a request interception rule saved while a `/multisend` command runs reaches its later parts; a
   group send keeps one list. Decision: owner, 2026-11-21 (found-issues review): it needs a rule edit during a multi-part

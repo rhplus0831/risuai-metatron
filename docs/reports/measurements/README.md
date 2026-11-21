@@ -37,6 +37,7 @@ A figure belongs to the commit, machine and fixture its report names. The guides
 | [tool-schema-tokens-2026-11-09.md](server/tool-schema-tokens-2026-11-09.md)                       | How many tokens the MCP tool descriptors add to a request, per provider form, for three sets of tools                                                                                       |
 | [transform-snapshot-2026-11-09.md](server/transform-snapshot-2026-11-09.md)                       | Snapshot bytes charged per target and per chunk for display transforms on a 2,000-message chat, and why the cap stays                                                                       |
 | [structured-memory-timeline-2026-11-11.md](server/structured-memory-timeline-2026-11-11.md)       | What the recent timeline puts in the memory card and what selection costs, before and after, on the 2026-11-03 fixtures at three budgets                                                    |
+| [tokenizer-worker-2026-11-22.md](server/tokenizer-worker-2026-11-22.md)                           | A read and a short token count during one long local count, before and after the Tokenizer Worker plan, with the batch round trip, the resident set, and the plan's in-process figures      |
 
 ## toolchain
 
