@@ -638,18 +638,27 @@ export function rebuildStore(
     };
 }
 
-/** A preview counts only windows with a message to read, and only those messages' text. */
+/** Count windows with readable messages or a greeting, using greeting text only for greeting-only work. */
 function windowsCost(
-    windows: readonly (readonly Pick<Message, "role" | "data">[])[],
+    windows: readonly Pick<WriterWindow, "messages" | "greeting">[],
     settings: Pick<WriterCadence, "omitUserMessages">,
 ): StructuredMemoryCostAnswer {
-    const read = windows.map((window) => window.filter((message) => memoryWriterReads(message, settings)));
-    const calls = read.filter((window) => window.length > 0).length;
-    const messages = read.flat();
-    const bytes = messages.reduce((total, { data }) => total + Buffer.byteLength(data, "utf8"), 0);
+    let calls = 0;
+    let messages = 0;
+    let bytes = 0;
+    for (const { messages: windowMessages, greeting } of windows) {
+        const read = windowMessages.filter((message) => memoryWriterReads(message, settings));
+        if (read.length === 0) {
+            if (!greeting) continue;
+            bytes += Buffer.byteLength(greeting.text, "utf8");
+        }
+        calls++;
+        messages += read.length;
+        for (const { data } of read) bytes += Buffer.byteLength(data, "utf8");
+    }
     return {
         calls,
-        messages: messages.length,
+        messages,
         estimatedTokens: memoryCostTokens(bytes, calls),
     };
 }
@@ -728,7 +737,7 @@ export function rebuildCost(
  * `turns` is what the tab would ask of a rebuild or a backfill, whose preview is `rebuildCost`.
  * Record now's windows are the writer's own, in windows of `turns` turns, because a route has no job scope
  * to read the cadence from, up to `maxWriterWindows`, marked events first. It plans with the current
- * greeting and the manual greeting-only ceiling; this estimate still counts message text and calls only.
+ * greeting and the manual greeting-only ceiling. Greeting-only windows add a call without adding a message.
  */
 export async function memoryWorkCost(
     store: Pick<ResourceStore, "memory" | "readChatSource" | "get">,
@@ -772,10 +781,7 @@ export async function memoryWorkCost(
                   manual: true,
                   rerecord,
               });
-    return windowsCost(
-        (windows ?? []).map(({ messages }) => messages),
-        { omitUserMessages },
-    );
+    return windowsCost(windows ?? [], { omitUserMessages });
 }
 
 const refusal = (message: string) => new GenerationRunnerError(409, message, { stage: "setup" });

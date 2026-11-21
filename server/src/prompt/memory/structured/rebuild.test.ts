@@ -958,6 +958,53 @@ it("replaces a covered mixed event only after the greeting is gone and still car
     expect(presentGreeting?.remove?.events).toEqual([]);
 });
 
+it("estimates a marked greeting repair as a separate Record now call with no messages", async () => {
+    const store = createResourceStore({ file: ":memory:", kinds: createKindRegistry(DEFAULT_RESOURCE_KINDS) });
+    try {
+        const firstMessage = "한😀é";
+        const ref = { chaId: "c", chatId: "k" };
+        const query = { mode: "record", turns: 1, through: "a1" } as const;
+        store.put(CHARACTERS, ref.chaId, { chaId: ref.chaId, type: "character", name: "C", firstMessage }, null);
+        store.applyChanges({
+            chats: [
+                {
+                    characterId: ref.chaId,
+                    chatId: ref.chatId,
+                    baseRevision: null,
+                    ops: [{ op: "create", chat: { id: ref.chatId, fmIndex: -1, message: messages.slice(0, 2) } }],
+                },
+            ],
+        });
+        expect(await memoryWorkCost(store, ref, query, CHARACTERS)).toEqual({
+            calls: 1,
+            messages: 2,
+            estimatedTokens: memoryCostTokens(4, 1),
+        });
+
+        store.memory.write(
+            ref.chaId,
+            ref.chatId,
+            { epoch: store.epoch(), baseRevision: store.memory.readContents(ref.chaId, ref.chatId)!.revision },
+            {
+                events: [
+                    event("greeting", [], {
+                        greeting: { fmIndex: -1, hash: greetingSourceHash(firstMessage) },
+                        rerecord: true,
+                    }),
+                ],
+            },
+        );
+
+        expect(await memoryWorkCost(store, ref, query, CHARACTERS)).toEqual({
+            calls: 2,
+            messages: 2,
+            estimatedTokens: memoryCostTokens(4 + Buffer.byteLength(firstMessage), 2),
+        });
+    } finally {
+        store.close();
+    }
+});
+
 it("charges greeting UTF-8 bytes once and a greeting-only backfill call without adding a message", async () => {
     const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
     const store = createResourceStore({ file: ":memory:", kinds });

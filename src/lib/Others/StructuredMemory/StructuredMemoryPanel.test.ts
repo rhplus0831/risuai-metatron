@@ -44,6 +44,7 @@ import {
     ADOPTED_WRITER_RUN,
     MEMORY_FIND_HITS_MAX,
     MEMORY_FIND_QUERY_CHARS,
+    memoryCostTokens,
     sealHypaV3Data,
     memoryChapterMark,
     STRUCTURED_MEMORY_LIMITS,
@@ -55,6 +56,7 @@ import {
     type MemoryPage,
     type MemoryThread,
     type StructuredMemoryContentsAnswer,
+    type StructuredMemoryCostAnswer,
     type MemoryRun,
 } from "../../../../shared/structuredMemory.ts";
 import StructuredMemoryPanel from "./StructuredMemoryPanel.svelte";
@@ -2123,6 +2125,58 @@ it("derives the writer line from current state and dispatches record and resume 
     await settle();
     expect(line()?.dataset.memoryWriterLine).toBe("memoryOff");
     expect(action()).toBeNull();
+});
+
+it("asks before recording a marked greeting repair and a confirmed turn and cancels when declined", async () => {
+    install([message("u0", "user", "Hello"), message("a0", "char", "Welcome")]);
+    serveMemory();
+    settings.hypaV3Presets.items[0].settings.structured!.cadence = "everyTurn";
+    const owner = characterList()[0];
+    if (owner.type !== "character") throw new Error("Expected a solo character");
+    owner.firstMessage = "어서 오세요";
+    setChatMeta(ref, { fmIndex: -1 });
+    const chat = findChat(ref)!;
+    const repair = {
+        id: "greeting",
+        status: "active",
+        sources: [],
+        greeting: { fmIndex: -1, hash: memoryGreetingHash(owner.firstMessage) },
+        rerecord: true,
+    };
+    const store = {
+        readChatSource: () => ({ data: chat }),
+        get: () => ({ data: owner }),
+        memory: {
+            readContents: () => ({ events: [repair] }),
+            readRecord: () => ({ data: repair }),
+            readWriterSettings: () => ({ screening: { refusal: [], format: [] }, omitUserMessages: false }),
+        },
+    };
+    // Keep the server module graph out of the client type check.
+    const serverPath = "../../../../server/src/prompt/memory/structured/rebuild.ts";
+    const { memoryWorkCost } = await import(/* @vite-ignore */ serverPath);
+    const costRoute = "/api/memory/structured/c/k/cost?mode=record&turns=1&through=a0";
+    serveResponseAt(costRoute, async () => {
+        const cost: StructuredMemoryCostAnswer | null = await memoryWorkCost(
+            store,
+            ref,
+            { mode: "record", turns: 1, through: "a0" },
+            { name: "characters" },
+        );
+        return Response.json(cost);
+    });
+    vi.mocked(alertConfirm).mockResolvedValueOnce(false);
+    io.runServerJob.mockResolvedValue(previewAnswer({}));
+
+    await open();
+    click('[data-memory-writer-action="record"]');
+    await settle();
+
+    const estimatedTokens = memoryCostTokens(new TextEncoder().encode("HelloWelcome" + owner.firstMessage).length, 2);
+    expect(alertConfirm).toHaveBeenCalledExactlyOnceWith(
+        language.structuredMemory.receipt.recordCost(2, estimatedTokens),
+    );
+    expect(io.runServerJob).not.toHaveBeenCalled();
 });
 
 /** Coverage, record and story I/O for the real Timeline; anchors come from the initial held chat. */

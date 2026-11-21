@@ -30,7 +30,7 @@ Sources the entries name (drop a line when no entry names it any more):
 - [memory](#memory) (1)
 - [network-jobs](#network-jobs) (1)
 - [persistence](#persistence) (1)
-- [structured-memory](#structured-memory) (2)
+- [structured-memory](#structured-memory) (1)
 - [ui-theming](#ui-theming) (1)
 
 ## characters-modules
@@ -170,15 +170,6 @@ Guide: [Structured Memory Records](../structure/structured-memory/records.md#kno
     caller in the product. The server has never written such an event.
 
   Not fixed: the byte charge, since measuring costs every round; the owner has not said whether it is a Limitation.
-
-- Record now can skip the confirmation for a second model call
-  ([rebuild guide](../structure/structured-memory/rebuild.md)). With a marked greeting-only event and one confirmed
-  ordinary turn, the cost query reported one call (structure audit, 2026-11-18); the real planner produced two windows,
-  one to repair the greeting and one for the turn. The panel asks for confirmation at two estimated calls. Not fixed.
-  A fix counts greeting-only work in the record estimate, with a test of the confirmation on the same chat.
-  [Cost query](../../server/src/prompt/memory/structured/rebuild.ts#L758) ·
-  [Window planner](../../server/src/prompt/memory/structured/window.ts#L403) ·
-  [Panel confirmation](../../src/lib/Others/StructuredMemory/memoryRecordPress.ts#L44)
 
 ## ui-theming
 
