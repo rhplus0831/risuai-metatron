@@ -2172,6 +2172,22 @@ describe("the context report", () => {
         },
     );
 
+    it("subtracts interception tokens when clamping a fractional output estimate", async () => {
+        const { host, run } = contextAssembly({
+            greeting: "",
+            messages: [{ chatId: "u", data: "x" }],
+            // The prompt recheck fits exactly, but adding the reservations rounds the total up.
+            maxContext: 63.199999999999996,
+            db: { maxResponse: 8.2 },
+        });
+        host.insertedMessages = [{ role: "system", content: "s".repeat(48) }];
+
+        const { report, generationInfo } = await run();
+        expect(report.input).toBe(4);
+        expect(report.interceptions).toBe(51);
+        expect(generationInfo.outputTokens).toBe(8.199999999999996);
+    });
+
     it("refuses when protected content, tool schemas, interceptions and the response exceed context", async () => {
         const { host } = contextAssembly({
             maxContext: 300,
