@@ -303,6 +303,12 @@
             items={(m ?? []).map(orToGridItem)}
             pinnedItems={openrouterPinnedItems}
         />
+    {:catch error}
+        <ModelGrid
+            bind:value={profile.openrouterRequestModel}
+            pinnedItems={openrouterPinnedItems}
+            loadError={error instanceof Error ? error.message : undefined}
+        />
     {/await}
 {/if}
 {#if profile.modelId === "openrouter"}

@@ -8,6 +8,7 @@ import {
 import type { MemoryTaskState, MemoryTaskStatus } from "../../../shared/jobs.ts";
 import { compareRevision, RESOURCE_EPOCH_HEADER, type ResourceRevisionListing } from "../../../shared/resources.ts";
 import { chatEntry, findChat, heldChatRevision, type ChatRef } from "../storage/chatStore.svelte";
+import { waitForResourceFlush } from "../storage/resourceFlushWait";
 import { flushResources, GenerationBlockedError, noteRemoteChanges } from "../storage/resourceSync.svelte";
 import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
 import { authFetch } from "../storage/serverAuth";
@@ -452,7 +453,7 @@ export function startMemoryTask(ref: ChatRef): Promise<MemoryTaskActionResult> {
             }
         };
         try {
-            const { discarded, refused } = await flushResources();
+            const { discarded, refused } = await waitForResourceFlush(flushResources());
             if (discarded.length > 0) {
                 release();
                 return { outcome: "refused", reason: "discarded" };

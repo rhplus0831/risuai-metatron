@@ -16,6 +16,7 @@
         items?: ModelGridItem[];
         pinnedItems?: ModelGridPinnedItem[];
         loading?: boolean;
+        loadError?: string;
         showSubBadge?: boolean;
         selectedLabelOverride?: string;
         onselect?: (id: string, displayName: string) => void;
@@ -26,6 +27,7 @@
         items = [],
         pinnedItems = [],
         loading = false,
+        loadError,
         showSubBadge = false,
         selectedLabelOverride,
         onselect,
@@ -155,7 +157,7 @@
 
                 {#if items.length === 0}
                     <p class="col-span-full py-4 text-center text-sm text-textcolor2">
-                        {language.modelGridCouldNotLoad}
+                        {loadError ?? language.modelGridCouldNotLoad}
                     </p>
                 {:else if filteredItems.length === 0}
                     <p class="col-span-full py-4 text-center text-sm text-textcolor2">

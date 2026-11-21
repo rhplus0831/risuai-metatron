@@ -1,5 +1,6 @@
 import type { ModelProfile } from "../../../shared/database.ts";
 import { auxFetch } from "../network/auxFetch";
+import { ResourceFlushTimeoutError } from "../storage/resourceFlushWait";
 import type { ModelGridItem } from "./modelGrid";
 
 /**
@@ -58,7 +59,7 @@ export async function getOpenRouterProviders(profile?: ModelProfile): Promise<{ 
 /**
  * Reads the profile's model list, splitting provider labels and converting available price fields to per million.
  * Models with negative or nonnumeric weighted prices are excluded; the rest sort by (prompt * 3 + completion) / 4.
- * Responses are parsed without checking HTTP status, and fetch/parsing/mapping failures return an empty list.
+ * Save timeouts reach the grid. Responses are parsed without checking HTTP status, and other failures return an empty list.
  */
 export async function getOpenRouterModels(profile?: ModelProfile): Promise<OpenRouterModelInfo[]> {
     try {
@@ -107,6 +108,7 @@ export async function getOpenRouterModels(profile?: ModelProfile): Promise<OpenR
                 return a.price - b.price;
             });
     } catch (error) {
+        if (error instanceof ResourceFlushTimeoutError) throw error;
         return [];
     }
 }

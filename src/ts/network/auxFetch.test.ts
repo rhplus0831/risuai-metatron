@@ -482,6 +482,37 @@ describe("auxFetch profile binding", () => {
         expect(deps.awaitSecretWrites).not.toHaveBeenCalled();
         expect(deps.authFetch).not.toHaveBeenCalled();
     });
+    it("rejects a profile request at the save deadline and never sends it after a late response", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const resources = deferred<Awaited<ReturnType<typeof deps.flushResources>>>();
+        deps.flushResources.mockReturnValue(resources.promise);
+        const fulfilled = vi.fn();
+        const rejected = vi.fn();
+        const call = auxFetch("openrouter-models", "https://openrouter.ai/api/v1/models", {
+            method: "GET",
+            profileId: "edited-profile",
+        }).then(fulfilled, rejected);
+        try {
+            await vi.advanceTimersByTimeAsync(29_999);
+            expect(deps.flushResources).toHaveBeenCalledOnce();
+            expect(fulfilled).not.toHaveBeenCalled();
+            expect(rejected).not.toHaveBeenCalled();
+
+            await vi.advanceTimersByTimeAsync(1);
+            expect(rejected).toHaveBeenCalledExactlyOnceWith(
+                expect.objectContaining({
+                    message: "The server has not answered the save request. Please try again shortly.",
+                }),
+            );
+        } finally {
+            resources.resolve({ discarded: [], refused: [] });
+            vi.useRealTimers();
+            await call;
+        }
+        expect(fulfilled).not.toHaveBeenCalled();
+        expect(deps.awaitSecretWrites).not.toHaveBeenCalled();
+        expect(deps.authFetch).not.toHaveBeenCalled();
+    });
     it("keeps a call without a profile independent of resource writes", async () => {
         deps.flushResources.mockImplementation(() => {
             throw new Error("must not flush");

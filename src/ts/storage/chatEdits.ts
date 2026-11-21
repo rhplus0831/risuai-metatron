@@ -14,6 +14,7 @@ import {
 } from "./chatStore.svelte";
 import { readWithDeadline } from "./readDeadline";
 import { readRefs } from "./resourceClient";
+import { waitForResourceFlush } from "./resourceFlushWait";
 import { assertSaveAdmission, flushResources } from "./resourceSync.svelte";
 
 /**
@@ -138,7 +139,7 @@ export async function readChatsDetached(chaIds: readonly string[]): Promise<Map<
     if (wanted.length === 0) {
         return result;
     }
-    const { discarded, refused } = await flushResources();
+    const { discarded, refused } = await waitForResourceFlush(flushResources());
     // A key of a wanted character: its record, its chat order, or one of its chats.
     const concerns = (key: string) =>
         wanted.some(

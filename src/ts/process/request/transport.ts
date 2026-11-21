@@ -36,6 +36,7 @@ import { capturePluginContext, type PluginCallContext } from "src/ts/plugins/api
 import { tabTokenScope } from "src/ts/tokenizer";
 import { authFetch } from "src/ts/storage/serverAuth";
 import { epochMismatch, getResourceEpoch } from "src/ts/storage/resourceClient";
+import { waitForResourceFlush } from "src/ts/storage/resourceFlushWait";
 import { flushResources } from "src/ts/storage/resourceSync.svelte";
 import { saveInlayedSignature, setInlayAsset, writeInlayImage } from "../files/inlays";
 import { callTool, decodeToolCall, encodeToolCall } from "../mcp/mcp";
@@ -271,7 +272,7 @@ export async function requestServer(
         }
     };
     try {
-        await flushResources();
+        await waitForResourceFlush(flushResources(), controller.signal);
         for (const ref of targets) {
             if (!(await ensureChatLoaded(ref)) || !targetsHeld()) {
                 // A captured chat that is gone (deleted or replaced meanwhile): nothing is requested for it.
@@ -281,7 +282,7 @@ export async function requestServer(
         }
     } catch (error) {
         detach();
-        return fail(`${error instanceof Error ? error.message : error}`);
+        return fail(controller.signal.aborted ? "Aborted" : `${error instanceof Error ? error.message : error}`);
     }
     if (controller.signal.aborted) {
         detach();

@@ -1,5 +1,6 @@
 import { addFetchLog } from "../globalApi.svelte";
 import { authFetch } from "../storage/serverAuth";
+import { waitForResourceFlush } from "../storage/resourceFlushWait";
 import { assertSaveAdmission, awaitSecretWrites, flushResources } from "../storage/resourceSync.svelte";
 import { bodyIntercepterStore } from "../stores.svelte";
 
@@ -7,7 +8,7 @@ import { bodyIntercepterStore } from "../stores.svelte";
  * A call that uses a stored LLM credential, through `/proxy2`'s auxiliary operations
  * (`server/src/llm/auxOps.ts`): the server sends it to the operation's fixed endpoint with the
  * stored key; the tab never holds the key. The operation's method is kept (a GET carries no body).
- * With a profileId it first flushes resource writes (including the profile and named-key metadata),
+ * With a profileId it first waits up to 30 seconds for resource writes (including the profile and named-key metadata),
  * sending `risu-aux-profile` for the discovery/account operations that support profile resolution.
  * It then waits for credential writes this tab queued (a key entered just before is used), runs
  * the plugin body interceptors for `interceptor` as `globalFetch` does, and logs the request (its
@@ -41,7 +42,7 @@ export async function auxFetch(
     checkAbort();
     const profileId = init.profileId;
     if (profileId !== undefined) {
-        await untilAborted(flushResources(), signal);
+        await waitForResourceFlush(flushResources(), signal);
         checkAbort();
     }
     await untilAborted(awaitSecretWrites(), signal);
