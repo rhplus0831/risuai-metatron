@@ -145,8 +145,10 @@ The transport below retains this tab's in-memory log.
   went to while that host stays connected.
 - A send's wait for the resource flush in that preflight ends on Stop or after 30 seconds (`waitForSendFlush`,
   `SEND_FLUSH_DEADLINE_MS`): before a local job, before the relay post, and on the receiving host. It answers the
-  pre-dispatch refusal with any earlier request uncertainty and leaves the shared write running. Command jobs and the
-  other flush callers still wait without a bound ([known issues](../backlog/known-issues.md#network-jobs)).
+  pre-dispatch refusal with any earlier request uncertainty and leaves the shared write running.
+- Command jobs and the callers a user waits on end their wait the same way (`waitForResourceFlush` in
+  `src/ts/storage/resourceFlushWait.ts`), each through its own failure path; an import that timed out says its entry is
+  already listed. One unanswered batch still holds later ones ([known issues](../backlog/known-issues.md#network-jobs)).
 - A Continue without input names the message it continues (`continueMessageId`, the chat's last message when pressed),
   so a message that lands before the host runs is not continued instead. A Continue with input names nothing: its job
   appends the user message and continues it. A Continue or reroll is never retried under its request id (each press is a

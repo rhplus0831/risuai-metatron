@@ -402,6 +402,10 @@ character or the tab has an unsaved create. It preserves unknown entries and the
 - The remote repair appends at the root: a folder this tab chose for its new character is lost with the discarded order
   write. A failed read ends the repair (logged) unless another order was announced meanwhile; the next remote order or
   `checkCharOrder` repairs again. Decision: the repair only adds (`queueRemoteCharOrderRepair`).
+- A character another client trashes or deletes between the remote repair's read and its order write, with no order
+  change, can be appended at the root as a hidden id. The sidebar and pins skip it; the next local add, remove, restore
+  or reorder (`checkCharOrder`) or the next boot repair removes it. Decision: owner, 2026-11-22: kept, since a cleanup
+  in every tab that learns of the trash raced other tabs' order writes.
 - The browser-local import has no cross-tab lock: a change another tab lands between `removeIfUnchanged`'s comparison
   and its deletion is lost. Decision: owner, 2026-11-10 (known-issues review): the import is one-time.
 

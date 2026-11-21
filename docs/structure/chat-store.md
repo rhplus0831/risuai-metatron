@@ -109,6 +109,8 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 - `oocLog`'s one writer is `src/ts/ooc/oocSession.svelte.ts`: a new exchange with its prune removals in one merge, the
   answer as the whole exchange again, and deletions as removals. It checks each entry with `oocExchangeError` before the
   merge, since a refused merge refuses the chat's queued work. `oocSegment` is a plain field (`setChatMeta`).
+- The answer's merge carries `ifOocUnanswered`: the server skips it when the stored exchange is gone or already answered
+  (`oocAnswerRefusals`), so the first stored answer wins, and the losing tab rereads with a notice.
 
 ### Stored translations
 

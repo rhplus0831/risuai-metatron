@@ -105,6 +105,9 @@ MCP tools see [MCP](mcp.md).
   ([scripts and triggers](scripts-triggers.md#flows)).
 - `src/ts/process/files/multisend.ts` converts attachments. `postChatFile` pins the captured chat across the picker and
   every PO translation in the batch. `sendPofile` checks that owner before further writes or downloads.
+- Each multisend part, PO entry and DevTool autopilot step checks the chat binding (`checkServerJobBinding`) before it
+  clears or appends. `sendPofile` ends an entry at a blank line (CRLF too) and at the end of the file, and downloads
+  once after the last entry, in the catalog's newline style.
 - `src/ts/process/group.ts` owns `addGroupChar` and `rmCharFromGroup`. A greeting goes to the captured group's pinned
   chat, with the owner rechecked after the dialogs.
 - `src/ts/process/infunctions.ts` binds the shared CBS calculator (`calcString`) to tab variables.
@@ -242,7 +245,8 @@ and a valid segment anchor. Only `refreshOoc` moves a missing anchor to the newe
    local send slot through this preview and handles its own OOC refusal codes. Only a preview result with `ooc: true`
    can launch the answer ([server generation](server-generation.md#prompt-job-execution)).
 3. The tab releases that slot, so the main chat can send while the answer streams. It calls `requestChatData` with the
-   captured owner and an empty tool list. On success it merges the answer into the existing exchange. Stop or failure
+   captured owner and an empty tool list. On success it merges the answer into the existing exchange while that exchange
+   is still unanswered, on the server too; a tab whose answer loses shows the stored one with a notice. Stop or failure
    leaves partial text in this tab. An unanswered exchange in the current segment can be retried.
 
 ### Not in `sendChat`

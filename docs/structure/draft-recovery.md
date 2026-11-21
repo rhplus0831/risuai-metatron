@@ -162,6 +162,9 @@
   strings and, for content that did not land (a missing or refused message edit or translation, an append whose rows
   were not inserted, a refused non-memory `meta` set), the narrowed ops. A gone chat with a snapshot uses `createChat`
   under the draft's id.
+- A memory field edit or OOC answer the server refuses (`memoryRefused`, `oocAnswerRefusals`) counts as refused for the
+  draft's chat, so the draft stays and Apply reports it as not saved. Apply first rereads a chat that is behind and
+  keeps the draft when the target cannot be verified. An OOC exchange the server already holds exactly counts as saved.
 - A real `hypaV3Data` that Structured Memory refuses (`setChatMeta`'s recovery source) is filed as a draft of its own
   before the flush, or a memory-only draft is kept; the dialog says which.
 - A non-delete character edit past the boot's three-day trash threshold becomes a draft instead of replaying. Explicit

@@ -16,19 +16,17 @@ when the owner keeps the behavior. When a fix closes part of an entry, rewrite t
 
 Sources the entries name (drop a line when no entry names it any more):
 
-- Structure audit of 2026-11-18: [report](../reports/audits/guides/structure-audit-2026-11-18.md); each entry was
-  exercised in an isolated run at `744d17cad`.
 - Wide review of 2026-11-14: [report](../reports/audits/codebase/wide-review-2026-11-14.md).
-- Remote Host post-audit of 2026-11-16: [report](../reports/audits/finished-plans/remote-host-2026-11-16.md).
 - Reproduction round of 2026-11-21: no report; each entry was run in a probe at `ddb0c225b` (Vitest, and headless
   Chrome for the transcript scroll entry), and the probes are kept with the review material outside the repository.
+- Second fix round of 2026-11-22: no report; the implementers' and reviewers' reports and probes are kept with the review
+  material outside the repository.
 
 ## Contents
 
 - [characters-modules](#characters-modules) (1)
 - [chat-pipeline](#chat-pipeline) (2)
 - [network-jobs](#network-jobs) (1)
-- [persistence](#persistence) (1)
 - [structured-memory](#structured-memory) (1)
 
 ## characters-modules
@@ -43,8 +41,15 @@ Guide: [Characters, Cards, Modules, Personas](../structure/characters-modules.md
   the popup closed, the stored entry kept its old prompt, and reopening showed the old prompt. Since `2e0402cbd` the
   fence also rises for a job or preview another device runs, so the loss has one more trigger. Not fixed. The message
   editor keeps such text through a lock (read-only popup, text handed back); these fields have no draft to hand to.
-  [Field switch](../../src/lib/SideBars/LoreBook/LoreEntryFields.svelte#L94) ·
-  [Popup teardown](../../src/lib/UI/GUI/TextAreaInput.svelte#L265)
+  - A fix attempt of 2026-11-22 (held text handed back when the fence falls) was withdrawn after two reviews found
+    reproduced losses on its own paths: a handback must wait while the chat is behind, and after a feed retirement
+    until the job and chat are reconciled; held text must survive a chat switch or a reload (unsaved-work
+    registration, or a recoverable draft or copy path); an older handback must not close a newer popup.
+  - The server accepts a whole lore-list write from a stale base, which can erase a job's lore change, so a reliable
+    fix starts with a server refusal like the one for the HypaV2 and SupaMemory fields (`chatMemoryWrites`). The
+    attempt's reproduction and the reviewers' probes are kept with the review material outside the repository.
+    [Field switch](../../src/lib/SideBars/LoreBook/LoreEntryFields.svelte#L94) ·
+    [Popup teardown](../../src/lib/UI/GUI/TextAreaInput.svelte#L265)
 
 ## chat-pipeline
 
@@ -74,7 +79,7 @@ Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-
   before it clears or appends, so a binding the tab knows to be incomplete refuses the part with the transcript
   unchanged. A refusal that only the server's admission finds (a binding mismatch the tab cannot see yet) still comes
   after that part's clear or append, so a clear-mode part can leave the chat with only its new message. Read in the
-  fix round of 2026-11-22, not run. A fix moves the clear and append into the job's admission, or restores them when
+  second fix round of 2026-11-22, not run. A fix moves the clear and append into the job's admission, or restores them when
   the job is refused. [Slash command](../../src/ts/process/command.ts#L52) ·
   [Binding check](../../src/ts/process/serverCommands.ts#L1181)
 
@@ -98,16 +103,6 @@ Guide:
   - [Bounded wait](../../src/ts/storage/resourceFlushWait.ts#L10) ·
     [Batch cycle](../../src/ts/storage/resourceSync.svelte.ts#L2996) ·
     [Batch request](../../src/ts/storage/resourceClient.ts#L450)
-
-## persistence
-
-Guide: [Persistence: Database, Records, Mutation Stores](../structure/persistence.md#known-hazards).
-
-- The remote repair's character read and order write are not atomic: a character another client trashes or deletes
-  between them, with no order change, can still be appended at the root. Reproduced on 2026-11-10: once the trash or
-  deletion arrives the stale id renders nothing (the sidebar and pins skip absent and trashed characters) and stays
-  through selection and idle refresh; the next local add, remove, restore, or reorder (`checkCharOrder`) or the next
-  boot repair removes it. Not fixed: hidden order metadata only; the owner has not yet decided to keep it.
 
 ## structured-memory
 

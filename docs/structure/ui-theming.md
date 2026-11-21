@@ -101,6 +101,8 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `src/lib/ChatScreens/Chat.svelte` owns original and translation editing, auto-popup eligibility, and `clickToEdit`.
   `src/ts/storage/messageEditorDrafts.svelte.ts` retains original-message and stored-translation drafts across screen or
   row unmounts. It keys text by chat ref, message id, and editor kind, and drops it on owner replacement or deletion.
+- An original reply's draft is also keyed by its selected candidate and generation, so it reopens only on that
+  candidate. When a standalone reply gains its first candidate id, its draft follows it into that slot.
 - The same store keeps the drafts of the rendered-translation editor (by captured cache key and reply) and of the
   partial-edit popover (by its source range: both neighbor hashes match, or the text is unique then and now). A reply is
   its candidate id and generation id; an id that appears or disappears on one generation keeps its drafts. At most 8

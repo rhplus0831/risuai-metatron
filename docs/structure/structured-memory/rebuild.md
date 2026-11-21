@@ -211,9 +211,8 @@ route comment owns query admission, the builder owns window counting, and the sh
 the [estimate](../../reports/measurements/server/structured-memory-2026-11-03.md).
 
 Rebuild, fresh rebuild and backfill count the stored greeting's UTF-8 bytes in its window and one analysis call for a
-greeting-only window, without adding to `messages`. Record now counts message text only and can omit a greeting-only
-repair from the call count used for confirmation. See the
-[known issue](../../backlog/known-issues.md#structured-memory).
+greeting-only window, without adding to `messages`. Record now counts each greeting-only window of the writer's plan the
+same way, so its confirmation sees the greeting repair's call.
 
 A backfill preview with `omitUserMessages` on also answers `folds`: the user messages the swap may attach, judged by the
 events' stored status without hashing, so an upper bound. `pressMemoryRebuild` asks for rebuild/backfill when cost is

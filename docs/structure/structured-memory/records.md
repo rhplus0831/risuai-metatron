@@ -181,7 +181,8 @@ whole shape check of `parseRestoredRecords`, and only when the chat holds no row
    therefore out of the package.
 2. The tab renders and zips the records for `downloadFile`. The builder's comment defines retries and the file set;
    `renderMemoryPage`, `renderMemoryTimeline`, `renderMemoryThreads` and `memoryPagePath` define serialization and
-   ordering. `StructuredMemoryResult` defines failures and epoch handling.
+   ordering. `StructuredMemoryResult` defines failures and epoch handling. `renderMemoryTimeline` reads a missing or
+   malformed `storyTime`, `keyLines` or `participants` as empty.
 3. [Package import](pages.md#the-import-route) reads those files back on the server. Metadata is authoritative, and line
    counts, not delimiters, bound text that holds headings, fences or `---`.
 

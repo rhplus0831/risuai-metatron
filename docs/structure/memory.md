@@ -69,7 +69,10 @@ Each module's header or the JSDoc of the identifiers named holds its rules; read
   (`src/lib/SideBars/CharConfig.svelte`) write the whole field with `setChatMeta`. They are read-only while
   `memoryEditorWriteFence` holds: a local send, a followed job, a message lock, a job the live feed lists (a preview
   too), or a chat update not yet read. Both dialog openers skip initializing an absent `hypaV2Data` then. A tab that has
-  not heard of another device's job is not fenced ([known issues](../backlog/known-issues.md#memory)).
+  not heard of another device's job is not fenced.
+- The server refuses such a whole-field HypaV2 or SupaMemory write when its base precedes a job's write of the same
+  field (`chatMemoryWrites`, stamped in the job's transaction), and the tab rereads the chat with a notice. An edit that
+  lands before the job's write stays: HypaV2 merges chunks by identity, and SupaMemory takes the job's summary.
 - `src/lib/Others/HypaV3Modal.svelte` and `src/lib/Others/HypaV3Modal/` children edit the current chat's synced
   `hypaV3Data` copy; its contract owns save, refresh, and discard. Jobs and tasks write send memory.
   `getCurrentHypaV3Preset(chat)` reads its chat's preset; `summarize` captures preset and connection from its context's
@@ -419,9 +422,9 @@ lookahead starts at stored coverage and does not defer summaries.
   again; past lengths use the current rest-of-prompt size, so a lore swing can move summaries. Prepared summaries can so
   replace messages earlier than vanilla Hypa would. Decision: owner, 2026-10-27 (document, do not change).
 - The modal and lore-draft fence knows only this tab's sends and the jobs it follows or sees locked: another tab's modal
-  (no job ownership on the change feed), the HypaV2 chunk editor (`AlertComp.svelte` `setHypaV2ChunkText`), and a
-  plugin's whole-chat result (`applyChatResult`) still write a whole memory value, and one that lands after the job's
-  write replaces the job's summaries (`meta set` replaces the field). Decision: owner, 2026-11-10 (known-issues review).
+  (no job ownership on the change feed) and a plugin's whole-chat result (`applyChatResult`) still write a whole memory
+  value, and one that lands after the job's write replaces the job's summaries (`meta set` replaces the field).
+  Decision: owner, 2026-11-10 (known-issues review).
 - The job's own write keeps a change saved before it. A memory task's writes fence the modal of every connected tab (its
   `memoryTask` frames), but a plugin's whole-chat result that lands after a task's write still replaces its summaries.
   Decision: owner, 2026-11-10 (known-issues review).

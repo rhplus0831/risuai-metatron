@@ -41,8 +41,8 @@
   the verdict line or the exit code: the last block is the slowest program, not the failed one.
 - `util/typeCheckCache.mjs` (`programKey`, `checkSettings`, `workingTreeFiles`, `cachedRun`) replays a stored result
   when the program's input key matches, including a stored failure. The block and verdict identify replays. The key
-  includes git-ignored files under source roots. Before saving a result, the runner rechecks only the tree ID from
-  `util/workingTree.mjs` (`workingTreeId`), which omits those ignored files and is also used by the test wrapper.
+  includes git-ignored files under source roots. Before saving a result, the runner computes each program's complete
+  input key again, ignored files included, and saves only when it still matches the key the run started with.
 - Worktrees share the per-program results in `<git common dir>/type-check-cache/`. Saving a result prunes entries older
   than 14 days. `--force` or a nonempty `CI` bypasses replay for each selected program. To run all three regardless of
   changed paths or cached results, use `pnpm check --force`, as `util/ci/check.sh` does.

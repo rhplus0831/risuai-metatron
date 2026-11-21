@@ -31,11 +31,14 @@ Sources the entries name (drop a line when no entry names it any more):
 
 - Wide review of 2026-11-14: [report](../reports/audits/codebase/wide-review-2026-11-14.md).
 - Fix round of 2026-11-22: no report; the fixes of eight known issues, and what their implementers read beside them.
+- Second fix round of 2026-11-22: no report; eleven known-issue fixes and their reviews (reports and probes kept with
+  the review material outside the repository).
 
 ## Contents
 
-- [Build and CI](#build-and-ci): 1
+- [Build and CI](#build-and-ci): 2
 - [Chat screen](#chat-screen): 1
+- [Draft recovery](#draft-recovery): 1
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 1
 
@@ -55,6 +58,17 @@ forge runs this workflow at all.
 ([build guide](../structure/build-test-platforms.md#ci)); do not file its absence. Owner, 2026-11-21: pin by hash only
 if the workflow is in use.
 
+### The test wrapper's result cache omits ignored inputs
+
+Second fix round of 2026-11-22, read and not run. `util/agentTest.mjs` (near 395) keys a stored test result on
+`workingTreeId`, which omits git-ignored files under source roots, and has no end-of-run check. The type-check cache
+had the same gap and now compares its complete input key before saving.
+
+**Why it matters:** low. A test that reads an ignored file (a local fixture, a generated file) can replay a stale pass.
+
+**Suggested handling:** reproduce with an ignored fixture a test reads; if it replays, key the result the way
+`util/typeCheckCache.mjs` keys a program.
+
 ## Chat screen
 
 ### The sidebar's whole-chat Copy can capture a reply that is still streaming
@@ -67,6 +81,21 @@ the same tab-side messages.
 
 **Suggested handling:** reproduce by copying a chat while its reply streams; if the copy is partial, disable Copy
 while the chat is busy.
+
+## Draft recovery
+
+### A second recovery Apply replays the ops the first one saved
+
+Second fix round of 2026-11-22, reproduced by a reviewer's probe (Vitest). When the server refuses part of a recovery
+draft (a memory field edit after a job's write, an OOC answer another tab already stored), Apply keeps the whole draft
+(`applyRecoveryDraft` in `src/ts/storage/journalRecovery.ts`). A later Apply rebuilds every op of the draft, so a note
+the first Apply saved and another tab edited since is set back to the draft's text. The same happens when the first Apply's wait for the save ends
+at its 30-second bound and the save commits later: the draft stays, and a second Apply after a newer edit replays it.
+
+**Why it matters:** an edit saved after the first Apply can be overwritten by the second, without a notice.
+
+**Suggested handling:** record which ops the acknowledgement refused and retry only those; the group result needs a
+field or exchange identity for that.
 
 ## Rendering
 
