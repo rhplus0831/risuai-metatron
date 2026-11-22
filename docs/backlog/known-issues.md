@@ -73,6 +73,8 @@ Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-
   - Not fixed. Recorded on 2026-11-18 at the owner's request with this scope. A fix keeps the rows until the server can
     commit the replacement (the removal inside the job's admission, with the removed tail held server-side for
     restoration) or keeps a durable copy of the pending reroll that survives a client exit.
+  - Planned: the [Removal Reroll plan](../plan/removal-reroll.md) (owner, 2026-11-22: a server-side fix in a plan
+    of its own).
 
 - A multisend part can still change the transcript before the server refuses its job. Each part of `runMultisend`,
   the PO translator, and the DevTool autopilot checks the chat binding as the tab sees it (`checkServerJobBinding`)
