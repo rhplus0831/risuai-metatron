@@ -80,6 +80,7 @@ export const CHAT_TABLES_SQL = `
         revision INTEGER NOT NULL,
         schemaVersion INTEGER NOT NULL,
         meta TEXT NOT NULL,
+        trashedAt INTEGER,
         UNIQUE (characterId, id)
     ) STRICT;
     CREATE TABLE messages (
@@ -113,7 +114,7 @@ export const TOUCHED_ROWS_SQL = `
 
 /** Column names of the chat tables, in `PRAGMA table_info` order (snapshot layout check). */
 export const CHAT_TABLE_COLUMNS: Record<string, readonly string[]> = {
-    chats: ["seq", "characterId", "id", "revision", "schemaVersion", "meta"],
+    chats: ["seq", "characterId", "id", "revision", "schemaVersion", "meta", "trashedAt"],
     messages: [
         "chatSeq",
         "id",
@@ -515,6 +516,7 @@ export type ChatSnapshotRows = {
         revision: number;
         schemaVersion: number;
         meta: string;
+        trashedAt: number | null;
     }[];
     readonly messages: readonly {
         chatSeq: number;
@@ -583,6 +585,10 @@ export type ChatFeedPayloads = Pick<
     ChangeSet["chats"][number],
     "patch" | "delta" | "rowDelta" | "rows" | "summary" | "summaryBase"
 >;
+
+/** Live publications always carry the stored mark for a surviving chat. */
+export type LiveChatChange = ChangeSet["chats"][number] &
+    ({ revision: string; trashedAt: number | null } | { revision: null });
 
 /**
  * Where a by-id group's change leaves a chat's messages, from their ids at its base (`base`, in
@@ -683,13 +689,13 @@ function sameJson(a: unknown, b: unknown): boolean {
 }
 
 type SummaryFields = Omit<ChatSummary, "characterId" | "id" | "revision">;
-type SummaryProjection = Omit<SummaryFields, "lastMessageAt">;
+type SummaryProjection = Omit<SummaryFields, "lastMessageAt" | "trashedAt">;
 
 /**
  * The shape of the stored projection (`summaryText`). Bump it whenever the projection's shape changes:
  * an open that finds another value in the `meta` table's `summaryProjectionVersion` rebuilds every row.
  */
-export const SUMMARY_PROJECTION_VERSION = 2;
+export const SUMMARY_PROJECTION_VERSION = 3;
 
 /**
  * A chat summary's listed fields: the projection of its stored metadata (the JSON copy, never a
@@ -733,9 +739,15 @@ function summaryText(meta: Record<string, unknown>): string {
 }
 
 /** A stored projection's fields with the time of the chat's last message, in the summary's key order. */
-function summaryWithTime(text: string, lastMessageAt: number | undefined): SummaryFields {
+function summaryWithTime(text: string, lastMessageAt: number | undefined, trashedAt: number | null): SummaryFields {
     const { name, fmIndex, ...rest } = JSON.parse(text) as SummaryProjection;
-    return { name, fmIndex, ...(lastMessageAt === undefined ? {} : { lastMessageAt }), ...rest };
+    return {
+        name,
+        fmIndex,
+        ...(lastMessageAt === undefined ? {} : { lastMessageAt }),
+        ...(trashedAt === null ? {} : { trashedAt }),
+        ...rest,
+    };
 }
 
 /**
@@ -1267,13 +1279,14 @@ export function countChatOperations(
     return groups.reduce((total, group) => total + group.ops.length, 0) + orders.length;
 }
 
-type ChatRow = { seq: number; revision: number; meta: string };
+type ChatRow = { seq: number; revision: number; meta: string; trashedAt: number | null };
 /** A chat as a summary read selects it: no metadata, with its joined `chatSummaries` columns (null: no row). */
 type ChatSummaryRow = {
     seq: number;
     characterId: string;
     id: string;
     revision: number;
+    trashedAt: number | null;
     summaryRevision: number | null;
     summaryText: string | null;
 };
@@ -1309,14 +1322,13 @@ class ChatChangeConflict extends Error {
 
 /**
  * The message ids of a group's ops that rewrite or remove a message, or "chat" for an op that
- * replaces or deletes the whole chat (the generation lock's preflight).
+ * replaces the whole chat (the generation lock's preflight).
  */
 function lockedTargets(group: PreparedChatGroup): { chat: boolean; messages: Set<string> } {
     const messages = new Set<string>();
     let chat = false;
     for (const op of group.ops) {
         switch (op.op) {
-            case "delete":
             case "replace":
                 chat = true;
                 break;
@@ -1375,6 +1387,10 @@ export function openChatSchema(db: DatabaseSync): void {
                             AND source.type = 'object' AND json_type(source.value, '$.messageId') = 'text';
             `);
         }
+    }
+    const chatColumns = db.prepare("PRAGMA table_xinfo(chats)").all() as { name: string }[];
+    if (!chatColumns.some(({ name }) => name === "trashedAt")) {
+        db.exec("ALTER TABLE chats ADD COLUMN trashedAt INTEGER");
     }
     const stateColumns = db.prepare("PRAGMA table_xinfo(memory_state)").all() as { name: string }[];
     if (!stateColumns.some(({ name }) => name === "adoptionDeclined")) {
@@ -1544,8 +1560,10 @@ export function createChatTables(
             "AS oldest FROM chatGroups WHERE chatSeq = ?1",
     );
     const characterExists = db.prepare("SELECT 1 AS found FROM resources WHERE kind = ? AND id = ?");
-    const selectChat = db.prepare("SELECT seq, revision, meta FROM chats WHERE characterId = ? AND id = ?");
-    const selectChatRevision = db.prepare("SELECT seq, revision FROM chats WHERE characterId = ? AND id = ?");
+    const selectChat = db.prepare("SELECT seq, revision, meta, trashedAt FROM chats WHERE characterId = ? AND id = ?");
+    const selectChatRevision = db.prepare(
+        "SELECT seq, revision, trashedAt FROM chats WHERE characterId = ? AND id = ?",
+    );
     const newerMemoryWrite = db.prepare(
         "SELECT 1 FROM chatMemoryWrites WHERE chatSeq = ? AND field = ? AND revision > ?",
     );
@@ -1556,6 +1574,10 @@ export function createChatTables(
     const selectRestoreFloor = db.prepare("SELECT revision FROM chatRestoreFloors WHERE chatSeq = ?");
     const insertChat = db.prepare(
         "INSERT INTO chats (characterId, id, revision, schemaVersion, meta) VALUES (?, ?, 0, ?, ?)",
+    );
+    const setChatTrash = db.prepare("UPDATE chats SET trashedAt = ?, revision = ? WHERE seq = ?");
+    const otherActiveChat = db.prepare(
+        "SELECT 1 FROM chats WHERE characterId = ? AND id != ? AND trashedAt IS NULL LIMIT 1",
     );
     const setChatMeta = db.prepare("UPDATE chats SET meta = ?, schemaVersion = ? WHERE seq = ?");
     const bumpChat = db.prepare("UPDATE chats SET revision = revision + ? WHERE seq = ?");
@@ -1619,10 +1641,10 @@ export function createChatTables(
     const insertOrder = db.prepare("INSERT INTO chatOrders (characterId, revision, ids) VALUES (?, 1, '[]')");
     const updateOrder = db.prepare("UPDATE chatOrders SET revision = revision + 1, ids = ? WHERE seq = ?");
     const deleteOrder = db.prepare("DELETE FROM chatOrders WHERE characterId = ?");
-    const selectAllChats = db.prepare("SELECT seq, characterId, id, revision, meta FROM chats ORDER BY seq");
+    const selectAllChats = db.prepare("SELECT seq, characterId, id, revision, meta, trashedAt FROM chats ORDER BY seq");
     // Summary reads take the stored projection and never select the potentially large metadata.
     const summaryRead =
-        "SELECT c.seq, c.characterId, c.id, c.revision, s.revision AS summaryRevision, s.text AS summaryText " +
+        "SELECT c.seq, c.characterId, c.id, c.revision, c.trashedAt, s.revision AS summaryRevision, s.text AS summaryText " +
         "FROM chats c LEFT JOIN chatSummaries s ON s.chatSeq = c.seq";
     const selectChatSummary = db.prepare(`${summaryRead} WHERE c.characterId = ? AND c.id = ?`);
     const selectAllSummaries = db.prepare(`${summaryRead} ORDER BY c.seq`);
@@ -1646,13 +1668,13 @@ export function createChatTables(
     const countUserTurns = db.prepare(COUNT_USER_TURNS_SQL);
     const selectPatchMessages = db.prepare(TOUCHED_ROWS_SQL);
     const selectCharacterChats = db.prepare(
-        "SELECT seq, id, revision, meta FROM chats WHERE characterId = ? ORDER BY seq",
+        "SELECT seq, id, revision, meta, trashedAt FROM chats WHERE characterId = ? ORDER BY seq",
     );
     const selectAllOrders = db.prepare("SELECT seq, characterId, revision, ids FROM chatOrders ORDER BY seq");
     const selectUncachedOrders = db.prepare(
         "SELECT seq, characterId, revision, ids FROM chatOrders WHERE characterId NOT IN (SELECT value FROM json_each(?)) ORDER BY seq",
     );
-    const selectChatRevisions = db.prepare("SELECT seq, characterId, id, revision FROM chats ORDER BY seq");
+    const selectChatRevisions = db.prepare("SELECT seq, characterId, id, revision, trashedAt FROM chats ORDER BY seq");
     const selectOrderRevisions = db.prepare("SELECT seq, characterId, revision FROM chatOrders ORDER BY seq");
     // Message search (`searchBatch`).
     const searchChatBySeq = db.prepare("SELECT seq, characterId, id FROM chats WHERE seq = ?");
@@ -1698,14 +1720,16 @@ export function createChatTables(
             "JOIN chats c ON c.seq = s.chatSeq WHERE c.characterId = ?",
     );
 
-    function chatRecord(
-        characterId: string,
-        row: { seq: number; id: string; revision: number; meta: string },
-        messages: unknown[],
-    ): ChatRecord {
+    function chatRecord(characterId: string, row: ChatRow & { id: string }, messages: unknown[]): ChatRecord {
         const data = JSON.parse(row.meta) as Chat;
         data.message = messages as Chat["message"];
-        return { characterId, id: row.id, revision: tokens.token(row.seq, row.revision), data };
+        return {
+            characterId,
+            id: row.id,
+            revision: tokens.token(row.seq, row.revision),
+            trashedAt: row.trashedAt,
+            data,
+        };
     }
 
     /** One indexed row read on a miss; metadata-only changes keep the memo. */
@@ -1814,6 +1838,7 @@ export function createChatTables(
             ...summaryWithTime(
                 freshSummaryText(row.seq, row.revision, { revision: row.summaryRevision, text: row.summaryText }),
                 lastMessageAt(row.seq),
+                row.trashedAt,
             ),
         };
     }
@@ -1835,8 +1860,9 @@ export function createChatTables(
 
     /** Stores a new id list on an order row and advances its revision (guarded, see `nextRevision`). */
     function writeOrder(order: { seq: number; revision: number }, ids: readonly string[]) {
-        nextRevision(order.revision, 1);
+        const next = nextRevision(order.revision, 1);
         updateOrder.run(JSON.stringify(ids), order.seq);
+        return next;
     }
 
     function insertAt(chatSeq: number, after: number, messages: readonly PreparedMessage[]) {
@@ -2243,10 +2269,9 @@ export function createChatTables(
     ): {
         result: ChatGroupResult;
         applied: number;
-        feed?: ChatFeedPayloads;
+        feed?: LiveChatChange;
         change?: ChatWriteChange;
         invalidated?: true;
-        duplicate?: true;
         messageChanges?: ChatMessageChanges;
     } {
         const { characterId, chatId } = group;
@@ -2266,12 +2291,18 @@ export function createChatTables(
             // refuse it now.
             const remembered = rememberedResult(group, row);
             if (remembered) {
-                return { result: remembered, applied: 0, duplicate: true };
+                return { result: remembered, applied: 0 };
             }
             if (group.retry && mayHaveForgotten(group, row)) {
                 // It may have landed before the oldest remembered group: refused, never applied twice.
                 conflictHere(row, "expired");
             }
+        }
+        if (group.ops[0].op === "delete") {
+            conflictHere(row, row ? "useTrash" : undefined);
+        }
+        if (row && row.trashedAt !== null) {
+            conflictHere(row, "chatTrashed");
         }
         // Before the revision checks: a refused edit of a generating message must read as
         // "retry after the job", not as a stale view to reload. The locked messages it targets
@@ -2369,8 +2400,7 @@ export function createChatTables(
         };
         // Per message-editing op: whether its message was there (reported only when one was not).
         const targets: TargetOutcome[] = [];
-        let deleted = false;
-        /** A `delete` or `replace` applied: the chat's source changed as a whole (its source generation). */
+        /** A `replace` applied: the chat's source changed as a whole (its source generation). */
         let invalidated = false;
         for (const [opIndex, op] of group.ops.entries()) {
             applyingOp = opIndex;
@@ -2397,24 +2427,7 @@ export function createChatTables(
                     messageIds = op.messages.map((message) => message.id);
                     messageIdsRenamed = op.renamed;
                     messageIds.forEach((id) => insertedHere.add(id));
-                    row = { seq, revision: 0, meta: op.meta };
-                    applied += 1;
-                    break;
-                }
-                case "delete": {
-                    (stagedAttempts ?? attempts).delete(attemptKey(characterId, chatId));
-                    deleteChat.run(chatSeq);
-                    setMessageCount(chatSeq, undefined);
-                    const order = readOrder(characterId);
-                    if (order) {
-                        writeOrder(
-                            order,
-                            order.ids.filter((id) => id !== chatId),
-                        );
-                        changedOrders.add(characterId);
-                    }
-                    deleted = true;
-                    invalidated = true;
+                    row = { seq, revision: 0, meta: op.meta, trashedAt: null };
                     applied += 1;
                     break;
                 }
@@ -2922,8 +2935,7 @@ export function createChatTables(
                 control?.action === "rollback" &&
                 control.generationId === attempt.generationId &&
                 control.messageId === attempt.messageId &&
-                row &&
-                !deleted
+                row
             ) {
                 if (patchBase && summaryBefore === undefined)
                     summaryBefore = freshSummaryText(row.seq, row.revision, { meta: row.meta });
@@ -2955,7 +2967,7 @@ export function createChatTables(
         }
         let revision: string | null = null;
         let next = 0;
-        if (!deleted && row) {
+        if (row) {
             next = nextRevision(row.revision, applied);
             if (applied > 0) {
                 bumpChat.run(applied, row.seq);
@@ -2981,7 +2993,7 @@ export function createChatTables(
         if (oocAnswerRefusals.size) result.oocAnswerRefusals = [...oocAnswerRefusals];
         if (memoryRefused) result.memoryRefused = true;
         if (selections.length) result.selections = selections;
-        if (!deleted && row) {
+        if (row) {
             const candidateRows: NonNullable<ChatGroupResult["candidateRows"]> = [];
             for (const [id, expected] of candidateWrites) {
                 const stored = selectMessage.get(row.seq, id) as MessageRow | undefined;
@@ -2997,7 +3009,7 @@ export function createChatTables(
         if (targets.includes("missing")) {
             result.targets = targets;
         }
-        if (group.groupId !== null && !deleted && row) {
+        if (group.groupId !== null && row) {
             // Every answered group, also one that changed nothing: a resend of it must not apply
             // after another writer recreated its target or changed its text. Rolled back with the
             // batch when anything conflicts.
@@ -3071,6 +3083,7 @@ export function createChatTables(
                         // Checked against the group's revision: a row left stale must not publish old text at it.
                         summaryAfter ?? freshSummaryText(row!.seq, next, { meta: row!.meta }),
                         timeBefore ? time : lastMessageAt(row!.seq),
+                        row!.trashedAt,
                     ),
                 };
             } else {
@@ -3087,7 +3100,7 @@ export function createChatTables(
             result,
             applied,
             change,
-            feed,
+            feed: { characterId, id: chatId, revision: revision!, trashedAt: row!.trashedAt, ...feed },
             ...(invalidated ? { invalidated } : {}),
             ...(retracted.length > 0 || rewritten.length > 0
                 ? {
@@ -3228,6 +3241,33 @@ export function createChatTables(
         readChatMeta(characterId: string, id: string): ChatRecord | null {
             const row = selectChat.get(characterId, id) as ChatRow | undefined;
             return row ? chatRecord(characterId, { ...row, id }, []) : null;
+        },
+
+        chatState(characterId: string, id: string) {
+            return selectChatRevision.get(characterId, id) as
+                Pick<ChatRow, "seq" | "revision" | "trashedAt"> | undefined;
+        },
+        hasOtherActiveChat(characterId: string, id: string): boolean {
+            return !!otherActiveChat.get(characterId, id);
+        },
+        setTrashedAt(seq: number, revision: number, trashedAt: number | null) {
+            const next = nextRevision(revision, 1);
+            setChatTrash.run(trashedAt, next, seq);
+            advanceSummary.run(next, seq, revision);
+        },
+        /** Deletes the chat and returns its changed order's revision. */
+        deleteChat(characterId: string, id: string, seq: number): string | null {
+            (stagedAttempts ?? attempts).delete(attemptKey(characterId, id));
+            lastMessageTimes.delete(seq);
+            deleteChat.run(seq);
+            setMessageCount(seq, undefined);
+            const order = readOrder(characterId);
+            if (!order) return null;
+            const revision = writeOrder(
+                order,
+                order.ids.filter((member) => member !== id),
+            );
+            return tokens.token(order.seq, revision);
         },
 
         /** A chat's incarnation (`chats.seq`), or null when it does not exist. */
@@ -3400,8 +3440,8 @@ export function createChatTables(
          * permutation of the list after this batch's creates and deletes; that check is skipped once
          * anything conflicted (`priorConflicts`: a resource op did), since the batch rolls back and a
          * conflicting change is missing from the list. Returns every conflict found (the caller rolls
-         * back when there is one), the results, the applied count, each applied by-id group's feed
-         * payloads (`feed`, by result), the chats a `delete` or `replace` applied to (`invalidated`,
+         * back when there is one), the results, the applied count, each newly answered group's feed
+         * entry (`feed`), the chats a `replace` applied to (`invalidated`,
          * once each, in group order), and what the groups did to messages (`messageChanges`, a group
          * with nothing to report left out). With `changes`, also each group's own change (`changes`,
          * aligned with the results; undefined for a group without one).
@@ -3420,8 +3460,7 @@ export function createChatTables(
             const conflicts: (ChatConflict | ChatOrderConflict)[] = [];
             const results: ChatGroupResult[] = [];
             // Feed-only data: kept outside the HTTP batch's ChatGroupResult entries.
-            const feed = new Map<ChatGroupResult, ChatFeedPayloads>();
-            const duplicates = new Set<ChatGroupResult>();
+            const feed: LiveChatChange[] = [];
             // Only for a writer that asked; kept outside the results like the feed's payloads.
             const written: (ChatWriteChange | undefined)[] | undefined = changes ? [] : undefined;
             const changedOrders = new Set<string>();
@@ -3434,11 +3473,8 @@ export function createChatTables(
                     const outcome = applyGroup(group, changedOrders, jobToken, changes, attemptWrite, restoredFields);
                     results.push(outcome.result);
                     written?.push(outcome.change);
-                    if (outcome.duplicate) {
-                        duplicates.add(outcome.result);
-                    }
                     if (outcome.feed) {
-                        feed.set(outcome.result, outcome.feed);
+                        feed.push(outcome.feed);
                     }
                     if (outcome.invalidated) {
                         invalidated.push({ characterId: group.characterId, id: group.chatId });
@@ -3505,7 +3541,6 @@ export function createChatTables(
                 orders: orderResults,
                 applied,
                 feed,
-                duplicates,
                 invalidated,
                 messageChanges,
                 changes: written,
@@ -3524,15 +3559,19 @@ export function createChatTables(
 
         /** Every chat's and every chat order's revision, without their data. */
         listRevisions(): {
-            chats: { characterId: string; id: string; revision: string }[];
+            chats: { characterId: string; id: string; revision: string; trashedAt: number | null }[];
             chatOrders: { characterId: string; revision: string }[];
         } {
             const chats = (
-                selectChatRevisions.all() as { seq: number; characterId: string; id: string; revision: number }[]
+                selectChatRevisions.all() as Pick<
+                    ChatSummaryRow,
+                    "seq" | "characterId" | "id" | "revision" | "trashedAt"
+                >[]
             ).map((row) => ({
                 characterId: row.characterId,
                 id: row.id,
                 revision: tokens.token(row.seq, row.revision),
+                trashedAt: row.trashedAt,
             }));
             const chatOrders = (
                 selectOrderRevisions.all() as { seq: number; characterId: string; revision: number }[]
@@ -3551,15 +3590,9 @@ export function createChatTables(
                 }
                 list.push(readMessage(row.data));
             }
-            const chats = (
-                selectAllChats.all() as {
-                    seq: number;
-                    characterId: string;
-                    id: string;
-                    revision: number;
-                    meta: string;
-                }[]
-            ).map((row) => chatRecord(row.characterId, row, messagesBySeq.get(row.seq) ?? []));
+            const chats = (selectAllChats.all() as (ChatRow & { characterId: string; id: string })[]).map((row) =>
+                chatRecord(row.characterId, row, messagesBySeq.get(row.seq) ?? []),
+            );
             const chatOrders = (
                 selectAllOrders.all() as { seq: number; characterId: string; revision: number; ids: string }[]
             ).map((row) => ({
@@ -3624,9 +3657,7 @@ export function createChatTables(
             if (!order) {
                 return null;
             }
-            const chats = (
-                selectCharacterChats.all(characterId) as { seq: number; id: string; revision: number; meta: string }[]
-            ).map((row) => {
+            const chats = (selectCharacterChats.all(characterId) as (ChatRow & { id: string })[]).map((row) => {
                 const messages = (selectChatMessages.all(row.seq) as { data: string }[]).map((entry) =>
                     readMessage(entry.data),
                 );
@@ -3769,6 +3800,7 @@ export function messageSearchSnippet(
 export function walkChatSnapshot(
     source: DatabaseSync,
     characterIds: ReadonlySet<string>,
+    chatColumns: readonly string[],
     sink: ChatSnapshotSink,
     signal?: AbortSignal,
 ): ReadonlyMap<number, string> {
@@ -3777,11 +3809,15 @@ export function walkChatSnapshot(
     const chatsByCharacter = new Map<string, Set<string>>();
     for (const [row, number] of snapshotRows(
         source,
-        "SELECT seq, characterId, id, revision, schemaVersion, meta FROM chats ORDER BY seq",
+        `SELECT seq, characterId, id, revision, schemaVersion, meta, ${chatColumns.includes("trashedAt") ? "trashedAt" : "NULL AS trashedAt"} FROM chats ORDER BY seq`,
         NOT_A_RESOURCE_DATABASE,
         signal,
     )) {
         const where = `chat row ${number}`;
+        const { trashedAt } = row;
+        if (trashedAt !== null && !isNonNegativeSafeInteger(trashedAt)) {
+            throw new ResourceValidationError(`${where}: invalid trashedAt`);
+        }
         if (!isPositiveSafeInteger(row.seq) || !isPositiveSafeInteger(row.revision) || chatIds.has(row.seq)) {
             throw new ResourceValidationError(`${where}: invalid seq or revision`);
         }
@@ -3822,6 +3858,7 @@ export function walkChatSnapshot(
                 revision: row.revision,
                 schemaVersion: CHAT_SCHEMA_VERSION,
                 meta: meta.text,
+                trashedAt,
             },
             meta.stored as Record<string, unknown>,
         );
@@ -3957,7 +3994,7 @@ export function walkChatSnapshot(
  */
 export function createChatStagingSink(db: DatabaseSync): ChatSnapshotSink {
     const insertChat = db.prepare(
-        "INSERT INTO chats (seq, characterId, id, revision, schemaVersion, meta) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO chats (seq, characterId, id, revision, schemaVersion, meta, trashedAt) VALUES (?, ?, ?, ?, ?, ?, ?)",
     );
     const upsertSummary = db.prepare(UPSERT_CHAT_SUMMARY_SQL);
     const insertMessage = db.prepare(
@@ -3967,7 +4004,7 @@ export function createChatStagingSink(db: DatabaseSync): ChatSnapshotSink {
     const insertOrder = db.prepare("INSERT INTO chatOrders (characterId, revision, ids) VALUES (?, ?, ?)");
     return {
         chat(row, meta) {
-            insertChat.run(row.seq, row.characterId, row.id, row.revision, row.schemaVersion, row.meta);
+            insertChat.run(row.seq, row.characterId, row.id, row.revision, row.schemaVersion, row.meta, row.trashedAt);
             upsertSummary.run(row.seq, row.revision, summaryText(meta));
         },
         message(row) {
@@ -4000,9 +4037,21 @@ export const STAGED_CHAT_SEQS = "temp.stagedChatSeqs";
  * and nothing is parsed.
  */
 export function copyStagedChats(db: DatabaseSync): void {
+    // Choose a survivor using the original marks, before the other trashed chats get a fresh retention period.
+    db.prepare(
+        `
+        WITH survivors AS (
+            SELECT (SELECT c.seq FROM staged.chats c WHERE c.characterId = s.characterId
+                    ORDER BY c.trashedAt DESC, c.seq DESC LIMIT 1) AS seq
+            FROM staged.chats s GROUP BY s.characterId HAVING COUNT(s.trashedAt) = COUNT(*)
+        )
+        INSERT INTO main.chats (characterId, id, revision, schemaVersion, meta, trashedAt)
+            SELECT characterId, id, revision, schemaVersion, meta,
+                CASE WHEN trashedAt IS NULL OR seq IN (SELECT seq FROM survivors) THEN NULL ELSE ? END
+            FROM staged.chats ORDER BY seq
+    `,
+    ).run(Date.now());
     db.exec(`
-        INSERT INTO main.chats (characterId, id, revision, schemaVersion, meta)
-            SELECT characterId, id, revision, schemaVersion, meta FROM staged.chats ORDER BY seq;
         CREATE TABLE ${STAGED_CHAT_SEQS} (stagedSeq INTEGER PRIMARY KEY, liveSeq INTEGER NOT NULL) STRICT;
         INSERT INTO ${STAGED_CHAT_SEQS} (stagedSeq, liveSeq)
             SELECT s.seq, l.seq FROM staged.chats s

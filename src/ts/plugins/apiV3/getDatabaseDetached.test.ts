@@ -501,14 +501,7 @@ it("matches a hook's loaded snapshot with local edits, structured memory and a c
     fake.set("ui", "main", { ...fake.record("ui", "main")!.data, memoryAlgorithmType: "structuredMemory" });
     remember(fake, "memory", "remembered");
     const old = await boot(fake);
-    fake.chatBatch([
-        {
-            characterId: "gone",
-            chatId: "deleted",
-            baseRevision: fake.chat("gone", "deleted")!.revision,
-            ops: [{ op: "delete" }],
-        },
-    ]);
+    fake.deleteChatForever("gone", "deleted");
     const prepare = async (b: Awaited<ReturnType<typeof boot>>) => {
         await b.chat.ensureChatLoaded(held);
         b.chat.selectChat("c", "other");
@@ -977,7 +970,7 @@ it("loads the whole unloaded character and saves a changed chat", async () => {
     expect(await b.api.getDatabase(["characters"])).toEqual(incoming);
 });
 
-it("loads the whole unloaded character and deletes a chat omitted by the plugin", async () => {
+it("loads the whole unloaded character and sends the delete of a chat omitted by the plugin, which the server refuses: the chat comes back", async () => {
     boundary.liveFeedCurrent.mockReturnValue(true);
     const b = await boot(await fixture());
     const incoming = structuredClone(await b.api.getDatabase(["characters"]));
@@ -986,17 +979,27 @@ it("loads the whole unloaded character and deletes a chat omitted by the plugin"
     b.fake.requests.length = 0;
 
     await b.api.setDatabase(incoming);
-    await b.sync.flushResources();
-
+    // The tab sends the omitted chat's delete; the server refuses delete ops (`useTrash`), so the
+    // conflict re-reads the chat, and the character's list read brings it back.
+    expect(await b.sync.flushResources()).toEqual({ discarded: ["chats/c/other"], refused: [] });
+    expect(b.fake.batchBodies().map((body) => body.chats)).toEqual([
+        [expect.objectContaining({ characterId: "c", chatId: "other", ops: [{ op: "delete" }] })],
+    ]);
     expect(requestedChats(b.fake)).toEqual([
         { characterId: "c", id: "held" },
         { characterId: "c", id: "other" },
+        { characterId: "c", id: "other" },
     ]);
     expect(b.chat.chatsLoaded("c")).toBe(true);
-    expect(b.fake.chat("c", "other")).toBeNull();
+    expect(b.fake.chat("c", "other")).not.toBeNull();
     expect(b.fake.chat("c", "held")!.data).toEqual(returnedCharacter(incoming, "c").chats[0]);
-    expect(b.fake.order("c")!.ids).toEqual(["held"]);
-    expect(await b.api.getDatabase(["characters"])).toEqual(incoming);
+    expect(b.fake.order("c")!.ids).toEqual(["held", "other"]);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(b.chat.chatList("c").map((entry) => entry.id)).toEqual(["held", "other"]);
+    expect(returnedCharacter(await b.api.getDatabase(["characters"]), "c").chats.map((chat) => chat.id)).toEqual([
+        "held",
+        "other",
+    ]);
 });
 
 it("loads the whole unloaded character and creates a chat added by the plugin", async () => {

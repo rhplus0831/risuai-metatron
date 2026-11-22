@@ -62,7 +62,13 @@ function holdChats(characters: { chaId: string; chats: any[] }[]) {
     assembleChats(
         characters,
         characters.flatMap((entry) =>
-            entry.chats.map((chat) => ({ characterId: entry.chaId, id: chat.id, revision: "r1", data: chat })),
+            entry.chats.map((chat) => ({
+                characterId: entry.chaId,
+                id: chat.id,
+                revision: "r1",
+                trashedAt: null,
+                data: chat,
+            })),
         ),
         characters.map((entry) => ({
             characterId: entry.chaId,

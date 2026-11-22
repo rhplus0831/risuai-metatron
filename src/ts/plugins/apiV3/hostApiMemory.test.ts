@@ -84,6 +84,7 @@ function install(count = 2) {
         characterId: "c",
         id: `k${i}`,
         revision: token(i + 1, 1),
+        trashedAt: null,
         data: chat(`k${i}`, memory(i + 1, 1)),
     }));
     initializeRecords(takeRecordFields({ characters, memoryAlgorithmType: "structuredMemory" }));
@@ -565,7 +566,13 @@ it("loads a chat added by a collection update during refresh before returning th
     const reading = host.getDatabase(["characters"]);
     try {
         await entered.promise;
-        rows.push({ characterId: "c", id: "k1", revision: token(2, 1), data: chat("k1", memory(2, 1)) });
+        rows.push({
+            characterId: "c",
+            id: "k1",
+            revision: token(2, 1),
+            trashedAt: null,
+            data: chat("k1", memory(2, 1)),
+        });
         chats.applyRemoteCollection({
             characterId: "c",
             order: { characterId: "c", revision: token(1, 2), ids: ["k0", "k1"] },

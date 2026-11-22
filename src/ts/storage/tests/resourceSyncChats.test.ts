@@ -605,7 +605,7 @@ describe("a new character whose create answer was lost", () => {
         expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
     });
 
-    it("saves replacement chats after a removed character's lost create is adopted and its deletion fails", async () => {
+    it("saves replacement chats after a removed character's lost create is adopted and its deletion fails, and keeps the dropped chat whose delete the server refuses", async () => {
         const { fake, sync, chat, characterStore, create } = await loseCharacterCreate();
         expect(characterStore.removeCharacter("d")).toBe(true);
         // Let the lost create's retry conflict first; fail only the delete that follows adoption.
@@ -629,18 +629,27 @@ describe("a new character whose create answer was lost", () => {
             name: "Replacement",
             chats: [{ id: "replacement", name: "Replacement chat", message: [m("r", "Replacement transcript")] }],
         });
-        expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
+        // The replacement drops `d1`: its delete op is refused (`useTrash`) and the chat stays after
+        // the replacement's, with its order work reported discarded.
+        expect(await sync.flushResources()).toEqual({ discarded: ["chats/d/d1", "chats/d"], refused: [] });
         const collection = fake.store.readRefs([], { chatCollections: ["d"] }).chatCollections[0];
-        expect(collection.order?.ids).toEqual(["replacement"]);
+        expect(collection.order?.ids).toEqual(["replacement", "d1"]);
         expect(
             collection.chats.map((entry) => ({
                 id: entry.id,
                 texts: entry.data.message.map((message) => message.data),
             })),
-        ).toEqual([{ id: "replacement", texts: ["Replacement transcript"] }]);
+        ).toEqual([
+            { id: "d1", texts: ["Original"] },
+            { id: "replacement", texts: ["Replacement transcript"] },
+        ]);
+        expect(fake.batchBodies().at(-1).chats).toEqual([
+            expect.objectContaining({ characterId: "d", chatId: "d1", ops: [{ op: "delete" }] }),
+        ]);
+        expect(chat.chatList("d").map((entry) => entry.id)).toEqual(["replacement", "d1"]);
         expect(fake.record("characters", "d")!.data.name).toBe("Replacement");
         expect(chat.hasUnsavedChatWork()).toBe(false);
-        expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
+        expect(alerts.normal).toHaveBeenCalledWith("reloaded");
     });
 });
 
@@ -1168,14 +1177,7 @@ describe("one chat's trouble does not block the rest", () => {
         chat.createChat("c", { id: "local", name: "L", message: [] } as any);
         await sync.flushResources();
         // Before the list is read again: another tab deletes `j`, this tab edits it and reorders.
-        fake.chatBatch([
-            {
-                characterId: "c",
-                chatId: "j",
-                baseRevision: fake.chat("c", "j")!.revision,
-                ops: [{ op: "delete" } as any],
-            },
-        ]);
+        fake.deleteChatForever("c", "j");
         chat.setChatMeta(refJ, { note: "edit of a chat gone on the server" });
         chat.reorderChats("c", ["local", "k", "j"]);
         const result = await sync.flushResources();
@@ -1226,7 +1228,7 @@ describe("one chat's trouble does not block the rest", () => {
     );
 
     it.each(["create", "delete"])(
-        "refreshes the order after a lost %s replay before sending a queued reorder",
+        "replays a lost %s first: a create's replay refreshes the order before the queued reorder is sent; a delete's is refused and the reorder discarded",
         async (membership) => {
             const { fake, sync, chat, mirrorIds } = await boot((server) => {
                 if (membership === "delete")
@@ -1241,7 +1243,10 @@ describe("one chat's trouble does not block the rest", () => {
             });
             if (membership === "create") chat.createChat("c", { id: "n", name: "N", message: [] } as any);
             else chat.deleteChat({ chaId: "c", chatId: "n" });
-            fake.dropNextBatchResponse = true;
+            // A delete op is never applied (the server answers it `useTrash`): its lost answer is a
+            // request that failed in transit.
+            if (membership === "create") fake.dropNextBatchResponse = true;
+            else fake.failNext = { status: 0, times: 1, match: (path) => path === "/api/resources/batch" };
             await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
             const lost = fake.batchBodies()[0].chats[0];
             const freshOrderRevision = fake.order("c")!.revision;
@@ -1249,6 +1254,22 @@ describe("one chat's trouble does not block the rest", () => {
             chat.reorderChats("c", desired);
             fake.requests.length = 0;
 
+            if (membership === "delete") {
+                // The replay keeps its id and retry flag; the server refuses it (`useTrash`) and keeps
+                // `n`, which comes back, and the reorder queued without it is discarded.
+                expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/n", "chats/c"], refused: [] });
+                expect(fake.batchBodies()).toEqual([
+                    expect.objectContaining({ chats: [{ ...lost, retry: true }], chatOrders: [] }),
+                ]);
+                expect(fake.order("c")!.revision).toBe(freshOrderRevision);
+                expect(fake.order("c")!.ids).toEqual(["k", "j", "n"]);
+                expect(mirrorIds()).toEqual(["k", "j", "n"]);
+                expect(alerts.normal).toHaveBeenCalledWith("reloaded");
+                expect(alerts.error).not.toHaveBeenCalled();
+                expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
+                expect(fake.batchCount()).toBe(1);
+                return;
+            }
             expect(await sync.flushResources()).toEqual({ discarded: [], refused: [] });
             const [replay, reordered] = fake.batchBodies();
             expect(replay.chats).toEqual([{ ...lost, retry: true }]);
@@ -1309,14 +1330,7 @@ describe("one chat's trouble does not block the rest", () => {
         const scope = sync.beginMutationScope();
         settings.ui.theme = "mine";
         fake.set("ui", "main", { ...(fake.record("ui", "main")!.data as object), theme: "theirs" });
-        fake.chatBatch([
-            {
-                characterId: "c",
-                chatId: "j",
-                baseRevision: fake.chat("c", "j")!.revision,
-                ops: [{ op: "delete" } as any],
-            },
-        ]);
+        fake.deleteChatForever("c", "j");
         chat.setChatMeta(refJ, { note: "edit of a chat gone on the server" });
         // The conflict read succeeds; the chat-list read after the discards fails.
         let reads = 0;
@@ -1738,7 +1752,7 @@ describe("missing targets and gone anchors", () => {
     it("takes the ordinary recovery when the chat was replaced by another of the same id meanwhile", async () => {
         const { fake, sync, chat } = await boot();
         const revision = fake.chat("c", "k")!.revision;
-        fake.chatBatch([{ characterId: "c", chatId: "k", baseRevision: revision, ops: [{ op: "delete" }] }]);
+        fake.deleteChatForever("c", "k");
         fake.chatBatch([
             {
                 characterId: "c",
@@ -1901,9 +1915,7 @@ describe("group idempotency ids", () => {
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 0 });
         // Another tab deletes `j`; this tab edits it: its group conflicts, and the batch (k's resend
         // with it) rolls back. The conflict's read fails the first time.
-        fake.chatBatch([
-            { characterId: "c", chatId: "j", baseRevision: fake.chat("c", "j")!.revision, ops: [{ op: "delete" }] },
-        ]);
+        fake.deleteChatForever("c", "j");
         chat.setChatMeta(refJ, { note: "edit of a chat gone on the server" });
         fake.failNext = { status: 500, times: 1, match: (path) => path === "/api/resources/read" };
         await expect(sync.flushResources()).rejects.toMatchObject({ status: 500 });
@@ -2028,10 +2040,7 @@ describe("kept absent chats leave the order", () => {
             ]),
         );
     /** The other tab deletes `j` on its current revision. */
-    const deleteElsewhere = (fake: StoreBackedServer) =>
-        fake.chatBatch([
-            { characterId: "c", chatId: "j", baseRevision: fake.chat("c", "j")!.revision, ops: [{ op: "delete" }] },
-        ]);
+    const deleteElsewhere = (fake: StoreBackedServer) => fake.deleteChatForever("c", "j");
     /** The live update of a change the other tab made to `j` and the order (the socket's frames). */
     const announce = (sync: Sync, fake: StoreBackedServer) =>
         sync.noteRemoteChanges({
@@ -2294,36 +2303,55 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
         h.fake.requests.length = 0;
     }
 
-    it("replays a lost chat create and then deletes the chat when the id is re-added without it: the server ends with exactly the replacement's chats", async () => {
+    it("replays a lost chat create and then deletes the chat on the revision its answer reports when the id is re-added without it; the server refuses the deletes and keeps the old chats beside the replacement's", async () => {
         const h = await bootWithCharacters();
         const lost = await loseCreateOfX(h);
         await failDeletion(h);
         h.characterStore.addCharacter(replacement([chatOf("r", "Replacement transcript")]));
-        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
-        expect(stored(h.fake)).toEqual({ ids: ["r"], texts: { r: "Replacement transcript" } });
+        // The delete ops are refused (`useTrash`) with their batch; the retry saves the replacement's chat.
+        expect(await h.sync.flushResources()).toEqual({
+            discarded: ["chats/c/k", "chats/c/j", "chats/c/x", "chats/c"],
+            refused: [],
+        });
+        expect(stored(h.fake)).toEqual({
+            ids: ["r", "k", "j", "x"],
+            texts: { r: "Replacement transcript", k: "A", x: "Lost create" },
+        });
         expect(h.fake.record("characters", "c")!.data.name).toBe("Replacement");
         // The lost create first, exactly as sent with its id and `retry` (answered as the duplicate it
-        // is), then the delete on the revision that answer reports; the chats held before as usual.
+        // is, again in the retry after the refusal), then the delete on the revision that answer
+        // reports; the chats held before as usual.
         expect(groups(h.fake).find((group: any) => group.chatId === "x")).toEqual({ ...lost, retry: true });
-        expect(opsOf(h.fake, "x")).toEqual([["create"], ["delete"]]);
+        expect(opsOf(h.fake, "x")).toEqual([["create"], ["create"], ["delete"]]);
+        expect(
+            groups(h.fake).find((group: any) => group.chatId === "x" && group.ops[0].op === "delete").baseRevision,
+        ).toBe(h.fake.chat("c", "x")!.revision);
         expect(opsOf(h.fake, "k")).toEqual([["delete"]]);
         expect(opsOf(h.fake, "j")).toEqual([["delete"]]);
-        expect(opsOf(h.fake, "r")).toEqual([["create"]]);
-        expect(h.chat.heldChatRevision(refX)).toBeNull();
+        expect(opsOf(h.fake, "r")).toEqual([["create"], ["create"]]);
+        expect(h.mirrorIds()).toEqual(["r", "k", "j", "x"]);
+        expect(h.chat.heldChatRevision(refX)).toBe(h.fake.chat("c", "x")!.revision);
         expect(h.chat.hasUnsavedChatWork()).toBe(false);
         expect(alerts.error).not.toHaveBeenCalled();
-        expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
+        expect(alerts.normal).toHaveBeenCalledWith("reloaded");
     });
 
-    it("replays a lost chat create and then replaces the chat when the id is re-added with it, on the revision the duplicate answer reports, without a conflict or a reload notice", async () => {
+    it("replays a lost chat create and then replaces the chat when the id is re-added with it, on the revision the duplicate answer reports; the dropped chats' refused deletes keep them", async () => {
         const h = await bootWithCharacters();
         const lost = await loseCreateOfX(h);
         const landed = h.fake.chat("c", "x")!.revision;
         await failDeletion(h);
         h.characterStore.addCharacter(replacement([chatOf("x", "Rewritten transcript")]));
-        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
-        expect(stored(h.fake)).toEqual({ ids: ["x"], texts: { x: "Rewritten transcript" } });
-        const [replay, replace] = groups(h.fake).filter((group: any) => group.chatId === "x");
+        // The dropped `k` and `j`'s delete ops are refused (`useTrash`) with their batch, and the
+        // re-add's reorder (`[x]`) is discarded with them; the retry saves `x`.
+        expect(await h.sync.flushResources()).toEqual({
+            discarded: ["chats/c/k", "chats/c/j", "chats/c"],
+            refused: [],
+        });
+        expect(stored(h.fake)).toEqual({ ids: ["k", "j", "x"], texts: { k: "A", x: "Rewritten transcript" } });
+        const sentX = groups(h.fake).filter((group: any) => group.chatId === "x");
+        const [replay] = sentX;
+        const replace = sentX.find((group: any) => group.ops[0].op === "replace");
         expect(replay).toEqual({ ...lost, retry: true });
         expect(replace).toEqual({
             characterId: "c",
@@ -2332,16 +2360,18 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
             groupId: expect.any(String),
             ops: [{ op: "replace", chat: expect.objectContaining({ id: "x" }) }],
         });
-        expect(opsOf(h.fake, "x")).toEqual([["create"], ["replace"]]);
+        expect(sentX.slice(1)).toEqual([{ ...lost, retry: true }, replace]);
+        expect(opsOf(h.fake, "x")).toEqual([["create"], ["create"], ["replace"]]);
+        expect(opsOf(h.fake, "k")).toEqual([["delete"]]);
+        expect(opsOf(h.fake, "j")).toEqual([["delete"]]);
+        expect(h.mirrorIds()).toEqual(["k", "j", "x"]);
         expect(h.chat.heldChatRevision(refX)).toBe(h.fake.chat("c", "x")!.revision);
         expect(h.chat.hasUnsavedChatWork()).toBe(false);
         expect(alerts.error).not.toHaveBeenCalled();
-        // The re-add's reorder (`[x]`) waits behind the in-doubt create replay, then goes out on the
-        // order revision the list read reports: no conflict and no reload notice.
-        expect(alerts.normal.mock.calls.map(([value]) => value)).toEqual([]);
+        expect(alerts.normal).toHaveBeenCalledWith("reloaded");
     });
 
-    it("keeps the lost groups of chats the server holds too: the re-add replays them, then replaces the reused chat and deletes the other on the revisions they report, without a conflict", async () => {
+    it("keeps the lost groups of chats the server holds too: the re-add replays them, then replaces the reused chat and deletes the other on the revisions they report; the server refuses the delete and keeps the other", async () => {
         const h = await bootWithCharacters();
         h.chat.setMessageText(refK, "a", "lost edit");
         h.chat.setChatMeta(refJ, { note: "lost note" });
@@ -2354,29 +2384,31 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
         h.fake.requests.length = 0;
         await failDeletion(h);
         h.characterStore.addCharacter(replacement([chatOf("k", "Rewritten transcript")]));
-        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
-        expect(stored(h.fake)).toEqual({ ids: ["k"], texts: { k: "Rewritten transcript" } });
+        // `j`'s delete op is refused (`useTrash`) with its batch; the retry saves `k`'s replace.
+        expect(await h.sync.flushResources()).toEqual({ discarded: ["chats/c/j", "chats/c"], refused: [] });
+        expect(stored(h.fake)).toEqual({ ids: ["k", "j"], texts: { k: "Rewritten transcript" } });
+        expect(h.fake.chat("c", "j")!.data.note).toBe("lost note");
         // Before the fix the settled resends were forgotten and the replace went out on the base the
         // lost edit had moved: a conflict, the notice, and the server's copy over the replacement.
-        const [replayK, replaceK] = groups(h.fake).filter((group: any) => group.chatId === "k");
+        const [replayK, replaceK, retriedK] = groups(h.fake).filter((group: any) => group.chatId === "k");
         expect(replayK).toEqual({ ...lostK, retry: true });
         expect(replaceK.baseRevision).toBe(landedK);
-        expect(opsOf(h.fake, "k")).toEqual([["setText"], ["replace"]]);
+        expect(retriedK).toEqual(replaceK);
+        expect(opsOf(h.fake, "k")).toEqual([["setText"], ["replace"], ["replace"]]);
         expect(groups(h.fake).find((group: any) => group.chatId === "j")).toEqual({ ...lostJ, retry: true });
         expect(opsOf(h.fake, "j")).toEqual([["meta"], ["delete"]]);
+        expect(h.mirrorIds()).toEqual(["k", "j"]);
         expect(h.chat.heldChatRevision(refK)).toBe(h.fake.chat("c", "k")!.revision);
         expect(h.chat.hasUnsavedChatWork()).toBe(false);
         expect(alerts.error).not.toHaveBeenCalled();
-        expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
+        expect(alerts.normal).toHaveBeenCalledWith("reloaded");
     });
 
-    it("does not keep a create the server rolled back unanswered (never in doubt, no revision held): the re-add creates the reused id afresh", async () => {
+    it("does not keep a create the server rolled back unanswered (never in doubt, no revision held): the re-add creates the reused id afresh, and the dropped chat's refused delete keeps it", async () => {
         const h = await bootWithCharacters();
         // Another tab deletes `j`; this tab's edit of it conflicts and rolls the batch back with x's
         // create, and the conflict's read fails: the create is kept apart, never in doubt.
-        h.fake.chatBatch([
-            { characterId: "c", chatId: "j", baseRevision: h.fake.chat("c", "j")!.revision, ops: [{ op: "delete" }] },
-        ]);
+        h.fake.deleteChatForever("c", "j");
         h.chat.setChatMeta(refJ, { note: "edit of a chat gone on the server" });
         h.chat.createChat("c", chatOf("x", "Rolled back"));
         h.fake.failNext = { status: 500, times: 1, match: (path) => path === "/api/resources/read" };
@@ -2386,11 +2418,13 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
         h.fake.requests.length = 0;
         await failDeletion(h);
         h.characterStore.addCharacter(replacement([chatOf("x", "Rewritten transcript")]));
-        // The create was never in doubt. The re-add's reorder waits for the character's list read
-        // instead of going on the stale order base, so nothing is discarded; membership
-        // reconciliation then sends the order that lands.
-        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
-        expect(stored(h.fake)).toEqual({ ids: ["x"], texts: { x: "Rewritten transcript" } });
+        // The create was never in doubt. The dropped `k`'s delete op is refused (`useTrash`) with
+        // its batch and the re-add's reorder; `j`'s delete finds it gone; the retry creates `x`.
+        expect(await h.sync.flushResources()).toEqual({ discarded: ["chats/c/k", "chats/c"], refused: [] });
+        expect(stored(h.fake)).toEqual({ ids: ["x", "k"], texts: { x: "Rewritten transcript", k: "A" } });
+        expect(opsOf(h.fake, "k")).toEqual([["delete"]]);
+        expect(opsOf(h.fake, "j")).toEqual([["delete"]]);
+        expect(h.mirrorIds()).toEqual(["x", "k"]);
         // A fresh create of the replacement's chat, never the rolled-back payload or its id.
         const creates = groups(h.fake).filter((group: any) => group.chatId === "x");
         expect(creates.length).toBeGreaterThan(0);
@@ -2426,7 +2460,7 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
         expect(alerts.error).not.toHaveBeenCalled();
     });
 
-    it("drops the kept group when a conflicting deletion restores the character from the server (its list is authoritative): a later re-add deletes the landed chat without replaying its create", async () => {
+    it("drops the kept group when a conflicting deletion restores the character from the server (its list is authoritative): a later re-add deletes the landed chat without replaying its create, and the server refuses the deletes", async () => {
         const h = await bootWithCharacters();
         const lost = await loseCreateOfX(h);
         // Another tab edits the character; this tab's deletion conflicts, and the recovery puts the
@@ -2445,11 +2479,21 @@ describe("a deletion that fails after a lost chat group keeps the group for a sa
 
         await failDeletion(h);
         h.characterStore.addCharacter(replacement([chatOf("r", "Replacement transcript")]));
-        expect(await h.sync.flushResources()).toEqual({ discarded: [], refused: [] });
-        expect(stored(h.fake)).toEqual({ ids: ["r"], texts: { r: "Replacement transcript" } });
+        // The delete ops are refused (`useTrash`) with their batch; the retry saves the replacement's chat.
+        expect(await h.sync.flushResources()).toEqual({
+            discarded: ["chats/c/k", "chats/c/j", "chats/c/x", "chats/c"],
+            refused: [],
+        });
+        expect(stored(h.fake)).toEqual({
+            ids: ["r", "k", "j", "x"],
+            texts: { r: "Replacement transcript", k: "A", x: "Lost create" },
+        });
         expect(opsOf(h.fake, "x")).toEqual([["delete"]]);
+        expect(opsOf(h.fake, "k")).toEqual([["delete"]]);
+        expect(opsOf(h.fake, "j")).toEqual([["delete"]]);
         expect(groups(h.fake).some((group: any) => group.groupId === lost.groupId)).toBe(false);
+        expect(h.mirrorIds()).toEqual(["r", "k", "j", "x"]);
         expect(h.chat.hasUnsavedChatWork()).toBe(false);
-        expect(alerts.normal).not.toHaveBeenCalledWith("reloaded");
+        expect(alerts.normal).toHaveBeenCalledWith("reloaded");
     });
 });

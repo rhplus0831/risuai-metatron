@@ -718,7 +718,9 @@ describe("the live-update socket on the server", () => {
             revision: applied.results[0].revision,
         });
         expect(listing.resources.some((entry) => entry.kind === "ui")).toBe(true);
-        expect(listing.chats).toEqual([{ characterId: "c", id: "k", revision: applied.chats[0].revision }]);
+        expect(listing.chats).toEqual([
+            { characterId: "c", id: "k", revision: applied.chats[0].revision, trashedAt: null },
+        ]);
         expect(listing.chatOrders).toEqual([{ characterId: "c", revision: applied.chatOrders[0].revision }]);
         expect(JSON.stringify(listing)).not.toContain('"data"');
     });
@@ -831,9 +833,17 @@ describe("the live-update socket on the server", () => {
             chatOrders: [{ characterId: "c", baseRevision: chatOrders.get("c")!.revision, ids: ["j", "k"] }],
         });
         await matches("chat order write");
-        await write({
-            chats: [{ characterId: "c", chatId: "j", baseRevision: chatRevision("j"), ops: [{ op: "delete" }] }],
-        });
+        const chatTrash = async (action: "trash" | "delete", revision: string) => {
+            const response = await request(
+                `/api/chat-trash/${action}`,
+                json({ characterId: "c", chatId: "j", revision }, { "x-resource-epoch": first.epoch }),
+            );
+            expect(response.status).toBe(200);
+            return (await response.json()) as { revision: string };
+        };
+        const trashed = await chatTrash("trash", chatRevision("j"));
+        await matches("chat trash");
+        await chatTrash("delete", trashed.revision);
         await matches("chat delete");
         const beforeRollback = structuredClone(advertised());
         const beforeFrames = observer.frames.length;

@@ -6,6 +6,7 @@ import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { createServerContext, type RouteLimits } from "../app.ts";
+import type { ChatTrashAnswer } from "../../../shared/chats.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "../data/kinds.ts";
 import { inProcessRestoreRunner, type RestoreRunner } from "../data/restore/validateRunner.ts";
 import type { UpstreamImportRunner } from "../data/upstream/importRunner.ts";
@@ -194,6 +195,29 @@ export async function createResourceTestClient(
         batch: (ops: unknown, epoch?: string | null) => client.json("/api/resources/batch", { ops }, {}, epoch),
         readKinds: (kinds: string) => client.request(`/api/resources?kinds=${kinds}`),
         readRefs: (refs: unknown) => client.json("/api/resources/read", { refs }),
+        /** `POST /api/chat-trash/{action}` with the client's epoch. */
+        chatTrash: (action: "trash" | "restore" | "delete", body: unknown, epoch?: string | null) =>
+            client.json(`/api/chat-trash/${action}`, body, {}, epoch),
+        /**
+         * Deletes a chat permanently over HTTP: trash at `revision`, then delete with the token the
+         * trash answered. Throws unless both answer 200; returns both bodies.
+         */
+        async deleteChat(
+            characterId: string,
+            chatId: string,
+            revision: string,
+        ): Promise<{ trashed: ChatTrashAnswer; deleted: ChatTrashAnswer }> {
+            const trash = await client.chatTrash("trash", { characterId, chatId, revision });
+            if (trash.status !== 200) {
+                throw new Error(`trash ${characterId}/${chatId}: ${trash.status} ${await trash.text()}`);
+            }
+            const trashed = (await trash.json()) as ChatTrashAnswer;
+            const remove = await client.chatTrash("delete", { characterId, chatId, revision: trashed.revision });
+            if (remove.status !== 200) {
+                throw new Error(`delete ${characterId}/${chatId}: ${remove.status} ${await remove.text()}`);
+            }
+            return { trashed, deleted: (await remove.json()) as ChatTrashAnswer };
+        },
         /** Creates a record and returns its revision token. */
         async create(kind: string, id: string, data: unknown): Promise<string> {
             const res = await client.put(kind, id, { baseRevision: null, data });

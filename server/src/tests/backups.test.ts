@@ -16,6 +16,7 @@ import type {
     BackupArchiveManifest,
     ResourceBatchConflictBody,
     ResourceBatchResult,
+    ResourceReadRefsResult,
 } from "../../../shared/resources.ts";
 import { MAX_ARCHIVE_RECORDS } from "../data/archive.ts";
 import { CHAT_TABLES_SQL } from "../data/chatStore.ts";
@@ -34,6 +35,7 @@ import {
     type TestServerOptions,
     waitFor,
 } from "./testSupport.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
 import { installSnapshot } from "./stagedRestore.ts";
 import { memoryKinds, memoryRecords, writeMemory } from "./memoryFixtures.ts";
 import { resolveStorageKey } from "../routes/storage.ts";
@@ -1285,6 +1287,86 @@ describe("chats in snapshots and archives", () => {
         };
     }
 
+    it("restores chats from a snapshot made before the trash column as active", async () => {
+        vi.useFakeTimers({ toFake: ["Date"], now: Date.UTC(2026, 4, 1) });
+        const s = await defaultServer();
+        const tokens = await seedChats(s);
+        const before = await readAll(s);
+        const snapshot = await s.context.snapshots.snapshotNow();
+        const db = new DatabaseSync(path.join(backupsDir(s), `${snapshot.id}.sqlite`));
+        try {
+            db.exec("ALTER TABLE chats DROP COLUMN trashedAt");
+        } finally {
+            db.close();
+        }
+        expect((await s.chatTrash("trash", { characterId: "c", chatId: "k", revision: tokens.chat })).status).toBe(200);
+        expect((await restore(s, snapshot.id)).status).toBe(200);
+        const installed = await readAll(s);
+        expect(content(installed)).toEqual(content(before));
+        expect(installed.chats.map(({ id, trashedAt }) => [id, trashedAt])).toEqual([
+            ["k", null],
+            ["k2", null],
+        ]);
+    });
+
+    it("restores the most recently trashed chat of an all-trashed character and restamps trash on snapshot and archive installs", async () => {
+        const s = await defaultServer();
+        const savedAt = Date.UTC(2025, 0, 1);
+        vi.useFakeTimers({ toFake: ["Date"], now: savedAt });
+        const tokens = await seedChats(s);
+        expect((await s.chatTrash("trash", { characterId: "c", chatId: "k2", revision: tokens.chat2 })).status).toBe(
+            200,
+        );
+        await batch(s, {
+            ops: [{ kind: "characters", id: "d", baseRevision: null, data: character("d") }],
+            chats: ["older", "newest", "oldest"].map((id) =>
+                group(id, null, [{ op: "create", chat: { name: id } }], "d"),
+            ),
+        });
+        const snapshot = await s.context.snapshots.snapshotNow();
+        // Only a foreign file can have no active chat. Put the newest mark in the middle of its order.
+        const db = new DatabaseSync(path.join(backupsDir(s), `${snapshot.id}.sqlite`));
+        try {
+            const mark = db.prepare("UPDATE chats SET trashedAt = ? WHERE characterId = 'd' AND id = ?");
+            mark.run(savedAt + 2, "older");
+            mark.run(savedAt + 3, "newest");
+            mark.run(savedAt + 1, "oldest");
+        } finally {
+            db.close();
+        }
+        async function expectInstalled(target: ResourceTestClient, installedAt: number) {
+            const expected = {
+                c: { k: null, k2: installedAt },
+                d: { older: installedAt, newest: null, oldest: installedAt },
+            };
+            const all = await readAll(target);
+            const listings = (await (
+                await target.json("/api/resources/read", { chatSummaryCollections: ["c", "d"] })
+            ).json()) as ResourceReadRefsResult;
+            for (const [characterId, marks] of Object.entries(expected)) {
+                const chats = all.chats.filter((chat) => chat.characterId === characterId);
+                expect(Object.fromEntries(chats.map((chat) => [chat.id, chat.trashedAt]))).toEqual(marks);
+                const summaries = listings.chatSummaryCollections!.find(
+                    (collection) => collection.characterId === characterId,
+                )!.chats;
+                expect(Object.fromEntries(summaries.map((chat) => [chat.id, chat.trashedAt ?? null]))).toEqual(marks);
+            }
+        }
+
+        const installTime = Date.UTC(2026, 0, 1);
+        vi.setSystemTime(installTime);
+        expect((await restore(s, snapshot.id)).status).toBe(200);
+        await s.readEpoch();
+        await expectInstalled(s, installTime);
+        const archive = await exportArchive(s);
+        const target = await defaultServer();
+        const importTime = Date.UTC(2026, 5, 1);
+        vi.setSystemTime(importTime);
+        expect((await importArchive(target, archive)).status).toBe(200);
+        await target.readEpoch();
+        await expectInstalled(target, importTime);
+    });
+
     it("validates snapshots with projections and restores fresh rows at new chat seqs without trusting snapshot text", async () => {
         const dir = mkdtempSync(path.join(os.tmpdir(), "risu-summary-snapshot-"));
         const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
@@ -1373,16 +1455,16 @@ describe("chats in snapshots and archives", () => {
         const tokens = await seedChats(s);
         const before = await readAll(s);
         const snapshot = await s.context.snapshots.snapshotNow();
-        // Move on: remove and append in `k`, delete `k2`.
+        // Move on: remove and append in `k`, delete `k2` through the trash.
         const edited = await batch(s, {
             chats: [
                 group("k", tokens.chat, [
                     { op: "remove", ids: ["a"] },
                     { op: "append", messages: [m("n", "N")], anchor: { end: true } },
                 ]),
-                group("k2", tokens.chat2, [{ op: "delete" }]),
             ],
         });
+        await s.deleteChat("c", "k2", tokens.chat2);
         expect((await readAll(s)).chats.map((c) => c.id)).toEqual(["k"]);
         const oldEpoch = s.epoch;
 
@@ -1622,18 +1704,10 @@ describe("checkpoints and memory in backups", () => {
                 ],
             });
             store.applyChanges({
-                chats: [
-                    {
-                        characterId: "c",
-                        chatId: "discarded",
-                        baseRevision: store.chatRevision("c", "discarded"),
-                        ops: [{ op: "delete" }],
-                    },
-                ],
-            });
-            store.applyChanges({
                 chats: [{ characterId: "c", chatId: "k", baseRevision: null, ops: [{ op: "create", chat }] }],
             });
+            // Deleted once `k` exists: the gap stays before `k`'s seq.
+            deleteChatThroughTrash(store, "c", "discarded");
             const checkpoint = store.checkpoints.save("c", "k", label, "manual")!;
             const policy = { autoEvery: 3, autoKeep: 4, lastAutoTurns: 11 };
             store.checkpoints.writePolicy("c", "k", policy);

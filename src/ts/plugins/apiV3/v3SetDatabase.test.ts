@@ -368,7 +368,7 @@ describe("the plugin setDatabase host setter", () => {
             return {
                 epoch: "",
                 items: [],
-                chats: [{ characterId: "loading", id: chat.id, revision, data: chat }],
+                chats: [{ characterId: "loading", id: chat.id, revision, trashedAt: null, data: chat }],
             };
         });
         let pending: Promise<void> | undefined;

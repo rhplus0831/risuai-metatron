@@ -56,7 +56,7 @@ function fixture() {
             revision,
             JSON.stringify({ chaId: id }),
         );
-        db.prepare("INSERT INTO chats VALUES (?, ?, ?, ?, 1, ?)").run(
+        db.prepare("INSERT INTO chats VALUES (?, ?, ?, ?, 1, ?, NULL)").run(
             seq,
             id,
             id,

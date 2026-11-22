@@ -10,6 +10,7 @@ import { loadJobScope } from "../jobs/jobScope.ts";
 import { createLuaBindings } from "../lua/bindings.ts";
 import { createCommandExecutor } from "../prompt/commands.ts";
 import type { HostContext } from "../scripts/workerPool.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
 
 // The server command executor (`server/src/prompt/commands.ts`), the port of the
 // client's `processMultiCommand`, over the production bindings' services on a real in-memory store
@@ -286,8 +287,14 @@ describe("the command executor", () => {
 
     it("consumes the rest of the line when the chat is deleted during a question, running nothing more", async () => {
         const s = setup();
+        // A spare active chat lets `k` go to the trash and be deleted.
+        s.store.applyChanges({
+            chats: [
+                { characterId: "c", chatId: "spare", baseRevision: null, ops: [{ op: "create", chat: {} as never }] },
+            ],
+        });
         s.state.answer = async () => {
-            s.external([{ op: "delete" }]);
+            deleteChatThroughTrash(s.store, "c", "k");
             return "ok";
         };
         expect(await s.run("/input wait | /echo should-not-run | /send nor this")).toBe("");

@@ -446,7 +446,7 @@ describe("resource save journal", () => {
     it("keeps a gone chat's sent and queued work with its local snapshot after discard and collection cleanup", async () => {
         const { fake, chat, sync } = await boot();
         const base = fake.chat("c", "k")!;
-        fake.chatBatch([{ characterId: "c", chatId: "k", baseRevision: base.revision, ops: [{ op: "delete" }] }]);
+        fake.deleteChatForever("c", "k");
         fake.holdNextBatch = true;
         chat.setMessageText(refK, "a", "sent local text");
         await vi.advanceTimersByTimeAsync(500);
@@ -1265,11 +1265,11 @@ describe("chat save journal", () => {
         expect(await rows()).toEqual([]);
     });
 
-    // An old deletion acknowledgement cannot consume the new incarnation's create.
-    it("preserves a recreated chat's pending snapshot when the old deletion is acknowledged", async () => {
+    // An old deletion settled as gone cannot consume the new incarnation's create.
+    it("preserves a recreated chat's pending snapshot when the old deletion settles against another tab's permanent deletion", async () => {
         const { fake, chat, sync } = await boot();
         const base = fake.chat("c", "k")!.revision;
-        fake.holdNextBatchResponse = true;
+        fake.holdNextBatch = true;
         chat.deleteChat(refK);
         await vi.advanceTimersByTimeAsync(500);
         const deletion = fake.batchBodies()[0].chats[0];
@@ -1302,7 +1302,10 @@ describe("chat save journal", () => {
             pending: { ops: [], baseRevision: base, groupId: expect.any(String), createSnapshot: snapshot },
         });
         expect(beforeAck.pending!.groupId).not.toBe(deletion.groupId);
-        fake.releaseBatchResponse!();
+        // Another tab deletes the chat for good while this delete is in flight: the server answers
+        // this tab's delete as a chat that is gone, which settles it.
+        fake.deleteChatForever("c", "k");
+        fake.releaseBatch!();
         await vi.advanceTimersByTimeAsync(0);
         await flushJournal();
         expect(await chatLayers()).toEqual({ pending: { ...beforeAck.pending, baseRevision: null } });
@@ -1326,6 +1329,65 @@ describe("chat save journal", () => {
         await saving;
         await vi.advanceTimersByTimeAsync(500);
         expect(await chatLayers()).toEqual({});
+    });
+
+    // A refused deletion of the old incarnation keeps the new incarnation's create out of the save queue.
+    it("journals a recreated chat's pending snapshot behind the old incarnation's delete; the server refuses the delete, and both go to a recovery draft", async () => {
+        const { fake, chat, sync } = await boot();
+        const base = fake.chat("c", "k")!.revision;
+        fake.holdNextBatch = true;
+        chat.deleteChat(refK);
+        await vi.advanceTimersByTimeAsync(500);
+        const deletion = fake.batchBodies()[0].chats[0];
+        expect(deletion).toEqual({
+            characterId: "c",
+            chatId: "k",
+            baseRevision: base,
+            groupId: expect.any(String),
+            ops: [{ op: "delete" }],
+        });
+        const snapshot = {
+            id: "k",
+            name: "Recreated",
+            note: "",
+            localLore: [],
+            fmIndex: -1,
+            message: [m("a", "new incarnation")],
+        };
+        chat.createChat("c", snapshot);
+        await vi.advanceTimersByTimeAsync(500);
+        const beforeAck = await chatLayers();
+        expect(beforeAck).toEqual({
+            resend: {
+                ops: [{ op: "delete" }],
+                baseRevision: base,
+                groupId: deletion.groupId,
+                seq: expect.any(Number),
+                inDoubt: false,
+            },
+            pending: { ops: [], baseRevision: base, groupId: expect.any(String), createSnapshot: snapshot },
+        });
+        expect(beforeAck.pending!.groupId).not.toBe(deletion.groupId);
+        fake.releaseBatch!();
+        await vi.advanceTimersByTimeAsync(0);
+        await flushJournal();
+        // The server refuses the delete op (`useTrash`): the old chat comes back as stored, and the
+        // delete and the recreation behind it leave the journal for a recovery draft.
+        expect(await chatLayers()).toEqual({});
+        const captured = await draft("chat", chatTarget("c", "k"), fake.store.epoch(), beforeAck);
+        expect(chat.findChat(refK)!.message.map((message) => message.data)).toEqual(["A", "B", "C"]);
+        expect(
+            chat
+                .chatList("c")
+                .map((entry) => entry.id)
+                .sort(),
+        ).toEqual(["j", "k"]);
+        await cleanup(sync);
+        expect(await draft("chat", chatTarget("c", "k"), fake.store.epoch(), beforeAck)).toEqual(captured);
+        expect(await chatLayers()).toEqual({});
+        // Nothing of the recreation is sent: its create never goes out.
+        expect(fake.batchCount()).toBe(1);
+        expect(fake.texts("c", "k")).toEqual(["A", "B", "C"]);
     });
 
     // A definite rollback can merge newer work, but the older group's identity owns the merge.

@@ -171,7 +171,7 @@ function bootDraftChat(theme = "") {
         message: [{ role: "char", data: "Original", chatId: "a" }],
     } as ChatRecord;
     const revision = "00000000-0000-0000-0000-000000000000:1:1";
-    const listed = [{ characterId: "c", id: ref.chatId, revision, data }];
+    const listed = [{ characterId: "c", id: ref.chatId, revision, trashedAt: null, data }];
     const orders = [{ characterId: "c", revision, ids: [ref.chatId] }];
     seedChats(listed, orders);
     assembleChats([{ chaId: "c" }] as never, listed, orders);

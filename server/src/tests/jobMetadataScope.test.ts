@@ -12,6 +12,7 @@ import { createGenerationLock } from "../jobs/generationLock.ts";
 import { loadJobScope, refreshCharacter, refreshChat, refreshChatAfterWrite, scopeChat } from "../jobs/jobScope.ts";
 import { createJobRunState, createRunSetup } from "../jobs/runSetup.ts";
 import { loadRequestDb } from "../llm/settings.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
 import { applyOwnWrite } from "./ownWrite.ts";
 
 // Operation counts, not timings: unchanged transcripts and character records must stay unread.
@@ -150,7 +151,13 @@ describe("metadata job scope", () => {
         expect(scope.chatRevision).toBe(h.store.chatRevision("c", "k"));
         expect(refreshChat(h.store, scope)).toBe(true);
         expect(h.reads() - before).toBe(1);
-        h.write([{ op: "delete" }]);
+        // A spare active chat lets `k` go to the trash and be deleted.
+        h.store.applyChanges({
+            chats: [
+                { characterId: "c", chatId: "spare", baseRevision: null, ops: [{ op: "create", chat: {} as never }] },
+            ],
+        });
+        deleteChatThroughTrash(h.store, "c", "k");
         expect(refreshChat(h.store, scope)).toBe(false);
         expect(scopeChat(scope)).toBeUndefined();
     });

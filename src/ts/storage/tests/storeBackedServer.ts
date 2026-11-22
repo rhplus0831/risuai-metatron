@@ -8,7 +8,16 @@ import {
     INVALID_CHARX_FILE,
     MAX_CHARX_ENTRY_BYTES,
 } from "../../../../shared/charxImport.ts";
-import type { ChatOp, ChatOrderRecord, ChatRecord, ChatSummary } from "../../../../shared/chats.ts";
+import type {
+    ChatOp,
+    ChatOrderRecord,
+    ChatRecord,
+    ChatSummary,
+    ChatTrashAction,
+    ChatTrashAnswer,
+    ChatTrashConflict,
+    ChatTrashRequest,
+} from "../../../../shared/chats.ts";
 import type { StreamingMessage } from "../../../../shared/jobs.ts";
 import { parseSecretPath, writeSecret } from "../../../../shared/llmSecrets.ts";
 import {
@@ -123,6 +132,13 @@ export type ServerStore = {
     /** The revision listing (`GET /api/resources/revisions`, for live updates). */
     listRevisions(): ResourceRevisionListing;
     transaction<T>(fn: () => T): T;
+    /** Trash, restore, or permanent deletion (`POST /api/chat-trash/*`), on the request's revision token. */
+    changeChatTrash(
+        action: ChatTrashAction,
+        request: ChatTrashRequest,
+        expectedEpoch: string | undefined,
+        chatHeld: (characterId: string, id: string) => boolean,
+    ): ChatTrashAnswer | ChatTrashConflict;
 };
 
 /** A chat's generation locks on a published change (`shared/events.ts` `ChatStreaming`). */
@@ -149,6 +165,7 @@ export type ServerGenerationLock = {
     ): unknown;
     release(ref: { characterId: string; chatId: string; messageId: string }, token: string, generationId: string): void;
     endJob(token: string): void;
+    chatHolders(characterId: string, chatId: string): ReadonlySet<string>;
 };
 
 type LockModule = { createGenerationLock(): ServerGenerationLock };
@@ -318,6 +335,30 @@ export class StoreBackedServer {
         }[],
     ) {
         return this.store.applyChanges({ chats });
+    }
+
+    /**
+     * Deletes a chat for good as another tab does (`POST /api/chat-trash/trash`, then `delete` on
+     * the token the trash answered): the same tombstone, order change, and invalidation. The
+     * character needs another chat that is not in the trash. Throws on a refusal.
+     */
+    deleteChatForever(characterId: string, chatId: string): ChatTrashAnswer {
+        const held = (character: string, id: string) => (this.lock?.chatHolders(character, id).size ?? 0) > 0;
+        const change = (action: ChatTrashAction, revision: string) => {
+            const answer = this.store.changeChatTrash(
+                action,
+                { characterId, chatId, revision },
+                this.store.epoch(),
+                held,
+            );
+            if ("error" in answer) {
+                throw new Error(`chat ${action} of ${characterId}/${chatId} refused: ${answer.error}`);
+            }
+            return answer;
+        };
+        const current = this.chat(characterId, chatId);
+        if (!current) throw new Error(`chat ${characterId}/${chatId} does not exist`);
+        return change("delete", change("trash", current.revision).revision);
     }
 
     /** Write job metadata without delivering any feed frames to the tab. */

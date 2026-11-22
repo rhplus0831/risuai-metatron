@@ -18,6 +18,7 @@ import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore } from "../data/resourceStore.ts";
 import { registerResourceRoutes } from "../routes/resources.ts";
 import type { AppEnv } from "../types.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
 import { createResourceTestClient, type ResourceTestClient } from "./testSupport.ts";
 
 const servers: ResourceTestClient[] = [];
@@ -136,6 +137,7 @@ describe("POST /api/resources/batch with chats", () => {
                 characterId: "c",
                 id: "k",
                 revision: edit.body.chats![0].revision,
+                trashedAt: null,
                 data: {
                     id: "k",
                     name: "K",
@@ -238,6 +240,7 @@ describe("POST /api/resources/batch with chats", () => {
                 createCharacter("d"),
             ],
             chats: [
+                // A delete group is refused whatever its revision: deletion goes through the trash.
                 group("k", stale(tokens.chat), [{ op: "delete" }]),
                 group("gone", tokens.chat, [{ op: "setText", id: "a", text: "x" }]),
                 group("n", null, [{ op: "create", chat: {} as never }]),
@@ -253,7 +256,7 @@ describe("POST /api/resources/batch with chats", () => {
         expect(r.body.error).toBe("Revision conflict");
         expect(conflicts).toEqual([
             { kind: "characters", id: "c", revision: tokens.character },
-            { kind: "chat", characterId: "c", id: "k", revision: tokens.chat },
+            { kind: "chat", characterId: "c", id: "k", revision: tokens.chat, reason: "useTrash" },
             { kind: "chat", characterId: "c", id: "gone", revision: null },
             // `d` was not created (the batch conflicted), so its chat has no parent.
             { kind: "chat", characterId: "d", id: "e", revision: null },
@@ -660,17 +663,14 @@ describe("revision-guarded chat row reads", () => {
         "answers moved when the chat is %s alongside other read entries",
         async (state) => {
             const s = budgetedChats(1024);
-            s.seed("c", [{ id: "k", message: [m("a", "A")] }]);
+            // A spare active chat lets `k` go to the trash.
+            s.seed("c", [
+                { id: "k", message: [m("a", "A")] },
+                { id: "spare", message: [] },
+            ]);
             const revision = s.store.chatRevision("c", "k")!;
-            s.store.applyChanges({
-                chats: [
-                    group(
-                        "k",
-                        revision,
-                        state === "deleted" ? [{ op: "delete" }] : [{ op: "setText", id: "a", text: "new" }],
-                    ),
-                ],
-            });
+            if (state === "deleted") deleteChatThroughTrash(s.store, "c", "k");
+            else s.store.applyChanges({ chats: [group("k", revision, [{ op: "setText", id: "a", text: "new" }])] });
             const current = state === "deleted" ? null : s.store.chatRevision("c", "k");
             const read = await s.read({
                 refs: [zeroRef],
@@ -746,6 +746,7 @@ describe("revision-guarded chat row reads", () => {
                 characterId: "c",
                 id: "k",
                 revision,
+                trashedAt: null,
                 data,
             },
         ]);

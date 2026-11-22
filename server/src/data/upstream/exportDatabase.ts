@@ -87,7 +87,7 @@ import { collectUpstreamAssetReferences } from "./assetReferences.ts";
 export type UpstreamExportRows = readonly { kind: string; id: string; text: string }[];
 
 export type UpstreamExportChats = {
-    readonly chats: readonly { seq: number; characterId: string; id: string; meta: string }[];
+    readonly chats: readonly { seq: number; characterId: string; id: string; meta: string; trashedAt: number | null }[];
     readonly messages: readonly { chatSeq: number; position: number; data: string }[];
     readonly chatOrders: readonly { characterId: string; ids: string }[];
     /** The structured memory events (`ValidatedSnapshot`), null when the memory tables could not be read. */
@@ -1041,12 +1041,9 @@ function upstreamCharacters(
             character.globalLore = repairLore(character.globalLore, `characters[${name}].globalLore`, report);
         }
         const stored = chatsByCharacter.get(chaId) ?? new Map();
-        const ids = orders.get(chaId) ?? [...stored.keys()];
-        const chats = ids.flatMap((id) => {
-            const row = stored.get(id);
-            if (!row) {
-                return [];
-            }
+        const ids = (orders.get(chaId) ?? [...stored.keys()]).filter((id) => stored.get(id)?.trashedAt === null);
+        const chats = ids.map((id) => {
+            const row = stored.get(id)!;
             const metadata = JSON.parse(row.meta);
             memoryEnabled ||= chatMemoryEnabled(metadata, owner, memorySettings);
             const projected = chatMemoryAlgorithm(memorySettings, metadata) === STRUCTURED_MEMORY_ALGORITHM;
@@ -1063,7 +1060,7 @@ function upstreamCharacters(
             ) {
                 addEntry(report.excluded, "inlays", [name]);
             }
-            return [chat];
+            return chat;
         });
         // A synthetic first chat has no preferences and must inherit the owner's resolved default.
         character.supaMemory = chats.length === 0 ? chatMemoryEnabled({}, owner, memorySettings) : memoryEnabled;

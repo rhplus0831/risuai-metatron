@@ -1057,7 +1057,7 @@ describe("chats and chat lists another writer changed", () => {
         expect(fake.batchCount()).toBe(0);
     });
 
-    it("keeps a chat deleted here out of the mirror while another writer's new chat brings the list in", async () => {
+    it("keeps a chat deleted here out of the mirror while its delete is queued, and takes it back when the server refuses the delete", async () => {
         const { fake, chat, chatIds, intercept } = await boot();
         const seen: string[][] = [];
         intercept.beforeRequest = (path) => {
@@ -1070,26 +1070,26 @@ describe("chats and chat lists another writer changed", () => {
         fake.store.applyChanges({ chats: [create("c", "y")] });
         await settle(fake);
         expect(seen[0]).not.toContain("j");
-        expect(chatIds()).toEqual(["k", "y"]);
-        expect(fake.chat("c", "j")).toBeNull();
-        expect(fake.order("c")!.ids).toEqual(["k", "y"]);
-        noNotice();
+        expect(fake.batchBodies()[0].chats).toEqual([
+            expect.objectContaining({ chatId: "j", ops: [{ op: "delete" }] }),
+        ]);
+        // The server refuses a delete op (the trash route deletes chats): the chat stays and comes back.
+        expect(fake.chat("c", "j")).not.toBeNull();
+        expect(chatIds()).toEqual(["k", "j", "y"]);
+        expect(fake.order("c")!.ids).toEqual(["k", "j", "y"]);
+        // The refusal takes the ordinary conflict path: one reload notice.
+        expect(alerts.normal).toHaveBeenCalledExactlyOnceWith("reloaded");
+        expect(alerts.error).not.toHaveBeenCalled();
     });
 
-    it("never writes when another writer deletes a character's only chat; its replacement then takes its place", async () => {
+    it("never writes when another writer replaces a character's only chat: the new chat joins the list, then the old one leaves it", async () => {
         const { fake, chatIds } = await boot();
-        fake.chatBatch([
-            {
-                characterId: "d",
-                chatId: "m",
-                baseRevision: fake.chat("d", "m")!.revision,
-                ops: [{ op: "delete" } as any],
-            },
-        ]);
-        await settle(fake);
-        expect(chatIds("d")).toEqual(["m"]);
-        expect(fake.batchCount()).toBe(0);
+        // A chat is deleted for good only while the character has another chat outside the trash.
         fake.store.applyChanges({ chats: [create("d", "n")] });
+        await settle(fake);
+        expect(chatIds("d")).toEqual(["m", "n"]);
+        expect(fake.batchCount()).toBe(0);
+        fake.deleteChatForever("d", "m");
         await settle(fake);
         expect(chatIds("d")).toEqual(["n"]);
         expect(fake.batchCount()).toBe(0);
@@ -1099,14 +1099,7 @@ describe("chats and chat lists another writer changed", () => {
     it("does not let a delayed chat-list answer remove a newer copy a job installed meanwhile", async () => {
         const { fake, sync, live, flushFeed, chatIds, texts, intercept } = await boot();
         intercept.hold = (path) => path === "/api/resources/read";
-        fake.chatBatch([
-            {
-                characterId: "c",
-                chatId: "j",
-                baseRevision: fake.chat("c", "j")!.revision,
-                ops: [{ op: "delete" } as any],
-            },
-        ]);
+        fake.deleteChatForever("c", "j");
         await vi.advanceTimersByTimeAsync(600);
         expect(intercept.release).not.toBeNull();
         // While the read (its answer: deleted) is out, the chat is created again and a job's event installs it.
@@ -1140,14 +1133,7 @@ describe("chats and chat lists another writer changed", () => {
     it("does not let a delayed idle read's deletion answer remove a newer copy a job installed meanwhile", async () => {
         const { fake, sync, live, chatIds, texts, intercept } = await boot();
         live.paused = true;
-        fake.chatBatch([
-            {
-                characterId: "c",
-                chatId: "j",
-                baseRevision: fake.chat("c", "j")!.revision,
-                ops: [{ op: "delete" } as any],
-            },
-        ]);
+        fake.deleteChatForever("c", "j");
         // Only the chat's ref arrives (its order's ref is later): the chat's idle read is the one held.
         intercept.hold = (path) => path === "/api/resources/read";
         sync.noteRemoteChanges({
@@ -1911,14 +1897,9 @@ describe("reconnecting through the revision log", () => {
             const oldRevision = chat.heldChatRevision(refK);
             connection.task();
             expect(tasks.memoryTaskFenced(refK)).toBe(true);
-            fake.chatBatch(
-                ["j", "k"].map((chatId) => ({
-                    characterId: "c",
-                    chatId,
-                    baseRevision: fake.chat("c", chatId)!.revision,
-                    ops: [{ op: "delete" } as any],
-                })),
-            );
+            // A sibling that is not in the trash lets both chats be deleted for good.
+            fake.store.applyChanges({ chats: [create("c", "x")] });
+            for (const chatId of ["j", "k"]) fake.deleteChatForever("c", chatId);
             fake.store.applyChanges({ chats: [create("c", "k", [m("new", "Recreated")])] });
             const until = connection.store.cursor();
             await connection.reconnect();

@@ -616,7 +616,7 @@ describe("the preset per call", () => {
             message: [{ role: "user", data: "B", chatId: "b" }],
             ...fields,
         } as unknown as ChatRecord;
-        const listed = [{ characterId: "c", id: "k", revision: "e:1:1", data }];
+        const listed = [{ characterId: "c", id: "k", revision: "e:1:1", trashedAt: null, data }];
         const orders = [{ characterId: "c", revision: "e:1:1", ids: ["k"] }];
         seedChats(listed, orders);
         assembleChats([selectedCharacter() ?? { chaId: "c" }] as never, listed, orders);

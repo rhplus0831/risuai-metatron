@@ -20,6 +20,7 @@ import {
     ResourceValidationError,
 } from "../data/resourceStore.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
 import { installSnapshot, stageSnapshot } from "./stagedRestore.ts";
 
 // The publisher of the live updates: the resource store publishes one change set per committed
@@ -61,8 +62,89 @@ const chatCreate = (id: string, messages: { chatId: string; data: string; role: 
 const empty = { resources: [], chats: [], chatOrders: [] };
 
 describe("the change feed", () => {
+    it("keeps the trash mark on a coalesced live entry even when its summary exceeds the publication budget", () => {
+        const { store, events } = setup();
+        const ref = { characterId: "c", chatId: "k" };
+        const id = { characterId: "c", id: "k" };
+        store.put(characters, "c", { chaId: "c" }, null);
+        store.applyChanges({
+            chats: ["k", "spare"].map((chatId) => ({
+                ...ref,
+                chatId,
+                baseRevision: null,
+                ops: [chatCreate(chatId)],
+            })),
+        });
+        const entries = () => events.flatMap((event) => (event.type === "change" ? event.changes.chats : []));
+        const stamp = Date.UTC(2026, 4, 1);
+        vi.useFakeTimers({ toFake: ["Date"], now: stamp });
+        try {
+            const change = (action: "trash" | "restore" | "delete", held = false) =>
+                store.changeChatTrash(
+                    action,
+                    { ...ref, revision: store.chatRevision("c", "k")! },
+                    store.epoch(),
+                    () => held,
+                );
+            events.length = 0;
+            const small = change("trash");
+            expect(entries()).toMatchObject([
+                {
+                    ...id,
+                    revision: small.revision,
+                    trashedAt: stamp,
+                    summary: { ...id, revision: small.revision, trashedAt: stamp, name: "k" },
+                },
+            ]);
+            const active = change("restore");
+            events.length = 0;
+            // Two commits in the same publication, as happens when a nested write joins an outer one.
+            store.applyChanges({
+                get chats() {
+                    store.applyChanges({
+                        chats: [
+                            {
+                                ...ref,
+                                baseRevision: active.revision,
+                                ops: [{ op: "meta", set: { name: "x".repeat(MAX_FEED_PUBLICATION_PATCH_BYTES) } }],
+                            },
+                        ],
+                    });
+                    change("trash");
+                    return [];
+                },
+            });
+            const marked = store.chatRevision("c", "k")!;
+            expect(events).toHaveLength(1);
+            expect(entries()).toEqual([{ ...id, revision: marked, trashedAt: stamp }]);
+            const writes = store.writeCount();
+            events.length = 0;
+            expect(change("trash", true)).toMatchObject({ revision: marked, trashedAt: stamp });
+            expect(change("delete", true)).toMatchObject({ error: "generating", revision: marked });
+            expect(store.writeCount()).toBe(writes);
+            expect(events).toEqual([]);
+            const restored = change("restore", true);
+            expect(restored).toMatchObject({ ...id, trashedAt: null });
+            expect(events).toHaveLength(1);
+            expect(entries()).toMatchObject([{ ...id, revision: restored.revision, trashedAt: null }]);
+            events.length = 0;
+            const restoredWrites = store.writeCount();
+            expect(change("restore", true)).toEqual(restored);
+            expect(store.writeCount()).toBe(restoredWrites);
+            expect(events).toEqual([]);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it("coalesces summary knowledge across writes and nested scopes at the final revision", () => {
-        const cases: { first: ChatOp; last: ChatOp; known: "summary" | "base" | "unknown"; name?: string }[] = [
+        // `last: "deletion"`: the chat is trashed and permanently deleted after `first`, ending as a tombstone.
+        const cases: {
+            first: ChatOp;
+            last: ChatOp | "deletion";
+            known: "summary" | "base" | "unknown";
+            name?: string;
+        }[] = [
             {
                 first: { op: "meta", set: { name: "Renamed" } },
                 last: { op: "setText", id: "m", text: "checkpoint" },
@@ -99,7 +181,7 @@ describe("the change feed", () => {
                 last: { op: "setText", id: "m", text: "two" },
                 known: "unknown",
             },
-            { first: { op: "meta", set: { name: "First" } }, last: { op: "delete" }, known: "unknown" },
+            { first: { op: "meta", set: { name: "First" } }, last: "deletion", known: "unknown" },
         ];
         for (const nested of [false, true])
             for (const { first, last, known, name } of cases) {
@@ -113,6 +195,8 @@ describe("the change feed", () => {
                             baseRevision: null,
                             ops: [chatCreate("k", [{ chatId: "m", data: "M", role: "char" }])],
                         },
+                        // Another active chat lets `k` go to the trash.
+                        { characterId: "c", chatId: "j", baseRevision: null, ops: [chatCreate("j")] },
                     ],
                 });
                 const base = store.chatRevision("c", "k");
@@ -123,24 +207,31 @@ describe("the change feed", () => {
                     ops: [op],
                 });
                 events.length = 0;
-                // Input evaluation supplies independently committed writes in one publication scope.
+                // Input evaluation supplies independently committed writes in one publication scope. A
+                // deletion has no batch form, so it always commits inside the scope.
                 store.applyChanges({
                     get chats() {
                         store.applyChanges({ chats: [group(first)] });
-                        if (nested) store.applyChanges({ chats: [group(last)] });
+                        if (last === "deletion") deleteChatThroughTrash(store, "c", "k");
+                        else if (nested) store.applyChanges({ chats: [group(last)] });
                         expect(events).toEqual([]);
-                        return nested ? [] : [group(last)];
+                        return nested || last === "deletion" ? [] : [group(last)];
                     },
                 });
                 const revision = store.chatRevision("c", "k");
                 expect(events).toHaveLength(1);
                 const event = events[0];
                 if (event.type !== "change") throw new Error("expected a committed change");
-                expect(event.changes.chats, `${nested}: ${first.op} then ${last.op}`).toEqual([
+                expect(
+                    event.changes.chats,
+                    `${nested}: ${first.op} then ${last === "deletion" ? last : last.op}`,
+                ).toEqual([
                     {
                         characterId: "c",
                         id: "k",
                         revision,
+                        // A tombstone carries no trash mark.
+                        ...(revision === null ? {} : { trashedAt: null }),
                         ...(known === "base" ? { summaryBase: base } : {}),
                         ...(known === "summary"
                             ? { summary: { characterId: "c", id: "k", revision, name, fmIndex: -1 } }
@@ -424,6 +515,7 @@ describe("the store publishes committed changes", () => {
                         characterId: "c",
                         id: chat.id,
                         revision: chat.revision,
+                        trashedAt: null,
                     })),
                     // The order the character's create made, then the creates: one entry, the final revision.
                     chatOrders: [{ characterId: "c", revision: order.revision }],
@@ -455,6 +547,7 @@ describe("the store publishes committed changes", () => {
                             characterId: "c",
                             id: "k",
                             revision: reordered.chats[0].revision,
+                            trashedAt: null,
                             patch: { baseRevision: k, messages: [{ after: null, message: stored[0] }], count: 1 },
                             // The text write leaves the summary as it was at the base.
                             summaryBase: k,
@@ -656,7 +749,9 @@ describe("the store publishes committed changes", () => {
             ]),
         );
         expect(listing.resources.every((entry) => Object.keys(entry).sort().join() === "id,kind,revision")).toBe(true);
-        expect(listing.chats).toEqual([{ characterId: "c", id: "k", revision: applied.chats[0].revision }]);
+        expect(listing.chats).toEqual([
+            { characterId: "c", id: "k", revision: applied.chats[0].revision, trashedAt: null },
+        ]);
         expect(listing.chatOrders).toEqual([
             {
                 characterId: "c",
@@ -1212,7 +1307,7 @@ describe("the publication patch budget", () => {
                 ] satisfies ChatOp[],
             },
             patch,
-            ref: () => ({ characterId: "c", id, revision: store.chatRevision("c", id) }),
+            ref: () => ({ characterId: "c", id, revision: store.chatRevision("c", id), trashedAt: null }),
         };
     }
 
@@ -1260,6 +1355,7 @@ describe("the publication patch budget", () => {
                 characterId: "c",
                 id: "k",
                 revision: store.chatRevision("c", "k"),
+                trashedAt: null,
                 // At the exact budget the body stays and leaves no room for summaryBase. An oversized
                 // body is dropped, so the small summaryBase that follows still fits.
                 ...(excess ? { summaryBase: baseRevision } : { rowDelta }),
@@ -1325,6 +1421,7 @@ describe("the publication patch budget", () => {
                             characterId: "c",
                             id: "k",
                             revision: store.chatRevision("c", "k"),
+                            trashedAt: null,
                             summaryBase: baseRevision,
                         },
                     ],
@@ -1420,7 +1517,7 @@ describe("the publication patch budget", () => {
             const event = events[0];
             if (event.type !== "change") throw new Error("expected a committed change");
             expect(event.changes.resources).toEqual(records.map((entry) => ({ ...entry.ref(), patch: entry.patch })));
-            const ref = (id: string) => ({ characterId: "c", id, revision: base(id) });
+            const ref = (id: string) => ({ characterId: "c", id, revision: base(id), trashedAt: null });
             expect(event.changes.chats).toEqual([
                 { ...ref("delta"), delta, summaryBase: deltaBase },
                 { ...ref("summary"), patch: keptPatch, summary: keptSummary },

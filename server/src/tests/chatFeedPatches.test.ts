@@ -18,6 +18,7 @@ import {
     type WrittenChanges,
 } from "../data/resourceStore.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
 import { createResourceTestClient } from "./testSupport.ts";
 
 // Public store/feed contract: expected rows come from the operations below, not the patch builder.
@@ -162,6 +163,7 @@ describe("by-id chat feed patches", () => {
                 characterId: "c",
                 id: "k",
                 revision,
+                trashedAt: null,
                 summaryBase: baseRevision,
                 rows: { baseRevision, changed: ["c"], removed: [], count: 3, meta: ["scriptstate"] },
             });
@@ -248,6 +250,7 @@ describe("by-id chat feed patches", () => {
             characterId: "c",
             id: "k",
             revision: b.read().revision,
+            trashedAt: null,
             summaryBase: baseRevision,
             rows: { baseRevision, changed: ["b", "inserted"], removed: ["a", "c"], count: 2, meta: [] },
         });
@@ -322,6 +325,7 @@ describe("by-id chat feed patches", () => {
             characterId: "c",
             id: "k",
             revision: b.read().revision,
+            trashedAt: null,
             summaryBase: baseRevision,
             patch: expected,
         });
@@ -360,6 +364,7 @@ describe("by-id chat feed patches", () => {
             characterId: "c",
             id: "k",
             revision: b.read().revision,
+            trashedAt: null,
             summaryBase: baseRevision,
             [body]: body === "patch" ? patch : rowDelta,
         });
@@ -389,6 +394,7 @@ describe("by-id chat feed patches", () => {
             characterId: "c",
             id: "k",
             revision: b.read().revision,
+            trashedAt: null,
             summaryBase: baseRevision,
             rowDelta: {
                 baseRevision,
@@ -435,6 +441,7 @@ describe("by-id chat feed patches", () => {
             characterId: "c",
             id: "k",
             revision: b.read().revision,
+            trashedAt: null,
             summaryBase: baseRevision,
             rowDelta: {
                 baseRevision,
@@ -491,6 +498,7 @@ describe("by-id chat feed patches", () => {
             characterId: "c",
             id: "k",
             revision: b.read().revision,
+            trashedAt: null,
             summaryBase: baseRevision,
             rowDelta: {
                 baseRevision,
@@ -534,6 +542,7 @@ describe("by-id chat feed patches", () => {
             characterId: "c",
             id: "k",
             revision: b.read().revision,
+            trashedAt: null,
             summaryBase: baseRevision,
             patch,
         });
@@ -552,6 +561,7 @@ describe("by-id chat feed patches", () => {
             characterId: "c",
             id: "k",
             revision: b.read().revision,
+            trashedAt: null,
             summaryBase: baseRevision,
             rows: { baseRevision, changed: ["b"], removed: [], count: 3, meta: [] },
         });
@@ -596,6 +606,7 @@ describe("by-id chat feed patches", () => {
             characterId: "c",
             id: "k",
             revision: b.read().revision,
+            trashedAt: null,
             summaryBase: storedBase,
             patch: { baseRevision: storedBase, count: 3, messages: [{ after: "a", message: m("b", "checkpoint") }] },
         });
@@ -605,6 +616,7 @@ describe("by-id chat feed patches", () => {
             characterId: "c",
             id: "k",
             revision: b.read().revision,
+            trashedAt: null,
             summaryBase: baseRevision,
             patch: {
                 baseRevision,
@@ -723,7 +735,9 @@ describe("by-id chat feed patches", () => {
         });
         expect(mixed.chats[0]).toEqual(first);
         expect(b.events).toHaveLength(1);
-        expect(b.events[0].changes.chats).toEqual([{ characterId: "c", id: "j", revision: mixed.chats[1].revision }]);
+        expect(b.events[0].changes.chats).toEqual([
+            { characterId: "c", id: "j", revision: mixed.chats[1].revision, trashedAt: null },
+        ]);
         expect(b.read()).toEqual(current);
     });
 
@@ -761,6 +775,7 @@ describe("by-id chat feed patches", () => {
             characterId: "c",
             id: "k",
             revision: b.read().revision,
+            trashedAt: null,
             // The rename changes the summary; no message carries a time, so it has no lastMessageAt.
             summary: { characterId: "c", id: "k", revision: b.read().revision, name: "renamed", fmIndex: -1 },
             patch: {
@@ -783,17 +798,45 @@ describe("by-id chat feed patches", () => {
             characterId: "c",
             id: "k",
             revision: b.read().revision,
+            trashedAt: null,
             summaryBase: baseRevision,
             patch: { baseRevision, count: 3 },
         });
         expect(b.read().data).toEqual(initial);
     });
 
-    it.each(["create", "replace", "delete"] as const)("keeps %s as a plain reference", (op) => {
+    it.each(["create", "replace"] as const)("keeps %s as a plain reference", (op) => {
         const b = setup();
         if (op === "replace") b.write([{ op, chat: { ...initial, name: "replacement" } }]);
-        if (op === "delete") b.write([{ op }]);
-        expect(b.notice()).toEqual({ characterId: "c", id: "k", revision: b.store.chatRevision("c", "k") });
+        expect(b.notice()).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: b.store.chatRevision("c", "k"),
+            trashedAt: null,
+        });
+    });
+
+    it("publishes nothing for a refused delete group, and a permanent deletion as a plain tombstone", () => {
+        const b = setup();
+        // Another active chat lets `k` go to the trash.
+        b.store.applyChanges({ chats: [group(null, [{ op: "create", chat: { ...initial, id: "j" } }], "j")] });
+        const revision = b.read().revision;
+        b.events.length = 0;
+        let refused: unknown;
+        try {
+            b.write([{ op: "delete" }]);
+        } catch (error) {
+            refused = error;
+        }
+        expect(refused).toBeInstanceOf(ResourceBatchConflictError);
+        expect((refused as ResourceBatchConflictError).conflicts).toEqual([
+            { kind: "chat", characterId: "c", id: "k", revision, reason: "useTrash" },
+        ]);
+        expect(b.events).toEqual([]);
+        deleteChatThroughTrash(b.store, "c", "k");
+        // The trash and the deletion are two commits; the deletion's entry is the bare tombstone.
+        expect(b.events).toHaveLength(2);
+        expect(b.notice()).toEqual({ characterId: "c", id: "k", revision: null });
     });
 
     it("keeps a remove and reappend of the same id without a by-id patch", () => {
@@ -809,6 +852,7 @@ describe("by-id chat feed patches", () => {
             characterId: "c",
             id: "k",
             revision: b.read().revision,
+            trashedAt: null,
             summaryBase: baseRevision,
         });
     });
@@ -819,7 +863,7 @@ describe("by-id chat feed patches", () => {
         b.events.length = 0;
         b.write([{ op: "append", anchor: { end: true }, messages: [m("c", "C")] }]);
         expect(b.events).toHaveLength(1);
-        expect(b.notice()).toEqual({ characterId: "c", id: "k", revision });
+        expect(b.notice()).toEqual({ characterId: "c", id: "k", revision, trashedAt: null });
     });
 
     it("allows a whole-row patch of 64 KiB exactly and a row manifest above it, measured in UTF-8 bytes", () => {
@@ -842,6 +886,7 @@ describe("by-id chat feed patches", () => {
                 characterId: "c",
                 id: "k",
                 revision: b.read().revision,
+                trashedAt: null,
                 // The summary base is independent of whether the patch fits.
                 summaryBase: baseRevision,
                 ...(excess ? { rows: { baseRevision, changed: [id], removed: [], count, meta: [] } } : { patch }),
@@ -871,7 +916,13 @@ describe("by-id chat feed patches", () => {
         });
         expect(b.events).toHaveLength(1);
         // Two writes that leave the summary unchanged: unchanged since the first write's base.
-        expect(b.notice()).toEqual({ characterId: "c", id: "k", revision: b.read().revision, summaryBase: firstBase });
+        expect(b.notice()).toEqual({
+            characterId: "c",
+            id: "k",
+            revision: b.read().revision,
+            trashedAt: null,
+            summaryBase: firstBase,
+        });
         expect(b.read().data.message).toEqual([m("a", "A2"), m("b", "B2"), m("c", "C")]);
     });
 });
@@ -924,6 +975,7 @@ describe("a writer's own chat changes", () => {
                 characterId: "c",
                 id: "k",
                 revision,
+                trashedAt: null,
                 summaryBase: baseRevision,
                 patch: { baseRevision, count: 3, messages: [{ after: "a", message: m("b", "B!") }] },
             });
@@ -1010,6 +1062,7 @@ describe("a writer's own chat changes", () => {
                 characterId: "c",
                 id: "k",
                 revision,
+                trashedAt: null,
                 summary: { characterId: "c", id: "k", revision, name: "renamed", fmIndex: -1 },
                 patch: {
                     baseRevision,
@@ -1055,6 +1108,7 @@ describe("a writer's own chat changes", () => {
                 characterId: "c",
                 id: "k",
                 revision,
+                trashedAt: null,
                 summaryBase: baseRevision,
                 rows: { baseRevision, changed: ["b", "a"], removed: [], count: 3, meta: [] },
             });
@@ -1212,7 +1266,6 @@ describe("a writer's own chat changes", () => {
         const cases = [
             { name: "create", ops: [{ op: "create", chat: { ...initial, id: "new" } }] },
             { name: "replace", ops: [{ op: "replace", chat: { ...initial, name: "replacement" } }] },
-            { name: "delete", ops: [{ op: "delete" }] },
             {
                 name: "remove and reappend",
                 ops: [

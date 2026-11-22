@@ -112,6 +112,15 @@ async function chatBatch(s: TestClient, body: unknown) {
     expect(response.status, await response.clone().text()).toBe(200);
 }
 
+/** Deletes a chat for good through the trash route: trash on `revision`, then delete on the token trash answers. */
+async function deleteChatForever(s: TestClient, characterId: string, chatId: string, revision: string) {
+    const trashed = await s.json("/api/chat-trash/trash", { characterId, chatId, revision });
+    expect(trashed.status, await trashed.clone().text()).toBe(200);
+    const { revision: token } = (await trashed.json()) as { revision: string };
+    const deleted = await s.json("/api/chat-trash/delete", { characterId, chatId, revision: token });
+    expect(deleted.status, await deleted.clone().text()).toBe(200);
+}
+
 /** Chat seq interleaves characters; order seq follows character creation instead. */
 async function seedInterleavedChats(s: TestClient) {
     for (const id of ["c1", "c2", "c3"]) await s.create("characters", id, character(id));
@@ -371,6 +380,8 @@ describe("the boot through the cache against the real route", () => {
                 await chatBatch(s, {
                     chatOrders: [{ characterId: "c2", baseRevision: order.revision, ids: [...order.ids].reverse() }],
                 });
+            } else if (change === "a removed chat") {
+                await deleteChatForever(s, "c2", target.id, target.revision);
             } else {
                 const ops =
                     change === "a metadata change"
@@ -383,9 +394,7 @@ describe("the boot through the cache against the real route", () => {
                                     messages: [{ role: "user", chatId: "message1", data: "Hello", time: 123 }],
                                 },
                             ]
-                          : change === "an added chat"
-                            ? [{ op: "create", chat: { name: "New", message: [] } }]
-                            : [{ op: "delete" }];
+                          : [{ op: "create", chat: { name: "New", message: [] } }];
                 await chatBatch(s, {
                     chats: [
                         {

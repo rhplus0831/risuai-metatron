@@ -35,6 +35,7 @@ import type { AppEnv } from "../types.ts";
 import { createTokenizers } from "../prompt/tokenizers/index.ts";
 import { createTokenCounter, type TokenCounter } from "../prompt/tokens.ts";
 import { createScriptWorkerPool } from "../scripts/workerPool.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
 import { allowListenerOrigin } from "./testSupport.ts";
 import { UNHURRIED_CBS, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
 
@@ -758,7 +759,20 @@ describe("server command sequences", () => {
                 );
                 h.write([{ op: "meta", set: { bindedPersona: "replacement" }, unset: [] }]);
             }
-            if (condition === "deleted chat") h.write([{ op: "delete" }]);
+            if (condition === "deleted chat") {
+                // Deleted through the trash; a spare active chat lets `k` go there.
+                h.store.applyChanges({
+                    chats: [
+                        {
+                            characterId: "c",
+                            chatId: "spare",
+                            baseRevision: null,
+                            ops: [{ op: "create", chat: {} as never }],
+                        },
+                    ],
+                });
+                deleteChatThroughTrash(h.store, "c", "k");
+            }
             if (condition === "closed gate") vi.spyOn(h.snapshots.gate, "active", "get").mockReturnValue(true);
             if (condition === "changed epoch") vi.spyOn(h.store, "epoch").mockReturnValue("new-epoch");
             before = structuredClone(h.read());

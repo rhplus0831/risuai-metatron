@@ -213,7 +213,7 @@ function boot(
         ],
     } as unknown as ChatRecord;
     revision = 1;
-    const listed = [{ characterId: "c", id: chatId, revision: rev(revision), data }];
+    const listed = [{ characterId: "c", id: chatId, revision: rev(revision), trashedAt: null, data }];
     const orders = [{ characterId: "c", revision: rev(1), ids: [chatId] }];
     seedChats(listed, orders);
     assembleChats([selectedCharacter() ?? { chaId: "c" }] as never, listed, orders);

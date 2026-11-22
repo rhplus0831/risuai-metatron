@@ -991,13 +991,22 @@ describe("every registered kind over the resource routes", () => {
             await s.json("/api/resources/read", { chats: [{ characterId: "c", id: "k" }], chatCollections: ["c"] })
         ).json()) as { chats: unknown[]; chatCollections: unknown[] };
         expect(read.chats).toEqual([
-            { characterId: "c", id: "k", revision: chatRevision, data: chatData, streaming: [] },
+            { characterId: "c", id: "k", revision: chatRevision, trashedAt: null, data: chatData, streaming: [] },
         ]);
         expect(read.chatCollections).toEqual([
             {
                 characterId: "c",
                 order: { characterId: "c", revision: orderRevision, ids: ["k"] },
-                chats: [{ characterId: "c", id: "k", revision: chatRevision, data: chatData, streaming: [] }],
+                chats: [
+                    {
+                        characterId: "c",
+                        id: "k",
+                        revision: chatRevision,
+                        trashedAt: null,
+                        data: chatData,
+                        streaming: [],
+                    },
+                ],
             },
         ]);
         const kinds = (await (await s.request("/api/resources?kinds=characters&chats=1")).json()) as {
@@ -1005,7 +1014,7 @@ describe("every registered kind over the resource routes", () => {
             chatOrders: unknown[];
         };
         expect(kinds.chats).toEqual([
-            { characterId: "c", id: "k", revision: chatRevision, data: chatData, streaming: [] },
+            { characterId: "c", id: "k", revision: chatRevision, trashedAt: null, data: chatData, streaming: [] },
         ]);
         expect(kinds.chatOrders).toEqual([{ characterId: "c", revision: orderRevision, ids: ["k"] }]);
 

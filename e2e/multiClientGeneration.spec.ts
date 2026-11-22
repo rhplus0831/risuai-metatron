@@ -422,7 +422,7 @@ test("a held reply refuses locked writes, preserves another message edit, and be
         // The owner's whole-chat refresh waits for its own stream. Completion below must adopt B's edit.
     });
 
-    await test.step("permanent character deletion and whole-chat deletion are refused during generation", async () => {
+    await test.step("permanent character deletion is refused during generation, and a whole-chat delete op is refused as useTrash", async () => {
         await expect(
             b.guard(() =>
                 b.page.evaluate(async (chaId) => {
@@ -431,8 +431,14 @@ test("a held reply refuses locked writes, preserves another message edit, and be
                 }, chaId),
             ),
         ).rejects.toThrow("the character is generating a reply");
+        const revision = (await serverChat(b, chaId, "s1")).revision;
         const refused = await rawWrite([{ op: "delete" }]);
-        generatingRefusal(refused);
+        // The batch route refuses every delete op before its generation check: chats are deleted
+        // through the trash route.
+        expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+        expect(
+            refused.body.conflicts?.find((entry) => entry.kind === "chat" && "id" in entry && entry.id === "s1"),
+        ).toEqual({ kind: "chat", characterId: chaId, id: "s1", revision, reason: "useTrash" });
         await test
             .info()
             .attach("chat-delete-refusal", { body: JSON.stringify(refused, null, 2), contentType: "application/json" });

@@ -13,6 +13,10 @@ import type {
     ChatOrderResult,
     ChatRecord,
     ChatSummary,
+    ChatTrashAction,
+    ChatTrashAnswer,
+    ChatTrashConflict,
+    ChatTrashRequest,
 } from "../../../shared/chats.ts";
 import type { Message } from "../../../shared/database.ts";
 import { HIDDEN_HYDRATION_KINDS } from "../../../shared/jobs.ts";
@@ -71,7 +75,7 @@ import {
     CHAT_OPEN_SCHEMA_SQL,
     CHAT_TABLE_COLUMNS,
     CHAT_TABLES_SQL,
-    type ChatFeedPayloads,
+    type LiveChatChange,
     type ChatMessageChanges,
     type ChatSnapshotRows,
     type ChatSnapshotSink,
@@ -466,6 +470,7 @@ type ChatChange = ChangeSet["chats"][number];
 function coalescedChat(earlier: ChatChange, later: ChatChange): ChatChange {
     const { characterId, id, revision } = later;
     const entry: ChatChange = { characterId, id, revision };
+    if (later.trashedAt !== undefined) entry.trashedAt = later.trashedAt;
     if (later.summary) {
         entry.summary = later.summary;
     } else if (revision !== null && later.summaryBase !== undefined && later.summaryBase === earlier.revision) {
@@ -612,12 +617,13 @@ export function walkSnapshotFile(
         throw new ResourceValidationError(NOT_A_RESOURCE_DATABASE);
     }
     try {
+        let chatColumns: readonly string[];
         try {
             const integrity = source.prepare("PRAGMA integrity_check").all() as { integrity_check: string }[];
             if (integrity.length !== 1 || integrity[0].integrity_check !== "ok") {
                 throw new ResourceValidationError("The resource database is damaged");
             }
-            assertSnapshotHeader(source);
+            chatColumns = assertSnapshotHeader(source, "source");
         } catch (error) {
             if (error instanceof ResourceValidationError) {
                 throw error;
@@ -683,7 +689,7 @@ export function walkSnapshotFile(
                 text,
             });
         }
-        const chatIds = walkChatSnapshot(source, characterIds, sink, signal);
+        const chatIds = walkChatSnapshot(source, characterIds, chatColumns, sink, signal);
         if (sink.checkpoints) {
             walkCheckpointSnapshot(source, chatIds, sink.checkpoints, signal);
         }
@@ -828,7 +834,7 @@ function assertStagedHeader(file: string) {
         throw new ResourceValidationError(NOT_A_RESOURCE_DATABASE);
     }
     try {
-        assertSnapshotHeader(staged);
+        assertSnapshotHeader(staged, "staged");
     } catch (error) {
         if (error instanceof ResourceValidationError) {
             throw error;
@@ -1336,11 +1342,9 @@ export function createResourceStore(options: {
         );
     }
 
-    /**
-     * `payloads`: the group's by-id change and summary knowledge (`ChatFeedPayloads`). A chat already
-     * written in this scope coalesces with its earlier entry (`coalescedChat`).
-     */
-    function recordChat(characterId: string, id: string, revision: string | null, payloads?: ChatFeedPayloads) {
+    /** Records the revision for replay and coalesces the live entry with any earlier one in this publication. */
+    function recordChat(entry: LiveChatChange) {
+        const { characterId, id, revision } = entry;
         transactionChanges?.set(JSON.stringify(["chats", characterId, id]), {
             kind: "chats",
             characterId,
@@ -1349,7 +1353,6 @@ export function createResourceStore(options: {
         });
         const changes = publishingScope?.changes;
         const key = `${characterId}\u0000${id}`;
-        const entry: ChangeSet["chats"][number] = { characterId, id, revision, ...payloads };
         const earlier = changes?.chats.get(key);
         changes?.chats.set(key, earlier ? coalescedChat(earlier, entry) : entry);
     }
@@ -1371,7 +1374,7 @@ export function createResourceStore(options: {
     /** A character's chats and order deleted with it, recorded as deletions and invalidations. */
     function recordCharacterCascade(characterId: string, removed: { chatIds: string[]; order: boolean }) {
         for (const chatId of removed.chatIds) {
-            recordChat(characterId, chatId, null);
+            recordChat({ characterId, id: chatId, revision: null });
             recordInvalidation(characterId, chatId);
         }
         if (removed.order) {
@@ -1974,10 +1977,8 @@ export function createResourceStore(options: {
             for (const [index, result] of results.entries()) {
                 recordResource(result.kind, result.id, result.revision, patches.get(index));
             }
-            for (const chat of chatOutcome.results) {
-                if (!chatOutcome.duplicates.has(chat)) {
-                    recordChat(chat.characterId, chat.id, chat.revision, chatOutcome.feed.get(chat));
-                }
+            for (const entry of chatOutcome.feed) {
+                recordChat(entry);
             }
             for (const order of chatOutcome.orders) {
                 recordOrder(order.characterId, order.revision);
@@ -2916,6 +2917,79 @@ export function createResourceStore(options: {
             return chatTables.chatRevision(characterId, id);
         },
 
+        /** Revision and trash mark without reading metadata, the projection, or messages. */
+        chatTrashState(characterId: string, id: string) {
+            assertOpen();
+            const row = chatTables.chatState(characterId, id);
+            return row && { revision: token(row.seq, row.revision), trashedAt: row.trashedAt };
+        },
+
+        /** The request's incarnation, admission checks, mutation and answer share one write transaction. */
+        changeChatTrash(
+            action: ChatTrashAction,
+            { characterId, chatId, revision }: ChatTrashRequest,
+            expectedEpoch: string | undefined,
+            chatHeld: (characterId: string, id: string) => boolean,
+        ): ChatTrashAnswer | ChatTrashConflict {
+            return store.transaction((): ChatTrashAnswer | ChatTrashConflict => {
+                assertEpochNow(expectedEpoch);
+                const row = chatTables.chatState(characterId, chatId);
+                if (!row) return { error: "stale", revision: null };
+                const current = token(row.seq, row.revision);
+                const conflict = (error: ChatTrashConflict["error"]): ChatTrashConflict => ({
+                    error,
+                    revision: current,
+                    trashedAt: row.trashedAt,
+                });
+                const base = parseToken(revision);
+                if (
+                    !base ||
+                    base.seq !== row.seq ||
+                    base.revision > row.revision ||
+                    (action === "delete" && revision !== current)
+                ) {
+                    return conflict("stale");
+                }
+                if (action === "delete" && row.trashedAt === null) return conflict("notTrashed");
+
+                const readAnswer = (): ChatTrashAnswer => {
+                    const summary = chatTables.readChatSummary(characterId, chatId)!;
+                    return {
+                        characterId,
+                        id: chatId,
+                        revision: summary.revision,
+                        trashedAt: summary.trashedAt ?? null,
+                        summary,
+                    };
+                };
+                if (
+                    (action === "trash" && row.trashedAt !== null) ||
+                    (action === "restore" && row.trashedAt === null)
+                ) {
+                    return readAnswer();
+                }
+                if (action !== "restore" && chatHeld(characterId, chatId)) return conflict("generating");
+                if (action === "trash" && !chatTables.hasOtherActiveChat(characterId, chatId)) {
+                    return conflict("lastActiveChat");
+                }
+
+                let answer: ChatTrashAnswer;
+                if (action === "delete") {
+                    answer = readAnswer();
+                    const order = chatTables.deleteChat(characterId, chatId, row.seq);
+                    recordChat({ characterId, id: chatId, revision: null });
+                    if (order !== null) recordOrder(characterId, order);
+                    recordInvalidation(characterId, chatId);
+                } else {
+                    chatTables.setTrashedAt(row.seq, row.revision, action === "trash" ? Date.now() : null);
+                    answer = readAnswer();
+                    recordChat(answer);
+                }
+                countWrite();
+                return answer;
+            });
+        },
+
         /**
          * Whether a generation job owns any of the chat's `messageIds`: a write of one without that
          * job's token conflicts with `reason: "generating"`. For a caller with another write to make
@@ -3770,14 +3844,15 @@ function snapshotTableColumns(): Record<string, readonly string[]> {
 /**
  * Requires this store's schema version and the layout `initialize` creates: `resources`, `meta`, and
  * the chat tables are ordinary tables (a view or a virtual table could answer the row query with
- * anything), with exactly these columns, and `meta` holds an epoch string. Anything else is not a
- * resource database.
+ * anything), and `meta` holds an epoch string. A source may predate the trash column. Return its
+ * matched chat layout for the row walk. Our staged output always has the current layout.
  */
-function assertSnapshotHeader(source: DatabaseSync) {
+function assertSnapshotHeader(source: DatabaseSync, kind: "source" | "staged"): readonly string[] {
     const { user_version: version } = source.prepare("PRAGMA user_version").get() as { user_version: number };
     if (version !== SCHEMA_VERSION) {
         throw new ResourceValidationError(`Unsupported resource database version ${version}`);
     }
+    let chatColumns = CHAT_TABLE_COLUMNS.chats;
     for (const [table, columns] of Object.entries(snapshotTableColumns())) {
         const objects = source.prepare("SELECT type, sql FROM sqlite_schema WHERE name = ?").all(table) as {
             type: string;
@@ -3786,15 +3861,26 @@ function assertSnapshotHeader(source: DatabaseSync) {
         if (objects.length !== 1 || objects[0].type !== "table" || !/^CREATE TABLE\b/i.test(objects[0].sql ?? "")) {
             throw new ResourceValidationError(NOT_A_RESOURCE_DATABASE);
         }
-        const info = source.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
-        if (info.length !== columns.length || !info.every((column, index) => column.name === columns[index])) {
+        const info = source.prepare(`PRAGMA table_xinfo(${table})`).all() as { name: string; hidden: number }[];
+        const layouts =
+            table === "chats" && kind === "source"
+                ? [columns, columns.filter((name) => name !== "trashedAt")]
+                : [columns];
+        const matched = layouts.find(
+            (layout) =>
+                info.length === layout.length &&
+                info.every((column, index) => column.name === layout[index] && column.hidden === 0),
+        );
+        if (!matched) {
             throw new ResourceValidationError(NOT_A_RESOURCE_DATABASE);
         }
+        if (table === "chats") chatColumns = matched;
     }
     const epoch = source.prepare("SELECT value FROM meta WHERE key = 'epoch'").get() as { value: unknown } | undefined;
     if (typeof epoch?.value !== "string") {
         throw new ResourceValidationError(NOT_A_RESOURCE_DATABASE);
     }
+    return chatColumns;
 }
 
 /**

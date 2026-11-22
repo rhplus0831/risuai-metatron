@@ -239,7 +239,7 @@ describe("idle refresh work", () => {
 
 describe("chat membership", () => {
     it("follows inserted, removed, replaced, reordered, and recreated chat lists", async () => {
-        const { chat, server, ref, character, commit } = await boot();
+        const { chat, server, ref, character, commit, take, recover } = await boot();
         const at = (chatId: string) => ({ chaId: "c", chatId });
         const input = (id: string) => ({ id, name: id, message: [] });
         // Cache a miss before each insertion or replacement, so an old set cannot hide the write.
@@ -256,9 +256,14 @@ describe("chat membership", () => {
         expect(chat.noteRemoteChat(at("s"), null)).toBe("collection");
         chat.deleteChat(at("s"));
         expect(chat.noteRemoteChat(at("s"), null)).toBe("ignored");
-        commit();
-
         expect(chat.chatCount("c")).toBe(2);
+        // The server refuses the delete op (`useTrash`): the conflict's read brings `s` back.
+        expect(recover(take()).conflicts).toEqual([
+            expect.objectContaining({ kind: "chat", id: "s", reason: "useTrash" }),
+        ]);
+        expect(chat.chatCount("c")).toBe(3);
+        expect((await chat.ensureChatLoaded(at("s")))?.id).toBe("s");
+
         expect(await chat.ensureChatLoaded(at("replacement"))).toBeUndefined();
         chat.installCharacterChats("c", [input("j"), input("replacement")] as any, character());
         expect(chat.chatCount("c")).toBe(2);
@@ -482,14 +487,16 @@ describe("display install state", () => {
         const { server, chat, ref, take } = await boot();
         chat.applyServerGeneration(ref, { jobId: "J", messageId: "a", generationId: "g", text: "stream", seq: 0 });
         expect(chat.chatHasUnackedWork(ref)).toBe(false);
+        // Another tab deletes `k` for good, which needs a sibling outside the trash.
         server.chatBatch([
             {
                 characterId: "c",
-                chatId: "k",
-                baseRevision: server.chat("c", "k")!.revision,
-                ops: [{ op: "delete" }],
+                chatId: "j",
+                baseRevision: null,
+                ops: [{ op: "create", chat: { name: "J", message: [] } as any }],
             },
         ]);
+        server.deleteChatForever("c", "k");
         chat.acceptRemoteCollection(server.store.readRefs([], { chatCollections: ["c"] }).chatCollections[0]);
         expect(chat.isChatDeferred("c\u0000k")).toBe(true);
         expect(chat.chatHasUnackedWork(ref)).toBe(true);
@@ -873,8 +880,8 @@ describe("membership and selection", () => {
         expect(chat.hasChatWork()).toBe(false);
     });
 
-    it("cancels a create that was never sent, but keeps a delete behind a create that was", async () => {
-        const { server, chat, take, commit, open } = await boot();
+    it("cancels a create that was never sent, but keeps a delete behind a create that was, which the server refuses", async () => {
+        const { server, chat, take, commit, recover, open } = await boot();
         chat.createChat("c", { id: "n", name: "N", message: [] } as any);
         chat.deleteChat({ chaId: "c", chatId: "n" });
         expect(take().groups).toEqual([]);
@@ -894,11 +901,23 @@ describe("membership and selection", () => {
         expect(work.orders).toEqual([]);
         expect(server.chat("c", "p")).not.toBeNull();
         expect(chat.unsettledChatObligations(obligations)).toEqual(["c\u0000p"]);
-        const second = commit();
-        expect(second.work.groups.map((group) => group.ops)).toEqual([[{ op: "delete" }]]);
-        expect(server.chat("c", "p")).toBeNull();
+        const second = take();
+        expect(second.groups.map((group) => group.ops)).toEqual([[{ op: "delete" }]]);
+        // The server refuses the delete op (`useTrash`) and keeps the chat; the tab reads it back.
+        expect(recover(second).conflicts).toEqual([
+            {
+                kind: "chat",
+                characterId: "c",
+                id: "p",
+                revision: server.chat("c", "p")!.revision,
+                reason: "useTrash",
+            },
+        ]);
+        expect(server.chat("c", "p")).not.toBeNull();
         expect(chat.unsettledChatObligations(obligations)).toEqual([]);
-        expect(server.order("c")!.ids).toEqual(["k"]);
+        expect(server.order("c")!.ids).toEqual(["k", "p"]);
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "p"]);
+        expect(chat.hasChatWork()).toBe(false);
     });
 
     it("keeps the selection on the chat id through creates, reorders, and deletes, and remembers it for the next boot", async () => {
@@ -928,9 +947,7 @@ describe("membership and selection", () => {
         chat.createChat("c", { id: "j", name: "J", message: [] } as any, { select: true });
         commit();
         expect(character().chatPage).toBe(1);
-        server.chatBatch([
-            { characterId: "c", chatId: "j", baseRevision: server.chat("c", "j")!.revision, ops: [{ op: "delete" }] },
-        ]);
+        server.deleteChatForever("c", "j");
         chat.setChatMeta({ chaId: "c", chatId: "j" }, { note: "edit on a chat another tab deleted" });
         recover(take());
         expect(character().chats.map((entry: any) => entry.id)).toEqual(["k"]);
@@ -938,9 +955,10 @@ describe("membership and selection", () => {
         expect(chat.chatDiscardsSince(0)).toEqual(["c/j"]);
         expect(chat.hasChatWork()).toBe(false);
 
-        server.chatBatch([
-            { characterId: "c", chatId: "k", baseRevision: server.chat("c", "k")!.revision, ops: [{ op: "delete" }] },
-        ]);
+        // A character's last chat outside the trash cannot be deleted for good: another writer
+        // deletes the character (its chats go with it) and creates it again under its id, chatless.
+        server.store.delete(server.kind("characters"), "c", server.record("characters", "c")!.revision);
+        server.set("characters", "c", { chaId: "c", name: "C" });
         chat.setChatMeta({ chaId: "c", chatId: "k" }, { note: "edit on the last chat" });
         recover(take());
         // The character has a fresh chat, and it can be saved.
@@ -955,7 +973,13 @@ describe("membership and selection", () => {
     it("assembles chats in the server order and repairs an order naming a missing chat or missing a chat", async () => {
         const { chat } = await boot();
         const characters = [{ chaId: "z", chats: [], chatPage: 3 }] as any[];
-        const record = (id: string) => ({ characterId: "z", id, revision: "r", data: { id, message: [] } as any });
+        const record = (id: string) => ({
+            characterId: "z",
+            id,
+            revision: "r",
+            trashedAt: null,
+            data: { id, message: [] } as any,
+        });
         chat.assembleChats(
             characters,
             [record("one"), record("two"), record("extra")],
@@ -970,8 +994,8 @@ describe("membership and selection", () => {
 });
 
 describe("generation lock", () => {
-    it("refuses deletion of a chat with a known generation until the job ends", async () => {
-        const { server, chat, ref, character, take, commit } = await boot();
+    it("refuses deletion of a chat with a known generation until the job ends, then sends the delete, which the server refuses", async () => {
+        const { server, chat, ref, character, take, commit, recover } = await boot();
         chat.createChat("c", { id: "j", name: "J", message: [] } as any);
         commit();
         chat.applyServerGeneration(ref, { jobId: "J", messageId: "a", generationId: "g", text: "partial", seq: 0 });
@@ -984,9 +1008,17 @@ describe("generation lock", () => {
 
         chat.endServerJob("J");
         chat.deleteChat(ref);
-        commit();
         expect(character().chats.map((entry: any) => entry.id)).toEqual(["j"]);
-        expect(server.chat("c", "k")).toBeNull();
+        const deletion = take();
+        expect(deletion.groups.map((group) => [group.chatId, group.ops])).toEqual([["k", [{ op: "delete" }]]]);
+        // The server refuses the delete op (`useTrash`): the chat stays, and the conflict's read brings it back.
+        expect(recover(deletion).conflicts).toEqual([
+            expect.objectContaining({ kind: "chat", id: "k", reason: "useTrash" }),
+        ]);
+        expect(server.chat("c", "k")).not.toBeNull();
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "j"]);
+        expect(chat.chatDiscardsSince(0)).toEqual(["c/k"]);
+        expect(take().groups).toEqual([]);
     });
 
     it("refuses edits, removals, and a chat replacement touching a message a server job locks, keeps the other messages editable, and keeps the lock until the job ends", async () => {
@@ -1394,8 +1426,8 @@ describe("applyChatResult", () => {
         expect(server.chat("c", "k")!.data.message.map((message) => message.chatId)).toEqual(ids(mirror));
     });
 
-    it("reconciles a whole character's chats from a plugin: diff by id, create, delete, order, selection", async () => {
-        const { server, chat, ref, character, commit } = await boot();
+    it("reconciles a whole character's chats from a plugin: diff by id, create, delete, order, selection; the server refuses the delete and keeps the omitted chat", async () => {
+        const { server, chat, ref, character, commit, take, recover } = await boot();
         chat.createChat("c", { id: "j", name: "J", message: [] } as any);
         commit();
         const incoming = clone(character().chats) as any[];
@@ -1408,11 +1440,30 @@ describe("applyChatResult", () => {
         expect(character().chatPage).toBe(1);
         expect((chat.findChat(ref) as any).note).toBe("plugin note");
         expect(texts(chat.findChat(ref))).toEqual(["A", "B by plugin", "C"]);
-        commit();
-        expect(server.order("c")!.ids).toEqual([chats[0].id, "k"]);
-        expect(server.chat("c", "j")).toBeNull();
+        const sent = take();
+        expect(sent.groups.map((group) => [group.chatId, group.ops.map((op) => op.op)])).toEqual([
+            [chats[0].id, ["create"]],
+            ["k", ["patchMessage", "meta"]],
+            ["j", ["delete"]],
+        ]);
+        expect(sent.orders.map((order) => order.ids)).toEqual([[chats[0].id, "k"]]);
+        // The server refuses the omitted chat's delete op (`useTrash`) and the batch with it: `j` comes
+        // back from the list read, and the plugin's order is discarded with it.
+        expect(recover(sent).conflicts).toEqual([
+            expect.objectContaining({ kind: "chat", characterId: "c", id: "j", reason: "useTrash" }),
+        ]);
+        expect(chat.chatDiscardsSince(0)).toEqual(["c/j", "c"]);
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "j", chats[0].id]);
+        const retry = commit();
+        expect(retry.work.groups.map((group) => [group.chatId, group.ops.map((op) => op.op)])).toEqual([
+            [chats[0].id, ["create"]],
+            ["k", ["patchMessage", "meta"]],
+        ]);
+        expect(server.order("c")!.ids).toEqual(["k", "j", chats[0].id]);
+        expect(server.chat("c", "j")).not.toBeNull();
         expect(server.texts("c", chats[0].id)).toEqual(["P1"]);
         expect((server.chat("c", "k")!.data as any).note).toBe("plugin note");
+        expect(take().groups).toEqual([]);
     });
 
     it("refuses a result that touches a locked message before changing anything", async () => {
@@ -3007,17 +3058,18 @@ describe("stream updates per frame", () => {
 describe("a lost delete with the chat created again under its id, and a lost create", () => {
     const refJ = { chaId: "c", chatId: "j" };
     const chatJ = { id: "j", name: "J", note: "", localLore: [], message: [m("x", "X")] } as any;
-    /** `k` deleted here with its answer lost (`landed`: the server applied it), then created again under its id. */
+    /** `k` deleted here with its answer lost (`landed`: the server no longer has it), then created again under its id. */
     async function lostDelete(landed: boolean) {
         const booted = await boot();
-        const { server, chat, ref, take, apply, commit } = booted;
+        const { server, chat, ref, take, commit } = booted;
         chat.createChat("c", chatJ);
         commit();
         chat.deleteChat(ref);
         const work = take();
         expect(work.groups.map((group) => group.ops)).toEqual([[{ op: "delete" }]]);
         if (landed) {
-            apply(work);
+            // The server no longer has the chat (a delete that landed before the server refused delete ops).
+            server.deleteChatForever("c", "k");
         }
         chat.requeueChatWork(work, { lost: true });
         expect(server.chat("c", "k") === null).toBe(landed);
@@ -3033,8 +3085,8 @@ describe("a lost delete with the chat created again under its id, and a lost cre
         return { ...booted, sent: work.groups[0] };
     }
 
-    it("keeps the recreation in the list while the server's list still shows the old chat, sends the delete first (its id, retry) and the create after it", async () => {
-        const { server, chat, ref, take, apply, ack, sent } = await lostDelete(false);
+    it("keeps the recreation in the list while the server's list still shows the old chat and sends the delete first (its id, retry); the server refuses it, keeps the old chat, and the recreation is discarded", async () => {
+        const { server, chat, ref, take, recover, sent } = await lostDelete(false);
         chat.acceptRemoteCollection(server.store.readRefs([], { chatCollections: ["c"] }).chatCollections[0] as any);
         // The recreation, at the old chat's server position.
         expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "j"]);
@@ -3043,16 +3095,22 @@ describe("a lost delete with the chat created again under its id, and a lost cre
         expect(resend.groups.map((group) => [group.ops, group.groupId, group.inDoubt])).toEqual([
             [[{ op: "delete" }], sent.groupId, true],
         ]);
-        const answer = apply(resend);
-        expect(answer.chats[0].revision).toBeNull();
-        ack(resend, answer);
-        expect(chat.hasChatWork()).toBe(true);
-        const create = take();
-        expect(create.groups.map((group) => group.ops[0].op)).toEqual(["create"]);
-        ack(create, apply(create));
-        expect(server.texts("c", "k")).toEqual(["N"]);
+        // The server refuses the delete op (`useTrash`), which also covers the retry of one it never
+        // applied: the old chat stays, the recreation is discarded, and its create is never sent.
+        expect(recover(resend).conflicts).toEqual([
+            {
+                kind: "chat",
+                characterId: "c",
+                id: "k",
+                revision: server.chat("c", "k")!.revision,
+                reason: "useTrash",
+            },
+        ]);
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "j"]);
+        expect(texts(chat.findChat(ref))).toEqual(["A", "B", "C"]);
+        expect(server.texts("c", "k")).toEqual(["A", "B", "C"]);
         expect(server.order("c")!.ids).toEqual(["k", "j"]);
-        expect(chat.chatDiscardsSince(0)).toEqual([]);
+        expect(chat.chatDiscardsSince(0)).toEqual(["c/k"]);
         expect(take().groups).toEqual([]);
         expect(chat.hasChatWork()).toBe(false);
     });
@@ -3071,17 +3129,22 @@ describe("a lost delete with the chat created again under its id, and a lost cre
         expect(chat.hasChatWork()).toBe(false);
     });
 
-    it("keeps the unresolved delete when the recreation is deleted again, so the old chat does not survive on the server", async () => {
-        const { server, chat, ref, take, apply, ack, sent, open } = await lostDelete(false);
+    it("keeps the unresolved delete when the recreation is deleted again and resends it; the server refuses it and the old chat comes back", async () => {
+        const { server, chat, ref, take, recover, sent, open } = await lostDelete(false);
         chat.deleteChat(ref);
         expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["j"]);
         const resend = take();
         expect(resend.groups.map((group) => [group.ops, group.groupId, group.inDoubt])).toEqual([
             [[{ op: "delete" }], sent.groupId, true],
         ]);
-        ack(resend, apply(resend));
-        expect(server.chat("c", "k")).toBeNull();
-        // The newer delete has nothing left to delete: settled without a request.
+        // The server refuses the delete op (`useTrash`): the old chat survives on the server and
+        // comes back here; the newer delete has nothing left to send.
+        expect(recover(resend).conflicts).toEqual([
+            expect.objectContaining({ kind: "chat", characterId: "c", id: "k", reason: "useTrash" }),
+        ]);
+        expect(server.texts("c", "k")).toEqual(["A", "B", "C"]);
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "j"]);
+        expect(chat.chatDiscardsSince(0)).toEqual(["c/k"]);
         expect(take().groups).toEqual([]);
         expect(chat.hasChatWork()).toBe(false);
         expect(open()).toEqual([]);

@@ -3,7 +3,7 @@ import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { normalizeCharacter } from "../../../shared/characters.ts";
 import type { ChatOp, ChatRecord } from "../../../shared/chats.ts";
 import type { Message, MessageTranslation } from "../../../shared/database.ts";
@@ -26,6 +26,7 @@ import {
     ResourceValidationError,
 } from "../data/resourceStore.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
 import { INJECTED_COPY_FAILURE, installSnapshot, stageSnapshot, withFailingInstallCopy } from "./stagedRestore.ts";
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
@@ -121,6 +122,39 @@ function seed(store: ResourceStore) {
         character: result.results[0].revision!,
     };
 }
+
+it("opens a pre-trash database and keeps plugin trashedAt metadata separate across edits and replacement", () => {
+    const dir = tempDir();
+    const original = fileStore(dir);
+    const { chat: revision } = seed(original);
+    original.close();
+    const db = new DatabaseSync(path.join(dir, "live.sqlite"));
+    try {
+        db.exec("ALTER TABLE chats DROP COLUMN trashedAt");
+    } finally {
+        db.close();
+    }
+
+    const store = fileStore(dir);
+    const migrated = new DatabaseSync(path.join(dir, "live.sqlite"), { readOnly: true });
+    try {
+        expect(migrated.prepare("PRAGMA table_info(chats)").all()).toContainEqual(
+            expect.objectContaining({ name: "trashedAt", type: "INTEGER", notnull: 0 }),
+        );
+    } finally {
+        migrated.close();
+    }
+    expect(chat(store, "k")).toMatchObject({ revision, trashedAt: null, data: { name: "K" } });
+    store.applyChanges({ chats: [group("k", revision, [{ op: "meta", set: { trashedAt: 41 } }])] });
+    const edited = chat(store, "k")!;
+    expect(edited).toMatchObject({ trashedAt: null, data: { trashedAt: 41 } });
+    const replacement = { ...edited.data, trashedAt: 73 };
+    store.applyChanges({ chats: [group("k", edited.revision, [{ op: "replace", chat: replacement }])] });
+    expect(chat(store, "k")).toMatchObject({ trashedAt: null, data: { trashedAt: 73 } });
+    expect(
+        store.readRefs([], { chatSummaryCollections: ["c"] }).chatSummaryCollections![0].chats[0],
+    ).not.toHaveProperty("trashedAt");
+});
 
 describe("creating characters and chats", () => {
     it("creates a character with its initial chats and order in one batch, normalizing message ids", () => {
@@ -259,7 +293,7 @@ describe("atomicity and cascades", () => {
         expect(snapshotState(store)).toBe(before);
         expect(store.writeCount()).toBe(writes);
 
-        // A stale chat delete: the valid character write is rolled back; the order and chat conflicts are all listed.
+        // A stale chat replace: the valid character write is rolled back; the order and chat conflicts are all listed.
         expect(
             conflictsOf(() =>
                 store.applyChanges({
@@ -267,7 +301,7 @@ describe("atomicity and cascades", () => {
                         { kind: characters, id: "c", baseRevision: tokens.character, data: { chaId: "c", name: "x" } },
                     ],
                     chats: [
-                        group("k", bumped(tokens.chat, -1), [{ op: "delete" }]),
+                        group("k", bumped(tokens.chat, -1), [{ op: "replace", chat: { message: [] } as never }]),
                         group("other", null, [{ op: "create", chat: {} as never }]),
                     ],
                     chatOrders: [order(bumped(tokens.order, 1), ["k"])],
@@ -394,7 +428,7 @@ describe("atomicity and cascades", () => {
 });
 
 describe("revision rules", () => {
-    it("applies by-id ops on a stale revision when the target exists, and needs the current one for delete, replace, and multi-id remove", () => {
+    it("applies by-id ops on a stale revision when the target exists, needs the current one for replace and multi-id remove, and refuses delete at any revision", () => {
         const store = memoryStore();
         const tokens = seed(store);
         const stale = tokens.chat;
@@ -422,8 +456,11 @@ describe("revision rules", () => {
 
         const writes = store.writeCount();
         const state = snapshotState(store);
+        // A delete group is refused whatever its revision: deletion goes through the trash.
+        expect(conflictsOf(() => store.applyChanges({ chats: [group("k", stale, [{ op: "delete" }])] }))).toEqual([
+            { kind: "chat", characterId: "c", id: "k", revision: current, reason: "useTrash" },
+        ]);
         for (const ops of [
-            [{ op: "delete" }],
             [{ op: "replace", chat: { message: [] } }],
             [{ op: "remove", ids: ["a", "b"] }],
             // A group mixing a tolerant op with a destructive one is judged as a whole.
@@ -511,20 +548,29 @@ describe("revision rules", () => {
             fmIndex: -1,
             message: [m("z", "Z"), { ...m("z", "Z2"), chatId: replaced.messageIds![1] }],
         });
-        const deleted = store.applyChanges({ chats: [group("k", replaced.revision!, [{ op: "delete" }])] });
-        expect(deleted.chats).toEqual([{ characterId: "c", id: "k", revision: null }]);
-        expect(deleted.chatOrders).toEqual([{ characterId: "c", revision: expect.any(String), ids: [] }]);
+        // A delete on the current revision is refused too, and changes nothing.
+        const replacedState = snapshotState(store);
+        expect(
+            conflictsOf(() => store.applyChanges({ chats: [group("k", replaced.revision!, [{ op: "delete" }])] })),
+        ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: replaced.revision, reason: "useTrash" }]);
+        expect(snapshotState(store)).toBe(replacedState);
+        // The trash deletes it, which needs another active chat of the character.
+        store.applyChanges({ chats: [group("j", null, [{ op: "create", chat: {} as never }])] });
+        deleteChatThroughTrash(store, "c", "k");
         expect(chat(store, "k")).toBeNull();
+        expect(orderOf(store)!.ids).toEqual(["j"]);
     });
 
     it("rejects tokens of another incarnation or epoch, even for stale-tolerant ops", () => {
         const store = memoryStore();
         const tokens = seed(store);
-        store.applyChanges({ chats: [group("k", tokens.chat, [{ op: "delete" }])] });
+        // A sibling (seq 2) keeps the character an active chat while k goes through the trash.
+        store.applyChanges({ chats: [group("j", null, [{ op: "create", chat: {} as never }])] });
+        deleteChatThroughTrash(store, "c", "k");
         const recreated = store.applyChanges({
             chats: [group("k", null, [{ op: "create", chat: { message: [m("a")] } as never }])],
         }).chats[0].revision!;
-        expect(recreated).toMatch(/:2:1$/);
+        expect(recreated).toMatch(/:3:1$/);
         expect(tokens.chat).toMatch(/:1:1$/);
         const otherEpoch = recreated.replace(/^[0-9a-f-]{36}/, "00000000-0000-4000-8000-000000000000");
         for (const token of [tokens.chat, otherEpoch, "garbage", "", `${recreated}:1`]) {
@@ -577,7 +623,8 @@ describe("revision rules", () => {
         expect(snapshotState(store)).toBe(state);
         expect(chat(store, "k3")).toBeNull();
 
-        // A stale delete with its dependent reorder is a 409 naming the chat, not a permutation error.
+        // A stale delete (refused: deletion goes through the trash) with its dependent reorder is a 409
+        // naming the chat, not a permutation error.
         const kRevision = chat(store, "k")!.revision;
         store.applyChanges({ chats: [group("k", kRevision, [{ op: "meta", set: { note: "moved on" } }])] });
         expect(
@@ -587,7 +634,7 @@ describe("revision rules", () => {
                     chatOrders: [order(committed, ["k2"])],
                 }),
             ),
-        ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: bumped(kRevision, 1) }]);
+        ).toEqual([{ kind: "chat", characterId: "c", id: "k", revision: bumped(kRevision, 1), reason: "useTrash" }]);
         // The same with a stale resource op instead.
         expect(
             conflictsOf(() =>
@@ -870,6 +917,7 @@ describe("patchMessage", () => {
                 characterId: "c",
                 id: "k",
                 revision: patched.revision,
+                trashedAt: null,
                 // No message has a time and the metadata is untouched: the summary is the stored base's.
                 summaryBase: storedBase,
                 patch: {
@@ -888,6 +936,7 @@ describe("patchMessage", () => {
                 characterId: "c",
                 id: "k",
                 revision: same.revision,
+                trashedAt: null,
                 summaryBase: patched.revision,
                 patch: { baseRevision: patched.revision, count: 3 },
             },
@@ -1081,8 +1130,14 @@ describe("idempotent replay", () => {
         expect(conflictsOf(() => store.applyChanges(replaceBatch))).toEqual([
             { kind: "chat", characterId: "c", id: "n", revision: replaced },
         ]);
+        // A delete group is refused (deletion goes through the trash); once the trash deleted the chat,
+        // the same group conflicts as gone.
         const deleteBatch = { chats: [group("n", replaced, [{ op: "delete" }] as ChatOp[])] };
-        store.applyChanges(deleteBatch);
+        expect(conflictsOf(() => store.applyChanges(deleteBatch))).toEqual([
+            { kind: "chat", characterId: "c", id: "n", revision: replaced, reason: "useTrash" },
+        ]);
+        expect(chat(store, "n")!.revision).toBe(replaced);
+        deleteChatThroughTrash(store, "c", "n");
         expect(conflictsOf(() => store.applyChanges(deleteBatch))).toEqual([
             { kind: "chat", characterId: "c", id: "n", revision: null },
         ]);
@@ -1414,14 +1469,10 @@ describe("revision counters", () => {
                 chats: [group("k", k, [{ op: "setText", id: "a", text: "x", generation: { id: "g", seq: 1 } }])],
             }).chats[0].revision,
         ).toBe(k);
-        // The order counter: a chat create, a chat delete, and a reorder all bump it (the first two
-        // fail inside a group's op, the reorder outside any group).
+        // The order counter: a chat create and a reorder both bump it (the create fails inside a
+        // group's op, the reorder outside any group); a permanent deletion is checked below.
         rejects(
             () => store.applyChanges({ chats: [group("k3", null, [{ op: "create", chat: {} as never }])] }),
-            `chats[0].ops[0]: ${exhausted}`,
-        );
-        rejects(
-            () => store.applyChanges({ chats: [group("k2", k2, [{ op: "delete" }])] }),
             `chats[0].ops[0]: ${exhausted}`,
         );
         rejects(() => store.applyChanges({ chatOrders: [order(orderToken, ["k2", "k"])] }), exhausted);
@@ -1445,6 +1496,34 @@ describe("revision counters", () => {
             reopened.applyChanges({ chats: [group("k2", k2, [{ op: "meta", set: { note: "ok" } }])] }).chats[0]
                 .revision,
         ).toBe(bumped(k2, 1));
+        // A permanent deletion bumps the order counter too: it is refused and rolled back, leaving the
+        // chat in the trash.
+        const trashed = reopened.changeChatTrash(
+            "trash",
+            { characterId: "c", chatId: "k2", revision: bumped(k2, 1) },
+            reopened.epoch(),
+            () => false,
+        );
+        if ("error" in trashed) throw new Error(JSON.stringify(trashed));
+        const trashedState = snapshotState(reopened);
+        const trashedWrites = reopened.writeCount();
+        rejects(
+            () =>
+                reopened.changeChatTrash(
+                    "delete",
+                    { characterId: "c", chatId: "k2", revision: trashed.revision },
+                    reopened.epoch(),
+                    () => false,
+                ),
+            exhausted,
+        );
+        expect(snapshotState(reopened)).toBe(trashedState);
+        expect(reopened.writeCount()).toBe(trashedWrites);
+        expect(reopened.chatTrashState("c", "k2")).toEqual({
+            revision: trashed.revision,
+            trashedAt: trashed.trashedAt,
+        });
+        expect(orderOf(reopened)).toEqual({ characterId: "c", revision: orderToken, ids: ["k", "k2"] });
     });
 });
 
@@ -1510,7 +1589,8 @@ describe("snapshots", () => {
         check([], ["a", "x", "d"]);
         write([{ op: "replace", chat: { message: [m("z")] } as never }]);
         check([], ["z"]);
-        write([{ op: "delete" }]);
+        store.applyChanges({ chats: [group("j", null, [{ op: "create", chat: {} as never }])] });
+        deleteChatThroughTrash(store, "c", "k");
         expect(chat(store, "k")).toBeNull();
         write([{ op: "create", chat: { message: [m("r"), m("s")] } as never }]);
         check([], ["r", "s"]);
@@ -1923,9 +2003,9 @@ describe("snapshots", () => {
         const loose = tamper(
             file,
             `CREATE TABLE chats2 AS SELECT * FROM chats; DROP TABLE chats;
-             CREATE TABLE chats (seq INTEGER, characterId TEXT NOT NULL, id TEXT NOT NULL, revision INTEGER NOT NULL, schemaVersion INTEGER NOT NULL, meta TEXT NOT NULL);
+             CREATE TABLE chats (seq INTEGER, characterId TEXT NOT NULL, id TEXT NOT NULL, revision INTEGER NOT NULL, schemaVersion INTEGER NOT NULL, meta TEXT NOT NULL, trashedAt INTEGER);
              INSERT INTO chats SELECT * FROM chats2; DROP TABLE chats2;
-             INSERT INTO chats VALUES (3, 'c', 'k', 1, 1, '{}');`,
+             INSERT INTO chats VALUES (3, 'c', 'k', 1, 1, '{}', NULL);`,
         );
         rejects(() => store.readSnapshot(loose), "chat row 3: duplicate chat");
         // A non-integer position needs a table without STRICT.
@@ -2171,7 +2251,8 @@ describe("job memory writes", () => {
             { chats: [group("k", current(), [set("Job summary before deletion")])] },
             { jobToken: "memory-job" },
         );
-        store.applyChanges({ chats: [group("k", current(), [{ op: "delete" }])] });
+        store.applyChanges({ chats: [group("j", null, [{ op: "create", chat: {} as never }])] });
+        deleteChatThroughTrash(store, "c", "k");
         const recreated = store.applyChanges({
             chats: [group("k", null, [{ op: "create", chat: { id: "k", message: [] } as never }])],
         }).chats[0].revision!;
@@ -2612,6 +2693,7 @@ describe("meta mergeUnset and scriptstate merge", () => {
                 characterId: "c",
                 id: "k",
                 revision: removed.revision,
+                trashedAt: null,
                 // `scriptstate` is outside the summary: unchanged since the stored base.
                 summaryBase: storedBase,
                 patch: {
@@ -2995,6 +3077,7 @@ describe("missing targets", () => {
                 characterId: "c",
                 id: "k",
                 revision: result.revision,
+                trashedAt: null,
                 // Neither the old last row nor the appended one has a time: the summary is the actual base's.
                 summaryBase: current,
                 patch: {
@@ -3039,7 +3122,9 @@ describe("missing targets", () => {
         expect(store.writeCount()).toBe(writes);
         // Published at the unchanged revision without a patch (as a replayed append is): a client
         // holding that revision ignores it.
-        expect(events.at(-1)!.changes.chats).toEqual([{ characterId: "c", id: "k", revision: current }]);
+        expect(events.at(-1)!.changes.chats).toEqual([
+            { characterId: "c", id: "k", revision: current, trashedAt: null },
+        ]);
     });
 
     it("still rolls the whole group back for an append after a gone anchor, a multi-id remove with a gone id, and a begin of a gone message", () => {
@@ -3112,6 +3197,48 @@ describe("group idempotency ids", () => {
             db.close();
         }
     }
+
+    it("answers remembered edits and expired retries before refusing writes to a trashed chat", () => {
+        vi.useFakeTimers({ toFake: ["Date"], now: Date.UTC(2026, 4, 1) });
+        onTestFinished(() => {
+            vi.useRealTimers();
+        });
+        const { store, events, base } = setup();
+        store.applyChanges({
+            chats: [
+                group("spare", null, [{ op: "create", chat: { name: "Spare", note: "", localLore: [], message: [] } }]),
+            ],
+        });
+        const first = identified("k", base, [note("first")], "first");
+        let revision = store.applyChanges({ chats: [first] }).chats[0].revision!;
+        // Fill the receipt window with newer edits so the first retry really did land and expire.
+        for (let i = 1; i < MAX_CHAT_GROUP_IDS; i++) {
+            revision = store.applyChanges({ chats: [identified("k", revision, [note(String(i))], String(i))] }).chats[0]
+                .revision!;
+        }
+        const last = identified("k", revision, [note("last")], "last");
+        const applied = store.applyChanges({ chats: [last] }).chats[0];
+        const marked = store.changeChatTrash(
+            "trash",
+            { characterId: "c", chatId: "k", revision: applied.revision! },
+            store.epoch(),
+            () => false,
+        );
+        expect(marked).not.toHaveProperty("error");
+        const writes = store.writeCount();
+        events.length = 0;
+        expect(store.applyChanges({ chats: [{ ...last, retry: true }] }).chats).toEqual([applied]);
+        // A receipt is keyed by group id and takes precedence even over the legacy delete refusal.
+        expect(store.applyChanges({ chats: [{ ...last, ops: [{ op: "delete" }], retry: true }] }).chats).toEqual([
+            applied,
+        ]);
+        expect(conflictsOf(() => store.applyChanges({ chats: [{ ...first, retry: true }] }))).toEqual([
+            { kind: "chat", characterId: "c", id: "k", revision: marked.revision, reason: "expired" },
+        ]);
+        expect(chat(store, "k")).toMatchObject({ revision: marked.revision, data: { note: "last" } });
+        expect(store.writeCount()).toBe(writes);
+        expect(events).toEqual([]);
+    });
 
     it("answers a replayed id with the earlier result and changes nothing: another writer's later edit stays, the revision and write count stay, and the feed carries nothing new", () => {
         const { store, events, base } = setup();
@@ -3375,7 +3502,8 @@ describe("group idempotency ids", () => {
         expect(rememberedIds(file).map((row) => row.groupId)).toEqual(["g9"]);
         store = createResourceStore({ file, kinds });
         const deleted = chat(store, "k")!.revision;
-        store.applyChanges({ chats: [identified("k", deleted, [{ op: "delete" }], "g10")] });
+        store.applyChanges({ chats: [group("j", null, [{ op: "create", chat: {} as never }])] });
+        deleteChatThroughTrash(store, "c", "k");
         store.close();
         expect(rememberedIds(file)).toEqual([]);
         store = createResourceStore({ file, kinds });
@@ -3828,7 +3956,8 @@ describe("persisted reply candidates", () => {
                     } finally {
                         db.close();
                     }
-                    write(store, [{ op: "delete" }]);
+                    store.applyChanges({ chats: [group("j", null, [{ op: "create", chat: {} as never }])] });
+                    deleteChatThroughTrash(store, "c", "k");
                     await installSnapshot(store, snapshot, kinds);
                 }
                 if (source === "opening a file without the index") {

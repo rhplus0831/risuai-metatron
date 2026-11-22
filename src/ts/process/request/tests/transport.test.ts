@@ -180,7 +180,7 @@ function assembleFixture(unloaded: readonly string[]) {
         char.chats.map((chat) =>
             unloaded.includes(char.chaId)
                 ? { characterId: char.chaId, id: chat.id, revision: "r1", name: chat.id, fmIndex: -1 }
-                : { characterId: char.chaId, id: chat.id, revision: "r1", data: chat as never },
+                : { characterId: char.chaId, id: chat.id, revision: "r1", trashedAt: null, data: chat as never },
         ),
     );
     const orders = characters.map((char) => ({

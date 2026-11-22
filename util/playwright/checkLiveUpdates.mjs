@@ -372,9 +372,17 @@ try {
         );
         check(`new chat: ${label} lists k and j`, ok === true, ok);
     }
+    // A chat is deleted for good through the trash route: trash it, then delete it on the token
+    // the trash answers (`j` stays outside the trash).
     rev = await chatRevision(liaId, "k");
-    const deleted = await batch({
-        chats: [{ characterId: liaId, chatId: "k", baseRevision: rev, ops: [{ op: "delete" }] }],
+    const trashed = await api("/api/chat-trash/trash", {
+        method: "POST",
+        body: JSON.stringify({ characterId: liaId, chatId: "k", revision: rev }),
+    });
+    check("deleted chat: trashed", trashed.status === 200, trashed);
+    const deleted = await api("/api/chat-trash/delete", {
+        method: "POST",
+        body: JSON.stringify({ characterId: liaId, chatId: "k", revision: trashed.body?.revision }),
     });
     check("deleted chat: stored", deleted.status === 200, deleted);
     for (const [label, p] of tabs) {

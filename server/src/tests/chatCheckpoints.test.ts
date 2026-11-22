@@ -18,6 +18,7 @@ import {
     type ResourceStore,
     ResourceValidationError,
 } from "../data/resourceStore.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
 import { memoryKinds, memoryRecords, writeMemory } from "./memoryFixtures.ts";
 
 const kinds = createKindRegistry(DEFAULT_RESOURCE_KINDS);
@@ -538,9 +539,9 @@ describe("chat checkpoints", () => {
 
             seed(store, { name: "Orphan", note: "Orphan note", localLore: [], message: [] }, "orphan");
             store.checkpoints.save("orphan", "k", "Orphan", "manual");
-            store.applyChanges({
-                chats: [group(store.chatRevision("orphan", "k"), [{ op: "delete" }], "orphan")],
-            });
+            // A spare active chat lets `k` go to the trash and be deleted.
+            store.applyChanges({ chats: [group(null, [{ op: "create", chat: {} as never }], "orphan", "spare")] });
+            deleteChatThroughTrash(store, "orphan", "k");
             const orphanHash = sha256(JSON.stringify("Orphan note"));
             expect(pages(db)[orphanHash]).toBe(JSON.stringify("Orphan note"));
             expect(db.prepare("SELECT hash FROM checkpointPageRefs WHERE hash = ?").all(orphanHash)).toEqual([]);
@@ -808,8 +809,11 @@ describe("chat checkpoints", () => {
             const survivingHashes = new Set([...otherRecord.pages, ...Object.values(otherRecord.fields)]);
             const beforePages = pages(db);
 
-            if (owner === "chat") edit(store, [{ op: "delete" }]);
-            else store.delete(characters, "c", seeded.results[0].revision!);
+            if (owner === "chat") {
+                // A spare active chat lets `k` go to the trash and be deleted.
+                store.applyChanges({ chats: [group(null, [{ op: "create", chat: {} as never }], "c", "spare")] });
+                deleteChatThroughTrash(store, "c", "k");
+            } else store.delete(characters, "c", seeded.results[0].revision!);
             expect(store.checkpoints.list("c", "k")).toBeNull();
             expect(store.checkpoints.readPolicy("c", "k")).toBeNull();
             expect(db.prepare("SELECT id FROM chatCheckpoints").all()).toEqual([{ id: other.id }]);

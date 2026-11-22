@@ -400,7 +400,8 @@ describe("the callback barrier over the real stores", () => {
         b.hooks.editoutput.add(hook);
         const acknowledged = await b.startRefresh();
         const before = plain(b.chat.findChat(refK));
-        b.fake.chatBatch([{ ...serverRef, baseRevision: acknowledged, ops: [{ op: "delete" }] }]);
+        expect(b.fake.chat("c", "k")!.revision).toBe(acknowledged);
+        b.fake.deleteChatForever("c", "k");
         b.fake.chatBatch([
             {
                 ...serverRef,

@@ -17,6 +17,7 @@ import {
     type ResourceStore,
 } from "../data/resourceStore.ts";
 import { createSnapshotManager, MaintenanceError, type SnapshotManager } from "../data/snapshots.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
 import { installSnapshot } from "./stagedRestore.ts";
 import { createResourceTestClient, testRestoreRunner, sleep } from "./testSupport.ts";
 
@@ -249,19 +250,10 @@ describe("checkpoint snapshots", () => {
         stores.push(store);
         store.put(characters, "c", { chaId: "c" }, null);
         store.put(characters, "d", { chaId: "d" }, null);
-        // Leave a gap so restoring the chats must remap their checkpoint and policy owners.
+        // Leave a gap (deleted once c/k exists) so restoring the chats must remap their checkpoint and
+        // policy owners.
         store.applyChanges({
             chats: [{ characterId: "c", chatId: "discarded", baseRevision: null, ops: [{ op: "create", chat: {} }] }],
-        });
-        store.applyChanges({
-            chats: [
-                {
-                    characterId: "c",
-                    chatId: "discarded",
-                    baseRevision: store.chatRevision("c", "discarded"),
-                    ops: [{ op: "delete" }],
-                },
-            ],
         });
         const saved = ["c", "d"].map((characterId, index) => {
             const chat: Chat = {
@@ -305,6 +297,7 @@ describe("checkpoint snapshots", () => {
             });
             return { characterId, chat, checkpoint, policy };
         });
+        deleteChatThroughTrash(store, "c", "discarded");
         return { dir, file, store, saved };
     }
 

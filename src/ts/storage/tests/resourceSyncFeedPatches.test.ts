@@ -665,6 +665,7 @@ describe("feed patches through the tab save adapter", () => {
                 characterId: "c",
                 id: "k",
                 revision,
+                trashedAt: null,
                 summaryBase: baseRevision,
                 rows: { baseRevision, changed: ["c"], removed: [], count: 3, meta: ["scriptstate"] },
             });
@@ -884,6 +885,7 @@ describe("feed patches through the tab save adapter", () => {
             characterId: "c",
             id: "k",
             revision,
+            trashedAt: null,
             summaryBase: baseRevision,
             rows: { baseRevision, changed: [], removed: [], count: 3, meta: ["note"] },
         });
@@ -921,7 +923,8 @@ describe("feed patches through the tab save adapter", () => {
             remote(b, [{ op: "setMessage", message: carrier }]);
             const requestedRevision = b.fake.chat("c", "k")!.revision;
             b.live.paused = true;
-            remote(b, state === "deleted" ? [{ op: "delete" }] : [{ op: "setText", id: "c", text: "newer" }]);
+            if (state === "deleted") b.fake.deleteChatForever("c", "k");
+            else remote(b, [{ op: "setText", id: "c", text: "newer" }]);
             b.live.queue.length = 0;
             const currentRevision = state === "deleted" ? null : b.fake.chat("c", "k")!.revision;
             expect(await b.sync.refreshStaleChat(refK)).toBe(true);
@@ -1599,7 +1602,7 @@ describe("the feed's generation locks", () => {
         jobWrite(b, [setText("setText", "b", "last checkpoint")], [lockOf("b", "g", 1)]);
         b.live.paused = true;
         jobEnd(b);
-        remote(b, [{ op: "delete" }]);
+        b.fake.deleteChatForever("c", "k");
         expect(locked(b)).toBe(true);
         expect(b.chat.heldChatRevision(refK)).not.toBeNull();
 
@@ -1639,14 +1642,7 @@ describe("the feed's generation locks", () => {
 
             // The missed deletion makes the sibling edit conflict and forces a recovery list read.
             b.live.paused = true;
-            b.fake.chatBatch([
-                {
-                    characterId: "c",
-                    chatId: "j",
-                    baseRevision: b.fake.chat("c", "j")!.revision,
-                    ops: [{ op: "delete" }],
-                },
-            ]);
+            b.fake.deleteChatForever("c", "j");
             b.chat.setChatMeta({ chaId: "c", chatId: "j" }, { note: "queued on the deleted sibling" });
             expect(await b.sync.flushResources()).toEqual({ discarded: ["chats/c/j"], refused: [] });
             const recoveryReads = () => reads(b).filter((body) => body.chatSummaryCollections?.includes("c"));

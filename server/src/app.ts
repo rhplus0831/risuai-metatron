@@ -67,6 +67,7 @@ import { createTransformers } from "./prompt/transformers.ts";
 import { registerAssetLifecycleRoutes } from "./routes/assetLifecycle.ts";
 import { createAuthStore, CRYPTO_PATH, LOGIN_PATH, SET_PASSWORD_PATH } from "./routes/auth.ts";
 import { CHAT_CHECKPOINTS_PATH, registerChatCheckpointRoutes } from "./routes/chatCheckpoints.ts";
+import { CHAT_TRASH_PATH, registerChatTrashRoutes } from "./routes/chatTrash.ts";
 import { BACKUP_IMPORT_PATH, DEFAULT_MAX_IMPORT_BYTES, registerBackupRoutes } from "./routes/backups.ts";
 import { createUpstreamImportStaging, registerUpstreamImportRoutes } from "./routes/backupsUpstream.ts";
 import { createUpstreamExportStaging, registerUpstreamExportRoutes } from "./routes/backupsUpstreamExport.ts";
@@ -771,6 +772,7 @@ export function createServerContext(options: {
         const structuredMemory =
             c.req.path === STRUCTURED_MEMORY_PATH || c.req.path.startsWith(`${STRUCTURED_MEMORY_PATH}/`);
         const checkpoint = c.req.path === CHAT_CHECKPOINTS_PATH || c.req.path.startsWith(`${CHAT_CHECKPOINTS_PATH}/`);
+        const chatTrash = c.req.path === CHAT_TRASH_PATH || c.req.path.startsWith(`${CHAT_TRASH_PATH}/`);
         const remoteCommand = c.req.path === REMOTE_COMMANDS_PATH || c.req.path.startsWith(`${REMOTE_COMMANDS_PATH}/`);
         const resource =
             /^\/api\/(?:resources|llm-secrets)(?:\/|$)/.test(c.req.path) ||
@@ -778,6 +780,7 @@ export function createServerContext(options: {
             memoryTask ||
             structuredMemory ||
             checkpoint ||
+            chatTrash ||
             remoteCommand;
         const backup = /^\/api\/backups(?:\/|$)/.test(c.req.path);
         // The module, CharX, and Realm imports are refused like the backup routes.
@@ -838,6 +841,7 @@ export function createServerContext(options: {
                 structuredMemory ||
                 tokenRoute ||
                 checkpoint ||
+                chatTrash ||
                 assetLifecycleRoute ||
                 remoteCommand
             ) {
@@ -876,6 +880,7 @@ export function createServerContext(options: {
                     route.startsWith(`${REMOTE_COMMANDS_PATH}/`) ||
                     route.startsWith(`${STRUCTURED_MEMORY_PATH}/`) ||
                     route.startsWith(`${CHAT_CHECKPOINTS_PATH}/`) ||
+                    route.startsWith(`${CHAT_TRASH_PATH}/`) ||
                     route === TOKEN_COUNT_PATH ||
                     route === TOKEN_ENCODE_PATH ||
                     route === ASSET_MISSING_PATH ||
@@ -1087,6 +1092,13 @@ export function createServerContext(options: {
         auth,
         limiter: authenticatedRouteLimiter.middleware,
         maintenance: snapshots.gate,
+    });
+    registerChatTrashRoutes(app, {
+        store: resources,
+        auth,
+        limiter: authenticatedRouteLimiter.middleware,
+        maintenance: snapshots.gate,
+        chatHeld,
     });
     registerLlmSecretRoutes(app, {
         store: resources,

@@ -202,13 +202,13 @@ export type ChatGroupResult = {
 export type ChatOrderResult = { characterId: string; revision: string; ids: string[] };
 
 /** A chat as read: metadata plus `message` in order. */
-export type ChatRecord = { characterId: string; id: string; revision: string; data: Chat };
+export type ChatRecord = { characterId: string; id: string; revision: string; trashedAt: number | null; data: Chat };
 
 /** A character's separately stored chat order as read: its revision and chat ids in display order. */
 export type ChatOrderRecord = { characterId: string; revision: string; ids: string[] };
 
 /** Bump when the server's chat summary projection changes, including derived fields. */
-export const CHAT_SUMMARY_FORMAT = 2;
+export const CHAT_SUMMARY_FORMAT = 3;
 
 /**
  * A chat's summary: what a chat list shows, projected from the stored metadata and the memoized
@@ -222,6 +222,8 @@ export type ChatSummary = {
     revision: string;
     /** The last message by position has this finite numeric `time`; absent otherwise. */
     lastMessageAt?: number;
+    /** Server time in milliseconds when this chat entered the trash. */
+    trashedAt?: number;
     name: string;
     pinned?: boolean;
     folderId?: string;
@@ -232,6 +234,20 @@ export type ChatSummary = {
     fmIndex: number;
 } & ChatTranslationFields &
     ChatMemorySummary;
+
+export type ChatTrashAction = "trash" | "restore" | "delete";
+export type ChatTrashRequest = { characterId: string; chatId: string; revision: string };
+/** Permanent deletion returns the state immediately before the cascade. */
+export type ChatTrashAnswer = {
+    characterId: string;
+    id: string;
+    revision: string;
+    trashedAt: number | null;
+    summary: ChatSummary;
+};
+export type ChatTrashConflict =
+    | { error: "stale"; revision: null }
+    | { error: "stale" | "generating" | "lastActiveChat" | "notTrashed"; revision: string; trashedAt: number | null };
 
 /**
  * A 409 entry for a chat group (revision null: the chat is gone). `reason: "generating"`: the group
@@ -245,7 +261,7 @@ export type ChatConflict = {
     characterId: string;
     id: string;
     revision: string | null;
-    reason?: "generating" | "expired";
+    reason?: "generating" | "expired" | "useTrash" | "chatTrashed";
     /**
      * With `reason: "generating"`: the messages the group's ops rewrite or remove that a generation
      * job owns (the refusal's evidence, not every lock of the chat); absent when there is none (a

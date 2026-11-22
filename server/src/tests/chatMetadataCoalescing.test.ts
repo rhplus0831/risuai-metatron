@@ -19,6 +19,7 @@ import {
 import { createJobRunState, createRunSetup } from "../jobs/runSetup.ts";
 import { createCommandExecutor } from "../prompt/commands.ts";
 import { createTriggerRuntime } from "../prompt/triggers.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
 import { applyOwnWrite } from "./ownWrite.ts";
 
 // Real storage and runtime boundaries; the fake job deliberately has no setPendingFlush hook.
@@ -491,7 +492,13 @@ describe("chat metadata coalescing", () => {
     it("silently discards a batch when the chat was deleted", async () => {
         const h = setup();
         h.set("x", "pending");
-        h.write([{ op: "delete" }]);
+        // A spare active chat lets `k` go to the trash and be deleted.
+        h.store.applyChanges({
+            chats: [
+                { characterId: "c", chatId: "spare", baseRevision: null, ops: [{ op: "create", chat: {} as never }] },
+            ],
+        });
+        deleteChatThroughTrash(h.store, "c", "k");
         const writes = vi.spyOn(h.job, "write");
         await Promise.resolve();
         expect(() => flushChatMetadata(h.job)).not.toThrow();

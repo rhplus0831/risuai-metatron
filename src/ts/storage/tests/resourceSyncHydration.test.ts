@@ -1003,28 +1003,27 @@ describe("a refusal for a generating message", () => {
         expect(alerts.normal).toHaveBeenCalledTimes(2);
     });
 
-    it("holds a reorder behind a refused chat delete without polling, and sends both at the retry", async () => {
-        const { fake, sync, chat, character, unloadWarning } = await boot();
+    it("refuses a delete of a chat a server job generates in at once as useTrash, not as generating: nothing is held for the job's end, and the list read brings the chat back", async () => {
+        const { fake, sync, chat, unloadWarning } = await boot();
         lockB(fake);
-        const timeouts = vi.spyOn(globalThis, "setTimeout");
         chat.deleteChat(refK);
-        await expect(sync.flushResources()).rejects.toThrow(/still being generated/);
+        // The server refuses every delete op before its lock check: the ordinary conflict path, no retry block.
+        expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"], refused: [] });
         expect(fake.batchCount()).toBe(1);
+        expect(fake.batchBodies()[0].chats).toEqual([
+            expect.objectContaining({ characterId: "c", chatId: "k", ops: [{ op: "delete" }] }),
+        ]);
         expect(fake.chat("c", "k")).not.toBeNull();
-        expect(character().chats.map((entry: any) => entry.id)).toEqual(["j"]);
-        chat.reorderChats("c", ["j"]);
-        timeouts.mockClear();
+        expect(alerts.normal.mock.calls.map(([value]) => value)).toEqual(["reloaded"]);
+        expect(unloadWarning()).toBe(false);
         await vi.advanceTimersByTimeAsync(4000);
+        expect(chat.chatList("c").map((entry) => entry.id)).toEqual(["k", "j"]);
         expect(fake.batchCount()).toBe(1);
-        expect(timeouts.mock.calls.filter(([, delay]) => typeof delay === "number" && delay <= 500)).toEqual([]);
-        expect(unloadWarning()).toBe(true);
         fake.lock!.endJob("T");
         await vi.advanceTimersByTimeAsync(1600);
-        expect(fake.batchCount()).toBe(2);
-        expect(fake.chat("c", "k")).toBeNull();
-        expect(fake.order("c")!.ids).toEqual(["j"]);
-        await sync.flushResources();
-        expect(fake.batchCount()).toBe(2);
+        expect(fake.batchCount()).toBe(1);
+        expect(fake.order("c")!.ids).toEqual(["k", "j"]);
+        expect(chat.hasUnsavedChatWork()).toBe(false);
     });
 
     it("keeps a refused character delete as an unsaved membership change without polling, refuses a flush, and deletes at the retry; an undo sends its chats back as replaces, refused while the job runs and sent at the retry", async () => {
@@ -1147,15 +1146,7 @@ describe("a refusal for a generating message", () => {
 describe("a sibling chat deleted during this tab's generation", () => {
     const refJ = { chaId: "c", chatId: "j" };
     const mirrorIds = (chat: ChatModule) => chat.chatList("c").map((entry) => entry.id);
-    const deleteJ = (fake: StoreBackedServer) =>
-        fake.chatBatch([
-            {
-                characterId: "c",
-                chatId: "j",
-                baseRevision: fake.chat("c", "j")!.revision,
-                ops: [{ op: "delete" } as any],
-            },
-        ]);
+    const deleteJ = (fake: StoreBackedServer) => fake.deleteChatForever("c", "j");
 
     it("discards the edit with the notice at once, and after the job reports a later edit discarded by the list read", async () => {
         const { fake, sync, chat } = await boot();

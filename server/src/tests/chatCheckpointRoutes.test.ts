@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { CheckpointSummary } from "../../../shared/chatCheckpoints.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
 import type { Chat, Message } from "../../../shared/database.ts";
@@ -170,6 +170,44 @@ describe("chat checkpoint routes", () => {
         expect(await read(s)).toEqual(before);
         expect(await list(s)).toEqual([checkpoint]);
         await save(s, "Gate reopened");
+    });
+
+    it("lists a trashed chat's saved checkpoints while refusing all checkpoint mutations", async () => {
+        vi.useFakeTimers({ toFake: ["Date"], now: Date.UTC(2026, 4, 1) });
+        onTestFinished(() => {
+            vi.useRealTimers();
+        });
+        const s = await server();
+        await answer(
+            await s.json("/api/resources/batch", {
+                chats: [{ ...ref, chatId: "spare", baseRevision: null, ops: [{ op: "create", chat: {} }] }],
+            }),
+            200,
+        );
+        const checkpoint = await save(s);
+        await answer(await edit(s, [{ op: "setText", id: "a", text: "After the checkpoint" }]), 200);
+        const marked = await answer(await s.chatTrash("trash", { ...ref, revision: (await read(s)).revision }), 200);
+        const saved = { id: checkpoint.id, baseRevision: checkpoint.revision };
+        const before = await read(s);
+        for (const [action, fields] of Object.entries({
+            save: { name: "Extra" },
+            load: { id: checkpoint.id, chatBaseRevision: marked.revision },
+            rename: { ...saved, name: "Renamed" },
+            delete: saved,
+            policy: { autoEvery: 4, autoKeep: 2 },
+        })) {
+            const response = await s.json(
+                `${path}/${action}`,
+                { ...ref, ...fields },
+                { method: action === "policy" ? "PUT" : "POST" },
+            );
+            expect(await answer(response, 409), action).toEqual({ reason: "chatTrashed", revision: marked.revision });
+        }
+        expect(await list(s)).toEqual([checkpoint]);
+        expect(await answer(await s.request(`${path}/policy?${new URLSearchParams(ref)}`), 200)).toMatchObject({
+            policy: null,
+        });
+        expect(await read(s)).toEqual(before);
     });
 
     it("lists, renames and deletes checkpoints with revision checks, missing-resource checks and validation limits", async () => {
@@ -537,7 +575,7 @@ describe("checkpoint load transactions", () => {
                 epoch: t.store.epoch(),
                 changes: {
                     resources: [],
-                    chats: [{ characterId: ref.characterId, id: ref.chatId, revision }],
+                    chats: [{ characterId: ref.characterId, id: ref.chatId, revision, trashedAt: null }],
                     chatOrders: [],
                 },
                 cursor: t.store.cursor(),

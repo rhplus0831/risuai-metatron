@@ -118,7 +118,7 @@ async function boot(options: { translation?: MessageTranslation; persona?: boole
             { role: "user", data: "B", chatId: "b" },
         ],
     } as unknown as Chat;
-    const listed = [{ characterId: "c", id: "k", revision: rev(1), data }];
+    const listed = [{ characterId: "c", id: "k", revision: rev(1), trashedAt: null, data }];
     const orders = [{ characterId: "c", revision: rev(1), ids: ["k"] }];
     chat.seedChats(listed, orders);
     chat.assembleChats(characterStore.characterList() as never, listed, orders);

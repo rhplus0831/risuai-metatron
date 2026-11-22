@@ -326,9 +326,7 @@ describe("a late unload answer after the chat's character or work is gone", () =
         const h = await bootStore();
         const scope = h.sync.beginMutationScope();
         await holdUnloadAnswer(h);
-        h.fake.chatBatch([
-            { characterId: "c", chatId: "k", baseRevision: h.fake.chat("c", "k")!.revision, ops: [{ op: "delete" }] },
-        ]);
+        h.fake.deleteChatForever("c", "k");
         h.chat.reorderChats("c", ["j", "k"]);
         // The list read answered while the unload request is out is not applied: the chat stays.
         const flushing = h.sync.flushResources({ scope });

@@ -110,6 +110,25 @@ function applied(answer: Answer<BatchAnswer>, chatId: string) {
     expect(answer.body.chats?.find((group) => group.id === chatId)?.revision, JSON.stringify(answer.body)).toBeTruthy();
 }
 
+/**
+ * Deletes a chat for good as another writer does, through the trash route with `s`'s session (its
+ * auth and `x-resource-epoch`): trash it on its current revision, then delete it on the revision
+ * the trash answers. The batch route refuses a delete op (`useTrash`).
+ */
+async function deleteChatForever(s: Session, characterId: string, chatId: string) {
+    const { revision } = await serverChat(s, characterId, chatId);
+    const trashed = await s.api<{ revision: string }>("/api/chat-trash/trash", {
+        method: "POST",
+        body: JSON.stringify({ characterId, chatId, revision }),
+    });
+    expect(trashed.status, JSON.stringify(trashed.body)).toBe(200);
+    const deleted = await s.api<{ revision: string }>("/api/chat-trash/delete", {
+        method: "POST",
+        body: JSON.stringify({ characterId, chatId, revision: trashed.body.revision }),
+    });
+    expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
+}
+
 function annotate(type: string, description: string) {
     test.info().annotations.push({ type, description });
 }
@@ -133,8 +152,9 @@ test("a stale client merges independent edits and recovers its edit of a deleted
         { type: "text", chatId: "s1", id: "m3", text: "B third message" },
         { type: "append", chatId: "s1", message: { chatId: "b-append", role: "char", data: "B appended reply" } },
         { type: "create", chat: emptyChat("s5", binding) },
-        { type: "delete", chatId: "s2" },
     ]);
+    await settle(b.page);
+    await deleteChatForever(b, chaId, "s2");
     await settle(b.page);
     expect(
         b.batches.some(
@@ -369,12 +389,16 @@ test("concurrent chat creation deletion and reordering preserve every surviving 
             { type: "create", chat: emptyChat("x2", binding) },
             { type: "reorderFirst", ids: ["x2", "x1"] },
         ]);
-        await edits(b, chaId, [
-            { type: "create", chat: emptyChat("y1", binding) },
-            { type: "delete", chatId: "s4" },
-        ]);
+        await edits(b, chaId, [{ type: "create", chat: emptyChat("y1", binding) }]);
         await Promise.all([ah.wait(), bh.wait()]);
+        // Neither held batch has landed.
         expect((await serverChatList(a, chaId)).order!.revision).toBe(before);
+        // Another writer deletes `s4` for good while both batches are held: the deletion takes it
+        // out of the stored order, so A's reorder and B's create race a newer order.
+        await deleteChatForever(b, chaId, "s4");
+        const afterDeletion = (await serverChatList(a, chaId)).order!;
+        expect(afterDeletion.revision).not.toBe(before);
+        expect(afterDeletion.ids).not.toContain("s4");
         applied(await bh.release(), "y1");
         // The held reorder can conflict, but its unrelated creates must be retried intact.
         await ah.release();

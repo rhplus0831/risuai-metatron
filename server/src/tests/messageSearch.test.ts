@@ -416,7 +416,13 @@ describe("POST /api/chats/search paging", () => {
         const first = await s.page({ query: "hit", limit: 1 });
         expect(refs(first)).toEqual(["k/k2"]);
 
-        await s.batch({ chats: [group("c", "k", revision, [{ op: "delete" }])] });
+        // Deleted through the trash: trash, then delete with the token the trash answered.
+        const epoch = { headers: { "x-resource-epoch": s.epoch } };
+        const trash = await s.json("/api/chat-trash/trash", { characterId: "c", chatId: "k", revision }, epoch);
+        expect(trash.status, await trash.clone().text()).toBe(200);
+        const trashed = (await trash.json()) as { revision: string };
+        const removal = { characterId: "c", chatId: "k", revision: trashed.revision };
+        expect((await s.json("/api/chat-trash/delete", removal, epoch)).status).toBe(200);
         await s.batch({ chats: [createChat("c", "k", [m("k1", "hit again"), m("k9", "hit new incarnation")])] });
 
         const rest = await s.allPages({ query: "hit", limit: 1, cursor: first.next });

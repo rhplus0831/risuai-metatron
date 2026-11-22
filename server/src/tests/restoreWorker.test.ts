@@ -46,7 +46,7 @@ it("restores 5000 messages in a real worker and reports the SQL install interval
     const snapshot = await source(s);
     const db = new DatabaseSync(snapshot.file);
     db.exec("BEGIN");
-    db.prepare("INSERT INTO chats VALUES (41, 'saved', 'long', 29, 1, ?)").run(
+    db.prepare("INSERT INTO chats VALUES (41, 'saved', 'long', 29, 1, ?, NULL)").run(
         JSON.stringify({ name: "Long", note: "", localLore: [], fmIndex: -1, id: "long" }),
     );
     db.exec(`UPDATE chatOrders SET ids = '["long"]', revision = 31 WHERE characterId = 'saved'`);

@@ -537,18 +537,13 @@ describe("selection", () => {
         expect(chat.selectedChat()?.id).toBe("k0");
         expect(chat.selectedChatLoad()).toBeNull();
 
-        // Another tab deleted `e`'s only chat and gave it none: the read says gone, the list is
-        // kept (no write), and the screen says the chat is not available.
-        server.store.applyChanges({
-            chats: [
-                {
-                    characterId: "e",
-                    chatId: "only",
-                    baseRevision: server.chat("e", "only")!.revision,
-                    ops: [{ op: "delete" }],
-                },
-            ],
-        });
+        // Another tab left `e` without chats (a character's last chat outside the trash cannot be
+        // deleted for good: it deleted the character, its chats with it, and created it again under
+        // its id): the read says gone, the list is kept (no write), and the screen says the chat is
+        // not available.
+        const recordE = server.record("characters", "e")!;
+        server.store.delete(server.kind("characters"), "e", recordE.revision);
+        server.set("characters", "e", recordE.data);
         selection.selectCharacter("e");
         await settleMicrotasks();
         expect(chat.selectedChat()).toBeNull();
@@ -564,16 +559,9 @@ describe("selection", () => {
         // Another tab deleted `c`'s selected chat `k0` and created `k_new` in front: the null read
         // removes `k0`, the selection falls back to the next chat and loads it, and the summary list
         // brings `k_new` as a summary.
+        server.store.applyChanges({ chats: [create("c", "k_new", { name: "New", message: [m("n", "N")] })] });
+        server.deleteChatForever("c", "k0");
         server.store.applyChanges({
-            chats: [
-                {
-                    characterId: "c",
-                    chatId: "k0",
-                    baseRevision: server.chat("c", "k0")!.revision,
-                    ops: [{ op: "delete" }],
-                },
-                create("c", "k_new", { name: "New", message: [m("n", "N")] }),
-            ],
             chatOrders: [
                 {
                     characterId: "c",
@@ -609,16 +597,9 @@ describe("selection", () => {
 
     it("an unloaded chat gone on the server while selected: the null read removes it, the selection falls back and loads, and the summary list brings the replacement", async () => {
         const { server, chat, selection, reads } = await boot();
+        server.store.applyChanges({ chats: [create("c", "k_new", { name: "New", message: [m("n", "N")] })] });
+        server.deleteChatForever("c", "k0");
         server.store.applyChanges({
-            chats: [
-                {
-                    characterId: "c",
-                    chatId: "k0",
-                    baseRevision: server.chat("c", "k0")!.revision,
-                    ops: [{ op: "delete" }],
-                },
-                create("c", "k_new", { name: "New", message: [m("n", "N")] }),
-            ],
             chatOrders: [
                 {
                     characterId: "c",

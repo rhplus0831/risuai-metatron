@@ -492,6 +492,7 @@ it("writes nothing when the chat's owner is replaced during the dialog", async (
         characterId: chat.chaId,
         id: chat.chatId,
         revision: "r2",
+        trashedAt: null,
         data: copy(findChat(chat)!) as Chat,
     }));
     assembleChats([{ chaId: ref.chaId }], chats, [

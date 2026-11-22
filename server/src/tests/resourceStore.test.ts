@@ -16,6 +16,7 @@ import {
     type ResourceStore,
     ResourceValidationError,
 } from "../data/resourceStore.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
 import { INJECTED_COPY_FAILURE, installSnapshot, stageSnapshot, withFailingInstallCopy } from "./stagedRestore.ts";
 import { verifyStagedFile } from "../data/restore/stageValidatedSnapshot.ts";
 import type { ChatOp } from "../../../shared/chats.ts";
@@ -176,14 +177,12 @@ describe("bounded revision replay", () => {
     it("replays tombstones and only the newest incarnation per key within the requested upper bound", () => {
         const store = open();
         for (const id of ["c", "d"]) store.put(characters, id, { chaId: id }, null);
-        store.applyChanges({ chats: [createChat("c", "k"), createChat("d", "k")] });
-        expect(store.cursor()).toBe(8);
-        store.applyChanges({
-            chats: [
-                { characterId: "c", chatId: "k", baseRevision: store.chatRevision("c", "k"), ops: [{ op: "delete" }] },
-            ],
-        });
-        expect(store.cursor()).toBe(10);
+        // `c/j` stays active, so `c/k` can go to the trash.
+        store.applyChanges({ chats: [createChat("c", "k"), createChat("d", "k"), createChat("c", "j")] });
+        expect(store.cursor()).toBe(9);
+        // The trash is its own commit (the chat only); the deletion then logs the tombstone and order.
+        const { trashed } = deleteChatThroughTrash(store, "c", "k");
+        expect(store.cursor()).toBe(12);
         const deletedOrder = store.listRevisions().chatOrders.find((row) => row.characterId === "c")!;
         const recreated = store.applyChanges({ chats: [createChat("c", "k")] });
         const updated = store.applyChanges({
@@ -196,21 +195,26 @@ describe("bounded revision replay", () => {
                 },
             ],
         });
-        expect(store.cursor()).toBe(13);
-        replay(store, 8, 10, {
-            ...empty,
-            chats: [{ characterId: "c", id: "k", revision: null }],
-            chatOrders: [deletedOrder],
-        });
-        replay(store, 8, 13, {
+        expect(store.cursor()).toBe(15);
+        // Replay stays bare: the trashed revision without its mark.
+        replay(store, 9, 10, { ...empty, chats: [{ characterId: "c", id: "k", revision: trashed.revision }] });
+        for (const since of [9, 10]) {
+            replay(store, since, 12, {
+                ...empty,
+                chats: [{ characterId: "c", id: "k", revision: null }],
+                chatOrders: [deletedOrder],
+            });
+        }
+        replay(store, 9, 15, {
             ...empty,
             chats: [{ characterId: "c", id: "k", revision: updated.chats[0].revision }],
             chatOrders: recreated.chatOrders.map(({ characterId, revision }) => ({ characterId, revision })),
         });
-        const all = store.listChanges(4, 13, store.epoch());
+        const all = store.listChanges(4, 15, store.epoch());
         expect(all.changes?.chats).toEqual([
             { characterId: "c", id: "k", revision: updated.chats[0].revision },
             { characterId: "d", id: "k", revision: store.chatRevision("d", "k") },
+            { characterId: "c", id: "j", revision: store.chatRevision("c", "j") },
         ]);
     });
 
@@ -1759,17 +1763,7 @@ describe("staged install identity", () => {
                     },
                 ],
             });
-        const remove = (id: string) =>
-            store.applyChanges({
-                chats: [
-                    {
-                        characterId: "c",
-                        chatId: id,
-                        baseRevision: store.chatRevision("c", id),
-                        ops: [{ op: "delete" }],
-                    },
-                ],
-            });
+        const remove = (id: string) => deleteChatThroughTrash(store, "c", id);
         create("saved");
         const oldToken = store.chatRevision("c", "saved");
         const snapshot = path.join(dir, "snapshot.sqlite");
@@ -1788,13 +1782,23 @@ describe("staged install identity", () => {
         expect(db.prepare("SELECT seq FROM chats WHERE id = 'saved'").get()!.seq).toBe(high + 1);
         const installedToken = store.chatRevision("c", "saved");
         expect(installedToken).not.toBe(oldToken);
+        // A spare active chat (high + 2) lets `saved` go to the trash.
+        create("spare");
         remove("saved");
         create("saved");
-        expect(db.prepare("SELECT seq FROM chats WHERE id = 'saved'").get()!.seq).toBe(high + 2);
-        expect(db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'chats'").get()!.seq).toBe(high + 2);
+        expect(db.prepare("SELECT seq FROM chats WHERE id = 'saved'").get()!.seq).toBe(high + 3);
+        expect(db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'chats'").get()!.seq).toBe(high + 3);
+        // The installed incarnation's token does not reach the recreated chat.
         expect(() =>
             store.applyChanges({
-                chats: [{ characterId: "c", chatId: "saved", baseRevision: installedToken, ops: [{ op: "delete" }] }],
+                chats: [
+                    {
+                        characterId: "c",
+                        chatId: "saved",
+                        baseRevision: installedToken,
+                        ops: [{ op: "meta", set: { note: "old incarnation" } }],
+                    },
+                ],
             }),
         ).toThrow(ResourceBatchConflictError);
         db.close();

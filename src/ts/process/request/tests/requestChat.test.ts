@@ -87,7 +87,13 @@ function install() {
     forgetCharacter("a");
     const chats = [
         { characterId: "a", id: "a1", revision: REVISION, name: "A1", fmIndex: -1 },
-        ...OTHERS.map((id) => ({ characterId: "a", id, revision: REVISION, data: chatOf(id) as never })),
+        ...OTHERS.map((id) => ({
+            characterId: "a",
+            id,
+            revision: REVISION,
+            trashedAt: null,
+            data: chatOf(id) as never,
+        })),
     ];
     const orders = [{ characterId: "a", revision: REVISION, ids: ["a1", ...OTHERS] }];
     seedChats(chats, orders);

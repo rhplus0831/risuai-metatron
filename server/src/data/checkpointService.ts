@@ -16,7 +16,13 @@ export type CheckpointRequest = { body: unknown; epoch?: string };
 
 type CheckpointError =
     | { status: 400 | 404; body: { error: string } }
-    | { status: 409; body: { reason: "generating" } | { error: string; revision: string | null } }
+    | {
+          status: 409;
+          body:
+              | { reason: "generating" }
+              | { reason: "chatTrashed"; revision: string | null }
+              | { error: string; revision: string | null };
+      }
     | { status: 412; body: { error: "EpochMismatch"; epoch: string } };
 
 type CheckpointResult<T> = { status: 200; body: T } | CheckpointError;
@@ -96,12 +102,26 @@ export function createCheckpointService({
             }
             if (error instanceof ResourceBatchConflictError) {
                 const conflict = error.conflicts[0];
+                if (conflict && "reason" in conflict && conflict.reason === "chatTrashed") {
+                    return { status: 409, body: { reason: "chatTrashed", revision: conflict.revision } };
+                }
                 return conflict && "reason" in conflict && conflict.reason === "generating"
                     ? generating()
                     : { status: 409, body: { error: error.message, revision: conflict?.revision ?? null } };
             }
             throw error;
         }
+    }
+
+    function writableRevision(epoch: string | undefined, characterId: string, chatId: string): string | null {
+        store.assertEpoch(epoch);
+        const state = store.chatTrashState(characterId, chatId);
+        if (state && state.trashedAt !== null) {
+            throw new ResourceBatchConflictError([
+                { kind: "chat", characterId, id: chatId, revision: state.revision, reason: "chatTrashed" },
+            ]);
+        }
+        return state?.revision ?? null;
     }
 
     return {
@@ -197,8 +217,7 @@ export function createCheckpointService({
                     }
                     policy = { autoEvery, autoKeep };
                 }
-                store.assertEpoch(request.epoch);
-                if (store.chatRevision(characterId, chatId) === null) {
+                if (writableRevision(request.epoch, characterId, chatId) === null) {
                     return notFound();
                 }
                 store.checkpoints.writePolicy(characterId, chatId, policy);
@@ -220,7 +239,7 @@ export function createCheckpointService({
                 const characterId = idField(body, "characterId");
                 const chatId = idField(body, "chatId");
                 const name = stringField(body, "name");
-                store.assertEpoch(request.epoch);
+                writableRevision(request.epoch, characterId, chatId);
                 if (busy(characterId, chatId)) {
                     return generating();
                 }
@@ -237,7 +256,7 @@ export function createCheckpointService({
                 const id = idField(body, "id");
                 const baseRevision = stringField(body, "baseRevision");
                 const name = stringField(body, "name");
-                store.assertEpoch(request.epoch);
+                writableRevision(request.epoch, characterId, chatId);
                 const checkpoint = store.checkpoints.rename(characterId, chatId, id, baseRevision, name);
                 return checkpoint ? { status: 200, body: { epoch: store.epoch(), checkpoint } } : notFound();
             });
@@ -250,7 +269,7 @@ export function createCheckpointService({
                 const chatId = idField(body, "chatId");
                 const id = idField(body, "id");
                 const baseRevision = stringField(body, "baseRevision");
-                store.assertEpoch(request.epoch);
+                writableRevision(request.epoch, characterId, chatId);
                 const removed = store.checkpoints.delete(characterId, chatId, id, baseRevision);
                 return removed ? { status: 200, body: { epoch: store.epoch(), ok: true } } : notFound();
             });
@@ -270,7 +289,7 @@ export function createCheckpointService({
                 const chatId = idField(body, "chatId");
                 const id = idField(body, "id");
                 const chatBaseRevision = stringField(body, "chatBaseRevision");
-                store.assertEpoch(request.epoch);
+                const current = writableRevision(request.epoch, characterId, chatId);
                 const epoch = store.epoch();
                 if (busy(characterId, chatId) || loadLocked?.(characterId, chatId)) {
                     return generating();
@@ -281,7 +300,6 @@ export function createCheckpointService({
                 if (!composed || !memory || !checkpoint) {
                     return notFound();
                 }
-                const current = store.chatRevision(characterId, chatId);
                 if (current !== chatBaseRevision) {
                     throw new ResourceConflictError(current);
                 }

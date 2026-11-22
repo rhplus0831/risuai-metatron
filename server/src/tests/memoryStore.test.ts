@@ -29,6 +29,7 @@ import {
 } from "../data/resourceStore.ts";
 import { chapterUnits } from "../prompt/memory/structured/chapters.ts";
 import { readRecordSet, rebuildChanges } from "../prompt/memory/structured/rebuild.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
 import { installSnapshot, stageSnapshot } from "./stagedRestore.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
 import { reconcileEvents, reconcileMessageChanges } from "../prompt/memory/structured/reconcile.ts";
@@ -130,6 +131,11 @@ function records(ids: string[], body = "문이 열린다 😀") {
     };
 }
 
+/** Deletes `c/k` through the trash, beside a spare active chat that lets it go there. */
+function deleteChat(store: ResourceStore) {
+    store.applyChanges({ chats: [group(null, [{ op: "create", chat: {} as never }], "c", "spare")] });
+    deleteChatThroughTrash(store, "c", "k");
+}
 const contents = (store: ResourceStore, characterId = "c", chatId = "k") =>
     store.memory.readContents(characterId, chatId)!;
 const write = (store: ResourceStore, baseRevision: string, changes: MemoryChanges, characterId = "c", chatId = "k") =>
@@ -327,7 +333,7 @@ it("cascades chapter deletion only to rows owned by the deleted chat", () => {
         write(store, contents(store, characterId).revision, { events }, characterId);
         store.memory.chapters.add(characterId, "k", store.epoch(), saved);
     }
-    store.applyChanges({ chats: [group(store.chatRevision("c", "k"), [{ op: "delete" }])] });
+    deleteChat(store);
     expect(db.prepare("SELECT chatSeq, id FROM memory_chapters").all()).toEqual([
         { chatSeq: chatSeq(db, "other"), id: saved.id },
     ]);
@@ -576,7 +582,7 @@ it("deletes live and staged citations only for the deleted chat incarnation", ()
     }
     const oldSeq = chatSeq(db);
     const otherSeq = chatSeq(db, "other");
-    store.applyChanges({ chats: [group(store.chatRevision("c", "k"), [{ op: "delete" }])] });
+    deleteChat(store);
     expect(sourceRows(db)).toEqual([{ chatSeq: otherSeq, messageId: "m", eventId: "shared" }]);
     expect(sourceRows(db, "memory_staged_event_sources")).toEqual([
         { chatSeq: otherSeq, messageId: "next", eventId: "shared" },
@@ -992,7 +998,7 @@ it.each(["chat", "character"] as const)(
         const old = write(store, zero, records(["z"]));
         write(store, contents(store, "c", "sibling").revision, records(["z"]), "c", "sibling");
         const other = write(store, contents(store, "other").revision, records(["z"]), "other");
-        if (owner === "chat") store.applyChanges({ chats: [group(store.chatRevision("c", "k"), [{ op: "delete" }])] });
+        if (owner === "chat") deleteChatThroughTrash(store, "c", "k");
         else store.delete(characters, "c", seeded.results[0].revision!);
         expect(store.memory.readContents("c", "k")).toBeNull();
         for (const table of tables) {
@@ -1943,7 +1949,7 @@ it("keeps a replaced run nonresumable after reopen and removes staging on abando
     expect(memoryRows(db)).toEqual(live);
     for (const table of stagedTables) expect(db.prepare(`SELECT * FROM ${table}`).all()).toEqual([]);
     beginRebuild(reopened);
-    reopened.applyChanges({ chats: [group(reopened.chatRevision("c", "k"), [{ op: "delete" }])] });
+    deleteChat(reopened);
     expect(reopened.memory.rebuild.status("c", "k")).toBeNull();
     for (const table of stagedTables) expect(db.prepare(`SELECT * FROM ${table}`).all()).toEqual([]);
 });

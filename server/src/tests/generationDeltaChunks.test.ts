@@ -388,6 +388,7 @@ describe("generation delta chunks on the owner socket", () => {
                                 characterId: "c",
                                 id: "k",
                                 revision: body.chats[0].revision,
+                                trashedAt: null,
                                 // A text write keeps the last row's time and the metadata: the base's summary.
                                 summaryBase: baseRevision,
                                 patch: {

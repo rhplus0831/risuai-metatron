@@ -796,6 +796,27 @@ describe("generation jobs over HTTP and WebSocket", () => {
         expect(await unheld.json()).toEqual({ released: false });
     });
 
+    it("refuses trash while an admitted job holds the chat slot before begin", async () => {
+        await listen();
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+        expect(
+            (
+                await request(
+                    "/api/resources/batch",
+                    json({
+                        chats: [{ ...ref, chatId: "spare", baseRevision: null, ops: [{ op: "create", chat: {} }] }],
+                    }),
+                )
+            ).status,
+        ).toBe(200);
+        const before = await revision();
+        await createOk(); // The runner waits for its first step without taking any message lock.
+        const result = await request("/api/chat-trash/trash", json({ ...ref, revision: before.revision }));
+        expect(result.status).toBe(409);
+        expect(await result.json()).toMatchObject({ error: "generating", revision: before.revision });
+        expect(await revision()).toEqual(before);
+    });
+
     it("admits one job per chat, streams the chat hydration, accepted, chunks, and done to the owner with the epoch, and answers the status DTO", async () => {
         await listen();
         const ctx = await context();

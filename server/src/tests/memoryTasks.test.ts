@@ -84,6 +84,7 @@ import {
     TEST_INDEX_HTML,
     waitFor,
 } from "./testSupport.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
 import { stageSnapshot } from "./stagedRestore.ts";
 import { memoryRecords, writeMemory } from "./memoryFixtures.ts";
 import { UNHURRIED_CBS, UNHURRIED_HYPAV3_SEPARATOR, UNHURRIED_SCRIPT_WORKERS } from "./unhurriedLimits.ts";
@@ -1105,7 +1106,7 @@ describe("a changed source", () => {
     it("a deleted chat cancels the task (`sourceChanged`, revision null) before the pending request settles, which writes nothing", async () => {
         const t = harness();
         const { terminal, second } = await afterFirstSummary(t);
-        t.write("k1", [{ op: "delete" }]);
+        deleteChatThroughTrash(t.store, "c", "k1");
         const end = await terminal;
         expect(end.status).toMatchObject({
             state: "cancelled",
@@ -1505,7 +1506,7 @@ describe("the start checks", () => {
         const t = harness({ invalidations: false });
         const terminal = t.nextTerminal("k1");
         handOff(t, "k1", { entries: 4 });
-        t.write("k1", [{ op: "delete" }]);
+        deleteChatThroughTrash(t.store, "c", "k1");
         expect((await terminal).status).toMatchObject({ state: "skipped", reason: "chatGone", terminalRevision: null });
     });
 
@@ -2416,23 +2417,31 @@ describe("the server wiring", () => {
         const a = await w.socket();
         w.handOff("k1");
         const held = await w.provider.request(0);
-        const deleted = await w.api("/api/resources/batch", {
+        // Trashed, then permanently deleted with the token the trash answered.
+        const trashed = await w.api("/api/chat-trash/trash", {
             method: "POST",
-            body: JSON.stringify({
-                chats: [{ characterId: "c", chatId: "k1", baseRevision: w.revisions.k1, ops: [{ op: "delete" }] }],
-            }),
+            body: JSON.stringify({ characterId: "c", chatId: "k1", revision: w.revisions.k1 }),
+        });
+        expect(trashed.status).toBe(200);
+        const deleted = await w.api("/api/chat-trash/delete", {
+            method: "POST",
+            body: JSON.stringify({ characterId: "c", chatId: "k1", revision: trashed.body.revision }),
         });
         expect(deleted.status).toBe(200);
         const terminal = await w.terminal(a, "k1");
         expect(terminal.status).toMatchObject({ state: "cancelled", reason: "sourceChanged", terminalRevision: null });
-        const change = a.frames.find(isChangeOf("k1"))!;
+        // The trash publishes the chat at its trashed revision first; the deletion's frame is the tombstone.
+        const [trashChange, change] = a.frames.filter(isChangeOf("k1"));
+        expect(trashChange.changes.chats).toMatchObject([
+            { characterId: "c", id: "k1", revision: trashed.body.revision, trashedAt: trashed.body.trashedAt },
+        ]);
         expect(change.changes.chats).toEqual([{ characterId: "c", id: "k1", revision: null }]);
         expect(a.frames.indexOf(change)).toBeLessThan(a.frames.indexOf(terminal));
         held.answer("A late summary");
         expect(await w.chat("k1")).toMatchObject({ revision: null, data: null });
         expect((await w.start({ characterId: "c", chatId: "k1" })).status).toBe(404);
         expect((await w.cancel("c", "k1")).status).toBe(404);
-        expect(a.frames.filter(isChangeOf("k1"))).toEqual([change]);
+        expect(a.frames.filter(isChangeOf("k1"))).toEqual([trashChange, change]);
     });
 
     it("a restore publishes `epoch` after the maintenance terminals and empties the registry: the socket stays open, a new `hello` carries the new epoch and no old status, and no old-epoch frame follows", async () => {

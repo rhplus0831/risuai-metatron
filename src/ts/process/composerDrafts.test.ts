@@ -687,7 +687,7 @@ describe("durable composers", () => {
                     applyRemoteCollection({
                         characterId: "c",
                         order: { characterId: "c", revision: "o2", ids: ["b"] },
-                        chats: [{ characterId: "c", id: "b", revision: "r1", data: chat("b") }],
+                        chats: [{ characterId: "c", id: "b", revision: "r1", trashedAt: null, data: chat("b") }],
                     }),
                 ).toBe(true);
             if (kind === "remote character") forgetCharacter("c", { discard: true });

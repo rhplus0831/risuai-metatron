@@ -1164,7 +1164,7 @@ describe("Apply after an intervening memory job", () => {
             return transport.fetch(path, init);
         };
         const removed = server.chat("c", "chat")!;
-        remoteChat([{ op: "delete" }]);
+        // The replacement first: a chat is deleted for good only while another is outside the trash.
         server.chatBatch([
             {
                 characterId: "c",
@@ -1173,6 +1173,7 @@ describe("Apply after an intervening memory job", () => {
                 ops: [{ op: "create", chat: { ...removed.data, id: "replacement" } }],
             },
         ]);
+        server.deleteChatForever("c", "chat");
         current.chat.markChatStale(ref());
         await expect(applyRecoveryDraft(draft)).rejects.toThrow(language.recoveryDrafts.unavailable);
         expect(current.chat.findChat(ref())).toBeDefined();
@@ -1794,7 +1795,7 @@ describe("boot recovery of chat work", () => {
                 await first.chat.ensureChatLoaded(ref());
                 first.chat.setMessageText(ref(), "m", "local");
                 await hideUnsent();
-                if (outcome === "gone chat") remoteChat([{ op: "delete" }]);
+                if (outcome === "gone chat") server.deleteChatForever("c", "chat");
                 else server.store.delete(server.kind("characters"), "c", server.record("characters", "c")!.revision);
             }
             const row = (await first.journal.readOwn()).find(

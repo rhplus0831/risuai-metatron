@@ -30,7 +30,7 @@ import {
     TAB_MCP_IDENTIFIERS,
 } from "../../../shared/jobs.ts";
 import type { OpenAIChat } from "../../../shared/openai.ts";
-import { compareRevision, RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
+import { type ChatReadRecord, compareRevision, RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
 import {
     alertClear,
     alertConfirm,
@@ -785,14 +785,14 @@ async function readChatForReceipt(
     if (holds(receipt)) {
         return;
     }
-    const fresh = result.chats?.find((chat) => chat.characterId === ref.chaId && chat.id === ref.chatId);
-    if (unchanged() && fresh?.revision != null && fresh.data != null && canApply(fresh)) {
+    const fresh = result.chats?.find(
+        (chat): chat is ChatReadRecord =>
+            chat.characterId === ref.chaId && chat.id === ref.chatId && chat.revision != null && chat.data != null,
+    );
+    if (unchanged() && fresh && canApply(fresh)) {
         applyHydration({
             kind: "chats",
-            id: ref.chatId,
-            characterId: ref.chaId,
-            revision: fresh.revision,
-            data: fresh.data,
+            ...fresh,
             job: { jobId: entry.jobId, streaming },
         });
     }

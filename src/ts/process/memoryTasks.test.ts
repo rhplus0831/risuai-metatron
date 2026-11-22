@@ -375,11 +375,7 @@ describe("the fence over frames and the save loop", () => {
         const refJ = { chaId: "c", chatId: "j" };
         tasks.noteMemoryTaskFrame(entry(live("B", "queued"), refJ));
         expect(tasks.memoryTaskFenced(refJ)).toBe(true);
-        fake.store.applyChanges({
-            chats: [
-                { characterId: "c", chatId: "j", baseRevision: fake.chat("c", "j")!.revision, ops: [{ op: "delete" }] },
-            ],
-        });
+        fake.deleteChatForever("c", "j");
         reconnect([]);
         await settle();
         expect(tasks.memoryTaskFenced(refJ)).toBe(false);
@@ -710,10 +706,10 @@ describe("memory fences on digest-matched reconnects", () => {
             };
             let committed: string | null = null;
             if (operation === "updated") committed = taskWrite(["one", "two", "three"]);
-            else
-                fake.store.applyChanges({
-                    chats: [{ characterId: "c", chatId: "k", baseRevision: held, ops: [{ op: "delete" }] }],
-                });
+            else {
+                expect(fake.chat("c", "k")!.revision).toBe(held);
+                fake.deleteChatForever("c", "k");
+            }
             await vi.advanceTimersByTimeAsync(50);
             await issued.promise;
             expect(chat.heldChatRevision(refK)).toBe(held);

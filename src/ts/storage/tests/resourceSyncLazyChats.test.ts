@@ -345,6 +345,7 @@ describe("live updates of chats that are not loaded", () => {
                 characterId: "c",
                 id: "k",
                 revision: b.fake.chat("c", "k")!.revision,
+                trashedAt: null,
                 summaryBase: baseRevision,
                 rowDelta: {
                     baseRevision,
@@ -499,11 +500,11 @@ describe("live updates of chats that are not loaded", () => {
         expect(b.chat.findChat({ chaId: "c", chatId: "new" })).toBeUndefined();
         b.fake.requests.length = 0;
         b.live.queue.length = 0;
-        b.fake.chatBatch([
-            { characterId: "c", chatId: "k", baseRevision: b.fake.chat("c", "k")!.revision, ops: [{ op: "delete" }] },
-        ]);
-        const deleted = b.live.queue[0];
+        b.fake.deleteChatForever("c", "k");
+        // The trash route publishes the trash, then the deletion: the deletion's notice alone is delivered.
+        const deleted = b.live.queue.at(-1)!;
         if (deleted.type !== "change") throw new Error("expected a committed change");
+        expect(deleted.changes.chats).toEqual([{ characterId: "c", id: "k", revision: null }]);
         b.sync.noteRemoteChanges({ ...deleted.changes, chatOrders: [] });
         await settle(b.fake);
         expect(b.reads()).toEqual([{ chats: [], summaries: ["c"], collections: [] }]);
@@ -570,17 +571,8 @@ describe("live updates of chats that are not loaded", () => {
 
         // Deleted and created by another tab: the list follows; the new chat is a summary.
         fake.requests.length = 0;
-        fake.store.applyChanges({
-            chats: [
-                {
-                    characterId: "c",
-                    chatId: "n7",
-                    baseRevision: fake.chat("c", "n7")!.revision,
-                    ops: [{ op: "delete" }],
-                },
-                create("c", "n8", { message: [m("n8-0", "N8")] }),
-            ],
-        });
+        fake.deleteChatForever("c", "n7");
+        fake.store.applyChanges({ chats: [create("c", "n8", { message: [m("n8-0", "N8")] })] });
         await settle(fake);
         expect(chat.chatList("c").map((entry) => entry.id)).toEqual([...C_IDS.filter((id) => id !== "n7"), "n8"]);
         expect(chat.findChat({ chaId: "c", chatId: "n8" })).toBeUndefined();

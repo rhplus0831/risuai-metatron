@@ -131,7 +131,7 @@ function installDatabase(fields: Record<string, unknown>, unloaded: readonly str
     reads.count = 0;
     const chats = characters.flatMap((char) =>
         (char.chats ?? []).map((entry) => {
-            const record = { characterId: char.chaId, id: entry.id, revision: REVISION, data: entry };
+            const record = { characterId: char.chaId, id: entry.id, revision: REVISION, trashedAt: null, data: entry };
             // Every chat can be read back (a chat evicted by the trim is loaded again through `readRefs`).
             reads.chats.set(`${char.chaId}/${entry.id}`, record);
             if (!unloaded.includes(char.chaId)) {

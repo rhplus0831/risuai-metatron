@@ -224,14 +224,7 @@ describe("chat checkpoints over the server store", () => {
         tab.chat.setChatMeta(created, { fmIndex: 3 });
         const sibling = { chaId: ref.chaId, chatId: "second" };
         tab.chat.setChatMeta(sibling, { note: "Edit on a deleted sibling" });
-        server.resources.chatBatch([
-            {
-                characterId: sibling.chaId,
-                chatId: sibling.chatId,
-                baseRevision: server.resources.chat(sibling.chaId, sibling.chatId)!.revision,
-                ops: [{ op: "delete" }],
-            },
-        ]);
+        server.resources.deleteChatForever(sibling.chaId, sibling.chatId);
         server.resources.requests.length = 0;
         mocks.reloadNotice.mockClear();
 

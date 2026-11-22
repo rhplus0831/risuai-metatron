@@ -15,6 +15,7 @@ import { applyTriggerChat, type ChatBaseline } from "../jobs/chatResult.ts";
 import { GenerationRunnerError, JobWriteConflictError, type RunningJob } from "../jobs/generationJobs.ts";
 import { createGenerationLock } from "../jobs/generationLock.ts";
 import { type JobScope, loadJobScope, refreshChat, scopeChat } from "../jobs/jobScope.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
 
 // `applyTriggerChat` (`server/src/jobs/chatResult.ts`), the port of the client's `applyChatResult`,
 // over a real in-memory resource store guarded by the real generation lock and a fake job whose
@@ -434,7 +435,13 @@ describe("applyTriggerChat", () => {
     it("applies nothing when the chat is gone", () => {
         const s = setup();
         const base = s.baseline();
-        s.external([{ op: "delete" }]);
+        // Another client deletes it (through the trash; a spare active chat lets it go there).
+        s.store.applyChanges({
+            chats: [
+                { characterId: "c", chatId: "spare", baseRevision: null, ops: [{ op: "create", chat: {} as never }] },
+            ],
+        });
+        deleteChatThroughTrash(s.store, "c", "k");
         const result = structuredClone(base.chat);
         result.message.push({ role: "user", data: "late" });
         expect(() => s.apply(base, result)).not.toThrow();

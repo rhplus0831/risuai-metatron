@@ -233,7 +233,7 @@ describe("chat status sources", () => {
         view(a);
         watch();
         const saved = JSON.parse(JSON.stringify(chat.findChat(a)!));
-        const record = { characterId: a.chaId, id: a.chatId, revision: "r1" };
+        const record = { characterId: a.chaId, id: a.chatId, revision: "r1", trashedAt: null };
         const orders = [{ characterId: a.chaId, revision: "o1", ids: [a.chatId] }];
         if (obstruction === "settings") settingsOpen.set(true);
         if (obstruction === "grid") gridOpenStore.set(true);

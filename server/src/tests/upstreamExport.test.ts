@@ -1068,6 +1068,26 @@ describe("buildUpstreamDatabase: characters and chats", () => {
         }
     });
 
+    it("omits trashed chats before locating the selected chat in the upstream chat order", async () => {
+        const snapshot = await snapshotOf(
+            (w) => {
+                w.put("characters", "c", { chaId: "c", type: "character", name: "Story" });
+                w.chat("c", "selected", { name: "Selected" });
+                w.chat("c", "first", { name: "First" }, 0);
+                w.chat("c", "hidden", { name: "Hidden" }, 0);
+            },
+            {
+                editCopy(db) {
+                    db.prepare("UPDATE chats SET trashedAt = ? WHERE id = 'hidden'").run(NOW - 1);
+                },
+            },
+        );
+        const { db } = exportOf(snapshot, { selectedChat: { characterId: "c", chatId: "selected" } });
+        const character = characterNamed(db, "Story");
+        expect((character.chats as Root[]).map((chat) => chat.id)).toEqual(["first", "selected"]);
+        expect(character.chatPage).toBe(1);
+    });
+
     it("rebuilds chats in chatOrders order, strips metatron chat fields and translations, and sets lastDate", async () => {
         const { db, report } = exportOf(await snapshotOf(), { selectedChat: { characterId: "c1", chatId: "k1" } });
         const alice = characterNamed(db, "Alice");

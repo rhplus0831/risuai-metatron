@@ -317,8 +317,7 @@ describe("a chat another tab announced", () => {
 
     it("removes a chat the server deleted", async () => {
         const { fake, character, notify } = await boot();
-        const r0 = fake.chat("c", "j")!.revision;
-        fake.chatBatch([{ characterId: "c", chatId: "j", baseRevision: r0, ops: [{ op: "delete" } as any] }]);
+        fake.deleteChatForever("c", "j");
         notify("j");
         await vi.advanceTimersByTimeAsync(3000);
         expect(character().chats.map((c: any) => c.id)).toEqual(["k"]);

@@ -617,6 +617,8 @@ export type ChangeSet = {
         characterId: string;
         id: string;
         revision: string | null;
+        /** Absent on tombstones, cursor replay, and notices from older servers. */
+        trashedAt?: number | null;
         patch?: ChatPatchBody;
         delta?: ChatDeltaBody;
         /** Optional for older clients and servers; mutually exclusive with `patch`, `delta`, and `rows`. */
@@ -633,7 +635,7 @@ export type ChangeSet = {
 export type ResourceRevisionListing = {
     epoch: string;
     resources: { kind: string; id: string; revision: string }[];
-    chats: { characterId: string; id: string; revision: string }[];
+    chats: { characterId: string; id: string; revision: string; trashedAt?: number | null }[];
     chatOrders: { characterId: string; revision: string }[];
 };
 

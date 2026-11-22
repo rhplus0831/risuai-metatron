@@ -11,6 +11,7 @@ import { SUMMARY_PROJECTION_VERSION } from "../data/chatStore.ts";
 import { createCheckpointService } from "../data/checkpointService.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS } from "../data/kinds.ts";
 import { createResourceStore, type ResourceStore } from "../data/resourceStore.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
 import { createResourceTestClient, type ResourceTestClient } from "./testSupport.ts";
 
 // The server's summary reads. A `ChatSummary` is the listed fields picked from a chat's stored
@@ -747,7 +748,7 @@ describe("stored summary projections", () => {
         const { store, db } = summaryFile();
         seedProjection(store, ["k", "j"]);
         const seqs = db.prepare("SELECT seq FROM chats ORDER BY seq").all() as { seq: number }[];
-        if (deleted === "chat") editProjection(store, [{ op: "delete" }]);
+        if (deleted === "chat") deleteChatThroughTrash(store, "c", "k");
         else
             store.applyChanges({
                 ops: [{ kind: characters, id: "c", baseRevision: store.revisionOf(characters, "c"), delete: true }],

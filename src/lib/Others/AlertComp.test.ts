@@ -379,7 +379,7 @@ describe("dialogs keep their requested character and chat", () => {
                     [{ chaId: "a" }, { chaId: "b" }],
                     [
                         { characterId: "a", id: "chat-a", revision: "r1", name: "Chat a", fmIndex: 0 },
-                        { characterId: "b", id: "chat-b", revision: "r1", data: otherChat },
+                        { characterId: "b", id: "chat-b", revision: "r1", trashedAt: null, data: otherChat },
                     ],
                     [
                         { characterId: "a", revision: "o1", ids: ["chat-a"] },

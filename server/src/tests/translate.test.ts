@@ -32,6 +32,7 @@ import {
     type ResourceTestClient,
     waitFor,
 } from "./testSupport.ts";
+import { deleteChatThroughTrash } from "./chatDeletion.ts";
 
 // The server translation runner (`server/src/translation/runner.ts`) and its route
 // (`POST /api/translate/message`, `server/src/routes/translate.ts`).
@@ -795,6 +796,13 @@ describe("createTranslationRunner over a fake request layer", () => {
     const message = (id: string) => readChat().data!.message.find((entry) => entry.chatId === id)!;
     const chatBatch = (ops: ChatOp[], baseRevision: string | null = readChat().revision) =>
         store.applyChanges({ chats: [group("k", baseRevision, ops)] });
+    /** Deletes `k` through the trash, beside a spare active chat that lets it go there. */
+    const deleteChat = () => {
+        if (readChat("spare").revision === null) {
+            store.applyChanges({ chats: [group("spare", null, [{ op: "create", chat: {} as never }])] });
+        }
+        deleteChatThroughTrash(store, "c", "k");
+    };
     const req = (messageId: string, extra: Partial<TranslateMessageRequest> = {}): TranslateMessageRequest => ({
         characterId: "c",
         chatId: "k",
@@ -1191,14 +1199,14 @@ describe("createTranslationRunner over a fake request layer", () => {
 
         const chatGone = runner.translate(req("m1"));
         await until(() => pending.length === 2);
-        chatBatch([{ op: "delete" }]);
+        deleteChat();
         pending[1].resolve({ type: "success", result: "new" });
         expect(await chatGone).toEqual({ ok: false, status: 404, error: "The chat no longer exists" });
 
         chatBatch([{ op: "create", chat: CHAT as never }], null);
         const replaced = runner.translate(req("m1"));
         await until(() => pending.length === 3);
-        chatBatch([{ op: "delete" }]);
+        deleteChat();
         chatBatch([{ op: "create", chat: CHAT as never }], null);
         pending[2].resolve({ type: "success", result: "new" });
         expect(await replaced).toEqual({
@@ -1399,7 +1407,7 @@ describe("createTranslationRunner over a fake request layer", () => {
         await until(() => pending.length === 3);
         chatBatch([{ op: "setText", id: "r2", text: "reply two, continued" }]);
         const chained = runner.translate(req("r2"));
-        chatBatch([{ op: "delete" }]);
+        deleteChat();
         pending[2].resolve({ type: "success", result: "stale" });
         expect(await again).toEqual({ ok: false, status: 404, error: "The chat no longer exists" });
         expect(await chained).toMatchObject({ ok: false, status: 404 });

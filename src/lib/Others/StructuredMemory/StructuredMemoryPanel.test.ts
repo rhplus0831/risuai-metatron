@@ -4892,7 +4892,7 @@ it("keeps a package import on its saved chat and revision when remote deletion s
         applyRemoteCollection({
             characterId: "c",
             order: { characterId: "c", revision: revision(2), ids: ["other"] },
-            chats: [{ characterId: "c", id: "other", revision: revision(1), data: before }],
+            chats: [{ characterId: "c", id: "other", revision: revision(1), trashedAt: null, data: before }],
         }),
     ).toBe(true);
     await settle();
