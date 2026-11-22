@@ -6,7 +6,9 @@ admits the replacement job" (owner, 2026-11-22: "a separate plan", against a cli
 Limitation). Revised the same day at `bcf9d8e8e` after its plan-runner
 [audit](../reports/audits/plan-runner/removal-reroll-2026-11-22.md) (six P1 findings) and a design review against the
 code; the owner answered Q1 to Q7 with the proposals on 2026-11-22, and D1 to D12 are written to those answers.
-The revision's own audit (the report's second section) left eight P1 findings open: revise again before any slice.
+The revision's own audit (the report's second section) left eight P1 findings open. The owner answered Q5 again
+and Q8 and Q9 for them the same day and paused the plan there: D1 to D12 are not yet rewritten to those answers or
+to B1 to B19, and the plan needs that revision and another audit before any slice.
 
 Sources: `src/lib/ChatScreens/DefaultChatScreen.svelte` (`reroll`, `rerollByRemoval`),
 `src/ts/process/rerollHistory.ts`, `src/ts/process/serverGeneration.ts`, `src/ts/process/serverCommands.ts`,
@@ -78,7 +80,8 @@ variable rule of a removal reroll; the in-place reroll's own durability gap for 
 
 ## Decisions
 
-Written to the owner's answers of 2026-11-22 (Q1 to Q7, all as proposed).
+Written to the owner's first answers of 2026-11-22 (Q1 to Q7, all as proposed); Q5's second answer, Q8, and Q9 are
+not yet written in.
 
 - **D1. A tail reroll has its own create kind.** `POST /api/generations` accepts `kind: "rerollTail"` with a required
   `rerollTail: { anchorMessageId, messageIds }` (the message the tail follows, or `null` at the head; the removed ids
@@ -170,11 +173,13 @@ Written to the owner's answers of 2026-11-22 (Q1 to Q7, all as proposed).
 - **Q4. Remote send.** Answered as proposed (owner, 2026-11-22): unchanged (the tail reroll runs on this tab).
   Alternative: let a host run it, which the server stash now makes possible; the bundle history would still be lost
   through a host.
-- **Q5. A group tail reroll that completes one speaker and fails the next.** Answered as proposed (owner, 2026-11-22):
-  keep the completed reply, remove the unfinished one, delete the whole original tail, and report the failure, live
-  and after a restart or capture alike; a first speaker that only streamed a prefix puts both originals back. This is
-  today's rule (a send that brought a reply keeps the tail removed). Alternative: all or nothing, putting both
-  originals back whenever any speaker fails.
+- **Q5. A group tail reroll that completes one speaker and fails the next.** First answered (owner, 2026-11-22) as
+  keep the completed reply and delete the whole original tail. Answered again the same day after the second audit
+  (B5, B15), which found that keeping one speaker needs its checkpoint kept across the next speaker, a per-round
+  variable boundary, and round tags on rows triggers and Lua add: **all or nothing**. Any speaker that fails or stops
+  discards the attempt's whole output (a completed first reply and rows a trigger wrote included) and puts the
+  original tail and its variables back, live and after a restart or capture alike. This changes today's rule, under
+  which a send that brought any reply keeps the tail removed. D5 and D6 are still written to the first answer.
 - **Q6. Edits while a tail reroll runs.** Answered as proposed (owner, 2026-11-22): only structural writes to that chat
   (append, remove, replace, delete) and deleting its character wait, with the existing "generating" refusal; message
   and variable edits go through. Some edits from other tabs, older ones included, now wait until the reroll ends.
@@ -183,6 +188,15 @@ Written to the owner's answers of 2026-11-22 (Q1 to Q7, all as proposed).
   route, which an earlier server refuses, plus the terminal's disposition and settled revision. Alternatives: a
   dedicated route (one more endpoint), or only the dispatch-time `hello` check, which leaves a server swapped onto the
   same file appending replies after the old tail.
+- **Q8. A downgrade with a stash pending.** Answered as proposed (owner, 2026-11-22, B8): the guarantee covers
+  restarts between builds that know the stash. Running an earlier build on the same file while a stash is pending (a
+  crash mid-reroll, then a downgrade) can lose the tail; this becomes a Limitation, and a downgrade first starts the
+  new build once so the stash settles. Alternative: an on-disk mark an already shipped build refuses to open while a
+  stash is pending.
+- **Q9. A plugin callback that adds or removes messages during a tail reroll.** Answered as proposed (owner,
+  2026-11-22, B12): the owning tab's callback flush carries the job's token and counts as the job's own write, so its
+  rows are output the settlement keeps or discards like the others; removing the anchor or a reserved id is still
+  refused. Alternative: refuse it, which fails the reroll and puts the originals back.
 
 ## Rules For Every Slice
 
