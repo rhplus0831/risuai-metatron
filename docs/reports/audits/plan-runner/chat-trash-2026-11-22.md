@@ -305,3 +305,123 @@ can omit a change's summary, which B1 depends on.
   (`server/src/data/resourceStore.ts:3289`). Correction: name checkpoint load as the precedent and the helpers'
   extraction; distinguish a request never sent from a lost answer; state the column's writers as trash and restore,
   the native install, and row deletion.
+
+## Third audit, of the second revision
+
+- Plan: `docs/plan/chat-trash.md`
+- Commit audited: `8cab9a528`
+- Mode: `full`
+- Model: GPT-6.2-Astra (`xhigh`), read-only, a fresh session; report written by the drafting session (Claude Opus 5.5)
+
+| Severity   | Count |
+| ---------- | ----- |
+| P1         | 4     |
+| P2         | 2     |
+| P3         | 4     |
+| unverified | 0     |
+
+The revision answered the owner's triage of B1 to B8 and the changed Q4. B4 and B8 are resolved; B1, B3, B6, and B7 are
+partly resolved; B2 is resolved for Structured Memory, with the translation Limitation as stated; B5's consequence is
+worse than its Limitation states (C2). All ten new findings are open; none was sent for a fix. The turn took about 18
+minutes and 10.8 M tokens; Astra ran no test (it type-checked a required `ChatRecord.trashedAt` in memory, emitting no
+file), and `read_only_violation` was `false`.
+
+Re-check list: the fence, fresh-schema, and socket-delivery entries are clean (`server/src/data/chatStore.ts:2682`,
+`server/src/data/resourceStore.ts:3902`, `:786`, `server/src/jobs/generationJobs.ts:1064`); the feed-sizing entry
+changes a plan claim, because the publication-wide budget can drop a whole summary (C5,
+`server/src/data/resourceStore.ts:1288`).
+
+### Second-audit findings
+
+| ID  | Disposition                                 | What remains                                                     |
+| --- | ------------------------------------------- | ---------------------------------------------------------------- |
+| B1  | partly resolved                             | Two delivery paths (C5).                                         |
+| B2  | resolved (memory); translation as stated    | A new model call can start while trashed (C6).                   |
+| B3  | partly resolved                             | The token after a confirmation (C3); a last-member branch (C7).  |
+| B4  | resolved                                    |                                                                  |
+| B5  | worse than stated; ordering partly resolved | Unsaved edits lost (C2); no receipt for a committed delete (C4). |
+| B6  | partly resolved; stale reorder as stated    | The parent-cascade premise (C1).                                 |
+| B7  | partly resolved                             | Compile-time callers, fixtures, overlaps (C8).                   |
+| B8  | resolved                                    |                                                                  |
+
+### P1
+
+- **C1. D15, "the known chats belong to the parent whose deletion is queued before the replacement's creates, and its
+  cascade removes them."** Likelihood: a remove and re-add under the same id before the save loop collects the
+  deletion, or a failed parent delete followed by a re-import. The save loop emits a delete only for an absent id
+  (`src/ts/storage/resourceSync.svelte.ts:2856`, `:2889`); `addPreparedCharacters` installs chats before inserting the
+  parent and `replaceCharacterAt` installs for the incoming id (`src/ts/storage/characterStore.svelte.ts:253`, `:345`);
+  the recreation tests show a parent update with explicit chat deletes
+  (`src/ts/storage/tests/resourceSyncRecreation.test.ts:234`, `:378`). Without those deletes, old rows stay under the
+  surviving parent while the mirror dropped them (`src/ts/storage/chatStore.svelte.ts:5415`), and the replacement-only
+  order fails the permutation check (`server/src/data/chatStore.ts:3481`). An acknowledged or committed in-flight
+  deletion works (`src/ts/storage/chatStore.svelte.ts:5736`). The plugin reconcile's nonmember branch can also recreate
+  a chat that disappeared during an await (`:4889`, `:4910`). Correction: wait for an explicit parent deletion's
+  acknowledgement before creating the replacement's chats; when the parent survives as an update, reconcile against its
+  authoritative chats, keeping omitted rows, marks, and slots; tell a new plugin chat from a captured id that vanished.
+- **C2. Limitations, "a chat the user meant to delete, so only its drafts are lost."** Likelihood: an earlier-build tab
+  edits or renames a chat and deletes it before the save is collected. `deleteChat` replaces the pending entry with the
+  delete and drops its ordinary ops (`src/ts/storage/chatStore.svelte.ts:3591`, `:3844`, `:3996`); on `useTrash` the
+  conflict path sees the server's last saved chat (`:6603`). Correction: the Limitation says a refusal keeps the last
+  committed chat and an earlier-build delete can also discard its unsaved message and metadata edits; boot replay's
+  draft cleanup stays a separate consequence (`:4951`).
+- **C3. D12, "each captures the held revision token when the user acts, runs `prepare`, and sends it"; slice 5, "each
+  call it only after one Yes."** Likelihood: another tab restores and re-trashes the chat while the confirmation is
+  open or while Empty trash works through earlier rows; a quick New Chat then Trash reaches the missing-token case. The
+  handlers capture the ref before `await alertConfirm` (`src/lib/SideBars/SideChatList.svelte:616`,
+  `src/lib/Others/ChatList.svelte:91`), so a token looked up afterwards authorizes the current trash period, and a new
+  chat has no token until its create is acknowledged (`src/ts/storage/chatStore.svelte.ts:3556`, `:3388`). Correction:
+  capture the targets and tokens before the confirmation, freeze Empty trash's list and count then, and pass them
+  through; an unsaved chat reports that it is still saving.
+- **C4. D5, "a retry of a delete that committed before the upgrade gets its success."** Likelihood: a legacy delete
+  commits, its answer is lost, and the tab retries after the upgrade. A delete removes the chat, its `chatGroups`
+  receipts cascade, and `applyGroup` does not remember a delete (`server/src/data/chatStore.ts:143`, `:2262`, `:2404`,
+  `:3000`), so there is no receipt to answer. The client already settles a delete conflict whose read finds the chat
+  absent (`src/ts/storage/chatStore.svelte.ts:6554`). Correction: keep remembered and expired precedence for groups on a
+  surviving incarnation; test a remembered edit after trash, an expired retry, and a committed legacy delete settled by
+  its missing-row read, with a same-id replacement surviving it.
+
+### P2
+
+- **C5. D2, "A trash or restore always publishes its summary"; D3, "Any delivery ... installs it."** Likelihood: a large
+  summary (a chat name has no summary-size bound) exhausting the publication budget; a plugin's cold read beating the
+  trash echo. The 256 KiB publication budget can drop the whole summary, coalescing rebuilds the entry from selected
+  fields, and the tab's feed adapter and reconnect listing forward selected fields (`shared/resources.ts:572`,
+  `server/src/data/chats.ts:48`, `server/src/data/resourceStore.ts:466`, `:1297`,
+  `src/ts/storage/resourceSync.svelte.ts:4972`, `:5014`). Cold plugin pages read through `readChatRefsDetached`, which
+  keeps `{ revision, data }` only (`src/ts/storage/chatEdits.ts:114`, `src/ts/plugins/apiV3/v3.svelte.ts:1591`, `:1766`,
+  `:1875`, `:3148`). Correction: the mark is a scalar of the live chat ref, kept through coalescing and independent of
+  body, manifest, and summary; the server offers the summary subject to budget; a revision-only notice without the mark
+  is compared with the member's mark revision to decide a readback; detached by-ref reads carry the mark, and plugin
+  copies re-check active membership before they are returned or cached.
+- **C6. D7, "`POST /api/translate/message` refuse[s] it at admission."** Likelihood: a message edited during a slow
+  translation, translated again, then the chat trashed before the first call ends. A joining request with a new source
+  hash calls `translate(request)` again inside the runner, past the route (`server/src/routes/translate.ts:81`,
+  `server/src/translation/runner.ts:455`, `:485`, `:551`). Correction: the mark check at the runner's common entry,
+  before joining or starting work; `server/src/translation/runner.ts` in slice 2.
+
+### P3
+
+- **C7. D12, `removeRemoteChat` "(the remote deletion path: held revision, locks, order, selection,
+  `notifyRemoval`)".** For the only locally held member it marks the id absent, notifies, and returns with the member
+  and revision held (`src/ts/storage/chatStore.svelte.ts:7193`, `:1295`, `src/ts/storage/resourceSync.svelte.ts:4996`).
+  Correction: describe that branch, request the authoritative collection when it is taken, and settle and notify once
+  for the deleted incarnation in either arrival order.
+- **C8. Slice 1, "`shared/chats.ts`: ... the feed field ...; `shared/resources.ts`: the new conflict reasons."** The two
+  are reversed: the feed entry is `ChangeSet.chats` in `shared/resources.ts:614`, the reasons are `ChatConflict` in
+  `shared/chats.ts:243`. A required `ChatRecord.trashedAt` reaches `src/ts/network/jobChannel.ts:789`,
+  `src/ts/storage/tests/installFlatDatabase.ts:130`, and about fifteen client test fixtures; real-delete wire ops appear
+  in `server/src/tests/chatSummaries.test.ts:750`, `chatResult.test.ts:437`, `chatMetadataCoalescing.test.ts:494`,
+  `commandExecutor.test.ts:290`, `commandSequences.test.ts:761`, `jobMetadataScope.test.ts:153`,
+  `memoryTasks.test.ts:1108`, `messageSearch.test.ts:419`, and `src/ts/storage/tests/chatLazyLoading.test.ts:542`; the
+  restore worker test inserts six positional chat values (`server/src/tests/restoreWorker.test.ts:49`). Correction:
+  required-field adaptations and real-delete setup in slice 1; record the 1/2 and 1/4 overlaps; assign C1, C5, and C6's
+  files to their slices.
+- **C9. D14, "D4's `lastActiveChat` and D10's install repair keep at least one active chat per character."** An empty
+  chat order is valid, and boot's `ensureChat` creates the first chat (`server/src/data/chatStore.ts:3933`,
+  `src/ts/storage/chatStore.svelte.ts:5119`). Correction: D10 restores one chat of a nonempty all-trashed collection;
+  an empty one is boot's.
+- **C10. Current State, "The invalidation hook cancels the chat's memory tasks and marks its rebuild
+  `sourceReplaced`."** A physical delete cascades the rebuild row first, so nothing is marked; `sourceReplaced` is what
+  a whole-chat replace does to a surviving rebuild (`server/src/data/chatStore.ts:257`,
+  `server/src/data/resourceStore.ts:1165`, `server/src/data/memoryStore.ts:917`). Correction: restate both.

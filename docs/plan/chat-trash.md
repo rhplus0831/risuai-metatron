@@ -5,7 +5,9 @@ at `2417475d6` ([report](../reports/audits/plan-runner/chat-trash-2026-11-22.md)
 a column, its own route, read-only trashed chats, Q12), and re-audited at `4c52e82e0` (the report's second section,
 B1 to B8). Revised again the same day at `06690eead` to the owner's triage of B1 to B8 and the changed Q4: B1, B2's
 memory part, B3, B4, B7, and B8 are fixed in the decisions and slices; B5's draft loss, B6's stale reorder, and the
-translation commit after a restore are Limitations; plugins no longer trash the chats they omit. Not yet re-audited.
+translation commit after a restore are Limitations; plugins no longer trash the chats they omit. Re-audited at
+`8cab9a528` (the report's third section): four P1 findings (C1 to C4), two P2, and four P3 are open, and the plan needs
+another revision before any slice.
 
 Sources: `server/src/data/chatStore.ts` (`CHAT_TABLES_SQL`, `CHAT_TABLE_COLUMNS`, the open-time column checks,
 `summaryFields`, `chatSummary`, `SUMMARY_PROJECTION_VERSION`, the feed's chat change, the op validation and replay
