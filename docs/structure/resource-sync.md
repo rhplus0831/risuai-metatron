@@ -191,6 +191,9 @@ handlers that reapply UI settings and repair incoming orders.
 - The adapter reads chat and order conflicts through `readRefs`; `recoverChatConflicts` owns per-group decisions such as
   replay recognition, missing-anchor repair, generation retry, and discard. See [chat-store](chat-store.md#by-id-ops)
   and [Restore floor](chat-store.md#restore-floor).
+- `useTrash` and `chatTrashed` take the standard conflict path through readback, recovery of eligible work, and a reload
+  notice. They skip missing-anchor repair and the shortcut for a create whose answer was lost. User trash actions use
+  the [direct client](chat-store.md#chat-trash).
 - A conflicted reorder keeps its sent vector until the `hydrate` list read: equal server order settles quietly;
   otherwise `markOrderDiscarded` reports `chats/<chaId>` with the notice. A failed/deferred read settles nothing, and a
   newer queued reorder keeps its sequence.
@@ -216,6 +219,13 @@ handlers that reapply UI settings and repair incoming orders.
 Server job records enter the adapter's `applyHydration`; read its comment for admission and deferred adoption. Chats
 enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patches use `applyPatchHydration` /
 `hydrateChatPatch`.
+
+### Chat Trash sync
+
+- `ChangeSet.chats` carries `trashedAt` on each live non-deletion entry beside the revision. `coalescedChat` and the
+  publication budget preserve the mark even when payloads are dropped. `eventFeed.ts` and `resourceSync.svelte.ts` pass
+  it through, including from the full revision listing on reconnect. Cursor replay carries bare revisions, so the
+  [chat store](chat-store.md#summaries-and-refresh) handles readback.
 
 ### Credential writes
 
@@ -317,6 +327,10 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
 
 ### Limitations
 
+- A tab left open across the upgrade keeps listing chats trashed elsewhere until it reloads. Edits and legacy deletes
+  are refused and re-read. The old delete had already replaced its queued work, so the chat returns as last saved and
+  unsaved message and metadata edits are lost with its drafts. Boot replay of a legacy journaled delete also recovers
+  the chat and clears its drafts. Decision: owner, 2026-11-22 (the user intended to delete the chat).
 - A lost group is recognized only within its chat's newest 100 groups: a live resend past them answers
   `reason: "expired"` and takes conflict recovery, a recovered one durable refusal quarantine. A resend skips page
   unload (`unloadPendingChatWork`). Decision: Durable Drafts Out of scope, D2 (f), archive; the recovered case is

@@ -141,6 +141,10 @@ entry point.
   Images): runtime behavior is in [media](media-aux.md).
 - `StorageSettings` (menu 23): its sections read the page's `Storage/storageController.svelte.ts` (via
   `Storage/storageContext.ts`), so polling ends with the page.
+- Storage › Chat trash renders `storage.chatTrashDays` from `src/ts/setting/storageSettingsData.ts`. `chatTrashDays`
+  belongs to `SECTION_FIELDS.ui`. The control uses `CHAT_TRASH_DAYS` in `shared/database.ts`, and `normalizeUi` calls
+  `normalizeChatTrashDays` for whole days from 1 to 3,650, default 30. English and Korean help warns that lowering it
+  can delete chats at the [next purge](server-resources.md#chat-trash-retention).
 - `HotkeySettings` (menu 15): `activeHotkeys` (`src/ts/hotkey.ts`) hides `quickSettings` ([app-shell](app-shell.md)).
 - `src/lib/Setting/Pages/InputHookSettings.svelte` edits the global `settings.inputHooks` list. A card addresses its
   hook by id, including for popup text edits. Only Draft hooks carry the optional `translation` flag. The chat's hook

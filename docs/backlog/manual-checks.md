@@ -115,9 +115,13 @@ One tab:
 - [ ] **Timeline Reading View (2, 3, 4)**: a real chat with dated events groups by day in the Timeline Read view and reads top to bottom as expected, and "Open in Manage" on an open event lands on the same event in Manage (2); changing "Events per Timeline group" in the memory settings and reopening the panel regroups a long day into the expected parts (3); typing a Korean query with an IME in the Read search does not submit while a syllable is still composing, on a desktop browser and on a phone keyboard (4).
 - [ ] **Settings Item Spacing**: with the legacy GUI on (`useLegacyGUI`), the Interaction, Advanced, and Model settings pages read evenly with their accordions open; a settings search jump to an item inside a collapsible section still scrolls to the item and highlights it.
 - [ ] **Tokenizer Worker**: the tokenizer playground encodes a short text with each tokenizer in its list.
+- [ ] **Chat Trash**: Open a pinned chat in an existing folder. Move it to Trash from the chat list dialog and check that it closes and disappears from the active list and pinned rail. In sidebar Trash, check its folder and days left. Restore and reopen it, then check that its messages, folder, pin, and memory panel are as before.
+- [ ] **Chat Trash**: Set Storage › Chat trash retention to 1 day and trash two chats. Restore one before expiry and verify it stays while the other disappears on the next purge after expiry. This requires a real wait through retention and the next hourly purge. The clock override in `createChatTrashPurge` is available through test options only, with no development setting.
+- [ ] **Chat Trash**: Restore a compatible snapshot made before the trash column, then one containing a trashed chat. Verify that the old snapshot's chats are active and that the second restore keeps the chat in Trash with its days left reset to the restored retention setting.
 
 Two tabs, two browsers, or a dropped connection:
 
+- [ ] **Chat Trash**: Open the same character in two tabs. Trash the chat open in the other tab and check that it closes with a notice there. Restore it in the first tab and check that it reappears in the second. With exactly two active chats left, open a move-to-trash confirmation for a different chat in each tab before accepting either. Confirm both and check that one move is refused.
 - [ ] **Per-Chat Toggles and Toggle Presets**: prompt info showing the chat's values.
 - [ ] **RisuNest Small Wins (P2)**: the deferred plugin reload with two tabs or devices, and a reload deferred during a generation.
 - [ ] **Deep Audit Fixes**: the two-tab LoRA alternation.

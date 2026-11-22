@@ -16,7 +16,7 @@ Module headers and export comments hold the contracts; these lists give lookup i
 
 - `src/ts/storage/chatStore.svelte.ts` owns membership, summaries, loaded chats, queued writes, refusals, and generation
   locks. Boot reads summaries. Start with `chatEntry` for summary metadata or `findChat` for a loaded chat.
-  `ensureChatLoaded` loads a member. `chatMemberPage` reads an ordered page without loading message rows.
+  `ensureChatLoaded` loads a member. `chatMemberPage` reads an ordered active page without loading message rows.
 - Write through the by-id or metadata operations below. For a bulk edit start at `captureChatBaseline` and
   `applyChatResult`. For synchronization start at `takeChatWork`, `ackChatWork`, `requeueChatWork` and
   `recoverChatConflicts`. The module header groups the other readers, writers and job boundaries.
@@ -34,6 +34,8 @@ Module headers and export comments hold the contracts; these lists give lookup i
 - `src/ts/checkpoints/chatCheckpoints.svelte.ts`: checkpoint client (module header). `chatCheckpointsDialog` opens from
   `SideChatList.svelte`; while `checkpointLoadBusy`, the dialog disables its controls and `hotkey.ts` swallows shortcuts
   behind it and keeps Escape from closing it.
+- `src/ts/checkpoints/chatTrash.ts` (`confirmTrashChat`, `trashChat`, `restoreChat`, `deleteChatForever`) and
+  `src/ts/checkpoints/chatRequest.ts` (flush, admission, and epoch transport shared with checkpoints).
 - `src/ts/network/jobChannel.ts`: `rememberHydration`, `rememberJobStreaming`, `endJobChannel`, and the callback barrier
   (its module header); chat installation stays in `chatStore.svelte.ts`.
 
@@ -119,10 +121,27 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   `setMessageTranslation` edits an existing row's translation; `replaceChat` and `selectCandidate` also change it (the
   `ChatOp` contract in `shared/chats.ts`).
 
+### Chat Trash
+
+- User chat deletion moves the chat to its character's trash. The caller captures `chatTrashRevision` before a
+  confirmation or await. The client requires an acknowledged token, flushes through `chatRequest.ts`, and sends the
+  captured token to the [trash route](server-resources.md#chat-trash). The mutation takes effect in the tab through the
+  answer or a server update, outside the save queue and journal. A 409 or uncertain result after dispatch triggers
+  readback and a notice.
+- Moving to trash keeps membership and drafts. Permanent deletion settles once for the deleted incarnation across the
+  answer, feed, and collection read. See `settleDeletedChat` and `removeRemoteChat` for the removal fence and the
+  handoff to a collection refresh when the deleted chat is the only member held by this tab.
+- Use `activeChatList`, `activeChatCount`, and `isActiveChat` for visible lists, counts, and opening a chat, and
+  `trashedChatList` for [the sidebar trash view](ui-theming.md#sidebar). `chatList`, `chatEntry`, `chatCount`, and
+  `memberIds` keep the full membership for structural readers. For drag and plugin writes, `reorderActiveChats` merges
+  the supplied active order into that full order, preserving the slots of other members.
+
 ### Selection
 
 - `selectChat` and `loadSelectionPreference` own selection persistence; `selectedChatLoad` drives loading/error/retry
   ([UI](ui-theming.md)).
+- `selectedChatId` falls back to the first active chat and `selectChat` refuses a trashed target. A trash update that
+  affects the open chat closes it with a notice and runs `syncSelection`.
 
 ### Summaries and refresh
 
@@ -138,6 +157,10 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   inserted or refreshed (`hydrate`: what the server's list has no room for is discarded with the notice), for characters
   an acknowledgement showed another writer's chats of (`listRefresh`, keeping a queued reorder), and for idle stale or
   noticed unloaded chats (`idleSummaryRefreshes`, `settleSummaryRefresh`).
+- `installChatTrashState` takes the mark from summaries, whole reads, [sync updates](resource-sync.md#chat-trash-sync),
+  and trash route answers. It ignores older deliveries and requests readback for a newer bare revision when needed.
+  `readChatsDetached` and `readChatRefsDetached` carry the mark beside the data so chat and dataset exports can omit
+  trash and plugin reads can apply their [active-chat contract](plugin-sandbox.md#host-api).
 
 ### Whole-chat writers
 
@@ -226,6 +249,8 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 
 - Per chat: revision, `absentChats`, unsent and in-flight ops, local version, job locks, deferrals, refused intent (with
   object identity fencing an asynchronous discard). Per character: selection, chat order revision, refused order.
+- A member's trash mark and its acknowledged revision are held apart from its transcript and save base. They survive
+  eviction and busy loads, so active membership is available before the transcript loads.
 - Refusal reads use the module's own counter and local projections without changing state. Forgetting a character
   removes its refusal entries; session alert guards survive release and recreation.
 - `pinned` is stored as sent and summarized only when `true`. First-party UI keeps it only while pinned and clears it on
@@ -252,8 +277,8 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
   ([Server memory writes](#server-memory-writes)).
 - A message being generated is changed only by its generation; other writers get an error from the module. `Chat.svelte`
   disables its controls from `isMessageLocked` and checks every affected id again at the write, which also covers a
-  finished reply whose final write is unacknowledged and a previous group speaker's reply. Reroll and chat deletion
-  check `isChatGenerating` and alert `chatGenerating`.
+  finished reply whose final write is unacknowledged and a previous group speaker's reply. The screen's reroll checks
+  `isScreenBusy`, and `confirmTrashChat` checks `isChatGenerating`. Both alert `chatGenerating` when blocked.
 
 ## Recipes
 
@@ -280,6 +305,13 @@ Only sequences crossing a module, process, or tab; one inside `chatStore.svelte.
 
 ### Limitations
 
+- A drag or plugin reorder built before another tab trashes a chat can still be a valid permutation. It can move the
+  trashed chat's slot and change where it reappears on restore. Decision: owner, 2026-11-22 (fencing order writes on
+  active membership is a server change for a cosmetic effect).
+- Same-id character recreation keeps omitted chats the server still holds. `installCharacterChats` queues no deletes and
+  the collection refresh appends those members after the replacement's chats. An omitted chat whose create this tab has
+  yet to send is discarded with its unsaved content. Decision: owner, 2026-11-22 (recreation must happen during the save
+  delay of a new chat).
 - `CHAT_READ_DEADLINE_MS` bounds one `readRefs` call, not a whole load: a load can make three passes of 500-chat calls
   plus a summary list read. Decision: U1,
   [durable drafts audit](../reports/audits/finished-plans/durable-drafts-2026-10-29.md).

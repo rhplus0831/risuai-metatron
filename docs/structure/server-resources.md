@@ -31,6 +31,7 @@ headers and method comments.
   `shared/pluginStorage.ts` and the kind declarations.
 - `server/src/data/checkpointStore.ts` (`createCheckpointTables`, `walkCheckpointSnapshot`) and
   `server/src/data/checkpointService.ts` (`createCheckpointService`: `save`, `load`, `autoSave`): checkpoints.
+- `server/src/data/chatTrashPurge.ts` (`createChatTrashPurge`), the [purge](#chat-trash-retention).
 - `server/src/data/snapshots.ts` (`createSnapshotManager`: the timer, `stageCopy`, `withMaintenance`;
   `MaintenanceGate`), `server/src/data/archive.ts` (the version-2 archive records),
   `server/src/data/databaseProjection.ts` (the flat `Database` projection of a job's scope and the upstream export), and
@@ -82,6 +83,8 @@ Proxies must preserve encoded ids ([Gotchas](self-host-server.md#gotchas)). Shap
 budget and cursor. Its newest-first walk in `chatStore.ts` uses literal matching with SQLite's ASCII-only case folding.
 Follow the [chat search client](chat-pipeline.md#slash-commands-groups-and-search) when changing snippet offsets or
 continuation.
+
+All scopes and continuations skip trash. A trashed chat's own scope returns an empty page. A missing chat gives 404.
 
 ### Chat checkpoint routes
 
@@ -188,6 +191,29 @@ numeric legacy value to the newest chat `lastDate`, but leave absence as absence
   newest non-comment message or a live job's row keeps them; `setMessage`/`patchMessage` cannot restore them on a row
   holding none unless an admitted generation or the lock owner writes (`candidateRows` reports `cleared`).
 
+### Chat Trash
+
+- `server/src/routes/chatTrash.ts` handles `POST /api/chat-trash/{trash,restore,delete}` with
+  `{ characterId, chatId, revision }` and the epoch header. `changeChatTrash` commits and publishes changes. A 200
+  returns revision, mark, and summary, using pre-delete state for `delete`. An already satisfied trash or restore is a
+  no-op.
+- Trash and restore accept older tokens of the same incarnation. Delete needs the exact revision of a trashed chat. A
+  409 reports `stale`, `notTrashed` for deleting an active chat, `lastActiveChat` for trashing the last active chat, or
+  `generating` when `chatHeld` blocks trash or delete. Restore clears the mark regardless of job holds.
+- After receipt replay and retry expiry, legacy batch deletes of existing chats get `useTrash`. Trashed chats reject
+  writes with `chatTrashed`, including translation commits and checkpoint mutations. Checkpoint listing works and
+  `autoSave` skips trash. [Tab conflict recovery](resource-sync.md#chat-and-order-conflicts).
+- Trash blocks generation after request-id replay, manual memory tasks, and translation even on follow-up. The
+  Structured Memory `fenced` predicate and rebuild abandonment check the mark. Trash invalidation cancels queued and
+  running memory tasks, bypassing `noteSourceReplaced` and leaving no stop reason so paused rebuilds can resume.
+
+### Chat Trash retention
+
+`startBackgroundTasks` starts one timer (one minute, then hourly). Runs skip maintenance. `beginShutdown` stops the
+timer and disposal drains the purge before store close. Each run scans `expiredTrashedChats` using
+[`chatTrashDays`](settings-i18n.md#pages). `changeChatTrash("delete")` rechecks epoch, revision, mark, cutoff, and
+`chatHeld` in the delete transaction. Eligible skips retry next run.
+
 ### Snapshots and restore
 
 - `createSnapshotManager`'s comment has the timer, retention, pins, removal, and disk check.
@@ -222,6 +248,10 @@ answers.
 staged rows into the live store in one `BEGIN IMMEDIATE` transaction; the order, the seq maps, and what changes only
 after the commit are its comment.
 
+Snapshots and v2 archives carry the mark. `assertSnapshotHeader` accepts both layouts at this schema version.
+`walkChatSnapshot` reads older rows as active. Staging uses the current layout. `copyStagedChats` restores a character's
+most recently trashed chat if all were trashed and restamps remaining trash at one install time.
+
 ### Shutdown during a restore
 
 Shutdown aborts a restore before its install (`restoreShutdown` in `app.ts`; `restoreSignal`'s comment in
@@ -240,6 +270,7 @@ way (`staging.signal`). A version-2 import admitted before shutdown finishes, an
 - Export reads the snapshot without checkpoint tables, so upstream saves hold no named checkpoint history. The flat save
   uses the eligible chats' memory projections and reports the count of omitted pages and threads. A failed memory walk
   leaves the rest exportable ([projection](structured-memory/projection.md#the-hypav3-projection)).
+- `exportDatabase.ts` omits `chatTrashDays` and filters trash before deriving `chatPage`.
 
 ### File imports
 
@@ -268,6 +299,8 @@ root settings record and cannot be opened or restored here.
 - `server/src/data/resourceStore.ts` `STORE_TABLES_SQL` defines resources and metadata, including the epoch,
   normalization stamp and summary projection version. `server/src/data/chatStore.ts` defines chats, ordered messages,
   generation fences, chat orders and the indexes used for by-id edits, last-message reads and checkpoint cleanup.
+- `chats.trashedAt INTEGER` holds server-clock milliseconds or null for active chats. `openChatSchema` adds it if
+  missing (`PRAGMA table_xinfo`). Ordinary writes preserve it, and `meta.trashedAt` is custom metadata.
 - The store records revision refs and tombstones in `changes` in the write's transaction. Open-time maintenance bypasses
   the log. Reconnect reads it through `listChanges`; a whole-store replacement drops its entries while preserving the
   cursor sequence. Snapshot copies include the log, and restore ignores it.
@@ -279,9 +312,10 @@ root settings record and cannot be opened or restored here.
 ### Summary projection
 
 - `chatSummaries` (`chatSeq` primary key referencing `chats.seq` with `ON DELETE CASCADE`, `revision`, `text`) is each
-  chat's summary projection (`summaryText`: the listed metadata fields as JSON, without `lastMessageAt` or the
-  revision), created the same way and outside the layout check: `backupTo` copies it into every snapshot, validation
+  chat's summary projection (`summaryText`: the listed metadata fields as JSON, without `lastMessageAt`, `trashedAt`, or
+  the revision), created the same way and outside the layout check: `backupTo` copies it into every snapshot, validation
   ignores it, and a restore writes its own rows.
+- Reads add `ChatSummary.trashedAt` from the column when marked. `ChatRecord.trashedAt` carries the nullable mark.
 - `writeChatMeta` is the only live writer of `chats.meta` and stores the projection in the same transaction (a
   [restore's writers](#invariants) write both tables together); every other chat write moves the row's `revision` with a
   compare-and-set, so a row an older server left behind never turns fresh. A row is fresh when its `revision` equals the
@@ -402,6 +436,8 @@ default) replaces `FULL` on this connection only, for SD cards and slow local vo
 
 ### Limitations
 
+- An in-flight translation can commit after restore. While trashed its commit fails, wasting the model call. Decision:
+  owner, 2026-11-22 (restore keeps chat identity).
 - `server/src/routes/resourceBoot.ts` `bootItems` recomputes every item's hash in a stale item-kind record on each boot
   read; the client's cache saves transfer bytes, but there is no server hash cache to save this work. Decision: Boot
   Resource Cache S4, [archive](../archived-plan/README.md).

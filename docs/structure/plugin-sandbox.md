@@ -58,6 +58,10 @@ entrypoints.
   ([compatibility model-root write rules](llm-requests.md#compatibility-model-root-writes)); a refusal warns
   `[Settings] Refused ...`. Preset fields go to the hook's ids, else `settingsWriteScope` taken at call start; a target
   gone by the apply refuses the whole call.
+- Plugin v3 uses the [active chat view](chat-store.md#chat-trash) for pages and totals (`getChats`), indexes
+  (`getChatFromIndex` and hooks), full and summary `getDatabase`, character copies, and job callbacks.
+  `chatMembershipVersion` refreshes a page if membership changes across an await, and detached reads check the mark
+  before returning or caching a chat.
 
 ## Flows
 
@@ -256,6 +260,9 @@ instance's ambient context.
   (`terminalNoticeShown`): the notice stops only bubbling.
 - A plugin character applied over the same `chaId` (`applyPluginCharacter`) keeps the stored `supaMemoryOnCount`
   whatever its copy says, and bumps it when it turns `supaMemory` on (`memory.md`).
+- Index writes recheck the captured chat's active status. `reconcileCharacterChats` skips trashed members, keeps them
+  and omitted chats in their slots, and resolves `chatPage` against the supplied list. New ids create active chats. The
+  plugin chat APIs cannot delete chats.
 - The v3 `sendChat` captures the hook's chat, else the selection at API entry, and its owner before consent; it pins
   through loading and dispatch and refuses a deleted or replaced target. It returns whether the send ran, refusing ("A
   chat is already in progress") before appending, checked again after loading:
@@ -324,6 +331,9 @@ instance's ambient context.
 
 ### Limitations
 
+- A plugin that writes back an earlier chat list can recreate a permanently deleted or purged chat as active. A chat
+  still in the trash stays there. Decision: owner, 2026-11-22 (tracking every id a plugin read costs extra bookkeeping
+  for a rare write).
 - The completion wait estimates quiet from in-flight plugin work, so a plugin waiting on its own timer can read as
   quiet. Busy work in another chat by an opted-in plugin delays the notification until it goes quiet or the time limit
   passes. See the [decision in the archive](../archived-plan/README.md) at `41d8239df`.

@@ -144,6 +144,13 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   chat list, folders, filtering, and actions such as `reorderActiveChats` on a drop. A row's own buttons stop their
   click, so only the row itself opens its chat; the options' copy and settings-only copy
   ([fields](persistence.md#chat-fields)) select the new chat without opening it.
+- The Trash button shows the character's trashed chat count when nonzero. Trash hides New Chat and shows newest-first
+  rows with name, existing folder, trash time, and days left from [retention](settings-i18n.md#pages). Search filters by
+  name and the rows cannot open chats. See the `SideChatList.svelte` header for drag and view lifetime.
+- Restore asks no confirmation. Delete forever and Empty trash ask once. Empty trash freezes every trashed chat of the
+  character regardless of the filter with its [trash token](chat-store.md#chat-trash) and reports failures together.
+  Folder deletion clears `folderId` only on active chats. Trash closes an open `ChatCheckpointsDialog.svelte` with a
+  notice, and its load and delete handlers recheck the target at dispatch.
 - `src/lib/SideBars/PinnedChatsRail.svelte` and `src/lib/SideBars/pinnedChats.ts` share the pinned-chat projection with
   home cards (`openPinnedChat`).
 - The sidebar's chat tab switches from `SideChatList` to `src/lib/SideBars/OpenChatPanel.svelte` when
@@ -305,7 +312,7 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   before it copies; an earlier, finished row can still branch.
 - While the chat is busy, the reroll arrows of every row, the side menu's Continue and Reroll, and checkpoint Save and
   Load are disabled, and Enter in the draft box does what its disabled Send Draft button does. The handlers keep their
-  checks: the Ctrl+M hotkey and chat deletion alert `chatGenerating`.
+  checks. Ctrl+M and the move-to-trash action show `chatGenerating` when blocked.
 - `Chat.svelte` `isInteractiveBodyTarget` excludes an entire `form[risu-form]` from click-to-edit, but plain form text
   still opens message editing when `clickToEdit` is enabled; preserve that distinction when changing the selector.
 - HTML boundaries:
