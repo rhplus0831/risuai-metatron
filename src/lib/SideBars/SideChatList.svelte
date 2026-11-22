@@ -12,12 +12,15 @@
         MenuIcon,
         TrashIcon,
         SplitIcon,
+        FolderIcon,
         FolderPlusIcon,
         BookmarkCheckIcon,
         CircleAlertIcon,
         TextSearchIcon,
+        ArrowLeftIcon,
     } from "@lucide/svelte";
 
+    import { normalizeChatTrashDays } from "../../../shared/database.ts";
     import type { Chat, ChatFolder, character, DeepReadonly, groupChat } from "src/ts/storage/database.svelte";
     import { chatBindingDialog, ReloadGUIPointer } from "src/ts/stores.svelte";
     import { chatBinding, initialChatBinding } from "src/ts/storage/chatBinding.svelte";
@@ -29,15 +32,17 @@
     import TextInput from "../UI/GUI/TextInput.svelte";
 
     import { exportChat, importChat, exportAllChats } from "src/ts/characters";
-    import { alertChatOptions, alertConfirm, alertSelect, alertStore } from "src/ts/alert";
+    import { alertChatOptions, alertConfirm, alertError, alertSelect, alertStore } from "src/ts/alert";
     import { findCharacterbyId, sleep, sortableOptions } from "src/ts/util";
     import { bookmarkListOpen } from "src/ts/stores.svelte";
     import { language } from "src/lang";
-    import { confirmTrashChat } from "src/ts/checkpoints/chatTrash";
+    import { confirmTrashChat, deleteChatForever, restoreChat } from "src/ts/checkpoints/chatTrash";
     import { changeChatTo, createChatCopyName } from "src/ts/globalApi.svelte";
     import {
         isActiveChat,
         activeChatList,
+        trashedChatList,
+        chatTrashRevision,
         type ChatListEntry,
         createChat,
         ensureChatLoaded,
@@ -47,6 +52,7 @@
         setChatMeta,
     } from "src/ts/storage/chatStore.svelte";
     import { chatSettingsCopy } from "src/ts/storage/chatSettingsCopy";
+    import { settings } from "src/ts/storage/settingsViews.svelte";
     import { chatFolderOf } from "./chatFolders";
     import { matchesAny, prepareQuery } from "src/ts/util/koreanSearch";
     import { openMessageSearch } from "src/ts/messageSearch.svelte";
@@ -54,9 +60,9 @@
     import { createInheritingChat } from "src/ts/process/chatMemoryInherit.svelte";
 
     /**
-     * A character's chat list, its chat folders, and the chat actions.
+     * A character's chat list, its chat folders, and its trash view.
      *
-     * - A row action captures the row's chat ref before its first dialog and resolves it again afterward
+     * - An active row action captures the row's chat ref before its first dialog and resolves it again afterward
      *   (`isActiveChat`), never the selection, so a selection change or a reorder meanwhile cannot
      *   redirect it.
      * - Chat structure (create, delete, rename, folder, order) goes through the chat module
@@ -65,10 +71,13 @@
      *   opens its chat while the importing character is still selected and a JSON or HTML import only adds entries.
      * - A chat whose `folderId` names no folder lists at the root and keeps the id (`chatFolderOf`). A drop writes a
      *   complete chat order while preserving the slots of unlisted rows.
-     * - The filter is Korean-aware (`prepareQuery`, `matchesAny` of `src/ts/util/koreanSearch.ts`, which the character
-     *   catalog also uses). It hides rows without unmounting them, so SortableJS keeps its containers and the drop
-     *   handlers their indexes, turns sorting off while a query is set, and shows matching folders open without
-     *   writing `folded`.
+     * - The Korean-aware filter (`prepareQuery`, `matchesAny`) matches active rows by chat or folder name and trash
+     *   rows by chat name. Filtering hides active rows in place and shows matching folders open without writing
+     *   `folded`. The trash view hides the active list in place. SortableJS keeps its containers and indexes, and
+     *   sorting is disabled while the list is filtered or hidden.
+     * - Trash rows never select or open a chat. Trash actions capture the character, chat, and trash revision
+     *   before any dialog or await. Empty trash captures every trashed chat of the character when pressed.
+     *   Switching characters resets the view and filter.
      */
 
     /** Sets a chat's folder (null or undefined: no folder) through the chat module. */
@@ -87,20 +96,67 @@
 
     let { chara = $bindable() }: Props = $props();
     let editMode = $state(false);
+    let showTrash = $state(false);
+    // A refresh can replace the same character's record. Reset the view only when its id changes.
+    const characterId = $derived(chara.chaId);
     /** The character's chats as list entries (the chat module's; never whole chats). */
-    const chats = $derived(activeChatList(chara.chaId));
-    const selectedId = $derived(selectedChatId(chara.chaId));
+    const chats = $derived(activeChatList(characterId));
+    const selectedId = $derived(selectedChatId(characterId));
+    const trashedChats = $derived(trashedChatList(characterId).sort((a, b) => b.trashedAt - a.trashedAt));
+    const retentionDays = $derived(normalizeChatTrashDays(settings.ui.chatTrashDays));
 
-    /** The filter field's text; it resets when the character changes. */
     let filterText = $state("");
     const filterQuery = $derived(prepareQuery(filterText));
-    // The id as its own derived value: a refresh of the same character replaces the record and
-    // would rerun an effect that read `chara.chaId` directly.
-    const filterOwner = $derived(chara.chaId);
+    const listedTrash = $derived(
+        filterQuery === null ? trashedChats : trashedChats.filter((chat) => matchesAny([chat.name], filterQuery)),
+    );
+    const sortingDisabled = $derived(showTrash || filterQuery !== null);
     $effect.pre(() => {
-        void filterOwner;
-        untrack(() => (filterText = ""));
+        void characterId;
+        untrack(() => {
+            filterText = "";
+            showTrash = false;
+        });
     });
+
+    const DAY_MS = 86_400_000;
+    let now = $state(Date.now());
+    $effect(() => {
+        if (!showTrash) return;
+        now = Date.now();
+        const timer = setInterval(() => (now = Date.now()), 60_000);
+        return () => clearInterval(timer);
+    });
+
+    function restoreTrashedChat(chatId: string) {
+        const ref = { chaId: characterId, chatId };
+        const revision = chatTrashRevision(ref);
+        return restoreChat(ref, revision);
+    }
+
+    async function permanentlyDeleteChat(chat: ChatListEntry) {
+        const ref = { chaId: characterId, chatId: chat.id };
+        const revision = chatTrashRevision(ref);
+        if (await alertConfirm(language.chatTrash.confirmDeleteForever(chat.name))) {
+            await deleteChatForever(ref, revision);
+        }
+    }
+
+    async function emptyTrash() {
+        const chaId = characterId;
+        const targets = trashedChats.map((chat) => {
+            const ref = { chaId, chatId: chat.id };
+            return { ref, name: chat.name, revision: chatTrashRevision(ref) };
+        });
+        if (targets.length === 0 || !(await alertConfirm(language.chatTrash.confirmEmptyTrash(targets.length)))) return;
+
+        const failed: string[] = [];
+        for (const { ref, name, revision } of targets) {
+            if (!(await deleteChatForever(ref, revision))) failed.push(name);
+        }
+        // The client queues its own errors. Queue the combined summary after all of them.
+        if (failed.length > 0) alertError(language.chatTrash.emptyTrashFailed(failed));
+    }
 
     /** Whether a chat shows under the filter: its name or its folder's name matches (all chats without a query). */
     function chatShown(chat: ChatListEntry): boolean {
@@ -212,8 +268,7 @@
         if (!listEle || !folderEles) {
             return;
         }
-        // A filtered view hides rows, so no drag may reorder it (the effect below toggles it later).
-        const disabled = filterQuery !== null;
+        const disabled = sortingDisabled;
         for (let chat of listEle.querySelectorAll(".risu-chat")) {
             chatsStb.push(
                 new Sortable(chat, {
@@ -308,7 +363,7 @@
     });
 
     $effect(() => {
-        const disabled = filterQuery !== null;
+        const disabled = sortingDisabled;
         for (const stb of [...chatsStb, folderStb]) {
             stb?.option("disabled", disabled);
         }
@@ -318,35 +373,39 @@
 </script>
 
 <div class="flex flex-col w-full h-[calc(100%-2rem)] max-h-[calc(100%-2rem)]">
-    <Button
-        className="relative bottom-2"
-        onclick={() => {
-            const cha = chara;
-            const len = chats.length;
-            const newChat: Chat = {
-                // Read before the chat is created: it becomes the selected chat.
-                ...initialChatBinding(cha.chaId),
-                ...initialChatMemory(cha.chaId),
-                ...initialChatTranslation(cha.chaId),
-                ...initialChatToggles(cha.chaId),
-                message: openingMessages(cha),
-                note: "",
-                name: `New Chat ${len + 1}`,
-                localLore: [],
-                fmIndex: -1,
-                id: v4(),
-            };
-            createChat(cha.chaId, newChat, { index: 0, select: true });
-            changeChatTo(0);
-            $ReloadGUIPointer += 1;
-        }}>{language.newChat}</Button
-    >
+    {#if !showTrash}
+        <Button
+            className="relative bottom-2"
+            onclick={() => {
+                const cha = chara;
+                const len = chats.length;
+                const newChat: Chat = {
+                    // Read before the chat is created: it becomes the selected chat.
+                    ...initialChatBinding(cha.chaId),
+                    ...initialChatMemory(cha.chaId),
+                    ...initialChatTranslation(cha.chaId),
+                    ...initialChatToggles(cha.chaId),
+                    message: openingMessages(cha),
+                    note: "",
+                    name: `New Chat ${len + 1}`,
+                    localLore: [],
+                    fmIndex: -1,
+                    id: v4(),
+                };
+                createChat(cha.chaId, newChat, { index: 0, select: true });
+                changeChatTo(0);
+                $ReloadGUIPointer += 1;
+            }}>{language.newChat}</Button
+        >
+    {/if}
     <TextInput placeholder={language.search} bind:value={filterText} size="sm" fullwidth={true} />
 
     {#key sorted}
         <!-- Stretched over the sidebar's side padding so the scrollbar sits at the sidebar's edge. -->
         <div
-            class="flex flex-col mt-2 overflow-y-auto grow -mr-(--sidebar-gutter) pr-(--sidebar-gutter)"
+            class="flex-col mt-2 overflow-y-auto grow -mr-(--sidebar-gutter) pr-(--sidebar-gutter)"
+            class:flex={!showTrash}
+            class:hidden={showTrash}
             bind:this={listEle}
         >
             <!-- folder div -->
@@ -731,6 +790,66 @@
         </div>
     {/key}
 
+    {#if showTrash}
+        <div class="flex flex-col gap-2 mt-2 overflow-y-auto grow -mr-(--sidebar-gutter) pr-(--sidebar-gutter)">
+            <div class="flex items-center gap-2">
+                <button
+                    type="button"
+                    class="p-2 rounded-md text-textcolor2 hover:bg-selected hover:text-textcolor cursor-pointer"
+                    title={language.goback}
+                    aria-label={language.goback}
+                    onclick={() => (showTrash = false)}
+                >
+                    <ArrowLeftIcon size={18} aria-hidden="true" />
+                </button>
+                <h2 class="text-lg font-semibold text-textcolor">{language.chatTrash.title(trashedChats.length)}</h2>
+            </div>
+            <p class="text-sm text-textcolor2">{language.chatTrash.retention(retentionDays)}</p>
+            <ul class="flex flex-col gap-2">
+                {#each listedTrash as chat (chat.id)}
+                    {@const folder = chatFolderOf(chat, chara.chatFolders)}
+                    {@const trashedAt = new Date(chat.trashedAt)}
+                    {@const daysLeft = Math.max(0, Math.ceil((chat.trashedAt + retentionDays * DAY_MS - now) / DAY_MS))}
+                    <li class="flex flex-col gap-1 p-2 rounded-md border border-darkborderc text-textcolor">
+                        <div class="break-any">{chat.name}</div>
+                        {#if folder}
+                            <div class="flex items-center gap-1 text-sm text-textcolor2">
+                                <FolderIcon size={14} class="shrink-0" aria-hidden="true" />
+                                <span class="break-any">{folder.name}</span>
+                            </div>
+                        {/if}
+                        <time class="text-sm text-textcolor2" datetime={trashedAt.toISOString()}>
+                            {trashedAt.toLocaleString()}
+                        </time>
+                        <span class="text-sm text-textcolor2">{language.chatTrash.daysLeft(daysLeft)}</span>
+                        <div class="flex flex-wrap gap-2 mt-1">
+                            <Button styled="outlined" size="sm" onclick={() => restoreTrashedChat(chat.id)}>
+                                {language.chatTrash.restore}
+                            </Button>
+                            <Button
+                                styled="outlined"
+                                size="sm"
+                                className="hover:text-danger-500"
+                                onclick={() => permanentlyDeleteChat(chat)}
+                            >
+                                {language.chatTrash.deleteForever}
+                            </Button>
+                        </div>
+                    </li>
+                {/each}
+            </ul>
+            <Button
+                styled="outlined"
+                size="sm"
+                className="mt-auto self-start enabled:hover:text-danger-500"
+                disabled={trashedChats.length === 0}
+                onclick={emptyTrash}
+            >
+                {language.chatTrash.emptyTrash}
+            </Button>
+        </div>
+    {/if}
+
     <div class="border-t border-selected mt-2">
         <div class="flex mt-2 ml-2 items-center">
             <button
@@ -787,6 +906,18 @@
                 }}
             >
                 <TextSearchIcon size={18} />
+            </button>
+            <button
+                type="button"
+                class="flex items-center gap-1 text-textcolor2 hover:text-textcolor mr-2 cursor-pointer"
+                title={language.chatTrash.open}
+                aria-label={language.chatTrash.open}
+                onclick={() => (showTrash = true)}
+            >
+                <TrashIcon size={18} aria-hidden="true" />
+                {#if trashedChats.length > 0}
+                    <span class="rounded-full bg-selected px-1 text-xs text-textcolor">{trashedChats.length}</span>
+                {/if}
             </button>
             <button
                 class="ml-auto text-textcolor2 hover:text-green-500 mr-2 cursor-pointer"

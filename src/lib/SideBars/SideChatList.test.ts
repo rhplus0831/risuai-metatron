@@ -75,7 +75,8 @@ vi.mock("src/ts/globalApi.svelte", async () =>
 
 import { normalizeModelPreset, normalizeModelProfile } from "../../../shared/presets.ts";
 import { language } from "src/lang";
-import { alertChatOptions, alertConfirm, alertSelect } from "src/ts/alert";
+import { alertChatOptions, alertConfirm, alertError, alertSelect } from "src/ts/alert";
+import * as chatTrash from "src/ts/checkpoints/chatTrash";
 import { changeChatTo } from "src/ts/globalApi.svelte";
 import { chatBinding } from "src/ts/storage/chatBinding.svelte";
 import { characterList } from "src/ts/storage/characterStore.svelte";
@@ -87,12 +88,19 @@ import {
     chatEntry,
     chatList,
     findChat,
+    installChatTrashState,
     seedChats,
     selectChat,
     selectedChatId,
     setChatMeta,
 } from "src/ts/storage/chatStore.svelte";
-import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
+import {
+    selectCharacter,
+    selectModelPreset,
+    selection,
+    selectPersona,
+    selectPreset,
+} from "src/ts/storage/selection.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { getResourceEpoch, setResourceEpoch } from "src/ts/storage/resourceClient";
@@ -1008,6 +1016,13 @@ describe("trash actions in the chat lists", () => {
     let server: StoreBackedServer;
     let previousEpoch: string;
     const ref = { chaId: "c", chatId: "target" };
+
+    function loadServerChats(...characterIds: string[]) {
+        const read = server.store.readKinds([], { chats: true });
+        seedChats(read.chats!, read.chatOrders!);
+        assembleChats(characterIds.map(byChaId), read.chats!, read.chatOrders!);
+    }
+
     beforeAll(() => StoreBackedServer.preload());
     beforeEach(async () => {
         vi.useFakeTimers();
@@ -1023,9 +1038,7 @@ describe("trash actions in the chat lists", () => {
                 ops: [{ op: "create", chat: chat(id) }],
             })),
         });
-        const read = server.store.readKinds([], { chats: true });
-        seedChats(read.chats!, read.chatOrders!);
-        assembleChats([byChaId("c")], read.chats!, read.chatOrders!);
+        loadServerChats("c");
         vi.spyOn(serverAuth, "authFetch").mockImplementation((path, init, options) => {
             options?.beforeDispatch?.();
             return server.fetch(path, init);
@@ -1080,7 +1093,6 @@ describe("trash actions in the chat lists", () => {
     it("keeps the hidden row in its slot on drop and preserves its folder when deleting the folder", async () => {
         byChaId("c").chatFolders = [{ id: "f", name: "Folder", folded: false }];
         setChatMeta(ref, { folderId: "f" });
-        const { installChatTrashState } = await import("src/ts/storage/chatStore.svelte");
         installChatTrashState(ref, server.chat("c", "target")!.revision, 5);
         const { target } = renderSide("c");
         const rows = [...target.querySelectorAll<HTMLElement>("[data-risu-chat-id]")];
@@ -1096,5 +1108,240 @@ describe("trash actions in the chat lists", () => {
         await vi.advanceTimersByTimeAsync(0);
         expect(byChaId("c").chatFolders).toEqual([]);
         expect(chatEntry(ref)?.folderId).toBe("f");
+    });
+
+    describe("the sidebar trash view", () => {
+        const now = Date.UTC(2026, 0, 10, 12);
+        const button = (scope: ParentNode, name: string) =>
+            [...scope.querySelectorAll("button")].find(
+                (entry) => (entry.getAttribute("aria-label") ?? entry.textContent?.trim()) === name,
+            );
+        const rows = (target: HTMLElement) => [...target.querySelectorAll("li")];
+        const rowNamed = (target: HTMLElement, name: string) =>
+            rows(target).find((row) => row.textContent?.includes(name))!;
+        const search = (target: HTMLElement) => target.querySelector<HTMLInputElement>('input[placeholder="Search"]')!;
+        const filter = (target: HTMLElement, text: string) => {
+            const input = search(target);
+            input.value = text;
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+            flushSync();
+        };
+
+        function changeTrashRemotely(action: "trash" | "restore", chatId: string, chaId = "c") {
+            const revision = server.chat(chaId, chatId)!.revision;
+            const answer = server.store.changeChatTrash(
+                action,
+                { characterId: chaId, chatId, revision },
+                server.store.epoch(),
+                server.chatHeld,
+            );
+            if ("error" in answer) throw new Error(`Remote ${action} of ${chatId} failed: ${answer.error}`);
+            installChatTrashState({ chaId, chatId }, answer.revision, answer.trashedAt);
+            return answer.revision;
+        }
+
+        function openTrash(target: HTMLElement) {
+            button(target, "Trash")!.click();
+            flushSync();
+        }
+
+        const trashCount = (target: HTMLElement) => button(target, "Trash")!.textContent?.match(/\d+/)?.[0];
+
+        function pressWithDeferredConfirmation(control: HTMLButtonElement) {
+            let answer!: (confirmed: boolean) => void;
+            const pending = new Promise<boolean>((resolve) => (answer = resolve));
+            vi.mocked(alertConfirm).mockClear().mockReturnValueOnce(pending);
+            control.click();
+            return answer;
+        }
+
+        const deleteRequests = () =>
+            server.requests
+                .filter((request) => request.path === "/api/chat-trash/delete")
+                .map((request) => request.body);
+        const deleteBody = (chatId: string, revision: string) => ({ characterId: "c", chatId, revision });
+
+        beforeEach(() => {
+            vi.setSystemTime(now);
+        });
+
+        it("shows the character's trash count and swaps between the chat list and filterable trash rows", () => {
+            server.set("characters", "g", { chaId: "g", name: "G" });
+            server.store.applyChanges({
+                chats: ["gk", "g-trash"].map((chatId) => ({
+                    characterId: "g",
+                    chatId,
+                    baseRevision: null,
+                    ops: [{ op: "create", chat: chat(chatId) }],
+                })),
+            });
+            loadServerChats("c", "g");
+            changeTrashRemotely("trash", "g-trash", "g");
+            selectCharacter("c");
+            selectChat("c", "after");
+            settings.ui.chatTrashDays = 21;
+            byChaId("c").chatFolders = [{ id: "harbor", name: "Harbor", folded: false }];
+            setChatMeta(ref, { folderId: "harbor" });
+            setChatMeta({ chaId: "c", chatId: "before" }, { folderId: "Deleted folder" });
+
+            const { target } = renderSide("c");
+            const visibleActiveChat = () =>
+                [...target.querySelectorAll<HTMLElement>('[data-risu-chat-id="after"]')].some(
+                    (row) => !row.closest(".hidden, [hidden]"),
+                );
+            expect(trashCount(target)).toBeUndefined();
+            expect(button(target, "New Chat")).toBeDefined();
+            expect(visibleActiveChat()).toBe(true);
+            openTrash(target);
+            expect(target.querySelector("h2")?.textContent).toBe("Trash (0)");
+            expect(button(target, "Empty trash")?.disabled).toBe(true);
+            expect(button(target, "New Chat")).toBeUndefined();
+            expect(visibleActiveChat()).toBe(false);
+            expect(search(target)).not.toBeNull();
+
+            vi.setSystemTime(new Date("2026-01-07T12:00:00.000Z"));
+            changeTrashRemotely("trash", "before");
+            vi.setSystemTime(new Date("2026-01-09T12:00:00.000Z"));
+            changeTrashRemotely("trash", "target");
+            vi.setSystemTime(now);
+            flushSync();
+
+            expect(trashCount(target)).toBe("2");
+            expect(target.querySelector("h2")?.textContent).toBe("Trash (2)");
+            expect(target.textContent).toContain("Chats in the trash are deleted forever after 21 days");
+            expect(button(target, "Empty trash")?.disabled).toBe(false);
+            expect(rows(target).map((row) => row.querySelector("time")?.dateTime)).toEqual([
+                "2026-01-09T12:00:00.000Z",
+                "2026-01-07T12:00:00.000Z",
+            ]);
+            expect(rows(target).every((row) => row.querySelector("time")?.textContent?.trim())).toBe(true);
+            const [newest, oldest] = rows(target);
+            expect(newest.textContent).toContain("Chat TARGET");
+            expect(newest.textContent).toContain("Harbor");
+            expect(newest.textContent).toContain("20 days left");
+            expect(oldest.textContent).toContain("Chat BEFORE");
+            expect(oldest.textContent).not.toContain("Deleted folder");
+            expect(oldest.textContent).toContain("18 days left");
+
+            filter(target, "harbor");
+            expect(rows(target)).toHaveLength(0);
+            filter(target, "target");
+            expect(rows(target)).toHaveLength(1);
+            const matching = rowNamed(target, "Chat TARGET");
+            vi.mocked(changeChatTo).mockClear();
+            matching.click();
+            flushSync();
+            expect(changeChatTo).not.toHaveBeenCalled();
+            expect(selectedChatId("c")).toBe("after");
+            expect(selection.chatOpen).toBe(false);
+
+            filter(target, "");
+            button(target, "Go Back")!.click();
+            flushSync();
+            expect(target.querySelector("h2")).toBeNull();
+            expect(rows(target)).toHaveLength(0);
+            expect(button(target, "New Chat")).toBeDefined();
+            expect(visibleActiveChat()).toBe(true);
+        });
+
+        it("calls Restore immediately with the chat's revision and asks for no confirmation", async () => {
+            const revision = changeTrashRemotely("trash", "target");
+            const restore = vi.spyOn(chatTrash, "restoreChat");
+            const { target } = renderSide("c");
+            openTrash(target);
+
+            button(rowNamed(target, "Chat TARGET"), "Restore")!.click();
+            expect(restore).toHaveBeenCalledExactlyOnceWith(ref, revision);
+            expect(alertConfirm).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(0);
+            flushSync();
+
+            expect(trashCount(target)).toBeUndefined();
+            expect(rows(target)).toHaveLength(0);
+            expect(alertConfirm).not.toHaveBeenCalled();
+        });
+
+        it("sends Delete forever only after Yes with the revision from before the confirmation", async () => {
+            const revision = changeTrashRemotely("trash", "target");
+            const { target } = renderSide("c");
+            openTrash(target);
+            const remove = () => button(rowNamed(target, "Chat TARGET"), "Delete forever")!;
+            const question = 'Delete "Chat TARGET" forever? This cannot be undone.';
+
+            pressWithDeferredConfirmation(remove())(false);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(alertConfirm).toHaveBeenCalledExactlyOnceWith(question);
+            expect(deleteRequests()).toEqual([]);
+
+            const answer = pressWithDeferredConfirmation(remove());
+            await vi.advanceTimersByTimeAsync(0);
+            expect(alertConfirm).toHaveBeenCalledExactlyOnceWith(question);
+            expect(deleteRequests()).toEqual([]);
+            changeTrashRemotely("restore", "target");
+            const newerRevision = changeTrashRemotely("trash", "target");
+            flushSync();
+
+            answer(true);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(alertConfirm).toHaveBeenCalledExactlyOnceWith(question);
+            expect(deleteRequests()).toEqual([deleteBody("target", revision)]);
+            expect(server.chat("c", "target")).toMatchObject({ revision: newerRevision, trashedAt: now });
+        });
+
+        it("empties the trash captured at press time after one Yes and reports failed chats together", async () => {
+            server.store.applyChanges({
+                chats: [
+                    {
+                        characterId: "c",
+                        chatId: "late",
+                        baseRevision: null,
+                        ops: [{ op: "create", chat: chat("late") }],
+                    },
+                ],
+            });
+            loadServerChats("c");
+            const initialIds = ["before", "target", "after"];
+            const captured = initialIds.map((id) => deleteBody(id, changeTrashRemotely("trash", id)));
+            const { target } = renderSide("c");
+            openTrash(target);
+            filter(target, "target");
+            const emptyTrash = button(target, "Empty trash")!;
+            const question = "Delete the 3 chats in the trash forever? This cannot be undone.";
+            vi.mocked(alertError).mockClear();
+
+            pressWithDeferredConfirmation(emptyTrash)(false);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(alertConfirm).toHaveBeenCalledExactlyOnceWith(question);
+            expect(deleteRequests()).toEqual([]);
+
+            const answer = pressWithDeferredConfirmation(emptyTrash);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(alertConfirm).toHaveBeenCalledExactlyOnceWith(question);
+            expect(deleteRequests()).toEqual([]);
+            changeTrashRemotely("restore", "target");
+            const newerRevision = changeTrashRemotely("trash", "target");
+            changeTrashRemotely("restore", "before");
+            const lateRevision = changeTrashRemotely("trash", "late");
+            flushSync();
+
+            answer(true);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(alertConfirm).toHaveBeenCalledExactlyOnceWith(question);
+            expect(deleteRequests()).toHaveLength(3);
+            expect(deleteRequests()).toEqual(expect.arrayContaining(captured));
+            expect(server.chat("c", "after")).toBeNull();
+            expect(server.chat("c", "before")).not.toBeNull();
+            expect(server.chat("c", "target")).toMatchObject({ revision: newerRevision, trashedAt: now });
+            expect(server.chat("c", "late")).toMatchObject({ revision: lateRevision, trashedAt: now });
+            // The client reports conflicts. The sidebar names the failed chats in one notice.
+            const namedNotices = vi
+                .mocked(alertError)
+                .mock.calls.map(([message]) => message)
+                .filter((message) => typeof message === "string" && /Chat (BEFORE|TARGET|AFTER|LATE)/.test(message));
+            expect(namedNotices).toHaveLength(1);
+            expect(namedNotices[0]).toContain("Chat BEFORE");
+            expect(namedNotices[0]).toContain("Chat TARGET");
+            expect(namedNotices[0]).not.toMatch(/Chat (AFTER|LATE)/);
+        });
     });
 });

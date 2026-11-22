@@ -1938,7 +1938,19 @@ export const languageEnglish = {
     resourceRestored: "The server data was restored from a backup. The app will reload.",
     characterGenerating: "This character is generating a reply. Wait until it finishes.",
     chatTrash: {
+        open: "Trash",
+        title: (count: number) => `Trash (${count})`,
+        retention: (days: number) =>
+            `Chats in the trash are deleted forever after ${days} ${days === 1 ? "day" : "days"}`,
+        daysLeft: (days: number) => `${days} ${days === 1 ? "day" : "days"} left`,
+        restore: "Restore",
+        deleteForever: "Delete forever",
+        emptyTrash: "Empty trash",
         confirm: (name: string) => `Move "${name}" to the trash?`,
+        confirmDeleteForever: (name: string) => `Delete "${name}" forever? This cannot be undone.`,
+        confirmEmptyTrash: (count: number) => `Delete the ${count} chats in the trash forever? This cannot be undone.`,
+        emptyTrashFailed: (names: string[]) =>
+            `Could not permanently delete the following chats.\n\n${names.map((name) => `"${name}"`).join("\n")}`,
         saving: "This chat is still saving. Try again when it finishes.",
         changed: "The chat changed. Check its current state and try again.",
         unknown: "The server may have applied the request. Check the chat before trying again.",

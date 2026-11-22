@@ -1300,7 +1300,19 @@ export const languageKorean = {
         saveSignatures: "Gemini 추론 서명 저장",
     },
     chatTrash: {
+        open: "휴지통",
+        title: (count: number) => `휴지통 (${count})`,
+        retention: (days: number) => `휴지통의 채팅은 ${days}일이 지나면 영구 삭제됩니다.`,
+        daysLeft: (days: number) => `${days}일 남음`,
+        restore: "복원",
+        deleteForever: "영구 삭제",
+        emptyTrash: "휴지통 비우기",
         confirm: (name: string) => `"${name}" 채팅을 휴지통으로 이동할까요?`,
+        confirmDeleteForever: (name: string) => `"${name}" 채팅을 영구 삭제할까요? 이 작업은 되돌릴 수 없습니다.`,
+        confirmEmptyTrash: (count: number) =>
+            `휴지통의 채팅 ${count}개를 영구 삭제할까요? 이 작업은 되돌릴 수 없습니다.`,
+        emptyTrashFailed: (names: string[]) =>
+            `다음 채팅을 영구 삭제하지 못했습니다.\n\n${names.map((name) => `"${name}"`).join("\n")}`,
         saving: "채팅을 저장하고 있습니다. 저장이 끝나면 다시 시도하세요.",
         changed: "채팅이 변경되었습니다. 현재 상태를 확인하고 다시 시도하세요.",
         unknown: "요청이 처리되었는지 확인할 수 없습니다. 다시 시도하기 전에 채팅 상태를 확인하세요.",
