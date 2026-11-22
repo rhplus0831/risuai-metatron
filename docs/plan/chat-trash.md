@@ -2,7 +2,9 @@
 
 Status: drafted 2026-11-22 at `efba3bf17` from the owner's answers of 2026-11-22 on a chat trash in the desktop
 sidebar (Q1 to Q6). The owner answered Q7 to Q11 as proposed the same day; D1 to D14 are written to those answers.
-Not audited.
+Audited before its run at `2417475d6` ([report](../reports/audits/plan-runner/chat-trash-2026-11-22.md)): six P1
+findings (A1 to A6) and the P3 finding A8 are open, and the plan needs a revision and another audit before any slice.
+A7, A9, and A10 are fixed in the plan.
 
 Sources: `shared/chats.ts` (`ChatOp`, `CHAT_META_FORBIDDEN_KEYS`, `ChatSummary`), `server/src/data/chatStore.ts`
 (`summaryFields`, `chatSummary`, the op validation and apply branches, `deleteCharacter`), `server/src/data/chats.ts`
@@ -62,7 +64,8 @@ three-day boot purge (filed in the durable data loss audit); a trash for message
   (`isCharacterTrashExpired`, `maintainCharacters`), which the durable data loss audit found can purge a fresh trash.
   Its catalog view (`GridCatalog.svelte`) lists, restores, and deletes forever (asking twice), with no times shown.
 - The server already reads settings records (`app.ts` reads `providers`) and starts timers in
-  `startBackgroundTasks`; nothing there touches chat records.
+  `startBackgroundTasks`; the asset lifecycle tick there reads `chats.meta` and `messages.data` for asset roots, but no
+  timer deletes chat rows.
 
 ## Decisions
 
@@ -88,7 +91,8 @@ Written to the owner's answers, Q1 to Q11.
 - **D5. A trashed chat gets no new work.** The server refuses to create a generation job for a trashed chat (`409`,
   reason `chatTrashed`); `trash` calls the same invalidation as `delete`, so the chat's queued and running memory
   tasks are cancelled; `autoSave` skips a trashed chat; the message search (`server/src/routes/messageSearch.ts`)
-  leaves trashed chats out of both the character and all-character scopes.
+  leaves trashed chats out of every scope it takes (one chat, one character, all characters), on the first page and
+  when a cursor resumes.
 - **D6. What a trashed chat keeps.** Its row, messages, order position, folder, pin, Structured Memory rows,
   checkpoints, and assets stay as they are (the asset scan already reads `chats.meta` and `messages.data`), so a
   restore is exact. A chat restored after its folder was removed lists at the root (`chatFolderOf`'s rule).
@@ -193,7 +197,9 @@ Order: 1, then 2 and 3 side by side (disjoint files), then 4 after 3, then 5.
   `trash`, the `notTrashed` refusal of `delete`, the invalidation call (D1 to D5).
 - `server/src/jobs/generationJobs.ts` (or the create route): the `chatTrashed` refusal (D5).
 - `server/src/data/checkpointService.ts`: `autoSave` skips a trashed chat (D5).
-- `server/src/routes/messageSearch.ts` and its query: trashed chats left out (D5).
+- `server/src/routes/messageSearch.ts`, the scope resolution in `server/src/data/resourceStore.ts`, and the chat search
+  queries in `server/src/data/chatStore.ts`: trashed chats left out of the chat, character, and global scopes and of
+  cursor resumption (D5).
 - `server/src/routes/backups.ts` and `server/src/data/resourceStore.ts`: the restore-time reset (D7);
   `server/src/data/upstream/exportDatabase.ts`: trashed chats left out (D7).
 - Tests (`server/src/tests/chatStore.test.ts`, `server/src/tests/messageSearch.test.ts`, the checkpoint, backup,
@@ -201,8 +207,9 @@ Order: 1, then 2 and 3 side by side (disjoint files), then 4 after 3, then 5.
   `trashedAt`, a `replace` without it, and a `create` with it leave the mark as the rule says; trash on an older
   revision applies; trash while a foreign job holds the chat is `409 generating`; `delete` on an untrashed chat is
   `409 notTrashed` and deletes on a trashed one; a job for a trashed chat is refused; memory tasks are cancelled; a
-  trashed chat is absent from search hits and gets no automatic checkpoint; the summary carries the mark; a restore
-  resets it; the upstream export omits the chat.
+  trashed chat is absent from search hits in each scope, a direct chat-scope request included, and a continuation
+  returns nothing more from a chat trashed between pages; a trashed chat gets no automatic checkpoint; the summary
+  carries the mark; a restore resets it; the upstream export omits the chat.
 
 ### 2. The retention setting and the purge (_small_)
 
@@ -241,8 +248,8 @@ Depends on 3; reads `chatTrashDays` from 2 (falls back to 30 until 2 lands).
   moved to `trashChat` (D14).
 - `src/lang/en.ts`, `src/lang/ko.ts`: the strings.
 - Tests (`src/lib/SideBars/SideChatList.test.ts`): the count shows and hides; the view swaps in and out; a delete asks
-  the move-to-trash text and trashes on Yes only; restore, delete forever, and empty trash call the store after their
-  confirmations; the filter narrows trash rows; a trash row does not open the chat.
+  the move-to-trash text and trashes on Yes only; restore calls the store at once; a move to trash, delete forever, and
+  empty trash each call it only after one Yes; the filter narrows trash rows; a trash row does not open the chat.
 
 ### 5. Guides and close-out (_small_)
 
