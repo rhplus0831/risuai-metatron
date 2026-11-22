@@ -58,18 +58,19 @@ frame (`server/src/jobs/generationJobs.ts:1064`).
   for a trashed chat, carry the intent through retry, journal recovery, and purge, and keep hidden members in same-id
   recreation.
 - **A3. D1, "Each op is its group's only op"; D12, `trashChat` "sets `trashedAt` optimistically (the server's value
-  replaces it), queues `trash`."** The per-chat queue sends its array as one group (`src/ts/storage/chatStore.svelte.ts:1791`,
-  `:5912`), so edit then trash makes an invalid mixed group; a pending create sends a whole snapshot (`:5882`), so
-  create then trash loses the trash; trash then Delete forever before the ack replaces the trash (`:3609`); a refusal
-  retry can turn intent into a `replace` (`:5284`). The draft journal stores the op (`src/ts/storage/draftJournal.ts:125`),
-  but boot recovery whitelists op kinds and assumes a message id (`src/ts/storage/journalRecovery.ts:244`, `:435`,
-  `:498`, `:947`), so an unsaved restore could be stranded and the chat purged. An ack advances the revision without
-  installing metadata and the later echo is suppressed (`src/ts/storage/chatStore.svelte.ts:6200`, `:7342`, `:7245`),
-  so the tab can keep its own clock's value; `setChatMeta` cannot make the optimistic write (`:4480`, `:4555`).
-  Correction: ordered, separately journaled groups for edit, create, trash, restore, and permanent delete; explicit
-  recovery, Apply, and page-unload rules (`:3473`); a dedicated mirror transition; the ack returns the authoritative
-  mark (no-ops and remembered results included) or a revision-fenced refresh follows; keep the server's replay, epoch,
-  incarnation, and restore-floor checks (`server/src/data/chatStore.ts:2196`, `:2262`, `:2298`).
+  replaces it), queues `trash`."** The per-chat queue sends its array as one group
+  (`src/ts/storage/chatStore.svelte.ts:1791`, `:5912`), so edit then trash makes an invalid mixed group; a pending
+  create sends a whole snapshot (`:5882`), so create then trash loses the trash; trash then Delete forever before the
+  ack replaces the trash (`:3609`); a refusal retry can turn intent into a `replace` (`:5284`). The draft journal stores
+  the op (`src/ts/storage/draftJournal.ts:125`), but boot recovery whitelists op kinds and assumes a message id
+  (`src/ts/storage/journalRecovery.ts:244`, `:435`, `:498`, `:947`), so an unsaved restore could be stranded and the
+  chat purged. An ack advances the revision without installing metadata and the later echo is suppressed
+  (`src/ts/storage/chatStore.svelte.ts:6200`, `:7342`, `:7245`), so the tab can keep its own clock's value;
+  `setChatMeta` cannot make the optimistic write (`:4480`, `:4555`). Correction: ordered, separately journaled groups
+  for edit, create, trash, restore, and permanent delete; explicit recovery, Apply, and page-unload rules (`:3473`); a
+  dedicated mirror transition; the ack returns the authoritative mark (no-ops and remembered results included) or a
+  revision-fenced refresh follows; keep the server's replay, epoch, incarnation, and restore-floor checks
+  (`server/src/data/chatStore.ts:2196`, `:2262`, `:2298`).
 - **A4. D3, "`trash` takes the same whole-chat lock admission as `delete`"; D5, "A trashed chat gets no new work."**
   Delete's check asks whether a foreign job owns a message (`server/src/data/chatStore.ts:1921`), but a job occupies
   its chat slot before it owns one (`server/src/jobs/generationJobs.ts:2523`, `:1959`, `:3138`), and a preview may own
@@ -90,20 +91,20 @@ frame (`server/src/jobs/generationJobs.ts:1064`).
   rebuild resumable (`server/src/data/resourceStore.ts:1184`, `server/src/app.ts:626`,
   `server/src/prompt/memory/memoryTasks.ts:2006`); refuse new manual tasks while trashed; test paused rebuild, trash,
   restore, resume.
-- **A6. D10, "A reader missed shows a trashed chat; none loses one"; D13, "trashed chats are never touched."** A
-  plugin list read before another tab trashed a chat still matches by raw membership and `applyChatResult` can replace
-  or cut its transcript (`src/ts/storage/chatStore.svelte.ts:4889`, `:4765`); `setChatToIndex` captures its id before
-  its awaits (`src/ts/plugins/apiV3/v3.svelte.ts:3257`). An open checkpoint dialog can load a checkpoint over a trashed
-  chat or delete one (`src/lib/Others/ChatCheckpointsDialog.svelte:151`, `:175`, `:196`,
+- **A6. D10, "A reader missed shows a trashed chat; none loses one"; D13, "trashed chats are never touched."** A plugin
+  list read before another tab trashed a chat still matches by raw membership and `applyChatResult` can replace or cut
+  its transcript (`src/ts/storage/chatStore.svelte.ts:4889`, `:4765`); `setChatToIndex` captures its id before its
+  awaits (`src/ts/plugins/apiV3/v3.svelte.ts:3257`). An open checkpoint dialog can load a checkpoint over a trashed chat
+  or delete one (`src/lib/Others/ChatCheckpointsDialog.svelte:151`, `:175`, `:196`,
   `server/src/data/checkpointService.ts:254`, `:291`). Folder deletion walks raw `chatList`
   (`src/lib/SideBars/SideChatList.svelte:489`); an active-only drag order fails the permutation check, and appending the
-  hidden ids moves them to the end (`:264`, `src/ts/storage/chatStore.svelte.ts:4925`, `:3624`). Selection falls back
-  to the first raw id, `selectChat` returns silently, and loaded patches and summary installs do not call
-  `syncSelection` (`src/ts/storage/chatStore.svelte.ts:1391`, `:3677`, `:3169`, `:7297`, `src/ts/router/router.svelte.ts:281`,
+  hidden ids moves them to the end (`:264`, `src/ts/storage/chatStore.svelte.ts:4925`, `:3624`). Selection falls back to
+  the first raw id, `selectChat` returns silently, and loaded patches and summary installs do not call `syncSelection`
+  (`src/ts/storage/chatStore.svelte.ts:1391`, `:3677`, `:3169`, `:7297`, `src/ts/router/router.svelte.ts:281`,
   `src/ts/globalApi.svelte.ts:1534`); two tabs can trash the last two active chats, leaving none. Correction: check
-  active status by captured id at application for plugin writes and ignore trashed ids; guard destructive writes
-  against the stored mark; merge an active reorder into raw order keeping hidden slots; folder cleanup edits active
-  chats only; define the zero-active state (no selected chat, screen closed, the last trashed member still deletable).
+  active status by captured id at application for plugin writes and ignore trashed ids; guard destructive writes against
+  the stored mark; merge an active reorder into raw order keeping hidden slots; folder cleanup edits active chats only;
+  define the zero-active state (no selected chat, screen closed, the last trashed member still deletable).
 
 ## P2
 
@@ -125,19 +126,20 @@ frame (`server/src/jobs/generationJobs.ts:1064`).
   the summary needs `SUMMARY_PROJECTION_VERSION` and `CHAT_SUMMARY_FORMAT` advanced (`server/src/data/chatStore.ts:692`,
   `shared/chats.ts:210`) and slice 3 needs `metaOf`, summary installation, and the busy-load overlay
   (`src/ts/storage/chatStore.svelte.ts:1206`, `:8003`); slice 2 needs `Database.chatTrashDays`, a rendered Storage
-  section, and the upstream settings classification (`shared/database.ts:127`, `src/ts/setting/storageSettingsData.ts:61`,
-  `server/src/data/upstream/exportDatabase.ts:443`); slices 2, 3, and 4 all edit the locale files, and the sidebar
-  still calls `deleteChat` between 3 and 4 (`src/lib/SideBars/SideChatList.svelte:42`, `:629`, `:762`); slice 3 omits
-  the plugin database builder (`src/ts/storage/snapshots.svelte.ts:55`), the paged-read membership version
+  section, and the upstream settings classification (`shared/database.ts:127`,
+  `src/ts/setting/storageSettingsData.ts:61`, `server/src/data/upstream/exportDatabase.ts:443`); slices 2, 3, and 4 all
+  edit the locale files, and the sidebar still calls `deleteChat` between 3 and 4
+  (`src/lib/SideBars/SideChatList.svelte:42`, `:629`, `:762`); slice 3 omits the plugin database builder
+  (`src/ts/storage/snapshots.svelte.ts:55`), the paged-read membership version
   (`src/ts/plugins/apiV3/v3.svelte.ts:2960`, `src/ts/storage/chatStore.svelte.ts:1521`), the plugin declaration and
   guide (`src/ts/plugins/apiV3/risuai.d.ts:1394`, `plugins.md:963`), and the shared mock and fixtures
-  (`src/ts/storage/tests/chatStoreMock.ts:108`). **Open**: the drafted fix (serial order, the files above) was
-  disputed because it left the old `shared/chats.ts` bullet and omitted `journalRecovery.ts`, the summary overlay, and
-  the checkpoint-dialog guard, which belong to the A3 and A6 revisions. Astra's suggested wording: "Declare
-  `Chat.trashedAt` in `shared/database.ts` and the summary and wire changes in `shared/chats.ts`. Include
-  `src/ts/storage/journalRecovery.ts` in the same slice as the new op union." and, for slice 3, "Carry the mark
-  through `metaOf`, summary installation and the busy-load overlay in `chatStore.svelte.ts`, and include the
-  active-target guard in `src/lib/Others/ChatCheckpointsDialog.svelte`."
+  (`src/ts/storage/tests/chatStoreMock.ts:108`). **Open**: the drafted fix (serial order, the files above) was disputed
+  because it left the old `shared/chats.ts` bullet and omitted `journalRecovery.ts`, the summary overlay, and the
+  checkpoint-dialog guard, which belong to the A3 and A6 revisions. Astra's suggested wording: "Declare `Chat.trashedAt`
+  in `shared/database.ts` and the summary and wire changes in `shared/chats.ts`. Include
+  `src/ts/storage/journalRecovery.ts` in the same slice as the new op union." and, for slice 3, "Carry the mark through
+  `metaOf`, summary installation and the busy-load overlay in `chatStore.svelte.ts`, and include the active-target guard
+  in `src/lib/Others/ChatCheckpointsDialog.svelte`."
 - **A9. Slice 4 tests, "restore, delete forever, and empty trash call the store after their confirmations".** D14 has
   no restore confirmation (`src/ts/alert.ts:401`). **Fixed in plan** (confirmed). New: "restore calls the store at
   once; a move to trash, delete forever, and empty trash each call it only after one Yes".
@@ -176,3 +178,130 @@ scan's epoch and revision, re-checks mark, cutoff, and job ownership inside the 
 against maintenance, starts once, stops at `beginShutdown`, and drains before the store closes
 (`server/src/data/resourceStore.ts:1760`, `:1887`, `server/src/data/snapshots.ts:85`, `server/src/app.ts:1247`,
 `:1273`).
+
+## Second audit, of the revision
+
+- Plan: `docs/plan/chat-trash.md`
+- Commit audited: `4c52e82e0`
+- Mode: `full`
+- Model: GPT-6.2-Astra (`xhigh`), read-only, a fresh session; report written by the drafting session (Claude Opus 5.5)
+
+| Severity   | Count |
+| ---------- | ----- |
+| P1         | 4     |
+| P2         | 2     |
+| P3         | 2     |
+| unverified | 0     |
+
+The revision moved the mark to a column, trash, restore, and permanent deletion to their own route, and trashed chats
+to read-only on the server. Of the first audit, A2, A5, A7, A9, and A10 are resolved; A1, A3, A4, A6, and A8 are
+partly resolved, and what remains of them is in B1 to B7. All eight new findings are open: none was sent for a fix
+in this audit, and the P3 corrections belong in the next revision with the P1 ones. The turn took about 13 minutes
+and 8.2 M tokens; Astra ran no test, and `read_only_violation` was `false`.
+
+Re-check list: all four checked, clean (`server/src/data/chatStore.ts:2682`; `shared/resources.ts:572`,
+`server/src/data/chatStore.ts:1980`, `:2073`, `server/src/data/resourceStore.ts:1275`;
+`server/src/data/resourceStore.ts:776`, `:3902`; `server/src/jobs/generationJobs.ts:1064`). The publication-wide budget
+can omit a change's summary, which B1 depends on.
+
+### First-audit findings
+
+| ID  | Resolution      | What remains                                                                           |
+| --- | --------------- | -------------------------------------------------------------------------------------- |
+| A1  | partly resolved | The column fixes provenance; the restore header check rejects the new layout (B4).     |
+| A2  | resolved        | A new-route request's identity is B3; local work cleared by an old producer is B5.     |
+| A3  | partly resolved | Installing the authoritative mark after an echo or readback (B1, B3).                  |
+| A4  | partly resolved | `chatHeld` and admission are right; translation can start or finish around trash (B2). |
+| A5  | resolved        | The rebuild can still be abandoned by another route (B2).                              |
+| A6  | partly resolved | Loaded-chat selection, memory writes, plugin reconciliation order (B1, B2, B6).        |
+| A7  | resolved        |                                                                                        |
+| A8  | partly resolved | Test, fixture, browser, and character-install callers (B6, B7).                        |
+| A9  | resolved        |                                                                                        |
+| A10 | resolved        |                                                                                        |
+
+### P1
+
+- **B1. D2, the tab "holds it in its list entry (`ChatEntryMeta`), not in the loaded `Chat`"; D11, "the returned
+  summary is installed in the list entry through the path a remote summary takes."** A loaded member has no held
+  `ChatEntryMeta`: the store keeps a `Chat` or a summary and derives a loaded entry from the `Chat`
+  (`src/ts/storage/chatStore.svelte.ts:573`, `:1605`, `:8003`). `applyRemoteSummary` rejects loaded members and equal
+  revisions, `noteRemoteChat` returns after a loaded patch before its summary (`:7275`, `:7342`), and a whole read
+  carries only `ChatRecord.data` (`shared/chats.ts:205`, `src/ts/storage/chatStore.svelte.ts:7474`), so an echo or a
+  read can advance the revision and the route's later `200` is ignored. A column-only transition also misses the
+  server's summary-changed test (`server/src/data/chatStore.ts:3057`). The detached reads behind "export all chats" and
+  dataset export strip envelopes to `record.data` (`src/ts/storage/chatEdits.ts:157`,
+  `src/ts/storage/chatStore.svelte.ts:5025`). Correction: revisioned trash state for every member, carried outside
+  `Chat.data` on whole reads; install it independently of transcript freshness, accept an equal-revision mark when
+  missing, reject older answers; compare the column at publication and read back when the summary is omitted; filter
+  detached export records before stripping envelopes.
+- **B2. D5, "A trashed chat is read-only on the server"; D7, "a paused Structured Memory rebuild stays resumable."** A
+  stale memory panel can delete chapters, edit records, or clear pages through `store.memory` in its own transaction
+  (`server/src/routes/structuredMemory.ts:1340`, `:1395`, `:2096`, `server/src/data/resourceStore.ts:2218`), and the
+  rebuild-abandon route checks only `chatHeld` (`server/src/routes/structuredMemory.ts:2133`, `server/src/app.ts:1002`),
+  so the rebuild D7 keeps can be abandoned while trashed. `POST /api/translate/message` starts outside `jobs.create`
+  and calls the model before its `setTranslation` (`server/src/routes/translate.ts:81`,
+  `server/src/translation/runner.ts:325`, `:380`, `:455`); after a restore the by-id op can apply on an older revision
+  (`server/src/data/chatStore.ts:2302`). Correction: the stored-mark check in the synchronous write step of every
+  Structured Memory mutation, chapters and abandon included, with D7's own cancellation able to finish; the mark check
+  at translation start and join, and the source generation trash advances as a fence at commit.
+- **B3. D3, "`{ characterId, chatId }`, the epoch header, and for `delete` the `trashedAt` the tab holds"; D11, after
+  `200` `deleteChatForever` "runs `removeChat` and `notifyRemoval`."** A chat id can be reused within an epoch; the
+  store tells incarnations apart by `seq` in the revision token (`shared/resources.ts:167`,
+  `server/src/data/chatStore.ts:2298`, `src/ts/storage/chatStore.svelte.ts:3545`). A delayed trash or restore names no
+  incarnation, two trash periods can share a millisecond, and a delayed `200` after the deletion feed and a same-id
+  recreation would remove the new member and its drafts; `removeChat` alone also leaves the held revision, unlike the
+  remote deletion settlement (`src/ts/storage/chatStore.svelte.ts:1290`, `:7193`). Correction: send the revision token
+  captured at the action; permanent deletion requires the exact trashed revision and a matching non-null mark; the purge
+  carries epoch, revision, and stamp into its transaction; the answer names the deleted identity, and the tab settles
+  the deletion once for that incarnation through the remote deletion path.
+- **B5. D4, "a journaled delete from before the upgrade ... re-reads and keeps the chat"; D5, "loses nothing
+  stored."** The server row survives, but the old producer already removed the member, called `notifyRemoval`, and
+  replaced pending ops with the delete (`src/ts/storage/chatStore.svelte.ts:3591`, `:3609`); an upgraded tab replaying
+  an old journal delete calls the same notification in `installRecoveredChat` before sending (`:4972`), which drops
+  editor drafts and composer journal rows (`src/ts/process/composerDrafts.svelte.ts:122`,
+  `src/ts/storage/messageEditorDrafts.svelte.ts:283`). Correction: classify pre-upgrade deletes in boot recovery before
+  anything is removed (`src/ts/storage/journalRecovery.ts:523`) and keep the drafts; state the narrower guarantee for a
+  running old tab; one refusal reason for a fresh bare delete even on a trashed chat (D4's `useTrash` and D5's
+  `chatTrashed` overlap), remembered successes answered before fresh admission (`server/src/data/chatStore.ts:2262`),
+  and the new terminal reasons kept out of missing-anchor repair (`src/ts/storage/resourceSync.svelte.ts:4280`).
+
+### P2
+
+- **B4. D10, "Staging and `copyStagedChats` copy it (an archive without the column stages null)."** Before any row
+  reaches the staging writer, `assertSnapshotHeader` requires the exact `CHAT_TABLE_COLUMNS.chats` layout
+  (`server/src/data/chatStore.ts:114`, `server/src/data/resourceStore.ts:620`, `:3781`, `:823`), and the upstream export
+  goes through it too (`server/src/data/upstream/exportStage.ts:36`), so slice 1's column breaks restore and upstream
+  export until slice 2. Correction: in slice 1, accept both exact source layouts and select the column or
+  `NULL AS trashedAt` in `walkChatSnapshot` (the optional memory column is the precedent,
+  `server/src/data/memoryStore.ts:1473`), require the current layout for staged output, and stamp the install time in
+  `replaceAll` before commit; define the repair of an imported character whose chats are all trashed, which the order
+  validator and boot's `ensureChat` do not catch (`server/src/data/chatStore.ts:3933`,
+  `src/ts/storage/chatStore.svelte.ts:3571`).
+- **B6. D14, "An active chat the plugin's list omits is trashed with `trashChat`; same-id character recreation ...
+  trashes the active chats it would have deleted."** The plugin reconcile and its callers are synchronous and compute
+  order and `chatPage` right after the omissions (`src/ts/storage/chatStore.svelte.ts:4915`,
+  `src/ts/plugins/apiV3/v3.svelte.ts:2113`, `:2364`, `src/ts/storage/records.svelte.ts:668`). Same-id recreation has
+  already forgotten the old list and runs before the parent records are inserted, with a local rollback on failure
+  (`src/ts/storage/chatStore.svelte.ts:5528`, `:5394`, `src/ts/storage/characterStore.svelte.ts:253`). The server
+  validates only the order revision and permutation (`server/src/data/chatStore.ts:3463`). Correction: keep the parent
+  install synchronous, keep or reread authoritative order, marks, and incarnations, then await the trash requests and
+  report refusals before the final active order and selection; recheck owner and target after awaits; fence order
+  writes against changes in active membership.
+
+### P3
+
+- **B7. D11, "Today's `deleteChat` has no caller left"; the slice lists.** Callers and fixtures outside the lists: the
+  typed browser harness and Playwright scripts (`e2e/multiClient.ts:542`, `util/playwright/checkDurableDrafts.mjs:389`,
+  `util/playwright/checkLiveUpdates.mjs:377`, `e2e/multiClientGeneration.spec.ts:434`), server tests relying on a real
+  delete (`server/src/tests/memoryStore.test.ts:330`, `server/src/tests/chatSourceGeneration.test.ts:105`), the boot
+  snapshot fixture for the new default (`server/src/tests/normalizeSections.test.ts:86`), `characterStore.svelte.ts`,
+  `journalRecovery.ts`, the detached export reader, and typed unit callers
+  (`src/lib/Others/LoreBudgetStopDialog.test.ts:206`). Slices 1 and 3 share `server/src/app.ts`, slices 4 and 5
+  `SideChatList.svelte`, and the upstream export is in slices 2 and 3, not 1.
+- **B8. Current State, the checkpoint client "re-reads the chat after the answer"; D11, "`flushResources` for the
+  chat"; D1, "Only D3's route and D9's purge write the column."** `prepare` and `request` are private, the flush is
+  global with target-specific checks, and only checkpoint load refreshes the chat
+  (`src/ts/checkpoints/chatCheckpoints.svelte.ts:93`, `:225`, `:309`); the install also writes the column
+  (`server/src/data/resourceStore.ts:3289`). Correction: name checkpoint load as the precedent and the helpers'
+  extraction; distinguish a request never sent from a lost answer; state the column's writers as trash and restore,
+  the native install, and row deletion.

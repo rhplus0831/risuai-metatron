@@ -1,11 +1,12 @@
 # Chat Trash Plan
 
-Status: drafted 2026-11-22 at `efba3bf17` from the owner's answers of 2026-11-22 on a chat trash in the desktop
-sidebar (Q1 to Q6); the owner answered Q7 to Q11 as proposed the same day. Audited before its run at `2417475d6`
-([report](../reports/audits/plan-runner/chat-trash-2026-11-22.md)): six P1 findings (A1 to A6) and A8 left it needing
-a revision. Revised the same day at `34cb89820` to the owner's go-ahead on the proposed fixes and Q12: the mark moved
-to a column, trash, restore, and permanent deletion moved off the save queue onto their own route, trashed chats became
-read-only on the server, and the slices were re-cut. Not yet re-audited.
+Status: drafted 2026-11-22 at `efba3bf17` from the owner's answers of 2026-11-22 on a chat trash in the desktop sidebar
+(Q1 to Q6); the owner answered Q7 to Q11 as proposed the same day. Audited before its run at `2417475d6`
+([report](../reports/audits/plan-runner/chat-trash-2026-11-22.md)): six P1 findings (A1 to A6) and A8 left it needing a
+revision. Revised the same day at `34cb89820` to the owner's go-ahead on the proposed fixes and Q12: the mark moved to a
+column, trash, restore, and permanent deletion moved off the save queue onto their own route, trashed chats became
+read-only on the server, and the slices were re-cut. Re-audited at `4c52e82e0` (the report's second section): four P1
+findings (B1, B2, B3, B5), two P2, and two P3 are open, and the plan needs another revision and audit before any slice.
 
 Sources: `server/src/data/chatStore.ts` (`CHAT_TABLES_SQL`, the open-time column checks, `summaryFields`,
 `chatSummary`, `SUMMARY_PROJECTION_VERSION`, the op validation and apply branches, the staging writer and
