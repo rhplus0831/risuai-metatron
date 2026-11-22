@@ -172,11 +172,11 @@ function applyRevisionChanges(rows: RevisionMap, changes: ChangeSet, keepDeletes
             keepDeletes,
         );
     }
-    for (const { characterId, id, revision } of changes.chats) {
+    for (const { characterId, id, revision, trashedAt } of changes.chats) {
         setRevisionRow(
             rows.chats,
             JSON.stringify([characterId, id]),
-            revision === null ? null : { characterId, id, revision },
+            revision === null ? null : { characterId, id, revision, ...(trashedAt === undefined ? {} : { trashedAt }) },
             keepDeletes,
         );
     }

@@ -1390,8 +1390,8 @@ interface RisuaiPluginAPI {
 
     /**
      * Saves a character at a specific index. Its `chats` use the same read-baseline rules as
-     * setChatToIndex: new or missing ids create chats, chats left
-     * out are deleted (the last one is kept), and `chatPage` selects a chat in this tab only. A
+     * setChatToIndex: new or missing ids create chats. Omitted chats keep their slots. Plugins cannot
+     * delete chats. `chatPage` selects an active chat from the supplied list in this tab only. A
      * character that is generating a reply is not replaced by one with another `chaId`.
      * @param index - Character index
      * @param character - Character object to save
@@ -1571,7 +1571,7 @@ interface RisuaiPluginAPI {
     getDatabase(includeOnly?: string[]|'all', options?: { chats?: "full" | "summaries" }): Promise<DatabaseSubset|null>;
 
     /**
-     * Gets a character's chats in member order, in the same shape as getDatabase's full chats.
+     * Gets a character's active chats in member order, in the same shape as getDatabase's full chats.
      * Requires the same database access consent; returns null without it or when chaId is unknown
      * (including a character deleted during the call).
      * @param chaId - Stable character id.

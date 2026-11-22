@@ -1655,3 +1655,19 @@ describe("browserHistory", () => {
         expect(listener).toHaveBeenCalledTimes(1);
     });
 });
+
+describe("routing to the trash", () => {
+    it("refuses to open a trashed chat from its saved URL", () => {
+        const ref = { chaId: "a", chatId: "a2" };
+        const revision = server.chat("a", "a2")!.revision;
+        chat.installChatTrashState(ref, revision, 100);
+        try {
+            const history = start(new FakeHistory([{ path: "/chat/a/a2", state: STATE }]));
+            expect(history.path).toBe("/chat/a");
+            expect(selection.chatOpen).toBe(false);
+            expect(chat.selectedChatId("a")).toBe("a1");
+        } finally {
+            chat.installChatTrashState(ref, revision, null);
+        }
+    });
+});

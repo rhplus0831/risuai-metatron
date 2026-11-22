@@ -15,7 +15,7 @@ import { readStructuredMemoryProjection, readStructuredMemoryRevisions } from "s
 import { readWithDeadline } from "src/ts/storage/readDeadline";
 import { terminalNotice } from "src/ts/alert";
 import { liveFeedCurrent } from "src/ts/network/eventFeed";
-import { chatEntry, heldChatRevision, isChatBehind, type ChatRef } from "src/ts/storage/chatStore.svelte";
+import { chatEntry, isActiveChat, heldChatRevision, isChatBehind, type ChatRef } from "src/ts/storage/chatStore.svelte";
 import { getResourceEpoch } from "src/ts/storage/resourceClient";
 import { assertSaveAdmission, utf8ByteLength } from "src/ts/storage/resourceSync.svelte";
 
@@ -119,12 +119,12 @@ export function forgetDetachedChat(ref: ChatRef, expected?: Entry) {
 /** Stores raw server JSON that the caller checked does not need a held-store snapshot. */
 export function rememberDetachedChat(
     ref: ChatRef,
-    read: { revision: string; data: Chat },
+    read: { revision: string; data: Chat; trashedAt?: number | null },
     structured: boolean,
     generation: number,
 ) {
     checkEpoch();
-    if (generation !== invalidation || !admitted()) return;
+    if (generation !== invalidation || !admitted() || read.trashedAt != null || !isActiveChat(ref)) return;
     const underlyingKnown = !isSealedHypaV3Data(read.data.hypaV3Data);
     const data = underlyingKnown ? read.data : { ...read.data };
     const projection = projectionRecord(underlyingKnown ? null : (read.data.hypaV3Data as SealedHypaV3Data));
@@ -148,7 +148,7 @@ export function rememberDetachedChat(
 function bodyCurrent(ref: ChatRef, hit: DetachedChatCacheHit): boolean {
     checkEpoch();
     const { entry } = hit;
-    if (entry.revision !== heldChatRevision(ref)) {
+    if (!isActiveChat(ref) || entry.revision !== heldChatRevision(ref)) {
         forgetDetachedChat(ref, entry);
         return false;
     }

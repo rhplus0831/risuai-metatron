@@ -29,21 +29,20 @@
     import TextInput from "../UI/GUI/TextInput.svelte";
 
     import { exportChat, importChat, exportAllChats } from "src/ts/characters";
-    import { alertChatOptions, alertConfirm, alertError, alertSelect, alertStore } from "src/ts/alert";
+    import { alertChatOptions, alertConfirm, alertSelect, alertStore } from "src/ts/alert";
     import { findCharacterbyId, sleep, sortableOptions } from "src/ts/util";
     import { bookmarkListOpen } from "src/ts/stores.svelte";
     import { language } from "src/lang";
+    import { confirmTrashChat } from "src/ts/checkpoints/chatTrash";
     import { changeChatTo, createChatCopyName } from "src/ts/globalApi.svelte";
     import {
-        chatEntry,
-        chatList,
+        isActiveChat,
+        activeChatList,
         type ChatListEntry,
         createChat,
-        deleteChat,
         ensureChatLoaded,
         findChat,
-        isChatGenerating,
-        reorderChats,
+        reorderActiveChats,
         selectedChatId,
         setChatMeta,
     } from "src/ts/storage/chatStore.svelte";
@@ -58,14 +57,14 @@
      * A character's chat list, its chat folders, and the chat actions.
      *
      * - A row action captures the row's chat ref before its first dialog and resolves it again afterward
-     *   (`chatEntry`, `isChatGenerating`), never the selection, so a selection change or a reorder meanwhile cannot
+     *   (`isActiveChat`), never the selection, so a selection change or a reorder meanwhile cannot
      *   redirect it.
      * - Chat structure (create, delete, rename, folder, order) goes through the chat module
      *   (`src/ts/storage/chatStore.svelte.ts`); the folder definitions are the character's `chatFolders`. A new chat
      *   opens through `changeChatTo`; imports go through `importChat` (`src/ts/characters.ts`), where a JSONL import
      *   opens its chat while the importing character is still selected and a JSON or HTML import only adds entries.
      * - A chat whose `folderId` names no folder lists at the root and keeps the id (`chatFolderOf`). A drop writes a
-     *   complete chat order (`completeOrder`).
+     *   complete chat order while preserving the slots of unlisted rows.
      * - The filter is Korean-aware (`prepareQuery`, `matchesAny` of `src/ts/util/koreanSearch.ts`, which the character
      *   catalog also uses). It hides rows without unmounting them, so SortableJS keeps its containers and the drop
      *   handlers their indexes, turns sorting off while a query is set, and shows matching folders open without
@@ -89,7 +88,7 @@
     let { chara = $bindable() }: Props = $props();
     let editMode = $state(false);
     /** The character's chats as list entries (the chat module's; never whole chats). */
-    const chats = $derived(chatList(chara.chaId));
+    const chats = $derived(activeChatList(chara.chaId));
     const selectedId = $derived(selectedChatId(chara.chaId));
 
     /** The filter field's text; it resets when the character changes. */
@@ -146,7 +145,7 @@
         switch (option) {
             case 0: {
                 const source = await chatCopySource(ref);
-                if (!source) {
+                if (!source || !isActiveChat(ref)) {
                     break;
                 }
                 delete source.pinned;
@@ -160,7 +159,7 @@
             case 1: {
                 const source = await chatCopySource(ref);
                 const owner = findCharacter(ref.chaId);
-                if (!source || !owner) {
+                if (!source || !owner || !isActiveChat(ref)) {
                     break;
                 }
                 // Plain `createChat`: the source's memory records describe a conversation this chat does not have.
@@ -176,27 +175,18 @@
             }
             case 2: {
                 // The binding is in the list entry, so a chat that is not loaded opens too.
-                if (chatEntry(ref)) {
+                if (isActiveChat(ref)) {
                     chatBindingDialog.set(ref);
                 }
                 break;
             }
             case 3: {
-                if (chatEntry(ref)) {
+                if (isActiveChat(ref)) {
                     chatCheckpointsDialog.set(ref);
                 }
                 break;
             }
         }
-    }
-
-    /**
-     * A drop's order (the rows as the DOM has them) with every listed chat it misses appended in
-     * list order, so `reorderChats` always gets a permutation even when a chat has no row.
-     */
-    function completeOrder(ordered: string[], listed: readonly ChatListEntry[]): string[] {
-        const seen = new Set(ordered);
-        return [...ordered, ...listed.filter((chat) => !seen.has(chat.id)).map((chat) => chat.id)];
     }
 
     let chatsStb: Sortable[] = [];
@@ -230,17 +220,16 @@
                     group: "chats",
                     disabled,
                     onEnd: async (event) => {
-                        // The list as rendered (the indexes in the DOM are into it), read once:
-                        // a folder change below makes the derived list a new one.
-                        const listed = chats;
+                        // Resolve the dragged rows by id even if membership changed during the drag.
+                        const listed = new Map(chats.map((chat) => [chat.id, chat]));
                         const folders = chara.chatFolders;
                         const newChats: string[] = [];
 
                         listEle.querySelectorAll("[data-risu-chat-folder-idx]").forEach((folder) => {
                             const folderIdx = parseInt(folder.getAttribute("data-risu-chat-folder-idx"));
                             folder.querySelectorAll("[data-risu-chat-idx]").forEach((chatInFolder) => {
-                                const chatIdx = parseInt(chatInFolder.getAttribute("data-risu-chat-idx"));
-                                const newChat = listed[chatIdx];
+                                const newChat = listed.get(chatInFolder.getAttribute("data-risu-chat-id"));
+                                if (!newChat) return;
                                 if (newChat.folderId !== folders[folderIdx].id) {
                                     setChatFolder(newChat, folders[folderIdx].id);
                                 }
@@ -249,8 +238,8 @@
                         });
 
                         listEle.querySelectorAll("[data-risu-chat-idx]").forEach((chatEle) => {
-                            const idx = parseInt(chatEle.getAttribute("data-risu-chat-idx"));
-                            const newChat = listed[idx];
+                            const newChat = listed.get(chatEle.getAttribute("data-risu-chat-id"));
+                            if (!newChat) return;
                             if (newChats.includes(newChat.id) == false) {
                                 // A root row leaves its folder; a dangling id (already unfiled) is not written.
                                 if (chatFolderOf(newChat, folders) != null) {
@@ -261,7 +250,7 @@
                         });
 
                         // The selected chat stays selected (the selection is by id).
-                        reorderChats(chara.chaId, completeOrder(newChats, listed));
+                        reorderActiveChats(chara.chaId, newChats);
 
                         try {
                             this.destroy();
@@ -278,7 +267,6 @@
             group: "folders",
             disabled,
             onEnd: async (event) => {
-                const listed = chats;
                 const newFolders: ChatFolder[] = [];
                 const newChats: string[] = [];
                 const folders: HTMLElement[] = Array.from<HTMLElement>(event.to.children);
@@ -288,20 +276,20 @@
                     newFolders.push(chara.chatFolders[folderIdx]);
 
                     folder.querySelectorAll("[data-risu-chat-idx]").forEach((chatEle) => {
-                        const idx = parseInt(chatEle.getAttribute("data-risu-chat-idx"));
-                        newChats.push(listed[idx].id);
+                        const id = chatEle.getAttribute("data-risu-chat-id");
+                        if (id) newChats.push(id);
                     });
                 });
 
                 listEle.querySelectorAll("[data-risu-chat-idx]").forEach((chatEle) => {
-                    const idx = parseInt(chatEle.getAttribute("data-risu-chat-idx"));
-                    if (newChats.includes(listed[idx].id) == false) {
-                        newChats.push(listed[idx].id);
+                    const id = chatEle.getAttribute("data-risu-chat-id");
+                    if (id && !newChats.includes(id)) {
+                        newChats.push(id);
                     }
                 });
 
                 chara.chatFolders = newFolders;
-                reorderChats(chara.chaId, completeOrder(newChats, listed));
+                reorderActiveChats(chara.chaId, newChats);
                 try {
                     folderStb.destroy();
                 } catch (e) {}
@@ -486,7 +474,7 @@
                                             if (index !== -1) {
                                                 folders.splice(index, 1);
                                             }
-                                            for (const chat of chatList(chaId)) {
+                                            for (const chat of activeChatList(chaId)) {
                                                 if (chat.folderId == folderId) {
                                                     setChatMeta({ chaId, chatId: chat.id }, {}, ["folderId"]);
                                                 }
@@ -512,6 +500,7 @@
                             {:else}
                                 {#each inFolder as chat}
                                     <button
+                                        data-risu-chat-id={chat.id}
                                         data-risu-chat-idx={chats.indexOf(chat)}
                                         onclick={() => {
                                             if (!editMode) {
@@ -609,26 +598,10 @@
                                                 class="text-textcolor2 hover:text-green-500 cursor-pointer"
                                                 onclick={async (e) => {
                                                     e.stopPropagation();
-                                                    if (chats.length === 1) {
-                                                        alertError(language.errors.onlyOneChat);
-                                                        return;
-                                                    }
-                                                    const ref = { chaId: chara.chaId, chatId: chat.id };
-                                                    if (isChatGenerating(ref)) {
-                                                        alertError(language.chatGenerating);
-                                                        return;
-                                                    }
-                                                    const d = await alertConfirm(
-                                                        `${language.removeConfirm}${chat.name}`,
+                                                    await confirmTrashChat(
+                                                        { chaId: chara.chaId, chatId: chat.id },
+                                                        chat.name,
                                                     );
-                                                    if (d) {
-                                                        if (isChatGenerating(ref)) {
-                                                            alertError(language.chatGenerating);
-                                                            return;
-                                                        }
-                                                        deleteChat(ref);
-                                                        $ReloadGUIPointer += 1;
-                                                    }
                                                 }}
                                             >
                                                 <TrashIcon size={18} />
@@ -647,6 +620,7 @@
                     <!-- Unfiled: no folder id, or one whose folder does not exist (`chatFolderOf`). -->
                     {#if chatFolderOf(chat, chara.chatFolders) == null}
                         <button
+                            data-risu-chat-id={chat.id}
                             data-risu-chat-idx={i}
                             onclick={() => {
                                 if (!editMode) {
@@ -744,24 +718,7 @@
                                     class="text-textcolor2 hover:text-green-500 cursor-pointer"
                                     onclick={async (e) => {
                                         e.stopPropagation();
-                                        if (chats.length === 1) {
-                                            alertError(language.errors.onlyOneChat);
-                                            return;
-                                        }
-                                        const ref = { chaId: chara.chaId, chatId: chat.id };
-                                        if (isChatGenerating(ref)) {
-                                            alertError(language.chatGenerating);
-                                            return;
-                                        }
-                                        const d = await alertConfirm(`${language.removeConfirm}${chat.name}`);
-                                        if (d) {
-                                            if (isChatGenerating(ref)) {
-                                                alertError(language.chatGenerating);
-                                                return;
-                                            }
-                                            deleteChat(ref);
-                                            $ReloadGUIPointer += 1;
-                                        }
+                                        await confirmTrashChat({ chaId: chara.chaId, chatId: chat.id }, chat.name);
                                     }}
                                 >
                                     <TrashIcon size={18} />

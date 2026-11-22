@@ -145,9 +145,9 @@ import { requestServer } from "../transport";
 import { requestChatData } from "../request";
 import { chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
 import {
+    acceptRemoteChat,
     assembleChats,
     createChat,
-    deleteChat,
     findChat,
     installCharacterChats,
 } from "src/ts/storage/chatStore.svelte";
@@ -1287,16 +1287,18 @@ describe("the request's chats", () => {
         expect(answers()).toHaveLength(2);
     });
 
-    it("posts nothing when the request's chat is deleted or replaced under the same ids during the flush", async () => {
-        // A second chat, so `chat-9` can be deleted.
+    it("posts nothing when the request's chat is deleted for good or replaced under the same ids during the flush", async () => {
+        // A second chat, so `chat-9` leaves the list when it is deleted.
         createChat("char-9", { id: "chat-9b", name: "B", note: "", localLore: [], message: [] } as never);
         stubs.flush.mockImplementationOnce(async () => {
-            deleteChat(chat9);
+            // Another tab deleted the chat for good; a whole read finds it gone.
+            acceptRemoteChat({ characterId: chat9.chaId, id: chat9.chatId, revision: null, data: null });
         });
         expect(await requestServer({ ...baseArg(), chatRef: chat9 } as never, "model", null, modelInfo)).toEqual({
             type: "fail",
             result: gone,
         });
+        expect(findChat(chat9)).toBeUndefined();
         expect(posted()).toHaveLength(0);
         installSettings();
         stubs.flush.mockImplementationOnce(async () => {

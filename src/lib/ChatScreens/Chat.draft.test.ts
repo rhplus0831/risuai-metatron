@@ -99,7 +99,6 @@ import {
     applyServerGeneration,
     assembleChats,
     createChat,
-    deleteChat,
     endServerJob,
     findChat,
     noteRemoteStreaming,
@@ -493,7 +492,7 @@ describe("original message draft", () => {
         expect(ui.textarea()?.value).toBe("User message draft");
     });
 
-    it("drops retained drafts when their message or chat is deleted without a mounted row", async () => {
+    it("drops retained drafts when their message is deleted or their chat is deleted for good without a mounted row", async () => {
         for (const removal of ["message", "chat"]) {
             let ui = render();
             settings.ui.disableAutoPopupMessageEditor = true;
@@ -507,7 +506,9 @@ describe("original message draft", () => {
             if (removal === "message") removeMessages(ref, ["a"]);
             else {
                 createChat(ref.chaId, { ...safeStructuredClone(findChat(ref))!, id: "spare", message: [] });
-                deleteChat(ref);
+                // Another tab's permanent deletion, found by a whole read.
+                acceptRemoteChat({ characterId: ref.chaId, id: ref.chatId, revision: null, data: null });
+                expect(findChat(ref)).toBeUndefined();
             }
             flushSync();
             expect(findMessageEditorDraft(ref, "a", "message")).toBeUndefined();

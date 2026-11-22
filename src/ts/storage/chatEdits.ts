@@ -1,3 +1,4 @@
+import type { ChatRecord } from "../../../shared/chats.ts";
 import type { Chat } from "../../../shared/database.ts";
 import { language } from "src/lang";
 import {
@@ -81,7 +82,7 @@ const DETACHED_READ_CHUNK = 500;
 /** The bound of one chunk's read (`readWithDeadline`): whole chat lists can be large on a slow link. */
 const DETACHED_READ_DEADLINE_MS = 60_000;
 
-export type DetachedChatRead = { revision: string; data: Chat } | "gone" | "absent";
+export type DetachedChatRead = Pick<ChatRecord, "revision" | "trashedAt" | "data"> | "gone" | "absent";
 
 /**
  * Reads named chats across characters as plain server copies, without installing or pinning them.
@@ -116,7 +117,11 @@ export async function readChatRefsDetached(
             if (chats?.has(chat.id)) {
                 chats.set(
                     chat.id,
-                    chat.revision === null || !chat.data ? "gone" : { revision: chat.revision, data: chat.data },
+                    chat.revision === null || !chat.data
+                        ? "gone"
+                        : "trashedAt" in chat
+                          ? { revision: chat.revision, trashedAt: chat.trashedAt, data: chat.data }
+                          : "absent",
                 );
             }
         }
@@ -133,9 +138,9 @@ export async function readChatRefsDetached(
  * server has no chat order for gets `[]`.
  * A restore halt rejects before each chunk's read and after its answer, so old-epoch copies never return.
  */
-export async function readChatsDetached(chaIds: readonly string[]): Promise<Map<string, Chat[]>> {
+export async function readChatsDetached(chaIds: readonly string[]): Promise<Map<string, ChatRecord[]>> {
     const wanted = [...new Set(chaIds)];
-    const result = new Map<string, Chat[]>();
+    const result = new Map<string, ChatRecord[]>();
     if (wanted.length === 0) {
         return result;
     }

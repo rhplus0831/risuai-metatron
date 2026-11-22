@@ -2,7 +2,7 @@
 
 import { flushSync, mount, unmount } from "svelte";
 import { fromStore, writable } from "svelte/store";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The two new-chat buttons (`SideChatList.svelte`'s and the chat list modal's,
 // `src/lib/Others/ChatList.svelte`) start the chat from `initialChatBinding`: with `newChatBinding`
@@ -87,6 +87,7 @@ import {
     chatEntry,
     chatList,
     findChat,
+    seedChats,
     selectChat,
     selectedChatId,
     setChatMeta,
@@ -94,6 +95,8 @@ import {
 import { selectCharacter, selectModelPreset, selectPersona, selectPreset } from "src/ts/storage/selection.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
+import { getResourceEpoch, setResourceEpoch } from "src/ts/storage/resourceClient";
+import { StoreBackedServer } from "src/ts/storage/tests/storeBackedServer";
 import ChatList from "../Others/ChatList.svelte";
 import SideChatList from "./SideChatList.svelte";
 
@@ -385,13 +388,14 @@ describe("a chat whose folder does not exist", () => {
         expect(inFolder(rowOf(target, "Chat K"))).toBe(false);
     });
 
-    it("a drop missing a chat's row still passes a permutation, appending that chat", async () => {
+    it("a drop missing a chat's row still passes a permutation, keeping that chat in its slot", async () => {
         const { target } = renderSide("c");
+        expect(ids("c")).toEqual(["k", "j", "n"]);
         const root = rowOf(target, "Chat K").parentElement!;
         root.appendChild(rowOf(target, "Chat K"));
         rowOf(target, "Chat J").remove();
         await drop();
-        expect(ids("c")).toEqual(["n", "k", "j"]);
+        expect(ids("c")).toEqual(["n", "j", "k"]);
     });
 
     it("a folder delete confirmed after another folder was put first deletes the confirmed folder", async () => {
@@ -998,4 +1002,99 @@ describe("new-chat memory inheritance", () => {
             }
         },
     );
+});
+
+describe("trash actions in the chat lists", () => {
+    let server: StoreBackedServer;
+    let previousEpoch: string;
+    const ref = { chaId: "c", chatId: "target" };
+    beforeAll(() => StoreBackedServer.preload());
+    beforeEach(async () => {
+        vi.useFakeTimers();
+        server = await StoreBackedServer.create();
+        previousEpoch = getResourceEpoch();
+        setResourceEpoch(server.store.epoch());
+        server.set("characters", "c", { chaId: "c", name: "C" });
+        server.store.applyChanges({
+            chats: ["before", "target", "after"].map((id) => ({
+                characterId: "c",
+                chatId: id,
+                baseRevision: null,
+                ops: [{ op: "create", chat: chat(id) }],
+            })),
+        });
+        const read = server.store.readKinds([], { chats: true });
+        seedChats(read.chats!, read.chatOrders!);
+        assembleChats([byChaId("c")], read.chats!, read.chatOrders!);
+        vi.spyOn(serverAuth, "authFetch").mockImplementation((path, init, options) => {
+            options?.beforeDispatch?.();
+            return server.fetch(path, init);
+        });
+        vi.spyOn(resourceSync, "flushResources").mockResolvedValue({ discarded: [], refused: [] });
+        vi.mocked(alertConfirm).mockClear();
+    });
+    afterEach(() => {
+        vi.restoreAllMocks();
+        setResourceEpoch(previousEpoch);
+        vi.clearAllTimers();
+        vi.useRealTimers();
+        server.close();
+    });
+
+    it.each(["sidebar root", "sidebar folder", "dialog"])(
+        "asks once per deletion and posts only on Yes in the %s",
+        async (surface) => {
+            if (surface === "sidebar folder") {
+                byChaId("c").chatFolders = [{ id: "f", name: "Folder", folded: false }];
+                setChatMeta(ref, { folderId: "f" });
+            }
+            selectCharacter("c");
+            const { target } = surface === "dialog" ? renderModal() : renderSide("c");
+            const row = [
+                ...target.querySelectorAll<HTMLElement>(surface === "dialog" ? "button" : "[data-risu-chat-id]"),
+            ].find((r) => r.textContent?.trim() === "Chat TARGET")!;
+            const remove = row.querySelector<HTMLElement>('[role="button"]:has(svg.lucide-trash)')!;
+            const captured = server.chat("c", "target")!.revision;
+            for (const confirmed of [false, true]) {
+                vi.mocked(alertConfirm).mockClear().mockResolvedValue(confirmed);
+                remove.click();
+                await vi.advanceTimersByTimeAsync(0);
+                flushSync();
+                expect(alertConfirm).toHaveBeenCalledExactlyOnceWith(language.chatTrash.confirm("Chat TARGET"));
+                expect(server.requests).toEqual(
+                    confirmed
+                        ? [
+                              {
+                                  method: "POST",
+                                  path: "/api/chat-trash/trash",
+                                  body: { characterId: "c", chatId: "target", revision: captured },
+                              },
+                          ]
+                        : [],
+                );
+                expect(target.textContent?.includes("Chat TARGET")).toBe(!confirmed);
+            }
+        },
+    );
+
+    it("keeps the hidden row in its slot on drop and preserves its folder when deleting the folder", async () => {
+        byChaId("c").chatFolders = [{ id: "f", name: "Folder", folded: false }];
+        setChatMeta(ref, { folderId: "f" });
+        const { installChatTrashState } = await import("src/ts/storage/chatStore.svelte");
+        installChatTrashState(ref, server.chat("c", "target")!.revision, 5);
+        const { target } = renderSide("c");
+        const rows = [...target.querySelectorAll<HTMLElement>("[data-risu-chat-id]")];
+        expect(rows.map((row) => row.dataset.risuChatId)).toEqual(["before", "after"]);
+        rows[0].parentElement!.appendChild(rows[0]);
+        const sortable = sortables.find((s) => s.el === rows[0].parentElement && !s.destroyed)!;
+        const dropped = sortable.options.onEnd.call(sortable, {});
+        await vi.advanceTimersByTimeAsync(1);
+        await dropped;
+        expect(ids("c")).toEqual(["after", "target", "before"]);
+        vi.mocked(alertConfirm).mockResolvedValue(true);
+        target.querySelector<HTMLElement>('[data-risu-chat-folder-idx] [role="button"]:has(svg.lucide-trash)')!.click();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(byChaId("c").chatFolders).toEqual([]);
+        expect(chatEntry(ref)?.folderId).toBe("f");
+    });
 });

@@ -151,12 +151,19 @@ async function boot() {
     const character = () => (characterList() as any[]).find((entry: any) => entry.chaId === "c");
     const mirrorChat = (id = "k") => character().chats.find((entry: any) => entry.id === id) as Chat | undefined;
     /** The feed's change set for chat `id` of `c`, at the revision the server store holds now (null: deleted). */
-    const notify = (id: string) =>
-        sync.noteRemoteChanges({
+    /** Another tab's change of chat `id`, as the feed announces it (with the mark, unless it is a deletion). */
+    const notify = (id: string) => {
+        const record = fake.chat("c", id);
+        return sync.noteRemoteChanges({
             resources: [],
-            chats: [{ characterId: "c", id, revision: fake.chat("c", id)?.revision ?? null }],
+            chats: [
+                record
+                    ? { characterId: "c", id, revision: record.revision, trashedAt: record.trashedAt }
+                    : { characterId: "c", id, revision: null },
+            ],
             chatOrders: [],
         });
+    };
     return { fake, sync, chat, transport, character, mirrorChat, notify };
 }
 

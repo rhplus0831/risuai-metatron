@@ -1299,6 +1299,15 @@ export const languageKorean = {
         streamGeminiThoughts: "Gemini 추론 과정 스트리밍",
         saveSignatures: "Gemini 추론 서명 저장",
     },
+    chatTrash: {
+        confirm: (name: string) => `"${name}" 채팅을 휴지통으로 이동할까요?`,
+        saving: "채팅을 저장하고 있습니다. 저장이 끝나면 다시 시도하세요.",
+        changed: "채팅이 변경되었습니다. 현재 상태를 확인하고 다시 시도하세요.",
+        unknown: "요청이 처리되었는지 확인할 수 없습니다. 다시 시도하기 전에 채팅 상태를 확인하세요.",
+        notSent: "요청을 보내지 못했습니다. 변경 사항이 저장되었는지 확인한 뒤 다시 시도하세요.",
+        closed: "채팅이 휴지통으로 이동하여 닫혔습니다.",
+        checkpointsClosed: "채팅이 휴지통으로 이동하여 체크포인트 창을 닫았습니다.",
+    },
     chatGenerating: "이 채팅에서 답변을 생성하고 있습니다. 완료될 때까지 기다려 주세요.",
     rerollRepliesNotRestored:
         "새 답변이 생성되지 않았으며, 다른 곳에서 이 채팅을 생성 중이거나 최신 상태를 불러오지 못해 리롤 전에 지운 답변을 안전하게 되돌리지 못했습니다.",

@@ -743,7 +743,9 @@ describe("gone targets", () => {
             }
         };
         const listener = await listenerOf(api, async () => {
-            chatStore.deleteChat(refB1);
+            // Another tab deleted the chat for good; a whole read finds it gone.
+            chatStore.acceptRemoteChat({ characterId: refB1.chaId, id: refB1.chatId, revision: null, data: null });
+            expect(chatStore.findChat(refB1)).toBeUndefined();
             await attempt("getCharacter", () => api.getCharacter());
             await attempt("getChar", () => api.getChar());
             await attempt("setCharacter", () => api.setCharacter({ chaId: "b", name: "x" }));
@@ -1190,7 +1192,9 @@ describe("sendChat across consent", () => {
             );
             const consent = await prompts.shown(0, running);
             selectCharacterAt(1);
-            if (change === "delete") chatStore.deleteChat(ref);
+            // Another tab deleted the chat for good; a whole read finds it gone.
+            if (change === "delete")
+                chatStore.acceptRemoteChat({ characterId: ref.chaId, id: ref.chatId, revision: null, data: null });
             if (change === "replace") {
                 chatStore.installCharacterChats("a", [chat("a0")] as any, {});
             }

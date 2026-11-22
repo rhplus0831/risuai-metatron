@@ -35,11 +35,12 @@ export async function exportAsDataset() {
 
     let dataset = [];
     for (const char of characters) {
-        for (const chat of chats.get(char.chaId) ?? []) {
+        for (const record of chats.get(char.chaId) ?? []) {
+            if (record.trashedAt != null) continue;
             dataset.push({
                 name: char.name,
                 description: char.description,
-                chats: chat.message,
+                chats: record.data.message,
                 lorebook: char.lorebook,
             });
         }

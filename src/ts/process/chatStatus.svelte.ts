@@ -18,7 +18,7 @@ import {
 import { characterList, findCharacter } from "src/ts/storage/characterStore.svelte";
 import {
     chatEntry,
-    chatList,
+    activeChatList,
     currentChatRef,
     findChat,
     lockedChatKeys,
@@ -248,7 +248,7 @@ const healthChatKeys = $derived.by((): string[] => {
         if (!character || character.trashTime) {
             continue;
         }
-        for (const chat of chatList(character.chaId)) {
+        for (const chat of activeChatList(character.chaId)) {
             const key = chatStatusKey({ chaId: character.chaId, chatId: chat.id });
             if (chat.pinned === true && !keys.includes(key)) {
                 keys.push(key);

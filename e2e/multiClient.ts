@@ -513,12 +513,15 @@ export type Edit =
     | { type: "text"; chatId: string; id: string; text: string }
     | { type: "append"; chatId: string; message: Message }
     | { type: "create"; chat: Chat }
-    | { type: "delete"; chatId: string }
+    | { type: "trash"; chatId: string }
     | { type: "reorderFirst"; ids: string[] }
     | { type: "character"; patch: Record<string, unknown> }
     | { type: "ui"; sendWithEnter: boolean };
 
-/** All imports finish before the synchronous writes, so a mixed record/chat edit shares one cycle. */
+/**
+ * All imports finish before the synchronous writes, so a mixed record/chat edit shares one cycle. A
+ * trash is not a queued write: it awaits the trash route, which saves the queued work first.
+ */
 export async function edits(s: Session, chaId: string, changes: Edit[]): Promise<string[] | null> {
     return s.guard(() =>
         s.page.evaluate(
@@ -526,6 +529,7 @@ export async function edits(s: Session, chaId: string, changes: Edit[]): Promise
                 const chats = await import("/src/ts/storage/chatStore.svelte.ts");
                 const { updateCharacter } = await import("/src/ts/storage/characterStore.svelte.ts");
                 const { settings } = await import("/src/ts/storage/settingsViews.svelte.ts");
+                const { trashChat } = await import("/src/ts/checkpoints/chatTrash.ts");
                 let order: string[] | null = null;
                 for (const change of changes) {
                     switch (change.type) {
@@ -538,9 +542,12 @@ export async function edits(s: Session, chaId: string, changes: Edit[]): Promise
                         case "create":
                             chats.createChat(chaId, change.chat);
                             break;
-                        case "delete":
-                            chats.deleteChat({ chaId, chatId: change.chatId });
+                        case "trash": {
+                            const ref = { chaId, chatId: change.chatId };
+                            if (!(await trashChat(ref, chats.chatTrashRevision(ref))))
+                                throw new Error(`Chat ${change.chatId} was not trashed`);
                             break;
+                        }
                         case "reorderFirst":
                             order = [
                                 ...change.ids,

@@ -3,7 +3,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import type { Chat } from "../../../../shared/database.ts";
 import type { GenerationEvent } from "../../../../shared/jobs.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
-import { warmMutationGraph } from "./mutationStoresHarness";
+import { recoverOldDelete, warmMutationGraph } from "./mutationStoresHarness";
 import { StoreBackedServer } from "./storeBackedServer";
 
 // A server generation job's events mirrored on the client without any outgoing write
@@ -1003,10 +1003,10 @@ describe("a refusal for a generating message", () => {
         expect(alerts.normal).toHaveBeenCalledTimes(2);
     });
 
-    it("refuses a delete of a chat a server job generates in at once as useTrash, not as generating: nothing is held for the job's end, and the list read brings the chat back", async () => {
+    it("refuses a delete (journaled by an earlier build) of a chat a server job generates in at once as useTrash, not as generating: nothing is held for the job's end, and the list read brings the chat back", async () => {
         const { fake, sync, chat, unloadWarning } = await boot();
         lockB(fake);
-        chat.deleteChat(refK);
+        recoverOldDelete(chat, refK);
         // The server refuses every delete op before its lock check: the ordinary conflict path, no retry block.
         expect(await sync.flushResources()).toEqual({ discarded: ["chats/c/k"], refused: [] });
         expect(fake.batchCount()).toBe(1);

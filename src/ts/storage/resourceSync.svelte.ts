@@ -106,9 +106,11 @@ import {
     ackChatWork,
     applyRemoteCollection,
     canApplyRemoteCollection,
+    chatCollectionIsCurrent,
     heldChatRefs,
     heldChatRevision,
     heldChatRevisionsByCharacter,
+    chatReadRevision,
     heldOrderRevision,
     issueChatReadStamp,
     noteRemoteChat,
@@ -125,6 +127,7 @@ import {
     ackCharacterDelete,
     hydrateChat,
     hydrateChatPatch,
+    type ChatHydrationJob,
     isChatBehind,
     type JobChatPatch,
     JOB_RETRY_MS,
@@ -4271,6 +4274,7 @@ async function recoverConflictedWork(
     const conflictedChats = new Set<string>();
     const conflictedOrders = new Set<string>();
     const generatingChats = new Set<string>();
+    const trashConflicts = new Map<string, "useTrash" | "chatTrashed">();
     const expiredChats = new Set<string>();
     /** Per generating chat: the locked messages its group targets (their edits are dropped). */
     const lockedMessages = new Map<string, string[]>();
@@ -4306,6 +4310,8 @@ async function recoverConflictedWork(
             conflictedChats.add(key);
             if (conflict.reason === "expired") {
                 expiredChats.add(key);
+            } else if (conflict.reason === "useTrash" || conflict.reason === "chatTrashed") {
+                trashConflicts.set(key, conflict.reason);
             }
         } else if (isChatOrderConflict(conflict)) {
             conflictedOrders.add(conflict.characterId);
@@ -4337,6 +4343,7 @@ async function recoverConflictedWork(
         generatingChats,
         lockedMessages,
         expiredChats,
+        trashConflicts,
     );
     if (generating || immediateRecovery.blocked) {
         showGeneratingNotice();
@@ -4378,6 +4385,7 @@ async function recoverConflictedWork(
         undefined,
         undefined,
         expiredChats,
+        trashConflicts,
     );
     if (recovered.reloaded) {
         notice.owed = true;
@@ -4575,6 +4583,7 @@ async function readCharacter(id: string, purpose: "hydrate" | "listRefresh"): Pr
             acceptRemote(record);
             discardedWork = true;
         } else if (collection.order) {
+            if (!chatCollectionIsCurrent(collection, issued.get(id))) continue;
             discardedWork = acceptRemoteCollection(collection) || discardedWork;
         } else {
             console.error(`[Save] Character ${id} has no chat order on the server`);
@@ -4677,7 +4686,7 @@ async function readIdleChats(refs: readonly ChatRef[]) {
     // Taken before the read: a notice that arrives while the read is in flight keeps its mark, and a
     // chat found gone is removed only if its held revision did not change meanwhile.
     const notices = new Map(refs.map((ref) => [`${ref.chaId}\u0000${ref.chatId}`, chatNoticeSeq(ref)]));
-    const issued = new Map(refs.map((ref) => [`${ref.chaId}\u0000${ref.chatId}`, heldChatRevision(ref)]));
+    const issued = new Map(refs.map((ref) => [`${ref.chaId}\u0000${ref.chatId}`, chatReadRevision(ref)]));
     const readStamp = issueChatReadStamp();
     for (const ref of refs) {
         noteIdleChatRead(ref, readStamp);
@@ -4744,11 +4753,17 @@ async function readIdleChats(refs: readonly ChatRef[]) {
  */
 async function refreshIdleSummaries() {
     const ids = idleSummaryRefreshes()
-        .filter((id) => !remoteCollections.has(id) && !hydrate.has(id) && !listRefresh.has(id))
+        .filter(
+            (id) =>
+                (!remoteCollections.has(id) || !canApplyRemoteCollection(id)) &&
+                !hydrate.has(id) &&
+                !listRefresh.has(id),
+        )
         .slice(0, MAX_REMOTE_READS);
     if (ids.length === 0) {
         return;
     }
+    const owners = new Map(ids.map((id) => [id, chatOwnerToken(id)]));
     const notices = summaryRefreshNotices(ids);
     const issued = heldChatRevisionsByCharacter(ids);
     const read = await deadlineRead((signal) => readRefs([], { chatSummaryCollections: ids, signal }));
@@ -4756,7 +4771,10 @@ async function refreshIdleSummaries() {
         return;
     }
     for (const collection of read.chatSummaryCollections ?? []) {
-        if (applyRemoteCollection(collection, issued.get(collection.characterId))) {
+        if (
+            chatOwnerToken(collection.characterId) === owners.get(collection.characterId) &&
+            applyRemoteCollection(collection, issued.get(collection.characterId))
+        ) {
             settleSummaryRefresh(collection, notices);
         }
     }
@@ -4973,7 +4991,7 @@ export function noteRemoteChanges(changes: ChangeSet) {
             { chaId: chat.characterId, chatId: chat.id },
             chat.revision,
             change,
-            { summary, summaryBase },
+            { summary, summaryBase, trashedAt: chat.trashedAt },
             chat.rows,
         );
         if (outcome === "collection") {
@@ -5589,6 +5607,7 @@ async function applyRemoteUpdates(): Promise<boolean> {
     const issuedEntries = new Map(records);
     const issuedHeld = new Map(records.map(([key]) => [key, persisted.get(key)?.revision ?? null]));
     const issuedSeqs = new Map(collections.map((id) => [id, remoteCollections.get(id)]));
+    const issuedOwners = new Map(collections.map((id) => [id, chatOwnerToken(id)]));
     const issuedChats = heldChatRevisionsByCharacter(collections);
     const read = await deadlineRead((signal) =>
         readRefs(
@@ -5660,7 +5679,9 @@ async function applyRemoteUpdates(): Promise<boolean> {
         const collection = collectionOf.get(id);
         const applied = newCharacters.has(id)
             ? findMirrorCharacter(id) !== undefined
-            : !!collection && applyRemoteCollection(collection, issuedChats.get(id));
+            : !!collection &&
+              chatOwnerToken(id) === issuedOwners.get(id) &&
+              applyRemoteCollection(collection, issuedChats.get(id));
         if ((applied || !collection) && remoteCollections.get(id) === issuedSeqs.get(id)) {
             remoteCollections.delete(id);
         }
@@ -5688,12 +5709,13 @@ export function heldRecordRevision(kind: string, id: string): string | null {
  * `job`: a job chat event's job and its messages still generating (see `hydrateChat`).
  */
 export type HydrationRecord = {
+    trashedAt?: number | null;
     kind: string;
     id: string;
     characterId?: string;
     revision: string;
     data: unknown;
-    job?: { jobId: string; streaming: readonly StreamingMessage[] };
+    job?: ChatHydrationJob;
 };
 
 /**
@@ -5723,6 +5745,7 @@ export function applyHydration(record: HydrationRecord): boolean {
                       id: record.id,
                       revision: record.revision,
                       data: record.data as Chat,
+                      trashedAt: record.trashedAt,
                   },
                   record.job,
               )
@@ -6076,7 +6099,8 @@ export function startResourceSync() {
     });
     chatJournal.setListener(queueJournalChat);
     chatJournal.setConflictListener(captureJournalChat);
-    setChatWorkListener(() => {
+    setChatWorkListener((refreshCharacter) => {
+        if (refreshCharacter !== undefined) queueCharacterRefresh(refreshCharacter, "listRefresh");
         pruneWaits();
         noteChatWaits();
         schedule();

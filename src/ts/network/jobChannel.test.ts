@@ -104,6 +104,9 @@ vi.mock("../storage/chatStore.svelte", async () => {
         loadChats: async (chaId: string) => owner(chaId)?.chats ?? [],
         chatList: (chaId: string) =>
             (owner(chaId)?.chats ?? []).map((chat) => ({ id: chat.id, name: "", fmIndex: -1 })),
+        // These fixtures hold no trashed chat, so the active view is the whole list.
+        activeChatList: (chaId: string) =>
+            (owner(chaId)?.chats ?? []).map((chat) => ({ id: chat.id, name: "", fmIndex: -1 })),
         withChatsCopy: (copy: { chaId: string }) => ({
             ...copy,
             chats: JSON.parse(JSON.stringify(owner(copy.chaId)?.chats ?? [])),

@@ -56,7 +56,7 @@
     import { type Message } from "../../ts/storage/database.svelte";
     import {
         appendMessage,
-        chatEntry,
+        isActiveChat,
         chatOwnerToken,
         type ChatRef,
         currentChatRef,
@@ -912,7 +912,7 @@
         resend: () => Promise<unknown>,
     ) {
         const choice = await askLoreBudgetStop(ref, stop.lore, { messageKept });
-        if (choice !== "warnOffAndSend" || chatOwnerToken(ref.chaId) !== owner || !chatEntry(ref)) {
+        if (choice !== "warnOffAndSend" || chatOwnerToken(ref.chaId) !== owner || !isActiveChat(ref)) {
             return;
         }
         try {

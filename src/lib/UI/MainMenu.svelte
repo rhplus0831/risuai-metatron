@@ -1,7 +1,7 @@
 <script lang="ts">
     import { settings } from "src/ts/storage/settingsViews.svelte";
     import { characterList } from "src/ts/storage/characterStore.svelte";
-    import { chatList } from "src/ts/storage/chatStore.svelte";
+    import { activeChatList } from "src/ts/storage/chatStore.svelte";
     import {
         chatStatusKey,
         generatingBadgeKeys,
@@ -65,7 +65,7 @@
     let relativeTimeNow = $state(Date.now());
     let showAllPinnedChats = $state(false);
     const pinnedChats = $derived(
-        collectPinnedChats(characterList(), settings.characterOrder, chatList, language.unnamedPinnedChat),
+        collectPinnedChats(characterList(), settings.characterOrder, activeChatList, language.unnamedPinnedChat),
     );
     const summarizing = $derived(summarizingChats());
     const healthStates = $derived(memoryHealthStates());

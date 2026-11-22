@@ -1,30 +1,23 @@
 <script>
     import { initialChatMemory } from "src/ts/storage/chatMemory.svelte";
     import { selectedCharacter } from "src/ts/storage/characterStore.svelte";
-    import { alertConfirm, alertError } from "../../ts/alert";
-    import { language } from "../../lang";
+    import { language } from "src/lang";
 
     import { ReloadGUIPointer } from "../../ts/stores.svelte";
     import { DownloadIcon, SquarePenIcon, HardDriveUploadIcon, PlusIcon, TrashIcon, XIcon } from "@lucide/svelte";
     import { exportChat, importChat } from "../../ts/characters";
     import { findCharacterbyId } from "../../ts/util";
     import TextInput from "../UI/GUI/TextInput.svelte";
+    import { confirmTrashChat } from "src/ts/checkpoints/chatTrash";
     import { changeChatTo } from "src/ts/globalApi.svelte";
     import { initialChatBinding } from "src/ts/storage/chatBinding.svelte";
     import { initialChatToggles } from "src/ts/toggles/chatToggles.svelte";
     import { initialChatTranslation } from "src/ts/translator/chatTranslation.svelte";
-    import {
-        chatList,
-        createChat,
-        deleteChat,
-        isChatGenerating,
-        selectedChatId,
-        setChatMeta,
-    } from "src/ts/storage/chatStore.svelte";
+    import { activeChatList, createChat, selectedChatId, setChatMeta } from "src/ts/storage/chatStore.svelte";
 
     const currentCharacter = $derived(selectedCharacter());
     // The chat list entries and the selected chat id (the chat module's).
-    const chats = $derived(currentCharacter ? chatList(currentCharacter.chaId) : []);
+    const chats = $derived(currentCharacter ? activeChatList(currentCharacter.chaId) : []);
     const selectedId = $derived(currentCharacter ? selectedChatId(currentCharacter.chaId) : null);
     let editMode = $state(false);
     /** @type {{close?: any}} */
@@ -84,23 +77,7 @@
                         tabindex="0"
                         onclick={async (e) => {
                             e.stopPropagation();
-                            if (chats.length === 1) {
-                                alertError(language.errors.onlyOneChat);
-                                return;
-                            }
-                            const ref = { chaId: currentCharacter.chaId, chatId: chat.id };
-                            if (isChatGenerating(ref)) {
-                                alertError(language.chatGenerating);
-                                return;
-                            }
-                            const d = await alertConfirm(`${language.removeConfirm}${chat.name}`);
-                            if (d) {
-                                if (isChatGenerating(ref)) {
-                                    alertError(language.chatGenerating);
-                                    return;
-                                }
-                                deleteChat(ref);
-                            }
+                            await confirmTrashChat({ chaId: currentCharacter.chaId, chatId: chat.id }, chat.name);
                         }}
                         onkeydown={() => {}}
                     >

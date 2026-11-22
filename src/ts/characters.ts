@@ -707,7 +707,8 @@ export async function exportAllChats() {
         const chaId = char.chaId;
         const name = char.name;
         const allFolders = JSON.parse(JSON.stringify(char.chatFolders ?? []));
-        const allChats = (await readChatsDetached([chaId])).get(chaId) ?? [];
+        const records = (await readChatsDetached([chaId])).get(chaId) ?? [];
+        const allChats = records.filter((record) => record.trashedAt == null).map((record) => record.data);
         // One chat at a time: one that cannot be read goes out with no records, and the others go on.
         const structuredMemory: StructuredMemoryFileEntry[] = [];
         let withoutRecords = 0;

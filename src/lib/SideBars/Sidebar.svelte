@@ -1,7 +1,7 @@
 <script lang="ts">
     import { selectCharacter, selection } from "src/ts/storage/selection.svelte";
     import { selectedCharacter, characterList } from "src/ts/storage/characterStore.svelte";
-    import { chatList, selectedChatId } from "src/ts/storage/chatStore.svelte";
+    import { activeChatList, selectedChatId } from "src/ts/storage/chatStore.svelte";
     import {
         chatStatusKey,
         generatingBadgeKeys,
@@ -89,7 +89,7 @@
 
     const currentCharacter = $derived(selectedCharacter());
     const pinnedChats = $derived(
-        collectPinnedChats(characterList(), settings.characterOrder, chatList, language.unnamedPinnedChat),
+        collectPinnedChats(characterList(), settings.characterOrder, activeChatList, language.unnamedPinnedChat),
     );
     const summarizing = $derived(summarizingChats());
     const healthStates = $derived(memoryHealthStates());

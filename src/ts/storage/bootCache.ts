@@ -125,7 +125,9 @@ function readCachedCollection(record: CachedRecord): CachedChatCollection | null
                 !isValidResourceId(summary.id) ||
                 ids.has(summary.id) ||
                 typeof summary.name !== "string" ||
-                typeof summary.fmIndex !== "number"
+                typeof summary.fmIndex !== "number" ||
+                (summary.trashedAt !== undefined &&
+                    !(Number.isSafeInteger(summary.trashedAt) && Number(summary.trashedAt) >= 0))
             )
                 return null;
             const token = parseRevisionToken(summary.revision);

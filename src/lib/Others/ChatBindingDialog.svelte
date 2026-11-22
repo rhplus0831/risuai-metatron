@@ -22,7 +22,7 @@
     let closeButton: HTMLButtonElement | undefined = $state();
 
     $effect(() => {
-        if (!entry) {
+        if (!entry || entry.trashedAt !== undefined) {
             close();
         }
     });

@@ -10,6 +10,7 @@ import {
     adoptCharacter,
     forgetCharacterChats,
     installCharacterChats,
+    requestChatListRefresh,
     isCharacterGenerating,
     prepareChatInput,
 } from "./chatStore.svelte";
@@ -251,11 +252,12 @@ export function addPreparedCharacters(prepared: readonly PreparedCharacter[]): s
         ids.add(entry.chaId);
     }
     const installed: string[] = [];
+    const refresh: string[] = [];
     let indexes: number[];
     try {
         for (const { copy, chaId, chats } of prepared) {
             installed.push(chaId);
-            installCharacterChats(chaId, chats, copy);
+            if (installCharacterChats(chaId, chats, copy)) refresh.push(chaId);
         }
         indexes = insertCharacterRecords(prepared.map(({ copy }) => copy as unknown as Record<string, unknown>));
     } catch (error) {
@@ -263,6 +265,7 @@ export function addPreparedCharacters(prepared: readonly PreparedCharacter[]): s
         throw error;
     }
     for (let i = 0; i < prepared.length; i++) adoptCharacter(prepared[i].chaId, indexes[i]);
+    for (const id of refresh) requestChatListRefresh(id);
     checkCharOrder();
     return prepared.map(({ chaId }) => chaId);
 }
@@ -343,7 +346,7 @@ export function replaceCharacterAt(index: number, char: unknown): string {
     }
     // Read before the replacement: the old wrapper is detached once its character leaves the list.
     const replacedId = current?.chaId;
-    installCharacterChats(chaId, chats, copy);
+    const refresh = installCharacterChats(chaId, chats, copy);
     try {
         batchRecordWrites(() => {
             replaceCharacterRecordAt(index, copy as unknown as Record<string, unknown>);
@@ -369,6 +372,7 @@ export function replaceCharacterAt(index: number, char: unknown): string {
         forgetCharacterChats(replacedId);
     }
     adoptCharacter(chaId);
+    if (refresh) requestChatListRefresh(chaId);
     return chaId;
 }
 

@@ -29,7 +29,7 @@ vi.mock("src/ts/persona", async () => {
 
 import { language } from "src/lang";
 import { chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
-import { chatEntry, deleteChat, selectChat } from "src/ts/storage/chatStore.svelte";
+import { acceptRemoteChat, chatEntry, selectChat } from "src/ts/storage/chatStore.svelte";
 import { selectCharacter, selection, selectPersona } from "src/ts/storage/selection.svelte";
 import { activePersona, editedPersona } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
@@ -171,7 +171,9 @@ describe("the persona list with a chat open", () => {
         expect(list.close).toHaveBeenCalledTimes(1);
 
         const another = render(refJ);
-        deleteChat(refJ);
+        // Another tab deleted the chat for good; a whole read finds it gone.
+        acceptRemoteChat({ characterId: refJ.chaId, id: refJ.chatId, revision: null, data: null });
+        expect(chatEntry(refJ)).toBeUndefined();
         flushSync();
         expect(another.close).toHaveBeenCalledTimes(1);
     });

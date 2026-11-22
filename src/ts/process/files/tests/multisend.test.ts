@@ -290,7 +290,9 @@ describe("postChatFile with a PO file", () => {
         }
         for (const release of releases) expect(release).not.toHaveBeenCalled();
         selectCharacter("d");
-        if (change === "delete") chatStore.deleteChat(ref);
+        // Another tab deleted the chat for good; a whole read finds it gone.
+        if (change === "delete")
+            chatStore.acceptRemoteChat({ characterId: ref.chaId, id: ref.chatId, revision: null, data: null });
         if (change === "replace") chatStore.installCharacterChats("c", [emptyChat("k")], {});
         picker.resolve(files);
         sent.resolve(true);

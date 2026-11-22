@@ -9,7 +9,7 @@ import {
     type ResourceChangesSince,
     type ResourceRevisionListing,
 } from "../../../../shared/resources.ts";
-import { warmMutationGraph } from "./mutationStoresHarness";
+import { recoverOldDelete, warmMutationGraph } from "./mutationStoresHarness";
 import { type ServerFeedEvent, StoreBackedServer } from "./storeBackedServer";
 
 // Live updates over the real server store and its real change feed: every commit "another tab" (or
@@ -1057,7 +1057,7 @@ describe("chats and chat lists another writer changed", () => {
         expect(fake.batchCount()).toBe(0);
     });
 
-    it("keeps a chat deleted here out of the mirror while its delete is queued, and takes it back when the server refuses the delete", async () => {
+    it("keeps a chat whose delete an earlier build journaled out of the mirror while the delete is queued, and takes it back when the server refuses the delete", async () => {
         const { fake, chat, chatIds, intercept } = await boot();
         const seen: string[][] = [];
         intercept.beforeRequest = (path) => {
@@ -1066,7 +1066,7 @@ describe("chats and chat lists another writer changed", () => {
             }
         };
         // Both before the cycle: the list is read and applied while the delete is still queued.
-        chat.deleteChat({ chaId: "c", chatId: "j" });
+        recoverOldDelete(chat, { chaId: "c", chatId: "j" });
         fake.store.applyChanges({ chats: [create("c", "y")] });
         await settle(fake);
         expect(seen[0]).not.toContain("j");

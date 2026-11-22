@@ -22,7 +22,7 @@ vi.mock("src/ts/globalApi.svelte", async () => (await import("src/ts/tests/globa
 
 import { createTranslatorPreset } from "../../../shared/translatorPresets.ts";
 import { language } from "src/lang";
-import { chatEntry, deleteChat } from "src/ts/storage/chatStore.svelte";
+import { acceptRemoteChat, chatEntry } from "src/ts/storage/chatStore.svelte";
 import { settings } from "src/ts/storage/settingsViews.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import ChatTranslationPanel from "./ChatTranslationPanel.svelte";
@@ -244,7 +244,8 @@ describe("ChatTranslationPanel", () => {
     it("shows nothing for a chat that is gone or was never a member, and a write as the chat goes does not throw", () => {
         const panel = renderPanel(refK);
         const checkbox = panel.checkbox();
-        deleteChat(refK);
+        // Another tab deleted the chat for good; a whole read finds it gone.
+        acceptRemoteChat({ characterId: refK.chaId, id: refK.chatId, revision: null, data: null });
         expect(() => checkbox.click()).not.toThrow();
         flushSync();
         expect(panel.panel()).toBeNull();

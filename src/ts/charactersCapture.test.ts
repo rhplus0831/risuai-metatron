@@ -65,6 +65,15 @@ const settleMicrotasks = async () => {
     }
 };
 
+/** Deletes a chat for good from this tab, as the trash view does: the trash route, then its delete. */
+async function deleteForever(ref: { chaId: string; chatId: string }) {
+    const chat = await import("./storage/chatStore.svelte");
+    const trash = await import("./checkpoints/chatTrash");
+    expect(await trash.trashChat(ref, chat.chatTrashRevision(ref))).toBe(true);
+    expect(await trash.deleteChatForever(ref, chat.chatTrashRevision(ref))).toBe(true);
+    expect(chat.findChat(ref)).toBeUndefined();
+}
+
 async function boot() {
     vi.resetModules();
     const booted = await bootMutations((fake) => {
@@ -294,7 +303,7 @@ describe("handlers that await keep their target", () => {
         alerts.select.mockReturnValueOnce(dialog.promise);
         const running = characters.exportChat("k");
         await settleMicrotasks();
-        chat.deleteChat({ chaId: "c", chatId: "k" });
+        await deleteForever({ chaId: "c", chatId: "k" });
         dialog.resolve("0");
         await running;
         expect(downloads).toEqual([]);
@@ -460,12 +469,14 @@ describe("handlers that await keep their target", () => {
     )("addGroupChar uses only its captured greeting destination across $wait ($change)", async ({ wait, change }) => {
         alerts.selectChar.mockReset();
         alerts.confirm.mockReset();
-        const { characters, characterStore, chat, group, character } = await boot();
+        const { characters, characterStore, chat, group, character, sync } = await boot();
         characterStore.updateCharacter("d", { firstMessage: "Welcome from D" });
         const groupId = characters.createNewGroup();
         characterStore.selectCharacter(groupId);
         const ref = { chaId: groupId, chatId: chat.selectedChatId(groupId)! };
         const other = chat.createChat(groupId, { name: "Other", note: "", localLore: [], message: [] });
+        // A permanent deletion needs the chat's acknowledged revision.
+        if (change === "delete") await sync.flushResources();
         const originalPin = chat.pinChat;
         const releases: ReturnType<typeof vi.fn>[] = [];
         vi.spyOn(chat, "pinChat").mockImplementation((target) => {
@@ -488,7 +499,7 @@ describe("handlers that await keep their target", () => {
             await confirming.promise;
         }
         chat.selectChat(groupId, other.id!);
-        if (change === "delete") chat.deleteChat(ref);
+        if (change === "delete") await deleteForever(ref);
         if (change === "replace") {
             chat.installCharacterChats(
                 groupId,

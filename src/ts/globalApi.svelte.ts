@@ -20,7 +20,14 @@ import { hasher } from "./parser/parser.svelte";
 import { markTransient } from "./parser/renderErrors";
 import { characterURLImport } from "./characterCards";
 import { defaultJailbreak, defaultMainPrompt, oldJailbreak, oldMainPrompt } from "./storage/defaultPrompts";
-import { chatEntry, chatList, currentChatRef, ensureChat, selectChat, type ChatRef } from "./storage/chatStore.svelte";
+import {
+    isActiveChat,
+    activeChatList,
+    currentChatRef,
+    ensureChat,
+    selectChat,
+    type ChatRef,
+} from "./storage/chatStore.svelte";
 import { selectCharacter, setChatOpen } from "./storage/selection.svelte";
 import {
     readAsset,
@@ -1536,7 +1543,7 @@ export function changeChatTo(IdOrIndex: string | number) {
     if (!character) {
         return;
     }
-    selectChat(character.chaId, IdOrIndex);
+    if (!selectChat(character.chaId, IdOrIndex)) return;
     setChatOpen(true);
     ReloadGUIPointer.set(Math.random());
 }
@@ -1546,12 +1553,12 @@ export function changeChatTo(IdOrIndex: string | number) {
  * so only the target chat is loaded; a missing character or chat entry leaves selection unchanged.
  */
 export function openPinnedChat(ref: ChatRef, reseter?: () => void) {
-    if (!findCharacter(ref.chaId) || !chatEntry(ref)) {
+    if (!findCharacter(ref.chaId) || !isActiveChat(ref)) {
         return;
     }
     reseter?.();
     ensureChat(ref.chaId);
-    selectChat(ref.chaId, ref.chatId);
+    if (!selectChat(ref.chaId, ref.chatId)) return;
     PlaygroundStore.set(ref.chaId === "§playground" ? 2 : 0);
     OpenRealmStore.set(false);
     selectCharacter(ref.chaId);
@@ -1568,7 +1575,7 @@ export function createChatCopyName(
     let name = originalName.replaceAll(/\(((Copy|Branch|Settings)( \d+)?)\)$/g, "").trim();
     let copyIndex = 1;
     let newName = `${name} (${type})`;
-    const names = new Set(chatList(chaId).map((entry) => entry.name));
+    const names = new Set(activeChatList(chaId).map((entry) => entry.name));
     while (names.has(newName)) {
         copyIndex++;
         newName = `${name} (${type} ${copyIndex})`;

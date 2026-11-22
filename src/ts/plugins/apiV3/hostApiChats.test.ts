@@ -4,10 +4,11 @@ import type { Chat } from "../../../../shared/database";
 // The character records hold no chats, so the v3 host builds the legacy shape at the boundary and
 // the setters load first.
 // - `getChar`/`getCharacterFromIndex`/`getDatabase` answer a detached character with its chats and
-//   `chatPage`; `getChatFromIndex` finds its chat again after the load (null once it is deleted).
-// - `setChar` reconciles the chats through the chat module: an omitted chat is deleted (never the
-//   last one), a `chatPage` selects, and the pins taken for the load are released on success and on
-//   a refusal.
+//   `chatPage`; `getChatFromIndex` finds its chat again after the load (null once it is trashed or
+//   deleted).
+// - `setChar` reconciles the chats through the chat module: an omitted chat stays a member in its
+//   slot, a `chatPage` selects the chat at that index of the plugin's list, and the pins taken for
+//   the load are released on success and on a refusal.
 // - `setDatabaseLite` applies at once when no chats load (the forwarded fields see the selection of
 //   the call), after the load otherwise; a character deleted while its chats load is skipped, not
 //   recreated.
@@ -252,7 +253,8 @@ describe("the getters", () => {
     it.each([
         { change: "reorder", expectedId: "k", total: 3 },
         { change: "insert", expectedId: "k", total: 4 },
-        { change: "delete", expectedId: "last", total: 2 },
+        { change: "trash", expectedId: "last", total: 2 },
+        { change: "permanent deletion", expectedId: "last", total: 2 },
     ])("getChats follows a member $change while its page is loading", async ({ change, expectedId, total }) => {
         installDatabase(
             { characters: [{ ...liveCharacters()[0], chats: [chat("k", "K"), chat("j", "J"), chat("last", "Last")] }] },
@@ -266,7 +268,9 @@ describe("the getters", () => {
         try {
             if (change === "reorder") chatStore.reorderChats("c", ["last", "k", "j"]);
             else if (change === "insert") chatStore.createChat("c", chat("new", "New"), { index: 0 });
-            else chatStore.deleteChat(refK);
+            else if (change === "trash") chatStore.installChatTrashState(refK, REVISION, 80);
+            // Another tab deleted the chat for good; a whole read finds it gone.
+            else chatStore.acceptRemoteChat({ characterId: "c", id: "k", revision: null, data: null });
         } finally {
             release();
         }
@@ -305,7 +309,7 @@ describe("the getters", () => {
         expect(chatStore.isChatPinned("d")).toBe(false);
     });
 
-    it("getChatFromIndex finds its chat again after the load: the chat as it is then, null once it was deleted", async () => {
+    it("getChatFromIndex finds its chat again after the load: the chat as it is then, null once it was trashed or deleted", async () => {
         const api = await makeApi();
         expect((await api.getChatFromIndex(0, 0)).id).toBe("k");
         expect(await api.getChatFromIndex(0, 5)).toBeNull();
@@ -315,8 +319,15 @@ describe("the getters", () => {
         chatStore.setChatMeta(refK, { note: "changed meanwhile" });
         expect((await changed).note).toBe("changed meanwhile");
 
+        const trashed = api.getChatFromIndex(0, 0);
+        chatStore.installChatTrashState(refK, REVISION, 80);
+        expect(await trashed).toBeNull();
+        chatStore.installChatTrashState(refK, REVISION, null);
+        expect((await api.getChatFromIndex(0, 0)).id).toBe("k");
+
         const deleted = api.getChatFromIndex(0, 0);
-        chatStore.deleteChat(refK);
+        // Another tab deleted the chat for good; a whole read finds it gone.
+        chatStore.acceptRemoteChat({ characterId: "c", id: "k", revision: null, data: null });
         expect(await deleted).toBeNull();
         // The index named `k` when the call came, not `j` (now at index 0).
         expect(chatIds("c")).toEqual(["j"]);
@@ -520,18 +531,23 @@ describe("retained plugin chat reads", () => {
 });
 
 describe("the setters", () => {
-    it("setChar outside a hook applies the fields, deletes an omitted chat through the chat module (never the last one), and a chatPage selects", async () => {
+    it("setChar outside a hook applies the fields, keeps an omitted chat in its slot, and a chatPage selects in the plugin's list", async () => {
         const api = await makeApi();
         const got = await api.getChar();
         await api.setChar({ ...got, name: "Renamed", chats: [got.chats[0]], chatPage: 0 });
         expect(characterList()[0].name).toBe("Renamed");
-        expect(chatIds("c")).toEqual(["k"]);
-        expect(chatStore.findChat({ chaId: "c", chatId: "j" })).toBeUndefined();
+        // The omitted chat stays a member in its slot: no delete is queued and the order is unchanged.
+        expect(chatIds("c")).toEqual(["k", "j"]);
+        expect(chatStore.chatEntry({ chaId: "c", chatId: "j" })).toMatchObject({ name: "J" });
+        expect(chatStore.selectedChatId("c")).toBe("k");
+        const work = chatStore.takeChatWork(new Set());
+        expect(work.groups.flatMap((group) => group.ops.map((op) => op.op))).not.toContain("delete");
+        for (const order of work.orders) expect(order.ids).toEqual(["k", "j"]);
         expect(chatStore.isChatPinned("c")).toBe(false);
 
-        // The last chat is never deleted (the list keeps it, without a warning).
+        // An empty list keeps every chat too (without a warning).
         await api.setChar({ ...(await api.getChar()), chats: [] });
-        expect(chatIds("c")).toEqual(["k"]);
+        expect(chatIds("c")).toEqual(["k", "j"]);
         expect(warnings()).toEqual([]);
 
         await api.setChar({
@@ -539,10 +555,15 @@ describe("the setters", () => {
             chats: [chat("n", "N"), ...(await api.getChar()).chats],
             chatPage: 0,
         });
-        expect(chatIds("c")).toEqual(["n", "k"]);
+        expect(chatIds("c")).toEqual(["n", "k", "j"]);
         expect(chatStore.selectedChatId("c")).toBe("n");
         await api.setChar({ ...(await api.getChar()), chatPage: 1 });
         expect(chatStore.selectedChatId("c")).toBe("k");
+        // `chatPage` indexes the plugin's own list, not the member order.
+        const all = await api.getChar();
+        await api.setChar({ ...all, chats: [all.chats[2]], chatPage: 0 });
+        expect(chatIds("c")).toEqual(["n", "k", "j"]);
+        expect(chatStore.selectedChatId("c")).toBe("j");
     });
 
     it("the pins taken for a setter's load are released after a refusal too", async () => {
@@ -673,7 +694,7 @@ describe("lazy loading", () => {
         expect(chatStore.isChatPinned("d")).toBe(false);
     });
 
-    it("setChar after an eviction: the plugin's change to the evicted chat is applied as a change, not a create; a chat left out of the list is deleted through the order", async () => {
+    it("setChar after an eviction: the plugin's change to the evicted chat is applied as a change, not a create; a chat left out of the list stays in its slot", async () => {
         installDatabase({ characters: manyCharacters(), pluginCustomStorage: undefined });
         chatStore.initializeChats();
         seedRevisions();
@@ -708,23 +729,19 @@ describe("lazy loading", () => {
                 ),
         });
         // The evicted chats were loaded for the reconcile (one read) and the changed one changed in
-        // place: a `meta` change, no create; the omitted one is deleted.
+        // place: a `meta` change, no create; the omitted one stays a member in its slot, with no op.
         expect(reads.count).toBe(1);
-        expect(chatIds("c")).toEqual(got.chats.map((entry: any) => entry.id).filter((id: string) => id !== omitted));
+        expect(chatIds("c")).toEqual(got.chats.map((entry: any) => entry.id));
+        expect(chatStore.chatEntry({ chaId: "c", chatId: omitted })).toBeDefined();
         expect(chatStore.findChat({ chaId: "c", chatId: changed })).toMatchObject({
             note: "from the plugin",
             name: "Renamed",
             message: [{ chatId: `${changed}-0`, data: "changed while evicted" }],
         });
         expect(chatStore.chatEntry({ chaId: "c", chatId: changed })?.name).toBe("Renamed");
-        const ops = queuedOps().filter(([id]) => id === changed || id === omitted);
-        expect(ops).toEqual(
-            expect.arrayContaining([
-                [changed, ["meta"]],
-                [omitted, ["delete"]],
-            ]),
-        );
-        expect(ops).toHaveLength(2);
+        const ops = queuedOps();
+        expect(ops.filter(([id]) => id === changed || id === omitted)).toEqual([[changed, ["meta"]]]);
+        expect(ops.flatMap(([, names]) => names)).not.toContain("delete");
         expect(warnings()).toEqual([]);
         expect(chatStore.isChatPinned("c")).toBe(false);
     });
@@ -1113,5 +1130,58 @@ describe("plugin writes of chat bindings", () => {
             draft.promptPresetId = "another-preset";
         });
         expect(chatStore.findChat(refK)).toMatchObject({ ...binding, promptPresetId: "another-preset" });
+    });
+});
+
+describe("plugin access to active chats", () => {
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+        vi.spyOn(permissionStore, "recordPermissionGrants").mockResolvedValue(undefined);
+    });
+    afterEach(() => vi.useRealTimers());
+
+    it("keeps omitted and trashed chats in their slots and resolves chatPage in the plugin's list", async () => {
+        const order = ["omitted", "hidden", "left", "right"];
+        installDatabase({ characters: [{ ...liveCharacters()[0], chats: order.map((id) => chat(id, id)) }] });
+        const api = await makeApi();
+        const copy = await api.getChar();
+        const [, hidden, left, right] = copy.chats;
+        chatStore.installChatTrashState({ chaId: "c", chatId: "hidden" }, REVISION, 80);
+        // The incoming copy predates the mark. It can neither edit nor reorder that member.
+        await api.setChar({ ...copy, chats: [right, { ...hidden, note: "stale edit" }, left], chatPage: 0 });
+        expect(chatIds("c")).toEqual(["omitted", "hidden", "right", "left"]);
+        expect(chatStore.findChat({ chaId: "c", chatId: "hidden" })?.note).toBe("");
+        expect(chatStore.selectedChatId("c")).toBe("right");
+        expect(await api.getCurrentChatIndex()).toBe(1);
+        expect((await api.getChatFromIndex(0, 2)).id).toBe("left");
+        expect(await api.getChatFromIndex(0, 3)).toBeNull();
+        expect(await api.getChats("c", { offset: 1, limit: 2 })).toMatchObject({
+            chats: [{ id: "right" }, { id: "left" }],
+            total: 3,
+        });
+        expect((await api.getChar()).chats.map((row: Chat) => row.id)).toEqual(["omitted", "right", "left"]);
+    });
+
+    it("ignores an indexed write when its target is trashed during consent", async () => {
+        vi.spyOn(permissionStore, "hasPermissionGrant").mockReturnValue(false);
+        vi.spyOn(permissionStore, "getLastGrantTime").mockReturnValue(undefined);
+        const api = await makeApi();
+        let consent!: (yes: boolean) => void;
+        const shown = new Promise<void>((resolve) => {
+            vi.mocked(alertConfirm).mockImplementationOnce(
+                () =>
+                    new Promise<boolean>((grant) => {
+                        consent = grant;
+                        resolve();
+                    }),
+            );
+        });
+        const write = api.setChatToIndex(0, 0, { note: "outdated" });
+        await shown;
+        chatStore.installChatTrashState(refK, REVISION, 80);
+        consent(true);
+        await write;
+        expect(chatStore.findChat(refK)?.note).toBe("");
+        expect(chatStore.findChat({ chaId: "c", chatId: "j" })?.note).toBe("");
     });
 });

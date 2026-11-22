@@ -1141,3 +1141,43 @@ it("keeps imported memory connection ids that exist locally and drops ids of mis
         }
     }
 });
+
+describe("exports after a remote trash", () => {
+    it("omits the marked transcript and its memory from the chat archive and dataset", async () => {
+        const b = await boot();
+        b.select(b.beta);
+        b.chat.appendMessage(
+            { chaId: b.beta, chatId: "b1" },
+            { role: "user", chatId: "keep", data: "keep this transcript" },
+        );
+        b.chat.appendMessage(
+            { chaId: b.beta, chatId: "b2" },
+            { role: "user", chatId: "hidden", data: "trashed transcript" },
+        );
+        await b.sync.flushResources();
+        const { store } = b.fake;
+        const result = store.changeChatTrash(
+            "trash",
+            {
+                characterId: b.beta,
+                chatId: "b2",
+                revision: b.fake.chat(b.beta, "b2")!.revision,
+            },
+            store.epoch(),
+            b.fake.chatHeld,
+        );
+        expect(result).not.toHaveProperty("error");
+        // Only the detached server read knows about the mark.
+        const memoryRequests = serveMemory(b, (id, route) => memoryRead(fileRecords(id), route));
+        await b.characters.exportAllChats();
+        const { exportAsDataset } = await import("./storage/exportAsDataset");
+        await exportAsDataset();
+        expect(b.downloads).toHaveLength(2);
+        const archive = JSON.parse(b.downloads[0].data);
+        expect(archive.data.map((entry: Chat) => entry.id)).toEqual(["b1"]);
+        expect(memoryRequests.map((request) => request.chatId)).not.toContain("b2");
+        expect(JSON.parse(b.downloads[1].data).filter((row: { name: string }) => row.name === "Beta")).toMatchObject([
+            { chats: [{ data: "keep this transcript" }] },
+        ]);
+    });
+});

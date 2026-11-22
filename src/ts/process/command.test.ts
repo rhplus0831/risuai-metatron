@@ -443,45 +443,21 @@ describe("the chat a line started in", () => {
         const refJ = freshChat();
         chat.selectChat("c", refK.chatId);
         hooks.input = async () => {
-            chat.deleteChat(refK);
+            // Another tab deletes the chat for good; its chat list arrives.
+            server.deleteChatForever("c", refK.chatId);
+            chat.acceptRemoteCollection(server.store.readRefs([], { chatCollections: ["c"] }).chatCollections[0]);
             return "typed";
         };
         expect(await processMultiCommand("/input question | /send after the wait")).toBe("");
         expect(chat.findChat(refK)).toBeUndefined();
+        expect(chat.chatList("c").map((entry) => entry.id)).not.toContain(refK.chatId);
         expect(texts(refJ)).toEqual(["A", "B", "C", "D"]);
         expect(chat.currentChatRef()).not.toBeNull();
-        // The queued delete is all the line left behind; the server refuses delete ops (`useTrash`),
-        // and the conflict's list read gives the chat back as the server holds it, with nothing left to send.
-        const deletion = chat.takeChatWork(new Set());
-        expect(deletion.groups.map((group) => [group.chatId, group.ops])).toEqual([[refK.chatId, [{ op: "delete" }]]]);
-        let conflicts: any[] = [];
-        try {
-            server.store.applyChanges({
-                chats: deletion.groups.map(({ characterId, chatId, baseRevision, ops }) => ({
-                    characterId,
-                    chatId,
-                    baseRevision,
-                    ops,
-                })),
-            });
-        } catch (error) {
-            conflicts = (error as { conflicts: any[] }).conflicts;
-        }
-        expect(conflicts).toEqual([expect.objectContaining({ id: refK.chatId, reason: "useTrash" })]);
-        const { refresh } = chat.recoverChatConflicts(
-            deletion,
-            new Set([`c\u0000${refK.chatId}`]),
-            new Set(),
-            server.store.readRefs([], { chats: [{ characterId: "c", id: refK.chatId }] }).chats as any,
-        );
-        for (const characterId of refresh) {
-            chat.acceptRemoteCollection(
-                server.store.readRefs([], { chatCollections: [characterId] }).chatCollections[0],
-            );
-        }
-        expect(chat.chatList("c").map((entry) => entry.id)).toContain(refK.chatId);
-        expect(server.texts("c", refK.chatId)).toEqual(["A", "B", "C", "D"]);
-        expect(chat.takeChatWork(new Set()).groups).toEqual([]);
+        expect(hooks.sends).toEqual([]);
+        // The line left nothing to send, and the server holds no chat under the id.
+        expect(chat.takeChatWork(new Set())).toEqual({ groups: [], orders: [] });
+        expect(server.chat("c", refK.chatId)).toBeNull();
+        expect(server.texts("c", refJ.chatId)).toEqual(["A", "B", "C", "D"]);
     });
 
     it("/trigger runs the manual trigger on the server for the line's chat and writes nothing in the tab", async () => {

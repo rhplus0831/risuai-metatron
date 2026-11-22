@@ -1073,7 +1073,8 @@ describe("feed patches through the tab save adapter", () => {
             count: 3,
             rowDiffs: [{ id: "b", text: { keep: 1, text: "!", ...(base === undefined ? {} : { base }) } }],
         } as Parameters<ChatModule["noteRemoteChat"]>[2];
-        expect(b.chat.noteRemoteChat(refK, revision, body)).toBe(outcome);
+        // The mark rides beside the revision, as the server's feed entry carries it.
+        expect(b.chat.noteRemoteChat(refK, revision, body, { trashedAt: null })).toBe(outcome);
         const applied = outcome === "ignored";
         expect(mirror(b).message[1].data).toBe(applied ? "B!" : "B");
         expect(b.chat.heldChatRevision(refK)).toBe(applied ? revision : baseRevision);

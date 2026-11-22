@@ -51,9 +51,9 @@ import {
  * `/api/llm-secrets/*` for the credential writes; and `POST /api/import/module`, the `.risum`
  * import's answer without its asset store, and `POST /api/import/charx`, the CharX import's answer
  * without its asset store, and `POST /api/assets/missing`, which answers every key present, since
- * these tests take the keys the import routes and `saveAsset` spies hand out as stored. The
- * hooks mirror `FakeResourceServer`'s: hold a batch, drop or hold a response after it was applied,
- * fail requests.
+ * these tests take the keys the import routes and `saveAsset` spies hand out as stored. The chat
+ * trash routes pass the request epoch and chat lock to the store. The hooks mirror
+ * `FakeResourceServer`'s: hold a batch, drop or hold a response after it was applied, fail requests.
  *
  * The server modules are loaded at run time (`create`) through a computed specifier: the client
  * `tsconfig.json` is not strict and must not type-check the strict server sources, so a static
@@ -337,19 +337,21 @@ export class StoreBackedServer {
         return this.store.applyChanges({ chats });
     }
 
+    readonly chatHeld = (characterId: string, chatId: string) =>
+        (this.lock?.chatHolders(characterId, chatId).size ?? 0) > 0;
+
     /**
      * Deletes a chat for good as another tab does (`POST /api/chat-trash/trash`, then `delete` on
      * the token the trash answered): the same tombstone, order change, and invalidation. The
      * character needs another chat that is not in the trash. Throws on a refusal.
      */
     deleteChatForever(characterId: string, chatId: string): ChatTrashAnswer {
-        const held = (character: string, id: string) => (this.lock?.chatHolders(character, id).size ?? 0) > 0;
         const change = (action: ChatTrashAction, revision: string) => {
             const answer = this.store.changeChatTrash(
                 action,
                 { characterId, chatId, revision },
                 this.store.epoch(),
-                held,
+                this.chatHeld,
             );
             if ("error" in answer) {
                 throw new Error(`chat ${action} of ${characterId}/${chatId} refused: ${answer.error}`);
@@ -606,6 +608,17 @@ export class StoreBackedServer {
             return Response.json(failure.body ?? { error: `failed ${failure.status}` }, { status: failure.status });
         }
         const headers = new Headers(init.headers);
+
+        for (const action of ["trash", "restore", "delete"] as const) {
+            if (method === "POST" && url.pathname === `/api/chat-trash/${action}`) {
+                const epoch = headers.get(RESOURCE_EPOCH_HEADER);
+                if (epoch !== this.store.epoch()) {
+                    return Response.json({ error: "EpochMismatch", epoch: this.store.epoch() }, { status: 412 });
+                }
+                const result = this.store.changeChatTrash(action, body, epoch, this.chatHeld);
+                return Response.json(result, { status: "error" in result ? 409 : 200 });
+            }
+        }
 
         if (this.structuredMemoryReads && url.pathname.startsWith(`${STRUCTURED_MEMORY_PATH}/`)) {
             if (headers.get(RESOURCE_EPOCH_HEADER) !== this.store.epoch()) {

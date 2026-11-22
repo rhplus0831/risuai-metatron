@@ -51,7 +51,7 @@ export function collectPinnedChats(
             continue;
         }
         for (const chat of chatListOf(chaId)) {
-            if (chat.pinned === true) {
+            if (chat.trashedAt === undefined && chat.pinned === true) {
                 pinned.push({
                     chaId,
                     chatId: chat.id,

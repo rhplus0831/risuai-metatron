@@ -7,19 +7,10 @@ import {
     type CheckpointPolicy,
     type CheckpointSummary,
 } from "../../../shared/chatCheckpoints.ts";
-import { compareRevision, RESOURCE_EPOCH_HEADER } from "../../../shared/resources.ts";
+import { compareRevision } from "../../../shared/resources.ts";
 import { isPlainObject } from "../../../shared/valueKinds.ts";
-import { heldChatRevision, isChatGenerating, loadChat, type ChatRef } from "../storage/chatStore.svelte";
-import { epochMismatch, getResourceEpoch } from "../storage/resourceClient";
-import { waitForResourceFlush } from "../storage/resourceFlushWait";
-import {
-    assertSaveAdmission,
-    flushResources,
-    GenerationBlockedError,
-    generatingNoticeCount,
-    refusedItems,
-} from "../storage/resourceSync.svelte";
-import { authFetch } from "../storage/serverAuth";
+import { heldChatRevision, isActiveChat, loadChat, type ChatRef } from "../storage/chatStore.svelte";
+import { prepare, request, type Answer } from "./chatRequest";
 
 /**
  * The checkpoint client (`/api/chat-checkpoints`). Requests use `authFetch`; a mutation sends
@@ -82,55 +73,11 @@ export type CheckpointLoadResult =
     | { status: "unknown" }
     | CheckpointFailure;
 
-type Answer =
-    | { kind: "response"; status: number; body: Record<string, unknown> | null }
-    | { kind: "failed"; dispatched: boolean };
-
 const path = "/api/chat-checkpoints";
 const address = (ref: ChatRef) => ({ characterId: ref.chaId, chatId: ref.chatId });
 
-/** Transport failures stay distinct from admission failures; epoch changes always throw to the caller. */
-async function request(url: string, body?: Record<string, unknown>, method = "POST"): Promise<Answer> {
-    let dispatched = body === undefined;
-    let response: Response;
-    try {
-        response = await authFetch(
-            url,
-            body === undefined
-                ? { cache: "no-store" }
-                : {
-                      method,
-                      cache: "no-store",
-                      headers: { "content-type": "application/json", [RESOURCE_EPOCH_HEADER]: getResourceEpoch() },
-                      body: JSON.stringify(body),
-                  },
-            body === undefined
-                ? {}
-                : {
-                      beforeDispatch: () => {
-                          assertSaveAdmission();
-                          dispatched = true;
-                      },
-                  },
-        );
-    } catch {
-        return { kind: "failed", dispatched };
-    }
-    let parsed: unknown = null;
-    try {
-        parsed = await response.json();
-    } catch {
-        // A 200 load is committed even if its response body cannot be read.
-    }
-    const result = isPlainObject(parsed) ? parsed : null;
-    if (response.status === 412 && result?.error === "EpochMismatch" && typeof result.epoch === "string") {
-        throw epochMismatch(result.epoch);
-    }
-    const epoch = getResourceEpoch();
-    if (epoch && typeof result?.epoch === "string" && result.epoch !== epoch) {
-        throw epochMismatch(result.epoch);
-    }
-    return { kind: "response", status: response.status, body: result };
+function requireActive(ref: ChatRef) {
+    if (!isActiveChat(ref)) throw new Error("The checkpoint chat is no longer active");
 }
 
 function failure(answer: Answer): CheckpointFailure {
@@ -208,37 +155,6 @@ export async function listCheckpoints(ref: ChatRef): Promise<CheckpointResult<{ 
     return failure(answer);
 }
 
-function localRefusal(ref: ChatRef): CheckpointFailure | null {
-    if (isChatGenerating(ref)) return { status: "not-sent", reason: "generating" };
-    if (
-        refusedItems().some(
-            (item) =>
-                (item.kind === "chat" && item.chaId === ref.chaId && item.chatId === ref.chatId) ||
-                (item.kind === "order" && item.chaId === ref.chaId),
-        )
-    ) {
-        return { status: "not-sent", reason: "refused" };
-    }
-    return null;
-}
-
-async function prepare(ref: ChatRef): Promise<CheckpointFailure | null> {
-    const refused = localRefusal(ref);
-    if (refused) return refused;
-    const notices = generatingNoticeCount();
-    try {
-        const { discarded } = await waitForResourceFlush(flushResources());
-        if (discarded.includes(`chats/${ref.chaId}/${ref.chatId}`) || discarded.includes(`chats/${ref.chaId}`)) {
-            return { status: "not-sent", reason: "discarded" };
-        }
-    } catch (error) {
-        return error instanceof GenerationBlockedError
-            ? { status: "not-sent", reason: "generating", noticeShown: generatingNoticeCount() !== notices }
-            : { status: "not-sent", reason: "saveFailed" };
-    }
-    return localRefusal(ref);
-}
-
 export async function saveCheckpoint(
     ref: ChatRef,
     name: string,
@@ -277,11 +193,16 @@ export async function deleteCheckpoint(
     ref: ChatRef,
     checkpoint: Pick<CheckpointSummary, "id" | "revision">,
 ): Promise<CheckpointResult> {
-    const answer = await request(`${path}/delete`, {
-        ...address(ref),
-        id: checkpoint.id,
-        baseRevision: checkpoint.revision,
-    });
+    const answer = await request(
+        `${path}/delete`,
+        {
+            ...address(ref),
+            id: checkpoint.id,
+            baseRevision: checkpoint.revision,
+        },
+        "POST",
+        () => requireActive(ref),
+    );
     return answer.kind === "response" && answer.status === 200 && answer.body?.ok === true
         ? { status: "ok" }
         : failure(answer);
@@ -306,7 +227,9 @@ export async function loadCheckpoint(ref: ChatRef, id: string): Promise<Checkpoi
         if (refused) return refused;
         const chatBaseRevision = heldChatRevision(ref);
         if (chatBaseRevision === null) return { status: "not-sent", reason: "unsaved" };
-        const answer = await request(`${path}/load`, { ...address(ref), id, chatBaseRevision });
+        const answer = await request(`${path}/load`, { ...address(ref), id, chatBaseRevision }, "POST", () =>
+            requireActive(ref),
+        );
         if (answer.kind === "failed" && !answer.dispatched) return failure(answer);
         if (answer.kind === "response") {
             if (answer.status === 200) {

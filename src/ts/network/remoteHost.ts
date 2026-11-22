@@ -458,9 +458,16 @@ async function runHostCommand(run: HostRun) {
         const target = { chaId: command.chaId, chatId: command.chatId };
         if (run.controller.signal.aborted) return refuse("stopped");
         if (safeBootOff("plugins")) return refuse("pluginsOff");
-        if (!characters.characterList().some((char) => char?.chaId === target.chaId) || !chats.chatEntry(target)) {
-            return refuse("chatMissing");
-        }
+        const canOpenTarget = () => {
+            const entry = chats.chatEntry(target);
+            return (
+                entry &&
+                entry.trashedAt === undefined &&
+                !chats.isChatKnownAbsent(target) &&
+                characters.characterList().some((char) => char?.chaId === target.chaId)
+            );
+        };
+        if (!canOpenTarget()) return refuse("chatMissing");
         if (!read.attempted && isLocalSend(target)) return refuse("busy");
         releasePlugins = transport.jobs.holdGenerationPluginWork();
         const { pluginsStarted } = await import("../plugins/plugins.svelte");
@@ -477,6 +484,7 @@ async function runHostCommand(run: HostRun) {
         ]);
         if (epochHalted || run.epoch !== getResourceEpoch()) return;
         if (run.controller.signal.aborted) return refuse("stopped");
+        if (!canOpenTarget()) return refuse("chatMissing");
         releaseChat = chats.pinChat(target);
         chats.selectChat(target.chaId, target.chatId);
         selection.selectCharacter(target.chaId);

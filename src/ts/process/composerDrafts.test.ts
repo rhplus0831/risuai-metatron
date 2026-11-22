@@ -12,9 +12,9 @@ import { installFlatDatabaseWithChats } from "../storage/tests/installFlatDataba
 import {
     acceptRemoteChat,
     applyRemoteCollection,
-    deleteChat,
     forgetCharacter,
     seedChats,
+    settleDeletedChat,
 } from "../storage/chatStore.svelte";
 import { composerSendText, createSendDrafts } from "./sendDraft";
 import { createComposer } from "./composerDrafts.svelte";
@@ -668,8 +668,9 @@ describe("durable composers", () => {
             installFlatDatabaseWithChats({
                 characters: [{ chaId: "c", type: "character", name: "C", chats: [chat("a"), chat("b")] }],
             });
+            const revision = "00000000-0000-0000-0000-000000000000:1:1";
             seedChats(
-                ["a", "b"].map((id) => ({ characterId: "c", id, revision: "r1", data: chat(id) })),
+                ["a", "b"].map((id) => ({ characterId: "c", id, revision, trashedAt: null, data: chat(id) })),
                 [{ characterId: "c", revision: "o1", ids: ["a", "b"] }],
             );
             const first = composer();
@@ -680,14 +681,15 @@ describe("durable composers", () => {
             await drive(first.flush());
             first.input = "queued edit";
             const pendingWrite = first.flush();
-            if (kind === "local chat") deleteChat({ chaId: "c", chatId: "a" });
+            // This tab's permanent deletion: `deleteChatForever`'s answer names the deleted incarnation.
+            if (kind === "local chat") settleDeletedChat({ chaId: "c", chatId: "a" }, revision);
             if (kind === "remote chat") acceptRemoteChat({ characterId: "c", id: "a", revision: null, data: null });
             if (kind === "remote collection")
                 expect(
                     applyRemoteCollection({
                         characterId: "c",
                         order: { characterId: "c", revision: "o2", ids: ["b"] },
-                        chats: [{ characterId: "c", id: "b", revision: "r1", trashedAt: null, data: chat("b") }],
+                        chats: [{ characterId: "c", id: "b", revision, trashedAt: null, data: chat("b") }],
                     }),
                 ).toBe(true);
             if (kind === "remote character") forgetCharacter("c", { discard: true });

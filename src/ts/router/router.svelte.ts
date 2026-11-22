@@ -10,7 +10,7 @@ import {
 } from "../stores.svelte";
 import { MODEL_SETTINGS_MENU, PROMPT_SETTINGS_MENU } from "../settingsMenu";
 import { findCharacter } from "../storage/characterStore.svelte";
-import { ensureChat, selectChat, selectedChatId } from "../storage/chatStore.svelte";
+import { chatEntry, ensureChat, selectChat, selectedChatId } from "../storage/chatStore.svelte";
 import { characterIndex } from "../storage/records.svelte";
 import { selectCharacter, selection, setChatOpen } from "../storage/selection.svelte";
 import {
@@ -281,7 +281,11 @@ function applyBase(route: Route) {
             ensureChat(chaId);
             if (route.chatId !== null) {
                 // Before the selection, so selecting loads this chat and not the previous one.
-                selectChat(chaId, route.chatId);
+                if (!selectChat(chaId, route.chatId) && chatEntry({ chaId, chatId: route.chatId })) {
+                    if (chaId === PLAYGROUND_CHA_ID) applyBase({ kind: "playground" });
+                    else applyBase({ kind: "chat", chaId, chatId: null });
+                    return;
+                }
             }
             PlaygroundStore.set(chaId === PLAYGROUND_CHA_ID ? 2 : 0);
             OpenRealmStore.set(false);

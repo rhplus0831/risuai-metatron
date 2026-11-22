@@ -1549,7 +1549,7 @@ it("rereads contents and the active tab when the open chat is installed, and whe
                 Response.json({
                     epoch,
                     items: [],
-                    chats: [{ characterId: "c", id: "k", revision: revision(2), data: loadedChat }],
+                    chats: [{ characterId: "c", id: "k", revision: revision(2), trashedAt: null, data: loadedChat }],
                 }),
             );
         return fetch(url, init, options);
@@ -3803,6 +3803,7 @@ it("shows Reset only on the server's offer, confirms it and rereads held summari
                                 characterId: "c",
                                 id: "k",
                                 revision: revision(newerSummary ? 3 : 2),
+                                trashedAt: null,
                                 data: { ...original, hypaV3Data: replacement },
                             },
                         ],

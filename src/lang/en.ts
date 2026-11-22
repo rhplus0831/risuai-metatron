@@ -1937,6 +1937,15 @@ export const languageEnglish = {
         "The server can no longer confirm whether these recovered changes were saved. They have been kept as refused work. Retry only if you want to apply them again.",
     resourceRestored: "The server data was restored from a backup. The app will reload.",
     characterGenerating: "This character is generating a reply. Wait until it finishes.",
+    chatTrash: {
+        confirm: (name: string) => `Move "${name}" to the trash?`,
+        saving: "This chat is still saving. Try again when it finishes.",
+        changed: "The chat changed. Check its current state and try again.",
+        unknown: "The server may have applied the request. Check the chat before trying again.",
+        notSent: "The request was not sent. Check that your changes have been saved and try again.",
+        closed: "This chat was moved to the trash and has been closed.",
+        checkpointsClosed: "Checkpoints closed because this chat was moved to the trash.",
+    },
     chatGenerating: "This chat is generating a reply. Wait until it finishes.",
     rerollRepliesNotRestored:
         "The reroll brought no reply, and the replies it removed could not be put back safely: this chat is being generated elsewhere, or its latest copy could not be read.",

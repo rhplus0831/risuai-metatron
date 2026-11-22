@@ -12,7 +12,16 @@ import {
     type OrderLayerValues,
 } from "../draftJournal";
 import { createFakeLockManager } from "./fakeLockManager";
-import { bootMutations, m, plain, refJ, refK, SAVE_DEBOUNCE_MS, warmMutationGraph } from "./mutationStoresHarness";
+import {
+    bootMutations,
+    m,
+    plain,
+    recoverOldDelete,
+    refJ,
+    refK,
+    SAVE_DEBOUNCE_MS,
+    warmMutationGraph,
+} from "./mutationStoresHarness";
 import type { StoreBackedServer } from "./storeBackedServer";
 
 const { server, diagnostics } = vi.hoisted(() => ({
@@ -1270,15 +1279,17 @@ describe("chat save journal", () => {
         const { fake, chat, sync } = await boot();
         const base = fake.chat("c", "k")!.revision;
         fake.holdNextBatch = true;
-        chat.deleteChat(refK);
+        // An earlier build journaled the delete; this build's recovery replays it, in doubt (a retry).
+        const recovered = recoverOldDelete(chat, refK);
         await vi.advanceTimersByTimeAsync(500);
         const deletion = fake.batchBodies()[0].chats[0];
         expect(deletion).toEqual({
             characterId: "c",
             chatId: "k",
             baseRevision: base,
-            groupId: expect.any(String),
+            groupId: recovered.groupId,
             ops: [{ op: "delete" }],
+            retry: true,
         });
         const snapshot = {
             id: "k",
@@ -1297,7 +1308,7 @@ describe("chat save journal", () => {
                 baseRevision: base,
                 groupId: deletion.groupId,
                 seq: expect.any(Number),
-                inDoubt: false,
+                inDoubt: true,
             },
             pending: { ops: [], baseRevision: base, groupId: expect.any(String), createSnapshot: snapshot },
         });
@@ -1336,15 +1347,17 @@ describe("chat save journal", () => {
         const { fake, chat, sync } = await boot();
         const base = fake.chat("c", "k")!.revision;
         fake.holdNextBatch = true;
-        chat.deleteChat(refK);
+        // An earlier build journaled the delete; this build's recovery replays it, in doubt (a retry).
+        const recovered = recoverOldDelete(chat, refK);
         await vi.advanceTimersByTimeAsync(500);
         const deletion = fake.batchBodies()[0].chats[0];
         expect(deletion).toEqual({
             characterId: "c",
             chatId: "k",
             baseRevision: base,
-            groupId: expect.any(String),
+            groupId: recovered.groupId,
             ops: [{ op: "delete" }],
+            retry: true,
         });
         const snapshot = {
             id: "k",
@@ -1363,7 +1376,7 @@ describe("chat save journal", () => {
                 baseRevision: base,
                 groupId: deletion.groupId,
                 seq: expect.any(Number),
-                inDoubt: false,
+                inDoubt: true,
             },
             pending: { ops: [], baseRevision: base, groupId: expect.any(String), createSnapshot: snapshot },
         });

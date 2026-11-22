@@ -62,7 +62,10 @@
     let active = true;
 
     $effect(() => {
-        if (!entry && !$checkpointLoadBusy) close();
+        if (entry?.trashedAt !== undefined) {
+            close();
+            alertNormal(language.chatTrash.checkpointsClosed);
+        } else if (!entry && !$checkpointLoadBusy) close();
     });
 
     onMount(() => {
@@ -139,7 +142,7 @@
         pending = true;
         try {
             const result = await action();
-            if (result) report(result);
+            if (active && result) report(result);
         } catch (error) {
             reportException(error);
         } finally {
@@ -149,7 +152,8 @@
     }
 
     function stillHere(ref: ChatRef) {
-        return active && !!chatEntry(ref);
+        const target = chatEntry(ref);
+        return active && !!target && target.trashedAt === undefined;
     }
 
     function save() {

@@ -55,7 +55,7 @@ import { capturePluginContext, invokeHook, type PluginCallContext } from "../plu
 import { pluginHooks } from "../plugins/pluginHooks";
 import {
     type ChatRef,
-    chatList,
+    activeChatList,
     currentChatRef,
     findChat,
     heldChatRevision,
@@ -1215,12 +1215,12 @@ async function runChatOutputListeners(
         // run, one it added does.
         for (const listener of pluginHooks.chatOutput) {
             stillWanted();
-            await loadChats(speakerId);
+            await loadChats(speakerId, true);
             stillWanted();
             // The plugin's `characterIndex` is the list position (the plugin index API's mapping).
             const characterIndex = characterList().findIndex((entry) => entry?.chaId === chaId);
             const owner = characterList()[characterIndex];
-            const chatIndex = owner ? chatList(owner.chaId).findIndex((entry) => entry.id === chatId) : -1;
+            const chatIndex = owner ? activeChatList(owner.chaId).findIndex((entry) => entry.id === chatId) : -1;
             const chat = chatIndex === -1 ? undefined : findChat({ chaId, chatId });
             const speaker = characterList().find((entry) => entry?.chaId === speakerId);
             if (!owner || !chat || !speaker) {

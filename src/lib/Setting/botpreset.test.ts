@@ -40,7 +40,7 @@ import {
 import { installFlatDatabase, installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import { selectCharacter, selection, selectModelPreset, selectPreset } from "src/ts/storage/selection.svelte";
 import { chatBinding, chatBindingPatch } from "src/ts/storage/chatBinding.svelte";
-import { chatEntry, deleteChat, selectChat } from "src/ts/storage/chatStore.svelte";
+import { acceptRemoteChat, chatEntry, selectChat } from "src/ts/storage/chatStore.svelte";
 import { language } from "src/lang";
 import Botpreset from "./botpreset.svelte";
 
@@ -346,7 +346,9 @@ describe("the lists with a chat open", () => {
         expect(prompt.close).toHaveBeenCalledTimes(1);
 
         const model = renderFor("model", refJ);
-        deleteChat(refJ);
+        // Another tab deleted the chat for good; a whole read finds it gone.
+        acceptRemoteChat({ characterId: refJ.chaId, id: refJ.chatId, revision: null, data: null });
+        expect(chatEntry(refJ)).toBeUndefined();
         flushSync();
         expect(model.close).toHaveBeenCalledTimes(1);
         expect(selection.modelPresetId).toBe("m1");

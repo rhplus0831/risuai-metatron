@@ -638,13 +638,14 @@ describe("detached reads and exports over unloaded chats", () => {
         const { fake, chat, chatEdits, dataset, downloads, reads, loadedIds } = await boot();
         const detached = await chatEdits.readChatsDetached(["c", "d"]);
         expect(detached.get("c")!.map((entry) => entry.id)).toEqual(C_IDS);
-        expect(detached.get("c")![0].message.map((entry) => entry.data)).toEqual(["A", "B", "C"]);
+        expect(detached.get("c")![0].data.message.map((entry) => entry.data)).toEqual(["A", "B", "C"]);
         expect(
             detached
                 .get("c")!
                 .slice(2)
-                .every((entry) => entry.message.length === 1),
+                .every((entry) => entry.data.message.length === 1),
         ).toBe(true);
+        expect([...detached.values()].flat().every((entry) => entry.trashedAt === null)).toBe(true);
         expect(detached.get("d")!.map((entry) => entry.id)).toEqual(["m"]);
         expect(loadedIds("c")).toEqual([]);
         expect(loadedIds("d")).toEqual([]);
@@ -735,9 +736,9 @@ describe("continued reads over the store", () => {
         const detached = await b.chatEdits.readChatsDetached(["d", "c", "d"]);
         expect([...detached.keys()]).toEqual(["d", "c"]);
         expect(detached.get("d")!.map(({ id }) => id)).toEqual(["m"]);
-        expect(detached.get("d")![0].message).toEqual([m("x", "X")]);
+        expect(detached.get("d")![0].data.message).toEqual([m("x", "X")]);
         expect(detached.get("c")!.map(({ id }) => id)).toEqual(C_IDS);
-        expect(detached.get("c")!.map(({ message }) => message.map(({ data }) => data))).toEqual([
+        expect(detached.get("c")!.map(({ data }) => data.message.map((message) => message.data))).toEqual([
             ["A", "B", "C"],
             [],
             ...Array.from({ length: EXTRA }, (_, i) => [`N${i}`]),

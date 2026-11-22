@@ -6,6 +6,8 @@
 // Checks include server readback, original chat replay identities, repeated recovery, other-epoch
 // JSON export after an archive restore, composer restoration, graceful close, and observed bfcache
 // eligibility. Uncommitted-journal loss and pagehide-only loss are asserted as documented limits.
+// A chat's trash is a route call outside the save queue and the journal: cut before or after its
+// commit, the relaunched tab shows the server's mark and nothing replays it.
 // This uses dev modules for mutations; the composer and recovery export are driven through the UI.
 //
 // Usage: node util/playwright/checkDurableDrafts.mjs
@@ -173,8 +175,8 @@ async function launch() {
             entry.responseError = String(error);
         }
     });
-    // Install the route before the first navigation, including any boot recovery dispatch.
-    await context.route("**/api/resources/batch", async (route) => {
+    // Install the routes before the first navigation, including any boot recovery dispatch.
+    const cutRoute = async (route) => {
         const body = route.request().postDataJSON();
         const entry = { url: route.request().url(), body, committed: false };
         entriesByRequest.set(route.request(), entry);
@@ -193,7 +195,9 @@ async function launch() {
             }
         }
         // Deliberately neither fulfil nor abort: the page has no answer until it is killed.
-    });
+    };
+    await context.route("**/api/resources/batch", cutRoute);
+    await context.route("**/api/chat-trash/*", cutRoute);
     page = context.pages()[0] ?? (await context.newPage());
     page.on("dialog", (dialog) => dialog.accept());
     context.on("request", (request) => {
@@ -386,7 +390,6 @@ async function mutate(kind, fixture) {
                 chats.setMessageText(ref, f.messageId, f.marker);
             }
             if (kind === "reorder") chats.reorderChats(f.chaId, [f.thirdId, f.chatId, f.secondId]);
-            if (kind === "delete") chats.deleteChat({ chaId: f.chaId, chatId: f.thirdId });
             if (kind === "chat-create")
                 chats.createChat(f.chaId, { id: f.newChatId, name: f.marker, message: [], localLore: [], note: "" });
         },
@@ -427,7 +430,7 @@ async function cutWork(kind, cut, fixture) {
                     JSON.stringify(row).includes(
                         kind === "settings"
                             ? String(fixture.zoom)
-                            : kind === "delete" || kind === "reorder"
+                            : kind === "reorder"
                               ? fixture.thirdId
                               : fixture.marker,
                     ),
@@ -443,7 +446,7 @@ function outcome(kind, fixture, state, changed, remote) {
     assert.equal(new Set(state.chats.map((row) => row.id)).size, state.chats.length, "no duplicate chat");
     assert.equal(
         state.chats.length,
-        kind === "chat-create" && changed ? 4 : kind === "delete" && changed ? 2 : 3,
+        kind === "chat-create" && changed ? 4 : 3,
         "exact chat membership, with no additional create or delete",
     );
     assert.equal(
@@ -462,11 +465,6 @@ function outcome(kind, fixture, state, changed, remote) {
         assert.deepEqual(
             state.order,
             changed ? [fixture.thirdId, fixture.chatId, fixture.secondId] : fixture.baseline.order,
-        );
-    if (kind === "delete")
-        assert.equal(
-            state.chats.some((row) => row.id === fixture.thirdId),
-            !changed,
         );
     if (kind === "chat-create")
         assert.equal(state.chats.filter((row) => row.id === fixture.newChatId).length, changed ? 1 : 0);
@@ -530,18 +528,10 @@ async function editAfterCommit(kind, fixture, original) {
         entry.answer?.chats?.some((row) => row.id === group.chatId),
     ).answer;
     const originalResult = answer.chats.find((row) => row.id === group.chatId);
-    const chatId = kind === "delete" ? fixture.chatId : group.chatId;
+    const chatId = group.chatId;
     const current = original.server.chats.find((row) => row.id === chatId);
     assert(current, "remote-edit target exists after first commit");
-    if (kind === "delete") {
-        assert.equal(originalResult.revision, null, "the committed delete removed its target and group history");
-        assert.equal(
-            original.server.orderRevision,
-            answer.chatOrders.find((row) => row.characterId === fixture.chaId).revision,
-        );
-    } else {
-        assert.equal(current.revision, originalResult.revision, "first server read holds the committed revision");
-    }
+    assert.equal(current.revision, originalResult.revision, "first server read holds the committed revision");
     const field = kind === "chat-create" ? "name" : "text";
     const value = `${fixture.marker} / remote after commit`;
     const ops =
@@ -566,7 +556,6 @@ async function editAfterCommit(kind, fixture, original) {
         remoteGroup,
         remoteResult,
         orderRevision: original.server.orderRevision,
-        deletedChatId: kind === "delete" ? group.chatId : undefined,
     };
     verifyRemoteEdit(fixture, remote, await readState(fixture));
     return remote;
@@ -588,9 +577,6 @@ function verifyRemoteEdit(fixture, remote, state) {
         "remote edit survives the original group's replay",
     );
     assert.equal(state.orderRevision, remote.orderRevision, "recovery neither recreates nor deletes a chat again");
-    if (remote.deletedChatId) {
-        assert(!state.chats.some((row) => row.id === remote.deletedChatId), "deleted chat stays absent");
-    }
     return {
         chatId: current.id,
         remoteRevision: remote.remoteResult.revision,
@@ -607,7 +593,7 @@ async function runMutation(kind, cut) {
     outcome(kind, fixture, before.server, serverChanged);
     await kill();
     const remote =
-        serverChanged && ["message", "delete", "chat-create"].includes(kind)
+        serverChanged && ["message", "chat-create"].includes(kind)
             ? await editAfterCommit(kind, fixture, before)
             : undefined;
     await launch();
@@ -632,26 +618,11 @@ async function runMutation(kind, cut) {
             0,
             "composer never starts a send",
         );
-    } else if (
-        expectedChange &&
-        ["message", "delete", "chat-create"].includes(kind) &&
-        !(kind === "delete" && cut === "answer-dropped")
-    ) {
+    } else if (expectedChange && ["message", "chat-create"].includes(kind)) {
         replay = await verifyReplay(fixture, before, cut === "answer-dropped");
     }
     let remaining = (await rows()).filter((row) => rowFor(row, fixture, kind));
-    if (kind === "delete" && cut === "answer-dropped") {
-        // A gone chat has no group-id history to consult: retain the delete as a draft.
-        assert(
-            remaining.some((row) => row.type === "draft" && row.target.includes(fixture.thirdId)),
-            "gone chat intent becomes a draft",
-        );
-        assert.equal(
-            traffic.flatMap((request) => request.body.chats ?? []).filter((group) => group.chatId === fixture.thirdId)
-                .length,
-            0,
-        );
-    } else if (kind === "chat-create" && cut === "before-commit") {
+    if (kind === "chat-create" && cut === "before-commit") {
         assert(
             remaining.some((row) => row.type === "draft" && row.target.includes(fixture.newChatId)),
             "dispatched absent create is a recovery draft",
@@ -692,6 +663,84 @@ async function runMutation(kind, cut) {
         remoteAfterCommit: remote,
         dedupe,
         remaining: briefRows(remaining),
+    });
+}
+/**
+ * Trashes the third chat through the trash route and cuts that request (before it reaches the
+ * server, or after it commits with its answer withheld), then kills the browser. A trash is not
+ * journaled and not replayed: after the relaunch the tab shows what the server holds, the chat a
+ * member either way, outside the active list only when the trash committed.
+ */
+async function runTrash(cut) {
+    const fixture = await seed();
+    const ref = { chaId: fixture.chaId, chatId: fixture.thirdId };
+    gate = { cut, requests: [] };
+    // The token is captured before the request; the call stays pending while the cut holds its answer.
+    await page.evaluate(async (ref) => {
+        const chats = await import("/src/ts/storage/chatStore.svelte.ts");
+        const { trashChat } = await import("/src/ts/checkpoints/chatTrash.ts");
+        void trashChat(ref, chats.chatTrashRevision(ref));
+    }, ref);
+    await until(
+        () =>
+            gate.requests.some(
+                (request) =>
+                    new URL(request.url).pathname === "/api/chat-trash/trash" &&
+                    (cut !== "answer-dropped" || request.committed),
+            ),
+        "trash request cut reached",
+    );
+    const committed = cut === "answer-dropped";
+    const markOf = (state) => state.chats.find((row) => row.id === fixture.thirdId)?.trashedAt;
+    const before = await readState(fixture);
+    assert.equal(before.chats.length, 3, "a trash removes no chat");
+    assert.equal(typeof markOf(before) === "number", committed, "the server holds the mark only once committed");
+    assert.equal(
+        gate.requests.filter((request) => new URL(request.url).pathname === "/api/resources/batch").length,
+        0,
+        "a trash sends no batch",
+    );
+    const journal = briefRows((await rows()).filter((row) => rowFor(row, fixture, "trash")));
+    assert.deepEqual(journal, [], "a trash writes no journal row");
+    const requests = structuredClone(gate.requests);
+    await kill();
+    await launch();
+    await flush();
+    const recovered = await readState(fixture);
+    assert.equal(recovered.chats.length, 3, "recovery removes no chat");
+    assert.equal(markOf(recovered), markOf(before) ?? null, "recovery leaves the mark as the server held it");
+    const view = await until(
+        () =>
+            page.evaluate(async (ref) => {
+                const chats = await import("/src/ts/storage/chatStore.svelte.ts");
+                const members = chats.chatList(ref.chaId).map((entry) => entry.id);
+                if (!members.includes(ref.chatId)) return null;
+                return {
+                    members,
+                    active: chats.activeChatList(ref.chaId).map((entry) => entry.id),
+                    trashed: chats.trashedChatList(ref.chaId).map((entry) => entry.id),
+                };
+            }, ref),
+        "relaunched chat list",
+    );
+    assert.equal(view.members.length, 3, "the trashed chat stays a member");
+    assert.equal(view.active.includes(fixture.thirdId), !committed, "a committed trash leaves the active list");
+    assert.equal(view.trashed.includes(fixture.thirdId), committed, "a committed trash lists in the trash");
+    assert.equal(
+        traffic.filter((request) => new URL(request.url).pathname.startsWith("/api/chat-trash/")).length,
+        0,
+        "nothing resends the trash",
+    );
+    assert(
+        !traffic.some((request) =>
+            (request.body?.chats ?? []).some((group) => group.ops.some((op) => op.op === "delete")),
+        ),
+        "no delete op is sent",
+    );
+    assert.deepEqual(briefRows((await rows()).filter((row) => rowFor(row, fixture, "trash"))), [], "no journal row");
+    check(`trash / ${cut}`, true, {
+        cut: { requests, mark: markOf(before) ?? null },
+        recovered: { mark: markOf(recovered) ?? null, view },
     });
 }
 async function runRecoveryAgain(cut) {
@@ -980,16 +1029,19 @@ try {
         "character",
         "message",
         "reorder",
-        "delete",
+        "trash",
         "chat-create",
         "composer",
         "recovery-again",
         "restore",
     ]) {
         for (const cut of cuts) {
+            // A trash never enters the journal, so there is no journal transaction to hold.
+            if (kind === "trash" && cut === "journal-held") continue;
             const name = `${kind} / ${cut}`;
             try {
-                if (kind === "recovery-again") await runRecoveryAgain(cut);
+                if (kind === "trash") await runTrash(cut);
+                else if (kind === "recovery-again") await runRecoveryAgain(cut);
                 else if (kind === "restore") await runRestore(cut);
                 else await runMutation(kind, cut);
             } catch (error) {

@@ -1,6 +1,6 @@
 <script lang="ts">
     import { characterList, type AnyClientCharacter } from "src/ts/storage/characterStore.svelte";
-    import { characterLastChattedAt, chatCount } from "src/ts/storage/chatStore.svelte";
+    import { characterLastChattedAt, activeChatCount } from "src/ts/storage/chatStore.svelte";
     import { type character, type groupChat } from "src/ts/storage/database.svelte";
     import BarIcon from "../SideBars/BarIcon.svelte";
     import LazyCharImage from "../UI/GUI/LazyCharImage.svelte";
@@ -40,7 +40,7 @@
                 return {
                     name: c.name || "Unnamed",
                     image: c.image,
-                    chats: chatCount(c.chaId),
+                    chats: activeChatCount(c.chaId),
                     chaId: c.chaId,
                     interaction,
                     agoText: makeAgoText(interaction),

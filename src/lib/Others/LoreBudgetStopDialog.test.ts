@@ -7,7 +7,7 @@ import { initHotkey } from "src/ts/hotkey";
 import { askLoreBudgetStop } from "src/ts/process/loreBudgetStop";
 import { loreBudgetStopFixture } from "src/ts/process/tests/loreBudgetStopFixture";
 import * as settingJump from "src/ts/setting/settingJump.svelte";
-import { deleteChat, selectChat } from "src/ts/storage/chatStore.svelte";
+import { acceptRemoteChat, selectChat } from "src/ts/storage/chatStore.svelte";
 import { selectCharacter } from "src/ts/storage/selection.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import {
@@ -203,7 +203,8 @@ it.each(["unmounted", "removed"])("answers Close when the dialog is %s", async (
     renderShown();
     if (reason === "unmounted") await unmount(mounted.pop()!);
     else {
-        deleteChat(ref);
+        // Another tab deleted the chat for good; a whole read finds it gone.
+        acceptRemoteChat({ characterId: ref.chaId, id: ref.chatId, revision: null, data: null });
         flushSync();
     }
     expect(get(loreBudgetStopDialog)).toBeNull();

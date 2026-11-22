@@ -145,7 +145,7 @@ handlers that reapply UI settings and repair incoming orders.
   other work saves. Quarantine alone schedules no idle cycle.
 - A refused order keeps its intent until sendable ids change or Retry. While `isOrderQuarantined` holds it, it is
   outside flush obligations, in `refused`, and still protects page close.
-- Chat refusal retention and release: `quarantineChat`, `releaseChatRefusal`, `retryRefusedChat` and `deleteChat` in
+- Chat refusal retention and release: `quarantineChat`, `releaseChatRefusal`, and `retryRefusedChat` in
   `chatStore.svelte.ts`.
 - A chat group above the batch cap is quarantined before dispatch. Each edit or Retry that still exceeds the cap shows
   the quarantine notice again; unchanged quarantined work is not retried automatically.

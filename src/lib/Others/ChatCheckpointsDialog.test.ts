@@ -305,3 +305,24 @@ describe("checkpoint dialog", () => {
         expect(mocks.list).toHaveBeenCalledTimes(2);
     });
 });
+
+describe("checkpoints of a trashed chat", () => {
+    it("closes the open dialog with a notice when its chat is trashed", async () => {
+        const { assembleChats, installChatTrashState } = await import("src/ts/storage/chatStore.svelte");
+        const revision = "00000000-0000-4000-8000-000000000000:1:1";
+        const rows = ["k", "other"].map((id) => ({
+            characterId: "c",
+            id,
+            revision,
+            trashedAt: null,
+            data: { id, name: id, note: "", localLore: [], message: [] },
+        }));
+        assembleChats([{ chaId: "c" }], rows, [{ characterId: "c", revision, ids: ["k", "other"] }]);
+        await render();
+        expect(close).not.toHaveBeenCalled();
+        installChatTrashState(ref, revision, 100);
+        await settle();
+        expect(close).toHaveBeenCalledOnce();
+        expect(mocks.normal).toHaveBeenCalledExactlyOnceWith(language.chatTrash.checkpointsClosed);
+    });
+});

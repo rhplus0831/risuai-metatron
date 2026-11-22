@@ -83,7 +83,28 @@ async function boot() {
     const probe = await import("./reactiveProbe.svelte");
     const { flushSync } = await import("svelte");
     const ids = (chaId: string) => booted.chat.chatList(chaId).map((entry) => entry.id);
-    return { ...booted, chatEdits, dataset, downloads, ids, createProbe: probe.createProbe, flushSync };
+    const trash = await import("../../checkpoints/chatTrash");
+    /** Deletes a chat for good from this tab, as the trash view does: the trash route, then its delete. */
+    const deleteForever = async (ref: { chaId: string; chatId: string }) => {
+        expect(await trash.trashChat(ref, booted.chat.chatTrashRevision(ref))).toBe(true);
+        expect(await trash.deleteChatForever(ref, booted.chat.chatTrashRevision(ref))).toBe(true);
+    };
+    /** Another tab deletes a chat for good, and a whole read of it finds it gone. */
+    const deletedElsewhere = (ref: { chaId: string; chatId: string }) => {
+        booted.fake.deleteChatForever(ref.chaId, ref.chatId);
+        booted.chat.acceptRemoteChat({ characterId: ref.chaId, id: ref.chatId, revision: null, data: null });
+    };
+    return {
+        ...booted,
+        chatEdits,
+        dataset,
+        downloads,
+        ids,
+        deleteForever,
+        deletedElsewhere,
+        createProbe: probe.createProbe,
+        flushSync,
+    };
 }
 
 beforeAll(async () => {
@@ -144,7 +165,7 @@ describe("the records are chat-free", () => {
 
 describe("the readers", () => {
     it("chatList follows the listed fields, the membership, and the order, and not a message; selectedChat follows the selection", async () => {
-        const { chat, characterStore, createProbe, flushSync } = await boot();
+        const { chat, characterStore, sync, deletedElsewhere, createProbe, flushSync } = await boot();
         characterStore.selectCharacter("c");
         const list = createProbe(() =>
             chat
@@ -182,7 +203,8 @@ describe("the readers", () => {
             chat.createChat("c", newChat("n", "N"), { index: 0 });
             flushSync();
             expect(list.seen.at(-1)).toBe("n:N,j:J,k:K renamed");
-            chat.deleteChat({ chaId: "c", chatId: "n" });
+            await sync.flushResources();
+            deletedElsewhere({ chaId: "c", chatId: "n" });
             flushSync();
             expect(list.seen).toEqual([
                 "k:K,j:J",
@@ -209,7 +231,7 @@ describe("the readers", () => {
     });
 
     it("selection: by id or index, kept across a reorder, falls back to the first chat when its chat leaves, and a read never writes it", async () => {
-        const { chat, characterStore } = await boot();
+        const { chat, characterStore, deleteForever } = await boot();
         characterStore.selectCharacter("c");
         chat.selectChat("c", "j");
         expect([chat.selectedChatId("c"), chat.selectedChatIndex("c")]).toEqual(["j", 1]);
@@ -221,14 +243,14 @@ describe("the readers", () => {
         chat.selectChat("c", 5);
         chat.selectChat("c", "nope");
         expect(chat.selectedChatId("c")).toBe("k");
-        chat.deleteChat(refK);
+        await deleteForever(refK);
         expect([chat.selectedChatId("c"), chat.selectedChat()?.id]).toEqual(["j", "j"]);
         // A remembered chat that is not in the list reads as the first chat, without a write: once
         // the chat is listed again it is the selection.
         chat.createChat("c", newChat("k", "K back"));
         expect(chat.selectedChatId("c")).toBe("j");
         chat.selectChat("c", "k");
-        chat.deleteChat(refJ);
+        await deleteForever(refJ);
         expect(chat.selectedChatId("c")).toBe("k");
         expect(chat.chatCount("c")).toBe(1);
         expect(chat.chatCount("nobody")).toBe(0);
@@ -499,14 +521,16 @@ describe("detached reads", () => {
             result
                 .get("c")!
                 .find((entry) => entry.id === "k")!
-                .message.map((message) => message.data),
+                .data.message.map((message) => message.data),
         ).toEqual(["A", "B", "C", "D"]);
+        // Each answer is the chat's record: its identity and the trash mark beside its data.
+        expect(result.get("c")!.every((entry) => entry.characterId === "c" && entry.trashedAt === null)).toBe(true);
         expect(result.get("d")!.map((entry) => entry.id)).toEqual(ids("d"));
         expect(result.get("c")!.length + result.get("d")!.length).toBe(13);
         expect(result.get("nobody")).toEqual([]);
         expect(fake.requests.map((request) => request.path)).toContain("/api/resources/read");
         // The copies are detached from the store.
-        result.get("c")![0].name = "changed in the copy";
+        result.get("c")![0].data.name = "changed in the copy";
         expect(chat.chatList("c").map((entry) => entry.name)).not.toContain("changed in the copy");
 
         fake.requests.length = 0;
@@ -569,7 +593,7 @@ describe("detached reads", () => {
             result
                 .get("c")!
                 .find((entry) => entry.id === "k")!
-                .message.map((message) => message.data),
+                .data.message.map((message) => message.data),
         ).toEqual(["A", "B", "C"]);
 
         // A refused chat order of a requested character refuses the read too.

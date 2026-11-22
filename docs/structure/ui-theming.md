@@ -141,9 +141,9 @@ comments on its exports. An entry names the path, its role, and the identifiers 
   chat status badges. The `memory` badge comes from memory tasks; `health` comes from
   [Structured Memory](structured-memory/read.md#the-health-badge).
 - `src/lib/SideBars/chatStatus.ts` owns badge priority and group states; `src/lib/SideBars/SideChatList.svelte` owns the
-  chat list, folders, filtering, and actions such as `completeOrder`. A row's own buttons stop their click, so only the
-  row itself opens its chat; the options' copy and settings-only copy ([fields](persistence.md#chat-fields)) select the
-  new chat without opening it.
+  chat list, folders, filtering, and actions such as `reorderActiveChats` on a drop. A row's own buttons stop their
+  click, so only the row itself opens its chat; the options' copy and settings-only copy
+  ([fields](persistence.md#chat-fields)) select the new chat without opening it.
 - `src/lib/SideBars/PinnedChatsRail.svelte` and `src/lib/SideBars/pinnedChats.ts` share the pinned-chat projection with
   home cards (`openPinnedChat`).
 - The sidebar's chat tab switches from `SideChatList` to `src/lib/SideBars/OpenChatPanel.svelte` when
@@ -293,9 +293,10 @@ comments on its exports. An entry names the path, its role, and the identifiers 
 - `Chat.updateRow` changes only supplied position/streaming fields, `isComment`, `messageGenerationInfo`,
   `candidateCount`, `candidateIndex`, `candidateCarrier`, `rerollIcon`, or display-only `name` and `img` props;
   name/image updates never reset the `ChatBody` key.
-- Chat structure operations go through the [chat module](chat-store.md#chat-writes) (`createChat`, `deleteChat`,
-  `reorderChats`, `setChatMeta` for `folderId`) and [select](chat-store.md#selection) with `changeChatTo`/`selectChat`;
-  `chatPage` is derived from the per-tab selected chat id and is never assigned.
+- Chat structure operations go through the [chat module](chat-store.md#chat-writes) (`createChat`, `confirmTrashChat` in
+  `src/ts/checkpoints/chatTrash.ts`, `reorderActiveChats`, `setChatMeta` for `folderId`) and
+  [select](chat-store.md#selection) with `changeChatTo`/`selectChat`; `chatPage` is derived from the per-tab selected
+  chat id and is never assigned.
 - Components never `bind:` a chat field directly: bind a getter/setter pair that calls the module, or a synced editing
   copy.
 - A locked message (`isMessageLocked`: generating, or its final write not yet acknowledged) has its edit, delete, and

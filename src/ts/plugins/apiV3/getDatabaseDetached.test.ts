@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { tick } from "svelte";
-import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Chat, character } from "../../../../shared/database.ts";
 import { RESOURCE_KIND } from "../../../../shared/resources.ts";
 import {
@@ -970,28 +970,29 @@ it("loads the whole unloaded character and saves a changed chat", async () => {
     expect(await b.api.getDatabase(["characters"])).toEqual(incoming);
 });
 
-it("loads the whole unloaded character and sends the delete of a chat omitted by the plugin, which the server refuses: the chat comes back", async () => {
+it("loads the whole unloaded character and keeps a chat omitted by the plugin in its slot: no delete is sent", async () => {
     boundary.liveFeedCurrent.mockReturnValue(true);
     const b = await boot(await fixture());
     const incoming = structuredClone(await b.api.getDatabase(["characters"]));
-    returnedCharacter(incoming, "c").chats.pop();
+    const omitted = returnedCharacter(incoming, "c").chats.pop()!;
+    expect(omitted.id).toBe("other");
     expect(b.chat.chatsLoaded("c")).toBe(false);
     b.fake.requests.length = 0;
 
     await b.api.setDatabase(incoming);
-    // The tab sends the omitted chat's delete; the server refuses delete ops (`useTrash`), so the
-    // conflict re-reads the chat, and the character's list read brings it back.
-    expect(await b.sync.flushResources()).toEqual({ discarded: ["chats/c/other"], refused: [] });
-    expect(b.fake.batchBodies().map((body) => body.chats)).toEqual([
-        [expect.objectContaining({ characterId: "c", chatId: "other", ops: [{ op: "delete" }] })],
-    ]);
+    expect(await b.sync.flushResources()).toEqual({ discarded: [], refused: [] });
+    const bodies = b.fake.batchBodies();
+    expect(bodies.flatMap((body) => body.chats ?? []).flatMap((group) => group.ops)).not.toContainEqual({
+        op: "delete",
+    });
+    for (const order of bodies.flatMap((body) => body.chatOrders ?? [])) expect(order.ids).toEqual(["held", "other"]);
+    // Only the load read the chats: no conflict re-read brought the omitted chat back.
     expect(requestedChats(b.fake)).toEqual([
         { characterId: "c", id: "held" },
         { characterId: "c", id: "other" },
-        { characterId: "c", id: "other" },
     ]);
     expect(b.chat.chatsLoaded("c")).toBe(true);
-    expect(b.fake.chat("c", "other")).not.toBeNull();
+    expect(b.fake.chat("c", "other")!.data).toEqual(omitted);
     expect(b.fake.chat("c", "held")!.data).toEqual(returnedCharacter(incoming, "c").chats[0]);
     expect(b.fake.order("c")!.ids).toEqual(["held", "other"]);
     await vi.advanceTimersByTimeAsync(2000);
@@ -1484,4 +1485,47 @@ it("keeps mixed-mode detached reads separate and invalidates only the chat whose
     expect(isSealedHypaV3Data(second[1].hypaV3Data)).toBe(true);
     expect(requestedChats(fake)).toEqual([{ characterId: "c", id: "hypa" }]);
     for (const id of ["projected", "hypa"]) expect(b.chat.findChat(ref("c", id))).toBeUndefined();
+});
+
+describe("plugin access to active chats", () => {
+    it("fills a cold page from active chats when its detached read discovers a mark", async () => {
+        const b = await boot(await fixture({ c: [chatData("other"), chatData("held")] }));
+        const entered = deferred();
+        const release = deferred();
+        boundary.fetch = async (path, init) => {
+            if (path === readPath) {
+                entered.resolve();
+                await release.promise;
+            }
+            return b.fake.fetch(path, init);
+        };
+        const pending = b.api.getChats("c", { offset: 0, limit: 1 });
+        try {
+            await entered.promise;
+            // The server commits while the page is in flight. The tab receives no feed frame.
+            const answer = b.fake.store.changeChatTrash(
+                "trash",
+                {
+                    characterId: "c",
+                    chatId: "other",
+                    revision: b.fake.chat("c", "other")!.revision,
+                },
+                b.fake.store.epoch(),
+                b.fake.chatHeld,
+            );
+            expect(answer).not.toHaveProperty("error");
+        } finally {
+            release.resolve();
+        }
+        expect(await pending).toMatchObject({ chats: [{ id: "held" }], total: 1 });
+        expect(await b.api.getChats("c", { offset: 1, limit: 1 })).toEqual({ chats: [], total: 1 });
+        expect(b.chat.findChat(other)).toBeUndefined();
+        const full = await b.api.getDatabase(["characters"]);
+        expect(returnedCharacter(full, "c").chats.map(({ id }) => id)).toEqual(["held"]);
+        const summaries = await b.api.getDatabase(["characters"], { chats: "summaries" });
+        expect(summaries.characters[0].chatSummaries.map(({ id }) => id)).toEqual(["held"]);
+        await b.runHook(async () => {
+            expect(await b.api.getCurrentChatIndex()).toBe(0);
+        });
+    });
 });

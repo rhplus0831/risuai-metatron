@@ -22,7 +22,7 @@ vi.mock("src/ts/characters", () => ({ exportChat: vi.fn() }));
 
 import { language } from "src/lang";
 import { exportChat } from "src/ts/characters";
-import { chatEntry, deleteChat, setChatMeta } from "src/ts/storage/chatStore.svelte";
+import { acceptRemoteChat, chatEntry, setChatMeta } from "src/ts/storage/chatStore.svelte";
 import { installFlatDatabaseWithChats } from "src/ts/storage/tests/installFlatDatabase";
 import OpenChatHeader from "./OpenChatHeader.svelte";
 
@@ -160,7 +160,8 @@ describe("OpenChatHeader", () => {
         const header = render(refK);
         const input = header.startEdit();
         type(input, "Late");
-        deleteChat(refK);
+        // Another tab deleted the chat for good; a whole read finds it gone.
+        acceptRemoteChat({ characterId: refK.chaId, id: refK.chatId, revision: null, data: null });
         flushSync();
         expect(() => input.dispatchEvent(new FocusEvent("blur"))).not.toThrow();
         expect(chatEntry(refK)).toBeUndefined();

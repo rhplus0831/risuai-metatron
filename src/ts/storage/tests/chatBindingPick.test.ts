@@ -293,12 +293,14 @@ describe("pickBinding's target", () => {
         expect(chat.hasChatWork()).toBe(false);
     });
 
-    it("a gone chat (deleted, or never a member) changes nothing and returns false", async () => {
-        const { chat, pick, selected, entryIds, open } = await boot();
+    it("a gone chat (deleted for good, or never a member) changes nothing and returns false", async () => {
+        const { server, chat, pick, selected, entryIds, open } = await boot();
         open("bound");
         const captured = chat.currentChatRef()!;
         expect(captured).toEqual(ref("bound"));
-        chat.deleteChat(captured);
+        // Another tab deletes the chat for good; a whole read of it finds it gone.
+        server.deleteChatForever(captured.chaId, captured.chatId);
+        chat.acceptRemoteChat({ characterId: captured.chaId, id: captured.chatId, revision: null, data: null });
         expect(chat.chatEntry(captured)).toBeUndefined();
         // The selection fell back to the first chat; the captured ref is not re-resolved to it.
         expect(chat.currentChatRef()).toEqual(ref("unbound"));

@@ -1142,7 +1142,10 @@ describe("server copies never load a chat", () => {
         // A busy unloaded member keeps its summary and its notice; once idle, the summary refresh covers it.
         chat.setChatMeta(kRef(2), { folderId: "mine" });
         remoteMeta("c", "k2", { name: "K2 remote" });
-        expect(chat.noteRemoteChat(kRef(2), server.chat("c", "k2")!.revision)).toBe("collection");
+        // The mark rides beside the revision, as the server's feed entry carries it.
+        expect(chat.noteRemoteChat(kRef(2), server.chat("c", "k2")!.revision, undefined, { trashedAt: null })).toBe(
+            "collection",
+        );
         expect(chat.idleSummaryRefreshes()).toEqual([]);
         const busyIssued = chat.heldChatRevisionsOf("c");
         const busyNotices = chat.summaryRefreshNotices(["c"]);
@@ -1200,9 +1203,15 @@ describe("server copies never load a chat", () => {
         // A job's chat event for an unloaded member: applied as its summary and revision only.
         remoteMeta("c", "k2", { name: "K2 job" });
         const remote = server.chat("c", "k2")!;
-        expect(chat.hydrateChat({ characterId: "c", id: "k2", revision: remote.revision, data: remote.data })).toBe(
-            true,
-        );
+        expect(
+            chat.hydrateChat({
+                characterId: "c",
+                id: "k2",
+                revision: remote.revision,
+                trashedAt: null,
+                data: remote.data,
+            }),
+        ).toBe(true);
         expect(chat.findChat(kRef(2))).toBeUndefined();
         expect(chat.chatEntry(kRef(2))?.name).toBe("K2 job");
         expect(chat.heldChatRevision(kRef(2))).toBe(remote.revision);
@@ -1210,7 +1219,9 @@ describe("server copies never load a chat", () => {
         chat.setChatMeta(kRef(3), { name: "Mine" });
         remoteMeta("c", "k3", { folderId: "f2" });
         const busy = server.chat("c", "k3")!;
-        expect(chat.hydrateChat({ characterId: "c", id: "k3", revision: busy.revision, data: busy.data })).toBe(false);
+        expect(
+            chat.hydrateChat({ characterId: "c", id: "k3", revision: busy.revision, trashedAt: null, data: busy.data }),
+        ).toBe(false);
         expect(chat.chatEntry(kRef(3))).toMatchObject({ name: "Mine", folderId: "f" });
         expect(chat.heldChatRevision(kRef(3))).not.toBe(busy.revision);
         expect(chat.idleChatRefreshes()).toEqual([]);

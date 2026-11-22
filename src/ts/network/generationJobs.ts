@@ -1294,16 +1294,18 @@ export function applyGenerationEvent(
             }
             return;
         case "resource": {
+            const jobChat = event.kind === "chats" && event.characterId === ref.chaId && event.id === ref.chatId;
             const record = {
                 kind: event.kind,
                 id: event.id,
                 characterId: event.characterId,
                 revision: event.revision,
                 data: event.data,
-                ...("streaming" in event && event.streaming ? { job: { jobId, streaming: event.streaming } } : {}),
+                ...("streaming" in event && event.streaming
+                    ? { job: { jobId, streaming: event.streaming, ...(jobChat ? {} : { otherChat: true }) } }
+                    : {}),
             };
             const applied = applyHydration(record);
-            const jobChat = event.kind === "chats" && event.characterId === ref.chaId && event.id === ref.chatId;
             // Kept for a later callback's barrier, which applies it again after local work settles; the
             // job chat's streaming list also goes with a read of that chat the barrier installs.
             onChannel((channel) => {
