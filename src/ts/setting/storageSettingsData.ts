@@ -1,3 +1,4 @@
+import { CHAT_TRASH_DAYS } from "../../../shared/database.ts";
 import type { SettingItem, SettingSection } from "./types";
 import { itemsById } from "./sections";
 
@@ -30,6 +31,19 @@ export const storageSettingsItems: SettingItem[] = [
         labelKey: "storagePage.cleanup.title",
         componentId: "StorageCleanup",
         keywords: ["assets", "cleanup", "에셋", "정리"],
+    },
+    {
+        type: "number",
+        id: "storage.chatTrashDays",
+        labelKey: "storagePage.chatTrash.retentionDays",
+        helpKey: "chatTrashDays",
+        bindKey: "chatTrashDays",
+        options: {
+            min: CHAT_TRASH_DAYS.min,
+            max: CHAT_TRASH_DAYS.max,
+            clampOnCommit: { defaultValue: CHAT_TRASH_DAYS.default },
+        },
+        keywords: ["chat", "trash", "retention", "purge", "채팅", "휴지통", "보관 기간", "삭제"],
     },
     {
         type: "custom",
@@ -68,6 +82,11 @@ export const storageSettingsSections: SettingSection[] = [
         id: "storage.cleanup",
         labelKey: "storagePage.cleanup.title",
         items: itemsById(storageSettingsItems, ["storage.cleanupPanel"]),
+    },
+    {
+        id: "storage.chatTrash",
+        labelKey: "storagePage.chatTrash.title",
+        items: itemsById(storageSettingsItems, ["storage.chatTrashDays"]),
     },
     {
         id: "storage.snapshots",

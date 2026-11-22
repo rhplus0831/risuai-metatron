@@ -49,6 +49,14 @@ export const CONTEXT_METER_FIXED_WARN = { min: 10, max: 95, default: 60 } as con
 /** The range and default of `Database.completionWaitMaxSeconds`; `normalizeUi` clamps to it. */
 export const COMPLETION_WAIT_MAX_SECONDS = { min: 10, max: 600, default: 180 } as const;
 
+/** The range and default of `Database.chatTrashDays`, in whole days. */
+export const CHAT_TRASH_DAYS = { min: 1, max: 3650, default: 30 } as const;
+
+export function normalizeChatTrashDays(value: unknown): number {
+    if (typeof value !== "number" || !Number.isFinite(value)) return CHAT_TRASH_DAYS.default;
+    return Math.min(CHAT_TRASH_DAYS.max, Math.max(CHAT_TRASH_DAYS.min, Math.floor(value)));
+}
+
 /** A blocked Realm creator persisted in UI settings; `id` is identity and `name` is a display label. */
 export type BlockedRealmCreator = { id: string; name: string };
 
@@ -639,6 +647,8 @@ export interface Database {
     contextMeterFixedWarn: number;
     /** The longest a remote host holds a send's completion notification for its plugins, in seconds. */
     completionWaitMaxSeconds: number;
+    /** How many days the server keeps a chat after it is moved to the trash. */
+    chatTrashDays: number;
     /** Whether the meter marks where HypaV3 asks for a background summary. */
     contextMeterLookahead: boolean;
     /**

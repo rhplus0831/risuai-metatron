@@ -150,6 +150,8 @@ export const languageKorean = {
             "설정하면 이 캐릭터의 응답 완료 알림에 기본 문구 대신 입력한 내용을 표시합니다. 이 서버에만 저장되며 캐릭터를 내보낼 때는 포함되지 않습니다.",
         completionWaitMaxSeconds:
             "이 기기가 원격 호스트 모드일 때, 플러그인 페이지에서 완료 알림 대기를 켠 플러그인의 작업이 잠잠해질 때까지 응답 완료 알림을 보류합니다. 응답이 끝난 뒤 기다리는 최대 시간이며, 이 시간이 지나면 알림을 보냅니다.",
+        chatTrashDays:
+            "캐릭터의 휴지통에 있는 채팅은 휴지통으로 옮긴 날부터 설정한 일수가 지나면 영구 삭제됩니다. 정리는 매시간 실행되며, 보관 기간을 줄이면 다음 정리 때 휴지통의 채팅이 삭제될 수 있습니다.",
         charNote: "모델에 강한 영향을 주는 프롬프트입니다. 현재 캐릭터에 내장되며, UJB라고도 부릅니다.",
         toggleNsfw: "탈옥 프롬프트를 켜거나 끕니다.",
         lorebook:
@@ -3979,6 +3981,10 @@ export const languageKorean = {
             unusedDays: (days: number) => `${days}일 동안 미사용`,
             noExtension: "확장자 없음",
             noMatches: "이 필터에 해당하는 항목이 없습니다.",
+        },
+        chatTrash: {
+            title: "채팅 휴지통",
+            retentionDays: "휴지통 채팅 보관 기간(일)",
         },
         snapshots: {
             title: "스냅샷",

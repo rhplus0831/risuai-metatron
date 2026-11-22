@@ -153,6 +153,7 @@ const METATRON_ONLY_SETTINGS = [
     "contextMeterFixedWarn",
     "contextMeterLookahead",
     "completionWaitMaxSeconds",
+    "chatTrashDays",
     "realmTermsAccepted",
     "scrollToReplyStartAfterStreaming",
     "disableAutoPopupMessageEditor",

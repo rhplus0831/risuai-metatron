@@ -712,6 +712,7 @@
   "contextMeterTurnUnit": "user",
   "contextMeterFixedWarn": 60,
   "completionWaitMaxSeconds": 180,
+  "chatTrashDays": 30,
   "contextMeterLookahead": true,
   "loreBudgetStop": true,
   "generationProgressWindow": true,

@@ -2930,12 +2930,24 @@ export function createResourceStore(options: {
             return row && { revision: token(row.seq, row.revision), trashedAt: row.trashedAt };
         },
 
+        /** Expired trash marks and their revision tokens, with the oldest marks first. */
+        expiredTrashedChats(cutoff: number) {
+            assertOpen();
+            return chatTables.expiredTrashedChats(cutoff).map(({ characterId, id, seq, revision, trashedAt }) => ({
+                characterId,
+                id,
+                revision: token(seq, revision),
+                trashedAt,
+            }));
+        },
+
         /** The request's incarnation, admission checks, mutation and answer share one write transaction. */
         changeChatTrash(
             action: ChatTrashAction,
             { characterId, chatId, revision }: ChatTrashRequest,
             expectedEpoch: string | undefined,
             chatHeld: (characterId: string, id: string) => boolean,
+            purge?: { trashedAt: number; cutoff: number },
         ): ChatTrashAnswer | ChatTrashConflict {
             return store.transaction((): ChatTrashAnswer | ChatTrashConflict => {
                 assertEpochNow(expectedEpoch);
@@ -2957,6 +2969,13 @@ export function createResourceStore(options: {
                     return conflict("stale");
                 }
                 if (action === "delete" && row.trashedAt === null) return conflict("notTrashed");
+                if (
+                    action === "delete" &&
+                    purge &&
+                    !(row.trashedAt === purge.trashedAt && row.trashedAt <= purge.cutoff)
+                ) {
+                    return conflict("stale");
+                }
 
                 const readAnswer = (): ChatTrashAnswer => {
                     const summary = chatTables.readChatSummary(characterId, chatId)!;

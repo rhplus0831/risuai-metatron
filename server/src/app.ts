@@ -21,6 +21,7 @@ import { type Context, Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { routePath } from "hono/route";
 import { createAssetLifecycle, type AssetLifecycleOptions } from "./data/assetLifecycle.ts";
+import { createChatTrashPurge } from "./data/chatTrashPurge.ts";
 import { createKindRegistry, DEFAULT_RESOURCE_KINDS, type ResourceKind } from "./data/kinds.ts";
 import { createChangeFeed } from "./data/changeFeed.ts";
 import { createCheckpointService } from "./data/checkpointService.ts";
@@ -298,6 +299,8 @@ export function createServerContext(options: {
     thumbnailOptions?: ThumbnailOptions;
     /** Retention scan clocks, grace, chunk yield, disk probe, and timer delays (tests). */
     assetLifecycle?: AssetLifecycleOptions;
+    /** The chat trash purge's clock and timer delays (tests). */
+    chatTrashPurge?: { now?: () => number; firstRunDelayMs?: number; intervalMs?: number };
 }) {
     const graceDays = options.assetLifecycle?.graceDays ?? parseAssetGraceDays(process.env.RISU_ASSET_GRACE_DAYS);
     const aiDisclosure = parseAiDisclosure(process.env.RISU_AI_DISCLOSURE);
@@ -680,6 +683,7 @@ export function createServerContext(options: {
         shuttingDown = true;
         thumbnailSweepController.abort();
         assetLifecycle.beginShutdown();
+        chatTrashPurge.beginShutdown();
         diagnostics.record({ kind: "lifecycle", phase: "shutdown" });
         // The memory tasks end `cancelled` (`shutdown`) first, before the jobs' aborts release their
         // writer leases and the request layer fails the tasks' requests; their terminals reach the
@@ -992,6 +996,13 @@ export function createServerContext(options: {
     // A job of any kind holds the chat, and a generation job owns its message.
     const chatHeld = (characterId: string, chatId: string) =>
         generationJobs.chatBusy(characterId, chatId) || generationLock.chatHolders(characterId, chatId).size > 0;
+    const chatTrashPurge = createChatTrashPurge({
+        ...options.chatTrashPurge,
+        store: resources,
+        gate: snapshots.gate,
+        uiKind: resourceKinds.get(RESOURCE_KIND.ui),
+        chatHeld,
+    });
     registerStructuredMemoryRoutes(app, {
         tokens: tokenCounter,
         store: resources,
@@ -1233,6 +1244,7 @@ export function createServerContext(options: {
         upstreamStaging,
         upstreamExportStaging,
         assetLifecycle,
+        chatTrashPurge,
         /**
          * Installs the one `upgrade` dispatcher: generation jobs, the live-update socket, else the
          * socket is destroyed.
@@ -1253,10 +1265,9 @@ export function createServerContext(options: {
             upgradeListeners.set(server, listener);
         },
         /**
-         * Starts the job garbage collection, the snapshot timer, the diagnostics timers, and the
-         * thumbnail cache sweep and daily read-only asset scan (once per context, never after shutdown
-         * began; `beginShutdown` aborts both). `main.ts` calls it after `serve()`, so the sweep runs
-         * once the server listens.
+         * Starts job garbage collection, the snapshot and diagnostics timers, the thumbnail cache
+         * sweep, the daily read-only asset scan, and the hourly chat trash purge. The sweep, scan,
+         * and purge start once per context and stop at shutdown. `main.ts` calls this after `serve()`.
          */
         startBackgroundTasks: () => {
             generationJobs.startGc();
@@ -1264,6 +1275,7 @@ export function createServerContext(options: {
             diagnostics.start();
             if (!shuttingDown) {
                 assetLifecycle.start();
+                chatTrashPurge.start();
                 if (!assetOffsetLogged && clockOffsetMs !== 0) {
                     assetOffsetLogged = true;
                     console.log(`[Server] Development asset clock offset: ${clockOffsetMs} ms`);
@@ -1276,7 +1288,8 @@ export function createServerContext(options: {
         /**
          * Begins shutdown (every generation job is aborted), waits for the jobs to end (bounded by
          * their abort deadline), disposes the script workers, waits for admitted resource handlers
-         * and backup operations, waits for the asset scan and closes its ledger, then closes the store.
+         * and backup operations, drains the chat trash purge and the asset scan, closes the asset
+         * ledger, then closes the resource store.
          * Once the jobs and the admitted operations ended, the subscription writes they left are
          * waited for, the diagnostics' timers stop, what it has queued is written (`finish`, bounded
          * by its own deadline), and its final `state.json`
@@ -1291,6 +1304,7 @@ export function createServerContext(options: {
                 translationRunner.drain(),
                 memoryTasks?.drain(),
                 llmRequests.dispose(),
+                chatTrashPurge.close(),
                 transforms.close(),
                 thumbnailSweep,
             ])

@@ -581,6 +581,17 @@ describe("ui", () => {
         }
     });
 
+    it("defaults chat trash retention to 30 days, floors fractions, and clamps it to 1–3650", () => {
+        const days = (value: unknown) => normalizeUi({ chatTrashDays: value }).chatTrashDays;
+        expect(normalizeUi({}).chatTrashDays).toBe(30);
+        for (const value of ["7", null, true, NaN, Infinity, -Infinity]) {
+            expect(days(value), String(value)).toBe(30);
+        }
+        expect(days(0)).toBe(1);
+        expect(days(3651)).toBe(3650);
+        expect(days(12.9)).toBe(12);
+    });
+
     it("clamps the context meter's fixed-share warning to 10–95 and replaces a non-finite or non-number value with 60", () => {
         const warn = (value: unknown) => normalizeUi({ contextMeterFixedWarn: value }).contextMeterFixedWarn;
         expect(warn(10)).toBe(10);

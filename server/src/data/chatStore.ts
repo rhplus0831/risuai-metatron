@@ -1564,6 +1564,10 @@ export function createChatTables(
     const selectChatRevision = db.prepare(
         "SELECT seq, revision, trashedAt FROM chats WHERE characterId = ? AND id = ?",
     );
+    const selectExpiredTrashedChats = db.prepare(
+        "SELECT characterId, id, seq, revision, trashedAt FROM chats " +
+            "WHERE trashedAt IS NOT NULL AND trashedAt <= ? ORDER BY trashedAt, seq",
+    );
     const newerMemoryWrite = db.prepare(
         "SELECT 1 FROM chatMemoryWrites WHERE chatSeq = ? AND field = ? AND revision > ?",
     );
@@ -3248,6 +3252,15 @@ export function createChatTables(
         chatState(characterId: string, id: string) {
             return selectChatRevision.get(characterId, id) as
                 Pick<ChatRow, "seq" | "revision" | "trashedAt"> | undefined;
+        },
+        expiredTrashedChats(cutoff: number) {
+            return selectExpiredTrashedChats.all(cutoff) as {
+                characterId: string;
+                id: string;
+                seq: number;
+                revision: number;
+                trashedAt: number;
+            }[];
         },
         hasOtherActiveChat(characterId: string, id: string): boolean {
             return !!otherActiveChat.get(characterId, id);

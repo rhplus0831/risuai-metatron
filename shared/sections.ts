@@ -309,6 +309,7 @@ export const SECTION_FIELDS = {
         "contextMeterTurnUnit",
         "contextMeterFixedWarn",
         "completionWaitMaxSeconds",
+        "chatTrashDays",
         "contextMeterLookahead",
         "loreBudgetStop",
         "generationProgressWindow",

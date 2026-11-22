@@ -153,6 +153,8 @@ export const languageEnglish = {
             "When set, chat completion notifications for this character use this text instead of the default message. It stays on this server and is not exported with the character.",
         completionWaitMaxSeconds:
             "In Remote Host Mode, this device holds a reply's completion notification until the plugins set to be waited for on the Plugins page have gone quiet. This is the longest it waits after the reply ends; past it, the notification is sent anyway.",
+        chatTrashDays:
+            "Chats in a character's trash are deleted forever this many days after they were trashed. Lowering it can delete trashed chats at the next purge, which runs every hour.",
         charNote: "A note that strongly affects model behavior. Embbedded to current character, also known as UJB.",
         toggleNsfw: "Toggles jailbreak prompt on and off.",
         lorebook:
@@ -4013,6 +4015,10 @@ export const languageEnglish = {
             unusedDays: (days: number) => `Unused for ${days} days`,
             noExtension: "No extension",
             noMatches: "No items match this filter.",
+        },
+        chatTrash: {
+            title: "Chat trash",
+            retentionDays: "Delete trashed chats after (days)",
         },
         snapshots: {
             title: "Snapshots",

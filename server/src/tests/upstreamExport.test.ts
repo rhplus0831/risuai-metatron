@@ -619,6 +619,7 @@ describe("buildUpstreamDatabase: settings", () => {
         ["contextMeterFixedWarn", 75],
         ["contextMeterLookahead", false],
         ["completionWaitMaxSeconds", 300],
+        ["chatTrashDays", 7],
         ["realmTermsAccepted", "accepted"],
         ["scrollToReplyStartAfterStreaming", false],
         ["disableAutoPopupMessageEditor", true],

@@ -588,7 +588,14 @@ describe("StorageSettings", () => {
             [...target.querySelectorAll("[data-settings-section]")].map((section) =>
                 section.getAttribute("data-settings-section"),
             ),
-        ).toEqual(["storage.overview", "storage.cleanup", "storage.snapshots", "storage.owners", "storage.details"]);
+        ).toEqual([
+            "storage.overview",
+            "storage.cleanup",
+            "storage.chatTrash",
+            "storage.snapshots",
+            "storage.owners",
+            "storage.details",
+        ]);
         for (const title of [language.storagePage.owners.title, language.storagePage.details.title]) {
             expect(button(title).getAttribute("aria-expanded")).toBe("false");
             await click(title);
@@ -675,6 +682,8 @@ describe("StorageSettings", () => {
             .filter((item) => !item.hasAttribute("aria-pressed"))
             // The whole-disk toggle only redraws the overview bar, so it stays enabled during a scan.
             .filter((item) => item.closest("label")?.textContent?.trim() !== language.storagePage.overview.wholeDisk)
+            // The chat trash retention is a setting the asset scan does not read, so it stays enabled during a scan.
+            .filter((item) => !item.closest('[data-settings-section="storage.chatTrash"]'))
             .map((item) => item.getAttribute("aria-label") ?? item.textContent?.trim() ?? item.value)
             // Cancel only closes the open label editor, so it stays enabled during a scan.
             .filter((name) => name !== language.storage.cancel);
