@@ -10,7 +10,7 @@ translation commit after a restore are Limitations; plugins no longer trash the 
 omitted chat is kept" (D15b), and confirmed over the changed sentences only (the report's last section): seven
 corrections confirmed; C5's replay sentence and C8's fixture corrected after it; the plugin part of C1 and the new N1
 kept as Limitations. No P1 is open. By the owner's decision of 2026-11-22 there is no fourth full audit: what the
-audits describe as races is settled in the slices, by the tests they list. Landed: 1 (`4b8e45126`), 2 (`0e1e35826`).
+audits describe as races is settled in the slices, by the tests they list. Landed: 1 (`4b8e45126`), 2 (`0e1e35826`), 3 (`139617122`).
 
 Sources: `server/src/data/chatStore.ts` (`CHAT_TABLES_SQL`, `CHAT_TABLE_COLUMNS`, the open-time column checks,
 `summaryFields`, `chatSummary`, `SUMMARY_PROJECTION_VERSION`, the feed's chat change, the op validation and replay
