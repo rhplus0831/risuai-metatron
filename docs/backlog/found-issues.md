@@ -36,9 +36,10 @@ Sources the entries name (drop a line when no entry names it any more):
 
 ## Contents
 
-- [Build and CI](#build-and-ci): 2
+- [Build and CI](#build-and-ci): 3
 - [Chat screen](#chat-screen): 1
-- [Draft recovery](#draft-recovery): 1
+- [Docs](#docs): 1
+- [Draft recovery](#draft-recovery): 2
 - [Rendering](#rendering): 1
 - [Server generation](#server-generation): 2
 
@@ -69,6 +70,18 @@ had the same gap and now compares its complete input key before saving.
 **Suggested handling:** reproduce with an ignored fixture a test reads; if it replays, key the result the way
 `util/typeCheckCache.mjs` keys a program.
 
+### The persona binding e2e spec's "Chat Settings" button name matches two buttons
+
+Run on 2026-11-23 at `a3cb3d014` and again at `667444a93`: `e2e/personaBinding.spec.ts:200` fails in Playwright strict
+mode. After it opens a chat row's options, `page.getByRole("button", { name: "Chat Settings" })` matches the "Chat
+Settings" option and the "Copy Settings Only" option, whose description `createSettingsCopyDesc` (`src/lang/en.ts`)
+ends in "and chat settings." The option came in at `4a44b704a`.
+
+**Why it matters:** the spec fails for a reason unrelated to what it tests, so it no longer guards the binding dialog's
+Chat Settings path, and every e2e run that selects it reports a failure.
+
+**Suggested handling:** pass `exact: true` to that `getByRole`, then run the spec again.
+
 ## Chat screen
 
 ### The sidebar's whole-chat Copy can capture a reply that is still streaming
@@ -81,6 +94,20 @@ the same tab-side messages.
 
 **Suggested handling:** reproduce by copying a chat while its reply streams; if the copy is partial, disable Copy
 while the chat is busy.
+
+## Docs
+
+### The server resources guide is near its size limit
+
+Measured on 2026-11-23 at `667444a93`: `docs/structure/server-resources.md` is 38,481 bytes (target 36,000, limit
+40,000), and `pnpm check:docs` reports it `near`. The Chat Trash sections (`### Chat Trash`, `### Chat Trash
+retention`, the column bullet under `### Store tables`, the snapshot layout paragraph under `### Install`, and a
+Limitation) took it there from 35,539.
+
+**Why it matters:** with 1,519 bytes left, the next server-side change that adds to this guide has to split it first.
+
+**Suggested handling:** trim or split it in its own commit. Candidates: the long `### Limitations` (about 5.3 KB) and the
+route lists under `## Files`.
 
 ## Draft recovery
 
@@ -96,6 +123,22 @@ at its 30-second bound and the save commits later: the draft stays, and a second
 
 **Suggested handling:** record which ops the acknowledgement refused and retry only those; the group result needs a
 field or exchange identity for that.
+
+### A refused replay of an earlier build's journaled delete leaves the tab's chat order unlike the server's
+
+Read on 2026-11-23 at `667444a93`. Boot recovery can still replay a `{ op: "delete" }` that a build before the chat trash
+journaled. When the tab then creates a chat with the same id, the server refuses the delete with `useTrash` and keeps
+the old chat. The tab lists the two chats in one order (`j, k`) while the server holds the other (`k, j`), with no
+pending work, until the next list read: the `useTrash` path of `recoverChatConflicts`
+(`src/ts/storage/chatStore.svelte.ts`) does not request the character's list. The recreation case in
+`src/ts/storage/tests/resourceSyncRecreation.test.ts` ("sends an earlier build's journaled delete…") compares the
+member set sorted, which hides the order.
+
+**Why it matters:** low and legacy-only. It needs a journal written before the upgrade plus a same-id create, and the
+order is only cosmetic.
+
+**Suggested handling:** have the `useTrash` refusal path call `requestChatListRefresh`, then drop the `.sort()` in that
+test.
 
 ## Rendering
 
