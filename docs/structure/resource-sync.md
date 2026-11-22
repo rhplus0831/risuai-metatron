@@ -245,6 +245,9 @@ enter the chat module's [`hydrateChat`](chat-store.md#job-hydration); job patche
 - `startResourceSync` owns lifecycle handlers, warning rules and the shared keepalive budget; `prepareUnloadAuth` in
   `resourceClient.ts` keeps a signed token ready while unsaved work exists. Hidden visibility requests an immediate
   normal cycle, bypassing debounce/backoff, with a follow-up if needed after joining an existing cycle.
+- `beforeunload` asks while work is unsaved or refused, and while a `holdUnloadWarning` hold is taken: work only this
+  page can finish that is not a queued write (a [removal reroll](chat-pipeline.md#reroll)'s removed replies). A halted
+  loop does not ask.
 - `pagehide` asks `unloadPendingChatWork` for whole eligible by-id batches under existing ids, one request per chat in
   the shared 60 KiB budget including outstanding keepalives. Only a successful `sendBatchOnUnload` dispatch calls
   `trackUnloadWork`; answers enter `settleUnloadWork`, failures requeue ahead of newer edits. Answers for retired work

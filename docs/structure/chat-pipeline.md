@@ -185,6 +185,11 @@ tab under the same reservation ([remote send](network-jobs.md#remote-send)).
 - `reroll`/`unReroll` switch the newest reply's `candidates`, then the bundle history; past the last, a one-reply tail
   rerolls [in place](server-generation.md#reroll-in-place) while the current `hello` allows it (`serverRerollsInPlace`),
   else the tail is removed and sent again.
+- A one-reply press while the feed is connecting (the socket is replaced whenever the page comes back) waits for that
+  connection's `hello` (`awaitServerRerollsInPlace`, at most `REROLL_HELLO_WAIT_MS`), and is dropped when the chat
+  changed meanwhile or was pressed again. With no connection being made, or none in time, it takes the removal.
+- A removal of a non-empty tail holds the page's leave question (`holdUnloadWarning`,
+  [resource sync](resource-sync.md#unload)) from the removal until its send ended and the restore is decided.
 - With remote sending on, the in-place reroll and Continue go through the host (a fresh request id per press; a Continue
   without input names the message it continues); the removal reroll always runs on this tab, since its bundle history
   cannot be kept through a host ([remote send](network-jobs.md#remote-send)).
@@ -409,6 +414,12 @@ lore.
 - `renderChatTemplate` calls Jinja's `Template.render` synchronously with no work or time limit; a costly custom
   template occupies its caller's thread. Decision: owner, 2026-11-10 (known-issues review): worker isolation would be
   designed together with the server CBS thread (server-generation).
+- A removal reroll (a turn of several replies, or a one-reply turn whose `hello` did not come in time) can lose the
+  replies it removes: only this tab's memory holds them from the saved removal until its send brought a reply or the
+  restore ran. Leaving the page asks first; a crash, a killed page (a phone may not ask), or a confirmed leave before a
+  failed send loses them. Reproduced: finding 6 of the
+  [durable data loss audit](../reports/audits/codebase/durable-data-loss-2026-11-18.md). Decision: owner, 2026-11-22: an
+  edge case; Removal Reroll retired ([archive](../archived-plan/README.md)).
 - The screen's per-chat reroll history (the bundles of multi-reply tails) is in memory only; a single reply's reroll
   keeps the previous reply as that message's `candidates` on the server. Decision: owner, 2026-11-10 (known-issues
   review).

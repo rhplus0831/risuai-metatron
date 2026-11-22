@@ -25,7 +25,7 @@ Sources the entries name (drop a line when no entry names it any more):
 ## Contents
 
 - [characters-modules](#characters-modules) (1)
-- [chat-pipeline](#chat-pipeline) (2)
+- [chat-pipeline](#chat-pipeline) (1)
 - [network-jobs](#network-jobs) (1)
 - [structured-memory](#structured-memory) (1)
 
@@ -54,27 +54,6 @@ Guide: [Characters, Cards, Modules, Personas](../structure/characters-modules.md
 ## chat-pipeline
 
 Guide: [Chat Pipeline: Send → Prompt → Request → Reply](../structure/chat-pipeline.md#known-hazards).
-
-- A removal reroll (`rerollByRemoval` in `src/lib/ChatScreens/DefaultChatScreen.svelte`) can lose the replies it
-  removes when the tab closes before the server admits the replacement job. It keeps the removed tail only in this
-  tab's memory (`rerollHistory.begin`), removes it from the chat, and `sendChatMain`'s preflight flushes that removal
-  to the server before the job is created; the restoration after a refused or failed send runs in the same tab, so a
-  close, reload, or crash in between leaves the chat without the tail. Reproduced in a browser at `1513f9288` by the
-  [durable data loss audit](../reports/audits/codebase/durable-data-loss-2026-11-18.md#6-closing-a-tab-during-a-group-reroll-can-discard-the-previous-replies):
-  a bound group chat with a question and two members' replies, the generation request held before the server, and the
-  page closed left only the question in SQLite.
-  - Scope: not only group chats. `reroll` takes this path whenever it does not reroll in place: when the turn after the
-    last user message is not a single character reply (`rerollCarrier` / `isRerollCarrier`, for example two members'
-    replies, or a reply a trigger or Lua script appended), and when the tab's live-update connection has no current
-    `hello` (`serverRerollsInPlace()` is false before the first `hello` and after the feed retires). A single reply
-    rerolled in place keeps its original rows on the server until the replacement commits, and is not affected. The
-    removed tail is the one `rerollTurnStart` picks: back to the last user message, or only to the last speaker's
-    previous reply when that speaker answered twice. Whether a send succeeds while the feed is down was not checked.
-  - Not fixed. Recorded on 2026-11-18 at the owner's request with this scope. A fix keeps the rows until the server can
-    commit the replacement (the removal inside the job's admission, with the removed tail held server-side for
-    restoration) or keeps a durable copy of the pending reroll that survives a client exit.
-  - Planned: the [Removal Reroll plan](../plan/removal-reroll.md) (owner, 2026-11-22: a server-side fix in a plan
-    of its own).
 
 - A multisend part can still change the transcript before the server refuses its job. Each part of `runMultisend`,
   the PO translator, and the DevTool autopilot checks the chat binding as the tab sees it (`checkServerJobBinding`)

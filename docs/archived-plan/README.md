@@ -119,6 +119,7 @@ A historical reference such as `docs/plan/chat-binding.md` is retrievable with
 | Response Checks                           | `69b9d366a`: `docs/plan/response-checks.md`                               | [LLM requests](../structure/llm-requests.md), [server generation](../structure/server-generation.md), [settings](../structure/settings-i18n.md); audit: [report](../reports/audits/plan-runner/response-checks-2026-11-20.md)                                                                                                                                                                                                                                                                                                                    |
 | Upstream Intake 3                         | `4d185ae5f`: `docs/plan/upstream-intake-3.md`                             | [upstream ledger](../backlog/upstream-ledger.md) (its rows for `4d87a70ff..b5bbc5647`), [scripts and triggers](../structure/scripts-triggers.md), [media and auxiliary](../structure/media-aux.md), [settings](../structure/settings-i18n.md); audit: [report](../reports/audits/plan-runner/upstream-intake-3-2026-11-21.md)                                                                                                                                                                                                                    |
 | Tokenizer Worker                          | `7da28aa8a`: `docs/plan/tokenizer-worker.md`                              | [tokenizers](../structure/tokenizers.md), [server generation](../structure/server-generation.md), [found issues](../backlog/found-issues.md) (the shutdown entry), [deferred work](../backlog/deferred-work.md) (Q3)                                                                                                                                                                                                                                                                                                                             |
+| Removal Reroll (retired unbuilt)          | `0cf948a52`: `docs/plan/removal-reroll.md`                                | None: no slice landed; [chat pipeline](../structure/chat-pipeline.md#limitations) keeps the loss as a Limitation with the leave question and the `hello` wait; audits: [report](../reports/audits/plan-runner/removal-reroll-2026-11-22.md)                                                                                                                                                                                                                                                                                                      |
 
 Notes on the table:
 
@@ -134,6 +135,13 @@ Notes on the table:
   `draft-recovery`; `self-host-server.md` became `self-host-server`, `server-resources`,
   and `server-generation`; `build-test-platforms.md` gave its test rules to
   `test-harness.md`.
+- Removal Reroll was retired by the owner on 2026-11-22 before any slice landed. It moved a
+  removal reroll's removal into the server job, with the removed replies kept in a private
+  table and one settlement at the job's end, at server start, and on captured copies. Two
+  audits left 14 P1 findings (six, then eight), and D1 to D12 were never rewritten to the
+  owner's last answers (Q5 again, Q8, Q9). The owner kept the loss as an edge case: the tab
+  now asks before the page is left during a removal reroll, and a one-reply reroll waits for
+  the feed's `hello` instead of taking the removal.
 - Server Plugin Runtime was retired by the owner on 2026-11-03 before any slice landed. It
   proposed an opt-in QuickJS-wasm runtime in the script worker pool (`//@runtime server`)
   running the hook half of API 3.0 plugins inside a generation job; D1–D10 stayed

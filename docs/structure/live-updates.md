@@ -46,7 +46,9 @@ Identifiers the flows below name are not repeated here.
   Retiring the connection or detecting an epoch mismatch clears progress, output samples, and the server clock offset.
   `memoryTask` frames and the hello's task snapshot feed the [memory task fences](memory.md#background-memory-task).
 - `hello.rerollInPlace` feeds `serverRerollsInPlace`; its connection-scoped contract is on the export in `eventFeed.ts`,
-  and its screen consumer is [Reroll](chat-pipeline.md#reroll).
+  and its screen consumer is [Reroll](chat-pipeline.md#reroll). `awaitServerRerollsInPlace` answers with it once a
+  connection being made has its `hello`: at once when none is being made, false when the attempt ends first or after
+  `REROLL_HELLO_WAIT_MS`.
 
 ### Live updates
 

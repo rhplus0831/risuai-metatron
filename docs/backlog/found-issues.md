@@ -132,11 +132,12 @@ then clears `candidates`. The rollback copy (`previousCandidate`) is a local var
 the begin and the final write leaves the reply empty. The 193 KiB runner case (`server/src/tests/promptRunner.test.ts:4197`)
 covers the notice and a normal completion, not a crash after the begin.
 
-**Why it matters:** a long reply rerolled in place, the path [known issues](known-issues.md) calls unaffected by the
-removal-reroll loss, can lose its text when the server dies mid-reroll.
+**Why it matters:** a long reply rerolled in place, the path that avoids the
+[removal reroll's loss](../structure/chat-pipeline.md#limitations), can lose its text when the server dies mid-reroll.
 
 **Suggested handling:** keep the previous reply when trimming for a reroll (drop it last, or refuse the in-place reroll
-and take the tail path), or keep the rollback copy durable as the Removal Reroll plan's stash does.
+and take the tail path), or keep the rollback copy durable, as the retired Removal Reroll plan
+([archive](../archived-plan/README.md)) proposed for a removed tail.
 
 ### A token count queued behind a long encode holds shutdown before the tokenizer worker is ended
 
